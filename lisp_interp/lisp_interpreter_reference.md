@@ -292,6 +292,33 @@ triangle, diamond, etc.
 | `(fred-series series-id [api-key] [start-date] [end-date])` | Fetch a data series; returns `(cons dates-vector values-vector)`. `api-key` may be omitted if the `FRED_API_KEY` environment variable is set. `start-date`/`end-date` are optional `"YYYY-MM-DD"` strings or dates |
 | `(load-csv filename [has-header?])` | Load a CSV's columns as vectors; returns `(cons headers-list vectors-list)`. Each column is auto-detected as numeric, as a date (`"YYYY-MM-DD"`), or skipped (along with its header) if neither. A row is included only if every kept column has a value there, so all returned vectors stay the same length and aligned. `has-header?` defaults to `#t` |
 
+### tastytrade (real broker data)
+
+Requires the `tastytrade` package (`pip install tastytrade`) and a
+tastytrade account. All four functions take a `credentials-path` — a
+local JSON file `{"client_secret": ..., "refresh_token": ..., "is_test":
+false}` — as their first argument; see `tasty_api/README.md` for the
+one-time OAuth setup (the same credentials file works for both `tasty_api`
+and this interpreter). `product` is one of `"CL"`, `"MCL"`, `"ES"`,
+`"NQ"`, `"SR3"`, `"ZN"`, `"ZQ"` — see `(tastytrade-products)`.
+
+| Function | Description |
+|---|---|
+| `(tastytrade-test-connection credentials-path)` | Authenticate and return a status string (account number(s) found), or raise an error describing what went wrong |
+| `(tastytrade-products)` | List of supported product code strings |
+| `(tastytrade-futures-curve credentials-path product [n-months])` | Fetch the product's futures term structure; returns `(cons delivery-dates-vector last-prices-vector)`, one entry per upcoming contract month that actually has a price. `n-months` (default 18) is how many upcoming months to guess symbols for — months that don't exist for this product (e.g. non-quarterly months for ES/NQ/ZN) are silently skipped. Feed the result straight into `plot-xy`, `linear-regression`, `spline-regression`, etc. |
+| `(tastytrade-option-chain credentials-path product [n-months max-strikes-per-expiration include-iv? greeks-timeout])` | Fetch a futures-option chain; returns a Lisp list of rows, each a 10-element list `(symbol type strike expiration-date delivery-month underlying-future last-price implied-volatility volume open-interest)`. `type` is `"Call"` or `"Put"`; missing values (e.g. no recent Greeks snapshot) come back as `'()`. Defaults: `n-months` 12, `max-strikes-per-expiration` 15 (strikes nearest the underlying's price, per expiration), `include-iv?` `#t`, `greeks-timeout` 25.0 seconds. Implied volatility comes from a live per-contract Greeks stream, so it's the slow part — pass `include-iv?` `#f` to skip it and fetch much faster when you only need prices/strikes |
+
+```lisp
+(define creds "tastytrade_credentials.json")
+(define curve (tastytrade-futures-curve creds "CL" 12))
+(plot-xy (car curve) (list (cdr curve)))
+
+(define chain (tastytrade-option-chain creds "CL" 3 10 #f))  ; skip IV, fast
+(display (length chain))
+(display (car chain))   ; (symbol type strike expiration delivery underlying price iv volume oi)
+```
+
 ### Input / output
 
 | Function | Description |

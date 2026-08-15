@@ -33,6 +33,13 @@ Supports:
   - a builtin to fetch a data series (as a pair of vectors: dates and
     values) from the FRED database at the Federal Reserve Bank of St. Louis,
     and a builtin (load-csv) to load a CSV file's columns as vectors
+  - builtins to fetch real broker data from tastytrade (futures term
+    structure and futures-option chains, with streamed implied
+    volatility), via a local JSON credentials file -- see
+    tastytrade-futures-curve, tastytrade-option-chain,
+    tastytrade-test-connection, and tastytrade-products. Requires the
+    `tastytrade` package (pip install tastytrade) and a tastytrade
+    account; see tasty_api/README.md for the one-time OAuth setup
 
 The code favors clarity and simplicity over efficiency or completeness.
 
@@ -60,6 +67,8 @@ import csv
 import math
 import json
 import random
+import asyncio
+import inspect
 import datetime
 import urllib.request
 import urllib.parse
@@ -1682,6 +1691,338 @@ def load_csv_fn(filename, has_header=True):
     return Pair(list_to_pairs(out_headers), list_to_pairs(out_vectors))
 
 
+# ---- tastytrade (real broker data): futures curves and futures-option
+#      chains, via the community `tastytrade` Python SDK. Modeled on
+#      tasty_api/tastytrade_source.py, but with the PyQt6/QThread plumbing
+#      stripped out -- these are plain synchronous functions (each just
+#      wraps an `asyncio.run` internally, the same way `fred_series` above
+#      wraps a plain urllib call), so this module keeps working without
+#      PyQt6 installed. ----
+
+try:
+    from tastytrade import Session as _TTSession
+    from tastytrade.instruments import get_future_option_chain as _tt_get_future_option_chain
+    from tastytrade.market_data import get_market_data_by_type as _tt_get_market_data_by_type
+    _TASTYTRADE_AVAILABLE = True
+except ImportError:
+    _TASTYTRADE_AVAILABLE = False
+
+TASTY_MONTH_CODES = {
+    1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
+    7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z",
+}
+TASTY_CODE_TO_MONTH = {v: k for k, v in TASTY_MONTH_CODES.items()}
+
+# Supported products: code -> tastytrade root symbol. Kept in sync with
+# tasty_api/tastytrade_source.py's PRODUCTS dict.
+TASTY_PRODUCTS = {
+    "CL": "/CL", "MCL": "/MCL", "ES": "/ES", "NQ": "/NQ",
+    "SR3": "/SR3", "ZN": "/ZN", "ZQ": "/ZQ",
+}
+
+
+async def _tasty_maybe_await(value):
+    """Compatibility shim: the `tastytrade` SDK went async-only in v12.0.0,
+    so older installed versions return plain results directly instead of a
+    coroutine. See the identically-named helper in tasty_api/tastytrade_source.py."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _tasty_root(product, name):
+    root = TASTY_PRODUCTS.get(str(product).upper())
+    if root is None:
+        raise LispError(
+            "%s: unknown product %r (supported: %s)"
+            % (name, str(product), ", ".join(TASTY_PRODUCTS)))
+    return root
+
+
+def _tasty_load_credentials(path):
+    path = str(path)
+    if not os.path.exists(path):
+        raise LispError("tastytrade: credentials file not found: %s" % path)
+    try:
+        with open(path) as f:
+            creds = json.load(f)
+    except json.JSONDecodeError as e:
+        raise LispError("tastytrade: credentials file isn't valid JSON: %s" % e)
+    for key in ("client_secret", "refresh_token"):
+        if isinstance(creds.get(key), str):
+            creds[key] = creds[key].strip()
+    missing = [k for k in ("client_secret", "refresh_token") if not creds.get(k)]
+    if missing:
+        raise LispError("tastytrade: credentials file is missing: %s" % ", ".join(missing))
+    return creds
+
+
+def _tasty_session(credentials_path):
+    if not _TASTYTRADE_AVAILABLE:
+        raise LispError(
+            "tastytrade: the 'tastytrade' package is not installed (pip install tastytrade)")
+    creds = _tasty_load_credentials(credentials_path)
+    return _TTSession(
+        creds["client_secret"], creds["refresh_token"],
+        is_test=bool(creds.get("is_test", False)))
+
+
+def _tasty_pick_price(md):
+    """Prefer settled/close price; fall back to last trade, then mark/mid."""
+    for attr in ("close", "last", "mark", "mid"):
+        val = getattr(md, attr, None)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _tasty_option_type_label(option_type):
+    val = getattr(option_type, "value", option_type)
+    return "Call" if str(val).upper().startswith("C") else "Put"
+
+
+def _tasty_parse_delivery_month(underlying_symbol, reference_date=None):
+    """Parse a CME futures trading symbol (single-digit year, e.g.
+    '/CLZ6') into its delivery month (first-of-month date). Returns None
+    if unparseable. See tasty_api/tastytrade_source.py's
+    parse_delivery_month for the full rationale."""
+    if not underlying_symbol:
+        return None
+    sym = underlying_symbol.lstrip("/")
+    if len(sym) < 3:
+        return None
+    year_digits = ""
+    i = len(sym) - 1
+    while i >= 0 and sym[i].isdigit():
+        year_digits = sym[i] + year_digits
+        i -= 1
+    if not year_digits or i < 0:
+        return None
+    month_code = sym[i]
+    if month_code not in TASTY_CODE_TO_MONTH:
+        return None
+    month = TASTY_CODE_TO_MONTH[month_code]
+
+    reference_date = reference_date or datetime.date.today()
+    if len(year_digits) >= 2:
+        year = 2000 + int(year_digits[-2:])
+    else:
+        last_digit = int(year_digits)
+        base_decade = (reference_date.year // 10) * 10
+        year = base_decade + last_digit
+        if year < reference_date.year - 2:
+            year += 10
+    try:
+        return datetime.date(year, month, 1)
+    except ValueError:
+        return None
+
+
+async def _tasty_test_connection_async(credentials_path):
+    session = _tasty_session(credentials_path)
+    from tastytrade import Account
+    raw = Account.get(session)
+    accounts = await _tasty_maybe_await(raw)
+    if not accounts:
+        return "Connected, but no accounts were found on this login."
+    numbers = ", ".join(getattr(a, "account_number", str(a)) for a in accounts)
+    return "Connected successfully. Account(s): %s." % numbers
+
+
+def tastytrade_test_connection_fn(credentials_path):
+    """(tastytrade-test-connection credentials-path) -> a status string.
+    Raises a LispError on any authentication/connection failure."""
+    return LispString(asyncio.run(_tasty_test_connection_async(credentials_path)))
+
+
+async def _tasty_futures_curve_async(credentials_path, product, n_months):
+    session = _tasty_session(credentials_path)
+    root = _tasty_root(product, "tastytrade-futures-curve")
+
+    today = datetime.date.today()
+    y, m = today.year, today.month
+    candidate_symbols, candidate_months = [], []
+    for i in range(int(n_months)):
+        total = (m - 1) + i
+        mm = total % 12 + 1
+        yyyy = y + total // 12
+        code = TASTY_MONTH_CODES[mm]
+        # tastytrade's plain trading symbol uses a single-digit year
+        # (e.g. "/CLZ6" for Dec 2026), unlike the streamer symbol.
+        candidate_symbols.append("%s%s%d" % (root, code, yyyy % 10))
+        candidate_months.append(datetime.date(yyyy, mm, 1))
+
+    market_data = await _tasty_maybe_await(
+        _tt_get_market_data_by_type(session, futures=candidate_symbols))
+    price_by_symbol = {md.symbol: _tasty_pick_price(md) for md in market_data}
+
+    dates, prices = [], []
+    for sym, delivery in zip(candidate_symbols, candidate_months):
+        price = price_by_symbol.get(sym)
+        if price is None:
+            continue
+        dates.append(LispDate(delivery.year, delivery.month, delivery.day))
+        prices.append(price)
+    return dates, prices
+
+
+def tastytrade_futures_curve_fn(credentials_path, product, n_months=18):
+    """(tastytrade-futures-curve credentials-path product [n-months]) ->
+    (cons delivery-dates-vector last-prices-vector), one entry per upcoming
+    contract month that actually has a price (guessed contract months that
+    don't exist for this product -- e.g. non-quarterly months for ES/NQ/ZN
+    -- are silently skipped). `product` is one of "CL", "MCL", "ES", "NQ",
+    "SR3", "ZN", "ZQ". Feed the result straight into plot-xy,
+    linear-regression, spline-regression, etc."""
+    dates, prices = asyncio.run(
+        _tasty_futures_curve_async(credentials_path, product, int(n_months)))
+    return Pair(LispVector(dates), LispVector(prices))
+
+
+async def _tasty_collect_greeks(session, streamer_symbols, timeout):
+    from tastytrade import DXLinkStreamer
+    from tastytrade.dxfeed import Greeks
+    collected = {}
+    if not streamer_symbols:
+        return collected
+
+    async def _listen():
+        async with DXLinkStreamer(session) as streamer:
+            await _tasty_maybe_await(streamer.subscribe(Greeks, streamer_symbols))
+            async for event in streamer.listen(Greeks):
+                collected[event.event_symbol] = event
+                if len(collected) >= len(streamer_symbols):
+                    break
+
+    try:
+        await asyncio.wait_for(_listen(), timeout=timeout)
+    except asyncio.TimeoutError:
+        pass  # illiquid strikes may simply never publish greeks in time
+    except Exception:
+        pass  # streaming API mismatch/hiccup -- return whatever we got
+    return collected
+
+
+async def _tasty_option_chain_async(credentials_path, product, n_months,
+                                     max_strikes_per_expiration, include_iv, greeks_timeout):
+    session = _tasty_session(credentials_path)
+    root = _tasty_root(product, "tastytrade-option-chain")
+
+    chain = await _tasty_maybe_await(_tt_get_future_option_chain(session, root))
+
+    today = datetime.date.today()
+    by_delivery_month = {}
+    for exp_date, options in chain.items():
+        for opt in options:
+            delivery = _tasty_parse_delivery_month(getattr(opt, "underlying_symbol", ""), today) \
+                or (exp_date.replace(day=1) if hasattr(exp_date, "replace") else None)
+            if delivery is None:
+                continue
+            by_delivery_month.setdefault(delivery, []).append(opt)
+
+    kept_months = sorted(mo for mo in by_delivery_month if mo >= today.replace(day=1))[:int(n_months)]
+    candidate_options = [opt for mo in kept_months for opt in by_delivery_month[mo]]
+    if not candidate_options:
+        return []
+
+    future_symbols = sorted({
+        getattr(o, "underlying_symbol", None) for o in candidate_options
+    } - {None})
+    future_md = await _tasty_maybe_await(
+        _tt_get_market_data_by_type(session, futures=future_symbols))
+    future_price = {md.symbol: _tasty_pick_price(md) for md in future_md}
+
+    grouped = {}
+    for opt in candidate_options:
+        key = (getattr(opt, "underlying_symbol", None), getattr(opt, "expiration_date", None))
+        grouped.setdefault(key, []).append(opt)
+
+    max_strikes_per_expiration = int(max_strikes_per_expiration)
+    filtered_options = []
+    for (underlying, _exp), opts in grouped.items():
+        ref_price = future_price.get(underlying)
+        if ref_price is not None:
+            opts_sorted = sorted(
+                opts, key=lambda o: abs(float(getattr(o, "strike_price", 0) or 0) - ref_price))
+            filtered_options.extend(opts_sorted[: max_strikes_per_expiration * 2])
+        else:
+            filtered_options.extend(opts[: max_strikes_per_expiration * 2])
+
+    option_symbols = [s for s in (getattr(o, "symbol", None) for o in filtered_options) if s]
+    option_md = []
+    for i in range(0, len(option_symbols), 100):
+        chunk = option_symbols[i:i + 100]
+        option_md.extend(await _tasty_maybe_await(
+            _tt_get_market_data_by_type(session, future_options=chunk)))
+    option_price = {md.symbol: _tasty_pick_price(md) for md in option_md}
+    option_volume = {md.symbol: getattr(md, "volume", None) for md in option_md}
+    option_oi = {md.symbol: getattr(md, "open_interest", None) for md in option_md}
+
+    greeks_by_symbol = {}
+    if include_iv:
+        streamer_symbols = [s for s in (getattr(o, "streamer_symbol", None) for o in filtered_options) if s]
+        greeks_by_symbol = await _tasty_collect_greeks(session, streamer_symbols, float(greeks_timeout))
+
+    rows = []
+    for opt in filtered_options:
+        symbol = getattr(opt, "symbol", None)
+        streamer_symbol = getattr(opt, "streamer_symbol", None)
+        underlying = getattr(opt, "underlying_symbol", None) or ""
+        strike = getattr(opt, "strike_price", None)
+        exp_date = getattr(opt, "expiration_date", None)
+        option_type = getattr(opt, "option_type", None)
+
+        delivery = _tasty_parse_delivery_month(underlying, today)
+        greeks = greeks_by_symbol.get(streamer_symbol)
+        iv = getattr(greeks, "volatility", None) if greeks is not None else None
+        price = option_price.get(symbol)
+        volume = option_volume.get(symbol)
+        oi = option_oi.get(symbol)
+
+        rows.append([
+            LispString(symbol) if symbol else NIL,
+            LispString(_tasty_option_type_label(option_type)) if option_type is not None else NIL,
+            float(strike) if strike is not None else NIL,
+            LispString(exp_date.isoformat()) if hasattr(exp_date, "isoformat") else NIL,
+            LispDate(delivery.year, delivery.month, delivery.day) if delivery else NIL,
+            LispString(underlying.lstrip("/")),
+            float(price) if price is not None else NIL,
+            float(iv) if iv is not None else NIL,
+            int(volume) if volume is not None else NIL,
+            int(oi) if oi is not None else NIL,
+        ])
+    return rows
+
+
+def tastytrade_option_chain_fn(credentials_path, product, n_months=12,
+                                max_strikes_per_expiration=15, include_iv=True,
+                                greeks_timeout=25.0):
+    """(tastytrade-option-chain credentials-path product
+         [n-months max-strikes-per-expiration include-iv? greeks-timeout])
+    -> a Lisp list of rows, each row a 10-element list:
+       (symbol type strike expiration-date delivery-month underlying-future
+        last-price implied-volatility volume open-interest)
+    `type` is the string "Call" or "Put"; missing values (e.g. no recent
+    Greeks snapshot for implied-volatility) come back as '() (the empty
+    list). Each expiration is trimmed to the `max-strikes-per-expiration`
+    strikes nearest the underlying's price, since implied volatility comes
+    from a live per-contract Greeks stream (`include-iv?` defaults to #t;
+    pass #f to skip the stream entirely and fetch much faster).
+    `greeks-timeout` (seconds) caps how long that stream is awaited."""
+    rows = asyncio.run(_tasty_option_chain_async(
+        credentials_path, product, int(n_months), int(max_strikes_per_expiration),
+        is_true(include_iv), float(greeks_timeout)))
+    return list_to_pairs([list_to_pairs(row) for row in rows])
+
+
+def tastytrade_products_fn():
+    """(tastytrade-products) -> a Lisp list of supported product code strings."""
+    return list_to_pairs([LispString(code) for code in TASTY_PRODUCTS])
+
+
 def make_global_env(output=None, plot=None):
     """Build the global environment of built-in procedures.
 
@@ -2023,6 +2364,14 @@ def make_global_env(output=None, plot=None):
         "load-csv": load_csv_fn,
     })
 
+    # ---- tastytrade (real broker data): futures curves and futures-option chains ----
+    env.update({
+        "tastytrade-test-connection": tastytrade_test_connection_fn,
+        "tastytrade-futures-curve": tastytrade_futures_curve_fn,
+        "tastytrade-option-chain": tastytrade_option_chain_fn,
+        "tastytrade-products": tastytrade_products_fn,
+    })
+
     # ---- charting: plot one X vector against one or more Y vectors ----
     # `last_chart` remembers the most recently plotted chart spec, so
     # `save-chart` can render it to a file without needing to be told the
@@ -2342,6 +2691,13 @@ if _PYQT_AVAILABLE:
         "                                 (vector 0 0 1 0 1 1 0 1 1 1 0 1) 2 #t))\n"
         "  ; load-csv returns (cons headers vectors); e.g.:\n"
         "  ; (define d2 (load-csv \"data.csv\"))  (define cols (cdr d2))\n"
+        "  ; tastytrade real broker data (needs a credentials JSON file --\n"
+        "  ; see tasty_api/README.md for one-time OAuth setup):\n"
+        "  (define creds \"tastytrade_credentials.json\")\n"
+        "  (define curve (tastytrade-futures-curve creds \"CL\" 12))\n"
+        "  (plot-xy (car curve) (list (cdr curve)))\n"
+        "  (define chain (tastytrade-option-chain creds \"CL\" 3 10 #f))\n"
+        "  (display (length chain))  ; #f above skips the slower IV stream\n"
         "Any top-level variable bound to a vector appears as a column in\n"
         "the Vectors tab; plot-xy... calls draw into the Chart tab.\n"
         "Press Ctrl+Enter, or click Run, to evaluate.\n\n"
