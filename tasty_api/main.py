@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import sys
 import datetime as dt
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (
@@ -59,7 +60,7 @@ class CredentialsBar(QWidget):
         layout.addWidget(QLabel("tastytrade credentials file:"))
         self.path_edit = QLineEdit()
         default_path = self._settings.value(
-            "tastytrade_credentials_path", "tastytrade_credentials.json"
+            "tastytrade_credentials_path", Path.home() / "credentials.json"
         )
         self.path_edit.setText(default_path)
         self.path_edit.textChanged.connect(
