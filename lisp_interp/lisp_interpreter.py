@@ -1,0 +1,2486 @@
+#!/usr/bin/env python3
+"""
+A simple Lisp interpreter with numeric-vector and date datatypes, an XY
+charting/regression facility, FRED economic-data access, and a PyQt6 GUI.
+
+Supports:
+  - integers, floats, strings, symbols, booleans
+  - cons cells (pairs) and lists built from them
+  - a vector datatype (of numbers and/or dates), written #(1 2 3) or built
+    with (vector ...)
+  - a simple date datatype: (date year month day)
+  - special forms: quote, if, define, set!, lambda, begin,
+                    let, let*, cond, and, or
+  - built-in arithmetic, comparison, list, string, date, and vector
+    procedures
+  - linear, logistic, and piecewise-linear spline regression, with one or
+    more X predictors (linear-regression / logistic-regression /
+    spline-regression), a plain-language report of a fitted model
+    (model-report), and evaluation of a model's quality on held-out data
+    it wasn't fit on (model-evaluate) -- together with vector-take/
+    vector-drop/vectors-shuffle for splitting data into a training subset
+    and a remaining subset. spline-regression adds a bit of non-linearity
+    by expanding each predictor into hinge (piecewise-linear) basis
+    functions at a handful of knots -- with an exact, independent maximum
+    knot count per predictor if wanted -- and can optionally fit that
+    expanded basis with a logistic link instead of ordinary least squares,
+    for a probability-in-[0,1] output
+  - GUI builtins to plot one X vector against several Y vectors (each
+    with its own marker symbol, optionally connected by line segments),
+    with an optional single-predictor linear or logistic regression line,
+    and a builtin (save-chart) to save the most recent chart to an image
+    file (PNG/PDF/SVG), which works with or without the GUI running
+  - a builtin to fetch a data series (as a pair of vectors: dates and
+    values) from the FRED database at the Federal Reserve Bank of St. Louis,
+    and a builtin (load-csv) to load a CSV file's columns as vectors
+
+The code favors clarity and simplicity over efficiency or completeness.
+
+IMPORTANT: the evaluator (`seval`) does NOT use Python function recursion
+to walk the Lisp expression tree. Instead it drives an explicit stack of
+"control frames" (a plain Python list) in a loop. This means deeply
+recursive Lisp programs -- even non-tail-recursive ones -- are limited only
+by available memory, not by Python's own call-stack / recursion limit.
+
+GUI: running this file with no arguments opens a small PyQt6 window with
+an input box, an output/history log, a QTableView of any vectors currently
+defined, and a chart tab (with its own "Save Chart..." button). Any
+top-level variable bound (via `define`) to a vector is shown live as a
+column in the table, so `(define prices (vector 10 20 30))` immediately
+produces a column labeled "prices". Calling one of the `plot-xy...`
+builtins draws a chart in the Chart tab. PyQt6 is only imported when the
+GUI is actually launched, so the console/batch mode below works fine
+without it; matplotlib alone (no PyQt6 needed) is enough for save-chart to
+work even in console/batch mode.
+"""
+
+import sys
+import os
+import csv
+import math
+import json
+import random
+import datetime
+import urllib.request
+import urllib.parse
+
+
+# ---------------------------------------------------------------------------
+# Data types
+# ---------------------------------------------------------------------------
+
+class Symbol(str):
+    """A Lisp symbol. Subclassing str lets us reuse Python's string
+    machinery while still being able to tell symbols apart from Lisp
+    strings (which are represented by the separate LispString class)."""
+    pass
+
+
+class LispString(str):
+    """A Lisp string literal. Kept as its own subclass of str (distinct
+    from Symbol) so `string?` and `symbol?` can tell the two apart."""
+    pass
+
+
+class Pair:
+    """A cons cell: the basic building block of Lisp lists."""
+    __slots__ = ("car", "cdr")
+
+    def __init__(self, car, cdr):
+        self.car = car
+        self.cdr = cdr
+
+    def __eq__(self, other):
+        return isinstance(other, Pair) and self.car == other.car and self.cdr == other.cdr
+
+    def __repr__(self):
+        return to_string(self)
+
+
+NIL = None  # represents the empty list '()
+
+
+class LispVector:
+    """A fixed-size, mutable vector of numbers and/or dates -- e.g.
+    #(1 2 3.5) or a vector of LispDate values. Kept deliberately simple:
+    just a thin wrapper around a Python list."""
+
+    def __init__(self, items):
+        self.items = list(items)
+
+    def __eq__(self, other):
+        return isinstance(other, LispVector) and self.items == other.items
+
+    def __repr__(self):
+        return to_string(self)
+
+
+class LispDate:
+    """A simple calendar date, e.g. (date 2020 1 15). Wraps a Python
+    datetime.date so charts can format it nicely on an axis."""
+
+    def __init__(self, year, month, day):
+        self.date = datetime.date(year, month, day)
+
+    def __eq__(self, other):
+        return isinstance(other, LispDate) and self.date == other.date
+
+    def __lt__(self, other):
+        return isinstance(other, LispDate) and self.date < other.date
+
+    def __repr__(self):
+        return self.date.isoformat()
+
+
+def _date_from_pydate(pydate):
+    """Wrap an existing datetime.date as a LispDate without re-validating
+    year/month/day (used by date-add-days and the FRED-data loader)."""
+    obj = LispDate.__new__(LispDate)
+    obj.date = pydate
+    return obj
+
+
+class Procedure:
+    """A user-defined function (closure) created by `lambda` or `define`."""
+
+    def __init__(self, params, body, env):
+        self.params = params      # list of Symbol parameter names
+        self.body = body          # list of body expressions
+        self.env = env            # environment in which it was defined
+
+    def __repr__(self):
+        return "#<procedure>"
+
+
+class LispError(Exception):
+    """Raised for any runtime or parse error in the interpreter."""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Tokenizer
+# ---------------------------------------------------------------------------
+
+def tokenize(text):
+    """Turn source text into a flat list of token strings."""
+    tokens = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in " \t\r\n":
+            i += 1
+        elif c == ';':                      # comment runs to end of line
+            while i < n and text[i] != '\n':
+                i += 1
+        elif c == '#' and i + 1 < n and text[i + 1] == '(':
+            tokens.append("#(")             # start of a vector literal
+            i += 2
+        elif c in "()":
+            tokens.append(c)
+            i += 1
+        elif c == "'":
+            tokens.append("'")
+            i += 1
+        elif c == '"':
+            j = i + 1
+            buf = []
+            while j < n and text[j] != '"':
+                if text[j] == '\\' and j + 1 < n:
+                    escapes = {'n': '\n', 't': '\t', '"': '"', '\\': '\\'}
+                    buf.append(escapes.get(text[j + 1], text[j + 1]))
+                    j += 2
+                else:
+                    buf.append(text[j])
+                    j += 1
+            tokens.append('"' + "".join(buf) + '"')
+            i = j + 1
+        else:
+            j = i
+            while j < n and text[j] not in " \t\r\n()'\"" and text[j] != ';':
+                j += 1
+            tokens.append(text[i:j])
+            i = j
+    return tokens
+
+
+# ---------------------------------------------------------------------------
+# Reader / Parser
+# ---------------------------------------------------------------------------
+
+def parse(text):
+    """Parse source text into a list of top-level Lisp expressions."""
+    tokens = tokenize(text)
+    exprs = []
+    while tokens:
+        exprs.append(read_from(tokens))
+    return exprs
+
+
+def read_from(tokens):
+    if not tokens:
+        raise LispError("unexpected end of input")
+    token = tokens.pop(0)
+    if token == "(":
+        items = []
+        while tokens and tokens[0] != ")":
+            items.append(read_from(tokens))
+        if not tokens:
+            raise LispError("missing ')'")
+        tokens.pop(0)  # discard ")"
+        return list_to_pairs(items)
+    elif token == "#(":
+        items = []
+        while tokens and tokens[0] != ")":
+            items.append(read_from(tokens))
+        if not tokens:
+            raise LispError("missing ')' for vector literal")
+        tokens.pop(0)  # discard ")"
+        return LispVector(items)
+    elif token == ")":
+        raise LispError("unexpected ')'")
+    elif token == "'":
+        return list_to_pairs([Symbol("quote"), read_from(tokens)])
+    else:
+        return atom(token)
+
+
+def atom(token):
+    """Convert a single token into a number, string, boolean, or symbol."""
+    if token.startswith('"') and token.endswith('"'):
+        return LispString(token[1:-1])
+    if token == "#t":
+        return True
+    if token == "#f":
+        return False
+    try:
+        return int(token)
+    except ValueError:
+        pass
+    try:
+        return float(token)
+    except ValueError:
+        pass
+    return Symbol(token)
+
+
+# ---------------------------------------------------------------------------
+# Conversions between Python lists and Lisp (Pair-based) lists
+# ---------------------------------------------------------------------------
+
+def list_to_pairs(items):
+    result = NIL
+    for item in reversed(items):
+        result = Pair(item, result)
+    return result
+
+
+def pairs_to_list(p):
+    items = []
+    while isinstance(p, Pair):
+        items.append(p.car)
+        p = p.cdr
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+
+class Env(dict):
+    """A mapping of names to values, with a link to an enclosing (outer)
+    environment. Together, a chain of Envs implements lexical scoping.
+    (This chain follows *lexical nesting*, not call/recursion depth, so it
+    stays shallow even for deeply recursive Lisp programs.)"""
+
+    def __init__(self, params=(), args=(), outer=None):
+        super().__init__()
+        self.outer = outer
+        params = list(params)
+        args = list(args)
+        if len(params) != len(args):
+            raise LispError(
+                "expected %d argument(s), got %d" % (len(params), len(args)))
+        for p, a in zip(params, args):
+            self[p] = a
+
+    def find(self, name):
+        """Return the innermost Env in which `name` is bound."""
+        e = self
+        while e is not None:
+            if name in e:
+                return e
+            e = e.outer
+        raise LispError("unbound symbol: %s" % name)
+
+
+# ---------------------------------------------------------------------------
+# Evaluator -- explicit-stack version
+# ---------------------------------------------------------------------------
+#
+# Rather than have seval() call itself recursively to evaluate sub-
+# expressions (which would use up Python's own call stack), we keep an
+# explicit "control stack" of pending work and an explicit "value stack" of
+# results computed so far, and drive them with a plain while-loop.
+#
+# A control frame is a tuple whose first element is a tag string:
+#
+#   ('EVAL', expr, env)             -- evaluate expr in env
+#   ('APPLY', nargs)                -- apply a procedure to nargs arguments
+#   ('SEQ', remaining_exprs, env)   -- discard a value, then run the rest
+#                                      of a body/begin sequence
+#   ('IF', conseq, alt, env)        -- choose a branch once the test is in
+#   ('DEFINE', name, env)           -- finish a (define name expr)
+#   ('SET', name, env)              -- finish a (set! name expr)
+#   ('COND', clauses, env)          -- try the next cond clause
+#   ('COND_BRANCH', body, rest, env)-- act on a cond test's result
+#   ('AND', exprs, env)             -- evaluate remaining `and` operands
+#   ('AND_CHECK', rest, env)        -- act on one `and` operand's result
+#   ('OR', exprs, env)              -- evaluate remaining `or` operands
+#   ('OR_CHECK', rest, env)         -- act on one `or` operand's result
+#
+# Frames are pushed onto control_stack (a Python list) and popped off in
+# LIFO order, exactly mirroring what Python's own call stack would have
+# done -- except it is a plain list under our control, so its size is
+# limited only by memory, not by sys.getrecursionlimit().
+
+SPECIAL_FORMS = {
+    "quote", "if", "define", "set!", "lambda",
+    "begin", "let", "let*", "cond", "and", "or",
+}
+
+
+def is_true(x):
+    """Everything except #f counts as true (including '() and 0)."""
+    return x is not False
+
+
+def push_sequence(exprs, env, control_stack, value_stack):
+    """Push frames to evaluate a body (list of expressions) in order,
+    discarding all but the value of the last one. Used for `begin`,
+    procedure bodies, and cond/let clause bodies."""
+    if not exprs:
+        value_stack.append(NIL)
+    elif len(exprs) == 1:
+        control_stack.append(('EVAL', exprs[0], env))
+    else:
+        control_stack.append(('SEQ', exprs[1:], env))
+        control_stack.append(('EVAL', exprs[0], env))
+
+
+def eval_cond(clauses, env, control_stack, value_stack):
+    if not clauses:
+        value_stack.append(NIL)
+        return
+    first, rest = clauses[0], clauses[1:]
+    test = first.car
+    body = pairs_to_list(first.cdr)
+    if test == Symbol("else"):
+        push_sequence(body, env, control_stack, value_stack)
+    else:
+        control_stack.append(('COND_BRANCH', body, rest, env))
+        control_stack.append(('EVAL', test, env))
+
+
+def eval_and(exprs, env, control_stack, value_stack):
+    if not exprs:
+        value_stack.append(True)
+    elif len(exprs) == 1:
+        control_stack.append(('EVAL', exprs[0], env))
+    else:
+        control_stack.append(('AND_CHECK', exprs[1:], env))
+        control_stack.append(('EVAL', exprs[0], env))
+
+
+def eval_or(exprs, env, control_stack, value_stack):
+    if not exprs:
+        value_stack.append(False)
+    elif len(exprs) == 1:
+        control_stack.append(('EVAL', exprs[0], env))
+    else:
+        control_stack.append(('OR_CHECK', exprs[1:], env))
+        control_stack.append(('EVAL', exprs[0], env))
+
+
+def desugar_let(args):
+    """(let ((x1 v1) (x2 v2) ...) body...)
+       => ((lambda (x1 x2 ...) body...) v1 v2 ...)"""
+    bindings = pairs_to_list(args.car)
+    body = args.cdr  # already a Pair-list, reused as the lambda's body
+    names = [b.car for b in bindings]
+    value_exprs = [b.cdr.car for b in bindings]
+    lambda_expr = Pair(Symbol("lambda"), Pair(list_to_pairs(names), body))
+    return Pair(lambda_expr, list_to_pairs(value_exprs))
+
+
+def desugar_let_star(args):
+    """(let* ((x1 v1) (x2 v2) ... (xn vn)) body...)
+       => (let ((x1 v1)) (let* ((x2 v2) ... (xn vn)) body...))
+       bottoming out at (let () body...).
+       Note: this builds a nested AST (plain data); it does not recurse in
+       Python to *evaluate* it -- that happens later, one level at a time,
+       through the ordinary explicit-stack loop."""
+    bindings = pairs_to_list(args.car)
+    body = args.cdr
+    if not bindings:
+        lambda_expr = Pair(Symbol("lambda"), Pair(NIL, body))
+        return Pair(lambda_expr, NIL)
+    first, rest = bindings[0], bindings[1:]
+    if rest:
+        inner_letstar = Pair(Symbol("let*"), Pair(list_to_pairs(rest), body))
+        inner_body = Pair(inner_letstar, NIL)
+    else:
+        inner_body = body
+    return Pair(Symbol("let"), Pair(list_to_pairs([first]), inner_body))
+
+
+def eval_special_form(op, args, env, control_stack, value_stack):
+    """Handle one of the special forms in SPECIAL_FORMS by pushing whatever
+    control frames are needed to carry out its evaluation."""
+    if op == "quote":
+        value_stack.append(args.car)
+
+    elif op == "if":
+        test, conseq = args.car, args.cdr.car
+        alt_pair = args.cdr.cdr
+        alt = alt_pair.car if isinstance(alt_pair, Pair) else NIL
+        control_stack.append(('IF', conseq, alt, env))
+        control_stack.append(('EVAL', test, env))
+
+    elif op == "define":
+        target = args.car
+        if isinstance(target, Pair):
+            # (define (name . params) body...) -- no evaluation needed
+            name = target.car
+            params = pairs_to_list(target.cdr)
+            body = pairs_to_list(args.cdr)
+            env[name] = Procedure(params, body, env)
+            value_stack.append(name)
+        else:
+            name = target
+            control_stack.append(('DEFINE', name, env))
+            control_stack.append(('EVAL', args.cdr.car, env))
+
+    elif op == "set!":
+        name = args.car
+        control_stack.append(('SET', name, env))
+        control_stack.append(('EVAL', args.cdr.car, env))
+
+    elif op == "lambda":
+        params = pairs_to_list(args.car)
+        body = pairs_to_list(args.cdr)
+        value_stack.append(Procedure(params, body, env))
+
+    elif op == "begin":
+        push_sequence(pairs_to_list(args), env, control_stack, value_stack)
+
+    elif op == "let":
+        control_stack.append(('EVAL', desugar_let(args), env))
+
+    elif op == "let*":
+        control_stack.append(('EVAL', desugar_let_star(args), env))
+
+    elif op == "cond":
+        eval_cond(pairs_to_list(args), env, control_stack, value_stack)
+
+    elif op == "and":
+        eval_and(pairs_to_list(args), env, control_stack, value_stack)
+
+    elif op == "or":
+        eval_or(pairs_to_list(args), env, control_stack, value_stack)
+
+    else:
+        raise LispError("unknown special form: %s" % op)
+
+
+def seval(expr, env):
+    """Evaluate a Lisp expression in an environment, using an explicit
+    stack machine rather than Python recursion."""
+    control_stack = [('EVAL', expr, env)]
+    value_stack = []
+
+    while control_stack:
+        frame = control_stack.pop()
+        tag = frame[0]
+
+        if tag == 'EVAL':
+            _, x, cur_env = frame
+            if isinstance(x, Symbol):
+                value_stack.append(cur_env.find(x)[x])
+            elif not isinstance(x, Pair):
+                value_stack.append(x)          # self-evaluating literal
+            else:
+                op, args = x.car, x.cdr
+                if isinstance(op, Symbol) and op in SPECIAL_FORMS:
+                    eval_special_form(op, args, cur_env, control_stack, value_stack)
+                else:
+                    # Procedure application: evaluate operator, then each
+                    # argument left-to-right, then apply. We push APPLY
+                    # first (so it runs last), then the arguments in
+                    # reverse (so they end up evaluated in order), then
+                    # the operator last (so it is evaluated first).
+                    arg_list = pairs_to_list(args)
+                    control_stack.append(('APPLY', len(arg_list)))
+                    for a in reversed(arg_list):
+                        control_stack.append(('EVAL', a, cur_env))
+                    control_stack.append(('EVAL', op, cur_env))
+
+        elif tag == 'APPLY':
+            _, nargs = frame
+            collected = [value_stack.pop() for _ in range(nargs + 1)]
+            collected.reverse()
+            proc, arg_values = collected[0], collected[1:]
+            if isinstance(proc, Procedure):
+                new_env = Env(proc.params, arg_values, proc.env)
+                push_sequence(proc.body, new_env, control_stack, value_stack)
+            elif callable(proc):
+                value_stack.append(proc(*arg_values))
+            else:
+                raise LispError("not a procedure: %r" % (proc,))
+
+        elif tag == 'SEQ':
+            _, remaining, seq_env = frame
+            value_stack.pop()  # discard the value of the expr just run
+            push_sequence(remaining, seq_env, control_stack, value_stack)
+
+        elif tag == 'IF':
+            _, conseq, alt, if_env = frame
+            branch = conseq if is_true(value_stack.pop()) else alt
+            control_stack.append(('EVAL', branch, if_env))
+
+        elif tag == 'DEFINE':
+            _, name, def_env = frame
+            def_env[name] = value_stack.pop()
+            value_stack.append(name)
+
+        elif tag == 'SET':
+            _, name, set_env = frame
+            set_env.find(name)[name] = value_stack.pop()
+            value_stack.append(NIL)
+
+        elif tag == 'COND':
+            _, clauses, cond_env = frame
+            eval_cond(clauses, cond_env, control_stack, value_stack)
+
+        elif tag == 'COND_BRANCH':
+            _, body, rest, cond_env = frame
+            if is_true(value_stack.pop()):
+                push_sequence(body, cond_env, control_stack, value_stack)
+            else:
+                eval_cond(rest, cond_env, control_stack, value_stack)
+
+        elif tag == 'AND':
+            _, exprs, and_env = frame
+            eval_and(exprs, and_env, control_stack, value_stack)
+
+        elif tag == 'AND_CHECK':
+            _, rest, and_env = frame
+            val = value_stack.pop()
+            if not is_true(val):
+                value_stack.append(False)
+            else:
+                eval_and(rest, and_env, control_stack, value_stack)
+
+        elif tag == 'OR':
+            _, exprs, or_env = frame
+            eval_or(exprs, or_env, control_stack, value_stack)
+
+        elif tag == 'OR_CHECK':
+            _, rest, or_env = frame
+            val = value_stack.pop()
+            if is_true(val):
+                value_stack.append(val)
+            else:
+                eval_or(rest, or_env, control_stack, value_stack)
+
+        else:
+            raise LispError("unknown control frame: %r" % (tag,))
+
+    return value_stack.pop()
+
+
+def eval_body(body, env):
+    """Evaluate a list of expressions in env, returning the last value.
+    Used by apply_proc to call back into a user-defined Procedure from a
+    built-in higher-order function like `map` or `vector-map`."""
+    return seval(Pair(Symbol("begin"), list_to_pairs(body)), env)
+
+
+def apply_proc(proc, args):
+    """Call a procedure -- either a user-defined Procedure (closure) or a
+    built-in Python callable -- with a list of already-evaluated args.
+    Used by higher-order builtins (map, filter, reduce, apply, vector-map)."""
+    if isinstance(proc, Procedure):
+        new_env = Env(proc.params, args, proc.env)
+        return eval_body(proc.body, new_env)
+    if callable(proc):
+        return proc(*args)
+    raise LispError("not a procedure: %r" % (proc,))
+
+
+# ---------------------------------------------------------------------------
+# Built-in procedures
+# ---------------------------------------------------------------------------
+
+def check_numbers(args, name):
+    for a in args:
+        if not isinstance(a, (int, float)) or isinstance(a, bool):
+            raise LispError("%s: not a number: %r" % (name, a))
+
+
+def check_vector_elements(args, name):
+    """Vectors may hold numbers and/or LispDate values (but not booleans,
+    strings, pairs, etc.)."""
+    for a in args:
+        if isinstance(a, bool) or not isinstance(a, (int, float, LispDate)):
+            raise LispError("%s: not a number or date: %r" % (name, a))
+
+
+def numeric_value(v):
+    """Convert a vector element to a plain number for arithmetic: dates
+    become their ordinal day count, numbers pass through unchanged."""
+    if isinstance(v, LispDate):
+        return v.date.toordinal()
+    return v
+
+
+# ---- date builtins (module-level: no closure over output/plot needed) ----
+
+def date_fn(year, month, day):
+    try:
+        return LispDate(int(year), int(month), int(day))
+    except ValueError as e:
+        raise LispError("date: invalid date: %s" % e)
+
+
+def date_year(d):
+    return d.date.year
+
+
+def date_month(d):
+    return d.date.month
+
+
+def date_day(d):
+    return d.date.day
+
+
+def date_to_string(d):
+    return LispString(d.date.isoformat())
+
+
+def string_to_date(s):
+    try:
+        y, m, d = str(s).split("-")
+        return LispDate(int(y), int(m), int(d))
+    except Exception:
+        raise LispError("string->date: invalid date string %r (want YYYY-MM-DD)" % (str(s),))
+
+
+def date_add_days(d, n):
+    if not isinstance(d, LispDate):
+        raise LispError("date-add-days: not a date: %r" % (d,))
+    return _date_from_pydate(d.date + datetime.timedelta(days=int(n)))
+
+
+# ---- regression models: linear and logistic, with one or more X
+#      predictors (module-level: shared by the standalone regression
+#      builtins and the chart-building code below) ----
+
+class LispModel:
+    """A fitted regression model: either "linear"
+    (y = intercept + sum(coefficients[i] * x[i])) or "logistic"
+    (p = sigmoid(intercept + sum(coefficients[i] * x[i]))).
+    `coefficients` is always a list, one entry per predictor (even if
+    there's only one). `stats` holds a few kind-specific fit diagnostics
+    used by `model-report`."""
+
+    def __init__(self, kind, coefficients, intercept, stats):
+        self.kind = kind                    # "linear" or "logistic"
+        self.coefficients = coefficients    # list of floats, one per predictor
+        self.intercept = intercept
+        self.k = len(coefficients)          # number of predictors
+        self.stats = stats                  # dict of extra fit info, kind-specific
+
+    def predict(self, xs):
+        """xs: a list of numbers, one per predictor, in the same order the
+        model was fit with."""
+        z = self.intercept + sum(c * x for c, x in zip(self.coefficients, xs))
+        return sigmoid(z) if self.kind == "logistic" else z
+
+    def __repr__(self):
+        return to_string(self)
+
+
+def sigmoid(z):
+    """Numerically stable logistic function 1 / (1 + e^-z)."""
+    if z >= 0:
+        ez = math.exp(-z)
+        return 1.0 / (1.0 + ez)
+    ez = math.exp(z)
+    return ez / (1.0 + ez)
+
+
+def solve_linear_system(matrix, rhs):
+    """Solve `matrix @ x = rhs` by Gauss-Jordan elimination with partial
+    pivoting. `matrix` is a list of `n` rows, each of length `n`; `rhs` is
+    a list of length `n`. Returns the solution as a list of length `n`.
+    Plain and O(n^3), which is plenty fast for the handful of predictors
+    a small Lisp program will realistically use."""
+    n = len(matrix)
+    augmented = [list(matrix[i]) + [rhs[i]] for i in range(n)]
+    for col in range(n):
+        pivot_row = max(range(col, n), key=lambda r: abs(augmented[r][col]))
+        if abs(augmented[pivot_row][col]) < 1e-12:
+            raise LispError(
+                "regression: the predictors are collinear or there isn't "
+                "enough data to fit this model")
+        augmented[col], augmented[pivot_row] = augmented[pivot_row], augmented[col]
+        pivot_value = augmented[col][col]
+        augmented[col] = [v / pivot_value for v in augmented[col]]
+        for row in range(n):
+            if row != col:
+                factor = augmented[row][col]
+                augmented[row] = [a - factor * b for a, b in zip(augmented[row], augmented[col])]
+    return [augmented[i][n] for i in range(n)]
+
+
+def _standardize_columns(columns):
+    """columns: a list of predictor columns (each a list of numbers, one
+    per observation). Returns (standardized_columns, means, scales).
+    Standardizing before fitting keeps both the normal-equations solve and
+    Newton-Raphson well-behaved regardless of a predictor's raw scale
+    (e.g. a huge ordinal date next to a small percentage)."""
+    means, scales, standardized = [], [], []
+    n = len(columns[0])
+    for i, col in enumerate(columns):
+        mean = sum(col) / n
+        variance = sum((v - mean) ** 2 for v in col) / n
+        if variance == 0:
+            raise LispError("regression: predictor %d has no variation; cannot fit a model" % (i + 1,))
+        scale = math.sqrt(variance)
+        means.append(mean)
+        scales.append(scale)
+        standardized.append([(v - mean) / scale for v in col])
+    return standardized, means, scales
+
+
+def _unstandardize_coefficients(b0, betas, means, scales):
+    """Convert coefficients fit in standardized-predictor space back to
+    the original, unstandardized scale."""
+    coefficients = [b / scale for b, scale in zip(betas, scales)]
+    intercept = b0 - sum(b * mean / scale for b, mean, scale in zip(betas, means, scales))
+    return coefficients, intercept
+
+
+def fit_linear(columns, ys):
+    """Ordinary least-squares fit of y = intercept + sum(coef[i]*x[i]).
+    `columns` is a list of one or more predictor columns (each a list of
+    plain numbers, one per observation); `ys` is the list of observed
+    values. Returns a LispModel."""
+    k = len(columns)
+    n = len(ys)
+    if n == 0:
+        raise LispError("linear-regression: no data to fit")
+    for col in columns:
+        if len(col) != n:
+            raise LispError("linear-regression: all vectors must be the same length")
+
+    std_columns, means, scales = _standardize_columns(columns)
+    design_rows = [[1.0] + [std_columns[j][i] for j in range(k)] for i in range(n)]
+    p = k + 1
+    normal_matrix = [[sum(design_rows[i][a] * design_rows[i][b] for i in range(n))
+                       for b in range(p)] for a in range(p)]
+    normal_rhs = [sum(design_rows[i][a] * ys[i] for i in range(n)) for a in range(p)]
+    solved = solve_linear_system(normal_matrix, normal_rhs)
+    coefficients, intercept = _unstandardize_coefficients(solved[0], solved[1:], means, scales)
+
+    model = LispModel("linear", coefficients, intercept, {})
+    predictions = [model.predict([col[i] for col in columns]) for i in range(n)]
+    mean_y = sum(ys) / n
+    ss_total = sum((y - mean_y) ** 2 for y in ys)
+    ss_residual = sum((y - p) ** 2 for y, p in zip(ys, predictions))
+    model.stats = {
+        "r_squared": (1 - ss_residual / ss_total) if ss_total > 0 else float("nan"),
+        "n": n,
+    }
+    return model
+
+
+def fit_logistic(columns, ys, max_iterations=50, tolerance=1e-8):
+    """Fit p = sigmoid(intercept + sum(coef[i]*x[i])) by maximum
+    likelihood, using Newton-Raphson (a.k.a. iteratively reweighted least
+    squares). Each y must be in [0, 1] -- either a hard 0/1 label or a
+    probability. `columns` is a list of one or more predictor columns."""
+    k = len(columns)
+    n = len(ys)
+    if n == 0:
+        raise LispError("logistic-regression: no data to fit")
+    for col in columns:
+        if len(col) != n:
+            raise LispError("logistic-regression: all vectors must be the same length")
+    for y in ys:
+        if y < 0 or y > 1:
+            raise LispError(
+                "logistic-regression: dependent-variable values must all be "
+                "between 0 and 1 (got %r)" % (y,))
+
+    std_columns, means, scales = _standardize_columns(columns)
+    design_rows = [[1.0] + [std_columns[j][i] for j in range(k)] for i in range(n)]
+    p = k + 1
+    eps = 1e-12
+
+    beta = [0.0] * p
+    converged = False
+    iterations_used = 0
+    log_likelihood = 0.0
+
+    for iteration in range(1, max_iterations + 1):
+        iterations_used = iteration
+        gradient = [0.0] * p
+        hessian = [[0.0] * p for _ in range(p)]
+        log_likelihood = 0.0
+        for i in range(n):
+            row = design_rows[i]
+            z = sum(beta[a] * row[a] for a in range(p))
+            prob = sigmoid(z)
+            error = prob - ys[i]
+            weight = prob * (1 - prob)
+            for a in range(p):
+                gradient[a] += error * row[a]
+                for b in range(p):
+                    hessian[a][b] += weight * row[a] * row[b]
+            log_likelihood += ys[i] * math.log(max(prob, eps)) + (1 - ys[i]) * math.log(max(1 - prob, eps))
+
+        try:
+            delta = solve_linear_system(hessian, gradient)
+        except LispError:
+            raise LispError(
+                "logistic-regression: fitting failed to converge -- this "
+                "usually means the data is perfectly (or almost perfectly) "
+                "separable by one of the predictors, which sends the "
+                "coefficients toward infinity; try more/noisier data")
+        for a in range(p):
+            beta[a] -= delta[a]
+        if max(abs(d) for d in delta) < tolerance:
+            converged = True
+            break
+
+    coefficients, intercept = _unstandardize_coefficients(beta[0], beta[1:], means, scales)
+
+    # McFadden's pseudo R-squared, comparing against an intercept-only model.
+    mean_y = min(max(sum(ys) / n, eps), 1 - eps)
+    null_log_likelihood = sum(y * math.log(mean_y) + (1 - y) * math.log(1 - mean_y) for y in ys)
+    pseudo_r_squared = (1 - log_likelihood / null_log_likelihood) if null_log_likelihood != 0 else float("nan")
+
+    stats = {
+        "log_likelihood": log_likelihood,
+        "pseudo_r_squared": pseudo_r_squared,
+        "iterations": iterations_used,
+        "converged": converged,
+        "n": n,
+    }
+    return LispModel("logistic", coefficients, intercept, stats)
+
+
+def _coerce_predictors(x_arg):
+    """Accept either a single vector (one predictor) or a Lisp list of
+    vectors (multiple predictors), so `(linear-regression xs ys)` keeps
+    working exactly as before, while `(linear-regression (list x1 x2) ys)`
+    fits a multi-predictor model."""
+    if isinstance(x_arg, LispVector):
+        return [x_arg]
+    if x_arg is NIL or isinstance(x_arg, Pair):
+        vecs = pairs_to_list(x_arg)
+        if not vecs:
+            raise LispError("regression: at least one predictor vector is required")
+        return vecs
+    raise LispError("regression: expected a vector, or a list of vectors, of predictors")
+
+
+def _predictor_columns(x_arg, n_expected):
+    x_vecs = _coerce_predictors(x_arg)
+    columns = []
+    for xv in x_vecs:
+        if not isinstance(xv, LispVector):
+            raise LispError("regression: each predictor must be a vector")
+        if len(xv.items) != n_expected:
+            raise LispError("regression: all vectors must be the same length")
+        columns.append([numeric_value(v) for v in xv.items])
+    return columns
+
+
+def linear_regression_fn(x_arg, y_vec):
+    if not isinstance(y_vec, LispVector):
+        raise LispError("linear-regression: y must be a vector")
+    columns = _predictor_columns(x_arg, len(y_vec.items))
+    ys = [numeric_value(v) for v in y_vec.items]
+    return fit_linear(columns, ys)
+
+
+def logistic_regression_fn(x_arg, y_vec):
+    if not isinstance(y_vec, LispVector):
+        raise LispError("logistic-regression: y must be a vector")
+    columns = _predictor_columns(x_arg, len(y_vec.items))
+    ys = [numeric_value(v) for v in y_vec.items]
+    return fit_logistic(columns, ys)
+
+
+def _is_model(x):
+    return isinstance(x, (LispModel, LispSplineModel))
+
+
+def _is_probabilistic(model):
+    """True for models whose .predict() returns a probability in [0,1]
+    (logistic, or a spline model fit with a logistic link)."""
+    return model.kind in ("logistic", "spline-logistic")
+
+
+def model_predict(model, x_arg):
+    if not _is_model(model):
+        raise LispError("model-predict: not a model: %r" % (model,))
+    if isinstance(x_arg, Pair) or x_arg is NIL:
+        xs = [numeric_value(v) for v in pairs_to_list(x_arg)]
+    else:
+        xs = [numeric_value(x_arg)]
+    if len(xs) != model.k:
+        raise LispError(
+            "model-predict: model has %d predictor(s), but %d given"
+            % (model.k, len(xs)))
+    return model.predict(xs)
+
+
+def model_slope(model):
+    if isinstance(model, LispSplineModel):
+        raise LispError("model-slope: not available for a spline model; use model-report instead")
+    if not isinstance(model, LispModel):
+        raise LispError("model-slope: not a model: %r" % (model,))
+    if len(model.coefficients) != 1:
+        raise LispError(
+            "model-slope: this model has %d predictors; use model-coefficients instead"
+            % len(model.coefficients))
+    return model.coefficients[0]
+
+
+def model_coefficients(model):
+    if isinstance(model, LispSplineModel):
+        raise LispError("model-coefficients: not available for a spline model; use model-report instead")
+    if not isinstance(model, LispModel):
+        raise LispError("model-coefficients: not a model: %r" % (model,))
+    return LispVector(list(model.coefficients))
+
+
+def model_report(model):
+    """Produce a human-readable multi-line report of a fitted model's
+    parameters (and a couple of fit-quality diagnostics)."""
+    if isinstance(model, LispSplineModel):
+        return LispString("\n".join(_spline_report_lines(model)))
+    if not isinstance(model, LispModel):
+        raise LispError("model-report: not a model: %r" % (model,))
+    lines = []
+    coefficient_lines = [
+        "  x%d coefficient = %.6g" % (i + 1, c) for i, c in enumerate(model.coefficients)
+    ]
+    if model.kind == "linear":
+        lines.append("Linear model:  y = %.6g + %s" % (
+            model.intercept,
+            " + ".join("%.6g*x%d" % (c, i + 1) for i, c in enumerate(model.coefficients))))
+        lines.extend(coefficient_lines)
+        lines.append("  intercept      = %.6g" % model.intercept)
+        lines.append("  R-squared      = %.6g" % model.stats["r_squared"])
+        lines.append("  n              = %d" % model.stats["n"])
+    else:
+        lines.append("Logistic model:  p = sigmoid(%.6g + %s)" % (
+            model.intercept,
+            " + ".join("%.6g*x%d" % (c, i + 1) for i, c in enumerate(model.coefficients))))
+        lines.extend(coefficient_lines)
+        lines.append("  intercept      = %.6g" % model.intercept)
+        lines.append("  log-likelihood = %.6g" % model.stats["log_likelihood"])
+        lines.append("  pseudo R-squared = %.6g  (McFadden's)" % model.stats["pseudo_r_squared"])
+        lines.append("  iterations     = %d (%s)" % (
+            model.stats["iterations"], "converged" if model.stats["converged"] else "did NOT converge"))
+        lines.append("  n              = %d" % model.stats["n"])
+    return LispString("\n".join(lines))
+
+
+def model_evaluate(model, x_arg, y_vec):
+    """Evaluate a fitted model's prediction quality against (typically
+    held-out) data it was not fit on, and return a human-readable report.
+    This is the "quality of the model on the remaining data" step of a
+    train/test workflow."""
+    if not _is_model(model):
+        raise LispError("model-evaluate: not a model: %r" % (model,))
+    if not isinstance(y_vec, LispVector):
+        raise LispError("model-evaluate: y must be a vector")
+    columns = _predictor_columns(x_arg, len(y_vec.items))
+    if len(columns) != model.k:
+        raise LispError(
+            "model-evaluate: model has %d predictor(s), but %d given"
+            % (model.k, len(columns)))
+    ys = [numeric_value(v) for v in y_vec.items]
+    n = len(ys)
+    if n == 0:
+        raise LispError("model-evaluate: no data to evaluate")
+    predictions = [model.predict([col[i] for col in columns]) for i in range(n)]
+
+    lines = ["Evaluation on %d held-out observation(s):" % n]
+    if not _is_probabilistic(model):
+        mean_y = sum(ys) / n
+        ss_total = sum((y - mean_y) ** 2 for y in ys)
+        ss_residual = sum((y - p) ** 2 for y, p in zip(ys, predictions))
+        r_squared = (1 - ss_residual / ss_total) if ss_total > 0 else float("nan")
+        rmse = math.sqrt(ss_residual / n)
+        mae = sum(abs(y - p) for y, p in zip(ys, predictions)) / n
+        lines.append("  R-squared = %.6g" % r_squared)
+        lines.append("  RMSE      = %.6g" % rmse)
+        lines.append("  MAE       = %.6g" % mae)
+    else:
+        eps = 1e-12
+        log_likelihood = sum(
+            y * math.log(max(p, eps)) + (1 - y) * math.log(max(1 - p, eps))
+            for y, p in zip(ys, predictions))
+        mean_y = min(max(sum(ys) / n, eps), 1 - eps)
+        null_log_likelihood = sum(y * math.log(mean_y) + (1 - y) * math.log(1 - mean_y) for y in ys)
+        pseudo_r_squared = (1 - log_likelihood / null_log_likelihood) if null_log_likelihood != 0 else float("nan")
+        correct = sum(1 for y, p in zip(ys, predictions) if (p >= 0.5) == (y >= 0.5))
+        accuracy = correct / n
+        lines.append("  log-likelihood   = %.6g" % log_likelihood)
+        lines.append("  pseudo R-squared = %.6g  (McFadden's)" % pseudo_r_squared)
+        lines.append("  accuracy         = %.6g  (at a 0.5 threshold)" % accuracy)
+    return LispString("\n".join(lines))
+
+
+# ---- spline regression: piecewise-linear hinge basis, no external deps ----
+#
+# A simple, hand-rolled way to let a model bend: for each predictor x,
+# pick a handful of "knot" locations (by default, evenly spaced quantiles
+# of that predictor's own values -- or exact locations the user supplies)
+# and add a hinge feature max(0, x - t) for each knot t, alongside the
+# plain linear term. A predictor can also be marked "categorical" (for a
+# variable like home-type, coded e.g. 0=own/1=rent) instead, in which case
+# it's expanded into 0/1 indicator columns -- one per non-baseline value --
+# rather than hinge features, since hinges/knots don't mean anything for a
+# handful of discrete codes. Fitting the expanded basis is then just an
+# ordinary (or logistic) regression -- reusing fit_linear/fit_logistic
+# exactly as they are.
+
+class _PredictorSpec:
+    """How one predictor is expanded into features: either a set of
+    hinge-function knots (mode "spline"), or a set of categories to
+    dummy-encode (mode "categorical", one 0/1 indicator column per
+    non-baseline category)."""
+
+    def __init__(self, mode, knots=None, categories=None, n_distinct=None):
+        self.mode = mode
+        self.knots = knots or []
+        self.categories = categories or []   # sorted; categories[0] is baseline
+        self.n_distinct = n_distinct
+
+    def n_features(self):
+        return len(self.knots) + 1 if self.mode == "spline" else len(self.categories) - 1
+
+
+def _choose_knots(column, n_knots):
+    """Pick n_knots knot locations at roughly evenly spaced quantiles of
+    column's values, staying strictly inside the data range (a knot at
+    the max value would produce an all-zero, useless hinge column)."""
+    if n_knots <= 0:
+        return []
+    values = sorted(column)
+    n = len(values)
+    if n < 3:
+        return []  # too little data to place an interior knot meaningfully
+    knots = []
+    for i in range(1, n_knots + 1):
+        q = i / (n_knots + 1)
+        idx = int(round(q * (n - 1)))
+        idx = min(max(idx, 1), n - 2)  # keep strictly interior
+        knots.append(values[idx])
+    return _dedupe_preserve_order(knots)
+
+
+def _dedupe_preserve_order(items):
+    seen = set()
+    result = []
+    for x in items:
+        if x not in seen:
+            seen.add(x)
+            result.append(x)
+    return result
+
+
+def _resolve_predictor_spec(spec, column, name):
+    """Turn one raw per-predictor argument into a _PredictorSpec:
+      - the symbol 'categorical  -> dummy-encode the distinct values seen
+      - a Lisp list of numbers   -> use exactly those knot locations
+      - a plain non-negative int -> auto-pick that many knots by quantile
+    """
+    n_distinct = len(set(column))
+    if isinstance(spec, Symbol) and spec == "categorical":
+        categories = sorted(set(column))
+        if len(categories) < 2:
+            raise LispError(
+                "spline-regression: %s marked categorical, but only %d distinct "
+                "value(s) were found (need at least 2)" % (name, len(categories)))
+        return _PredictorSpec("categorical", categories=categories, n_distinct=n_distinct)
+
+    if isinstance(spec, Pair) or spec is NIL:
+        knots = _dedupe_preserve_order(sorted(numeric_value(v) for v in pairs_to_list(spec)))
+    else:
+        count = int(spec)
+        if count < 0:
+            raise LispError("spline-regression: knot counts must not be negative")
+        knots = _choose_knots(column, count)
+
+    if knots and n_distinct <= 3:
+        # A knot placed among only 2-3 distinct values is liable to make a
+        # hinge column identical (or near-identical) to the plain linear
+        # term or to another hinge, making the fit singular -- and hinge
+        # knots don't really mean anything for a handful of discrete
+        # values anyway. Catch this up front with an actionable message,
+        # rather than letting it surface later as a confusing "collinear"
+        # error deep in the linear-algebra code.
+        raise LispError(
+            "spline-regression: %s has only %d distinct value(s), so hinge "
+            "knots aren't meaningful there (and can make the fit singular). "
+            "Use a knot count of 0 (stay linear) or mark it 'categorical "
+            "instead." % (name, n_distinct))
+
+    return _PredictorSpec("spline", knots=knots, n_distinct=n_distinct)
+
+
+def _resolve_all_predictor_specs(max_knots, columns):
+    """Resolve the `max-knots` argument into one _PredictorSpec per
+    predictor. `max_knots` may be:
+      - a single int or 'categorical, applied to every predictor
+      - a flat list of numbers/dates, when there's exactly one predictor
+        (shorthand for explicit knot locations on that one predictor)
+      - a list with exactly one entry per predictor, where each entry is
+        itself an int, 'categorical, or a list of explicit knot locations
+    """
+    k = len(columns)
+    names = ["x%d" % (i + 1) for i in range(k)]
+
+    def is_knot_value(v):
+        return (isinstance(v, (int, float)) and not isinstance(v, bool)) or isinstance(v, LispDate)
+
+    if isinstance(max_knots, Pair) or max_knots is NIL:
+        items = pairs_to_list(max_knots)
+        all_knot_values = items and all(is_knot_value(v) for v in items)
+        if k == 1 and all_knot_values:
+            # A flat list of numbers/dates with one predictor: explicit knots.
+            return [_resolve_predictor_spec(list_to_pairs(items), columns[0], names[0])]
+        if len(items) != k:
+            raise LispError(
+                "spline-regression: the knot-spec list must have one entry per "
+                "predictor (%d), got %d" % (k, len(items)))
+        return [_resolve_predictor_spec(spec, col, name)
+                for spec, col, name in zip(items, columns, names)]
+
+    return [_resolve_predictor_spec(max_knots, col, name)
+            for col, name in zip(columns, names)]
+
+
+def _spline_expand_value(v, spec, name):
+    if spec.mode == "categorical":
+        if v not in spec.categories:
+            raise LispError(
+                "spline-regression: %s value %r was not one of the categories "
+                "seen while fitting (%s)" % (
+                    name, v, ", ".join("%.6g" % c for c in spec.categories)))
+        return [1.0 if v == cat else 0.0 for cat in spec.categories[1:]]
+    row = [v]
+    for t in spec.knots:
+        row.append(max(0.0, v - t))
+    return row
+
+
+def _spline_expand_row(values, specs):
+    """values: one value per original predictor. Returns the expanded
+    feature row (hinge features and/or 0/1 category indicators)."""
+    row = []
+    for i, (v, spec) in enumerate(zip(values, specs)):
+        row.extend(_spline_expand_value(v, spec, "x%d" % (i + 1)))
+    return row
+
+
+def _spline_expand_columns(columns, specs):
+    """columns: one column (list of n values) per original predictor.
+    Returns the same expansion as _spline_expand_row, but column-wise."""
+    n = len(columns[0]) if columns else 0
+    rows = [_spline_expand_row([col[i] for col in columns], specs) for i in range(n)]
+    n_features = len(rows[0]) if rows else 0
+    return [[row[j] for row in rows] for j in range(n_features)]
+
+
+class LispSplineModel:
+    """A piecewise-linear spline model: an ordinary linear or logistic
+    regression fit on top of a per-predictor feature expansion (hinge
+    functions and/or categorical dummy encoding -- see _resolve_predictor_spec
+    / _spline_expand_columns above), giving the model a bit of the same
+    kind of bendable-curve flexibility as MARS, without any external
+    dependency."""
+
+    def __init__(self, inner_model, predictor_specs, k):
+        self.inner_model = inner_model          # a LispModel fit on the expanded basis
+        self.predictor_specs = predictor_specs  # list of k _PredictorSpec
+        self.k = k                              # number of original predictors
+        self.kind = "spline-logistic" if inner_model.kind == "logistic" else "spline"
+
+    def predict(self, values):
+        return self.inner_model.predict(_spline_expand_row(values, self.predictor_specs))
+
+    def __repr__(self):
+        return to_string(self)
+
+
+def _spline_report_lines(model):
+    lines = []
+    if model.kind == "spline-logistic":
+        lines.append("Piecewise-linear spline model, with a logistic link:")
+    else:
+        lines.append("Piecewise-linear spline model:")
+    lines.append("  predictors = %d" % model.k)
+    for i, spec in enumerate(model.predictor_specs):
+        if spec.mode == "categorical":
+            cats = ", ".join("%.6g" % c for c in spec.categories)
+            lines.append("  x%d: categorical -- categories %s (baseline %.6g)"
+                          % (i + 1, cats, spec.categories[0]))
+        else:
+            knot_text = ", ".join("%.6g" % t for t in spec.knots) if spec.knots else "(none -- plain linear)"
+            hint = ""
+            if spec.n_distinct is not None and spec.n_distinct <= 3:
+                hint = "  [only %d distinct value(s) seen -- consider 'categorical]" % spec.n_distinct
+            lines.append("  x%d: knots %s%s" % (i + 1, knot_text, hint))
+    lines.append("")
+    stats = model.inner_model.stats
+    if model.kind == "spline-logistic":
+        lines.append("Logistic fit on the expanded basis:")
+        lines.append("  log-likelihood   = %.6g" % stats["log_likelihood"])
+        lines.append("  pseudo R-squared = %.6g  (McFadden's)" % stats["pseudo_r_squared"])
+        lines.append("  iterations       = %d (%s)" % (
+            stats["iterations"], "converged" if stats["converged"] else "did NOT converge"))
+    else:
+        lines.append("Linear fit on the expanded basis:")
+        lines.append("  R-squared = %.6g" % stats["r_squared"])
+    lines.append("  n = %d" % stats["n"])
+    return lines
+
+
+def spline_regression_fn(x_arg, y_vec, max_knots=3, logistic=False):
+    """Fit a piecewise-linear spline model. `x_arg` is a vector or list of
+    vectors (predictors). `max_knots` controls how each predictor is
+    expanded -- see _resolve_all_predictor_specs for the accepted forms
+    (an auto knot count, explicit knot locations, or 'categorical). If
+    `logistic` is true, `y` must be in [0, 1], and a logistic regression
+    (instead of ordinary least squares) is fit on the expanded basis,
+    giving a probability-in-[0,1] output."""
+    if not isinstance(y_vec, LispVector):
+        raise LispError("spline-regression: y must be a vector")
+
+    columns = _predictor_columns(x_arg, len(y_vec.items))
+    ys = [numeric_value(v) for v in y_vec.items]
+    k = len(columns)
+    n = len(ys)
+    if n == 0:
+        raise LispError("spline-regression: no data to fit")
+    if logistic:
+        for y in ys:
+            if y < 0 or y > 1:
+                raise LispError(
+                    "spline-regression: with logistic #t, dependent-variable values "
+                    "must all be between 0 and 1 (got %r)" % (y,))
+
+    predictor_specs = _resolve_all_predictor_specs(max_knots, columns)
+    expanded_columns = _spline_expand_columns(columns, predictor_specs)
+
+    inner_model = fit_logistic(expanded_columns, ys) if logistic else fit_linear(expanded_columns, ys)
+    return LispSplineModel(inner_model, predictor_specs, k)
+
+
+def suggest_knots_fn(x_vec, y_vec, window, n):
+    """Suggest n knot locations for spline-regression, based on where y
+    curves most sharply as a function of x.
+
+    Method: first aggregate y (by mean) onto each distinct x value seen
+    (so `window` counts steps along the distinct-x curve, not raw rows --
+    important for panel/pool data where many rows often share the same x).
+    Estimate that curve's second derivative at each interior point (via
+    the standard 3-point finite-difference formula, which works whether
+    or not x is evenly spaced), smooth that sequence with a centered
+    moving average of the given `window` size (to reduce sensitivity to
+    single-point noise), then greedily pick the `window`-separated points
+    with the largest smoothed |second derivative| -- "window-separated"
+    meaning no two chosen points are within `window` of each other by
+    index, so their smoothing windows don't overlap and they represent
+    genuinely distinct bends rather than the same one picked twice.
+
+    Returns a Lisp list of up to n x-values (fewer if there aren't that
+    many usable candidates), sorted ascending -- ready to hand straight
+    to spline-regression as an explicit knot list, e.g.
+    (spline-regression x y (suggest-knots x y 5 2))."""
+    if not isinstance(x_vec, LispVector) or not isinstance(y_vec, LispVector):
+        raise LispError("suggest-knots: x and y must be vectors")
+    if len(x_vec.items) != len(y_vec.items):
+        raise LispError("suggest-knots: x and y must be the same length")
+
+    window = int(window)
+    n = int(n)
+    if window < 1:
+        raise LispError("suggest-knots: window must be a positive integer")
+    if n < 0:
+        raise LispError("suggest-knots: n must not be negative")
+    if n == 0:
+        return NIL
+
+    # Sort by x, then aggregate y (by mean) onto each *distinct* x value.
+    # Real/panel data routinely has many rows sharing the same x (e.g. many
+    # pools observed at the same rate-incentive level); estimating a second
+    # derivative needs distinct neighboring x's, and `window` is meant to
+    # count "steps along the curve", not raw rows -- so we collapse to one
+    # (x, mean-of-y) point per distinct x first. This also happens to be the
+    # statistically sensible thing to do: it's the marginal curve of y
+    # against x whose bends we want to find, not the scatter of every row.
+    pairs = sorted(zip(x_vec.items, y_vec.items), key=lambda p: numeric_value(p[0]))
+    groups = {}
+    order = []
+    for raw_xi, raw_yi in pairs:
+        key = numeric_value(raw_xi)
+        if key not in groups:
+            groups[key] = {"raw_x": raw_xi, "ys": []}
+            order.append(key)
+        groups[key]["ys"].append(numeric_value(raw_yi))
+
+    raw_x = [groups[k]["raw_x"] for k in order]
+    xs = list(order)
+    ys = [sum(groups[k]["ys"]) / len(groups[k]["ys"]) for k in order]
+    m = len(xs)
+    if m < 3:
+        raise LispError(
+            "suggest-knots: need at least 3 distinct x values to estimate curvature "
+            "(found %d)" % m)
+
+    # Second-derivative estimate at each interior point i (1 .. m-2):
+    #   f''(x_i) ~= 2 * [ (y_{i+1}-y_i)/(x_{i+1}-x_i) - (y_i-y_{i-1})/(x_i-x_{i-1}) ]
+    #               / (x_{i+1} - x_{i-1})
+    # which reduces to the familiar (y_{i+1} - 2y_i + y_{i-1}) / h^2 when x
+    # is evenly spaced by h, but also works for uneven spacing. Since x is
+    # now strictly increasing (we've deduplicated), h1/h2 are always > 0.
+    raw_d2 = [0.0] * m
+    for i in range(1, m - 1):
+        h1 = xs[i] - xs[i - 1]
+        h2 = xs[i + 1] - xs[i]
+        raw_d2[i] = 2.0 * ((ys[i + 1] - ys[i]) / h2 - (ys[i] - ys[i - 1]) / h1) / (xs[i + 1] - xs[i - 1])
+
+    # Centered moving average of the second-derivative sequence.
+    half_before = window // 2
+    half_after = window - 1 - half_before
+    smoothed = [0.0] * m
+    for i in range(1, m - 1):
+        lo = max(1, i - half_before)
+        hi = min(m - 2, i + half_after)
+        segment = raw_d2[lo:hi + 1]
+        smoothed[i] = sum(segment) / len(segment)
+
+    # Greedily take the largest-|smoothed-second-derivative| points,
+    # skipping any candidate within `window` (by index) of one already
+    # chosen.
+    candidates = sorted(range(1, m - 1), key=lambda i: abs(smoothed[i]), reverse=True)
+    selected = []
+    for i in candidates:
+        if smoothed[i] == 0.0:
+            continue
+        if any(abs(i - j) < window for j in selected):
+            continue
+        selected.append(i)
+        if len(selected) == n:
+            break
+
+    selected.sort()
+    return list_to_pairs([raw_x[i] for i in selected])
+
+
+# ---- chart-spec building (module-level: pure data, no Qt involved) ----
+# Charts only ever plot against a single X vector (a 2-D chart has one
+# X axis), so any regression line drawn on a chart is single-predictor,
+# even though linear-regression/logistic-regression themselves now
+# support multiple predictors -- use model-report/model-evaluate for the
+# multi-predictor case instead of a chart overlay.
+
+def build_chart_spec(x_vec, y_vecs, labels, connect, title, regression_label, regression_kind="linear"):
+    """Build a plain-data chart description dict from Lisp values. This is
+    consumed by the GUI's ChartCanvas.plot(), or by the console fallback
+    plotter -- neither of those needs to know anything about Lisp."""
+    if not isinstance(x_vec, LispVector):
+        raise LispError("plot: x must be a vector")
+    if not y_vecs:
+        raise LispError("plot: at least one y-vector is required")
+    if regression_kind not in ("linear", "logistic"):
+        raise LispError('plot: regression kind must be "linear" or "logistic"')
+
+    xs_raw = x_vec.items
+    n = len(xs_raw)
+    x_is_date = any(isinstance(v, LispDate) for v in xs_raw)
+    xs_plot = [v.date if isinstance(v, LispDate) else v for v in xs_raw]
+    xs_numeric = [numeric_value(v) for v in xs_raw]
+
+    series_list = []
+    for i, y_vec in enumerate(y_vecs):
+        if not isinstance(y_vec, LispVector):
+            raise LispError("plot: each y must be a vector")
+        if len(y_vec.items) != n:
+            raise LispError("plot: every vector must be the same length as x")
+        label = labels[i] if labels else ("Y%d" % (i + 1))
+        series_list.append({"label": label, "y": list(y_vec.items), "connect": connect})
+
+    spec = {
+        "title": title,
+        "x_label": "X",
+        "x_is_date": x_is_date,
+        "x": xs_plot,
+        "series": series_list,
+        "regression": None,
+    }
+
+    if regression_label is not None:
+        target = next((s for s in series_list if s["label"] == regression_label), None)
+        if target is None:
+            raise LispError("plot: no y-series labeled %r to run regression on" % (regression_label,))
+
+        model = (fit_logistic([xs_numeric], target["y"]) if regression_kind == "logistic"
+                 else fit_linear([xs_numeric], target["y"]))
+
+        x_min, x_max = min(xs_numeric), max(xs_numeric)
+        if regression_kind == "logistic":
+            # The fitted curve is an S-shape, not a straight line, so
+            # sample enough points across the x-range to draw it smoothly.
+            steps = 100
+            sample_xs_num = [x_min + (x_max - x_min) * i / (steps - 1) for i in range(steps)]
+        else:
+            sample_xs_num = [x_min, x_max]  # a straight line only needs two points
+        sample_ys = [model.predict([xv]) for xv in sample_xs_num]
+        if x_is_date:
+            sample_xs_plot = [datetime.date.fromordinal(int(round(v))) for v in sample_xs_num]
+        else:
+            sample_xs_plot = sample_xs_num
+
+        spec["regression"] = {
+            "label": regression_label,
+            "kind": regression_kind,
+            "model": model,
+            "x": sample_xs_plot,
+            "y": sample_ys,
+        }
+
+    return spec
+
+
+# ---- FRED (Federal Reserve Bank of St. Louis) data access ----
+
+# ---- chart rendering (module-level, needs only matplotlib -- not Qt) ----
+#
+# This is deliberately independent of the PyQt6 import below: as long as
+# matplotlib is installed, `save-chart` and the console fallback can both
+# render a chart to an image file even without PyQt6/a GUI at all. The GUI's
+# ChartCanvas (further down) reuses the exact same draw_chart_on_axes()
+# function so the on-screen chart and any saved image always match.
+
+try:
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    _MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    _MATPLOTLIB_AVAILABLE = False
+
+# One marker shape per Y-series; cycles if there are more series than
+# shapes. Matplotlib's own default color cycle distinguishes them too.
+CHART_MARKERS = ["o", "s", "^", "D", "v", "P", "x", "*"]
+
+
+def draw_chart_on_axes(fig, ax, spec):
+    """Draw a chart spec (see build_chart_spec) onto an existing Matplotlib
+    Figure/Axes: one X vector against one or more Y vectors, each with its
+    own marker symbol and optionally connected by line segments, plus an
+    optional dashed regression line/curve. Pure matplotlib -- no Qt."""
+    ax.clear()
+
+    xs = spec["x"]
+    for i, s in enumerate(spec["series"]):
+        marker = CHART_MARKERS[i % len(CHART_MARKERS)]
+        linestyle = "-" if s["connect"] else "None"
+        ax.plot(xs, s["y"], marker=marker, linestyle=linestyle,
+                 markersize=7, label=s["label"])
+
+    reg = spec.get("regression")
+    if reg:
+        model = reg["model"]
+        label = "%s %s fit (slope=%.4g, intercept=%.4g)" % (
+            reg["label"], reg["kind"], model.coefficients[0], model.intercept)
+        ax.plot(reg["x"], reg["y"], linestyle="--", color="black",
+                 linewidth=1.5, label=label)
+
+    ax.set_xlabel(spec.get("x_label", "X"))
+    ax.set_title(spec.get("title", "XY Chart"))
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    if spec.get("x_is_date"):
+        fig.autofmt_xdate()
+
+
+def render_chart_to_file(spec, path, width=8.0, height=6.0, dpi=150):
+    """Render a chart spec to a standalone image file (PNG, PDF, SVG, ...
+    -- whatever matplotlib recognizes from the file extension). Uses a
+    throwaway headless Figure, so this works with or without a GUI running."""
+    if not _MATPLOTLIB_AVAILABLE:
+        raise LispError("save-chart: matplotlib is not installed (pip install matplotlib)")
+    fig = Figure(figsize=(width, height), dpi=dpi)
+    FigureCanvasAgg(fig)  # attach a headless (non-interactive) canvas
+    ax = fig.add_subplot(111)
+    draw_chart_on_axes(fig, ax, spec)
+    try:
+        fig.savefig(path)
+    except Exception as e:
+        raise LispError("save-chart: could not save %r: %s" % (path, e))
+
+
+def _parse_fred_observations(observations):
+    """Turn FRED's list of {"date": "...", "value": "..."} dicts into a
+    (dates-vector . values-vector) pair, skipping missing observations
+    (FRED marks those with a value of ".")."""
+    dates = []
+    values = []
+    for obs in observations:
+        value_str = obs.get("value", ".")
+        if value_str == ".":
+            continue
+        try:
+            value = float(value_str)
+        except (TypeError, ValueError):
+            continue
+        year, month, day = obs["date"].split("-")
+        dates.append(LispDate(int(year), int(month), int(day)))
+        values.append(value)
+    return Pair(LispVector(dates), LispVector(values))
+
+
+def fred_series(series_id, api_key=None, start_date=None, end_date=None):
+    """Fetch one FRED data series and return (dates-vector . values-vector).
+
+    `api_key` may be omitted if the FRED_API_KEY environment variable is
+    set. A free API key can be requested at
+    https://fred.stlouisfed.org/docs/api/api_key.html
+    `start_date` / `end_date`, if given, are "YYYY-MM-DD" strings (or
+    LispDate values) limiting the observation range.
+    """
+    if api_key is None:
+        api_key = os.environ.get("FRED_API_KEY")
+    if not api_key:
+        raise LispError(
+            "fred-series: no API key given (pass one, or set the "
+            "FRED_API_KEY environment variable)")
+
+    params = {
+        "series_id": str(series_id),
+        "api_key": str(api_key),
+        "file_type": "json",
+    }
+    if start_date is not None:
+        params["observation_start"] = (
+            start_date.date.isoformat() if isinstance(start_date, LispDate) else str(start_date))
+    if end_date is not None:
+        params["observation_end"] = (
+            end_date.date.isoformat() if isinstance(end_date, LispDate) else str(end_date))
+
+    url = "https://api.stlouisfed.org/fred/series/observations?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(url, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception as e:
+        raise LispError("fred-series: request failed: %s" % e)
+
+    if "observations" not in data:
+        raise LispError("fred-series: %s" % data.get("error_message", "unknown error from FRED"))
+
+    return _parse_fred_observations(data["observations"])
+
+
+def load_csv_fn(filename, has_header=True):
+    """Load a CSV file's columns as vectors: returns
+    (cons headers-list vectors-list), where headers-list is a Lisp list
+    of column-name strings and vectors-list is the same-length Lisp list
+    of the corresponding vectors.
+
+    Each column is independently classified as numeric, as a date
+    ("YYYY-MM-DD" text), or unusable (skipped, along with its header) if
+    it's neither. A row is only included if every *usable* column has a
+    non-blank value in that row, so all returned vectors stay the same
+    length and row-aligned -- the same "skip missing observations"
+    approach used by fred-series."""
+    try:
+        with open(str(filename), newline="") as f:
+            rows = list(csv.reader(f))
+    except OSError as e:
+        raise LispError("load-csv: could not open %r: %s" % (str(filename), e))
+
+    if not rows:
+        raise LispError("load-csv: %r is empty" % (str(filename),))
+
+    if is_true(has_header):
+        header, data_rows = rows[0], rows[1:]
+    else:
+        header, data_rows = None, rows
+
+    if not data_rows:
+        raise LispError("load-csv: %r has no data rows" % (str(filename),))
+
+    n_cols = len(data_rows[0])
+    if header is None:
+        header = ["Column%d" % (i + 1) for i in range(n_cols)]
+
+    def try_float(s):
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    def try_date(s):
+        try:
+            y, m, d = s.split("-")
+            return LispDate(int(y), int(m), int(d))
+        except Exception:
+            return None
+
+    column_kinds = []  # "number", "date", or None (unusable), per column
+    for c in range(n_cols):
+        non_blank = [row[c].strip() for row in data_rows if c < len(row) and row[c].strip() != ""]
+        if non_blank and all(try_float(v) is not None for v in non_blank):
+            column_kinds.append("number")
+        elif non_blank and all(try_date(v) is not None for v in non_blank):
+            column_kinds.append("date")
+        else:
+            column_kinds.append(None)
+
+    usable = [c for c in range(n_cols) if column_kinds[c] is not None]
+    if not usable:
+        raise LispError("load-csv: no numeric or date (YYYY-MM-DD) columns found in %r" % (str(filename),))
+
+    included_rows = [
+        row for row in data_rows
+        if len(row) >= n_cols and all(row[c].strip() != "" for c in usable)
+    ]
+    if not included_rows:
+        raise LispError("load-csv: no complete rows found for the usable columns in %r" % (str(filename),))
+
+    out_headers, out_vectors = [], []
+    for c in usable:
+        out_headers.append(LispString(header[c]))
+        if column_kinds[c] == "number":
+            items = [try_float(row[c].strip()) for row in included_rows]
+        else:
+            items = [try_date(row[c].strip()) for row in included_rows]
+        out_vectors.append(LispVector(items))
+
+    return Pair(list_to_pairs(out_headers), list_to_pairs(out_vectors))
+
+
+def make_global_env(output=None, plot=None):
+    """Build the global environment of built-in procedures.
+
+    `output` is a one-argument function that receives raw text produced by
+    `display`, `newline`, and `print`. `plot` is a one-argument function
+    that receives a chart spec dict (see build_chart_spec) produced by the
+    `plot-xy...` builtins. Both default to plain-text console behavior, but
+    the GUI supplies callbacks that update its on-screen log and chart tab
+    instead -- the interpreter core doesn't need to know anything about Qt
+    for this to work.
+    """
+    if output is None:
+        output = lambda s: print(s, end="")
+    if plot is None:
+        def plot(spec):
+            lines = ["[chart] %s" % spec["title"]]
+            for s in spec["series"]:
+                how = "connected" if s["connect"] else "points only"
+                lines.append("  %s: %d points (%s)" % (s["label"], len(s["y"]), how))
+            if spec["regression"]:
+                r = spec["regression"]
+                lines.append(
+                    "  %s regression on %s: slope=%.6g intercept=%.6g"
+                    % (r["kind"], r["label"], r["model"].coefficients[0], r["model"].intercept))
+            output("\n".join(lines) + "\n")
+
+    env = Env()
+
+    # ---- arithmetic ----
+    def add(*args):
+        check_numbers(args, "+")
+        total = 0
+        for a in args:
+            total += a
+        return total
+
+    def sub(*args):
+        check_numbers(args, "-")
+        if not args:
+            raise LispError("- needs at least one argument")
+        if len(args) == 1:
+            return -args[0]
+        total = args[0]
+        for a in args[1:]:
+            total -= a
+        return total
+
+    def mul(*args):
+        check_numbers(args, "*")
+        total = 1
+        for a in args:
+            total *= a
+        return total
+
+    def div(*args):
+        check_numbers(args, "/")
+        if not args:
+            raise LispError("/ needs at least one argument")
+        if len(args) == 1:
+            return 1 / args[0]
+        total = args[0]
+        for a in args[1:]:
+            total /= a
+        return total
+
+    def chain_compare(op, args):
+        for a, b in zip(args, args[1:]):
+            if not op(a, b):
+                return False
+        return True
+
+    env.update({
+        "+": add,
+        "-": sub,
+        "*": mul,
+        "/": div,
+        "mod": lambda a, b: a % b,
+        "quotient": lambda a, b: int(a / b),
+        "remainder": lambda a, b: a % b,
+        "abs": abs,
+        "min": lambda *a: min(a),
+        "max": lambda *a: max(a),
+        "sqrt": math.sqrt,
+        "expt": lambda a, b: a ** b,
+        "floor": lambda x: math.floor(x),
+        "ceiling": lambda x: math.ceil(x),
+        "truncate": lambda x: math.trunc(x),
+        "round": lambda x: round(x),
+        "=": lambda *a: chain_compare(lambda x, y: x == y, a),
+        "<": lambda *a: chain_compare(lambda x, y: x < y, a),
+        ">": lambda *a: chain_compare(lambda x, y: x > y, a),
+        "<=": lambda *a: chain_compare(lambda x, y: x <= y, a),
+        ">=": lambda *a: chain_compare(lambda x, y: x >= y, a),
+    })
+
+    # ---- booleans / equality ----
+    env.update({
+        "not": lambda x: not is_true(x),
+        "eq?": lambda a, b: a is b or a == b,
+        "equal?": lambda a, b: a == b,
+    })
+
+    # ---- pairs / lists ----
+    def car(p):
+        if not isinstance(p, Pair):
+            raise LispError("car: not a pair: %r" % (p,))
+        return p.car
+
+    def cdr(p):
+        if not isinstance(p, Pair):
+            raise LispError("cdr: not a pair: %r" % (p,))
+        return p.cdr
+
+    def append2(a, b):
+        items = pairs_to_list(a)
+        result = b
+        for item in reversed(items):
+            result = Pair(item, result)
+        return result
+
+    def lisp_append(*lists):
+        result = NIL
+        for lst in reversed(lists):
+            result = append2(lst, result)
+        return result
+
+    def lisp_map(f, lst):
+        return list_to_pairs([apply_proc(f, [x]) for x in pairs_to_list(lst)])
+
+    def lisp_filter(f, lst):
+        return list_to_pairs([x for x in pairs_to_list(lst) if is_true(apply_proc(f, [x]))])
+
+    def lisp_reduce(f, lst, *init):
+        items = pairs_to_list(lst)
+        if init:
+            acc = init[0]
+        else:
+            acc, items = items[0], items[1:]
+        for x in items:
+            acc = apply_proc(f, [acc, x])
+        return acc
+
+    def list_ref(lst, n):
+        items = pairs_to_list(lst)
+        n = int(n)
+        if n < 0 or n >= len(items):
+            raise LispError("list-ref: index %d out of range (0..%d)" % (n, len(items) - 1))
+        return items[n]
+
+    env.update({
+        "cons": lambda a, b: Pair(a, b),
+        "car": car,
+        "cdr": cdr,
+        "list": lambda *args: list_to_pairs(list(args)),
+        "append": lisp_append,
+        "reverse": lambda p: list_to_pairs(list(reversed(pairs_to_list(p)))),
+        "length": lambda p: len(pairs_to_list(p)),
+        "list-ref": list_ref,
+        "null?": lambda p: p is NIL,
+        "pair?": lambda p: isinstance(p, Pair),
+        "list?": lambda p: p is NIL or isinstance(p, Pair),
+        "map": lisp_map,
+        "filter": lisp_filter,
+        "reduce": lisp_reduce,
+        "apply": lambda f, lst: apply_proc(f, pairs_to_list(lst)),
+    })
+
+    # ---- strings ----
+    env.update({
+        "string-append": lambda *a: LispString("".join(a)),
+        "string-length": lambda s: len(s),
+        "substring": lambda s, start, end=None: LispString(s[start:end]),
+        "string=?": lambda a, b: a == b,
+        "string<?": lambda a, b: a < b,
+        "string>?": lambda a, b: a > b,
+        "string->number": lambda s: (float(s) if ('.' in s or 'e' in s.lower()) else int(s)),
+        "number->string": lambda n: LispString(to_display_string(n)),
+        "string->list": lambda s: list_to_pairs(list(s)),
+        "list->string": lambda p: LispString("".join(pairs_to_list(p))),
+        "string-upcase": lambda s: LispString(s.upper()),
+        "string-downcase": lambda s: LispString(s.lower()),
+        "string->symbol": lambda s: Symbol(s),
+        "symbol->string": lambda s: LispString(str(s)),
+        "string": lambda *chars: LispString("".join(chars)),
+    })
+
+    # ---- vectors (fixed-size, mutable; holds numbers and/or dates) ----
+    def make_vector_fn(*args):
+        check_vector_elements(args, "vector")
+        return LispVector(list(args))
+
+    def make_vector(n, fill=0):
+        check_vector_elements([fill], "make-vector")
+        return LispVector([fill] * n)
+
+    def vector_ref(v, i):
+        if not isinstance(v, LispVector):
+            raise LispError("vector-ref: not a vector: %r" % (v,))
+        return v.items[i]
+
+    def vector_set(v, i, x):
+        if not isinstance(v, LispVector):
+            raise LispError("vector-set!: not a vector: %r" % (v,))
+        check_vector_elements([x], "vector-set!")
+        v.items[i] = x
+        return NIL
+
+    def vector_fill(v, x):
+        check_vector_elements([x], "vector-fill!")
+        for i in range(len(v.items)):
+            v.items[i] = x
+        return NIL
+
+    def vector_map(f, v):
+        return LispVector([apply_proc(f, [x]) for x in v.items])
+
+    def vector_append(*vs):
+        items = []
+        for v in vs:
+            items.extend(v.items)
+        return LispVector(items)
+
+    def list_to_vector(p):
+        items = pairs_to_list(p)
+        check_vector_elements(items, "list->vector")
+        return LispVector(items)
+
+    def vector_iterate(first, count, f):
+        """Build a vector of `count` elements: the first is `first`, and
+        each following element is (f previous-element). Works for numbers
+        or dates, since `f` can be e.g. date-add-days."""
+        check_vector_elements([first], "vector-iterate")
+        if count < 0:
+            raise LispError("vector-iterate: count must not be negative")
+        items = []
+        current = first
+        for i in range(count):
+            if i > 0:
+                current = apply_proc(f, [current])
+                check_vector_elements([current], "vector-iterate")
+            items.append(current)
+        return LispVector(items)
+
+    def vector_slice(v, start, end=None):
+        if not isinstance(v, LispVector):
+            raise LispError("vector-slice: not a vector: %r" % (v,))
+        return LispVector(v.items[start:end])
+
+    def vector_take(v, n):
+        if not isinstance(v, LispVector):
+            raise LispError("vector-take: not a vector: %r" % (v,))
+        return LispVector(v.items[:n])
+
+    def vector_drop(v, n):
+        if not isinstance(v, LispVector):
+            raise LispError("vector-drop: not a vector: %r" % (v,))
+        return LispVector(v.items[n:])
+
+    def vectors_shuffle(vec_list, seed=None):
+        """(vectors-shuffle (list v1 v2 ...) [seed]) -> a Lisp list of new
+        vectors, all permuted with the SAME random ordering -- so you can
+        shuffle a set of x/y vectors together without losing the
+        row-by-row alignment between them, before splitting into a
+        training subset and a held-out subset."""
+        vecs = pairs_to_list(vec_list)
+        if not vecs:
+            raise LispError("vectors-shuffle: at least one vector is required")
+        n = len(vecs[0].items)
+        for v in vecs:
+            if not isinstance(v, LispVector):
+                raise LispError("vectors-shuffle: every element must be a vector")
+            if len(v.items) != n:
+                raise LispError("vectors-shuffle: all vectors must be the same length")
+        indices = list(range(n))
+        rng = random.Random(seed) if seed is not None else random.Random()
+        rng.shuffle(indices)
+        shuffled = [LispVector([v.items[i] for i in indices]) for v in vecs]
+        return list_to_pairs(shuffled)
+
+    env.update({
+        "vector": make_vector_fn,
+        "make-vector": make_vector,
+        "vector-ref": vector_ref,
+        "vector-set!": vector_set,
+        "vector-length": lambda v: len(v.items),
+        "vector-fill!": vector_fill,
+        "vector-copy": lambda v: LispVector(list(v.items)),
+        "vector-map": vector_map,
+        "vector-append": vector_append,
+        "vector->list": lambda v: list_to_pairs(list(v.items)),
+        "list->vector": list_to_vector,
+        "vector-iterate": vector_iterate,
+        "vector-sum": lambda v: sum(v.items),
+        "vector-add": lambda a, b: LispVector([x + y for x, y in zip(a.items, b.items)]),
+        "vector-sub": lambda a, b: LispVector([x - y for x, y in zip(a.items, b.items)]),
+        "vector-scale": lambda v, s: LispVector([x * s for x in v.items]),
+        "vector-slice": vector_slice,
+        "vector-take": vector_take,
+        "vector-drop": vector_drop,
+        "vectors-shuffle": vectors_shuffle,
+    })
+
+    # ---- dates ----
+    env.update({
+        "date": date_fn,
+        "date-year": date_year,
+        "date-month": date_month,
+        "date-day": date_day,
+        "date->string": date_to_string,
+        "string->date": string_to_date,
+        "date-add-days": date_add_days,
+    })
+
+    # ---- regression models: linear, logistic, and spline; single- or multi-predictor ----
+    def model_intercept(m):
+        if isinstance(m, LispSplineModel):
+            raise LispError("model-intercept: not available for a spline model; use model-report instead")
+        return m.intercept
+
+    env.update({
+        "linear-regression": linear_regression_fn,
+        "logistic-regression": logistic_regression_fn,
+        "spline-regression": spline_regression_fn,
+        "suggest-knots": suggest_knots_fn,
+        "model-report": model_report,
+        "model-predict": model_predict,
+        "model-evaluate": model_evaluate,
+        "model-slope": model_slope,
+        "model-coefficients": model_coefficients,
+        "model-intercept": model_intercept,
+        "model-kind": lambda m: LispString(m.kind),
+        "model?": lambda x: _is_model(x),
+        "sigmoid": lambda z: sigmoid(z),
+    })
+
+    # ---- FRED (Federal Reserve Bank of St. Louis) data, and CSV loading ----
+    env.update({
+        "fred-series": fred_series,
+        "load-csv": load_csv_fn,
+    })
+
+    # ---- charting: plot one X vector against one or more Y vectors ----
+    # `last_chart` remembers the most recently plotted chart spec, so
+    # `save-chart` can render it to a file without needing to be told the
+    # data all over again -- this works the same in the GUI and in plain
+    # console/batch mode, since it only depends on render_chart_to_file.
+    last_chart = {"spec": None}
+
+    def plot_xy(x_vec, y_list):
+        y_vecs = pairs_to_list(y_list)
+        spec = build_chart_spec(x_vec, y_vecs, labels=None, connect=True,
+                                 title="XY Chart", regression_label=None)
+        last_chart["spec"] = spec
+        plot(spec)
+        return NIL
+
+    def plot_xy_regression(x_vec, y_vec, label, kind="linear"):
+        label = str(label)
+        kind = str(kind)
+        spec = build_chart_spec(
+            x_vec, [y_vec], labels=[label], connect=False,
+            title="%s vs X, with %s regression" % (label, kind),
+            regression_label=label, regression_kind=kind)
+        last_chart["spec"] = spec
+        plot(spec)
+        return NIL
+
+    def plot_xy_full(x_vec, y_list, label_list, connect_flag, title, regression_label, regression_kind="linear"):
+        y_vecs = pairs_to_list(y_list)
+        labels = [str(s) for s in pairs_to_list(label_list)] if label_list is not NIL else None
+        if labels is not None and len(labels) != len(y_vecs):
+            raise LispError("plot-xy-full: the labels list must match the number of y-vectors")
+        reg_label = None if regression_label is False else str(regression_label)
+        spec = build_chart_spec(x_vec, y_vecs, labels, is_true(connect_flag),
+                                 str(title), reg_label, str(regression_kind))
+        last_chart["spec"] = spec
+        plot(spec)
+        return NIL
+
+    def save_chart_fn(filename, width=8.0, height=6.0, dpi=150.0):
+        if last_chart["spec"] is None:
+            raise LispError("save-chart: no chart has been plotted yet (call plot-xy, "
+                             "plot-xy-regression, or plot-xy-full first)")
+        render_chart_to_file(last_chart["spec"], str(filename), float(width), float(height), int(dpi))
+        return NIL
+
+    env.update({
+        "plot-xy": plot_xy,
+        "plot-xy-regression": plot_xy_regression,
+        "plot-xy-full": plot_xy_full,
+        "save-chart": save_chart_fn,
+    })
+
+
+    # ---- type predicates ----
+    env.update({
+        "number?": lambda x: isinstance(x, (int, float)) and not isinstance(x, bool),
+        "integer?": lambda x: isinstance(x, int) and not isinstance(x, bool),
+        "string?": lambda x: isinstance(x, LispString),
+        "symbol?": lambda x: isinstance(x, Symbol),
+        "vector?": lambda x: isinstance(x, LispVector),
+        "date?": lambda x: isinstance(x, LispDate),
+        "procedure?": lambda x: callable(x) or isinstance(x, Procedure),
+        "boolean?": lambda x: isinstance(x, bool),
+    })
+
+    # ---- I/O ----
+    def lisp_display(x):
+        output(to_display_string(x))
+        return NIL
+
+    def lisp_newline():
+        output("\n")
+        return NIL
+
+    def lisp_print(x):
+        output(to_display_string(x) + "\n")
+        return NIL
+
+    env.update({
+        "display": lisp_display,
+        "newline": lisp_newline,
+        "print": lisp_print,
+    })
+
+    return env
+
+
+# ---------------------------------------------------------------------------
+# Printer
+# ---------------------------------------------------------------------------
+
+def to_display_string(x):
+    """Render a value the way `display` would (strings without quotes)."""
+    if x is True:
+        return "#t"
+    if x is False:
+        return "#f"
+    if x is NIL:
+        return "()"
+    if isinstance(x, LispString):
+        return x
+    if isinstance(x, (Pair, LispVector, LispDate, LispModel, LispSplineModel)):
+        return to_string(x)
+    return str(x)
+
+
+def to_string(x):
+    """Render a value the way the REPL would print it (strings quoted).
+    Note: iterative rather than recursive, so very long lists print fine."""
+    if x is True:
+        return "#t"
+    if x is False:
+        return "#f"
+    if x is NIL:
+        return "()"
+    if isinstance(x, LispString):
+        return '"%s"' % x
+    if isinstance(x, LispDate):
+        return x.date.isoformat()
+    if isinstance(x, LispSplineModel):
+        total_knots = sum(len(s.knots) for s in x.predictor_specs if s.mode == "spline")
+        n_categorical = sum(1 for s in x.predictor_specs if s.mode == "categorical")
+        if n_categorical:
+            return "#<%s-model predictors=%d knots=%d categorical=%d>" % (
+                x.kind, x.k, total_knots, n_categorical)
+        return "#<%s-model predictors=%d knots=%d>" % (x.kind, x.k, total_knots)
+    if isinstance(x, LispModel):
+        if len(x.coefficients) == 1:
+            return "#<%s-model slope=%.6g intercept=%.6g>" % (x.kind, x.coefficients[0], x.intercept)
+        coeffs = ", ".join("%.6g" % c for c in x.coefficients)
+        return "#<%s-model coefficients=(%s) intercept=%.6g>" % (x.kind, coeffs, x.intercept)
+    if isinstance(x, LispVector):
+        return "#(" + " ".join(to_string(item) for item in x.items) + ")"
+    if isinstance(x, Pair):
+        parts = []
+        p = x
+        while isinstance(p, Pair):
+            parts.append(to_string(p.car))
+            p = p.cdr
+        if p is NIL:
+            return "(" + " ".join(parts) + ")"
+        return "(" + " ".join(parts) + " . " + to_string(p) + ")"
+    return str(x)
+
+
+# ---------------------------------------------------------------------------
+# Console REPL / batch runner (no PyQt6 needed)
+# ---------------------------------------------------------------------------
+
+def run_file(path, env):
+    with open(path) as f:
+        text = f.read()
+    for expr in parse(text):
+        seval(expr, env)
+
+
+def repl(env):
+    print("Simple Lisp interpreter. Type (exit) to quit.")
+    buffer = ""
+    while True:
+        try:
+            line = input("  ... " if buffer else "lisp> ")
+        except EOFError:
+            print()
+            break
+        buffer += line + "\n"
+        if buffer.count("(") <= buffer.count(")"):
+            try:
+                for expr in parse(buffer):
+                    if isinstance(expr, Pair) and expr.car == Symbol("exit"):
+                        return
+                    result = seval(expr, env)
+                    print(to_string(result))
+            except LispError as e:
+                print("Error:", e)
+            except Exception as e:
+                print("Error:", e)
+            buffer = ""
+
+
+# ---------------------------------------------------------------------------
+# PyQt6 GUI
+# ---------------------------------------------------------------------------
+#
+# PyQt6 and matplotlib are only imported here, and only used if the GUI is
+# actually launched, so the interpreter above works standalone even on a
+# machine without either installed.
+
+try:
+    from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex
+    from PyQt6.QtGui import QTextCursor
+    from PyQt6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QPlainTextEdit, QPushButton, QTextEdit, QTableView, QSplitter,
+        QTabWidget, QFileDialog, QMessageBox,
+    )
+    import matplotlib
+    matplotlib.use("QtAgg")  # auto-detects the installed Qt binding (PyQt6 here)
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+    _PYQT_AVAILABLE = _MATPLOTLIB_AVAILABLE  # the GUI needs both PyQt6 and matplotlib
+except ImportError:
+    _PYQT_AVAILABLE = False
+
+
+if _PYQT_AVAILABLE:
+
+    class ChartCanvas(FigureCanvasQTAgg):
+        """Renders a chart spec (see build_chart_spec): one X vector against
+        one or more Y vectors, each with its own marker symbol and
+        optionally connected by line segments, plus an optional dashed
+        regression line/curve. Drawing itself is shared with the headless
+        save-chart path via draw_chart_on_axes()."""
+
+        def __init__(self):
+            figure = Figure(figsize=(6, 5))
+            super().__init__(figure)
+            self.ax = figure.add_subplot(111)
+
+        def plot(self, spec):
+            draw_chart_on_axes(self.figure, self.ax, spec)
+            self.draw()
+
+    class VectorTableModel(QAbstractTableModel):
+        """Displays a set of named number vectors as columns: one column
+        per vector, headed by its variable name, one row per index."""
+
+        def __init__(self):
+            super().__init__()
+            self.names = []    # column headers, in display order
+            self.columns = []  # parallel list of plain Python number lists
+
+        def set_vectors(self, name_value_pairs):
+            """Replace the full set of displayed vectors.
+            name_value_pairs: list of (name, list-of-numbers) tuples."""
+            self.beginResetModel()
+            self.names = [name for name, _ in name_value_pairs]
+            self.columns = [values for _, values in name_value_pairs]
+            self.endResetModel()
+
+        def rowCount(self, parent=QModelIndex()):
+            return max((len(col) for col in self.columns), default=0)
+
+        def columnCount(self, parent=QModelIndex()):
+            return len(self.columns)
+
+        def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+            if role != Qt.ItemDataRole.DisplayRole:
+                return None
+            col = self.columns[index.column()]
+            row = index.row()
+            if row < len(col):
+                return str(col[row])
+            return ""
+
+        def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+            if role != Qt.ItemDataRole.DisplayRole:
+                return None
+            if orientation == Qt.Orientation.Horizontal:
+                return self.names[section]
+            return str(section)
+
+    class InputEdit(QPlainTextEdit):
+        """A plain-text box that runs its contents on Ctrl+Enter, while
+        letting a plain Enter insert a newline (so multi-line definitions
+        are easy to type)."""
+
+        def __init__(self, on_submit):
+            super().__init__()
+            self._on_submit = on_submit
+
+        def keyPressEvent(self, event):
+            is_enter = event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            if is_enter and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                self._on_submit()
+                return
+            super().keyPressEvent(event)
+
+    WELCOME_MESSAGE = (
+        "Simple Lisp, with vectors/dates, XY charts, and FRED data access.\n"
+        "Try, for example:\n"
+        "  (define prices (vector 10 20 30 40 50))\n"
+        "  (define doubled (vector-map (lambda (x) (* x 2)) prices))\n"
+        "  (define powers-of-two (vector-iterate 1 8 (lambda (x) (* x 2))))\n"
+        "  (define squares #(1 4 9 16 25))\n"
+        "  (define home-type (vector 0 1 0 1 1))  ; 0=own, 1=rent\n"
+        "  (plot-xy prices (list doubled squares))\n"
+        "  (plot-xy-regression prices squares \"Squares\")             ; linear\n"
+        "  (define m (logistic-regression prices (vector 0 1 0 1 1)))  ; y in [0,1]\n"
+        "  (display (model-report m))\n"
+        "  (plot-xy-regression prices (vector 0 1 0 1 1) \"Y\" \"logistic\")\n"
+        "  ; multiple predictors: pass a list of x-vectors instead of one\n"
+        "  (define m2 (linear-regression (list prices squares) doubled))\n"
+        "  (display (model-coefficients m2))\n"
+        "  ; train/test split: fit on a subset, evaluate on the rest\n"
+        "  (define n-train (floor (* (vector-length prices) 0.7)))\n"
+        "  (define train-x (vector-take prices n-train))\n"
+        "  (define test-x (vector-drop prices n-train))\n"
+        "  (define m3 (linear-regression train-x (vector-take squares n-train)))\n"
+        "  (display (model-evaluate m3 test-x (vector-drop squares n-train)))\n"
+        "  (define d (fred-series \"GDP\" \"YOUR_FRED_API_KEY\"))\n"
+        "  (plot-xy (car d) (list (cdr d)))\n"
+        "  (save-chart \"chart.png\")   ; or use the Save Chart... button\n"
+        "  ; spline-regression: a bit of non-linearity via hinge functions\n"
+        "  (define m4 (spline-regression prices squares 3))  ; up to 3 auto knots\n"
+        "  (display (model-report m4))\n"
+        "  ; explicit knots (e.g. bracketing a critical range) instead of auto:\n"
+        "  (define m5 (spline-regression prices squares (list 25 35)))\n"
+        "  ; or let suggest-knots propose locations from the data itself:\n"
+        "  (define knots (suggest-knots prices squares 2 2))\n"
+        "  (define m5b (spline-regression prices squares knots))\n"
+        "  ; different max knots per predictor: pass a list instead of one number\n"
+        "  (define m6 (spline-regression (list prices squares) doubled (list 1 0)))\n"
+        "  ; a 2-3-valued predictor (e.g. home-type: 0=own/1=rent) -> 'categorical\n"
+        "  (define m7 (spline-regression (list prices home-type) doubled\n"
+        "                                 (list 2 (quote categorical))))\n"
+        "  (define m8 (spline-regression (vector 10 20 30 40 50 60 70 80 90 100 110 120)\n"
+        "                                 (vector 0 0 1 0 1 1 0 1 1 1 0 1) 2 #t))\n"
+        "  ; load-csv returns (cons headers vectors); e.g.:\n"
+        "  ; (define d2 (load-csv \"data.csv\"))  (define cols (cdr d2))\n"
+        "Any top-level variable bound to a vector appears as a column in\n"
+        "the Vectors tab; plot-xy... calls draw into the Chart tab.\n"
+        "Press Ctrl+Enter, or click Run, to evaluate.\n\n"
+    )
+
+    class LispMainWindow(QMainWindow):
+        def __init__(self):
+            super().__init__()
+            self.setWindowTitle("Simple Lisp \u2014 vectors, charts, and FRED data")
+            self.resize(1150, 620)
+
+            self.env = make_global_env(output=self._write_output, plot=self._on_plot)
+
+            central = QWidget()
+            self.setCentralWidget(central)
+            outer_layout = QVBoxLayout(central)
+
+            input_row = QHBoxLayout()
+            self.input_edit = InputEdit(self._on_run)
+            self.input_edit.setPlaceholderText(
+                "Enter one or more Lisp expressions, then press Ctrl+Enter or click Run...")
+            self.input_edit.setFixedHeight(90)
+            input_row.addWidget(self.input_edit, 1)
+
+            run_button = QPushButton("Run (Ctrl+Enter)")
+            run_button.clicked.connect(self._on_run)
+            input_row.addWidget(run_button)
+
+            outer_layout.addLayout(input_row)
+
+            splitter = QSplitter(Qt.Orientation.Horizontal)
+            outer_layout.addWidget(splitter, 1)
+
+            self.output_view = QTextEdit()
+            self.output_view.setReadOnly(True)
+            splitter.addWidget(self.output_view)
+
+            self.tabs = QTabWidget()
+            splitter.addWidget(self.tabs)
+
+            self.table_model = VectorTableModel()
+            self.table_view = QTableView()
+            self.table_view.setModel(self.table_model)
+            self.tabs.addTab(self.table_view, "Vectors")
+
+            chart_tab = QWidget()
+            chart_layout = QVBoxLayout(chart_tab)
+            chart_layout.setContentsMargins(0, 0, 0, 0)
+            self.chart_canvas = ChartCanvas()
+            chart_layout.addWidget(self.chart_canvas, 1)
+            save_chart_button = QPushButton("Save Chart...")
+            save_chart_button.clicked.connect(self._on_save_chart)
+            chart_layout.addWidget(save_chart_button)
+            self.tabs.addTab(chart_tab, "Chart")
+
+            self.last_chart_spec = None
+            splitter.setSizes([500, 650])
+
+            self._append_text(WELCOME_MESSAGE)
+            self._refresh_table()
+
+        def _write_output(self, text):
+            """Called directly by the Lisp `display` / `newline` / `print`
+            builtins -- this is the only bit of "wiring" between the
+            interpreter and the GUI."""
+            self._append_text(text)
+
+        def _on_plot(self, spec):
+            """Called directly by the Lisp `plot-xy...` builtins with a
+            plain-data chart spec (see build_chart_spec)."""
+            self.last_chart_spec = spec
+            self.chart_canvas.plot(spec)
+            self.tabs.setCurrentIndex(1)
+
+        def _on_save_chart(self):
+            if self.last_chart_spec is None:
+                QMessageBox.information(
+                    self, "No chart yet", "Plot a chart first, e.g. with plot-xy.")
+                return
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save Chart", "chart.png",
+                "PNG Image (*.png);;PDF Document (*.pdf);;SVG Image (*.svg);;All Files (*)")
+            if not path:
+                return
+            try:
+                render_chart_to_file(self.last_chart_spec, path)
+                self._append_text("Chart saved to %s\n\n" % path)
+            except LispError as e:
+                QMessageBox.warning(self, "Save failed", str(e))
+
+        def _append_text(self, text):
+            self.output_view.moveCursor(QTextCursor.MoveOperation.End)
+            self.output_view.insertPlainText(text)
+            self.output_view.moveCursor(QTextCursor.MoveOperation.End)
+
+        def _on_run(self):
+            source = self.input_edit.toPlainText().strip()
+            if not source:
+                return
+            self._append_text("lisp> " + source + "\n")
+            try:
+                result = NIL
+                for expr in parse(source):
+                    result = seval(expr, self.env)
+                self._append_text("=> " + to_string(result) + "\n\n")
+            except LispError as e:
+                self._append_text("Error: %s\n\n" % e)
+            except Exception as e:
+                self._append_text("Error: %s\n\n" % e)
+            self.input_edit.clear()
+            self._refresh_table()
+
+        def _refresh_table(self):
+            vectors = [(name, value.items) for name, value in self.env.items()
+                       if isinstance(value, LispVector)]
+            self.table_model.set_vectors(vectors)
+
+
+def launch_gui():
+    if not _PYQT_AVAILABLE:
+        print("PyQt6 and matplotlib are required for the GUI:\n\n    pip install PyQt6 matplotlib\n")
+        print("Falling back to the console REPL.\n")
+        repl(make_global_env())
+        return
+    app = QApplication(sys.argv)
+    window = LispMainWindow()
+    window.show()
+    sys.exit(app.exec())
+
+
+def main():
+    if len(sys.argv) > 1:
+        # Batch mode: run a script file from the console, no GUI needed.
+        env = make_global_env()
+        run_file(sys.argv[1], env)
+    else:
+        # Default: launch the PyQt6 GUI.
+        launch_gui()
+
+
+if __name__ == "__main__":
+    main()
