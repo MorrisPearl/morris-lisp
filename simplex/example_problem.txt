@@ -1,0 +1,14 @@
+# Classic textbook example.
+# Maximize 3x1 + 5x2  is the same as  minimize -3x1 - 5x2
+# subject to:
+#   x1        <= 4
+#        2 x2 <= 12
+#   3x1 + 2x2 <= 18
+# Known optimal solution: x1 = 2, x2 = 6, objective = -36 (i.e. max 36)
+
+minimize
+-3 -5
+subject to
+1 0 <= 4
+0 2 <= 12
+3 2 <= 18
