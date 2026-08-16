@@ -292,6 +292,53 @@ triangle, diamond, etc.
 | `(fred-series series-id [api-key] [start-date] [end-date])` | Fetch a data series; returns `(cons dates-vector values-vector)`. `api-key` may be omitted if the `FRED_API_KEY` environment variable is set. `start-date`/`end-date` are optional `"YYYY-MM-DD"` strings or dates |
 | `(load-csv filename [has-header?])` | Load a CSV's columns as vectors; returns `(cons headers-list vectors-list)`. Each column is auto-detected as numeric, as a date (`"YYYY-MM-DD"`), or skipped (along with its header) if neither. A row is included only if every kept column has a value there, so all returned vectors stay the same length and aligned. `has-header?` defaults to `#t` |
 
+**Example** (also runnable as [`fred_example.lsp`](fred_example.lsp) — `python3 lisp_interpreter.py fred_example.lsp`). `fred-series` is the only FRED builtin, so this exercises its full argument range: series-alone, an explicit date range given as `date` values, and the same given as `"YYYY-MM-DD"` strings:
+
+```lisp
+(define api-key "YOUR_FRED_API_KEY")   ; or delete this arg below to use $FRED_API_KEY
+
+; A small helper to print a (dates . values) series returned by
+; fred-series, one observation per line -- this Lisp has no built-in
+; loop construct, so iteration is just ordinary recursion.
+(define (print-series dates values i n)
+  (if (< i n)
+      (begin
+        (display "  ") (display (vector-ref dates i))
+        (display "  ") (display (vector-ref values i))
+        (newline)
+        (print-series dates values (+ i 1) n))
+      #t))
+
+; --- 1. fetch a full series: US Real Gross Domestic Product ("GDP") ---
+(define gdp (fred-series "GDP" api-key))
+(define gdp-dates (car gdp))
+(define gdp-values (cdr gdp))
+(define gdp-n (vector-length gdp-values))
+(display "GDP: ") (display gdp-n) (display " quarterly observations") (newline)
+(display "  first:  ") (display (vector-ref gdp-dates 0))
+(display "  ") (display (vector-ref gdp-values 0)) (newline)
+(display "  latest: ") (display (vector-ref gdp-dates (- gdp-n 1)))
+(display "  ") (display (vector-ref gdp-values (- gdp-n 1))) (newline)
+
+; --- 2. a second series, restricted to a date range with an explicit
+;        start-date/end-date, given as `date` values ---
+(define unrate (fred-series "UNRATE" api-key (date 2020 1 1) (date 2020 12 31)))
+(display "UNRATE, 2020 (civilian unemployment rate, %):") (newline)
+(print-series (car unrate) (cdr unrate) 0 (vector-length (car unrate)))
+
+; --- 3. a third series, with the date range given as "YYYY-MM-DD"
+;        strings instead -- both forms work interchangeably ---
+(define fedfunds (fred-series "FEDFUNDS" api-key "2023-01-01" "2023-12-31"))
+(display "FEDFUNDS, 2023 (effective federal funds rate, %):") (newline)
+(print-series (car fedfunds) (cdr fedfunds) 0 (vector-length (car fedfunds)))
+
+; --- 4. once fetched, it's just ordinary vector data -- e.g. a quick
+;        derived stat ---
+(display "Average FEDFUNDS in 2023: ")
+(display (/ (vector-sum (cdr fedfunds)) (vector-length (cdr fedfunds))))
+(newline)
+```
+
 ### tastytrade (real broker data)
 
 Requires the `tastytrade` package (`pip install tastytrade`) and a
@@ -309,14 +356,61 @@ and this interpreter). `product` is one of `"CL"`, `"MCL"`, `"ES"`,
 | `(tastytrade-futures-curve credentials-path product [n-months])` | Fetch the product's futures term structure; returns `(cons delivery-dates-vector last-prices-vector)`, one entry per upcoming contract month that actually has a price. `n-months` (default 18) is how many upcoming months to guess symbols for — months that don't exist for this product (e.g. non-quarterly months for ES/NQ/ZN) are silently skipped. Feed the result straight into `plot-xy`, `linear-regression`, `spline-regression`, etc. |
 | `(tastytrade-option-chain credentials-path product [n-months max-strikes-per-expiration include-iv? greeks-timeout])` | Fetch a futures-option chain; returns a Lisp list of rows, each a 10-element list `(symbol type strike expiration-date delivery-month underlying-future last-price implied-volatility volume open-interest)`. `type` is `"Call"` or `"Put"`; missing values (e.g. no recent Greeks snapshot) come back as `'()`. Defaults: `n-months` 12, `max-strikes-per-expiration` 15 (strikes nearest the underlying's price, per expiration), `include-iv?` `#t`, `greeks-timeout` 25.0 seconds. Implied volatility comes from a live per-contract Greeks stream, so it's the slow part — pass `include-iv?` `#f` to skip it and fetch much faster when you only need prices/strikes |
 
-```lisp
-(define creds "tastytrade_credentials.json")
-(define curve (tastytrade-futures-curve creds "CL" 12))
-(plot-xy (car curve) (list (cdr curve)))
+**Example** (also runnable as [`tastytrade_example.lsp`](tastytrade_example.lsp) — `python3 lisp_interpreter.py tastytrade_example.lsp`). Exercises all four `tastytrade-*` builtins:
 
-(define chain (tastytrade-option-chain creds "CL" 3 10 #f))  ; skip IV, fast
-(display (length chain))
-(display (car chain))   ; (symbol type strike expiration delivery underlying price iv volume oi)
+```lisp
+(define creds "tastytrade_credentials.json")   ; edit to your credentials file's path
+
+; A small helper to print a Lisp list, one item per line -- this Lisp
+; has no built-in loop construct, so iteration is just ordinary
+; recursion.
+(define (print-each lst)
+  (if (null? lst)
+      #t
+      (begin
+        (display "  ") (display (car lst)) (newline)
+        (print-each (cdr lst)))))
+
+; --- 1. tastytrade-products: which product codes are supported ---
+(display "Supported products:") (newline)
+(print-each (tastytrade-products))
+
+; --- 2. tastytrade-test-connection: confirm the credentials work before
+;        spending time on real data fetches ---
+(display "Connection test: ") (display (tastytrade-test-connection creds)) (newline)
+
+; --- 3. tastytrade-futures-curve: WTI Crude Oil (CL) futures term
+;        structure, next 6 contract months ---
+(define curve (tastytrade-futures-curve creds "CL" 6))
+(define curve-dates (car curve))
+(define curve-prices (cdr curve))
+
+(define (print-curve dates prices i n)
+  (if (< i n)
+      (begin
+        (display "  ") (display (vector-ref dates i))
+        (display "  ") (display (vector-ref prices i))
+        (newline)
+        (print-curve dates prices (+ i 1) n))
+      #t))
+
+(display "CL futures curve (") (display (vector-length curve-dates)) (display " months):") (newline)
+(print-curve curve-dates curve-prices 0 (vector-length curve-dates))
+
+; --- 4. tastytrade-option-chain, fast path (include-iv? = #f): CL
+;        options over the next 2 delivery months, 5 strikes nearest the
+;        money per expiration -- skipping the Greeks stream, so this
+;        returns quickly ---
+(define chain (tastytrade-option-chain creds "CL" 2 5 #f))
+(display "CL option chain, no IV (") (display (length chain)) (display " contracts):") (newline)
+(print-each chain)
+
+; --- 5. tastytrade-option-chain, with implied volatility (include-iv? =
+;        #t, the default): kept to a small chain (1 month, 3 strikes) so
+;        the Greeks stream finishes quickly ---
+(define chain-iv (tastytrade-option-chain creds "CL" 1 3 #t 20.0))
+(display "CL option chain, with IV (") (display (length chain-iv)) (display " contracts):") (newline)
+(print-each chain-iv)
 ```
 
 ### Input / output
