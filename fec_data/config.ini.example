@@ -1,0 +1,19 @@
+; Copy this file to config.ini and fill in your own values.
+; config.ini is read by fec_loader.py (--config lets you point elsewhere).
+
+[mysql]
+host = 127.0.0.1
+port = 3306
+user = fec_user
+password = change_me
+database = fec
+
+[download]
+; Where downloaded zip files and extracted .txt files are kept.
+dest_dir = ./fec_downloads
+
+[openfec]
+; Only needed for the `sync-indiv` / `inspect-schedule-a` commands, which
+; use the OpenFEC API instead of the bulk data files. Get a free key at
+; https://api.data.gov/signup/
+api_key = YOUR_KEY_HERE
