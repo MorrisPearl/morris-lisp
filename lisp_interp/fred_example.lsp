@@ -1,15 +1,19 @@
 ; ---------------------------------------------------------------------
 ; FRED example: retrieve and print economic data series from the Federal
-; Reserve Bank of St. Louis (FRED). Needs a free API key -- either set
-; FRED_API_KEY in your environment, or pass it explicitly as below.
-; Get one at https://fred.stlouisfed.org/docs/api/api_key.html
+; Reserve Bank of St. Louis (FRED). Needs a free API key -- get one at
+; https://fred.stlouisfed.org/docs/api/api_key.html, then either:
+;   - add it to your tastytrade credentials JSON file as "fred_api_key"
+;     (see tasty_api/README.md) and pass that file's path below, as
+;     shown -- the same file both APIs' credentials can live in, or
+;   - pass a literal key string instead ("abc123...") , or
+;   - set the FRED_API_KEY environment variable and delete the arg below.
 ;
 ; Exercises fred-series (the only FRED builtin) across its full argument
 ; range: series + key alone, and both accepted forms of an optional
 ; start-date/end-date range (LispDate values, and "YYYY-MM-DD" strings).
 ; ---------------------------------------------------------------------
 
-(define api-key "YOUR_FRED_API_KEY")   ; or delete this arg below to use $FRED_API_KEY
+(define api-key "tastytrade_credentials.json")   ; edit to your credentials file's path
 
 ; A small helper to print a (dates . values) series returned by
 ; fred-series, one observation per line -- this Lisp has no built-in

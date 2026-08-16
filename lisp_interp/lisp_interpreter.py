@@ -1571,21 +1571,45 @@ def _parse_fred_observations(observations):
     return Pair(LispVector(dates), LispVector(values))
 
 
+def _fred_api_key_from_file(path):
+    """Load a "fred_api_key" entry out of a JSON credentials file -- the
+    same file used for tastytrade-* credentials, so both APIs' keys can
+    live in one place (see _tasty_load_credentials)."""
+    try:
+        with open(str(path)) as f:
+            data = json.load(f)
+    except OSError as e:
+        raise LispError("fred-series: could not open credentials file %r: %s" % (str(path), e))
+    except json.JSONDecodeError as e:
+        raise LispError("fred-series: credentials file %r isn't valid JSON: %s" % (str(path), e))
+    key = data.get("fred_api_key")
+    if not key:
+        raise LispError(
+            "fred-series: credentials file %r has no \"fred_api_key\" entry" % (str(path),))
+    return str(key).strip()
+
+
 def fred_series(series_id, api_key=None, start_date=None, end_date=None):
     """Fetch one FRED data series and return (dates-vector . values-vector).
 
-    `api_key` may be omitted if the FRED_API_KEY environment variable is
-    set. A free API key can be requested at
+    `api_key` may be a literal FRED API key, or the path to a JSON
+    credentials file with a "fred_api_key" entry (the same file used for
+    tastytrade-* credentials, so both APIs' keys can live in one place).
+    It may also be omitted entirely if the FRED_API_KEY environment
+    variable is set. A free API key can be requested at
     https://fred.stlouisfed.org/docs/api/api_key.html
     `start_date` / `end_date`, if given, are "YYYY-MM-DD" strings (or
     LispDate values) limiting the observation range.
     """
+    if api_key is not None and os.path.exists(str(api_key)):
+        api_key = _fred_api_key_from_file(api_key)
     if api_key is None:
         api_key = os.environ.get("FRED_API_KEY")
     if not api_key:
         raise LispError(
-            "fred-series: no API key given (pass one, or set the "
-            "FRED_API_KEY environment variable)")
+            "fred-series: no API key given (pass one, pass the path to a "
+            "credentials JSON file with a \"fred_api_key\" entry, or set "
+            "the FRED_API_KEY environment variable)")
 
     params = {
         "series_id": str(series_id),

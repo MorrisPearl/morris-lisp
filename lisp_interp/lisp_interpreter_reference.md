@@ -289,13 +289,13 @@ triangle, diamond, etc.
 
 | Function | Description |
 |---|---|
-| `(fred-series series-id [api-key] [start-date] [end-date])` | Fetch a data series; returns `(cons dates-vector values-vector)`. `api-key` may be omitted if the `FRED_API_KEY` environment variable is set. `start-date`/`end-date` are optional `"YYYY-MM-DD"` strings or dates |
+| `(fred-series series-id [api-key] [start-date] [end-date])` | Fetch a data series; returns `(cons dates-vector values-vector)`. `api-key` may be a literal FRED API key, or the path to a JSON credentials file with a `"fred_api_key"` entry — the same file used for the `tastytrade-*` credentials below, so both APIs' keys can live in one place. It may also be omitted entirely if the `FRED_API_KEY` environment variable is set. `start-date`/`end-date` are optional `"YYYY-MM-DD"` strings or dates |
 | `(load-csv filename [has-header?])` | Load a CSV's columns as vectors; returns `(cons headers-list vectors-list)`. Each column is auto-detected as numeric, as a date (`"YYYY-MM-DD"`), or skipped (along with its header) if neither. A row is included only if every kept column has a value there, so all returned vectors stay the same length and aligned. `has-header?` defaults to `#t` |
 
-**Example** (also runnable as [`fred_example.lsp`](fred_example.lsp) — `python3 lisp_interpreter.py fred_example.lsp`). `fred-series` is the only FRED builtin, so this exercises its full argument range: series-alone, an explicit date range given as `date` values, and the same given as `"YYYY-MM-DD"` strings:
+**Example** (also runnable as [`fred_example.lsp`](fred_example.lsp) — `python3 lisp_interpreter.py fred_example.lsp`). `fred-series` is the only FRED builtin, so this exercises its full argument range: series-alone (with the key coming from a shared credentials file), an explicit date range given as `date` values, and the same given as `"YYYY-MM-DD"` strings:
 
 ```lisp
-(define api-key "YOUR_FRED_API_KEY")   ; or delete this arg below to use $FRED_API_KEY
+(define api-key "tastytrade_credentials.json")   ; edit to your credentials file's path
 
 ; A small helper to print a (dates . values) series returned by
 ; fred-series, one observation per line -- this Lisp has no built-in
