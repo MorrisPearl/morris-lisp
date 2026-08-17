@@ -4,21 +4,28 @@ term_structure_model.py
 A simple two-factor term structure ("Hull-White style") model, built in
 three steps:
 
-  1. bootstrap_forward_curve(...)
-     Turns a handful of market yields (T-bill rates + semiannual par bond
-     yields) into a full curve of 1-month forward rates, one for every
-     month out to 30 years.
+  1. bootstrap_forward_curve(...) / bootstrap_sofr_curve(...)
+     Turns a handful of market yields -- either T-bill rates + semiannual
+     par bond yields, or a strip of exchange-traded 3-month SOFR futures
+     -- into a full curve of 1-month forward rates, one for every month
+     out to 30 years.
 
-  2. price_cme_option_mc(...)
+  2. price_cme_option_mc(...) / price_sofr_future_option_mc(...)
      Simulates that curve forward in time with two random ("stochastic")
      factors -- a short-rate factor and a slower-moving long-term
      mean-reversion level -- using Monte Carlo, and uses the simulated
-     paths to price a CME-style option on a 10-year note future.
+     paths to price a CME-style option on either a 10-year note future or
+     a 3-month SOFR future.
 
   3. calibrate_volatilities(...)
      Searches for the two volatility parameters (one per factor) that make
      the model's option prices match a set of real market option prices
-     you supply.
+     you supply (works with either option pricer above via `price_fn`).
+
+This module is deliberately free of any network/broker dependency -- it
+only ever sees plain numbers. Real market data (SOFR futures prices,
+option quotes) is fetched separately by sofr_market_data.py, which
+shapes tastytrade data into the dicts these functions expect.
 
 DESIGN PHILOSOPHY: this code favors readability over speed or textbook
 completeness. Every simplifying assumption is called out in a comment
@@ -148,13 +155,89 @@ def bootstrap_forward_curve(rates):
 
 
 # ---------------------------------------------------------------------------
+# Step 1 (alternate source): bootstrap the curve from exchange-traded
+# 3-month SOFR futures instead of T-bills/par bonds
+# ---------------------------------------------------------------------------
+
+def bootstrap_sofr_curve(sofr_futures):
+    """
+    Bootstrap a monthly curve of 1-month forward rates from a strip of
+    exchange-traded CME 3-Month SOFR (SR3) futures.
+
+    sofr_futures: list of dicts, one per futures contract, each with:
+        'start_months' -- int, months from today when this future's
+                           3-month reference (accrual) quarter BEGINS
+                           (0 if the quarter has already begun, i.e. this
+                           is the front/currently-accruing contract)
+        'end_months'   -- int, months from today when that quarter ENDS
+                           (the future's own settlement date)
+        'rate'         -- decimal rate implied by the future's price,
+                           i.e. (100 - price) / 100
+
+    Returns a dict shaped like bootstrap_forward_curve()'s output:
+        'months'          -- [1, 2, ..., 360]
+        'forward_rates'   -- 1-month forward rate for each of those months
+        'quarters'        -- the input list, sorted by start_months (kept
+                              around for reference/debugging)
+
+    SIMPLIFICATIONS:
+      - A 3-Month SOFR future settles to 100 minus the COMPOUNDED average
+        daily SOFR over its reference quarter. This treats that as a flat
+        1-month forward rate applied to every month the quarter covers --
+        no attempt to back out day-by-day forwards, and no convexity
+        adjustment between the futures-implied rate and a true forward
+        rate (a standard simplification for short-dated strips; the
+        convexity effect is only a few basis points out to ~2 years).
+      - Months before the first future's start (front-contract stub) and
+        any gap between non-adjacent contract months use the nearest
+        available future's rate, held flat.
+      - Months beyond the last supplied future are extrapolated flat at
+        that future's rate -- there's no market information further out
+        than what was supplied.
+    """
+    quarters = sorted(sofr_futures, key=lambda q: q['start_months'])
+    months = np.arange(1, TOTAL_MONTHS + 1)
+
+    # Default fill covers "beyond the last future" -- everything else
+    # below overwrites this with a more specific rate.
+    forward_rates = np.full(TOTAL_MONTHS, quarters[-1]['rate'])
+
+    # Front-contract stub: months up to and including the first future's
+    # start get that future's rate.
+    first_start = max(quarters[0]['start_months'], 0)
+    if first_start > 0:
+        forward_rates[months <= first_start] = quarters[0]['rate']
+
+    # Each future's own coverage window.
+    for q in quarters:
+        start, end = max(q['start_months'], 0), q['end_months']
+        mask = (months > start) & (months <= end)
+        forward_rates[mask] = q['rate']
+
+    # Gaps between non-adjacent contract months: fill with the earlier
+    # (near) contract's rate, held flat.
+    for near, far in zip(quarters[:-1], quarters[1:]):
+        gap_start, gap_end = near['end_months'], far['start_months']
+        if gap_end > gap_start:
+            mask = (months > gap_start) & (months <= gap_end)
+            forward_rates[mask] = near['rate']
+
+    return {
+        'months': months.tolist(),
+        'forward_rates': forward_rates.tolist(),
+        'quarters': quarters,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Step 2: two-factor Monte Carlo simulation + option pricing
 # ---------------------------------------------------------------------------
 
 def _simulate_two_factor_paths(forward_rates, sigma1, sigma2, horizon_months,
                                 n_paths, seed,
                                 a=SHORT_RATE_REVERSION_SPEED,
-                                b=MEAN_LEVEL_REVERSION_SPEED):
+                                b=MEAN_LEVEL_REVERSION_SPEED,
+                                theta_bar=None):
     """
     Simulate n_paths Monte Carlo paths of the two factors:
         r      -- the short-rate factor
@@ -166,6 +249,22 @@ def _simulate_two_factor_paths(forward_rates, sigma1, sigma2, horizon_months,
     SIMPLIFICATION: the two random shocks dW1, dW2 are independent (no
     correlation parameter). Adding one would be a one-line change.
 
+    theta_bar: optional override for the long-run level theta drifts
+        toward. If not supplied (the default), it's computed as the
+        average forward rate over the last 2 years of the supplied curve
+        (the "long end") -- this is the ORIGINAL behavior, appropriate
+        when forward_rates spans a genuine multi-decade curve (e.g. the
+        Treasury-bootstrapped curve this model was first built for).
+
+        Pass an explicit value when that default would anchor theta
+        somewhere not economically meaningful for what's being priced --
+        e.g. price_sofr_future_option_mc() passes the average over the
+        curve's real (non-extrapolated) SOFR-futures-implied months
+        instead, since bootstrap_sofr_curve() extrapolates FLAT beyond
+        its last real futures quarter, which would otherwise anchor theta
+        at an arbitrary flat tail value that has nothing to do with a
+        near-dated option's dynamics and biases the whole path's drift.
+
     Returns:
         r_paths     -- array (n_paths, horizon_months + 1), the short-rate
                         factor at month 0, 1, ..., horizon_months
@@ -176,9 +275,10 @@ def _simulate_two_factor_paths(forward_rates, sigma1, sigma2, horizon_months,
     dt = 1.0 / MONTHS_PER_YEAR
 
     r0 = forward_rates[0]
-    # Long-run level that theta drifts toward: the average forward rate
-    # over the last 2 years of today's curve (the "long end").
-    theta_bar = float(np.mean(forward_rates[-24:]))
+    if theta_bar is None:
+        # Long-run level that theta drifts toward: the average forward
+        # rate over the last 2 years of today's curve (the "long end").
+        theta_bar = float(np.mean(forward_rates[-24:]))
     theta0 = theta_bar
 
     r = np.full(n_paths, r0)
@@ -338,17 +438,175 @@ def price_cme_option_mc(forward_rates, option, sigma1, sigma2,
 
 
 # ---------------------------------------------------------------------------
+# Step 2b: option pricing for a CME 3-Month SOFR future (SR3)
+# ---------------------------------------------------------------------------
+
+def _fit_sofr_theta_bar(forward_rates, n_months, a=SHORT_RATE_REVERSION_SPEED):
+    """
+    Fit theta_bar (the long-run level _simulate_two_factor_paths()'s theta
+    factor drifts toward) so the model's OWN deterministic curve shape --
+    the same exponential blend f(0, tau) = theta_bar + (r0 - theta_bar) *
+    exp(-a*tau) used everywhere else in this file -- best matches the
+    first n_months of the supplied (bootstrapped) forward_rates, in a
+    least-squares sense.
+
+    WHY THIS MATTERS (found by checking real SR3 quotes): naively setting
+    theta_bar to some flat average of the curve -- either the file's
+    original "average of the last 2 years" (meaningless for a SOFR curve
+    that bootstrap_sofr_curve() extrapolates FLAT beyond its last real
+    futures quarter) or even "average of the real near-term months" --
+    still leaves a multi-basis-point LEVEL bias in near-dated SOFR option
+    prices, because the model only has two free parameters (r0, theta_bar)
+    to shape an entire curve, and a flat average doesn't account for HOW
+    those two parameters combine through the exponential blend at each
+    tenor. This fit does: it directly minimizes the blend formula's error
+    against the real curve, so short-dated options (most sensitive to
+    curve shape) get the best possible baseline from a model this simple.
+
+    Since the blend is LINEAR in theta_bar for a fixed r0 and a, this has
+    a closed-form (weighted least-squares) solution -- no iterative
+    optimizer needed, consistent with the rest of this file.
+
+    n_months should cover the REAL (non-extrapolated) part of the curve --
+    e.g. however many months bootstrap_sofr_curve()'s input futures
+    actually covered -- fitting against the flat-extrapolated tail would
+    just pull theta_bar toward that arbitrary flat value again.
+    """
+    r0 = forward_rates[0]
+    months = np.arange(1, n_months + 1)
+    tau1 = (months - 1) / MONTHS_PER_YEAR
+    tau2 = months / MONTHS_PER_YEAR
+    # weight_m = the model's own coefficient on r0 (vs. theta_bar) when
+    # averaging f(0, tau) over the m-th month -- see
+    # _sofr_futures_price_from_state()'s docstring for this same formula.
+    weight = MONTHS_PER_YEAR * (np.exp(-a * tau1) - np.exp(-a * tau2))
+    real_rate = np.asarray(forward_rates[:n_months], dtype=float)
+
+    # model_avg_m = theta_bar*(1 - weight_m) + r0*weight_m; minimize
+    # sum_m (model_avg_m - real_rate_m)^2 over theta_bar.
+    numerator = np.sum((1 - weight) * (real_rate - r0 * weight))
+    denominator = np.sum((1 - weight) ** 2)
+    return float(numerator / denominator)
+
+
+def _sofr_futures_price_from_state(r_T, theta_T, tau1, tau2,
+                                    a=SHORT_RATE_REVERSION_SPEED):
+    """
+    Approximate the price of a CME 3-Month SOFR future at simulation date
+    T, given that date's simulated state (r_T, theta_T), for the future
+    whose reference (accrual) quarter is [T+tau1, T+tau2] (both offsets
+    from T, in years).
+
+    SIMPLIFICATIONS:
+      - The real future settles to 100 minus the COMPOUNDED average daily
+        SOFR over its reference quarter; this uses 100 minus the SIMPLE
+        average of the model's own forward curve over the quarter instead
+        (a negligible difference for a 3-month window at typical rate
+        levels) -- the same style of approximation ten_year_rate_from_state()
+        and _note_price_from_state() already use elsewhere in this file.
+      - Uses the same "exponential blend" forward-curve shape as those
+        functions, f(T, T+tau) = theta_T + (r_T - theta_T) * exp(-a*tau),
+        averaged analytically over tau in [tau1, tau2]:
+            avg = theta_T + (r_T - theta_T) * (exp(-a*tau1) - exp(-a*tau2))
+                                                / (a * (tau2 - tau1))
+    r_T and theta_T can be scalars or numpy arrays (e.g. one value per
+    Monte Carlo path).
+    """
+    avg_rate = theta_T + (r_T - theta_T) * (
+        (np.exp(-a * tau1) - np.exp(-a * tau2)) / (a * (tau2 - tau1))
+    )
+    return 100.0 - avg_rate * 100.0
+
+
+def price_sofr_future_option_mc(forward_rates, option, sigma1, sigma2,
+                                 n_paths=2000, seed=42, theta_bar_months=24):
+    """
+    Monte Carlo price of one European option on a CME 3-Month SOFR (SR3)
+    future.
+
+    option: dict with keys
+        'type'                 -- 'call' or 'put'
+        'strike'                -- strike, in futures price points
+                                    (e.g. 96.25, i.e. 100 - 3.75%)
+        'expiry_months'         -- months from today until the OPTION's
+                                    own expiry
+        'quarter_start_months'  -- months from today until the underlying
+                                    future's reference quarter BEGINS
+        'quarter_end_months'    -- months from today until that quarter
+                                    ENDS (the future's own settlement date)
+        'market_price'          -- optional, only needed for calibration
+
+    The option's payoff is based on the FUTURES PRICE AS OF THE OPTION'S
+    OWN EXPIRY (a mark-to-market of the market's then-current expectation
+    for the quarter's average SOFR), not on the quarter's eventually-
+    realized average -- see _sofr_futures_price_from_state().
+
+    theta_bar_months: how many months of forward_rates are the REAL
+        (non-extrapolated) part of the curve -- used to fit the model's
+        long-run mean-reversion anchor via _fit_sofr_theta_bar() instead
+        of _simulate_two_factor_paths()'s own default (a flat average of
+        the curve's LAST 2 years). That default would anchor theta at
+        bootstrap_sofr_curve()'s arbitrary flat-extrapolated tail value,
+        with no connection to real market data -- verified against real
+        SR3 quotes to bias every near-dated option price by several
+        basis points, in a way no amount of volatility calibration could
+        fix (with sigma1=sigma2=0, i.e. NO randomness at all, it priced a
+        1-month call/put spread at ~0.10 against a true parity-implied
+        spread of ~0.03). Fitting theta_bar to the real curve directly,
+        via the same blend formula used for pricing, removes that bias
+        at its source -- see _fit_sofr_theta_bar()'s docstring.
+
+    SIMPLIFICATION: CME SOFR futures options are American-style; this
+    model prices them as European (exercise only at expiry), ignoring
+    early-exercise value -- the same simplification price_cme_option_mc()
+    makes for note-future options.
+    """
+    theta_bar = _fit_sofr_theta_bar(forward_rates, theta_bar_months)
+    horizon = option['expiry_months']
+    r_paths, theta_paths = _simulate_two_factor_paths(
+        forward_rates, sigma1, sigma2, horizon, n_paths, seed,
+        theta_bar=theta_bar)
+    r_T = r_paths[:, -1]
+    theta_T = theta_paths[:, -1]
+
+    # Quarter bounds, expressed as offsets in years FROM the option's
+    # expiry date T (rather than from today).
+    tau1 = max(option['quarter_start_months'] - horizon, 0) / MONTHS_PER_YEAR
+    tau2 = (option['quarter_end_months'] - horizon) / MONTHS_PER_YEAR
+    if tau2 <= tau1:
+        tau2 = tau1 + 1.0 / MONTHS_PER_YEAR
+
+    futures_prices = _sofr_futures_price_from_state(r_T, theta_T, tau1, tau2)
+
+    strike = option['strike']
+    if option['type'] == 'call':
+        payoffs = np.maximum(futures_prices - strike, 0.0)
+    else:
+        payoffs = np.maximum(strike - futures_prices, 0.0)
+
+    discount = _discount_to_today(r_paths)
+    return float(np.mean(payoffs * discount))
+
+
+# ---------------------------------------------------------------------------
 # Step 3: calibrate the two volatilities to market option prices
 # ---------------------------------------------------------------------------
 
 def calibrate_volatilities(forward_rates, options, n_paths=2000, seed=42,
                             sigma1_range=(0.0005, 0.03),
                             sigma2_range=(0.0005, 0.02),
-                            n_grid=7, n_rounds=4):
+                            n_grid=7, n_rounds=4,
+                            price_fn=price_cme_option_mc):
     """
     Find (sigma1, sigma2) -- the volatility of the short-rate factor and of
-    the mean-reversion-level factor -- that make price_cme_option_mc match
-    each option's 'market_price' as closely as possible.
+    the mean-reversion-level factor -- that make price_fn match each
+    option's 'market_price' as closely as possible.
+
+    price_fn defaults to price_cme_option_mc (options on the CME 10-year
+    note future); pass price_sofr_future_option_mc instead to calibrate to
+    SOFR futures options. Both take the same (forward_rates, option,
+    sigma1, sigma2, n_paths, seed) signature -- only the shape of the
+    `option` dict and what it prices differ.
 
     METHOD (deliberately simple, no external optimizer library):
     a "zooming grid search". Try a grid of (sigma1, sigma2) combinations,
@@ -376,7 +634,7 @@ def calibrate_volatilities(forward_rates, options, n_paths=2000, seed=42,
             for s2 in candidates2:
                 total_error = 0.0
                 for option in options:
-                    model_price = price_cme_option_mc(
+                    model_price = price_fn(
                         forward_rates, option, s1, s2, n_paths, seed)
                     total_error += (model_price - option['market_price']) ** 2
                 if best_error is None or total_error < best_error:
