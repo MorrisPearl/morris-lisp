@@ -302,31 +302,48 @@ def _simulate_two_factor_paths(forward_rates, sigma1, sigma2, horizon_months,
     return r_paths, theta_paths
 
 
+def _average_forward_rate_from_state(r, theta, tau1, tau2, a=SHORT_RATE_REVERSION_SPEED):
+    """
+    Closed-form average of the model's own forward-rate curve
+    f(tau) = theta + (r - theta) * exp(-a * tau) (see _note_price_from_state)
+    over the window tau in [tau1, tau2], where tau is years forward from
+    the state date. Used both by ten_year_rate_from_state (tau1=0,
+    tau2=10) and by price_sofr_future_option_mc (tau1/tau2 = a SOFR
+    future's 3-month reference quarter).
+
+    r and theta can be scalars or numpy arrays (e.g. a whole path/state
+    vector); tau1 and tau2 are scalars.
+    """
+    tau2 = max(tau2, tau1 + 1e-6)  # guard against a zero-width window
+    return theta + (r - theta) * (np.exp(-a * tau1) - np.exp(-a * tau2)) / (a * (tau2 - tau1))
+
+
 def ten_year_rate_from_state(r, theta, a=SHORT_RATE_REVERSION_SPEED, tenor_years=10):
     """
     Approximate "the ten-year rate" implied by the model's state (r, theta)
     at some date, for charting purposes.
 
     SIMPLIFICATION: rather than building the full 10-year curve and solving
-    for a par yield, this uses the average of the modeled forward curve
-    over the next 10 years. Because that forward curve is the simple
-    exponential blend theta + (r - theta) * exp(-a * tau) (see
-    _note_price_from_state), its average over tau = 0..10 has a closed
-    form, so no simulation loop is needed:
-
-        avg = theta + (r - theta) * (1 - exp(-a * tenor_years)) / (a * tenor_years)
-
+    for a par yield, this uses the closed-form average of the modeled
+    forward curve over the next 10 years (see _average_forward_rate_from_state).
     This is close to, but not identical to, a true compounded 10-year zero
     or par yield -- good enough for a quick chart, not for precise pricing.
     r and theta can be scalars or numpy arrays (e.g. a whole path).
     """
-    return theta + (r - theta) * (1.0 - np.exp(-a * tenor_years)) / (a * tenor_years)
+    return _average_forward_rate_from_state(r, theta, 0.0, tenor_years, a)
 
 
-def simulate_rate_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths, seed=None):
+def simulate_rate_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths, seed=None,
+                         theta_bar=None):
     """
     Public convenience wrapper (used by the GUI, or anyone who just wants
     to look at simulated rate paths without pricing an option or a bond).
+
+    theta_bar: optional override -- see _simulate_two_factor_paths()'s
+        docstring. Pass the value from _fit_sofr_theta_bar() when
+        forward_rates came from bootstrap_sofr_curve() rather than
+        bootstrap_forward_curve(), for the same reason
+        price_sofr_future_option_mc() does.
 
     Returns:
         years            -- array of times in years, 0, 1/12, 2/12, ... out
@@ -339,10 +356,56 @@ def simulate_rate_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths, s
     """
     horizon_months = int(round(horizon_years * MONTHS_PER_YEAR))
     r_paths, theta_paths = _simulate_two_factor_paths(
-        forward_rates, sigma1, sigma2, horizon_months, n_paths, seed)
+        forward_rates, sigma1, sigma2, horizon_months, n_paths, seed, theta_bar=theta_bar)
     years = np.arange(horizon_months + 1) / MONTHS_PER_YEAR
     ten_year_paths = ten_year_rate_from_state(r_paths, theta_paths)
     return years, r_paths, ten_year_paths
+
+
+def simulate_mortgage_rate_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths,
+                                  mortgage_spread, seed=None, theta_bar=None, tenor_years=10):
+    """
+    Simulate a simple proxy mortgage rate alongside the model's own rate
+    paths -- for Monte Carlo mortgage analysis (e.g. prepayment modeling)
+    off a SOFR curve. For every simulated month on every path:
+
+        mortgage_rate = tenor_years_rate + mortgage_spread
+
+    where tenor_years_rate is the model's own approximate long-tenor rate
+    (see ten_year_rate_from_state; tenor_years defaults to 10, the usual
+    rate-sensitivity proxy for a 30-year mortgage) at that path/month, and
+    mortgage_spread is a constant spread you supply (e.g. 0.015 for 150bp).
+
+    theta_bar: pass the value from _fit_sofr_theta_bar(forward_rates, ...)
+        when forward_rates came from bootstrap_sofr_curve() -- see that
+        function's docstring (and price_sofr_future_option_mc()'s) for
+        why the default long-run anchor (average of the curve's last 2
+        years) is the wrong one for a SOFR curve that's flat-extrapolated
+        past its last real futures quarter.
+
+    SIMPLIFICATION: mortgage rates actually track something closer to
+    current-coupon MBS yields (which move with the whole curve,
+    prepayment risk, and origination costs -- not just one point on it),
+    and the mortgage-to-underlying spread is NOT constant in reality; it
+    widens and narrows with MBS supply, bank demand, and rate volatility.
+    A single flat spread is a deliberate simplification -- named in the
+    function's own parameter (mortgage_spread) so it's obvious where to
+    plug in a richer assumption later.
+
+    Returns:
+        years            -- as in simulate_rate_paths
+        short_rate_paths -- as in simulate_rate_paths
+        underlying_paths -- the tenor_years rate along each path (what
+                             simulate_rate_paths calls ten_year_paths)
+        mortgage_paths   -- underlying_paths + mortgage_spread, same shape
+    """
+    horizon_months = int(round(horizon_years * MONTHS_PER_YEAR))
+    r_paths, theta_paths = _simulate_two_factor_paths(
+        forward_rates, sigma1, sigma2, horizon_months, n_paths, seed, theta_bar=theta_bar)
+    years = np.arange(horizon_months + 1) / MONTHS_PER_YEAR
+    underlying_paths = ten_year_rate_from_state(r_paths, theta_paths, tenor_years=tenor_years)
+    mortgage_paths = underlying_paths + mortgage_spread
+    return years, r_paths, underlying_paths, mortgage_paths
 
 
 def _note_price_from_state(r_T, theta_T, a=SHORT_RATE_REVERSION_SPEED,

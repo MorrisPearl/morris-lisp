@@ -22,38 +22,47 @@ in main.py's CredentialsBar) -- pass credentials_path explicitly to use a
 different file. See ../tasty_api/README.md for how to obtain a
 client_secret + refresh_token.
 
---- What "a few options" means here ---
-SOFR futures options are American-style, expire monthly, and are listed
-on many strikes. To keep this simple and match "use a FEW exchange traded
-options" from the brief, this fetches only the options on ONE nearby
-quarterly SR3 contract (whichever near-dated quarter actually has a
-listed option chain -- the currently-accruing front quarter often
-doesn't), at its nearest expiration, at the `n_strikes` strikes closest
-to that future's current price (both call and put at each strike).
+--- "As far out as they go" ---
+fetch_sofr_calibration_data()'s n_futures defaults to 40, comfortably
+above the ~20 quarterly SR3 contracts CME actually lists at any time (a
+~5 year strip) -- so by default this uses every contract tastytrade
+returns, not an arbitrary near-term subset. bootstrap_sofr_curve() (in
+term_structure_model.py) still has to extrapolate flat past the last one
+to fill out the model's full 30-year grid; there is no market information
+further out than the last listed contract.
+
+--- Spreading calibration options across the curve ---
+sigma1 (the fast-moving short-rate factor) and sigma2 (the slower
+mean-reversion-level factor) are hard to tell apart from options
+clustered at similar expiries -- both blend together into "how uncertain
+is the near-term rate". Options on CONTRACTS FURTHER OUT ON THE CURVE
+give sigma2 more room to show up on its own. So rather than just grabbing
+the n_underlyings nearest contract months with a listed option chain,
+this spreads its picks evenly across every curve quarter that has one
+(see the n_underlyings docstring below).
 """
 
 from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import sys
 from pathlib import Path
 
-import sys
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tasty_api"))
-
-import tastytrade_source as tt  # noqa: E402  (path must be set up first)
+import tastytrade_source as tt  # noqa: E402
 
 try:
-    from tastytrade.instruments import Future, get_future_option_chain
-    from tastytrade.market_data import get_market_data_by_type
+    from tastytrade.instruments import Future, get_future_option_chain  # noqa: E402
+    from tastytrade.market_data import get_market_data_by_type  # noqa: E402
 except ImportError:
-    pass  # tt.TASTYTRADE_AVAILABLE guards all use below
+    pass  # tt.TASTYTRADE_AVAILABLE below covers this; nothing here is called if it's False.
 
 DEFAULT_CREDENTIALS_PATH = str(Path.home() / "credentials.json")
-
 SR3_ROOT = "/SR3"
-DAYS_PER_MONTH = 365.2425 / 12.0
+DAYS_PER_MONTH = 30.436875  # 365.2425 / 12 -- average Gregorian month length
 
 
 def _months_between(d1: dt.date, d2: dt.date) -> float:
@@ -67,38 +76,48 @@ def _option_type_str(option_type) -> str:
 
 
 def _calibration_price(md):
-    """Pick a market price suited to CALIBRATION, as opposed to display:
-    prefer a live mark/mid quote over a possibly-stale last-trade print.
-    Calibration needs prices that are mutually consistent with each other
-    at a single point in time (e.g. respecting put-call parity across a
-    strike) far more than it needs trade-history accuracy -- unlike
-    tastytrade_source._pick_price() (used for display in the tasty_api
-    viewer), which prefers close/last first and only falls back to
-    mark/mid when no trade has happened. For a thinly-traded short-dated
-    future option, 'last' can be a stale print from well before the
-    current bid/ask and materially violate parity against a same-strike
-    call/put pulled seconds apart -- 'mark' does not have that problem."""
-    mark = getattr(md, "mark", None)
-    if mark is not None:
-        try:
-            return float(mark)
-        except (TypeError, ValueError):
-            pass
+    """
+    Pick a market price suited to CALIBRATION, as opposed to display: only
+    trust a price backed by real market evidence -- a two-sided bid/ask
+    quote (preferred: calibration needs prices that are mutually
+    consistent with each other at a single point in time, e.g. respecting
+    put-call parity across a strike, far more than it needs trade-history
+    accuracy) or an actual trade print (last/close) -- and return None
+    otherwise, so the caller skips the contract.
+
+    This deliberately does NOT fall back to tastytrade's bare 'mark' field
+    the way tastytrade_source._pick_price() does (that function is for
+    DISPLAY in the tasty_api viewer, where a rough number beats a blank
+    cell). Found by testing against real SR3 quotes: several far-dated,
+    essentially untraded strikes came back with bid=ask=last=close=None
+    but a lone 'mark' of ~25-28 points on a ~96 future -- wildly larger
+    than any sane premium at those strikes (a handful of points
+    in-the-money should be worth single digits, not 27) -- clearly a
+    theoretical value with no real market behind it. A bad calibration
+    price actively corrupts the fitted (sigma1, sigma2); it's better to
+    use one fewer option than a wrong one.
+    """
     bid, ask = getattr(md, "bid", None), getattr(md, "ask", None)
     if bid is not None and ask is not None:
         try:
             return (float(bid) + float(ask)) / 2.0
         except (TypeError, ValueError):
             pass
-    return tt._pick_price(md)
+    for attr in ("close", "last"):
+        val = getattr(md, attr, None)
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+    return None
 
 
 async def _fetch_async(credentials_path: str, n_futures: int, n_underlyings: int,
                         n_strikes: int, today: dt.date):
     session = tt.make_session(credentials_path)
 
-    # --- 1. All listed SR3 futures contracts (used for both the curve and
-    #        to find each option's underlying quarter's settlement date) ---
+    # --- SOFR futures curve --------------------------------------------
     all_futures = await tt._maybe_await(Future.get(session, product_codes=["SR3"]))
     all_futures = [f for f in all_futures if getattr(f, "expiration_date", None) is not None]
     all_futures.sort(key=lambda f: f.expiration_date)
@@ -108,15 +127,6 @@ async def _fetch_async(credentials_path: str, n_futures: int, n_underlyings: int
     futures_md = await tt._maybe_await(get_market_data_by_type(session, futures=future_symbols))
     price_by_symbol = {md.symbol: _calibration_price(md) for md in futures_md}
 
-    # SR3 accrual quarters run IMM-date to IMM-date (3rd Wednesday to 3rd
-    # Wednesday), NOT calendar-month to calendar-month, so each quarter's
-    # start is chained to the PREVIOUS contract's own settlement date
-    # (its expiration_date) rather than approximated from the delivery
-    # month's first-of-month date -- using the first-of-month approximation
-    # for every contract independently can round two adjacent quarters'
-    # starts to the same month and make them silently overlap. The only
-    # place the first-of-month approximation is still used is to decide
-    # whether the very FRONT contract has already begun accruing.
     curve = []
     prior_end_months = None
     for f in curve_futures:
@@ -125,114 +135,104 @@ async def _fetch_async(credentials_path: str, n_futures: int, n_underlyings: int
             continue
         end_months = round(_months_between(today, f.expiration_date))
         if prior_end_months is None:
+            # Front contract: its accrual quarter may have already begun
+            # (SR3's reference quarter runs from the PRIOR IMM date to
+            # this one, so "today" often falls inside it) -- in that case
+            # the quarter covers today through the contract's own
+            # expiration, i.e. starts at month 0, not some point in the
+            # past.
             delivery_start = tt.parse_delivery_month(f.symbol, reference_date=today)
             already_started = delivery_start is not None and delivery_start <= today
-            start_months = 0 if already_started else max(
-                round(_months_between(today, delivery_start)), 0)
+            start_months = 0 if already_started else max(round(_months_between(today, delivery_start)), 0)
         else:
             start_months = prior_end_months
         if end_months <= start_months:
             end_months = start_months + 1
         curve.append({
-            'symbol': f.symbol,
-            'price': price,
-            'rate': (100.0 - price) / 100.0,
-            'start_months': start_months,
-            'end_months': end_months,
-            'expiration_date': f.expiration_date,
+            "symbol": f.symbol,
+            "price": price,
+            "rate": (100.0 - price) / 100.0,
+            "start_months": start_months,
+            "end_months": end_months,
+            "expiration_date": f.expiration_date,
         })
         prior_end_months = end_months
-    curve.sort(key=lambda q: q['start_months'])
+    curve.sort(key=lambda q: q["start_months"])
 
     if not curve:
         raise RuntimeError(
-            "No SR3 futures with a usable price were returned -- check "
-            "market hours / connectivity and try again."
-        )
+            "No SR3 futures with a usable price were returned -- check market hours / connectivity and try again.")
 
-    # --- 2. Option chain: pick the n_underlyings nearest curve quarters
-    #        that actually have a listed option chain, and on EACH one
-    #        keep its nearest expiration's n_strikes strikes closest to
-    #        that future's current price.
-    #
-    #        Spanning more than one underlying quarter matters here, not
-    #        just for more data points: sigma1 (short-rate factor) and
-    #        sigma2 (mean-reversion-level factor) are both roughly
-    #        "noise added to the short rate," and over a SINGLE short
-    #        horizon their effects on the option payoff are close to
-    #        collinear (see _sofr_futures_price_from_state()'s blend
-    #        weights), so calibrating against options that all share one
-    #        expiry leaves the two parameters poorly identified -- the
-    #        grid search can land on a corner solution (e.g. sigma1 ~ 0)
-    #        that fits that one expiry fine but isn't a meaningful split
-    #        of the two vols. Using near- and far-dated expiries together
-    #        gives the search two different mean-reversion-decay weightings
-    #        to separate them by. ---
-    chain = await tt._maybe_await(get_future_option_chain(session, SR3_ROOT))
+    # --- calibration options, spread across the curve -------------------
+    chain = await tt._maybe_await(get_future_option_chain(session, SR3_ROOT))  # Dict[expiry, List[FutureOption]]
     all_opts = [o for opts in chain.values() for o in opts]
-    opts_by_underlying: dict = {}
+
+    opts_by_underlying = {}
     for o in all_opts:
         opts_by_underlying.setdefault(o.underlying_symbol, []).append(o)
 
-    targets = [q for q in curve if q['symbol'] in opts_by_underlying][:n_underlyings]
-    if not targets:
+    usable = [q for q in curve if q["symbol"] in opts_by_underlying]
+    if not usable:
         raise RuntimeError(
-            "None of the fetched SR3 futures contract months have a "
-            "listed option chain -- try increasing n_futures."
-        )
+            "None of the fetched SR3 futures contract months have a listed option chain -- try increasing n_futures.")
 
-    selected = []  # list of (FutureOption, target_quarter_dict)
+    # Evenly-spaced picks across every curve quarter that has a listed
+    # option chain -- not just the nearest n_underlyings -- so
+    # calibrate_volatilities() sees both near- and far-dated expiries and
+    # can separately identify sigma1 from sigma2 (see the module
+    # docstring).
+    n_pick = min(n_underlyings, len(usable))
+    pick_positions = np.linspace(0, len(usable) - 1, n_pick)
+    pick_indices = sorted({int(round(p)) for p in pick_positions})
+    targets = [usable[i] for i in pick_indices]
+
+    selected = []
     for target in targets:
-        target_opts = opts_by_underlying[target['symbol']]
+        target_opts = opts_by_underlying[target["symbol"]]
         nearest_exp = min(o.expiration_date for o in target_opts)
         near_opts = [o for o in target_opts if o.expiration_date == nearest_exp]
 
-        ref_price = target['price']
+        ref_price = target["price"]
         strikes_sorted = sorted({float(o.strike_price) for o in near_opts},
                                  key=lambda k: abs(k - ref_price))
         kept_strikes = set(strikes_sorted[:n_strikes])
-        selected.extend(
-            (o, target) for o in near_opts if float(o.strike_price) in kept_strikes
-        )
+        selected.extend((o, target) for o in near_opts if float(o.strike_price) in kept_strikes)
 
     option_symbols = [o.symbol for o, _ in selected]
-    options_md = await tt._maybe_await(
-        get_market_data_by_type(session, future_options=option_symbols))
+    options_md = []
+    for i in range(0, len(option_symbols), 100):
+        chunk = option_symbols[i:i + 100]
+        options_md.extend(await tt._maybe_await(get_market_data_by_type(session, future_options=chunk)))
     price_by_option_symbol = {md.symbol: _calibration_price(md) for md in options_md}
 
     options = []
     for o, target in selected:
         market_price = price_by_option_symbol.get(o.symbol)
-        # Skip anything with no usable quote at all -- these would just
-        # inject noise into the calibration's squared-error objective.
         if market_price is None or market_price <= 0:
             continue
         expiry_months = max(round(_months_between(today, o.expiration_date)), 1)
         options.append({
-            'type': _option_type_str(o.option_type),
-            'strike': float(o.strike_price),
-            'expiry_months': expiry_months,
-            'quarter_start_months': target['start_months'],
-            'quarter_end_months': target['end_months'],
-            'market_price': market_price,
-            'symbol': o.symbol,
-            'underlying_symbol': o.underlying_symbol,
-            'underlying_price': target['price'],
+            "type": _option_type_str(o.option_type),
+            "strike": float(o.strike_price),
+            "expiry_months": expiry_months,
+            "quarter_start_months": target["start_months"],
+            "quarter_end_months": target["end_months"],
+            "market_price": market_price,
+            "symbol": o.symbol,
+            "underlying_symbol": o.underlying_symbol,
+            "underlying_price": target["price"],
         })
 
     if not options:
         raise RuntimeError(
             f"Found {len(selected)} near-the-money option contracts across "
-            f"{[t['symbol'] for t in targets]} but none had a usable "
-            "market price -- try again during market hours."
-        )
+            f"{[t['symbol'] for t in targets]} but none had a usable market price -- try again during market hours.")
 
     return curve, options
 
 
-def fetch_sofr_calibration_data(credentials_path: str | None = None,
-                                 n_futures: int = 8, n_underlyings: int = 2,
-                                 n_strikes: int = 2,
+def fetch_sofr_calibration_data(credentials_path: str | None = None, n_futures: int = 40,
+                                 n_underlyings: int = 10, n_strikes: int = 3,
                                  today: dt.date | None = None):
     """
     Fetch everything needed to bootstrap a SOFR curve and calibrate the
@@ -254,16 +254,19 @@ def fetch_sofr_calibration_data(credentials_path: str | None = None,
                           volatilities(..., price_fn=price_sofr_future_option_mc).
 
     n_futures     -- how many upcoming SR3 quarterly contracts to use for
-                      the curve (8 quarters ~= 2 years of real
-                      market-implied forward rates; the curve is
-                      extrapolated flat beyond that -- see
-                      bootstrap_sofr_curve()'s SIMPLIFICATIONS).
-    n_underlyings -- how many of the nearest curve quarters (that have a
-                      listed option chain) to draw calibration options
-                      from. Deliberately > 1: sigma1 and sigma2 are poorly
-                      identified from a single expiry alone (see the
-                      comment above the option-selection loop), so this
-                      spans near- and farther-dated expiries on purpose.
+                      the curve. Defaults to 40 -- comfortably more than
+                      CME actually lists at once (~20, a ~5 year strip) --
+                      so by default this uses every contract available,
+                      not an arbitrary near-term subset. The curve is
+                      extrapolated flat beyond the last one -- see
+                      bootstrap_sofr_curve()'s SIMPLIFICATIONS.
+    n_underlyings -- how many of the curve quarters that have a listed
+                      option chain to draw calibration options from,
+                      spaced as evenly as possible across ALL of them
+                      (not just the nearest few). sigma1 and sigma2 are
+                      poorly identified from options clustered at similar
+                      expiries alone (see the module docstring), so this
+                      spans near- and far-dated expiries on purpose.
     n_strikes     -- how many distinct near-the-money strikes to use per
                       underlying (both the call and put at each strike are
                       kept when available, so total options is up to
@@ -276,5 +279,4 @@ def fetch_sofr_calibration_data(credentials_path: str | None = None,
         )
     credentials_path = credentials_path or DEFAULT_CREDENTIALS_PATH
     today = today or dt.date.today()
-    return asyncio.run(
-        _fetch_async(credentials_path, n_futures, n_underlyings, n_strikes, today))
+    return asyncio.run(_fetch_async(credentials_path, n_futures, n_underlyings, n_strikes, today))

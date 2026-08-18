@@ -6,27 +6,41 @@ End-to-end demo: fetch real, exchange-traded CME 3-Month SOFR (SR3)
 futures and a few options on those futures via tastytrade, bootstrap a
 SOFR forward curve, then calibrate the two-factor model's volatility
 parameters (sigma1, sigma2) so the calibration options price correctly
-under Monte Carlo.
+under Monte Carlo -- then use the calibrated model to run a small Monte
+Carlo mortgage-rate example (SOFR curve -> approximate 10y rate + a flat
+spread assumption -> a proxy 30y mortgage rate, per Monte Carlo path).
 
 Run:
     python3 sofr_calibration_demo.py [path/to/credentials.json]
+        [--mortgage-spread-bp BP] [--mortgage-paths N] [--mortgage-years N]
 
-If no path is given, defaults to ~/credentials.json (see
+If no credentials path is given, defaults to ~/credentials.json (see
 sofr_market_data.py / ../tasty_api/README.md for the one-time tastytrade
 OAuth setup).
 """
 
+import argparse
 import functools
-import sys
+
+import numpy as np
 
 import sofr_market_data as smd
 import term_structure_model as tsm
 
 
 def main():
-    credentials_path = sys.argv[1] if len(sys.argv) > 1 else None
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("credentials_path", nargs="?", default=None)
+    parser.add_argument("--mortgage-spread-bp", type=float, default=175.0,
+                         help="Flat spread (bp) added to the model's ~10y rate to proxy a 30y mortgage rate.")
+    parser.add_argument("--mortgage-paths", type=int, default=1000)
+    parser.add_argument("--mortgage-years", type=int, default=10)
+    args = parser.parse_args()
+    credentials_path = args.credentials_path
 
-    print("Fetching SR3 (3-Month SOFR) futures + options from tastytrade...")
+    print("Fetching SR3 (3-Month SOFR) futures + options from tastytrade "
+          "(as many contract months as are listed, options spread across "
+          "the curve)...")
     curve_futures, options = smd.fetch_sofr_calibration_data(credentials_path)
 
     print(f"\n{len(curve_futures)} SR3 futures contract months fetched:")
@@ -36,12 +50,14 @@ def main():
               f"accrual quarter: month {q['start_months']:>3} -> {q['end_months']:>3} "
               f"(settles {q['expiration_date']})")
 
-    print(f"\n{len(options)} calibration options fetched "
-          f"(underlying {options[0]['underlying_symbol']}, "
-          f"future price {options[0]['underlying_price']:.4f}):")
+    underlyings = sorted({(o['underlying_symbol'], o['underlying_price']) for o in options})
+    print(f"\n{len(options)} calibration options fetched, spread across "
+          f"{len(underlyings)} underlying contract month(s):")
+    for sym, px in underlyings:
+        print(f"  underlying {sym:<8} future price {px:.4f}")
     for o in options:
         print(f"  {o['symbol']:<24} {o['type']:<4} strike {o['strike']:>8.4f}  "
-              f"expiry {o['expiry_months']}m  market {o['market_price']:.4f}")
+              f"expiry {o['expiry_months']:>3}m  market {o['market_price']:.4f}")
 
     print("\nBootstrapping SOFR forward curve...")
     curve = tsm.bootstrap_sofr_curve(curve_futures)
@@ -58,6 +74,7 @@ def main():
     # with a fixed (forward_rates, option, sigma1, sigma2, n_paths, seed)
     # signature.
     theta_bar_months = curve_futures[-1]['end_months']
+    theta_bar = tsm._fit_sofr_theta_bar(forward_rates, theta_bar_months)
     price_fn = functools.partial(
         tsm.price_sofr_future_option_mc, theta_bar_months=theta_bar_months)
 
@@ -89,6 +106,24 @@ def main():
         "See _fit_sofr_theta_bar()'s docstring in term_structure_model.py "
         "for more."
     )
+
+    print(f"\nRunning a Monte Carlo mortgage-rate example off the calibrated "
+          f"SOFR model ({args.mortgage_paths} paths, {args.mortgage_years}y "
+          f"horizon, +{args.mortgage_spread_bp:.0f}bp flat spread over the "
+          f"model's ~10y rate)...")
+    years, short_rate_paths, ten_year_paths, mortgage_paths = tsm.simulate_mortgage_rate_paths(
+        forward_rates, sigma1, sigma2,
+        horizon_years=args.mortgage_years,
+        n_paths=args.mortgage_paths,
+        mortgage_spread=args.mortgage_spread_bp / 10000.0,
+        theta_bar=theta_bar)
+
+    print("  Simulated 30y-mortgage-rate proxy, percentiles across paths:")
+    for y in [yy for yy in (1, 2, 3, 5, 10) if yy <= args.mortgage_years]:
+        idx = min(int(round(y * tsm.MONTHS_PER_YEAR)), mortgage_paths.shape[1] - 1)
+        col = mortgage_paths[:, idx] * 100.0
+        p10, p50, p90 = np.percentile(col, [10, 50, 90])
+        print(f"    year {y:>2}: p10 {p10:.2f}%  median {p50:.2f}%  p90 {p90:.2f}%")
 
 
 if __name__ == '__main__':
