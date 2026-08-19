@@ -7,17 +7,24 @@ futures and a few options on those futures via tastytrade, bootstrap a
 SOFR forward curve, then calibrate the model -- (a, sigma1, sigma2), with
 b left fixed; see term_structure_model.calibrate_sofr_model()'s docstring
 for why -- so the calibration options price correctly under Monte Carlo.
-Then use the calibrated model to run a small Monte Carlo mortgage-rate
-example (SOFR curve -> approximate 10y rate + a flat spread assumption ->
-a proxy 30y mortgage rate, per Monte Carlo path).
+Can run the grid-search calibrator, the Nelder-Mead one, or both side by
+side for comparison (--method). Then uses the calibrated model to run a
+small Monte Carlo mortgage-rate example: SOFR curve -> approximate 10y
+rate + a spread -> a proxy 30y mortgage rate, per Monte Carlo path. The
+spread defaults to an EMPIRICAL one -- today's real 30-year mortgage rate
+(FRED) minus the model's own current ~10y rate -- see mortgage_spread.py
+for why this uses FRED rather than TBA MBS futures (tastytrade doesn't
+offer any MBS/TBA product at all).
 
 Run:
     python3 sofr_calibration_demo.py [path/to/credentials.json]
+        [--method {grid,nelder-mead,both}] [--min-expiry-months N]
         [--mortgage-spread-bp BP] [--mortgage-paths N] [--mortgage-years N]
 
 If no credentials path is given, defaults to ~/credentials.json (see
 sofr_market_data.py / ../tasty_api/README.md for the one-time tastytrade
-OAuth setup).
+OAuth setup; the same file's fred_api_key entry is used for the mortgage
+spread lookup).
 """
 
 import argparse
@@ -25,6 +32,7 @@ import functools
 
 import numpy as np
 
+import mortgage_spread as ms
 import sofr_market_data as smd
 import term_structure_model as tsm
 
@@ -32,8 +40,18 @@ import term_structure_model as tsm
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("credentials_path", nargs="?", default=None)
-    parser.add_argument("--mortgage-spread-bp", type=float, default=175.0,
-                         help="Flat spread (bp) added to the model's ~10y rate to proxy a 30y mortgage rate.")
+    parser.add_argument("--method", choices=["grid", "nelder-mead", "both"], default="both",
+                         help="Which calibration algorithm(s) to run. 'both' (the default) runs "
+                              "both and prints them side by side; the grid-search result is used "
+                              "for everything downstream (the model-vs-market table and the "
+                              "mortgage Monte Carlo).")
+    parser.add_argument("--min-expiry-months", type=int, default=0,
+                         help="Exclude calibration options with expiry_months <= this value "
+                              "(e.g. 1 to drop 1-month-or-shorter options -- useful for checking "
+                              "whether they're behaving anomalously relative to the rest).")
+    parser.add_argument("--mortgage-spread-bp", type=float, default=None,
+                         help="Override: use this flat spread (bp) instead of computing it from "
+                              "the current FRED 30-year mortgage rate.")
     parser.add_argument("--mortgage-paths", type=int, default=1000)
     parser.add_argument("--mortgage-years", type=int, default=10)
     args = parser.parse_args()
@@ -69,27 +87,43 @@ def main():
 
     # curve_real_months: how many months of forward_rates are the REAL
     # (non-extrapolated) part of the curve -- see calibrate_sofr_model()'s
-    # docstring. It grid-searches (a, sigma1, sigma2) directly against the
-    # option prices (refitting theta_bar in closed form at each candidate
-    # a) -- b is left fixed. This takes ten to twenty seconds, not the
-    # sub-second the plain sigma1/sigma2 calibration used to take, since
-    # it's now a 3-D grid search instead of a 2-D one.
+    # docstring. b is left fixed in both calibrators.
     curve_real_months = curve_futures[-1]['end_months']
-    print("\nCalibrating the SOFR model: grid-searching (a, sigma1, sigma2) "
-          "directly against the fetched option prices (b is left fixed -- "
-          "see calibrate_sofr_model()'s docstring). This takes a bit "
-          "longer than before (~10-20s) since it's now a 3-D search...")
-    a, theta_bar, sigma1, sigma2, error = tsm.calibrate_sofr_model(
-        forward_rates, options, curve_real_months)
-    price_fn = functools.partial(tsm.price_sofr_future_option_mc, a=a, theta_bar=theta_bar)
-    print(f"  fitted a         = {a:.5f}   (module default: {tsm.SHORT_RATE_REVERSION_SPEED})")
-    print(f"  fitted theta_bar = {theta_bar:.4%}")
-    print(f"  fitted sigma1    = {sigma1:.5f}")
-    print(f"  fitted sigma2    = {sigma2:.5f}")
-    print(f"  total squared pricing error = {error:.6f}")
+    if args.min_expiry_months > 0:
+        print(f"\nExcluding options with expiry_months <= {args.min_expiry_months} "
+              f"from calibration...")
 
-    print("\nModel price vs. market price after calibration:")
-    for option in options:
+    results = {}
+    if args.method in ("grid", "both"):
+        print("\nCalibrating (grid search): grid-searching (a, sigma1, sigma2) "
+              "directly against the fetched option prices. Takes roughly "
+              "10-20 seconds (it's a 3-D search)...")
+        results["grid search"] = tsm.calibrate_sofr_model(
+            forward_rates, options, curve_real_months, min_expiry_months=args.min_expiry_months)
+    if args.method in ("nelder-mead", "both"):
+        print("\nCalibrating (Nelder-Mead): simplex search for (a, sigma1, sigma2) "
+              "against the same option prices. Typically a few seconds...")
+        results["Nelder-Mead"] = tsm.calibrate_sofr_model_nelder_mead(
+            forward_rates, options, curve_real_months, min_expiry_months=args.min_expiry_months)
+
+    print("\nCalibration results:")
+    for label, (a, theta_bar, sigma1, sigma2, error) in results.items():
+        print(f"  {label:<12}  a={a:.5f}  theta_bar={theta_bar:.4%}  "
+              f"sigma1={sigma1:.5f}  sigma2={sigma2:.5f}  total_sq_error={error:.6f}")
+    if len(results) > 1:
+        print(f"  (module default a = {tsm.SHORT_RATE_REVERSION_SPEED} for reference)")
+
+    # Use the grid-search result (if it ran) for everything downstream --
+    # arbitrary but consistent choice between two methods that, per
+    # calibrate_sofr_model_nelder_mead()'s docstring, should usually agree
+    # closely; if they don't, that itself is worth a look.
+    a, theta_bar, sigma1, sigma2, error = results.get("grid search") or results["Nelder-Mead"]
+
+    calibration_options = tsm._filter_calibration_options(options, args.min_expiry_months)
+    price_fn = functools.partial(tsm.price_sofr_future_option_mc, a=a, theta_bar=theta_bar)
+    print(f"\nModel price vs. market price after calibration "
+          f"({'grid search' if 'grid search' in results else 'Nelder-Mead'}):")
+    for option in calibration_options:
         model_price = price_fn(forward_rates, option, sigma1, sigma2)
         print(f"  {option['type']:<4} strike {option['strike']:<9.4f} "
               f"expiry {option['expiry_months']}m -> "
@@ -109,15 +143,28 @@ def main():
         "for more."
     )
 
+    if args.mortgage_spread_bp is not None:
+        mortgage_spread = args.mortgage_spread_bp / 10000.0
+        print(f"\nUsing the supplied flat mortgage spread: {args.mortgage_spread_bp:.0f}bp.")
+    else:
+        print("\nFetching today's 30-year mortgage rate from FRED "
+              "(MORTGAGE30US) to compute the spread empirically...")
+        mortgage_spread, mortgage_rate, model_rate, rate_date = ms.compute_sofr_mortgage_spread(
+            forward_rates, a, theta_bar, credentials_path=credentials_path)
+        print(f"  FRED 30y mortgage rate ({rate_date}): {mortgage_rate:.3%}")
+        print(f"  Model's current ~10y rate:             {model_rate:.3%}")
+        print(f"  Implied spread:                        {mortgage_spread:.3%} "
+              f"({mortgage_spread * 10000:.0f}bp)")
+
     print(f"\nRunning a Monte Carlo mortgage-rate example off the calibrated "
           f"SOFR model ({args.mortgage_paths} paths, {args.mortgage_years}y "
-          f"horizon, +{args.mortgage_spread_bp:.0f}bp flat spread over the "
+          f"horizon, +{mortgage_spread * 10000:.0f}bp spread over the "
           f"model's ~10y rate)...")
     years, short_rate_paths, ten_year_paths, mortgage_paths = tsm.simulate_mortgage_rate_paths(
         forward_rates, sigma1, sigma2,
         horizon_years=args.mortgage_years,
         n_paths=args.mortgage_paths,
-        mortgage_spread=args.mortgage_spread_bp / 10000.0,
+        mortgage_spread=mortgage_spread,
         a=a, theta_bar=theta_bar)
 
     print("  Simulated 30y-mortgage-rate proxy, percentiles across paths:")

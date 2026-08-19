@@ -47,6 +47,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -63,6 +64,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import mortgage_spread as ms
 import sofr_market_data as smd
 import term_structure_model as tsm
 
@@ -97,26 +99,61 @@ class SofrFetchWorker(QThread):
 
 
 class SofrCalibrationWorker(QThread):
-    """Runs term_structure_model.calibrate_sofr_model() off the UI thread.
+    """Runs term_structure_model.calibrate_sofr_model() or
+    calibrate_sofr_model_nelder_mead() off the UI thread.
 
-    Unlike the plain sigma1/sigma2 calibration this replaced, calibrating
-    (a, sigma1, sigma2) together is a 3-D grid search and takes on the
-    order of ten to twenty seconds (see calibrate_sofr_model()'s
-    docstring for why that's still fast enough to just do directly) --
-    long enough that blocking the UI thread for it would be a bad idea."""
+    The grid search calibrates (a, sigma1, sigma2) together as a 3-D grid
+    search and takes on the order of ten to twenty seconds (see
+    calibrate_sofr_model()'s docstring for why that's still fast enough
+    to just do directly); Nelder-Mead is usually a few seconds but isn't
+    guaranteed to find as good a fit -- see
+    calibrate_sofr_model_nelder_mead()'s docstring for the trade-off.
+    Either way, long enough that blocking the UI thread would be a bad
+    idea."""
 
     finished_ok = pyqtSignal(object)  # (a, theta_bar, sigma1, sigma2, error)
     failed = pyqtSignal(str)
 
-    def __init__(self, forward_rates, options, curve_real_months, parent=None):
+    def __init__(self, forward_rates, options, curve_real_months, method,
+                 min_expiry_months=0, parent=None):
         super().__init__(parent)
         self.forward_rates = forward_rates
         self.options = options
         self.curve_real_months = curve_real_months
+        self.method = method  # "grid" or "nelder-mead"
+        self.min_expiry_months = min_expiry_months
+
+    def run(self):
+        calibrate = (tsm.calibrate_sofr_model if self.method == "grid"
+                     else tsm.calibrate_sofr_model_nelder_mead)
+        try:
+            result = calibrate(self.forward_rates, self.options, self.curve_real_months,
+                                min_expiry_months=self.min_expiry_months)
+        except Exception as e:
+            self.failed.emit(str(e))
+            return
+        self.finished_ok.emit(result)
+
+
+class MortgageRateFetchWorker(QThread):
+    """Fetches today's real 30-year mortgage rate from FRED and turns it
+    into a mortgage_spread over the model's current ~10y rate (see
+    mortgage_spread.compute_sofr_mortgage_spread) off the UI thread."""
+
+    finished_ok = pyqtSignal(object)  # (spread, mortgage_rate, model_rate, date)
+    failed = pyqtSignal(str)
+
+    def __init__(self, forward_rates, a, theta_bar, credentials_path, parent=None):
+        super().__init__(parent)
+        self.forward_rates = forward_rates
+        self.a = a
+        self.theta_bar = theta_bar
+        self.credentials_path = credentials_path
 
     def run(self):
         try:
-            result = tsm.calibrate_sofr_model(self.forward_rates, self.options, self.curve_real_months)
+            result = ms.compute_sofr_mortgage_spread(
+                self.forward_rates, self.a, self.theta_bar, credentials_path=self.credentials_path)
         except Exception as e:
             self.failed.emit(str(e))
             return
@@ -137,6 +174,7 @@ class TermStructureWindow(QMainWindow):
         self.sofr_theta_bar = None  # set together with sofr_a
         self._sofr_fetch_worker = None
         self._sofr_calibration_worker = None
+        self._mortgage_rate_worker = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -248,17 +286,43 @@ class TermStructureWindow(QMainWindow):
         self.sofr_fetch_button.clicked.connect(self._on_fetch_sofr_clicked)
         buttons_col.addWidget(self.sofr_fetch_button)
 
+        calibrate_row = QHBoxLayout()
         self.sofr_calibrate_button = QPushButton("Calibrate Vols to SOFR Options")
         self.sofr_calibrate_button.setToolTip(
-            "Grid-search (a, sigma1, sigma2) so the model's Monte Carlo "
-            "prices for the fetched SOFR options match their real market "
-            "prices (b is left fixed -- see calibrate_sofr_model()'s "
-            "docstring). Fills in sigma1/sigma2 above and stores the fitted "
-            "a internally. Takes roughly 10-20 seconds."
+            "Search (a, sigma1, sigma2) so the model's Monte Carlo prices "
+            "for the fetched SOFR options match their real market prices "
+            "(b is left fixed -- see calibrate_sofr_model()'s docstring). "
+            "Fills in sigma1/sigma2 above and stores the fitted a internally."
         )
         self.sofr_calibrate_button.setEnabled(False)
         self.sofr_calibrate_button.clicked.connect(self._on_calibrate_sofr_clicked)
-        buttons_col.addWidget(self.sofr_calibrate_button)
+        calibrate_row.addWidget(self.sofr_calibrate_button)
+
+        self.sofr_method_combo = QComboBox()
+        self.sofr_method_combo.addItem("Grid search (thorough, ~10-20s)", "grid")
+        self.sofr_method_combo.addItem("Nelder-Mead (fast, ~seconds)", "nelder-mead")
+        self.sofr_method_combo.setToolTip(
+            "Which calibration algorithm to run -- see calibrate_sofr_model_nelder_mead()'s "
+            "docstring for the trade-off. Run each once and compare the fitted a/sigma1/sigma2 "
+            "if you want to sanity-check the result."
+        )
+        calibrate_row.addWidget(self.sofr_method_combo)
+        buttons_col.addLayout(calibrate_row)
+
+        min_expiry_row = QHBoxLayout()
+        min_expiry_row.addWidget(QLabel("Exclude options with expiry ≤"))
+        self.sofr_min_expiry_spin = QSpinBox()
+        self.sofr_min_expiry_spin.setRange(0, 12)
+        self.sofr_min_expiry_spin.setValue(0)
+        self.sofr_min_expiry_spin.setToolTip(
+            "0 = use every fetched option. Set to 1 to drop 1-month-or-shorter "
+            "options from calibration -- useful for checking whether they're "
+            "behaving anomalously relative to the rest of the curve."
+        )
+        min_expiry_row.addWidget(self.sofr_min_expiry_spin)
+        min_expiry_row.addWidget(QLabel("months"))
+        min_expiry_row.addStretch()
+        buttons_col.addLayout(min_expiry_row)
         layout.addLayout(buttons_col)
 
         self.sofr_status_label = QLabel("Not fetched yet.")
@@ -322,14 +386,19 @@ class TermStructureWindow(QMainWindow):
             return
 
         curve_real_months = self.sofr_curve_futures[-1]['end_months']
+        method = self.sofr_method_combo.currentData()
+        min_expiry_months = self.sofr_min_expiry_spin.value()
         self.sofr_calibrate_button.setEnabled(False)
         self.sofr_fetch_button.setEnabled(False)
+        n_used = sum(1 for o in self.sofr_options if o['expiry_months'] > min_expiry_months)
+        method_label = self.sofr_method_combo.currentText()
         self.sofr_status_label.setText(
-            f"Calibrating (a, sigma1, sigma2) to {len(self.sofr_options)} SOFR option "
-            "quotes -- a 3-D grid search, roughly 10-20 seconds...")
+            f"Calibrating (a, sigma1, sigma2) to {n_used} of {len(self.sofr_options)} SOFR "
+            f"option quotes using {method_label}...")
 
         self._sofr_calibration_worker = SofrCalibrationWorker(
-            self.forward_rates, self.sofr_options, curve_real_months)
+            self.forward_rates, self.sofr_options, curve_real_months, method,
+            min_expiry_months=min_expiry_months)
         self._sofr_calibration_worker.finished_ok.connect(self._on_sofr_calibration_finished)
         self._sofr_calibration_worker.failed.connect(self._on_sofr_calibration_failed)
         self._sofr_calibration_worker.start()
@@ -343,8 +412,9 @@ class TermStructureWindow(QMainWindow):
         self.sofr_theta_bar = theta_bar
         self.sigma1_input.setValue(sigma1 * 100.0)
         self.sigma2_input.setValue(sigma2 * 100.0)
+        method_label = self.sofr_method_combo.currentText()
         self.sofr_status_label.setText(
-            f"Calibrated to {len(self.sofr_options)} SOFR options: a={a:.4f} "
+            f"Calibrated ({method_label}): a={a:.4f} "
             f"(module default {tsm.SHORT_RATE_REVERSION_SPEED}), sigma1={sigma1:.5f}, "
             f"sigma2={sigma2:.5f}, total squared pricing error={error:.5f}."
         )
@@ -354,6 +424,37 @@ class TermStructureWindow(QMainWindow):
         self.sofr_fetch_button.setEnabled(True)
         self.sofr_status_label.setText("Calibration failed -- see dialog.")
         QMessageBox.critical(self, "Calibration failed", message)
+
+    def _on_fetch_mortgage_rate_clicked(self):
+        if not self._require_curve():
+            return
+        if self._mortgage_rate_worker is not None and self._mortgage_rate_worker.isRunning():
+            return
+
+        a, theta_bar = self._current_a_theta_bar()
+        credentials_path = self.sofr_credentials_edit.text().strip() or None
+        self.mortgage_rate_fetch_button.setEnabled(False)
+        self.mortgage_rate_status_label.setText("Fetching today's mortgage rate from FRED...")
+
+        self._mortgage_rate_worker = MortgageRateFetchWorker(
+            self.forward_rates, a, theta_bar, credentials_path)
+        self._mortgage_rate_worker.finished_ok.connect(self._on_mortgage_rate_fetch_finished)
+        self._mortgage_rate_worker.failed.connect(self._on_mortgage_rate_fetch_failed)
+        self._mortgage_rate_worker.start()
+
+    def _on_mortgage_rate_fetch_finished(self, result):
+        spread, mortgage_rate, model_rate, rate_date = result
+        self.mortgage_rate_fetch_button.setEnabled(True)
+        self.mortgage_spread_spin.setValue(spread * 10000.0)
+        self.mortgage_rate_status_label.setText(
+            f"FRED 30y mortgage rate ({rate_date}): {mortgage_rate:.3%}. Active curve's "
+            f"current ~10y rate: {model_rate:.3%}. Spread set to {spread * 10000:.0f}bp."
+        )
+
+    def _on_mortgage_rate_fetch_failed(self, message):
+        self.mortgage_rate_fetch_button.setEnabled(True)
+        self.mortgage_rate_status_label.setText("Fetch failed -- see dialog.")
+        QMessageBox.critical(self, "Mortgage rate fetch failed", message)
 
     # ------------------------------------------------------------------
     # Tab 1: rate path chart
@@ -408,11 +509,46 @@ class TermStructureWindow(QMainWindow):
 
         layout.addLayout(controls)
 
+        mortgage_fetch_row = QHBoxLayout()
+        self.mortgage_rate_fetch_button = QPushButton("Get Current Mortgage Rate (FRED)")
+        self.mortgage_rate_fetch_button.setToolTip(
+            "Look up today's real 30-year mortgage rate (FRED series MORTGAGE30US, "
+            "Freddie Mac's weekly Primary Mortgage Market Survey) and set the spread "
+            "above to (that rate - the active curve's current ~10-year rate). See "
+            "mortgage_spread.py for why this uses FRED rather than TBA MBS futures "
+            "-- tastytrade doesn't offer any MBS/TBA/agency product at all."
+        )
+        self.mortgage_rate_fetch_button.clicked.connect(self._on_fetch_mortgage_rate_clicked)
+        mortgage_fetch_row.addWidget(self.mortgage_rate_fetch_button)
+        self.mortgage_rate_status_label = QLabel("")
+        self.mortgage_rate_status_label.setWordWrap(True)
+        mortgage_fetch_row.addWidget(self.mortgage_rate_status_label, stretch=1)
+        layout.addLayout(mortgage_fetch_row)
+
         self.figure = Figure(figsize=(6, 4))
         self.canvas = FigureCanvasQTAgg(self.figure)
         layout.addWidget(self.canvas)
 
         return tab
+
+    def _current_a_theta_bar(self):
+        """
+        (a, theta_bar) to use for the currently ACTIVE curve: the
+        calibrated SOFR fit if the SOFR curve is active and has been
+        calibrated (see calibrate_sofr_model()'s docstring for why the
+        module defaults would otherwise bias a SOFR-curve simulation),
+        otherwise the same defaults _simulate_two_factor_paths() would
+        fall back to on its own -- computed explicitly here so callers
+        that need a concrete theta_bar right now (e.g. the mortgage-rate
+        FRED lookup, which isn't itself a simulation call) don't have to
+        duplicate that fallback.
+        """
+        is_calibrated_sofr = self.curve_source == "SOFR (live, tastytrade)" and self.sofr_a is not None
+        if is_calibrated_sofr:
+            return self.sofr_a, self.sofr_theta_bar
+        a = tsm.SHORT_RATE_REVERSION_SPEED
+        theta_bar = float(np.mean(self.forward_rates[-24:]))
+        return a, theta_bar
 
     def _on_simulate_clicked(self):
         if not self._require_curve():
@@ -421,14 +557,7 @@ class TermStructureWindow(QMainWindow):
         n_paths = self.n_paths_spin.value()
         horizon_years = self.horizon_spin.value()
         sigma1, sigma2 = self._current_sigmas()
-        # (a, theta_bar) are only meaningful (and only set) once "Calibrate
-        # Vols to SOFR Options" has been run against the currently-active
-        # SOFR curve -- see calibrate_sofr_model()'s / _simulate_two_factor_
-        # paths()'s docstrings in term_structure_model.py for why the
-        # module defaults would otherwise bias a SOFR-curve simulation.
-        is_calibrated_sofr = self.curve_source == "SOFR (live, tastytrade)" and self.sofr_a is not None
-        a = self.sofr_a if is_calibrated_sofr else tsm.SHORT_RATE_REVERSION_SPEED
-        theta_bar = self.sofr_theta_bar if is_calibrated_sofr else None
+        a, theta_bar = self._current_a_theta_bar()
 
         # seed=None -> a fresh random draw every time the button is
         # clicked, so repeated clicks show different sample paths.

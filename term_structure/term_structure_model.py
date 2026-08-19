@@ -55,7 +55,8 @@ TOTAL_MONTHS = 30 * MONTHS_PER_YEAR   # 360 -- 30 years of monthly forwards
 
 
 # ---------------------------------------------------------------------------
-# Small numerical helper: bisection root-finder (replaces scipy.optimize)
+# Small numerical helpers: bisection root-finder and Nelder-Mead simplex
+# minimizer (both replace scipy.optimize)
 # ---------------------------------------------------------------------------
 
 def _bisection(f, lo, hi, tol=1e-8, max_iter=100):
@@ -71,6 +72,83 @@ def _bisection(f, lo, hi, tol=1e-8, max_iter=100):
         else:
             hi = mid
     return (lo + hi) / 2
+
+
+def _nelder_mead(objective, x0, step=0.5, max_iter=200, xtol=1e-6, ftol=1e-8,
+                  alpha=1.0, gamma=2.0, rho=0.5, shrink=0.5):
+    """
+    Minimal Nelder-Mead simplex minimizer of objective(x) -> scalar, where
+    x is a 1-D numpy array. Used by calibrate_sofr_model_nelder_mead() as
+    an alternative to calibrate_sofr_model()'s grid search -- see that
+    function's docstring for the trade-offs between the two.
+
+    METHOD: the textbook simplex algorithm -- track n+1 points (a
+    "simplex") for an n-dimensional problem; each iteration, reflect the
+    worst point through the centroid of the rest, and expand, contract,
+    or shrink the simplex depending on whether that improves things.
+    SIMPLIFICATION: this collapses the textbook's separate "inside" and
+    "outside" contraction cases into one (contract toward the centroid
+    whenever reflection doesn't beat the second-worst point) -- a common
+    simplification that's a little less thorough about which side to
+    contract toward, but simpler to trace by hand and works fine in
+    practice for a smooth, low-dimensional objective like this one.
+
+    x0: starting point. The initial simplex is x0 plus one point per
+        dimension, each nudged by `step` along that axis.
+
+    Returns (best_x, best_f).
+    """
+    n = len(x0)
+    simplex = [np.array(x0, dtype=float)]
+    for i in range(n):
+        point = np.array(x0, dtype=float)
+        point[i] += step
+        simplex.append(point)
+    f_values = [objective(p) for p in simplex]
+
+    for _ in range(max_iter):
+        order = np.argsort(f_values)
+        simplex = [simplex[i] for i in order]
+        f_values = [f_values[i] for i in order]
+
+        spread_x = max(np.max(np.abs(simplex[i] - simplex[0])) for i in range(1, n + 1))
+        spread_f = abs(f_values[-1] - f_values[0])
+        if spread_x < xtol and spread_f < ftol:
+            break
+
+        centroid = np.mean(simplex[:-1], axis=0)  # every point except the worst
+        worst, f_worst = simplex[-1], f_values[-1]
+        f_best, f_second_worst = f_values[0], f_values[-2]
+
+        reflected = centroid + alpha * (centroid - worst)
+        f_reflected = objective(reflected)
+
+        if f_best <= f_reflected < f_second_worst:
+            simplex[-1], f_values[-1] = reflected, f_reflected
+            continue
+
+        if f_reflected < f_best:
+            expanded = centroid + gamma * (reflected - centroid)
+            f_expanded = objective(expanded)
+            if f_expanded < f_reflected:
+                simplex[-1], f_values[-1] = expanded, f_expanded
+            else:
+                simplex[-1], f_values[-1] = reflected, f_reflected
+            continue
+
+        contracted = centroid + rho * (worst - centroid)
+        f_contracted = objective(contracted)
+        if f_contracted < f_worst:
+            simplex[-1], f_values[-1] = contracted, f_contracted
+            continue
+
+        best = simplex[0]
+        for i in range(1, n + 1):
+            simplex[i] = best + shrink * (simplex[i] - best)
+            f_values[i] = objective(simplex[i])
+
+    order = np.argsort(f_values)
+    return simplex[order[0]], f_values[order[0]]
 
 
 # ---------------------------------------------------------------------------
@@ -743,12 +821,32 @@ def calibrate_volatilities(forward_rates, options, n_paths=2000, seed=42,
     return best_sigma1, best_sigma2, best_error
 
 
+def _filter_calibration_options(options, min_expiry_months):
+    """
+    Drop options with expiry_months <= min_expiry_months (default 0, i.e.
+    no filtering). Shared by calibrate_sofr_model() and
+    calibrate_sofr_model_nelder_mead() -- see calibrate_sofr_model()'s
+    min_expiry_months docstring for why you might want this (e.g. to test
+    whether the shortest-dated options are behaving anomalously).
+    """
+    if min_expiry_months <= 0:
+        return options
+    filtered = [o for o in options if o['expiry_months'] > min_expiry_months]
+    if not filtered:
+        raise ValueError(
+            f"min_expiry_months={min_expiry_months} filtered out every option "
+            f"(all {len(options)} had expiry_months <= {min_expiry_months}) -- "
+            "nothing left to calibrate against.")
+    return filtered
+
+
 def calibrate_sofr_model(forward_rates, options, curve_real_months,
                           n_paths=2000, seed=42,
                           a_range=(0.05, 10.0),
                           sigma1_range=(0.0005, 0.03),
                           sigma2_range=(0.0005, 0.02),
-                          n_grid=7, n_rounds=4):
+                          n_grid=7, n_rounds=4,
+                          min_expiry_months=0):
     """
     Calibrate the SOFR model's (a, sigma1, sigma2) directly against real
     SOFR futures option prices -- the same "zooming grid search"
@@ -794,11 +892,21 @@ def calibrate_sofr_model(forward_rates, options, curve_real_months,
         _average_forward_rate_from_state() -- a fit landing at exactly 0
         would blow those up.
 
+    min_expiry_months: drop calibration options with expiry_months <= this
+        value before fitting (default 0 -- keep everything). Useful for
+        checking whether the shortest-dated (e.g. 1-month) options are
+        behaving anomalously relative to the rest of the curve -- run the
+        calibration once with min_expiry_months=0 and once with
+        min_expiry_months=1, and compare the fitted parameters and the
+        remaining options' pricing errors between the two runs.
+
     Returns (a, theta_bar, sigma1, sigma2, error) -- theta_bar is
     _fit_sofr_theta_bar()'s fit at the winning a; error is the total
     squared pricing error at the winning (a, sigma1, sigma2), same
-    definition calibrate_volatilities() returns.
+    definition calibrate_volatilities() returns (summed over whatever
+    options survived the min_expiry_months filter).
     """
+    options = _filter_calibration_options(options, min_expiry_months)
     lo_a, hi_a = a_range
     lo1, hi1 = sigma1_range
     lo2, hi2 = sigma2_range
@@ -834,6 +942,76 @@ def calibrate_sofr_model(forward_rates, options, curve_real_months,
         lo2, hi2 = max(1e-6, best_sigma2 - span2), best_sigma2 + span2
 
     return best_a, best_theta_bar, best_sigma1, best_sigma2, best_error
+
+
+def calibrate_sofr_model_nelder_mead(forward_rates, options, curve_real_months,
+                                      n_paths=2000, seed=42,
+                                      initial_a=SHORT_RATE_REVERSION_SPEED,
+                                      initial_sigma1=0.005, initial_sigma2=0.01,
+                                      initial_step=0.5, max_iter=200,
+                                      xtol=1e-6, ftol=1e-8,
+                                      min_expiry_months=0):
+    """
+    Calibrate the SOFR model's (a, sigma1, sigma2) directly against real
+    SOFR futures option prices -- the exact same objective
+    calibrate_sofr_model() grid-searches -- but using Nelder-Mead simplex
+    minimization (_nelder_mead()) instead. Kept ALONGSIDE
+    calibrate_sofr_model(), not as a replacement, specifically so the two
+    can be compared on the same options.
+
+    WHY HAVE BOTH: a grid search can't get fooled into a bad local
+    minimum -- it samples the whole box you give it, every round -- and
+    is trivial to reason about, but it only ever visits grid points and
+    its cost grows fast with resolution. Nelder-Mead can, in principle,
+    home in on a better minimum between grid points and typically needs
+    far fewer objective evaluations to converge. Its trade-off is the
+    usual one for any local search: no guarantee of finding the GLOBAL
+    minimum, and real sensitivity to the starting point
+    (initial_a/initial_sigma1/initial_sigma2) and initial_step -- there's
+    no "start from a wide net and zoom in" safety margin the way the grid
+    search has. Run both and compare their (a, sigma1, sigma2, error)
+    before trusting either one blindly; if they agree, that's good
+    evidence the fit is real and not an artifact of one method.
+
+    Internally parameterized as (log a, log sigma1, log sigma2) rather
+    than the raw values, so the unconstrained simplex search can never
+    wander into a <= 0 or a sigma <= 0 -- either nonsensical (negative
+    vol) or, for a, a blow-up in _sofr_futures_price_from_state()'s
+    1/a term. There's no equivalent of calibrate_sofr_model()'s
+    a_range/sigma1_range/sigma2_range bounds here; initial_a/
+    initial_sigma1/initial_sigma2 (and initial_step, which sets how far
+    the starting simplex spreads out in log-space) are the closest
+    equivalent -- they set where the search STARTS, not where it's
+    confined to stay.
+
+    curve_real_months / min_expiry_months: same meaning as in
+    calibrate_sofr_model().
+
+    Returns (a, theta_bar, sigma1, sigma2, error) -- same shape as
+    calibrate_sofr_model(), so callers can compare the two directly.
+    """
+    options = _filter_calibration_options(options, min_expiry_months)
+
+    def total_squared_error(a, sigma1, sigma2):
+        theta_bar = _fit_sofr_theta_bar(forward_rates, curve_real_months, a=a)
+        total = 0.0
+        for option in options:
+            model_price = price_sofr_future_option_mc(
+                forward_rates, option, sigma1, sigma2, n_paths, seed, a=a, theta_bar=theta_bar)
+            total += (model_price - option['market_price']) ** 2
+        return total
+
+    def objective(log_params):
+        a, sigma1, sigma2 = np.exp(log_params)
+        return total_squared_error(a, sigma1, sigma2)
+
+    x0 = np.log([initial_a, initial_sigma1, initial_sigma2])
+    best_log_params, best_error = _nelder_mead(
+        objective, x0, step=initial_step, max_iter=max_iter, xtol=xtol, ftol=ftol)
+
+    a, sigma1, sigma2 = np.exp(best_log_params)
+    theta_bar = _fit_sofr_theta_bar(forward_rates, curve_real_months, a=a)
+    return float(a), theta_bar, float(sigma1), float(sigma2), float(best_error)
 
 
 # ---------------------------------------------------------------------------
