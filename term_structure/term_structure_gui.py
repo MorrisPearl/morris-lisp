@@ -38,7 +38,6 @@ so runs on a QThread, the same pattern ../tasty_api/tastytrade_source.py
 uses, so the window doesn't freeze while it waits on the network.
 """
 
-import functools
 import sys
 
 import numpy as np
@@ -97,6 +96,33 @@ class SofrFetchWorker(QThread):
         self.finished_ok.emit(curve_futures, options)
 
 
+class SofrCalibrationWorker(QThread):
+    """Runs term_structure_model.calibrate_sofr_model() off the UI thread.
+
+    Unlike the plain sigma1/sigma2 calibration this replaced, calibrating
+    (a, sigma1, sigma2) together is a 3-D grid search and takes on the
+    order of ten to twenty seconds (see calibrate_sofr_model()'s
+    docstring for why that's still fast enough to just do directly) --
+    long enough that blocking the UI thread for it would be a bad idea."""
+
+    finished_ok = pyqtSignal(object)  # (a, theta_bar, sigma1, sigma2, error)
+    failed = pyqtSignal(str)
+
+    def __init__(self, forward_rates, options, curve_real_months, parent=None):
+        super().__init__(parent)
+        self.forward_rates = forward_rates
+        self.options = options
+        self.curve_real_months = curve_real_months
+
+    def run(self):
+        try:
+            result = tsm.calibrate_sofr_model(self.forward_rates, self.options, self.curve_real_months)
+        except Exception as e:
+            self.failed.emit(str(e))
+            return
+        self.finished_ok.emit(result)
+
+
 class TermStructureWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -107,8 +133,10 @@ class TermStructureWindow(QMainWindow):
         self.curve_source = None  # "Treasury (manual)" or "SOFR (live, tastytrade)"
         self.sofr_curve_futures = None  # set once a SOFR fetch succeeds
         self.sofr_options = None
-        self.sofr_theta_bar = None  # set once "Calibrate to SOFR Options" succeeds
+        self.sofr_a = None  # set once "Calibrate to SOFR Options" succeeds
+        self.sofr_theta_bar = None  # set together with sofr_a
         self._sofr_fetch_worker = None
+        self._sofr_calibration_worker = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -181,7 +209,8 @@ class TermStructureWindow(QMainWindow):
             return
         self.forward_rates = curve['forward_rates']
         self.curve_source = "Treasury (manual)"
-        self.sofr_theta_bar = None  # only meaningful for a SOFR-sourced curve
+        self.sofr_a = None  # only meaningful for a SOFR-sourced curve
+        self.sofr_theta_bar = None
         self.curve_status_label.setText(
             f"Active curve: Treasury (manual) -- 1-month forward: {self.forward_rates[0]:.3%}, "
             f"30-year forward: {self.forward_rates[-1]:.3%}"
@@ -221,9 +250,11 @@ class TermStructureWindow(QMainWindow):
 
         self.sofr_calibrate_button = QPushButton("Calibrate Vols to SOFR Options")
         self.sofr_calibrate_button.setToolTip(
-            "Solve for sigma1/sigma2 so the model's Monte Carlo prices for "
-            "the fetched SOFR options match their real market prices. Fills "
-            "in sigma1/sigma2 above."
+            "Grid-search (a, sigma1, sigma2) so the model's Monte Carlo "
+            "prices for the fetched SOFR options match their real market "
+            "prices (b is left fixed -- see calibrate_sofr_model()'s "
+            "docstring). Fills in sigma1/sigma2 above and stores the fitted "
+            "a internally. Takes roughly 10-20 seconds."
         )
         self.sofr_calibrate_button.setEnabled(False)
         self.sofr_calibrate_button.clicked.connect(self._on_calibrate_sofr_clicked)
@@ -253,7 +284,8 @@ class TermStructureWindow(QMainWindow):
         self.sofr_fetch_button.setEnabled(True)
         self.sofr_curve_futures = curve_futures
         self.sofr_options = options
-        self.sofr_theta_bar = None  # stale until "Calibrate" is run again
+        self.sofr_a = None  # stale until "Calibrate" is run again
+        self.sofr_theta_bar = None
 
         curve = tsm.bootstrap_sofr_curve(curve_futures)
         self.forward_rates = curve['forward_rates']
@@ -286,30 +318,42 @@ class TermStructureWindow(QMainWindow):
                 "'Fetch SOFR Curve' again to make the SOFR curve active "
                 "before calibrating to it.")
             return
-
-        theta_bar_months = self.sofr_curve_futures[-1]['end_months']
-        theta_bar = tsm._fit_sofr_theta_bar(self.forward_rates, theta_bar_months)
-        price_fn = functools.partial(tsm.price_sofr_future_option_mc, theta_bar_months=theta_bar_months)
-
-        self.sofr_status_label.setText(
-            f"Calibrating to {len(self.sofr_options)} SOFR option quotes "
-            "(a few seconds of Monte Carlo grid search)...")
-        QApplication.processEvents()  # let the status text above actually paint before the grid search blocks
-
-        try:
-            sigma1, sigma2, error = tsm.calibrate_volatilities(
-                self.forward_rates, self.sofr_options, price_fn=price_fn)
-        except Exception as exc:
-            QMessageBox.critical(self, "Calibration failed", str(exc))
+        if self._sofr_calibration_worker is not None and self._sofr_calibration_worker.isRunning():
             return
 
+        curve_real_months = self.sofr_curve_futures[-1]['end_months']
+        self.sofr_calibrate_button.setEnabled(False)
+        self.sofr_fetch_button.setEnabled(False)
+        self.sofr_status_label.setText(
+            f"Calibrating (a, sigma1, sigma2) to {len(self.sofr_options)} SOFR option "
+            "quotes -- a 3-D grid search, roughly 10-20 seconds...")
+
+        self._sofr_calibration_worker = SofrCalibrationWorker(
+            self.forward_rates, self.sofr_options, curve_real_months)
+        self._sofr_calibration_worker.finished_ok.connect(self._on_sofr_calibration_finished)
+        self._sofr_calibration_worker.failed.connect(self._on_sofr_calibration_failed)
+        self._sofr_calibration_worker.start()
+
+    def _on_sofr_calibration_finished(self, result):
+        a, theta_bar, sigma1, sigma2, error = result
+        self.sofr_calibrate_button.setEnabled(True)
+        self.sofr_fetch_button.setEnabled(True)
+
+        self.sofr_a = a
         self.sofr_theta_bar = theta_bar
         self.sigma1_input.setValue(sigma1 * 100.0)
         self.sigma2_input.setValue(sigma2 * 100.0)
         self.sofr_status_label.setText(
-            f"Calibrated to {len(self.sofr_options)} SOFR options: sigma1={sigma1:.5f}, "
+            f"Calibrated to {len(self.sofr_options)} SOFR options: a={a:.4f} "
+            f"(module default {tsm.SHORT_RATE_REVERSION_SPEED}), sigma1={sigma1:.5f}, "
             f"sigma2={sigma2:.5f}, total squared pricing error={error:.5f}."
         )
+
+    def _on_sofr_calibration_failed(self, message):
+        self.sofr_calibrate_button.setEnabled(True)
+        self.sofr_fetch_button.setEnabled(True)
+        self.sofr_status_label.setText("Calibration failed -- see dialog.")
+        QMessageBox.critical(self, "Calibration failed", message)
 
     # ------------------------------------------------------------------
     # Tab 1: rate path chart
@@ -377,12 +421,14 @@ class TermStructureWindow(QMainWindow):
         n_paths = self.n_paths_spin.value()
         horizon_years = self.horizon_spin.value()
         sigma1, sigma2 = self._current_sigmas()
-        # Only meaningful (and only set) once "Calibrate Vols to SOFR
-        # Options" has been run against the currently-active SOFR curve --
-        # see _simulate_two_factor_paths()'s docstring in
-        # term_structure_model.py for why the plain "last 2 years" default
-        # would otherwise bias a SOFR-curve simulation.
-        theta_bar = self.sofr_theta_bar if self.curve_source == "SOFR (live, tastytrade)" else None
+        # (a, theta_bar) are only meaningful (and only set) once "Calibrate
+        # Vols to SOFR Options" has been run against the currently-active
+        # SOFR curve -- see calibrate_sofr_model()'s / _simulate_two_factor_
+        # paths()'s docstrings in term_structure_model.py for why the
+        # module defaults would otherwise bias a SOFR-curve simulation.
+        is_calibrated_sofr = self.curve_source == "SOFR (live, tastytrade)" and self.sofr_a is not None
+        a = self.sofr_a if is_calibrated_sofr else tsm.SHORT_RATE_REVERSION_SPEED
+        theta_bar = self.sofr_theta_bar if is_calibrated_sofr else None
 
         # seed=None -> a fresh random draw every time the button is
         # clicked, so repeated clicks show different sample paths.
@@ -390,12 +436,12 @@ class TermStructureWindow(QMainWindow):
             spread = self.mortgage_spread_spin.value() / 10000.0  # bp -> decimal
             years, short_rate_paths, ten_year_paths, values = tsm.simulate_mortgage_rate_paths(
                 self.forward_rates, sigma1, sigma2, horizon_years, n_paths,
-                mortgage_spread=spread, seed=None, theta_bar=theta_bar)
+                mortgage_spread=spread, seed=None, a=a, theta_bar=theta_bar)
             title = f"Simulated mortgage-rate paths (~10y + {self.mortgage_spread_spin.value():.0f}bp)"
         else:
             years, short_rate_paths, ten_year_paths = tsm.simulate_rate_paths(
                 self.forward_rates, sigma1, sigma2, horizon_years, n_paths, seed=None,
-                theta_bar=theta_bar)
+                a=a, theta_bar=theta_bar)
             if self.treasury_rate_radio.isChecked():
                 values = ten_year_paths
                 title = "Simulated Treasury rate paths (~10y, approximate)"

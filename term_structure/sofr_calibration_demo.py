@@ -4,11 +4,12 @@ sofr_calibration_demo.py
 ==========================
 End-to-end demo: fetch real, exchange-traded CME 3-Month SOFR (SR3)
 futures and a few options on those futures via tastytrade, bootstrap a
-SOFR forward curve, then calibrate the two-factor model's volatility
-parameters (sigma1, sigma2) so the calibration options price correctly
-under Monte Carlo -- then use the calibrated model to run a small Monte
-Carlo mortgage-rate example (SOFR curve -> approximate 10y rate + a flat
-spread assumption -> a proxy 30y mortgage rate, per Monte Carlo path).
+SOFR forward curve, then calibrate the model -- (a, sigma1, sigma2), with
+b left fixed; see term_structure_model.calibrate_sofr_model()'s docstring
+for why -- so the calibration options price correctly under Monte Carlo.
+Then use the calibrated model to run a small Monte Carlo mortgage-rate
+example (SOFR curve -> approximate 10y rate + a flat spread assumption ->
+a proxy 30y mortgage rate, per Monte Carlo path).
 
 Run:
     python3 sofr_calibration_demo.py [path/to/credentials.json]
@@ -66,24 +67,25 @@ def main():
           f"1-year forward: {forward_rates[11]:.4%}   "
           f"2-year forward: {forward_rates[23]:.4%}")
 
-    # Fit the model's long-run mean-reversion anchor (theta_bar) to the
-    # REAL (non-extrapolated) part of the curve only -- see
-    # term_structure_model._fit_sofr_theta_bar()'s docstring for why this
-    # matters for near-dated SOFR options specifically. Bound here via
-    # functools.partial since calibrate_volatilities() calls price_fn
-    # with a fixed (forward_rates, option, sigma1, sigma2, n_paths, seed)
-    # signature.
-    theta_bar_months = curve_futures[-1]['end_months']
-    theta_bar = tsm._fit_sofr_theta_bar(forward_rates, theta_bar_months)
-    price_fn = functools.partial(
-        tsm.price_sofr_future_option_mc, theta_bar_months=theta_bar_months)
-
-    print("\nCalibrating sigma1 (short-rate vol) and sigma2 (mean-reversion "
-          "level vol) to the fetched SOFR futures option prices...")
-    sigma1, sigma2, error = tsm.calibrate_volatilities(
-        forward_rates, options, price_fn=price_fn)
-    print(f"  fitted sigma1 = {sigma1:.5f}")
-    print(f"  fitted sigma2 = {sigma2:.5f}")
+    # curve_real_months: how many months of forward_rates are the REAL
+    # (non-extrapolated) part of the curve -- see calibrate_sofr_model()'s
+    # docstring. It grid-searches (a, sigma1, sigma2) directly against the
+    # option prices (refitting theta_bar in closed form at each candidate
+    # a) -- b is left fixed. This takes ten to twenty seconds, not the
+    # sub-second the plain sigma1/sigma2 calibration used to take, since
+    # it's now a 3-D grid search instead of a 2-D one.
+    curve_real_months = curve_futures[-1]['end_months']
+    print("\nCalibrating the SOFR model: grid-searching (a, sigma1, sigma2) "
+          "directly against the fetched option prices (b is left fixed -- "
+          "see calibrate_sofr_model()'s docstring). This takes a bit "
+          "longer than before (~10-20s) since it's now a 3-D search...")
+    a, theta_bar, sigma1, sigma2, error = tsm.calibrate_sofr_model(
+        forward_rates, options, curve_real_months)
+    price_fn = functools.partial(tsm.price_sofr_future_option_mc, a=a, theta_bar=theta_bar)
+    print(f"  fitted a         = {a:.5f}   (module default: {tsm.SHORT_RATE_REVERSION_SPEED})")
+    print(f"  fitted theta_bar = {theta_bar:.4%}")
+    print(f"  fitted sigma1    = {sigma1:.5f}")
+    print(f"  fitted sigma2    = {sigma2:.5f}")
     print(f"  total squared pricing error = {error:.6f}")
 
     print("\nModel price vs. market price after calibration:")
@@ -116,7 +118,7 @@ def main():
         horizon_years=args.mortgage_years,
         n_paths=args.mortgage_paths,
         mortgage_spread=args.mortgage_spread_bp / 10000.0,
-        theta_bar=theta_bar)
+        a=a, theta_bar=theta_bar)
 
     print("  Simulated 30y-mortgage-rate proxy, percentiles across paths:")
     for y in [yy for yy in (1, 2, 3, 5, 10) if yy <= args.mortgage_years]:
