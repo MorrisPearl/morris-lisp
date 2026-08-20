@@ -20,9 +20,24 @@ Supports:
     `swap!`, `unless`, ...) that a plain function can't, because a
     function's arguments are always evaluated before it ever runs. Macro
     calls in tail position keep the same constant-stack-space guarantee
-    ordinary tail calls get (see expand_macro() / the note below); macro
-    parameter lists are fixed-arity, like every other procedure/macro in
-    this interpreter -- there's no rest-parameter/variadic support (yet)
+    ordinary tail calls get (see expand_macro() / the note below)
+  - variadic procedures AND macros: a `lambda`/`define`/`defmacro`
+    parameter list can be a proper list (a b c) (fixed arity, as before),
+    a DOTTED list (a b . rest) (a and b fixed, rest collects every
+    further argument into a list), or a single bare symbol not wrapped in
+    parens at all, e.g. (lambda args ...) (every argument collected, no
+    fixed ones) -- see parse_params(). The reader supports the dotted-pair
+    syntax `(a . b)` generally, not just in parameter lists, so it also
+    works as an ordinary way to build an improper cons cell from source
+  - metaprogramming builtins: (eval expr) evaluates a piece of Lisp code
+    (data -- e.g. built with quasiquote, or read from a string/file) in
+    the top-level environment; (apply f arg1 ... args) calls f with
+    arg1... as individual arguments followed by the elements of the
+    final list argument `args`; (gensym ["prefix"]) returns a symbol
+    guaranteed not to collide with anything in the program, for writing
+    your own hygienic macros by hand; (load "path.lsp") reads and
+    evaluates a file's top-level forms into the current environment,
+    exactly as if you'd typed them yourself
   - built-in arithmetic, comparison, list, string, date, and vector
     procedures (including vectors-map, the multi-vector generalization
     of vector-map: apply a procedure across corresponding elements of
@@ -86,12 +101,12 @@ to hundreds of thousands of iterations.
 CAVEAT: the constant-stack-space guarantee only covers ordinary
 `(f arg...)` application syntax (which macro calls desugar into, via
 their expansion) -- not calls made INDIRECTLY through a higher-order
-builtin. `(apply f args)`, a callback passed to `map`/`filter`/`reduce`/
-`vector-map`/`vectors-map`, or a macro transformer's OWN body while it's
-still being run to PRODUCE an expansion (see `expand_macro`) all call
-back into `seval` via an ordinary (recursive) Python function call (see
-`apply_proc`), so those paths are still bounded by Python's own
-recursion limit. This is a real, narrower limitation, not an oversight:
+builtin. `(apply f args)`, `(eval expr)`, `(load "file.lsp")`, a callback
+passed to `map`/`filter`/`reduce`/`vector-map`/`vectors-map`, or a macro
+transformer's OWN body while it's still being run to PRODUCE an expansion
+(see `expand_macro`) all call back into `seval` via an ordinary
+(recursive) Python function call (see `apply_proc`), so those paths are
+still bounded by Python's own recursion limit. This is a real, narrower limitation, not an oversight:
 trampolining those too would mean turning them into resumable coroutines
 integrated with the same control stack, a much larger change than the
 immediate need called for. In practice it rarely matters for macros
@@ -108,6 +123,21 @@ builtins draws a chart in the Chart tab. PyQt6 is only imported when the
 GUI is actually launched, so the console/batch mode below works fine
 without it; matplotlib alone (no PyQt6 needed) is enough for save-chart to
 work even in console/batch mode.
+
+STARTUP INIT FILE: every fresh environment -- batch mode, the console
+REPL, and the GUI alike -- automatically loads DEFAULT_INIT_FILE
+(init.lsp, next to this script; override with the LISP_INIT_FILE
+environment variable) before doing anything else, via load_init_file().
+It's entirely optional: a missing init file is silently skipped, so this
+doesn't change behavior for anyone who doesn't have one. Put your own
+always-available definitions/macros there instead of re-(load)-ing them
+by hand in every script.
+
+OUTPUT REDIRECTION: (redirect-output "path.txt" [append?]) sends
+everything display/newline/print write to a file instead of the console/
+GUI log, until (reset-output) switches back -- see those builtins in
+make_global_env(). Useful for a script that wants to log its own output
+to disk (including from the init file, if you want every session logged).
 """
 
 import sys
@@ -199,10 +229,18 @@ def _date_from_pydate(pydate):
 
 
 class Procedure:
-    """A user-defined function (closure) created by `lambda` or `define`."""
+    """A user-defined function (closure) created by `lambda` or `define`.
 
-    def __init__(self, params, body, env):
-        self.params = params      # list of Symbol parameter names
+    rest_param (a Symbol, or None): if set, this procedure is variadic --
+    it accepts any number of arguments beyond its fixed `params`, and
+    they're collected into a list bound to rest_param. See parse_params()
+    (which builds params/rest_param from source syntax like
+    `(a b . rest)` or a bare `args`) and Env.__init__'s rest_param
+    handling (which does the actual binding at call time)."""
+
+    def __init__(self, params, body, env, rest_param=None):
+        self.params = params      # list of Symbol FIXED parameter names
+        self.rest_param = rest_param
         self.body = body          # list of body expressions
         self.env = env            # environment in which it was defined
 
@@ -212,17 +250,20 @@ class Procedure:
 
 class Macro:
     """A macro transformer created by `defmacro`. Structurally identical
-    to a Procedure (params/body/env), but invoked completely differently:
-    a Procedure call evaluates its arguments first and binds the results;
-    a Macro call binds its parameters to the CALL SITE's argument
-    expressions UNEVALUATED (as plain source-code data -- Symbols, Pairs,
-    literals), runs its body to compute a new expression (the
-    "expansion"), and that expansion is evaluated in place of the
+    to a Procedure (params/rest_param/body/env), but invoked completely
+    differently: a Procedure call evaluates its arguments first and binds
+    the results; a Macro call binds its parameters to the CALL SITE's
+    argument expressions UNEVALUATED (as plain source-code data --
+    Symbols, Pairs, literals), runs its body to compute a new expression
+    (the "expansion"), and that expansion is evaluated in place of the
     original call, in the CALLING environment. See expand_macro() and the
-    macro-call check in seval()."""
+    macro-call check in seval(). rest_param works the same way it does
+    for a Procedure -- see that class's docstring -- except what it
+    collects is unevaluated expressions rather than values."""
 
-    def __init__(self, params, body, env):
+    def __init__(self, params, body, env, rest_param=None):
         self.params = params
+        self.rest_param = rest_param
         self.body = body
         self.env = env
 
@@ -310,12 +351,20 @@ def read_from(tokens):
     token = tokens.pop(0)
     if token == "(":
         items = []
+        tail = NIL
         while tokens and tokens[0] != ")":
+            if tokens[0] == ".":
+                tokens.pop(0)  # consume '.'
+                tail = read_from(tokens)   # the dotted tail -- e.g. (a b . c)
+                break
             items.append(read_from(tokens))
         if not tokens:
             raise LispError("missing ')'")
         tokens.pop(0)  # discard ")"
-        return list_to_pairs(items)
+        result = tail
+        for item in reversed(items):
+            result = Pair(item, result)
+        return result
     elif token == "#(":
         items = []
         while tokens and tokens[0] != ")":
@@ -376,6 +425,31 @@ def pairs_to_list(p):
     return items
 
 
+def parse_params(params_expr):
+    """Parse a lambda/define/defmacro parameter spec into (fixed_names,
+    rest_name_or_None) -- used to give Procedure and Macro variadic
+    ("rest parameter") support. params_expr may be:
+      - a proper list, e.g. (a b c) -- fixed arity, no rest parameter;
+        rest_name is None
+      - an improper (dotted) list, e.g. (a b . rest) -- a and b are
+        ordinary fixed parameters; rest is bound to a LIST of every
+        additional argument beyond the fixed ones (possibly empty)
+      - a single bare symbol not wrapped in parens at all, e.g. the
+        `args` in (lambda args body) or (define (f . args) body) -- every
+        argument, with no fixed ones at all, is collected into that name
+    See Env.__init__'s rest_param handling for how the actual binding at
+    call time works.
+    """
+    if isinstance(params_expr, Symbol):
+        return [], params_expr
+    fixed = []
+    p = params_expr
+    while isinstance(p, Pair):
+        fixed.append(p.car)
+        p = p.cdr
+    return fixed, (p if p is not NIL else None)
+
+
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
@@ -386,16 +460,31 @@ class Env(dict):
     (This chain follows *lexical nesting*, not call/recursion depth, so it
     stays shallow even for deeply recursive Lisp programs.)"""
 
-    def __init__(self, params=(), args=(), outer=None):
+    def __init__(self, params=(), args=(), outer=None, rest_param=None):
+        """params: the FIXED parameter names (never includes the rest
+        parameter, if any). rest_param: None for an ordinary fixed-arity
+        call (the original, unchanged behavior -- args must match params
+        exactly in count), or a Symbol to bind to a list of every
+        argument beyond the fixed ones (possibly empty) -- see
+        parse_params(), which is what Procedure/Macro construction uses
+        to split a parameter spec into these two pieces."""
         super().__init__()
         self.outer = outer
         params = list(params)
         args = list(args)
-        if len(params) != len(args):
-            raise LispError(
-                "expected %d argument(s), got %d" % (len(params), len(args)))
-        for p, a in zip(params, args):
-            self[p] = a
+        if rest_param is None:
+            if len(params) != len(args):
+                raise LispError(
+                    "expected %d argument(s), got %d" % (len(params), len(args)))
+            for p, a in zip(params, args):
+                self[p] = a
+        else:
+            if len(args) < len(params):
+                raise LispError(
+                    "expected at least %d argument(s), got %d" % (len(params), len(args)))
+            for p, a in zip(params, args):
+                self[p] = a
+            self[rest_param] = list_to_pairs(args[len(params):])
 
     def find(self, name):
         """Return the innermost Env in which `name` is bound."""
@@ -546,11 +635,17 @@ def desugar_let_star(args):
 _gensym_counter = [0]
 
 
-def gensym(base):
+def gensym(base="g"):
     """A symbol that can't collide with any name the user actually typed
-    -- used by desugar_dolist() for its internal loop-helper name and
-    loop-state parameter, so a `dolist` body that happens to use a
-    similarly-named variable of its own can't be shadowed by accident."""
+    -- used internally by desugar_dolist() for its loop-helper name and
+    loop-state parameter (so a `dolist` body that happens to use a
+    similarly-named variable of its own can't be shadowed by accident),
+    and exposed directly to Lisp code as the `gensym` builtin -- the
+    standard tool for writing YOUR OWN hygienic macros by hand (build a
+    fresh, guaranteed-unique name for anything your macro's expansion
+    needs to bind internally, e.g. a temporary in a generated `let`, so
+    it can't capture a variable of the same name from the macro's
+    caller)."""
     _gensym_counter[0] += 1
     return Symbol("%%%s-%d" % (base, _gensym_counter[0]))
 
@@ -704,7 +799,7 @@ def expand_macro(macro, arg_exprs):
     tail-call-optimized treatment -- including a proper tail call if the
     macro expands to one (e.g. a macro-defined looping construct).
     """
-    new_env = Env(macro.params, arg_exprs, macro.env)
+    new_env = Env(macro.params, arg_exprs, macro.env, rest_param=macro.rest_param)
     return eval_body(macro.body, new_env)
 
 
@@ -719,11 +814,13 @@ def eval_special_form(op, args, env, control_stack, value_stack):
 
     elif op == "defmacro":
         # (defmacro name (params...) body...) -- name and params are
-        # never evaluated, exactly like `lambda`'s parameter list.
+        # never evaluated, exactly like `lambda`'s parameter list. params
+        # may be fixed (a b), dotted/variadic (a b . rest), or a single
+        # bare symbol (fully variadic) -- see parse_params().
         name = args.car
-        params = pairs_to_list(args.cdr.car)
+        fixed, rest = parse_params(args.cdr.car)
         body = pairs_to_list(args.cdr.cdr)
-        env[name] = Macro(params, body, env)
+        env[name] = Macro(fixed, body, env, rest_param=rest)
         value_stack.append(name)
 
     elif op == "if":
@@ -736,11 +833,13 @@ def eval_special_form(op, args, env, control_stack, value_stack):
     elif op == "define":
         target = args.car
         if isinstance(target, Pair):
-            # (define (name . params) body...) -- no evaluation needed
+            # (define (name params...) body...) -- no evaluation needed.
+            # params may be fixed, dotted/variadic, or (name . rest) for
+            # a fully-variadic function -- see parse_params().
             name = target.car
-            params = pairs_to_list(target.cdr)
+            fixed, rest = parse_params(target.cdr)
             body = pairs_to_list(args.cdr)
-            env[name] = Procedure(params, body, env)
+            env[name] = Procedure(fixed, body, env, rest_param=rest)
             value_stack.append(name)
         else:
             name = target
@@ -753,9 +852,11 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         control_stack.append(('EVAL', args.cdr.car, env))
 
     elif op == "lambda":
-        params = pairs_to_list(args.car)
+        # params may be fixed (a b), dotted/variadic (a b . rest), or a
+        # single bare symbol (fully variadic) -- see parse_params().
+        fixed, rest = parse_params(args.car)
         body = pairs_to_list(args.cdr)
-        value_stack.append(Procedure(params, body, env))
+        value_stack.append(Procedure(fixed, body, env, rest_param=rest))
 
     elif op == "begin":
         push_sequence(pairs_to_list(args), env, control_stack, value_stack)
@@ -832,7 +933,7 @@ def seval(expr, env):
             collected.reverse()
             proc, arg_values = collected[0], collected[1:]
             if isinstance(proc, Procedure):
-                new_env = Env(proc.params, arg_values, proc.env)
+                new_env = Env(proc.params, arg_values, proc.env, rest_param=proc.rest_param)
                 push_sequence(proc.body, new_env, control_stack, value_stack)
             elif callable(proc):
                 value_stack.append(proc(*arg_values))
@@ -912,7 +1013,7 @@ def apply_proc(proc, args):
     built-in Python callable -- with a list of already-evaluated args.
     Used by higher-order builtins (map, filter, reduce, apply, vector-map)."""
     if isinstance(proc, Procedure):
-        new_env = Env(proc.params, args, proc.env)
+        new_env = Env(proc.params, args, proc.env, rest_param=proc.rest_param)
         return eval_body(proc.body, new_env)
     if callable(proc):
         return proc(*args)
@@ -2353,6 +2454,19 @@ def make_global_env(output=None, plot=None):
     """
     if output is None:
         output = lambda s: print(s, end="")
+
+    # A mutable "current sink" -- output_state["fn"] is what display/
+    # newline/print (and the default no-GUI plot fallback below) actually
+    # write to. Starts out equal to `output` (the console/GUI callback
+    # this function was given), but the redirect-output/reset-output
+    # builtins can retarget it to a file and back, without needing to
+    # rebuild the whole environment. See those builtins, in the I/O
+    # section below, for why it's structured this way.
+    output_state = {"fn": output, "file": None}
+
+    def emit(s):
+        output_state["fn"](s)
+
     if plot is None:
         def plot(spec):
             lines = ["[chart] %s" % spec["title"]]
@@ -2364,7 +2478,7 @@ def make_global_env(output=None, plot=None):
                 lines.append(
                     "  %s regression on %s: slope=%.6g intercept=%.6g"
                     % (r["kind"], r["label"], r["model"].coefficients[0], r["model"].intercept))
-            output("\n".join(lines) + "\n")
+            emit("\n".join(lines) + "\n")
 
     env = Env()
 
@@ -2423,6 +2537,8 @@ def make_global_env(output=None, plot=None):
         "min": lambda *a: min(a),
         "max": lambda *a: max(a),
         "sqrt": math.sqrt,
+        "pow": math.pow,
+        "log": math.log,
         "expt": lambda a, b: a ** b,
         "floor": lambda x: math.floor(x),
         "ceiling": lambda x: math.ceil(x),
@@ -2504,7 +2620,48 @@ def make_global_env(output=None, plot=None):
         "map": lisp_map,
         "filter": lisp_filter,
         "reduce": lisp_reduce,
-        "apply": lambda f, lst: apply_proc(f, pairs_to_list(lst)),
+    })
+
+    # ---- metaprogramming: eval, apply, gensym, load ----
+    def lisp_apply(f, *args):
+        """(apply f arg1 arg2 ... args) -- call f with arg1, arg2, ...
+        as individual arguments, followed by the ELEMENTS of the final
+        argument `args` (a list). (apply f lst) -- just the final list,
+        no individual leading arguments -- is the common special case."""
+        if not args:
+            raise LispError("apply: expected at least 2 arguments (a procedure and a list)")
+        *leading, last = args
+        return apply_proc(f, list(leading) + pairs_to_list(last))
+
+    def lisp_eval(expr):
+        """(eval expr) -- evaluate a piece of Lisp code (as DATA -- e.g.
+        something built with quasiquote/list/cons, or read from a string
+        or file) in the top-level global environment. A macro's own
+        expansion is already evaluated automatically by the evaluator;
+        this is for the separate case of constructing or obtaining an
+        expression some other way and wanting to run it directly."""
+        return seval(expr, env)
+
+    def lisp_gensym(*base):
+        """(gensym ["prefix"]) -- a symbol guaranteed not to collide with
+        any name in the program, for writing your own hygienic macros by
+        hand (see gensym()'s docstring)."""
+        return gensym(str(base[0]) if base else "g")
+
+    def lisp_load(path):
+        """(load "path/to/file.lsp") -- read and evaluate every top-level
+        form in a file, in this SAME global environment, so its
+        definitions become available afterward exactly as if you'd typed
+        them yourself. Uses the same run_file() the interpreter's own
+        startup init-file loading does (see load_init_file)."""
+        run_file(str(path), env)
+        return NIL
+
+    env.update({
+        "apply": lisp_apply,
+        "eval": lisp_eval,
+        "gensym": lisp_gensym,
+        "load": lisp_load,
     })
 
     # ---- strings ----
@@ -2793,21 +2950,54 @@ def make_global_env(output=None, plot=None):
 
     # ---- I/O ----
     def lisp_display(x):
-        output(to_display_string(x))
+        emit(to_display_string(x))
         return NIL
 
     def lisp_newline():
-        output("\n")
+        emit("\n")
         return NIL
 
     def lisp_print(x):
-        output(to_display_string(x) + "\n")
+        emit(to_display_string(x) + "\n")
+        return NIL
+
+    def redirect_output(path, append=False):
+        """(redirect-output "path.txt" [append?]) -- send everything
+        display/newline/print (and the console/no-GUI default plot
+        summary) write from now on to the given file instead of the
+        console/GUI log, until (reset-output) is called. Opens in
+        overwrite mode by default; pass #t for append. Closes whatever
+        file a PRIOR redirect-output call opened first, so redirecting
+        twice in a row doesn't leak an open file handle."""
+        old_file = output_state["file"]
+        if old_file is not None:
+            old_file.close()
+        f = open(str(path), "a" if is_true(append) else "w")
+
+        def write_to_file(s):
+            f.write(s)
+            f.flush()  # so output shows up even if the script errors out before reset-output/exit
+
+        output_state["fn"] = write_to_file
+        output_state["file"] = f
+        return NIL
+
+    def reset_output():
+        """(reset-output) -- undo redirect-output: close its file (if
+        one is open) and go back to writing to the console/GUI log."""
+        old_file = output_state["file"]
+        if old_file is not None:
+            old_file.close()
+        output_state["fn"] = output
+        output_state["file"] = None
         return NIL
 
     env.update({
         "display": lisp_display,
         "newline": lisp_newline,
         "print": lisp_print,
+        "redirect-output": redirect_output,
+        "reset-output": reset_output,
     })
 
     return env
@@ -2880,6 +3070,34 @@ def run_file(path, env):
         text = f.read()
     for expr in parse(text):
         seval(expr, env)
+
+
+# Loaded automatically into every fresh environment at startup (batch
+# mode, the console REPL, and the GUI) -- see load_init_file(). Defaults
+# to init.lsp next to this script, so it's easy to find; override with
+# the LISP_INIT_FILE environment variable if you'd rather keep it
+# somewhere else (e.g. a dotfile in your home directory).
+DEFAULT_INIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "init.lsp")
+
+
+def load_init_file(env, path=None):
+    """Load the interpreter's init file into env, if it exists -- called
+    once per fresh environment, right after make_global_env(), before any
+    user script/REPL input/GUI interaction. Silently does nothing if the
+    file isn't there (a fresh checkout with no init.lsp behaves exactly
+    as if this function didn't exist), the same way a missing .bashrc
+    doesn't stop a shell from starting. A LispError while loading it IS
+    reported (to stderr) but doesn't prevent startup -- same reasoning:
+    a broken init file shouldn't lock you out of the interpreter you'd
+    need to open it and fix it.
+    """
+    path = path or os.environ.get("LISP_INIT_FILE", DEFAULT_INIT_FILE)
+    if not path or not os.path.exists(path):
+        return
+    try:
+        run_file(path, env)
+    except LispError as e:
+        sys.stderr.write("warning: error loading init file %r: %s\n" % (path, e))
 
 
 def repl(env):
@@ -3064,6 +3282,7 @@ if _PYQT_AVAILABLE:
             self.resize(1150, 620)
 
             self.env = make_global_env(output=self._write_output, plot=self._on_plot)
+            load_init_file(self.env)
 
             central = QWidget()
             self.setCentralWidget(central)
@@ -3174,7 +3393,9 @@ def launch_gui():
     if not _PYQT_AVAILABLE:
         print("PyQt6 and matplotlib are required for the GUI:\n\n    pip install PyQt6 matplotlib\n")
         print("Falling back to the console REPL.\n")
-        repl(make_global_env())
+        env = make_global_env()
+        load_init_file(env)
+        repl(env)
         return
     app = QApplication(sys.argv)
     window = LispMainWindow()
@@ -3186,6 +3407,7 @@ def main():
     if len(sys.argv) > 1:
         # Batch mode: run a script file from the console, no GUI needed.
         env = make_global_env()
+        load_init_file(env)
         run_file(sys.argv[1], env)
     else:
         # Default: launch the PyQt6 GUI.

@@ -13,6 +13,13 @@ FRED economic-data access, plus an optional PyQt6 GUI.
   that file in batch mode (no GUI). `save-chart` still works in this mode
   as long as matplotlib is installed (PyQt6 is not required for it).
 
+Every fresh environment — batch mode, the console REPL, and the GUI alike —
+automatically loads `init.lsp` (next to `lisp_interpreter.py`; override with
+the `LISP_INIT_FILE` environment variable) before doing anything else, if it
+exists. It's entirely optional — a missing init file is silently skipped.
+Put your own always-available definitions/macros there instead of
+`(load ...)`-ing them by hand in every script.
+
 ## Syntax
 
 | Type | Example | Notes |
@@ -23,6 +30,7 @@ FRED economic-data access, plus an optional PyQt6 GUI.
 | Boolean | `#t`, `#f` | Everything except `#f` counts as true |
 | Symbol | `foo`, `list->vector` | Identifiers |
 | Pair / list | `(1 2 3)`, `'(a b c)` | Built from cons cells; `()` is the empty list |
+| Dotted pair | `(1 . 2)`, `(a b . c)` | An IMPROPER list — `.` before the last element sets the final cdr directly instead of `()`. Mainly used for variadic parameter lists (see below), but works anywhere |
 | Quasiquote | `` `(a ,b ,@c) `` | Like `quote`, but `,x` splices in the value of `x` and `,@x` splices in the elements of list `x` — see Macros below |
 | Vector | `#(1 2 3)`, `(vector 1 2 3)` | Fixed-size, holds numbers and/or dates |
 | Date | `(date 2024 3 15)` | Prints as `2024-03-15` |
@@ -59,6 +67,27 @@ you're looping for effect and don't want a collected result vector/list.
 (dolist (x (list 1 2 3 4 5)) (set! total (+ total x)))
 total                          ; => 15
 ```
+
+### Variadic parameters
+
+A `lambda`/`define`/`defmacro` parameter list can take three shapes:
+
+| Form | Example | Meaning |
+|---|---|---|
+| Proper list | `(a b c)` | Fixed arity — exactly 3 arguments, as always |
+| Dotted list | `(a b . rest)` | `a` and `b` are fixed; `rest` collects every additional argument into a list (possibly empty) |
+| Bare symbol | `args` (no parens at all) | Every argument, with no fixed ones, collected into `args` |
+
+```lisp
+(define (f a b . rest) (list a b rest))
+(f 1 2 3 4 5)                  ; => (1 2 (3 4 5))
+
+(define sum-all (lambda nums (apply + nums)))
+(sum-all 1 2 3 4)              ; => 10
+```
+
+This works identically for `defmacro` — a macro can take a variable number
+of arguments the same way a function can.
 
 ### Macros
 
@@ -98,11 +127,24 @@ literal data with a few computed pieces."
 (list p q)                     ; => (2 1)
 ```
 
-Like every procedure/macro in this interpreter, `defmacro` parameter lists
-are fixed-arity — there's no rest-parameter/variadic syntax (e.g. no
-`(name . rest)`) yet, so a macro that takes a variable-length body has to
-take it as one argument and have the caller wrap multiple statements in a
-single `(begin ...)`.
+`defmacro` supports variadic parameters too (see above), so a macro that
+takes a variable-length body can collect it with a dotted or bare-symbol
+parameter instead of requiring the caller to wrap multiple statements in a
+single `(begin ...)`:
+
+```lisp
+(defmacro my-or (. exprs)
+  (if (null? exprs)
+      #f
+      `(let ((t ,(car exprs)))
+         (if t t (my-or ,@(cdr exprs))))))
+(my-or #f #f 3 4)              ; => 3
+```
+
+`gensym` (see Metaprogramming, below) is the standard tool for avoiding
+accidental variable capture in a macro like this by hand — e.g. the `t`
+above would shadow a caller's own variable named `t`; a hand-written macro
+meant for wider use would bind `(gensym)`'s result instead of a fixed name.
 
 ---
 
@@ -147,8 +189,21 @@ single `(begin ...)`.
 | `(map f l)` | Apply `f` to each element |
 | `(filter f l)` | Keep elements where `(f x)` is true |
 | `(reduce f l [init])` | Fold left over the list |
-| `(apply f l)` | Call `f` with the elements of `l` as arguments |
+| `(apply f arg1 ... l)` | Call `f` with `arg1 ...` as individual arguments, followed by the elements of `l`. `(apply f l)` — no leading args — is the common case |
 | `(list-ref l n)` | The `n`-th element (0-based) |
+
+### Metaprogramming
+
+| Function | Description |
+|---|---|
+| `(eval expr)` | Evaluate a piece of Lisp code — data, e.g. built with `quasiquote`/`list`/`cons`, or read from a string/file — in the top-level environment |
+| `(gensym ["prefix"])` | A symbol guaranteed not to collide with any name in the program — the standard tool for avoiding variable capture in a hand-written macro |
+| `(load "path.lsp")` | Read and evaluate every top-level form in a file, into the CURRENT environment — its definitions become available afterward exactly as if you'd typed them yourself |
+
+A macro's own expansion is evaluated automatically — you don't need `eval`
+for that. `eval` is for the separate case of constructing an expression
+some other way (e.g. with `list`/`cons`/`quasiquote`) and wanting to run it
+directly.
 
 ### Strings
 
@@ -488,6 +543,9 @@ and this interpreter). `product` is one of `"CL"`, `"MCL"`, `"ES"`,
 | `(display x)` | Print without a trailing newline |
 | `(newline)` | Print a newline |
 | `(print x)` | Print with a trailing newline |
+| `(load "path.lsp")` | Read and evaluate a file's top-level forms into the current environment (see Metaprogramming, above) |
+| `(redirect-output "path.txt" [append?])` | Send everything `display`/`newline`/`print` write to a file instead of the console/GUI log, until `reset-output`. Overwrites by default; pass `#t` to append |
+| `(reset-output)` | Undo `redirect-output` — close its file and go back to the console/GUI log |
 
 ---
 
