@@ -9,10 +9,26 @@ Supports:
   - a vector datatype (of numbers and/or dates), written #(1 2 3) or built
     with (vector ...)
   - a simple date datatype: (date year month day)
-  - special forms: quote, if, define, set!, lambda, begin,
-                    let, let*, cond, and, or
+  - special forms: quote, quasiquote (with unquote/unquote-splicing,
+                    written `, ,, and ,@), if, define, set!, lambda,
+                    begin, let, let*, cond, and, or, dolist, defmacro
+  - macros: (defmacro name (params...) body...) defines a macro --
+    unlike a procedure, its arguments are the CALL SITE's UNEVALUATED
+    source expressions, and its body's return value (typically built
+    with quasiquote) becomes new code that's evaluated in place of the
+    macro call. Lets you write control constructs (a custom `while`,
+    `swap!`, `unless`, ...) that a plain function can't, because a
+    function's arguments are always evaluated before it ever runs. Macro
+    calls in tail position keep the same constant-stack-space guarantee
+    ordinary tail calls get (see expand_macro() / the note below); macro
+    parameter lists are fixed-arity, like every other procedure/macro in
+    this interpreter -- there's no rest-parameter/variadic support (yet)
   - built-in arithmetic, comparison, list, string, date, and vector
-    procedures
+    procedures (including vectors-map, the multi-vector generalization
+    of vector-map: apply a procedure across corresponding elements of
+    several vectors at once, with a choice of what to do when they're
+    not all the same length -- stop at the shortest, or pad the rest
+    with a default value)
   - linear, logistic, and piecewise-linear spline regression, with one or
     more X predictors (linear-regression / logistic-regression /
     spline-regression), a plain-language report of a fitted model
@@ -48,6 +64,39 @@ to walk the Lisp expression tree. Instead it drives an explicit stack of
 "control frames" (a plain Python list) in a loop. This means deeply
 recursive Lisp programs -- even non-tail-recursive ones -- are limited only
 by available memory, not by Python's own call-stack / recursion limit.
+
+TAIL CALLS specifically get more than just "won't hit Python's recursion
+limit": a procedure call in TAIL POSITION -- the last thing a function
+body does, including through if/let/let*/cond/and/or/begin/dolist -- is
+handled by pushing the callee's body directly on top of the SAME control
+stack, with no leftover "resume the caller here" frame underneath. So a
+self- or mutually-tail-recursive loop runs in CONSTANT control-stack
+space, not space proportional to the number of iterations: e.g.
+`(define (count-down n) (if (= n 0) 'done (count-down (- n 1))))` uses
+the same tiny, fixed amount of control-stack space whether n is 10 or
+10,000,000 (verified: the control stack's peak depth doesn't grow with
+n). This falls out of the explicit-stack design above, not from any
+special-cased "is this a tail call?" check. A MACRO call gets the same
+treatment: its expansion is pushed as a plain EVAL frame rather than
+evaluated right away, so a macro-defined looping construct used in tail
+position (see the module docstring's `defmacro` entry) is just as
+constant-stack-space as a hand-written one -- verified the same way, up
+to hundreds of thousands of iterations.
+
+CAVEAT: the constant-stack-space guarantee only covers ordinary
+`(f arg...)` application syntax (which macro calls desugar into, via
+their expansion) -- not calls made INDIRECTLY through a higher-order
+builtin. `(apply f args)`, a callback passed to `map`/`filter`/`reduce`/
+`vector-map`/`vectors-map`, or a macro transformer's OWN body while it's
+still being run to PRODUCE an expansion (see `expand_macro`) all call
+back into `seval` via an ordinary (recursive) Python function call (see
+`apply_proc`), so those paths are still bounded by Python's own
+recursion limit. This is a real, narrower limitation, not an oversight:
+trampolining those too would mean turning them into resumable coroutines
+integrated with the same control stack, a much larger change than the
+immediate need called for. In practice it rarely matters for macros
+specifically -- a transformer builds a piece of code, it doesn't loop
+over runtime data -- but it's worth knowing about.
 
 GUI: running this file with no arguments opens a small PyQt6 window with
 an input box, an output/history log, a QTableView of any vectors currently
@@ -161,6 +210,26 @@ class Procedure:
         return "#<procedure>"
 
 
+class Macro:
+    """A macro transformer created by `defmacro`. Structurally identical
+    to a Procedure (params/body/env), but invoked completely differently:
+    a Procedure call evaluates its arguments first and binds the results;
+    a Macro call binds its parameters to the CALL SITE's argument
+    expressions UNEVALUATED (as plain source-code data -- Symbols, Pairs,
+    literals), runs its body to compute a new expression (the
+    "expansion"), and that expansion is evaluated in place of the
+    original call, in the CALLING environment. See expand_macro() and the
+    macro-call check in seval()."""
+
+    def __init__(self, params, body, env):
+        self.params = params
+        self.body = body
+        self.env = env
+
+    def __repr__(self):
+        return "#<macro>"
+
+
 class LispError(Exception):
     """Raised for any runtime or parse error in the interpreter."""
     pass
@@ -190,6 +259,16 @@ def tokenize(text):
         elif c == "'":
             tokens.append("'")
             i += 1
+        elif c == '`':
+            tokens.append('`')
+            i += 1
+        elif c == ',':
+            if i + 1 < n and text[i + 1] == '@':
+                tokens.append(',@')
+                i += 2
+            else:
+                tokens.append(',')
+                i += 1
         elif c == '"':
             j = i + 1
             buf = []
@@ -205,7 +284,7 @@ def tokenize(text):
             i = j + 1
         else:
             j = i
-            while j < n and text[j] not in " \t\r\n()'\"" and text[j] != ';':
+            while j < n and text[j] not in " \t\r\n()'\"`," and text[j] != ';':
                 j += 1
             tokens.append(text[i:j])
             i = j
@@ -249,6 +328,12 @@ def read_from(tokens):
         raise LispError("unexpected ')'")
     elif token == "'":
         return list_to_pairs([Symbol("quote"), read_from(tokens)])
+    elif token == "`":
+        return list_to_pairs([Symbol("quasiquote"), read_from(tokens)])
+    elif token == ",":
+        return list_to_pairs([Symbol("unquote"), read_from(tokens)])
+    elif token == ",@":
+        return list_to_pairs([Symbol("unquote-splicing"), read_from(tokens)])
     else:
         return atom(token)
 
@@ -321,6 +406,21 @@ class Env(dict):
             e = e.outer
         raise LispError("unbound symbol: %s" % name)
 
+    def lookup_or_none(self, name):
+        """Like find(), but returns None instead of raising when `name`
+        isn't bound anywhere in the chain. Used by seval() to check
+        whether an operator symbol names a macro without disturbing the
+        ordinary "unbound symbol" error path for everything else (a
+        symbol this returns None for just falls through to being
+        evaluated as an operator/argument as usual, which raises that
+        same error itself if it truly isn't bound)."""
+        e = self
+        while e is not None:
+            if name in e:
+                return e[name]
+            e = e.outer
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Evaluator -- explicit-stack version
@@ -354,7 +454,8 @@ class Env(dict):
 
 SPECIAL_FORMS = {
     "quote", "if", "define", "set!", "lambda",
-    "begin", "let", "let*", "cond", "and", "or",
+    "begin", "let", "let*", "cond", "and", "or", "dolist",
+    "defmacro", "quasiquote",
 }
 
 
@@ -442,11 +543,188 @@ def desugar_let_star(args):
     return Pair(Symbol("let"), Pair(list_to_pairs([first]), inner_body))
 
 
+_gensym_counter = [0]
+
+
+def gensym(base):
+    """A symbol that can't collide with any name the user actually typed
+    -- used by desugar_dolist() for its internal loop-helper name and
+    loop-state parameter, so a `dolist` body that happens to use a
+    similarly-named variable of its own can't be shadowed by accident."""
+    _gensym_counter[0] += 1
+    return Symbol("%%%s-%d" % (base, _gensym_counter[0]))
+
+
+def desugar_dolist(args):
+    """(dolist (var list-expr [result-expr]) body...)
+       Common-Lisp-style list iteration: evaluates list-expr ONCE, then
+       for each element in turn, binds var to it and evaluates body... for
+       side effects (display, vector-set!, etc.) -- like `map`, but for
+       when you want the looping and don't care about collecting a
+       result. Once the list is exhausted, var is (re)bound to '() and
+       result-expr is evaluated and returned (or '() itself, if no
+       result-expr was given).
+
+       Desugars entirely into forms the evaluator already knows about
+       (let, define, if, car/cdr/null?) -- built as a self-recursive
+       local helper, via an internal `define` inside a fresh (let () ...)
+       scope so the helper doesn't leak into the surrounding environment:
+
+           (let ()
+             (define (%dolist-loop-N %dolist-remaining-N)
+               (if (null? %dolist-remaining-N)
+                   (let ((var '())) result-expr)
+                   (let ((var (car %dolist-remaining-N)))
+                     body...
+                     (%dolist-loop-N (cdr %dolist-remaining-N)))))
+             (%dolist-loop-N list-expr))
+
+       Because the recursive call is the LAST expression of the `let`
+       that binds var each iteration, it's in TAIL POSITION -- so it gets
+       exactly the same constant-stack-space handling seval() gives any
+       other tail call (see the module docstring), and dolist can walk
+       arbitrarily long lists without growing the control stack.
+       """
+    spec = pairs_to_list(args.car)
+    if len(spec) not in (2, 3):
+        raise LispError(
+            "dolist: expected (dolist (var list-expr [result-expr]) body...)")
+    var = spec[0]
+    list_expr = spec[1]
+    result_expr = spec[2] if len(spec) == 3 else NIL
+    body = pairs_to_list(args.cdr)
+
+    loop_name = gensym("dolist-loop")
+    remaining = gensym("dolist-remaining")
+
+    def let1(name, value_expr, body_exprs):
+        """(let ((name value_expr)) body_exprs...)"""
+        binding = Pair(Pair(name, Pair(value_expr, NIL)), NIL)
+        return Pair(Symbol("let"), Pair(binding, list_to_pairs(body_exprs)))
+
+    car_remaining = Pair(Symbol("car"), Pair(remaining, NIL))
+    cdr_remaining = Pair(Symbol("cdr"), Pair(remaining, NIL))
+    recurse_call = Pair(loop_name, Pair(cdr_remaining, NIL))
+
+    loop_branch = let1(var, car_remaining, body + [recurse_call])
+    result_branch = let1(var, NIL, [result_expr])
+
+    if_expr = Pair(
+        Symbol("if"),
+        Pair(Pair(Symbol("null?"), Pair(remaining, NIL)),
+             Pair(result_branch, Pair(loop_branch, NIL))))
+
+    loop_def = Pair(
+        Symbol("define"),
+        Pair(Pair(loop_name, Pair(remaining, NIL)), Pair(if_expr, NIL)))
+
+    loop_call = Pair(loop_name, Pair(list_expr, NIL))
+    return Pair(Symbol("let"), Pair(NIL, Pair(loop_def, Pair(loop_call, NIL))))
+
+
+def eval_quasiquote(expr, env, depth=1):
+    """Walk a quasiquoted template: `(unquote x)` is replaced by the
+    result of evaluating x in env (once we're back at the matching
+    quasiquote level, depth == 1); `(unquote-splicing x)` as a LIST
+    ELEMENT is replaced by splicing in the elements of x's (list) value;
+    everything else is copied as literal, unevaluated data -- standard
+    Scheme quasiquote semantics. A nested `quasiquote` increases depth
+    instead of being touched, so a nested unquote/unquote-splicing only
+    "sees through" to its own matching level (decrementing depth rather
+    than evaluating, until depth is back down to 1).
+
+    This is plain Python recursion, not the seval() trampoline -- safe
+    here because the recursion depth is bounded by how deeply NESTED the
+    quasiquote TEMPLATE is in the source code (a fixed, small number),
+    never by any runtime data size, unlike a Lisp-level loop. Each
+    unquoted subexpression IS evaluated through the ordinary trampolined
+    seval(), same as any other embedded evaluation call in this file
+    (e.g. eval_cond's test expressions).
+
+    The reader never produces an improper (dotted) list, so this doesn't
+    need to handle a non-NIL, non-Pair tail.
+    """
+    if isinstance(expr, Pair):
+        head = expr.car
+        if head == Symbol("unquote") and isinstance(expr.cdr, Pair) and expr.cdr.cdr is NIL:
+            if depth == 1:
+                return seval(expr.cdr.car, env)
+            return Pair(Symbol("unquote"),
+                        Pair(eval_quasiquote(expr.cdr.car, env, depth - 1), NIL))
+        if head == Symbol("quasiquote") and isinstance(expr.cdr, Pair) and expr.cdr.cdr is NIL:
+            return Pair(Symbol("quasiquote"),
+                        Pair(eval_quasiquote(expr.cdr.car, env, depth + 1), NIL))
+
+        items = []
+        rest = expr
+        while isinstance(rest, Pair):
+            item = rest.car
+            is_splice = (isinstance(item, Pair) and item.car == Symbol("unquote-splicing")
+                         and isinstance(item.cdr, Pair) and item.cdr.cdr is NIL)
+            if is_splice and depth == 1:
+                items.extend(pairs_to_list(seval(item.cdr.car, env)))
+            elif is_splice:
+                items.append(Pair(Symbol("unquote-splicing"),
+                                   Pair(eval_quasiquote(item.cdr.car, env, depth - 1), NIL)))
+            else:
+                items.append(eval_quasiquote(item, env, depth))
+            rest = rest.cdr
+        tail = NIL if rest is NIL else eval_quasiquote(rest, env, depth)
+        result = tail
+        for item in reversed(items):
+            result = Pair(item, result)
+        return result
+
+    if isinstance(expr, LispVector):
+        return LispVector([eval_quasiquote(x, env, depth) for x in expr.items])
+
+    return expr  # atoms (numbers, strings, symbols, booleans) are literal
+
+
+def expand_macro(macro, arg_exprs):
+    """Run a macro's transformer body with the call site's UNEVALUATED
+    argument expressions (Symbols, Pairs, literals -- plain source code
+    as data) bound to its parameters, and return the resulting
+    expression -- the "expansion" -- which the caller (seval's macro-call
+    check) pushes back onto the control stack to be evaluated exactly
+    once, in the CALLING environment, in place of the original call.
+
+    Structurally identical to apply_proc() for an ordinary Procedure,
+    except the "arguments" are unevaluated expressions rather than
+    values, and the result is code to be evaluated rather than a final
+    answer. Like apply_proc(), this calls back into the evaluator via an
+    ordinary (recursive) Python function call rather than the trampoline,
+    so a macro transformer that itself did deep non-tail recursion while
+    BUILDING its expansion would be bounded by Python's recursion limit
+    -- the same documented limitation apply/map/filter/reduce/vector-map
+    already have (see the module docstring). In practice this essentially
+    never matters: a macro transformer builds a piece of code, it doesn't
+    loop over runtime data. The code it PRODUCES, once pushed back onto
+    the control stack for evaluation, gets the evaluator's usual fully
+    tail-call-optimized treatment -- including a proper tail call if the
+    macro expands to one (e.g. a macro-defined looping construct).
+    """
+    new_env = Env(macro.params, arg_exprs, macro.env)
+    return eval_body(macro.body, new_env)
+
+
 def eval_special_form(op, args, env, control_stack, value_stack):
     """Handle one of the special forms in SPECIAL_FORMS by pushing whatever
     control frames are needed to carry out its evaluation."""
     if op == "quote":
         value_stack.append(args.car)
+
+    elif op == "quasiquote":
+        value_stack.append(eval_quasiquote(args.car, env))
+
+    elif op == "defmacro":
+        # (defmacro name (params...) body...) -- name and params are
+        # never evaluated, exactly like `lambda`'s parameter list.
+        name = args.car
+        params = pairs_to_list(args.cdr.car)
+        body = pairs_to_list(args.cdr.cdr)
+        env[name] = Macro(params, body, env)
+        value_stack.append(name)
 
     elif op == "if":
         test, conseq = args.car, args.cdr.car
@@ -488,6 +766,9 @@ def eval_special_form(op, args, env, control_stack, value_stack):
     elif op == "let*":
         control_stack.append(('EVAL', desugar_let_star(args), env))
 
+    elif op == "dolist":
+        control_stack.append(('EVAL', desugar_dolist(args), env))
+
     elif op == "cond":
         eval_cond(pairs_to_list(args), env, control_stack, value_stack)
 
@@ -521,6 +802,18 @@ def seval(expr, env):
                 op, args = x.car, x.cdr
                 if isinstance(op, Symbol) and op in SPECIAL_FORMS:
                     eval_special_form(op, args, cur_env, control_stack, value_stack)
+                    continue
+                # Macro call? Check before evaluating anything -- a macro
+                # gets its arguments as raw, UNEVALUATED expressions, not
+                # values. Pushing the expansion as a plain EVAL frame
+                # (rather than recursively evaluating it right here) means
+                # a macro call in TAIL POSITION still gets the same
+                # constant-stack-space handling as any other tail call --
+                # see expand_macro()'s docstring.
+                macro = cur_env.lookup_or_none(op) if isinstance(op, Symbol) else None
+                if isinstance(macro, Macro):
+                    expansion = expand_macro(macro, pairs_to_list(args))
+                    control_stack.append(('EVAL', expansion, cur_env))
                 else:
                     # Procedure application: evaluate operator, then each
                     # argument left-to-right, then apply. We push APPLY
@@ -2326,6 +2619,42 @@ def make_global_env(output=None, plot=None):
         shuffled = [LispVector([v.items[i] for i in indices]) for v in vecs]
         return list_to_pairs(shuffled)
 
+    _NO_DEFAULT = object()  # sentinel: distinguishes "no default given" from "default given as NIL/0/etc."
+
+    def vectors_map(f, vec_list, default=_NO_DEFAULT):
+        """(vectors-map f (list v1 v2 ...) [default]) -> a new vector whose
+        J-th element is (f (vector-ref v1 J) (vector-ref v2 J) ...) -- the
+        multi-vector generalization of vector-map (which only takes one
+        vector).
+
+        If the input vectors aren't all the same length:
+          - with no `default` argument (the default), stops at the
+            length of the SHORTEST input vector -- elements beyond that
+            are simply never visited.
+          - with a `default` argument, the result runs out to the length
+            of the LONGEST input vector, and any vector that's run out of
+            real elements contributes `default` in its place for the
+            remaining positions.
+        """
+        vecs = pairs_to_list(vec_list)
+        if not vecs:
+            raise LispError("vectors-map: at least one vector is required")
+        for v in vecs:
+            if not isinstance(v, LispVector):
+                raise LispError("vectors-map: every element must be a vector")
+        lengths = [len(v.items) for v in vecs]
+
+        if default is _NO_DEFAULT:
+            n = min(lengths)
+            return LispVector([apply_proc(f, [v.items[j] for v in vecs]) for j in range(n)])
+
+        n = max(lengths)
+        result = []
+        for j in range(n):
+            row = [v.items[j] if j < len(v.items) else default for v in vecs]
+            result.append(apply_proc(f, row))
+        return LispVector(result)
+
     env.update({
         "vector": make_vector_fn,
         "make-vector": make_vector,
@@ -2347,6 +2676,7 @@ def make_global_env(output=None, plot=None):
         "vector-take": vector_take,
         "vector-drop": vector_drop,
         "vectors-shuffle": vectors_shuffle,
+        "vectors-map": vectors_map,
     })
 
     # ---- dates ----

@@ -23,6 +23,7 @@ FRED economic-data access, plus an optional PyQt6 GUI.
 | Boolean | `#t`, `#f` | Everything except `#f` counts as true |
 | Symbol | `foo`, `list->vector` | Identifiers |
 | Pair / list | `(1 2 3)`, `'(a b c)` | Built from cons cells; `()` is the empty list |
+| Quasiquote | `` `(a ,b ,@c) `` | Like `quote`, but `,x` splices in the value of `x` and `,@x` splices in the elements of list `x` — see Macros below |
 | Vector | `#(1 2 3)`, `(vector 1 2 3)` | Fixed-size, holds numbers and/or dates |
 | Date | `(date 2024 3 15)` | Prints as `2024-03-15` |
 | Model | *(returned by regression)* | Prints as `#<linear-model ...>` etc. |
@@ -31,11 +32,77 @@ Comments run from `;` to end of line.
 
 ### Special forms
 
-`quote`, `if`, `define`, `set!`, `lambda`, `begin`, `let`, `let*`, `cond`,
-`and`, `or` — standard Scheme-like semantics. `(define (f x) ...)` defines a
-function; `(define x 5)` defines a value. The evaluator uses an explicit
-stack (not Python's call stack), so even deep non-tail recursion won't hit
-a Python recursion-limit error, and tail calls run in constant stack space.
+`quote`, `quasiquote`, `if`, `define`, `set!`, `lambda`, `begin`, `let`,
+`let*`, `cond`, `and`, `or`, `dolist`, `defmacro` — standard Scheme-like
+semantics. `(define (f x) ...)` defines a function; `(define x 5)` defines
+a value. The evaluator uses an explicit stack (not Python's call stack), so
+even deep non-tail recursion won't hit a Python recursion-limit error, and
+ordinary `(f arg...)` tail calls — including through `if`/`let`/`let*`/
+`cond`/`and`/`or`/`begin`/`dolist`, and through a macro expansion — run in
+genuinely constant control-stack space, verified up to hundreds of
+thousands of iterations. (The one exception: a recursive call made
+*indirectly* through `apply`, a callback passed to `map`/`filter`/`reduce`/
+`vector-map`/`vectors-map`, or a macro transformer's own body while it's
+still computing an expansion, calls back into the evaluator via an ordinary
+Python function call, so those paths are still bounded by Python's own
+recursion limit.)
+
+`(dolist (var list-expr [result-expr]) body...)` — evaluates `list-expr`
+once, then for each element in turn binds `var` to it and runs `body...`
+for side effects (`display`, `set!`, `vector-set!`, etc.); once the list is
+exhausted, `var` is rebound to `'()` and `result-expr` is evaluated and
+returned (or `'()` if no `result-expr` was given). Like `map`, but for when
+you're looping for effect and don't want a collected result vector/list.
+
+```lisp
+(define total 0)
+(dolist (x (list 1 2 3 4 5)) (set! total (+ total x)))
+total                          ; => 15
+```
+
+### Macros
+
+`(defmacro name (params...) body...)` defines a macro. The difference from
+a procedure: when you call `name`, its arguments are NOT evaluated first —
+`params` are bound to the call site's raw, unevaluated source expressions
+(as data: symbols, pairs, literals), `body...` runs to compute a new
+expression from them (the "expansion"), and THAT expression is evaluated,
+in your calling environment, in place of the original call. This lets a
+macro see and rearrange the code it was called with, which a function
+never can (a function's arguments are already values by the time it runs).
+
+`` `template `` (quasiquote) is the natural way to build an expansion:
+it's like `'template` (quote), except `,expr` inside it splices in the
+*value* of `expr`, and `,@expr` splices in the *elements* of `expr` (which
+must evaluate to a list) rather than the list itself. Quasiquote nests
+correctly, and works outside of macros too — anywhere you want "mostly
+literal data with a few computed pieces."
+
+```lisp
+; unless: the mirror image of `if` with no else-branch. Can't be written
+; as a plain function -- a function would evaluate `then` regardless of
+; whether `test` was true.
+(defmacro unless (test then)
+  `(if (not ,test) ,then '()))
+(unless (> 1 2) 'shown)        ; => shown
+
+; swap!: mutates two variables in place. No function could do this either
+; -- a function only ever sees the VALUES of its arguments, never the
+; variables (names) themselves, so it has nothing to set!.
+(defmacro swap! (a b)
+  `(let ((tmp ,a))
+     (set! ,a ,b)
+     (set! ,b tmp)))
+(define p 1) (define q 2)
+(swap! p q)
+(list p q)                     ; => (2 1)
+```
+
+Like every procedure/macro in this interpreter, `defmacro` parameter lists
+are fixed-arity — there's no rest-parameter/variadic syntax (e.g. no
+`(name . rest)`) yet, so a macro that takes a variable-length body has to
+take it as one argument and have the caller wrap multiple statements in a
+single `(begin ...)`.
 
 ---
 
@@ -120,6 +187,7 @@ Vectors hold numbers and/or dates (not strings, pairs, etc.).
 | `(vector-add v1 v2)`, `(vector-sub v1 v2)` | Elementwise add / subtract |
 | `(vector-scale v s)` | Multiply every element by `s` |
 | `(vectors-shuffle (list v1 v2 ...) [seed])` | Shuffle several vectors together with the *same* random permutation (keeps rows aligned); returns a list of new vectors |
+| `(vectors-map f (list v1 v2 ...) [default])` | Multi-vector `vector-map`: element `J` of the result is `(f (vector-ref v1 J) (vector-ref v2 J) ...)`. If the vectors aren't the same length: with no `default`, stops at the shortest; with a `default`, runs out to the longest and substitutes `default` for any vector that's run out |
 
 ### Dates
 
