@@ -1,30 +1,11 @@
-; ---------------------------------------------------------------------
-; init.lsp
-;
-; Loaded automatically, into a fresh global environment, every time the
-; interpreter starts -- batch mode (python3 lisp_interpreter.py script.lsp),
-; the console REPL, and the GUI all load this file first, before anything
-; else runs. See load_init_file() / DEFAULT_INIT_FILE in lisp_interpreter.py.
-;
-; Put your own always-available definitions and macros here -- they'll
-; be in scope for every script and REPL session without having to
-; (load ...) them by hand each time. This file is optional: if it's
-; empty (or you delete it), startup behaves exactly as if it didn't
-; exist.
-;
-; To use a different init file instead of this one, either edit this
-; file in place or set the LISP_INIT_FILE environment variable to another
-; path.
-; ---------------------------------------------------------------------
-
-(define api-key "/Users/morris/credentials.json")
+( define api-key "/Users/morris/credentials.json" )
 
 (defmacro while (test body)
   `(let ()
      (define (%loop)
-       (if ,test
-           (begin ,body (%loop))
-           '()))
+	 (if ,test
+             (begin ,body (%loop))
+             '()))
      (%loop)))
 
 (define gdp_series (fred-series "GDP" api-key))
@@ -79,7 +60,8 @@
 (define (lineup_time_series md dates values result)
     (cond
       ((< (length md) 1) (reverse result))
-      ((< (length dates) 1) (lineup_time_series (cdr md) dates values (cons -1.0 results))))
+      ((< (length dates) 1) (lineup_time_series (cdr md) dates values (cons -1.0 result)))
+
       ((< (car md) (car dates))
        (lineup_time_series (cdr md) dates values (cons -1.0 result)))
       ((> (car md) (car dates))
@@ -90,7 +72,3 @@
   )
 
 (define dates_matched (lineup_time_series master_dates (car cpi_series) (car (cdr cpi_series)) () ))
-
-
-	   
-  
