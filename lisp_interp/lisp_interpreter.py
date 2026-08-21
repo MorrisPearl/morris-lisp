@@ -152,6 +152,8 @@ import datetime
 import urllib.request
 import urllib.parse
 
+verbose_mode = 0
+
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -337,13 +339,14 @@ def tokenize(text):
 # ---------------------------------------------------------------------------
 
 def parse(text):
+    # This is a generator function, mainly so that if there is an
+    # error we can see where the error is (by seeing what has already been
+    # processed before the error.
     """Parse source text into a list of top-level Lisp expressions."""
     tokens = tokenize(text)
-    exprs = []
     while tokens:
-        exprs.append(read_from(tokens))
-    return exprs
-
+        yield read_from(tokens)
+    return
 
 def read_from(tokens):
     if not tokens:
@@ -544,7 +547,7 @@ class Env(dict):
 SPECIAL_FORMS = {
     "quote", "if", "define", "set!", "lambda",
     "begin", "let", "let*", "cond", "and", "or", "dolist",
-    "defmacro", "quasiquote",
+    "defmacro", "quasiquote", "breakpoint",
 }
 
 
@@ -811,6 +814,16 @@ def eval_special_form(op, args, env, control_stack, value_stack):
 
     elif op == "quasiquote":
         value_stack.append(eval_quasiquote(args.car, env))
+
+    elif op == "breakpoint":
+        # A special form (not a function/macro) specifically so it sees
+        # `env` -- the REAL lexical environment at the call site (e.g. a
+        # paused function's own parameters) -- see debug_repl()'s
+        # docstring. A function/macro couldn't do this: a function only
+        # ever gets already-evaluated VALUES, and a macro's transformer
+        # runs in ITS OWN defining environment, not the caller's.
+        debug_repl(env, label="breakpoint")
+        value_stack.append(NIL)
 
     elif op == "defmacro":
         # (defmacro name (params...) body...) -- name and params are
@@ -2780,9 +2793,9 @@ def make_global_env(output=None, plot=None):
 
     def vectors_map(f, vec_list, default=_NO_DEFAULT):
         """(vectors-map f (list v1 v2 ...) [default]) -> a new vector whose
-        J-th element is (f (vector-ref v1 J) (vector-ref v2 J) ...) -- the
+        J-th element is (f (vector-ref v1 J) (vector-ref v2 J) ... J) -- the
         multi-vector generalization of vector-map (which only takes one
-        vector).
+        vector).  The last argument to f is the integer J.
 
         If the input vectors aren't all the same length:
           - with no `default` argument (the default), stops at the
@@ -2803,12 +2816,12 @@ def make_global_env(output=None, plot=None):
 
         if default is _NO_DEFAULT:
             n = min(lengths)
-            return LispVector([apply_proc(f, [v.items[j] for v in vecs]) for j in range(n)])
+            return LispVector([apply_proc(f, [v.items[j] for v in vecs] + [j]) for j in range(n)])
 
         n = max(lengths)
         result = []
         for j in range(n):
-            row = [v.items[j] if j < len(v.items) else default for v in vecs]
+            row = [v.items[j] if j < len(v.items) else default for v in vecs] + [j]
             result.append(apply_proc(f, row))
         return LispVector(result)
 
@@ -3000,6 +3013,152 @@ def make_global_env(output=None, plot=None):
         "reset-output": reset_output,
     })
 
+    # ---- introspection, pretty-printing, and debugging ----
+    def lisp_pretty_print(x):
+        """(pretty-print x) -- verbose, paren-column-aligned printing of
+        ANY value (see pretty_print_string()). A Procedure or Macro is
+        shown as its reconstructed, name-free (lambda ...) / (defmacro
+        <anonymous> ...) source; everything else is printed as-is."""
+        if isinstance(x, Procedure):
+            expr = reconstruct_procedure_source(x)
+        elif isinstance(x, Macro):
+            expr = reconstruct_macro_source(x)
+        else:
+            expr = x
+        emit(pretty_print_string(expr) + "\n")
+        return NIL
+
+    def lisp_pretty_print_function_named(name, value):
+        if not isinstance(value, Procedure) and name in debug_originals:
+            value = debug_originals[name]  # show the real definition even while debug-wrapped
+        if not isinstance(value, Procedure):
+            raise LispError("pretty-print-function: %r is not a user-defined function" % (name,))
+        emit(pretty_print_string(reconstruct_procedure_source(value, name)) + "\n")
+        return NIL
+
+    def lisp_pretty_print_macro_named(name, value):
+        if not isinstance(value, Macro):
+            raise LispError("pretty-print-macro: %r is not a macro" % (name,))
+        emit(pretty_print_string(reconstruct_macro_source(value, name)) + "\n")
+        return NIL
+
+    def defined_functions():
+        """(defined-functions) -- every name currently bound (in the top-
+        level environment) to a user-defined Procedure -- i.e. something
+        created by `lambda`/`define`, NOT a built-in. There's no separate
+        registry to keep in sync: this just filters the live environment,
+        so it's always exactly correct, in the order things were first
+        defined (a redefinition doesn't move its entry)."""
+        return list_to_pairs([name for name in env if isinstance(env[name], Procedure)])
+
+    # The convenience macros bootstrapped below (pretty-print-function,
+    # etc.) are technically ordinary Macro instances too, same as
+    # anything the user writes with defmacro -- there's no type-level
+    # "built-in macro" distinction the way there is for built-in
+    # PROCEDURES (those are plain Python callables, so isinstance(...,
+    # Procedure) already excludes them for free). Excluded by name here
+    # instead, so defined-macros() reflects only what you actually wrote.
+    _bootstrap_macro_names = set()
+
+    def defined_macros():
+        """(defined-macros) -- every name currently bound to a
+        user-defined Macro (excluding this interpreter's own
+        pretty-print-function/-macro/debug-function/undebug-function
+        convenience macros -- see _bootstrap_macro_names above). Same
+        live-filter approach as defined-functions()."""
+        return list_to_pairs([
+            name for name in env
+            if isinstance(env[name], Macro) and name not in _bootstrap_macro_names
+        ])
+
+    def bound_variables():
+        """(bound-variables) -- every top-level name bound to a plain
+        VALUE (not a function, macro, or built-in procedure) -- i.e.
+        ordinary `define`d data: numbers, strings, lists, vectors, dates,
+        etc. Built-in procedures are excluded because they're plain
+        Python callables, same as `callable(x)` already excludes them
+        from defined-functions()/defined-macros() implicitly (only
+        Procedure/Macro instances count as user-defined there)."""
+        return list_to_pairs([
+            name for name in env
+            if not isinstance(env[name], (Procedure, Macro)) and not callable(env[name])
+        ])
+
+    # State for debug-function/undebug-function -- local to this
+    # environment (like output_state above), so separate sessions in the
+    # same process don't share debug state.
+    debug_call_stack = []      # names of debug-function-wrapped calls currently in progress
+    debug_originals = {}       # name -> the original Procedure, so undebug-function can restore it
+
+    def debug_function_named(name):
+        """(debug-function name) [macro -- see the bootstrap below]:
+        wraps the named function so every future call opens a debug REPL
+        (debug_repl) BEFORE running the body, in an environment where the
+        function's own parameters are already bound to this call's real
+        argument values -- inspect or (via set!) change them, then
+        (continue) to actually run the body with whatever's in scope at
+        that point. Also prints the chain of debug-function-wrapped calls
+        currently in progress, as a lightweight "how was this called, and
+        from where" trace -- NOT a full backtrace (this interpreter's
+        tail-call optimization deliberately discards ordinary call-frame
+        history; see the module docstring), just of the functions you've
+        explicitly asked to watch.
+        """
+        proc = env.get(name)
+        if not isinstance(proc, Procedure):
+            raise LispError("debug-function: %r is not a user-defined function" % (name,))
+        debug_originals[name] = proc
+
+        def wrapper(*args):
+            debug_call_stack.append(name)
+            try:
+                new_env = Env(proc.params, list(args), proc.env, rest_param=proc.rest_param)
+                arg_strs = ", ".join(to_string(a) for a in args)
+                chain = " -> ".join(str(n) for n in debug_call_stack)
+                print("--- debug-function: entering %s(%s) ---" % (name, arg_strs))
+                print("    call chain: %s" % chain)
+                print("    arguments are bound in this scope -- inspect/set! them, then (continue)")
+                debug_repl(new_env, label=str(name))
+                return eval_body(proc.body, new_env)
+            finally:
+                debug_call_stack.pop()
+
+        env[name] = wrapper
+        return NIL
+
+    def undebug_function_named(name):
+        """(undebug-function name) [macro]: restore the original,
+        un-wrapped definition debug-function saved before wrapping it.
+        Does nothing if `name` was never debug-function-wrapped."""
+        if name in debug_originals:
+            env[name] = debug_originals.pop(name)
+        return NIL
+
+    env.update({
+        "pretty-print": lisp_pretty_print,
+        "pretty-print-function-named": lisp_pretty_print_function_named,
+        "pretty-print-macro-named": lisp_pretty_print_macro_named,
+        "defined-functions": defined_functions,
+        "defined-macros": defined_macros,
+        "bound-variables": bound_variables,
+        "debug-function-named": debug_function_named,
+        "undebug-function-named": undebug_function_named,
+    })
+
+    # Thin macros so callers can write the NAME directly (e.g.
+    # `(pretty-print-function my-func)`) instead of quoting it -- built
+    # out of ordinary defmacro/quasiquote, the same as any user macro
+    # would be, rather than needing special evaluator support.
+    for _bootstrap_src in (
+        "(defmacro pretty-print-function (name) `(pretty-print-function-named ',name ,name))",
+        "(defmacro pretty-print-macro (name) `(pretty-print-macro-named ',name ,name))",
+        "(defmacro debug-function (name) `(debug-function-named ',name))",
+        "(defmacro undebug-function (name) `(undebug-function-named ',name))",
+    ):
+        for _bootstrap_expr in parse(_bootstrap_src):
+            seval(_bootstrap_expr, env)
+            _bootstrap_macro_names.add(_bootstrap_expr.cdr.car)  # (defmacro NAME ...) -> NAME
+
     return env
 
 
@@ -3059,6 +3218,163 @@ def to_string(x):
             return "(" + " ".join(parts) + ")"
         return "(" + " ".join(parts) + " . " + to_string(p) + ")"
     return str(x)
+
+
+def pretty_print_string(expr):
+    """Render expr (any Lisp value or expression -- a Pair/list, vector,
+    or atom) as a deliberately VERBOSE, multi-line string: every list
+    element goes on its own line, and a list's closing parenthesis is
+    printed ALONE on its own line, directly below the COLUMN of its
+    matching opening parenthesis. This isn't meant to be attractive for
+    everyday reading -- to_string()/to_display_string() already do that
+    -- it's meant to make a mismatched or misplaced parenthesis
+    impossible to miss: scan straight down any closing paren's column and
+    you can see exactly which opening paren it closes, and whether
+    that's the one you meant.
+
+    Also used (via reconstruct_procedure_source() / reconstruct_macro_source())
+    to display a Procedure's or Macro's definition. That's what makes
+    `pretty-print-function` possible: a Procedure/Macro stores its
+    already-PARSED parameter list and body (the same Pairs/Symbols/
+    literals seval() walks), which is enough to rebuild a semantically
+    faithful, canonically-formatted (define ...) / (lambda ...) /
+    (defmacro ...) form -- but NOT a byte-exact copy of what was
+    originally typed, since the reader discards comments and doesn't
+    remember the original whitespace/formatting.
+
+    Plain Python recursion, like eval_quasiquote (not the seval()
+    trampoline) -- safe here because recursion depth is bounded by how
+    deeply NESTED the EXPRESSION is (fixed by the source code), never by
+    runtime data size.
+    """
+    lines = ['']
+
+    def col():
+        return len(lines[-1])
+
+    def emit_text(s):
+        lines[-1] += s
+
+    def break_line(indent):
+        lines.append(' ' * indent)
+
+    def write(x):
+        if isinstance(x, Pair):
+            open_col = col()
+            emit_text('(')
+            p = x
+            first = True
+            while isinstance(p, Pair):
+                if not first:
+                    break_line(open_col + 1)
+                write(p.car)
+                first = False
+                p = p.cdr
+            if p is not NIL:
+                break_line(open_col + 1)
+                emit_text('. ')
+                write(p)
+            break_line(open_col)
+            emit_text(')')
+        elif isinstance(x, LispVector):
+            open_col = col()
+            emit_text('#(')
+            first = True
+            for item in x.items:
+                if not first:
+                    break_line(open_col + 2)
+                write(item)
+                first = False
+            break_line(open_col + 1)  # align under the '(' of '#(', not the '#'
+            emit_text(')')
+        else:
+            emit_text(to_string(x))
+
+    write(expr)
+    return "\n".join(lines)
+
+
+def _param_spec_from(params, rest_param):
+    """Rebuild the SOURCE-SYNTAX parameter spec (proper list, dotted
+    list, or bare symbol) that parse_params() would have parsed INTO
+    (params, rest_param) -- the exact inverse of that function. Used by
+    reconstruct_procedure_source()/reconstruct_macro_source()."""
+    if rest_param is None:
+        return list_to_pairs(params)
+    if not params:
+        return rest_param
+    spec = rest_param
+    for p in reversed(params):
+        spec = Pair(p, spec)
+    return spec
+
+
+def reconstruct_procedure_source(proc, name=None):
+    """Rebuild the (lambda (params...) body...) -- or, if `name` is
+    given, (define (name params...) body...) -- source form for a
+    Procedure. See pretty_print_string()'s docstring for exactly what
+    "rebuild" does and doesn't preserve."""
+    param_spec = _param_spec_from(proc.params, proc.rest_param)
+    body = list_to_pairs(proc.body)
+    if name is not None:
+        return Pair(Symbol("define"), Pair(Pair(name, param_spec), body))
+    return Pair(Symbol("lambda"), Pair(param_spec, body))
+
+
+def reconstruct_macro_source(macro, name=None):
+    """Rebuild the (defmacro name (params...) body...) source form for a
+    Macro (name defaults to a placeholder if not given, since a Macro
+    value on its own doesn't carry the name it may be bound under)."""
+    param_spec = _param_spec_from(macro.params, macro.rest_param)
+    body = list_to_pairs(macro.body)
+    return Pair(Symbol("defmacro"),
+                Pair(name if name is not None else Symbol("<anonymous>"),
+                     Pair(param_spec, body)))
+
+
+def debug_repl(env, label="debug"):
+    """A nested REPL used by the `breakpoint` special form and
+    `debug-function`: evaluates whatever the user types directly in
+    `env` -- the ACTUAL lexical environment active at the point
+    execution paused (e.g. a paused function's own parameters are
+    variables in this env, inspectable AND, via set!, modifiable, exactly
+    as they exist at that point in the running program). Type
+    `(continue)` (or `(exit)`, or press Ctrl-D) to resume normal
+    execution from where it paused.
+
+    CONSOLE/BATCH MODE ONLY: this reads from the real console via
+    input(), the same as the top-level REPL. Triggering a breakpoint from
+    the GUI will try to read from whatever stdin the GUI process has
+    (usually none, or the terminal it was launched from) rather than
+    opening any kind of dialog in the GUI window itself -- there's no
+    GUI-integrated debugger here, just this console one.
+    """
+    print("--- %s: entering debug REPL (type (continue) or press Ctrl-D to resume) ---" % label)
+    buffer = ""
+    while True:
+        try:
+            line = input("  ... " if buffer else "%s> " % label)
+        except EOFError:
+            print()
+            break
+        buffer += line + "\n"
+        if buffer.count("(") <= buffer.count(")"):
+            resume = False
+            try:
+                for expr in parse(buffer):
+                    if isinstance(expr, Pair) and expr.car in (Symbol("continue"), Symbol("exit")):
+                        resume = True
+                        break
+                    result = seval(expr, env)
+                    print(to_string(result))
+            except LispError as e:
+                print("Error:", e)
+            except Exception as e:
+                print("Error:", e)
+            buffer = ""
+            if resume:
+                break
+    print("--- %s: resuming ---" % label)
 
 
 # ---------------------------------------------------------------------------
