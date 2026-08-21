@@ -76,6 +76,6 @@
 
 (define i 0)
 (define total 0)
-(my-while (< i 200000)
+(while (< i 200000)
   (begin (set! total (+ total i)) (set! i (+ i 1))))
 (display "my-while summed 0..199999 -> ") (display total) (newline)
