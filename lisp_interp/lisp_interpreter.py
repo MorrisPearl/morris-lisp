@@ -938,7 +938,7 @@ def seval(expr, env):
             elif callable(proc):
                 value_stack.append(proc(*arg_values))
             else:
-                raise LispError("not a procedure: %r" % (proc,))
+                raise LispError("in tag APPLY: not a procedure: %r" % (proc,))
 
         elif tag == 'SEQ':
             _, remaining, seq_env = frame
@@ -1017,7 +1017,7 @@ def apply_proc(proc, args):
         return eval_body(proc.body, new_env)
     if callable(proc):
         return proc(*args)
-    raise LispError("not a procedure: %r" % (proc,))
+    raise LispError("in apply_proc: not a procedure: %r" % (proc,))
 
 
 # ---------------------------------------------------------------------------
@@ -1962,7 +1962,7 @@ def _parse_fred_observations(observations):
         year, month, day = obs["date"].split("-")
         dates.append(LispDate(int(year), int(month), int(day)))
         values.append(value)
-    return Pair(LispVector(dates), LispVector(values))
+    return Pair(list_to_pairs(dates), Pair(list_to_pairs(values), NIL))
 
 
 def _fred_api_key_from_file(path):
