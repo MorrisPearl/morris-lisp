@@ -66,7 +66,7 @@
 ;        a tail call, gets the SAME constant-stack-space handling any
 ;        other tail call does (see the module docstring / reference.md) ---
 
-(defmacro my-while (test body)
+(defmacro while (test body)
   `(let ()
      (define (%loop)
        (if ,test
@@ -74,7 +74,7 @@
            '()))
      (%loop)))
 
-(define i 0)
+n(define i 0)
 (define total 0)
 (my-while (< i 200000)
   (begin (set! total (+ total i)) (set! i (+ i 1))))
