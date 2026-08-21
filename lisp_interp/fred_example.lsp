@@ -13,7 +13,7 @@
 ; start-date/end-date range (LispDate values, and "YYYY-MM-DD" strings).
 ; ---------------------------------------------------------------------
 
-(define api-key "tastytrade_credentials.json")   ; edit to your credentials file's path
+(define api-key "/Users/morris/credentials.json")
 
 ; A small helper to print a (dates . values) series returned by
 ; fred-series, one observation per line -- this Lisp has no built-in
@@ -29,8 +29,8 @@
 
 ; --- 1. fetch a full series: US Real Gross Domestic Product ("GDP") ---
 (define gdp (fred-series "GDP" api-key))
-(define gdp-dates (car gdp))
-(define gdp-values (cdr gdp))
+(define gdp-dates (list->vector (car gdp)))
+(define gdp-values (list->vector (car (cdr gdp))))
 (define gdp-n (vector-length gdp-values))
 (display "GDP: ") (display gdp-n) (display " quarterly observations") (newline)
 (display "  first:  ") (display (vector-ref gdp-dates 0))
@@ -43,18 +43,12 @@
 ;        start-date/end-date, given as `date` values ---
 (define unrate (fred-series "UNRATE" api-key (date 2020 1 1) (date 2020 12 31)))
 (display "UNRATE, 2020 (civilian unemployment rate, %):") (newline)
-(print-series (car unrate) (cdr unrate) 0 (vector-length (car unrate)))
+(print-series (list->vector (car unrate)) (list->vector (car (cdr unrate))) 0 (length (car unrate)))
 (newline)
 
 ; --- 3. a third series, with the date range given as "YYYY-MM-DD"
 ;        strings instead -- both forms work interchangeably ---
 (define fedfunds (fred-series "FEDFUNDS" api-key "2023-01-01" "2023-12-31"))
 (display "FEDFUNDS, 2023 (effective federal funds rate, %):") (newline)
-(print-series (car fedfunds) (cdr fedfunds) 0 (vector-length (car fedfunds)))
-(newline)
-
-; --- 4. once fetched, it's just ordinary vector data -- e.g. a quick
-;        derived stat ---
-(display "Average FEDFUNDS in 2023: ")
-(display (/ (vector-sum (cdr fedfunds)) (vector-length (cdr fedfunds))))
+(print-series (list->vector (car fedfunds() (list->vector (car (cdr fedfunds))) 0 (length (car fedfunds)))
 (newline)
