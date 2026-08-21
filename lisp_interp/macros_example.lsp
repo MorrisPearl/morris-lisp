@@ -74,7 +74,7 @@
            '()))
      (%loop)))
 
-n(define i 0)
+(define i 0)
 (define total 0)
 (my-while (< i 200000)
   (begin (set! total (+ total i)) (set! i (+ i 1))))
