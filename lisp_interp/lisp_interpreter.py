@@ -3721,10 +3721,13 @@ def launch_gui():
 
 def main():
     if len(sys.argv) > 1:
-        # Batch mode: run a script file from the console, no GUI needed.
+        # run a script file from the console, no GUI needed.
         env = make_global_env()
         load_init_file(env)
-        run_file(sys.argv[1], env)
+        if (sys.argv[1] == "-"): # or just run interactively with no GUI
+            repl(env)
+        else:
+            run_file(sys.argv[1], env)
     else:
         # Default: launch the PyQt6 GUI.
         launch_gui()
