@@ -19,6 +19,9 @@ functions" as a reference to search rather than read start to end.
 - **A filename argument** — `python3 lisp_interpreter.py script.lsp` runs
   that file in batch mode (no GUI). `save-chart` still works in this mode
   as long as matplotlib is installed (PyQt6 is not required for it).
+  - **Argument just "-"** — `python3 lisp_interpreter.py -` runs
+  interactively with no GUI. `save-chart` still works in this mode
+  as long as matplotlib is installed (PyQt6 is not required for it).
 
 Every fresh environment — batch mode, the console REPL, and the GUI alike —
 automatically loads `init.lsp` (next to `lisp_interpreter.py`; override with
@@ -857,9 +860,10 @@ file-write failure. Returns `'()`.
 ### FRED (Federal Reserve Bank of St. Louis) data, and CSV loading
 
 #### `(fred-series series-id [api-key] [start-date] [end-date])`
-Fetches one FRED economic data series and returns `(cons dates-vector
-values-vector)` — parallel, row-aligned vectors of dates and numbers.
-Observations FRED marks as missing are silently skipped, so both vectors
+Fetches one FRED economic data series and returns a two element with
+containing a list of dates and a list of values.
+-— parallel, row-aligned lists of dates and numbers.
+Observations FRED marks as missing are silently skipped, so both lists
 stay the same length.
 
 - `series-id` — the FRED series mnemonic, e.g. `"GDP"`, `"UNRATE"`,
@@ -900,8 +904,8 @@ argument forms:
 ; --- 1. fetch a full series: US Real Gross Domestic Product ("GDP") ---
 (define gdp (fred-series "GDP" api-key))
 (define gdp-dates (car gdp))
-(define gdp-values (cdr gdp))
-(define gdp-n (vector-length gdp-values))
+(define gdp-values (car (cdr gdp)))
+(define gdp-n (length gdp-values))
 (display "GDP: ") (display gdp-n) (display " quarterly observations") (newline)
 
 ; --- 2. a second series, restricted to a date range given as `date` values ---
@@ -914,10 +918,6 @@ argument forms:
 (display "FEDFUNDS, 2023 (effective federal funds rate, %):") (newline)
 (print-series (car fedfunds) (cdr fedfunds) 0 (vector-length (car fedfunds)))
 
-; --- 4. once fetched, it's just ordinary vector data -- e.g. a quick derived stat ---
-(display "Average FEDFUNDS in 2023: ")
-(display (/ (vector-sum (cdr fedfunds)) (vector-length (cdr fedfunds))))
-(newline)
 ```
 
 #### `(load-csv filename [has-header?])`
