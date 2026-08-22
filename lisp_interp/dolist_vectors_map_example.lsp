@@ -25,22 +25,30 @@
 ; --- 2. vectors-map: apply a procedure across several vectors at once ---
 
 (newline)
+; Note: vectors-map passes each element's INDEX as an extra, final argument
+; to f -- so f needs one parameter per input vector, plus one more for it.
+
 (display "vectors-map: elementwise combination of three same-length vectors") (newline)
 (define prices #(100 101 99))
 (define rates #(0.04 0.041 0.039))
 (define spreads #(0.01 0.012 0.009))
 (display "  ")
-(display (vectors-map (lambda (p r s) (* p (+ r s))) (list prices rates spreads)))
+(display (vectors-map (lambda (p r s i) (* p (+ r s))) (list prices rates spreads)))
+(newline)
+
+(display "vectors-map: the index argument, for when you actually want it") (newline)
+(display "  ")
+(display (vectors-map (lambda (p r i) (list i p r)) (list prices rates)))
 (newline)
 
 (display "vectors-map: mismatched lengths, stop at the shortest (default)") (newline)
 (display "  ")
-(display (vectors-map + (list #(1 2 3 4 5) #(10 20 30))))
+(display (vectors-map (lambda (a b i) (+ a b)) (list #(1 2 3 4 5) #(10 20 30))))
 (newline)
 
 (display "vectors-map: mismatched lengths, pad the short one with a default") (newline)
 (display "  ")
-(display (vectors-map + (list #(1 2 3 4 5) #(10 20 30)) 0))
+(display (vectors-map (lambda (a b i) (+ a b)) (list #(1 2 3 4 5) #(10 20 30)) 0))
 (newline)
 
 ; --- 3. tail calls run in constant stack space --------------------------
