@@ -1,7 +1,25 @@
 # FEC bulk data loader
 
-Downloads four FEC bulk data files and loads them into MySQL with table
-layouts that match the flat files field-for-field:
+Downloads four FEC bulk data files and loads them into a database with
+table layouts that match the flat files field-for-field. Two
+interchangeable loaders are provided:
+
+- **`fec_loader.py`** -- loads into MySQL via `LOAD DATA LOCAL INFILE`.
+  Use this if other things need concurrent read/write access to the
+  data while it's being updated.
+- **`fec_loader_sqlite.py`** -- loads into a local SQLite file via the
+  `sqlite3` command-line tool's `.import` command (the closest SQLite
+  equivalent of `LOAD DATA`). No server to run or configure. Best for
+  unattended, single-writer setups (e.g. an overnight cron job) where
+  nothing needs to read or write the database while it's loading --
+  SQLite allows only one writer at a time. See
+  [SQLite version](#sqlite-version) below.
+
+Both loaders share the same table names, columns, `config.ini` file,
+and command names (`setup`, `load-static`, `load-indiv`, `load-all`,
+`sync-indiv`, `inspect-schedule-a`, `status`), so everything in this
+README that isn't MySQL/SQL-syntax-specific applies to either one --
+just substitute the script name.
 
 | FEC file | Table | Refresh behavior |
 |---|---|---|
@@ -152,11 +170,94 @@ run (and avoid re-downloading the whole file), that requires querying the
 [OpenFEC API](https://api.open.fec.gov) instead of the bulk files; let me
 know if you'd like that built as an alternative or a supplement.
 
+## SQLite version
+
+`fec_loader_sqlite.py` is a drop-in alternative to `fec_loader.py` that
+needs no database server -- just a local file and the `sqlite3`
+command-line tool (ships with macOS and most Linux distros; if it's
+missing, `brew install sqlite` or `apt install sqlite3`).
+
+```bash
+pip install -r requirements.txt   # only 'requests' is actually needed here
+cp config.ini.example config.ini
+# edit config.ini: [sqlite] db_path = ./fec.db
+
+python fec_loader_sqlite.py setup
+python fec_loader_sqlite.py load-all
+python fec_loader_sqlite.py status
+```
+
+All the same subcommands, `--cycle`, and `sync-indiv`/`inspect-schedule-a`
+OpenFEC options work identically to `fec_loader.py` -- see the sections
+above.
+
+**Why SQLite instead of just using MySQL for everything:** if you don't
+need concurrent access to the data while it's loading (e.g. you run
+updates overnight via cron, when nothing else is querying it), SQLite
+avoids running a database server at all. The tradeoff is that SQLite
+only supports one writer at a time, so this isn't a good fit if you
+need the data to stay live and queryable *during* a load.
+
+**How the bulk loading works:** MySQL's `LOAD DATA LOCAL INFILE` has no
+direct SQLite equivalent inside a normal database connection, but the
+`sqlite3` command-line client's `.import` dot-command does the same
+job -- it streams a delimited text file straight into a table without
+going through row-by-row `INSERT` statements from Python. This script
+shells out to that CLI (via `subprocess`) for every bulk load:
+
+- Candidate Master, Committee Master and Candidate-Committee Linkages
+  match their target tables' columns 1:1, so the extracted file is
+  `.import`ed directly into a freshly dropped-and-recreated table
+  (indexes are recreated afterward).
+- Contributions by Individuals needs a little transformation (the
+  `MMDDYYYY` date and three bookkeeping columns not present in the raw
+  file), so it's `.import`ed into a throwaway staging table first, then
+  copied into `indiv_contributions` with one `INSERT ... SELECT`.
+  Deduplication by `SUB_ID` doesn't need MySQL's `IGNORE` keyword --
+  `indiv_contributions` declares `sub_id INTEGER PRIMARY KEY ON
+  CONFLICT IGNORE`, so *any* insert that collides on an existing
+  `sub_id` (including this one) is silently skipped by SQLite itself.
+
+Since this is meant for unattended single-writer runs where a crash
+mid-load just means re-running the load, the loader trades away
+durability for speed during the bulk-load step: `journal_mode=OFF`
+(no rollback journal at all -- not even WAL) and `synchronous=OFF`.
+This is meaningfully riskier than the defaults -- a crash mid-script
+can in principle leave the database file corrupt, not just missing the
+in-progress transaction -- so don't use this against a database you
+can't afford to recreate from scratch. Each PRAGMA only applies to the
+connection that sets it (the `sqlite3` CLI subprocess for that one
+load), so it doesn't linger and affect other connections opened
+afterward (e.g. `status`).
+
+For `indiv_contributions`, the loader also drops its five secondary
+indexes before the bulk insert and rebuilds them afterward, since
+maintaining them row-by-row during a multi-million-row insert is much
+slower than bulk-building them once at the end (the `sub_id` primary
+key index stays in place throughout, since dedup depends on it). This
+only happens for `load-indiv` (the bulk-file path); `sync-indiv` (the
+OpenFEC API top-up, meant for small day-to-day deltas) leaves indexes
+in place, since rebuilding all of them on every small top-up would cost
+more than it saves.
+
+By default, `load-static`/`load-indiv`/`load-all` delete each
+downloaded zip and extracted flat file once it's been loaded
+successfully -- pass `--keep-downloads` to keep them around instead.
+
+`schema_sqlite.sql` is the SQLite counterpart of `schema.sql`, if you'd
+rather create the schema by hand with `sqlite3 fec.db < schema_sqlite.sql`.
+
 ## Encoding
 
-FEC bulk files are Latin-1/Windows-1252 encoded, not UTF-8. The loader
-tells MySQL to read the files as `latin1` and convert into the tables'
-`utf8mb4` columns, so names with accented characters come through intact.
+FEC bulk files are Latin-1/Windows-1252 encoded, not UTF-8.
+
+- `fec_loader.py` tells MySQL to read the files as `latin1` and convert
+  into the tables' `utf8mb4` columns, so names with accented characters
+  come through intact.
+- `fec_loader_sqlite.py` re-encodes each extracted file from Latin-1 to
+  UTF-8 (SQLite text storage is always UTF-8, and `.import` has no
+  per-file charset option) before running `.import`, then deletes the
+  re-encoded copy.
 
 ## Notes
 
@@ -165,6 +266,8 @@ tells MySQL to read the files as `latin1` and convert into the tables'
   that briefly doesn't yet exist in `candidate_master`). Indexes are added
   on the natural join columns (`cand_id`, `cmte_id`) instead.
 - `TRANSACTION_DT` in the individual contributions file is converted from
-  `MMDDYYYY` text to a real `DATE` column via
-  `STR_TO_DATE(@transaction_dt, '%m%d%Y')`, per your request. Blank dates
-  become `NULL`.
+  `MMDDYYYY` text to a real date column: `STR_TO_DATE(@transaction_dt,
+  '%m%d%Y')` in `fec_loader.py` (MySQL `DATE`), or a `substr()`-built
+  ISO `YYYY-MM-DD` string in `fec_loader_sqlite.py` (SQLite has no native
+  date type; ISO text is what its own date functions expect). Blank
+  dates become `NULL` in both.
