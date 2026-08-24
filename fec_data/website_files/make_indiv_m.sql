@@ -1,0 +1,22 @@
+ CREATE TABLE indiv_m (
+  last_name varchar(60) ,
+  first_name varchar(60) ,
+  city varchar(60) ,
+  state char(2) ,
+  match_name varchar(60) ,
+  priv int(1) ,
+  pub int(1) ,
+  mem int(1) ,
+  prospect int(1) ,
+  dares int(1) ,
+  ep_max_out int(1) ,
+  fec_name varchar(200) ,
+  fec_city varchar(80) ,
+  fec_state char(2) ,
+  fec_employer varchar(80) ,
+  committee_id char(9) ,
+  trans_amount int(11) ,
+  trans_date date ,
+  KEY i_indiv_m_match_name (match_name),
+  KEY i_indiv_m_cid (committee_id)
+)

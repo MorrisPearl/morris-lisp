@@ -1,0 +1,31 @@
+<html>
+ <head>
+  <title>Patriotic Millionaires Donor Lookup Form</title>
+ </head>
+<body>
+Enter names of candidates in box, then press button to get report.
+<div>
+<form action="" method="post", novalidate>
+
+{{ form.hidden_tag() }}
+
+{{ form.cname.label }}
+{{ form.cname(style='height: 60px; width: 400px;') }}
+<br>
+{{ form.dccc_flag.label}} {{ form.dccc_flag() }}
+<br>
+{{ form.dscc_flag.label}} {{ form.dscc_flag() }}
+<br>
+{{ form.dnc_flag.label}} {{ form.dnc_flag() }}
+<br>
+{{ form.report_type.label }}
+{{ form.report_type() }}
+<br>
+{{ form.submit() }}
+</form>
+
+
+</div>
+
+</body>
+</html>

@@ -1,0 +1,54 @@
+<html>
+
+ <head>
+  <title>Patriotic Millionaires Donor Lookup grid Report</title>
+  <style>
+    body {font-size: 80%;}
+  </style>
+
+  <script src="https://unpkg.com/ag-grid-community/dist/ag-grid-community.min.noStyle.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/ag-grid-community/dist/styles/ag-grid.css">
+  <link rel="stylesheet" href="https://unpkg.com/ag-grid-community/dist/styles/ag-theme-balham.css">
+
+
+ </head>
+
+<body>
+  <div id="DonorNameGrid" class="ag-theme-balham"></div>
+  <script type="text/javascript" charset="utf-8">
+    // specify the columns
+    {% set comma3 = joiner(",") %}    
+    var columnDefs = [
+    {% for t in title_list %}
+      {{comma3() }} {headerName: "{{t}}",field:"{{t}}" }
+    {% endfor %}
+    ];
+    var rowData = [
+    {% set comma1 = joiner(",") %}    
+    {% for n in name_list %}
+      {{comma1() }} {
+      {% set comma2 = joiner(",") %}
+      {% for type1, val1 in title_list|zip(n) %}
+        {{comma2() }} {{type1}} : "{{val1}}" 
+      {% endfor %}
+      }
+    {% endfor %}
+    ];
+
+    // let the grid know which columns and what data to use
+    var gridOptions = {
+    onCellClicked: function(event) { console.log('a CELL was clicked'); },
+      columnDefs: columnDefs,
+      rowData: rowData
+    };
+
+  // lookup the container we want the Grid to use
+  var eGridDiv = document.querySelector('#DonorNameGrid');
+
+  // create the grid passing in the div to use together with the columns & data we want to use
+  new agGrid.Grid(eGridDiv, gridOptions);
+
+  </script>
+
+</body>
+</html>

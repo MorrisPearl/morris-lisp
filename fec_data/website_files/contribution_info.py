@@ -1,0 +1,213 @@
+# Testing Flask app with database.
+
+import pprint
+
+import mysql.connector
+from flask import Flask, render_template, request, flash
+
+from flask_wtf import FlaskForm
+from wtforms import StringField, BooleanField, SubmitField, SelectField, TextAreaField
+from wtforms.validators import DataRequired
+
+class candidate_name_form(FlaskForm):
+    cname = TextAreaField('Candidate names')
+    report_type = SelectField('Report Type',
+                              choices=[('mem', 'All Members'),
+                                       ('pro','Prospects'),
+                                       ('priv','Private Members'),
+                                       ('pub', 'Public Members'),
+                                       ('dares', 'Dares people'),
+                                       ('epmax','EP Special Max List'),
+                                       ('all','All Contacts')])
+    dccc_flag = BooleanField('DCCC')
+    dscc_flag = BooleanField('DSCC')
+    dnc_flag = BooleanField('DNC')
+    
+    submit = SubmitField('Do Report')
+
+class new_member_form(FlaskForm):
+    first_name = TextAreaField('First Name')
+    last_name = TextAreaField('Last Name')
+    match_name = TextAreaField('Match Name')
+    city = TextAreaField('City')
+    state = TextAreaField('State')
+    priv = BooleanField('Private')
+    pub = BooleanField('Public')
+    pro = BooleanField('Prospect')
+    dares = BooleanField('DARES')
+    submit_add = SubmitField(label="Add Person")
+    submit_del = SubmitField(label="Remove Person")
+    message = TextAreaField('')
+
+
+report_type_tab = {'mem'	:	'and mem > 0',
+                   'pro'	:	'and prospect > 0',
+                   'epmax'	:	'and ep_max_out > 0',
+                   'priv'	:	'and priv > 0',
+                   'pub'	:	'and pub > 0',
+                   'dares'	:	'and dares > 0',
+                   'all'	:	' '}
+
+app = Flask(__name__)
+app.config["DEBUG"] = True
+
+app.config['SECRET_KEY'] = "542067798312729234611824003439"
+
+app.jinja_env.filters['zip'] = zip
+
+@app.route('/edit', methods=['GET', 'POST'])
+def do_add_form():
+
+    f = new_member_form()
+
+    if f.validate_on_submit():
+        if (f.submit_add.data):
+            j = add_member_to_database(f)
+            f.message.data = "Added member with %d donations!" % j
+
+        elif (f.submit_del.data):
+            j = delete_member_from_database(f)
+            f.message.data = "Deleted member with %d donations!" % j
+
+    return render_template("add_member.html", form=f)
+    # render the template initially AND after submit.
+
+def delete_member_from_database(f):
+    cnx = mysql.connector.connect(user="patrioticmillion",
+                                  password="taxther1%ch",
+                                  host="patrioticmillionaires.mysql.pythonanywhere-services.com",
+                                  database="patrioticmillion$fec_data")
+    c = cnx.cursor()
+    q1 = (" delete from indiv_m "
+          " where last_name = %s and first_name = %s ")
+
+    c.execute(q1, (f.last_name.data , f.first_name.data))
+    j = c.rowcount
+    cnx.commit()
+    c.close()
+    cnx.close()
+    return j
+
+def add_member_to_database(f):
+    cnx = mysql.connector.connect(user="patrioticmillion",
+                                  password="taxther1%ch",
+                                  host="patrioticmillionaires.mysql.pythonanywhere-services.com",
+                                  database="patrioticmillion$fec_data")
+    c = cnx.cursor()
+
+    q1 = (" insert into indiv_m "
+      " select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, name as fec_name, "
+      " city as fec_city, state as fec_state, employer as fec_employer, "
+      " committee_id, trans_amount, trans_date "
+      " from indiv where name like %s ")
+
+    r = c.execute(q1, (f.last_name.data, f.first_name.data, f.city.data, f.state.data, f.match_name.data, f.priv.data, f.pub.data, (f.priv.data + f.pub.data), f.pro.data, f.dares.data, 0, f.match_name.data))
+
+    j = c.rowcount
+
+    cnx.commit()
+    c.close()
+    cnx.close()
+    return j
+
+@app.route('/list')
+def do_list():
+
+    member_list_columns = ('first_name','last_name','city','state','public','private','FEC_Donor_Name',
+               'FEC_city','FEC_state','Count','Total_Donations','Date_of_last_donation')
+
+    c = get_member_list()
+    return render_template("donor_report.html",
+                           title_list=member_list_columns,
+                           name_list=c,
+                           message=" ")
+
+def get_member_list():
+
+    cnx = mysql.connector.connect(user="patrioticmillion",
+                                  password="taxther1%ch",
+                                  host="patrioticmillionaires.mysql.pythonanywhere-services.com",
+                                  database="patrioticmillion$fec_data")
+    c = cnx.cursor()
+
+
+    q = ("select first_name, last_name, city, state, elt(pub+1,\"No\",\"Yes\"), elt(priv+1,\"No\",\"Yes\") , fec_name, fec_city,fec_state, "
+         "count(*) , sum(trans_amount) , max(trans_date) "
+         "from indiv_m d "
+         "group by d.first_name, "
+         "d.last_name, d.city, d.state, pub, priv,fec_name,fec_city,fec_state "
+         "order by last_name, first_name "   )
+
+
+    c.execute(q)
+
+    cc = list(c)
+
+    return(cc)
+
+@app.route('/', methods=['GET', 'POST'])
+def do_form():
+    f = candidate_name_form()
+    if f.validate_on_submit():
+        names = query_report_multi_list(f)
+        columns = ('first_name','last_name','city','state','committee','Candidate','FEC_Donor_Name',
+                   'FEC_city','FEC_state','FEC_Employer','Count','Total_Donations','Date_of_last_donation')
+
+        return render_template("donor_report.html",
+                               title_list=columns,
+                               name_list=names,
+                               message=" ")
+
+    return render_template("candidate_name.html",form=f)
+
+def query_report_multi_list(f):
+
+    cnx = mysql.connector.connect(user="patrioticmillion",
+                                  password="taxther1%ch",
+                                  host="patrioticmillionaires.mysql.pythonanywhere-services.com",
+                                  database="patrioticmillion$fec_data")
+    c = cnx.cursor()
+
+    q1 = "create temporary table comm_ids (committee_id char(9), committee_name char(60), candidate_name char(60), primary key (committee_id))"
+    c.execute(q1)
+
+    if (f.dscc_flag.data):
+        qa = 'insert into comm_ids values ("C00042366","DSCC","N/A")'
+        c.execute(qa)
+
+    if (f.dccc_flag.data):
+        qa = 'insert into comm_ids values ("C00000935","DCCC","N/A")'
+        c.execute(qa)
+
+    if (f.dnc_flag.data):
+        qa = 'insert into comm_ids values ("C00010603","DNC Services","N/A")'
+        c.execute(qa)
+        qa = 'insert into comm_ids values ("C00307991","DNC PAC","N/A")'
+        c.execute(qa)
+        qa = 'insert into comm_ids values ("C00493254","DNC Charlotte","N/A")'
+        c.execute(qa)
+
+    for cname in f.cname.data.split():
+        # The "ignore" in the query means to ignore rows which would duplicate index values, in other words
+        # if we find the same committee_id multiple times, it is only inserted once.
+        q2 = (" insert ignore into comm_ids select distinct c.committee_id, c.committee_name, a.candidate_name"
+              " from committees c, candidates a"
+              " where a.candidate_name like %s and a.candidate_id = c.candidate_id")
+        c.execute(q2,(cname.strip()+"%",))
+
+        cnx.commit()
+
+    q3 = ("select first_name, last_name, city, state, c.committee_name, c.candidate_name, fec_name, fec_city,fec_state, "
+         " fec_employer, count(*) , sum(trans_amount) , max(trans_date) "
+         " from comm_ids c, indiv_m d "
+         " where c.committee_id = d.committee_id "
+          + report_type_tab[f.report_type.data] + 
+         " group by d.first_name, "
+         " d.last_name, d.city, d.state, c.committee_name, fec_city,fec_state,fec_employer "
+         " order by last_name, first_name, c.candidate_name "   )
+
+    c.execute(q3)
+
+    cc = list(c)
+
+    return(cc)
