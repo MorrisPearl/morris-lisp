@@ -1,13 +1,29 @@
-# Testing Flask app with database.
+# Patriotic Millionaires donor-lookup Flask app.
+# SQLite version -- see fec_loader_pa.py for how the database is built
+# and kept up to date.
 
-import pprint
+import configparser
+import os
+import sqlite3
 
-import mysql.connector
 from flask import Flask, render_template, request, flash
 
 from flask_wtf import FlaskForm
 from wtforms import StringField, BooleanField, SubmitField, SelectField, TextAreaField
 from wtforms.validators import DataRequired
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def get_db_path():
+    cfg = configparser.ConfigParser()
+    cfg.read(os.path.join(APP_DIR, "config.ini"))
+    return cfg.get("sqlite", "db_path", fallback=os.path.join(APP_DIR, "fec_pa.db"))
+
+
+def get_connection():
+    return sqlite3.connect(get_db_path())
+
 
 class candidate_name_form(FlaskForm):
     cname = TextAreaField('Candidate names')
@@ -16,13 +32,11 @@ class candidate_name_form(FlaskForm):
                                        ('pro','Prospects'),
                                        ('priv','Private Members'),
                                        ('pub', 'Public Members'),
-                                       ('dares', 'Dares people'),
-                                       ('epmax','EP Special Max List'),
                                        ('all','All Contacts')])
     dccc_flag = BooleanField('DCCC')
     dscc_flag = BooleanField('DSCC')
     dnc_flag = BooleanField('DNC')
-    
+
     submit = SubmitField('Do Report')
 
 class new_member_form(FlaskForm):
@@ -34,7 +48,6 @@ class new_member_form(FlaskForm):
     priv = BooleanField('Private')
     pub = BooleanField('Public')
     pro = BooleanField('Prospect')
-    dares = BooleanField('DARES')
     submit_add = SubmitField(label="Add Person")
     submit_del = SubmitField(label="Remove Person")
     message = TextAreaField('')
@@ -42,10 +55,8 @@ class new_member_form(FlaskForm):
 
 report_type_tab = {'mem'	:	'and mem > 0',
                    'pro'	:	'and prospect > 0',
-                   'epmax'	:	'and ep_max_out > 0',
                    'priv'	:	'and priv > 0',
                    'pub'	:	'and pub > 0',
-                   'dares'	:	'and dares > 0',
                    'all'	:	' '}
 
 app = Flask(__name__)
@@ -73,15 +84,12 @@ def do_add_form():
     # render the template initially AND after submit.
 
 def delete_member_from_database(f):
-    cnx = mysql.connector.connect(user="patrioticmillion",
-                                  password="taxther1%ch",
-                                  host="patrioticmillionaires.mysql.pythonanywhere-services.com",
-                                  database="patrioticmillion$fec_data")
+    cnx = get_connection()
     c = cnx.cursor()
     q1 = (" delete from indiv_m "
-          " where last_name = %s and first_name = %s ")
+          " where last_name = ? and first_name = ? ")
 
-    c.execute(q1, (f.last_name.data , f.first_name.data))
+    c.execute(q1, (f.last_name.data, f.first_name.data))
     j = c.rowcount
     cnx.commit()
     c.close()
@@ -89,19 +97,24 @@ def delete_member_from_database(f):
     return j
 
 def add_member_to_database(f):
-    cnx = mysql.connector.connect(user="patrioticmillion",
-                                  password="taxther1%ch",
-                                  host="patrioticmillionaires.mysql.pythonanywhere-services.com",
-                                  database="patrioticmillion$fec_data")
+    cnx = get_connection()
     c = cnx.cursor()
 
-    q1 = (" insert into indiv_m "
-      " select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, name as fec_name, "
-      " city as fec_city, state as fec_state, employer as fec_employer, "
-      " committee_id, trans_amount, trans_date "
-      " from indiv where name like %s ")
+    priv = int(bool(f.priv.data))
+    pub = int(bool(f.pub.data))
+    pro = int(bool(f.pro.data))
 
-    r = c.execute(q1, (f.last_name.data, f.first_name.data, f.city.data, f.state.data, f.match_name.data, f.priv.data, f.pub.data, (f.priv.data + f.pub.data), f.pro.data, f.dares.data, 0, f.match_name.data))
+    q1 = (" insert into indiv_m "
+      " (last_name, first_name, city, state, match_name, priv, pub, mem, prospect, "
+      "  fec_name, fec_city, fec_state, fec_employer, committee_id, trans_amount, trans_date) "
+      " select ?, ?, ?, ?, ?, ?, ?, ?, ?, name, "
+      " city, state, employer, "
+      " cmte_id, transaction_amt, transaction_dt "
+      " from indiv_contributions where name like ? ")
+
+    c.execute(q1, (f.last_name.data, f.first_name.data, f.city.data, f.state.data,
+                   f.match_name.data, priv, pub, (priv + pub), pro,
+                   f.match_name.data))
 
     j = c.rowcount
 
@@ -124,20 +137,18 @@ def do_list():
 
 def get_member_list():
 
-    cnx = mysql.connector.connect(user="patrioticmillion",
-                                  password="taxther1%ch",
-                                  host="patrioticmillionaires.mysql.pythonanywhere-services.com",
-                                  database="patrioticmillion$fec_data")
+    cnx = get_connection()
     c = cnx.cursor()
 
-
-    q = ("select first_name, last_name, city, state, elt(pub+1,\"No\",\"Yes\"), elt(priv+1,\"No\",\"Yes\") , fec_name, fec_city,fec_state, "
-         "count(*) , sum(trans_amount) , max(trans_date) "
+    q = ("select first_name, last_name, city, state, "
+         "case when pub > 0 then 'Yes' else 'No' end, "
+         "case when priv > 0 then 'Yes' else 'No' end, "
+         "fec_name, fec_city, fec_state, "
+         "count(*), sum(trans_amount), max(trans_date) "
          "from indiv_m d "
          "group by d.first_name, "
-         "d.last_name, d.city, d.state, pub, priv,fec_name,fec_city,fec_state "
+         "d.last_name, d.city, d.state, pub, priv, fec_name, fec_city, fec_state "
          "order by last_name, first_name "   )
-
 
     c.execute(q)
 
@@ -162,13 +173,12 @@ def do_form():
 
 def query_report_multi_list(f):
 
-    cnx = mysql.connector.connect(user="patrioticmillion",
-                                  password="taxther1%ch",
-                                  host="patrioticmillionaires.mysql.pythonanywhere-services.com",
-                                  database="patrioticmillion$fec_data")
+    cnx = get_connection()
     c = cnx.cursor()
 
-    q1 = "create temporary table comm_ids (committee_id char(9), committee_name char(60), candidate_name char(60), primary key (committee_id))"
+    q1 = ("create temp table comm_ids ("
+          "committee_id text, committee_name text, candidate_name text, "
+          "primary key (committee_id))")
     c.execute(q1)
 
     if (f.dscc_flag.data):
@@ -188,26 +198,30 @@ def query_report_multi_list(f):
         c.execute(qa)
 
     for cname in f.cname.data.split():
-        # The "ignore" in the query means to ignore rows which would duplicate index values, in other words
-        # if we find the same committee_id multiple times, it is only inserted once.
-        q2 = (" insert ignore into comm_ids select distinct c.committee_id, c.committee_name, a.candidate_name"
-              " from committees c, candidates a"
-              " where a.candidate_name like %s and a.candidate_id = c.candidate_id")
-        c.execute(q2,(cname.strip()+"%",))
+        # "insert or ignore" means to ignore rows which would duplicate index values,
+        # i.e. if we find the same committee_id multiple times, it's only inserted once.
+        q2 = (" insert or ignore into comm_ids select distinct c.cmte_id, c.cmte_nm, a.cand_name"
+              " from committee_master c, candidate_master a"
+              " where a.cand_name like ? and a.cand_id = c.cand_id")
+        c.execute(q2, (cname.strip() + "%",))
 
         cnx.commit()
 
-    q3 = ("select first_name, last_name, city, state, c.committee_name, c.candidate_name, fec_name, fec_city,fec_state, "
-         " fec_employer, count(*) , sum(trans_amount) , max(trans_date) "
+    q3 = ("select first_name, last_name, city, state, c.committee_name, c.candidate_name, "
+         " fec_name, fec_city, fec_state, "
+         " fec_employer, count(*), sum(trans_amount), max(trans_date) "
          " from comm_ids c, indiv_m d "
          " where c.committee_id = d.committee_id "
-          + report_type_tab[f.report_type.data] + 
+          + report_type_tab[f.report_type.data] +
          " group by d.first_name, "
-         " d.last_name, d.city, d.state, c.committee_name, fec_city,fec_state,fec_employer "
+         " d.last_name, d.city, d.state, c.committee_name, fec_city, fec_state, fec_employer "
          " order by last_name, first_name, c.candidate_name "   )
 
     c.execute(q3)
 
     cc = list(c)
+
+    c.execute("drop table comm_ids")
+    cnx.commit()
 
     return(cc)
