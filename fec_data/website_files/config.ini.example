@@ -1,0 +1,8 @@
+; Copy this file to config.ini (same directory as contribution_info.py
+; and fec_loader_pa.py) and adjust if needed.
+
+[sqlite]
+db_path = /home/patrioticmillionaires/fec_data/fec_pa.db
+
+[download]
+dest_dir = /home/patrioticmillionaires/fec_data/fec_downloads
