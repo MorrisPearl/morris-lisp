@@ -91,14 +91,72 @@ CODE_TO_MONTH = {v: k for k, v in MONTH_CODES.items()}
 # single-digit year). Adding a new product is just adding a line here —
 # everything else (chain parsing, delivery-month grouping, near-the-money
 # filtering) is generic.
+
 PRODUCTS = {
-    "CL": {"root": "/CL", "label": "CL — WTI Crude Oil"},
-    "MCL": {"root": "/MCL", "label": "MCL — Micro WTI Crude Oil"},
-    "ES": {"root": "/ES", "label": "ES — E-mini S&P 500"},
-    "NQ": {"root": "/NQ", "label": "NQ — E-mini Nasdaq-100"},
-    "SR3": {"root": "/SR3", "label": "SR3 — Three-Month SOFR"},
-    "ZN": {"root": "/ZN", "label": "ZN — 10-Year T-Note"},
-    "ZQ": {"root": "/ZQ", "label": "ZQ — 30-Day Fed Funds"},
+"CL": {"root":"/CL","opt": " *", "label": "Crude Oil *"},
+"MCL": {"root":"/MCL","opt": " *", "label": "Micro Crude Oil *"},
+"ES": {"root":"/ES","opt": " *", "label": "E-mini S&P 500 *"},
+"MES": {"root":"/MES","opt": " *", "label": "Micro E-mini S&P 500 *"},
+"NQ": {"root":"/NQ","opt": " *", "label": "E-mini Nasdaq 100 *"},
+"MNQ": {"root":"/MNQ","opt": " *", "label": "Micro E-mini NASDAQ 100 *"},
+"YM": {"root":"/YM","opt": " ", "label": "E-mini Dow 30 "},
+"MYM": {"root":"/MYM","opt": " ", "label": "Micro E-mini DOW "},
+"RTY": {"root":"/RTY","opt": " *", "label": "E-mini Russell 2000 *"},
+"M2K": {"root":"/M2K","opt": " ", "label": "Micro E-mini Russell 2000 "},
+"ZT": {"root":"/ZT","opt": " *", "label": "2 Year T-Note *"},
+"ZF": {"root":"/ZF","opt": " *", "label": "5 Year T-Note *"},
+"ZN": {"root":"/ZN","opt": " *", "label": "10 Year T-Note *"},
+"ZB": {"root":"/ZB","opt": " *", "label": "30 Year T-Bond *"},
+"SR3": {"root":"/SR3","opt": " *", "label": "Three-Month SOFR *"},
+"2YY": {"root":"/2YY","opt": " ", "label": "2-Year Yield "},
+"5YY": {"root":"/5YY","opt": " ", "label": "5-Year Yield "},
+"10Y": {"root":"/10Y","opt": " ", "label": "10-Year Yield "},
+"30Y": {"root":"/30Y","opt": " ", "label": "30-Year Yield "},
+"TN": {"root":"/TN","opt": " ", "label": "Ultra 10-Year U.S. Treasury Note "},
+"UB": {"root":"/UB","opt": " ", "label": "Ultra U.S. Treasury Bonds "},
+"6E": {"root":"/6E","opt": " *", "label": "Euro FX *"},
+"M6E": {"root":"/M6E","opt": " ", "label": "Micro Euro "},
+"6J": {"root":"/6J","opt": " *", "label": "Japanese Yen *"},
+"6B": {"root":"/6B","opt": " *", "label": "British Pound *"},
+"M6B": {"root":"/M6B","opt": " ", "label": "Micro British Pound "},
+"6C": {"root":"/6C","opt": " *", "label": "Canadian Dollar *"},
+"MCD": {"root":"/MCD","opt": " ", "label": "Micro Canadian Dollar "},
+"6A": {"root":"/6A","opt": " *", "label": "Australian Dollar *"},
+"M6A": {"root":"/M6A","opt": " ", "label": "Micro Australian Dollar "},
+"6M": {"root":"/6M","opt": " ", "label": "Mexican Peso "},
+"6S": {"root":"/6S","opt": " ", "label": "Swiss Franc "},
+"QM": {"root":"/QM","opt": " ", "label": "E-mini Crude Oil "},
+"NG": {"root":"/NG","opt": " *", "label": "Henry Hub Natural Gas *"},
+"MNG": {"root":"/MNG","opt": " ", "label": "Micro Henry Hub Natural Gas "},
+"QG": {"root":"/QG","opt": " ", "label": "E-mini Natural Gas "},
+"RB": {"root":"/RB","opt": " ", "label": "RBOB Gasoline "},
+"HO": {"root":"/HO","opt": " ", "label": "Heating Oil "},
+"BZ": {"root":"/BZ","opt": " ", "label": "Brent Crude Oil "},
+"GC": {"root":"/GC","opt": " *", "label": "Gold *"},
+"MGC": {"root":"/MGC","opt": " ", "label": "Micro Gold "},
+"1OZ": {"root":"/1OZ","opt": " ", "label": "1-oz. Gold "},
+"HG": {"root":"/HG","opt": " *", "label": "Copper *"},
+"MHG": {"root":"/MHG","opt": " ", "label": "Micro Copper "},
+"SI": {"root":"/SI","opt": " *", "label": "Silver *"},
+"SIL": {"root":"/SIL","opt": " ", "label": "Micro Silver "},
+"SIC": {"root":"/SIC","opt": " ", "label": "Silver 100-oz. "},
+"PL": {"root":"/PL","opt": " ", "label": "Platinum "},
+"PA": {"root":"/PA","opt": " ", "label": "Palladium "},
+"ZC": {"root":"/ZC","opt": " *", "label": "Corn Futures *"},
+"XC": {"root":"/XC","opt": " ", "label": "Mini Corn "},
+"ZS": {"root":"/ZS","opt": " *", "label": "Soybean *"},
+"XK": {"root":"/XK","opt": " ", "label": "Mini Soybean "},
+"ZW": {"root":"/ZW","opt": " *", "label": "Chicago SRW Wheat *"},
+"XW": {"root":"/XW","opt": " ", "label": "Mini Chicago SRW Wheat "},
+"BTC": {"root":"/BTC","opt": " *", "label": "Bitcoin *"},
+"MBT": {"root":"/MBT","opt": " ", "label": "Micro Bitcoin "},
+"ETH": {"root":"/ETH","opt": " *", "label": "Ether *"},
+"MET": {"root":"/MET","opt": " ", "label": "Micro Ether "},
+"MXP": {"root":"/MXP","opt": " ", "label": "Micro XRP "},
+"LE": {"root":"/LE","opt": " *", "label": "Live Cattle *"},
+"HE": {"root":"/HE","opt": " *", "label": "Lean Hog *"},
+"VX": {"root":"/VX","opt": " ", "label": "CBOE Volatility Index "},
+"VXM": {"root":"/VXM","opt": " ", "label": "CBOE Mini Volatility Index "}
 }
 
 COLUMNS = [
@@ -107,10 +165,8 @@ COLUMNS = [
     "Volume", "Open Interest",
 ]
 
-
 class CredentialsError(Exception):
     pass
-
 
 def load_credentials(path: str) -> dict:
     p = Path(path)
