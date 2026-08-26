@@ -133,3 +133,13 @@ CREATE TABLE IF NOT EXISTS indiv_m (
 );
 CREATE INDEX IF NOT EXISTS idx_indiv_m_match_name ON indiv_m (match_name);
 CREATE INDEX IF NOT EXISTS idx_indiv_m_committee_id ON indiv_m (committee_id);
+
+-- Tracks the highest indiv_contributions.load_batch_id already folded
+-- into indiv_m, so update_indiv_m() (the incremental nightly path in
+-- fec_loader_pa.py) only has to look at rows added since the last
+-- rebuild/update instead of rescanning the whole table each time.
+CREATE TABLE IF NOT EXISTS indiv_m_state (
+    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+    last_load_batch_id  INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO indiv_m_state (id, last_load_batch_id) VALUES (1, 0);

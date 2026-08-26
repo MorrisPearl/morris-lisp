@@ -1,12 +1,14 @@
 ; ---------------------------------------------------------------------
-; tastytrade example: retrieve and print real broker data (futures curve
-; and futures-option chain) via the tastytrade-* functions. Needs the
-; `tastytrade` package (pip install tastytrade), a tastytrade account,
-; and a local credentials JSON file -- see tasty_api/README.md for the
-; one-time OAuth setup. The same credentials file works for tasty_api
-; and this interpreter.
+; tastytrade example: retrieve and print real broker data (futures curve,
+; futures/equity option chains, and rich/cheap curve analysis) via the
+; tastytrade-* functions -- the full functionality of the tasty_api/
+; desktop app, as plain builtins. Needs the `tastytrade` package
+; (pip install tastytrade), a tastytrade account, and a local
+; credentials JSON file -- see tasty_api/README.md for the one-time
+; OAuth setup. The same credentials file works for tasty_api and this
+; interpreter.
 ;
-; Exercises all four tastytrade-* builtins.
+; Exercises all seven tastytrade-* builtins.
 ; ---------------------------------------------------------------------
 
 (define creds "tastytrade_credentials.json")   ; edit to your credentials file's path
@@ -56,7 +58,7 @@
 ;        returns quickly ---
 (define chain (tastytrade-option-chain creds "CL" 2 5 #f))
 (display "CL option chain, no IV (") (display (length chain)) (display " contracts):") (newline)
-(display "  (symbol type strike expiration delivery-month underlying price iv volume oi)") (newline)
+(display "  (symbol type strike expiration days-to-expiration delivery-month underlying price iv volume oi)") (newline)
 (print-each chain)
 (newline)
 
@@ -66,4 +68,44 @@
 (define chain-iv (tastytrade-option-chain creds "CL" 1 3 #t 20.0))
 (display "CL option chain, with IV (") (display (length chain-iv)) (display " contracts):") (newline)
 (print-each chain-iv)
+(newline)
+
+; --- 6. tastytrade-option-chain on an equity: any symbol that isn't a
+;        futures root ("/..." or a known short code like "CL") is
+;        fetched as an equity option chain automatically, no separate
+;        function or symbol translation needed. For equities,
+;        delivery-month is always '() (there's no separate delivery
+;        month the way there is for a futures option) and underlying
+;        is just the equity symbol itself; n-months limits results to
+;        expirations within that many months from today. ---
+(define aapl-chain (tastytrade-option-chain creds "AAPL" 2 5 #f))
+(display "AAPL option chain, no IV (") (display (length aapl-chain)) (display " contracts):") (newline)
+(print-each aapl-chain)
+(newline)
+
+; --- 7. tastytrade-curve-fit: per-contract rich/cheap vs. a fitted
+;        curve. Fetch the curve ROWS once (unlike plain
+;        tastytrade-futures-curve, these also carry the futures symbol
+;        and days-to-delivery that the analysis needs); tastytrade-curve-fit
+;        itself does no networking, so re-running it with a different
+;        threshold is instant. ---
+(define curve-rows (tastytrade-futures-curve-rows creds "CL" 8))
+(define fit (tastytrade-curve-fit curve-rows 0.75))
+(display "CL curve-fit rich/cheap (threshold 0.75%):") (newline)
+(display "  (delivery-month symbol days-to-delivery price fitted-price rich-cheap-pct signal)") (newline)
+(print-each fit)
+(newline)
+
+; --- 8. tastytrade-leg-carry: pairwise (adjacent contract month)
+;        implied cost-of-carry decomposition -- also pure, no
+;        networking, reusing curve-rows from step 7. See the big
+;        methodology comment at the top of tasty_api/relative_value.py
+;        for what these numbers mean and their limits (the storage-cost/
+;        convenience-yield split is only literal for a storable physical
+;        commodity like CL; for financial futures read it as
+;        illustrative, not a real estimate). ---
+(define legs (tastytrade-leg-carry curve-rows 4.25 3.0 1.0))
+(display "CL implied carry by leg (funding rate 4.25%, storage cost 3.0%):") (newline)
+(display "  (near-month far-month near-price far-price days-between carry-rate-pct net-storage-pct convenience-yield-pct signal)") (newline)
+(print-each legs)
 (newline)

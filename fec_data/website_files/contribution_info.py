@@ -36,13 +36,13 @@ class candidate_name_form(FlaskForm):
     dccc_flag = BooleanField('DCCC')
     dscc_flag = BooleanField('DSCC')
     dnc_flag = BooleanField('DNC')
+    no_group = BooleanField('Show every matching donation (no grouping)')
 
     submit = SubmitField('Do Report')
 
 class new_member_form(FlaskForm):
     first_name = TextAreaField('First Name')
     last_name = TextAreaField('Last Name')
-    match_name = TextAreaField('Match Name')
     city = TextAreaField('City')
     state = TextAreaField('State')
     priv = BooleanField('Private')
@@ -96,7 +96,23 @@ def delete_member_from_database(f):
     cnx.close()
     return j
 
+def build_match_name(last_name, first_name):
+    """Derives the FEC-name LIKE pattern the same way load_members.sql
+    does: LASTNAME, FIR% (last name in full, first three letters of the
+    first name), both upper-cased to match FEC's all-caps contributor
+    names."""
+    last = (last_name or "").strip().upper()
+    first3 = (first_name or "").strip().upper()[:3]
+    return "{}, {}%".format(last, first3)
+
 def add_member_to_database(f):
+    match_name = build_match_name(f.last_name.data, f.first_name.data)
+    if match_name in ("", ", %"):
+        # last_name (and/or first_name) was blank -- this pattern would
+        # match every row in indiv_contributions, which is never what's
+        # wanted, so refuse rather than silently vacuuming in everyone.
+        return 0
+
     cnx = get_connection()
     c = cnx.cursor()
 
@@ -113,8 +129,8 @@ def add_member_to_database(f):
       " from indiv_contributions where name like ? ")
 
     c.execute(q1, (f.last_name.data, f.first_name.data, f.city.data, f.state.data,
-                   f.match_name.data, priv, pub, (priv + pub), pro,
-                   f.match_name.data))
+                   match_name, priv, pub, (priv + pub), pro,
+                   match_name))
 
     j = c.rowcount
 
@@ -160,9 +176,14 @@ def get_member_list():
 def do_form():
     f = candidate_name_form()
     if f.validate_on_submit():
-        names = query_report_multi_list(f)
-        columns = ('first_name','last_name','city','state','committee','Candidate','FEC_Donor_Name',
-                   'FEC_city','FEC_state','FEC_Employer','Count','Total_Donations','Date_of_last_donation')
+        no_group = bool(f.no_group.data)
+        names = query_report_multi_list(f, no_group=no_group)
+        if no_group:
+            columns = ('first_name','last_name','city','state','committee','Candidate','FEC_Donor_Name',
+                       'FEC_city','FEC_state','FEC_Employer','Amount','Date')
+        else:
+            columns = ('first_name','last_name','city','state','committee','Candidate','FEC_Donor_Name',
+                       'FEC_city','FEC_state','FEC_Employer','Count','Total_Donations','Date_of_last_donation')
 
         return render_template("donor_report.html",
                                title_list=columns,
@@ -171,7 +192,7 @@ def do_form():
 
     return render_template("candidate_name.html",form=f)
 
-def query_report_multi_list(f):
+def query_report_multi_list(f, no_group=False):
 
     cnx = get_connection()
     c = cnx.cursor()
@@ -207,15 +228,24 @@ def query_report_multi_list(f):
 
         cnx.commit()
 
-    q3 = ("select first_name, last_name, city, state, c.committee_name, c.candidate_name, "
-         " fec_name, fec_city, fec_state, "
-         " fec_employer, count(*), sum(trans_amount), max(trans_date) "
-         " from comm_ids c, indiv_m d "
-         " where c.committee_id = d.committee_id "
-          + report_type_tab[f.report_type.data] +
-         " group by d.first_name, "
-         " d.last_name, d.city, d.state, c.committee_name, fec_city, fec_state, fec_employer "
-         " order by last_name, first_name, c.candidate_name "   )
+    if no_group:
+        q3 = ("select first_name, last_name, city, state, c.committee_name, c.candidate_name, "
+             " fec_name, fec_city, fec_state, "
+             " fec_employer, trans_amount, trans_date "
+             " from comm_ids c, indiv_m d "
+             " where c.committee_id = d.committee_id "
+              + report_type_tab[f.report_type.data] +
+             " order by last_name, first_name, c.candidate_name, trans_date "   )
+    else:
+        q3 = ("select first_name, last_name, city, state, c.committee_name, c.candidate_name, "
+             " fec_name, fec_city, fec_state, "
+             " fec_employer, count(*), sum(trans_amount), max(trans_date) "
+             " from comm_ids c, indiv_m d "
+             " where c.committee_id = d.committee_id "
+              + report_type_tab[f.report_type.data] +
+             " group by d.first_name, "
+             " d.last_name, d.city, d.state, c.committee_name, fec_city, fec_state, fec_employer "
+             " order by last_name, first_name, c.candidate_name "   )
 
     c.execute(q3)
 

@@ -10,9 +10,18 @@ the Patriotic Millionaires donor-lookup app:
     -- see schema_pa.sql for the exact column list and rationale.
   - Adds ngp_contacts (the membership list) and indiv_m (a precomputed
     join of ngp_contacts x indiv_contributions, matched by
-    indiv_contributions.name LIKE ngp_contacts.match_name) plus a
-    rebuild-indiv-m command to regenerate indiv_m after either
-    ngp_contacts or indiv_contributions changes.
+    indiv_contributions.name LIKE ngp_contacts.match_name), with two
+    ways to keep indiv_m current:
+      - rebuild-indiv-m: full rescan (DELETE + re-INSERT everything).
+        Expensive -- use after a bulk historical load or a large
+        change to ngp_contacts.
+      - update-indiv-m: incremental. Tracks the highest
+        indiv_contributions.load_batch_id already folded into indiv_m
+        (in indiv_m_state), stages only newer rows in a temp table,
+        and joins *that* against ngp_contacts -- appending new matches
+        instead of rescanning the whole table. This is what nightly
+        runs use, since a nightly top-up only adds a small number of
+        rows and a full rescan every night would waste CPU quota.
   - Designed to run within PythonAnywhere's daily CPU-second quota:
     load-static/load-indiv/load-all/rebuild-indiv-m are meant to be run
     incrementally (e.g. one cycle at a time, via a scheduled task),
@@ -24,11 +33,12 @@ Usage:
     python3 fec_loader_pa.py load-indiv         [--cycle 2026]
     python3 fec_loader_pa.py load-all           [--cycle 2026]
     python3 fec_loader_pa.py rebuild-indiv-m
+    python3 fec_loader_pa.py update-indiv-m
     python3 fec_loader_pa.py nightly-update     [--cycle 2026]
     python3 fec_loader_pa.py status
 
 `nightly-update` is what the scheduled task runs: load-indiv for the
-given cycle (default: current cycle), then rebuild-indiv-m.
+given cycle (default: current cycle), then update-indiv-m (incremental).
 
 Configuration is read from config.ini (see config.ini.example) or
 overridden with --db-path.
@@ -214,6 +224,17 @@ INDIV_M_TABLE_SQL = """
         committee_id    TEXT,
         trans_amount    REAL,
         trans_date      TEXT
+    );
+"""
+
+# Tracks the highest indiv_contributions.load_batch_id already folded
+# into indiv_m, so update_indiv_m() only has to look at rows added
+# since the last update instead of rescanning the whole (growing)
+# table against every ngp_contacts pattern each time.
+INDIV_M_STATE_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS indiv_m_state (
+        id                  INTEGER PRIMARY KEY CHECK (id = 1),
+        last_load_batch_id  INTEGER NOT NULL DEFAULT 0
     );
 """
 
@@ -467,8 +488,8 @@ def load_indiv_table(db_path, txt_path, source_file, election_cycle):
 .output /dev/null
 PRAGMA journal_mode=OFF;
 PRAGMA synchronous=OFF;
-PRAGMA temp_store=MEMORY;
-PRAGMA cache_size=-100000;
+PRAGMA temp_store=FILE;
+PRAGMA cache_size=-20000;
 {indiv_table}
 {index_drops}
 DROP TABLE IF EXISTS stg_indiv;
@@ -535,6 +556,7 @@ def rebuild_indiv_m(db_path):
 PRAGMA journal_mode=OFF;
 PRAGMA synchronous=OFF;
 {indiv_m_table}
+{indiv_m_state_table}
 DELETE FROM indiv_m;
 INSERT INTO indiv_m
     (last_name, first_name, city, state, match_name, priv, pub, mem, prospect,
@@ -545,7 +567,10 @@ SELECT
     d.name, d.city, d.state, d.employer, d.cmte_id, d.transaction_amt, d.transaction_dt
 FROM ngp_contacts m
 JOIN indiv_contributions d ON d.name LIKE m.match_name;
-""".format(indiv_m_table=INDIV_M_TABLE_SQL)
+INSERT INTO indiv_m_state (id, last_load_batch_id)
+    VALUES (1, (SELECT COALESCE(MAX(load_batch_id), 0) FROM indiv_contributions))
+    ON CONFLICT (id) DO UPDATE SET last_load_batch_id = excluded.last_load_batch_id;
+""".format(indiv_m_table=INDIV_M_TABLE_SQL, indiv_m_state_table=INDIV_M_STATE_TABLE_SQL)
     run_sqlite_cli(db_path, script)
     elapsed = time.time() - start
 
@@ -555,6 +580,56 @@ JOIN indiv_contributions d ON d.name LIKE m.match_name;
     n = cur.fetchone()[0]
     conn.close()
     print("  indiv_m: {} rows ({:.0f}s).".format(n, elapsed))
+
+
+def update_indiv_m(db_path):
+    """Incremental counterpart to rebuild_indiv_m(): instead of
+    rescanning the whole (and ever-growing) indiv_contributions table
+    against every ngp_contacts pattern, this only looks at rows added
+    since the last rebuild/update (tracked via indiv_m_state), stages
+    just those rows in a temp table, and joins *that* against
+    ngp_contacts -- appending new matches to indiv_m rather than
+    replacing it. This is what the nightly scheduled task runs, since
+    a nightly top-up only adds a small number of new rows and doing a
+    full rebuild for that every night would waste CPU quota re-scanning
+    everything already processed."""
+    print("Updating indiv_m (incremental) ...")
+    start = time.time()
+    script = """
+.bail on
+.output /dev/null
+PRAGMA journal_mode=OFF;
+PRAGMA synchronous=OFF;
+{indiv_m_table}
+{indiv_m_state_table}
+INSERT OR IGNORE INTO indiv_m_state (id, last_load_batch_id) VALUES (1, 0);
+DROP TABLE IF EXISTS stg_new_indiv;
+CREATE TEMP TABLE stg_new_indiv AS
+SELECT * FROM indiv_contributions
+WHERE load_batch_id > (SELECT last_load_batch_id FROM indiv_m_state WHERE id = 1);
+INSERT INTO indiv_m
+    (last_name, first_name, city, state, match_name, priv, pub, mem, prospect,
+     fec_name, fec_city, fec_state, fec_employer, committee_id, trans_amount, trans_date)
+SELECT
+    m.last_name, m.first_name, m.city, m.state, m.match_name,
+    m.priv, m.pub, m.mem, m.prospect,
+    d.name, d.city, d.state, d.employer, d.cmte_id, d.transaction_amt, d.transaction_dt
+FROM ngp_contacts m
+JOIN stg_new_indiv d ON d.name LIKE m.match_name;
+UPDATE indiv_m_state SET last_load_batch_id =
+    (SELECT COALESCE(MAX(load_batch_id), last_load_batch_id) FROM indiv_contributions)
+    WHERE id = 1;
+DROP TABLE stg_new_indiv;
+""".format(indiv_m_table=INDIV_M_TABLE_SQL, indiv_m_state_table=INDIV_M_STATE_TABLE_SQL)
+    run_sqlite_cli(db_path, script)
+    elapsed = time.time() - start
+
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM indiv_m")
+    n = cur.fetchone()[0]
+    conn.close()
+    print("  indiv_m: {} rows total ({:.0f}s).".format(n, elapsed))
 
 
 # --------------------------------------------------------------------------
@@ -578,6 +653,8 @@ def cmd_setup(args, db_path, download_dir):
     cur.execute(INDIV_M_TABLE_SQL)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_indiv_m_match_name ON indiv_m (match_name);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_indiv_m_committee_id ON indiv_m (committee_id);")
+    cur.execute(INDIV_M_STATE_TABLE_SQL)
+    cur.execute("INSERT OR IGNORE INTO indiv_m_state (id, last_load_batch_id) VALUES (1, 0);")
     conn.commit()
     conn.close()
     print("Schema is ready ({}).".format(db_path))
@@ -612,9 +689,13 @@ def cmd_rebuild_indiv_m(args, db_path, download_dir):
     rebuild_indiv_m(db_path)
 
 
+def cmd_update_indiv_m(args, db_path, download_dir):
+    update_indiv_m(db_path)
+
+
 def cmd_nightly_update(args, db_path, download_dir):
     cmd_load_indiv(args, db_path, download_dir)
-    rebuild_indiv_m(db_path)
+    update_indiv_m(db_path)
 
 
 def cmd_status(args, db_path, download_dir):
@@ -625,6 +706,9 @@ def cmd_status(args, db_path, download_dir):
                    "indiv_contributions", "ngp_contacts", "indiv_m"):
         cur.execute("SELECT COUNT(*) FROM {}".format(table))
         print("  {:<22} {:>15,}".format(table, cur.fetchone()[0]))
+    cur.execute("SELECT last_load_batch_id FROM indiv_m_state WHERE id = 1")
+    row = cur.fetchone()
+    print("  indiv_m_state.last_load_batch_id: {}".format(row[0] if row else "(unset)"))
     print("\nRecent load history:")
     cur.execute(
         "SELECT load_batch_id, table_name, source_file, election_cycle, "
@@ -662,10 +746,17 @@ def build_arg_parser():
         sp.add_argument("--keep-downloads", action="store_true")
 
     sub.add_parser("rebuild-indiv-m",
-                    help="Rebuild indiv_m from ngp_contacts + indiv_contributions.")
+                    help="Full rebuild of indiv_m from ngp_contacts + indiv_contributions "
+                         "(rescans everything -- expensive; use after a bulk historical "
+                         "load or a big change to ngp_contacts).")
+
+    sub.add_parser("update-indiv-m",
+                    help="Incremental indiv_m update: only joins indiv_contributions rows "
+                         "added since the last rebuild/update, appending new matches.")
 
     sp = sub.add_parser("nightly-update",
-                         help="load-indiv then rebuild-indiv-m -- what the scheduled task runs.")
+                         help="load-indiv then update-indiv-m (incremental) -- what the "
+                              "scheduled task runs.")
     sp.add_argument("--cycle", type=int, default=None)
     sp.add_argument("--keep-downloads", action="store_true")
 
@@ -688,6 +779,7 @@ def main():
         "load-indiv": cmd_load_indiv,
         "load-all": cmd_load_all,
         "rebuild-indiv-m": cmd_rebuild_indiv_m,
+        "update-indiv-m": cmd_update_indiv_m,
         "nightly-update": cmd_nightly_update,
         "status": cmd_status,
     }

@@ -1,8 +1,9 @@
 # Simple Lisp — Reference
 
 A small Lisp with vectors, dates, macros, linear/logistic/spline regression,
-XY charting, FRED economic-data access, real tastytrade broker data, and a
-built-in debugger — plus an optional PyQt6 GUI.
+XY charting, FRED economic-data access, real tastytrade broker data (futures
+and equity option chains, futures-curve rich/cheap and calendar-spread carry
+analysis), and a built-in debugger — plus an optional PyQt6 GUI.
 
 This document aims to cover **every builtin and special form** the
 interpreter provides: what its arguments mean, what it returns, and any
@@ -953,8 +954,14 @@ vectors-list)`: `headers-list` is a Lisp list of column-name strings,
 ### tastytrade (real broker data)
 
 Requires the `tastytrade` package (`pip install tastytrade`) and a
-tastytrade account. All four functions take `credentials-path` first — a
-local JSON file:
+tastytrade account. This is the full data-and-analysis functionality of
+the `tasty_api/` desktop app, ported here as plain synchronous builtins
+(each one just wraps an internal `asyncio.run(...)` call, the same way
+`fred-series` wraps a plain `urllib` call) — no PyQt6 dependency, and
+nothing here needs a GUI running.
+
+Five of the seven functions do real network I/O and take
+`credentials-path` first — a local JSON file:
 ```json
 {"client_secret": "...", "refresh_token": "...", "is_test": false}
 ```
@@ -964,13 +971,22 @@ hold both APIs' credentials. See `tasty_api/README.md` for the one-time
 OAuth setup (create an OAuth application on tastytrade, save the client
 secret, then use "Create Grant" to generate a refresh token — refresh
 tokens don't expire; the SDK auto-renews the short-lived session token
-behind the scenes).
+behind the scenes). The other two, `tastytrade-curve-fit` and
+`tastytrade-leg-carry`, are pure analysis functions — no
+`credentials-path`, no networking — that operate on data already fetched
+by `tastytrade-futures-curve-rows`, so you can fetch a curve once and
+re-run either analysis as many times as you like with different rate/
+threshold assumptions at no extra cost.
 
-`product` is one of `"CL"` (WTI Crude Oil), `"MCL"` (Micro WTI Crude Oil),
-`"ES"` (E-mini S&P 500), `"NQ"` (E-mini Nasdaq-100), `"SR3"` (Three-Month
-SOFR), `"ZN"` (10-Year T-Note), or `"ZQ"` (30-Day Fed Funds) — see
-`(tastytrade-products)`. An unrecognized product raises `LispError:
-unknown product '...' (supported: CL, MCL, ES, NQ, SR3, ZN, ZQ)`.
+`product` (for `tastytrade-futures-curve` and `tastytrade-futures-curve-rows`)
+must be one of the recognized futures short codes — call
+`(tastytrade-products)` for the current full list (around 60 codes as of
+this writing, spanning equity-index, rates, FX, energy, metals, grains,
+crypto, and livestock futures, e.g. `"ES"`, `"CL"`, `"GC"`, `"6E"`,
+`"ZC"`, `"BTC"`). An unrecognized product raises `LispError:
+tastytrade-futures-curve: unknown product '...' (supported: ...)`,
+naming the full current list. `tastytrade-option-chain`'s `symbol`
+argument is more flexible than this — see its own entry below.
 
 #### `(tastytrade-test-connection credentials-path)`
 Authenticates and checks for accounts. Returns a status string naming the
@@ -984,8 +1000,12 @@ fetches.
 ```
 
 #### `(tastytrade-products)`
-Takes no arguments. Returns the list of supported product-code strings:
-`("CL" "MCL" "ES" "NQ" "SR3" "ZN" "ZQ")`.
+Takes no arguments. Returns the list of supported futures short-code
+strings (around 60 of them) recognized by `tastytrade-futures-curve` and
+`tastytrade-futures-curve-rows`, and (as short-code shorthand, for
+backward compatibility) by `tastytrade-option-chain`. Call this to see
+the exact current list rather than relying on this document to enumerate
+every one.
 
 #### `(tastytrade-futures-curve credentials-path product [n-months])`
 Fetches the product's futures term structure. `n-months` (default `18`) is
@@ -1001,16 +1021,67 @@ a price, sorted by delivery date — ready to feed straight into `plot-xy`,
 (plot-xy (car curve) (list (cdr curve)))
 ```
 
-#### `(tastytrade-option-chain credentials-path product [n-months max-strikes-per-expiration include-iv? greeks-timeout])`
-Fetches a futures-option chain. Returns a Lisp list of rows, each a
-10-element list: `(symbol type strike expiration-date delivery-month
-underlying-future last-price implied-volatility volume open-interest)` —
-`type` is `"Call"` or `"Put"`; any value tastytrade didn't report (e.g. no
-recent implied-volatility snapshot) comes back as `'()`.
+See also `tastytrade-futures-curve-rows`, immediately below, which covers
+the exact same contract months but returns richer rows (including each
+contract's futures symbol and days-to-delivery) — that's what
+`tastytrade-curve-fit` and `tastytrade-leg-carry` need as input.
 
-- `n-months` (default `12`) — how many upcoming delivery months to include.
-- `max-strikes-per-expiration` (default `15`) — each expiration is trimmed
-  to the strikes nearest the underlying future's current price.
+#### `(tastytrade-futures-curve-rows credentials-path product [n-months])`
+Fetches the same futures term structure as `tastytrade-futures-curve`
+(same `product`/`n-months` semantics, same coverage), but returns a Lisp
+list of rows instead of a dates/prices pair — each row a 4-element list:
+```
+(delivery-month futures-symbol days-to-delivery last-price)
+```
+`futures-symbol` has the leading `"/"` stripped (e.g. `"CLZ6"`, not
+`"/CLZ6"`); `days-to-delivery` is an integer (negative if the contract's
+first-of-month delivery date has already passed but it's still trading).
+Sorted by delivery date. This is the raw input `tastytrade-curve-fit` and
+`tastytrade-leg-carry` expect — fetch once with this, then call either
+analysis function (repeatedly, with different assumptions) with no
+re-fetch needed.
+
+```lisp
+(define rows (tastytrade-futures-curve-rows "tastytrade_credentials.json" "CL" 8))
+(define fit (tastytrade-curve-fit rows 0.75))
+```
+
+#### `(tastytrade-option-chain credentials-path symbol [n-months max-strikes-per-expiration include-iv? greeks-timeout])`
+Fetches an option chain — for a CME futures product **or for any equity
+symbol**. Returns a Lisp list of rows, each an 11-element list:
+```
+(symbol type strike expiration-date days-to-expiration delivery-month
+ underlying last-price implied-volatility volume open-interest)
+```
+`type` is `"Call"` or `"Put"`; `strike` is the exercise price;
+`days-to-expiration` is an integer; any value tastytrade didn't report
+(e.g. no recent implied-volatility snapshot) comes back as `'()`.
+
+`symbol` is classified into one of three cases:
+
+| Form | Treated as | Notes |
+|---|---|---|
+| Starts with `"/"`, e.g. `"/CL"` | Futures, using the root exactly as given | tastytrade's own convention — works for **any** futures root, not just ones in `tastytrade-products`; no short-code translation needed or done |
+| A known short code, e.g. `"CL"` | Futures, translated to `"/CL"` | Kept for backward compatibility with the older, futures-only version of this function |
+| Anything else, e.g. `"AAPL"`, `"SPY"` | Equity | No translation of any kind — the symbol is used exactly as given (upper-cased) |
+
+For a **futures** chain: `delivery-month` is the contract's delivery
+month (a `date` value, first-of-month) and `underlying` is the futures
+symbol with its leading `"/"` stripped (e.g. `"CLZ6"`); `n-months` is how
+many upcoming *delivery months* to include (same meaning as in
+`tastytrade-futures-curve`).
+
+For an **equity** chain: `delivery-month` is always `'()` (there's no
+separate delivery month the way there is for a futures option) and
+`underlying` is just the equity symbol itself; `n-months` instead limits
+results to expirations within that many months from today — the closest
+equivalent for a single underlying with no separate contract months.
+
+The remaining parameters mean the same thing for both cases:
+
+- `max-strikes-per-expiration` (default `15`) — each expiration is
+  trimmed to the strikes nearest the underlying's current price (the
+  futures price, or the equity's last/close price).
 - `include-iv?` (default `#t`) — implied volatility only comes from
   tastytrade's live per-contract Greeks stream (no snapshot IV field in
   the REST market-data endpoint), which is the slow part of this call.
@@ -1020,9 +1091,89 @@ recent implied-volatility snapshot) comes back as `'()`.
   Greeks stream before giving up on stragglers; a timeout there isn't an
   error, those rows just get `'()` for IV.
 
+```lisp
+(define creds "tastytrade_credentials.json")
+(define chain (tastytrade-option-chain creds "/CL" 2 5 #f))     ; futures, explicit root
+(define chain2 (tastytrade-option-chain creds "CL" 2 5 #f))     ; futures, short code (same as above)
+(define aapl (tastytrade-option-chain creds "AAPL" 2 10 #f))    ; equity
+```
+
+#### `(tastytrade-curve-fit curve-rows [rich-cheap-threshold-pct poly-degree])`
+Pure function — no networking. Per-contract rich/cheap analysis: fits
+`ln(price)` vs. `days-to-delivery` with a low-order polynomial across
+every row in `curve-rows` (the output of `tastytrade-futures-curve-rows`,
+or anything shaped the same way), then flags each contract's deviation
+from that fitted curve. This is the futures-curve analogue of bond
+rich/cheap-to-curve analysis — generic, and doesn't require any rate
+assumption. Returns a Lisp list of rows, each a 7-element list:
+```
+(delivery-month futures-symbol days-to-delivery last-price
+ fitted-price rich-cheap-pct signal)
+```
+`signal` is the string `"Rich"` if the contract trades more than
+`rich-cheap-threshold-pct` (default `0.75`) above the fit, `"Cheap"` if
+that far below, else `"Fair"`.
+
+`poly-degree` (optional) controls the fit's polynomial degree; omit it,
+or pass `#f`/`'()`, for the automatic default (`min(3, max(1, n-1))`,
+where `n` is the row count) — or pass an integer to override it.
+
+Needs at least 3 rows; returns `'()` if `curve-rows` has fewer.
+
+```lisp
+(define rows (tastytrade-futures-curve-rows creds "CL" 8))
+(define fit (tastytrade-curve-fit rows 0.75))
+(define fit-strict (tastytrade-curve-fit rows 0.25))   ; re-run, no re-fetch, tighter threshold
+```
+
+#### `(tastytrade-leg-carry curve-rows funding-rate-pct storage-cost-pct [leg-signal-threshold-pct])`
+Pure function — no networking. Pairwise (adjacent contract month)
+implied cost-of-carry decomposition. For each pair of adjacent months in
+`curve-rows` (near, far) with positive spacing between them:
+```
+c = ln(far-price / near-price) / ((days-between) / 365)      -- OBSERVED
+net storage cost  (u - y) = c - r                             -- given r
+convenience yield  y = r + u - c                              -- given r AND u
+```
+where `r` = `funding-rate-pct` / 100 (your assumed annualized funding
+rate) and `u` = `storage-cost-pct` / 100 (your assumed annualized storage
+cost), both supplied by you as arguments — the model backs out what's
+implied by the actual curve, and can't fully separate storage cost from
+convenience yield without your `u` assumption too (that limitation is
+inherent to the model). Returns a Lisp list of rows, each a 9-element
+list:
+```
+(near-month far-month near-price far-price days-between
+ implied-carry-rate-pct implied-net-storage-cost-pct
+ implied-convenience-yield-pct signal)
+```
+`signal` is `"Far month rich / near cheap"` if that leg's implied carry
+rate `c` exceeds the *median* carry rate across all legs by more than
+`leg-signal-threshold-pct` percentage points (default `1.0`),
+`"Far month cheap / near rich"` if that far below, else `"Fair"`.
+
+**Important for non-commodity products:** "storage cost" and
+"convenience yield" are physical-commodity concepts. For a storable
+physical commodity (`CL`, `MCL`, ...) they have a real economic
+interpretation. For financial futures (`ES`, `NQ`, `ZN`, `SR3`, ...)
+there's no physical storage — the *math* (the implied carry rate `c`) is
+still valid and meaningful, but the storage/convenience-yield split
+doesn't map to anything real; read those two fields as "what a
+storage-cost story would require to be true, if you insisted on one" for
+those products, not as an actual estimate. `tastytrade-curve-fit`'s
+per-contract rich/cheap view is the more broadly meaningful of the two
+for non-commodity products.
+
+Needs at least 2 rows; returns `'()` if `curve-rows` has fewer, or if no
+adjacent pair has positive day spacing.
+
+```lisp
+(define legs (tastytrade-leg-carry rows 4.25 3.0 1.0))
+```
+
 **Example** (also runnable as [`tastytrade_example.lsp`](tastytrade_example.lsp) —
-`python3 lisp_interpreter.py tastytrade_example.lsp`). Exercises all four
-`tastytrade-*` builtins:
+`python3 lisp_interpreter.py tastytrade_example.lsp`). Exercises all
+seven `tastytrade-*` builtins:
 
 ```lisp
 (define creds "tastytrade_credentials.json")   ; edit to your credentials file's path
@@ -1055,6 +1206,25 @@ recent implied-volatility snapshot) comes back as `'()`.
 (define chain-iv (tastytrade-option-chain creds "CL" 1 3 #t 20.0))
 (display "CL option chain, with IV (") (display (length chain-iv)) (display " contracts):") (newline)
 (print-each chain-iv)
+
+; --- 6. option chain on an equity: any symbol that isn't a futures root
+;        ("/..." or a known short code) is fetched as an equity chain
+;        automatically -- no separate function, no translation ---
+(define aapl-chain (tastytrade-option-chain creds "AAPL" 2 5 #f))
+(display "AAPL option chain, no IV (") (display (length aapl-chain)) (display " contracts):") (newline)
+(print-each aapl-chain)
+
+; --- 7. rich/cheap curve-fit analysis -- fetch the curve rows once,
+;        analyze for free (no networking in tastytrade-curve-fit) ---
+(define curve-rows (tastytrade-futures-curve-rows creds "CL" 8))
+(define fit (tastytrade-curve-fit curve-rows 0.75))
+(display "CL curve-fit rich/cheap:") (newline)
+(print-each fit)
+
+; --- 8. implied calendar-spread carry, reusing curve-rows from step 7 ---
+(define legs (tastytrade-leg-carry curve-rows 4.25 3.0 1.0))
+(display "CL implied carry by leg:") (newline)
+(print-each legs)
 ```
 
 ### Input / output
