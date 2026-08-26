@@ -26,12 +26,23 @@ the Patriotic Millionaires donor-lookup app:
     load-static/load-indiv/load-all/rebuild-indiv-m are meant to be run
     incrementally (e.g. one cycle at a time, via a scheduled task),
     not all at once.
+  - load-indiv normally leaves indiv_contributions' secondary indexes
+    in place and lets SQLite maintain them incrementally as new rows
+    are inserted -- fine for a small nightly top-up. Pass --bulk for a
+    large historical cycle backfill: this drops the indexes before the
+    import for a much faster bulk load, but leaves them dropped
+    afterward -- follow up with rebuild-indiv-indexes, which rebuilds
+    them one at a time (each in its own sqlite3 process) so peak
+    memory stays bounded instead of accumulating across all of them in
+    one long-running process (which OOM-killed on a large table even
+    with temp_store=FILE/cache_size capped).
 
 Usage:
     python3 fec_loader_pa.py setup
     python3 fec_loader_pa.py load-static        [--cycle 2026]
-    python3 fec_loader_pa.py load-indiv         [--cycle 2026]
-    python3 fec_loader_pa.py load-all           [--cycle 2026]
+    python3 fec_loader_pa.py load-indiv         [--cycle 2026] [--bulk]
+    python3 fec_loader_pa.py load-all           [--cycle 2026] [--bulk]
+    python3 fec_loader_pa.py rebuild-indiv-indexes
     python3 fec_loader_pa.py rebuild-indiv-m
     python3 fec_loader_pa.py update-indiv-m
     python3 fec_loader_pa.py nightly-update     [--cycle 2026]
@@ -468,7 +479,14 @@ DROP TABLE IF EXISTS {table};
     print("  {}: {} rows loaded.".format(table_name, rows_inserted))
 
 
-def load_indiv_table(db_path, txt_path, source_file, election_cycle):
+def load_indiv_table(db_path, txt_path, source_file, election_cycle, bulk=False):
+    """bulk=True drops the secondary indexes before the import (fast bulk
+    load, but leaves indiv_contributions without them until a separate
+    'rebuild-indiv-indexes' call) -- use for big historical cycle
+    backfills. bulk=False (the default, used by nightly-update) leaves
+    the indexes in place and lets SQLite maintain them incrementally as
+    the new rows are inserted, which is fine for a small nightly top-up
+    and keeps the live app's indexes always present."""
     table_name = INDIV_FILE[1]
     rows_in_file = count_lines(txt_path)
 
@@ -514,10 +532,8 @@ SELECT
     sub_id, {cycle}, {source}, {batch_id}
 FROM stg_indiv;
 DROP TABLE stg_indiv;
-{index_creates}
 """.format(indiv_table=INDIV_TABLE_SQL, path=utf8_path,
-           index_drops="\n".join(INDIV_INDEX_DROPS),
-           index_creates="\n".join(INDIV_INDEXES),
+           index_drops="\n".join(INDIV_INDEX_DROPS) if bulk else "",
            cycle=sql_quote(election_cycle), source=sql_quote(source_file),
            batch_id=int(batch_id))
 
@@ -540,6 +556,36 @@ DROP TABLE stg_indiv;
     conn.close()
     print("  {}: {} new rows inserted out of {} rows in file ({:.0f}s).".format(
         table_name, rows_inserted, rows_in_file, elapsed))
+    if bulk:
+        print("  (secondary indexes were dropped for this bulk load -- run "
+              "'rebuild-indiv-indexes' to rebuild them.)")
+
+
+def rebuild_indiv_indexes(db_path):
+    """Rebuilds the secondary indexes on indiv_contributions one at a
+    time, each in its own sqlite3 subprocess. load_indiv_table() drops
+    all of them before every cycle load (cheap, since DROP is instant)
+    but no longer rebuilds them in that same script -- building all 5
+    back-to-back in one long-running process let memory pressure
+    accumulate across indexes (each CREATE INDEX needs its own
+    temp-sort space) and got OOM-killed partway through on a large
+    table even with temp_store=FILE/cache_size capped. A fresh process
+    per index releases that memory in between, keeping peak usage
+    roughly constant regardless of how many indexes are left to build."""
+    print("Rebuilding indiv_contributions secondary indexes, one at a time ...")
+    for name, column in INDIV_INDEX_DEFS.items():
+        start = time.time()
+        script = """
+.bail on
+PRAGMA journal_mode=OFF;
+PRAGMA synchronous=OFF;
+PRAGMA temp_store=FILE;
+PRAGMA cache_size=-20000;
+CREATE INDEX IF NOT EXISTS {name} ON indiv_contributions ({column});
+""".format(name=name, column=column)
+        run_sqlite_cli(db_path, script)
+        print("  {}: done ({:.0f}s).".format(name, time.time() - start))
+    print("  All secondary indexes rebuilt.")
 
 
 def rebuild_indiv_m(db_path):
@@ -675,7 +721,8 @@ def cmd_load_indiv(args, db_path, download_dir):
     prefix, table_name, desc = INDIV_FILE
     print("== {} ({}) ==".format(desc, cycle_label(cycle_year)))
     zip_name, zip_path, txt_path = fetch_and_extract(prefix, cycle_year, download_dir)
-    load_indiv_table(db_path, txt_path, zip_name, cycle_label(cycle_year))
+    load_indiv_table(db_path, txt_path, zip_name, cycle_label(cycle_year),
+                      bulk=getattr(args, "bulk", False))
     if not args.keep_downloads:
         cleanup_download(zip_path, txt_path)
 
@@ -683,6 +730,10 @@ def cmd_load_indiv(args, db_path, download_dir):
 def cmd_load_all(args, db_path, download_dir):
     cmd_load_static(args, db_path, download_dir)
     cmd_load_indiv(args, db_path, download_dir)
+
+
+def cmd_rebuild_indiv_indexes(args, db_path, download_dir):
+    rebuild_indiv_indexes(db_path)
 
 
 def cmd_rebuild_indiv_m(args, db_path, download_dir):
@@ -744,6 +795,21 @@ def build_arg_parser():
         sp.add_argument("--cycle", type=int, default=None,
                          help="Election cycle end year, e.g. 2026 (default: current cycle).")
         sp.add_argument("--keep-downloads", action="store_true")
+        if name in ("load-indiv", "load-all"):
+            sp.add_argument("--bulk", action="store_true",
+                             help="Drop indiv_contributions' secondary indexes before "
+                                  "the import for a faster bulk load (e.g. a historical "
+                                  "cycle backfill). Follow up with 'rebuild-indiv-indexes' "
+                                  "afterward. Without this flag (the default, used by "
+                                  "nightly-update), indexes are left in place and "
+                                  "maintained incrementally, which is fine for a small "
+                                  "top-up and keeps the live app's indexes always present.")
+
+    sub.add_parser("rebuild-indiv-indexes",
+                    help="Rebuild the secondary indexes on indiv_contributions, one "
+                         "at a time in separate sqlite3 processes (load-indiv drops "
+                         "them before every cycle load but no longer rebuilds them "
+                         "itself, to avoid OOM kills from building several at once).")
 
     sub.add_parser("rebuild-indiv-m",
                     help="Full rebuild of indiv_m from ngp_contacts + indiv_contributions "
@@ -778,6 +844,7 @@ def main():
         "load-static": cmd_load_static,
         "load-indiv": cmd_load_indiv,
         "load-all": cmd_load_all,
+        "rebuild-indiv-indexes": cmd_rebuild_indiv_indexes,
         "rebuild-indiv-m": cmd_rebuild_indiv_m,
         "update-indiv-m": cmd_update_indiv_m,
         "nightly-update": cmd_nightly_update,
