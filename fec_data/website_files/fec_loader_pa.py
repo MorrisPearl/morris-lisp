@@ -179,7 +179,6 @@ INDIV_INDEX_DEFS = {
     "idx_indiv_cmte_id": "cmte_id",
     "idx_indiv_name": "name",
     "idx_indiv_transaction_dt": "transaction_dt",
-    "idx_indiv_zip_code": "zip_code",
     "idx_indiv_election_cycle": "election_cycle",
     "idx_indiv_load_batch_id": "load_batch_id",
 }

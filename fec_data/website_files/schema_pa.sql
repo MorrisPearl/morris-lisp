@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS committee_master (
 CREATE INDEX IF NOT EXISTS idx_cmte_cand_id ON committee_master (cand_id);
 
 -- Trimmed: only the columns the app and indiv_m rebuild use, plus
--- zip_code (kept for possible future queries) and loader bookkeeping.
+-- zip_code (kept for possible future queries, but not currently
+-- filtered/joined on -- no index) and loader bookkeeping.
 CREATE TABLE IF NOT EXISTS indiv_contributions (
     cmte_id           TEXT,
     name              TEXT,
@@ -77,7 +78,6 @@ CREATE TABLE IF NOT EXISTS indiv_contributions (
 CREATE INDEX IF NOT EXISTS idx_indiv_cmte_id ON indiv_contributions (cmte_id);
 CREATE INDEX IF NOT EXISTS idx_indiv_name ON indiv_contributions (name);
 CREATE INDEX IF NOT EXISTS idx_indiv_transaction_dt ON indiv_contributions (transaction_dt);
-CREATE INDEX IF NOT EXISTS idx_indiv_zip_code ON indiv_contributions (zip_code);
 CREATE INDEX IF NOT EXISTS idx_indiv_election_cycle ON indiv_contributions (election_cycle);
 CREATE INDEX IF NOT EXISTS idx_indiv_load_batch_id ON indiv_contributions (load_batch_id);
 
