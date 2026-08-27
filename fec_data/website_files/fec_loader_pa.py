@@ -589,15 +589,29 @@ CREATE INDEX IF NOT EXISTS {name} ON indiv_contributions ({column});
     print("  All secondary indexes rebuilt.")
 
 
-def rebuild_indiv_m(db_path):
+def rebuild_indiv_m(db_path, by_cycle=False):
     """Rebuilds indiv_m from scratch: every ngp_contacts member joined
     against every indiv_contributions row whose name matches that
     member's match_name pattern. This is the expensive step (a LIKE
     join with a per-row pattern can't use an index), which is exactly
-    why indiv_m is precomputed instead of running this at request time."""
-    print("Rebuilding indiv_m ...")
+    why indiv_m is precomputed instead of running this at request time.
+
+    by_cycle=True splits the single INSERT...SELECT into one INSERT per
+    distinct election_cycle, each in its own sqlite3 subprocess (using
+    idx_indiv_election_cycle to scope it cheaply) -- same rationale as
+    rebuild_indiv_indexes(): a single very-long-running statement is one
+    long exposure window for anything (an OOM kill, a host/console
+    hiccup) to blow away hours of progress, whereas per-cycle chunks
+    fail (and can be individually retried) without losing the rest.
+    indiv_m has no unique key, so this still does one whole-table
+    DELETE up front -- re-running an already-completed cycle afterward
+    would duplicate its rows, so a retry after a partial failure should
+    skip the cycles already confirmed done (visible in this function's
+    per-cycle print output) rather than rerunning everything."""
+    print("Rebuilding indiv_m{} ...".format(" (by cycle)" if by_cycle else ""))
     start = time.time()
-    script = """
+
+    setup_script = """
 .bail on
 .output /dev/null
 PRAGMA journal_mode=OFF;
@@ -606,20 +620,62 @@ PRAGMA busy_timeout=60000;
 {indiv_m_table}
 {indiv_m_state_table}
 DELETE FROM indiv_m;
+""".format(indiv_m_table=INDIV_M_TABLE_SQL, indiv_m_state_table=INDIV_M_STATE_TABLE_SQL)
+    run_sqlite_cli(db_path, setup_script)
+
+    insert_cols = (
+        "    (last_name, first_name, city, state, match_name, priv, pub, mem, prospect,\n"
+        "     fec_name, fec_city, fec_state, fec_employer, committee_id, trans_amount, trans_date)\n"
+        "SELECT\n"
+        "    m.last_name, m.first_name, m.city, m.state, m.match_name,\n"
+        "    m.priv, m.pub, m.mem, m.prospect,\n"
+        "    d.name, d.city, d.state, d.employer, d.cmte_id, d.transaction_amt, d.transaction_dt\n"
+        "FROM ngp_contacts m\n"
+        "JOIN indiv_contributions d ON d.name LIKE m.match_name"
+    )
+
+    if by_cycle:
+        conn = get_connection(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT election_cycle FROM indiv_contributions "
+                    "ORDER BY election_cycle")
+        cycles = [row[0] for row in cur.fetchall()]
+        conn.close()
+
+        for cycle in cycles:
+            cycle_start = time.time()
+            script = """
+.bail on
+.output /dev/null
+PRAGMA journal_mode=OFF;
+PRAGMA synchronous=OFF;
+PRAGMA busy_timeout=60000;
 INSERT INTO indiv_m
-    (last_name, first_name, city, state, match_name, priv, pub, mem, prospect,
-     fec_name, fec_city, fec_state, fec_employer, committee_id, trans_amount, trans_date)
-SELECT
-    m.last_name, m.first_name, m.city, m.state, m.match_name,
-    m.priv, m.pub, m.mem, m.prospect,
-    d.name, d.city, d.state, d.employer, d.cmte_id, d.transaction_amt, d.transaction_dt
-FROM ngp_contacts m
-JOIN indiv_contributions d ON d.name LIKE m.match_name;
+{insert_cols}
+WHERE d.election_cycle = {cycle};
+""".format(insert_cols=insert_cols, cycle=sql_quote(cycle))
+            run_sqlite_cli(db_path, script)
+            print("  {}: done ({:.0f}s).".format(cycle, time.time() - cycle_start))
+    else:
+        script = """
+.bail on
+.output /dev/null
+PRAGMA journal_mode=OFF;
+PRAGMA synchronous=OFF;
+PRAGMA busy_timeout=60000;
+INSERT INTO indiv_m
+{insert_cols};
+""".format(insert_cols=insert_cols)
+        run_sqlite_cli(db_path, script)
+
+    finalize_script = """
+.bail on
+PRAGMA busy_timeout=60000;
 INSERT INTO indiv_m_state (id, last_load_batch_id)
     VALUES (1, (SELECT COALESCE(MAX(load_batch_id), 0) FROM indiv_contributions))
     ON CONFLICT (id) DO UPDATE SET last_load_batch_id = excluded.last_load_batch_id;
-""".format(indiv_m_table=INDIV_M_TABLE_SQL, indiv_m_state_table=INDIV_M_STATE_TABLE_SQL)
-    run_sqlite_cli(db_path, script)
+"""
+    run_sqlite_cli(db_path, finalize_script)
     elapsed = time.time() - start
 
     conn = get_connection(db_path)
@@ -740,7 +796,7 @@ def cmd_rebuild_indiv_indexes(args, db_path, download_dir):
 
 
 def cmd_rebuild_indiv_m(args, db_path, download_dir):
-    rebuild_indiv_m(db_path)
+    rebuild_indiv_m(db_path, by_cycle=args.by_cycle)
 
 
 def cmd_update_indiv_m(args, db_path, download_dir):
@@ -814,10 +870,16 @@ def build_arg_parser():
                          "them before every cycle load but no longer rebuilds them "
                          "itself, to avoid OOM kills from building several at once).")
 
-    sub.add_parser("rebuild-indiv-m",
-                    help="Full rebuild of indiv_m from ngp_contacts + indiv_contributions "
-                         "(rescans everything -- expensive; use after a bulk historical "
-                         "load or a big change to ngp_contacts).")
+    sp = sub.add_parser("rebuild-indiv-m",
+                         help="Full rebuild of indiv_m from ngp_contacts + indiv_contributions "
+                              "(rescans everything -- expensive; use after a bulk historical "
+                              "load or a big change to ngp_contacts).")
+    sp.add_argument("--by-cycle", action="store_true",
+                     help="Split the rebuild into one INSERT per election_cycle "
+                          "(using idx_indiv_election_cycle) instead of a single "
+                          "very-long-running statement. Slower overall but each "
+                          "cycle fails/retries independently -- use if a plain "
+                          "rebuild-indiv-m keeps getting interrupted.")
 
     sub.add_parser("update-indiv-m",
                     help="Incremental indiv_m update: only joins indiv_contributions rows "
