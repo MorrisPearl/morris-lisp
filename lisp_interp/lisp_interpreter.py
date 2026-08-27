@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-A simple Lisp interpreter with numeric-vector and date datatypes, an XY
+"""A simple Lisp interpreter with numeric-vector and date datatypes, an XY
 charting/regression facility, FRED economic-data access, and a PyQt6 GUI.
 
 Supports:
@@ -10,8 +9,8 @@ Supports:
     with (vector ...)
   - a simple date datatype: (date year month day)
   - special forms: quote, quasiquote (with unquote/unquote-splicing,
-                    written `, ,, and ,@), if, define, set!, lambda,
-                    begin, let, let*, cond, and, or, dolist, defmacro
+    written `, ,, and ,@), if, define, set!, lambda, begin, let, let*,
+    cond, and, or, dolist, defmacro, defstruct
   - macros: (defmacro name (params...) body...) defines a macro --
     unlike a procedure, its arguments are the CALL SITE's UNEVALUATED
     source expressions, and its body's return value (typically built
@@ -29,6 +28,21 @@ Supports:
     fixed ones) -- see parse_params(). The reader supports the dotted-pair
     syntax `(a . b)` generally, not just in parameter lists, so it also
     works as an ordinary way to build an improper cons cell from source
+  - CL-style KEYWORD ARGUMENTS for `lambda`/`define`/`defmacro`: a
+    parameter list's tail can be `&key name (name2 default-expr) ...`
+    instead of a rest parameter -- e.g. (lambda (a &key (b 10) c) ...) --
+    called as (f 1 :b 20 :c 30), in any order, each optional. A keyword
+    symbol like :name is its own self-evaluating datatype (Keyword, a
+    Symbol subclass), so it never needs quoting at a call site. See
+    parse_params()/Env.__init__/Keyword
+  - defstruct: (defstruct name slot...) -- CL-style record types, each
+    slot a bare symbol (default '()) or (slot-name default-expr). Defines
+    make-<name> (a keyword-argument constructor -- an ordinary example of
+    the &key feature above, not a separate mechanism), <name>-<slot>
+    accessors, <name>-<slot>-set! setters (mutable slots), and a <name>?
+    predicate. See LispStruct/LispStructType and the "defstruct" case in
+    eval_special_form. Generic struct-ref/struct-set!/struct-type-name/
+    struct? builtins also work on any struct instance by slot-name symbol
   - metaprogramming builtins: (eval expr) evaluates a piece of Lisp code
     (data -- e.g. built with quasiquote, or read from a string/file) in
     the top-level environment; (apply f arg1 ... args) calls f with
@@ -121,15 +135,18 @@ specifically -- a transformer builds a piece of code, it doesn't loop
 over runtime data -- but it's worth knowing about.
 
 GUI: running this file with no arguments opens a small PyQt6 window with
-an input box, an output/history log, a QTableView of any vectors currently
-defined, and a chart tab (with its own "Save Chart..." button). Any
-top-level variable bound (via `define`) to a vector is shown live as a
-column in the table, so `(define prices (vector 10 20 30))` immediately
-produces a column labeled "prices". Calling one of the `plot-xy...`
-builtins draws a chart in the Chart tab. PyQt6 is only imported when the
-GUI is actually launched, so the console/batch mode below works fine
-without it; matplotlib alone (no PyQt6 needed) is enough for save-chart to
-work even in console/batch mode.
+an input box, an output/history log, a QTableView "Columns" tab, and a
+chart tab (with its own "Save Chart..." button). The Columns tab is
+populated ONLY by an explicit call to the `display-columns` builtin --
+(display-columns (list (cons "name1" vector1) (cons "name2" vector2) ...))
+-- there's no automatic scan of top-level variables; see column_engine.lsp
+for a defstruct/keyword-argument-based library that builds this list of
+(name . vector) pairs from registered "column" struct instances (for e.g.
+a mortgage amortization table). Calling one of the `plot-xy...` builtins
+draws a chart in the Chart tab. PyQt6 is only imported when the GUI is
+actually launched, so the console/batch mode below works fine without it;
+matplotlib alone (no PyQt6 needed) is enough for save-chart to work even
+in console/batch mode.
 
 STARTUP INIT FILE: every fresh environment -- batch mode, the console
 REPL, and the GUI alike -- automatically loads DEFAULT_INIT_FILE
@@ -145,6 +162,7 @@ everything display/newline/print write to a file instead of the console/
 GUI log, until (reset-output) switches back -- see those builtins in
 make_global_env(). Useful for a script that wants to log its own output
 to disk (including from the init file, if you want every session logged).
+
 """
 
 import sys
@@ -177,6 +195,17 @@ class Symbol(str):
 class LispString(str):
     """A Lisp string literal. Kept as its own subclass of str (distinct
     from Symbol) so `string?` and `symbol?` can tell the two apart."""
+    pass
+
+
+class Keyword(Symbol):
+    """A keyword symbol, e.g. :name -- written with a leading colon (kept
+    as part of the stored name, so printing is free). Unlike an ordinary
+    Symbol, a Keyword is SELF-EVALUATING (see seval()'s EVAL case), exactly
+    like a number or #t/#f, so it can be used directly as a call-site
+    marker in keyword-argument calls, e.g. (make-column :name "balance"
+    ...), without needing to be quoted. See parse_params()/Env.__init__
+    for the &key parameter-binding side of keyword arguments."""
     pass
 
 
@@ -230,6 +259,41 @@ class LispDate:
         return self.date.isoformat()
 
 
+class LispStructType:
+    """The record type created by (defstruct name slot...) -- see
+    eval_special_form()'s "defstruct" case. Just metadata: the type's
+    name and its ordered slots (Symbol slot_name, default_expr_or_None).
+    Slot order is preserved everywhere a struct of this type is printed
+    or its constructor's keyword arguments are bound, matching the
+    source's declaration order."""
+
+    def __init__(self, name, slots):
+        self.name = name            # Symbol
+        self.slots = slots          # [(Symbol slot_name, default_expr_or_None), ...]
+
+    def __repr__(self):
+        return "#<struct-type %s>" % (self.name,)
+
+
+class LispStruct:
+    """An instance of a defstruct-defined record type: a struct_type plus
+    a mutable dict of slot_name -> value. Structural equality (like
+    Pair/LispVector) rather than CL's identity-based `eql`, since this
+    language doesn't otherwise distinguish the two."""
+
+    def __init__(self, struct_type, values):
+        self.struct_type = struct_type
+        self.values = values        # dict: Symbol slot_name -> value
+
+    def __eq__(self, other):
+        return (isinstance(other, LispStruct)
+                and self.struct_type is other.struct_type
+                and self.values == other.values)
+
+    def __repr__(self):
+        return to_string(self)
+
+
 def _date_from_pydate(pydate):
     """Wrap an existing datetime.date as a LispDate without re-validating
     year/month/day (used by date-add-days and the FRED-data loader)."""
@@ -248,9 +312,10 @@ class Procedure:
     `(a b . rest)` or a bare `args`) and Env.__init__'s rest_param
     handling (which does the actual binding at call time)."""
 
-    def __init__(self, params, body, env, rest_param=None):
+    def __init__(self, params, body, env, rest_param=None, keyword_specs=None):
         self.params = params      # list of Symbol FIXED parameter names
         self.rest_param = rest_param
+        self.keyword_specs = keyword_specs or []  # see parse_params()
         self.body = body          # list of body expressions
         self.env = env            # environment in which it was defined
 
@@ -271,9 +336,10 @@ class Macro:
     for a Procedure -- see that class's docstring -- except what it
     collects is unevaluated expressions rather than values."""
 
-    def __init__(self, params, body, env, rest_param=None):
+    def __init__(self, params, body, env, rest_param=None, keyword_specs=None):
         self.params = params
         self.rest_param = rest_param
+        self.keyword_specs = keyword_specs or []  # see parse_params()
         self.body = body
         self.env = env
 
@@ -406,6 +472,8 @@ def atom(token):
         return True
     if token == "#f":
         return False
+    if token.startswith(":") and len(token) > 1:
+        return Keyword(token)
     try:
         return int(token)
     except ValueError:
@@ -438,8 +506,9 @@ def pairs_to_list(p):
 
 def parse_params(params_expr):
     """Parse a lambda/define/defmacro parameter spec into (fixed_names,
-    rest_name_or_None) -- used to give Procedure and Macro variadic
-    ("rest parameter") support. params_expr may be:
+    rest_name_or_None, keyword_specs) -- used to give Procedure and Macro
+    variadic ("rest parameter") and keyword-argument support. params_expr
+    may be:
       - a proper list, e.g. (a b c) -- fixed arity, no rest parameter;
         rest_name is None
       - an improper (dotted) list, e.g. (a b . rest) -- a and b are
@@ -448,17 +517,37 @@ def parse_params(params_expr):
       - a single bare symbol not wrapped in parens at all, e.g. the
         `args` in (lambda args body) or (define (f . args) body) -- every
         argument, with no fixed ones at all, is collected into that name
-    See Env.__init__'s rest_param handling for how the actual binding at
-    call time works.
+      - a proper list whose tail is the marker symbol &key followed by
+        keyword-parameter specs, e.g. (a b &key c (d 10)) -- a and b are
+        ordinary fixed (positional) parameters; c and d are CL-style
+        keyword parameters, supplied at the call site as :c value / :d
+        value pairs AFTER the fixed arguments, in any order, each
+        optional. A bare spec (c) means "default to '()"; a spec (name
+        default-expr) supplies an explicit default, evaluated per call
+        (see Env.__init__'s keyword_specs/default_eval handling). &key
+        and a dotted/bare-symbol rest parameter are mutually exclusive in
+        this implementation. keyword_specs is [] when &key isn't present.
+    See Env.__init__ for how the actual binding at call time works.
     """
     if isinstance(params_expr, Symbol):
-        return [], params_expr
+        return [], params_expr, []
     fixed = []
     p = params_expr
-    while isinstance(p, Pair):
+    while isinstance(p, Pair) and p.car != Symbol("&key"):
         fixed.append(p.car)
         p = p.cdr
-    return fixed, (p if p is not NIL else None)
+    if isinstance(p, Pair) and p.car == Symbol("&key"):
+        keyword_specs = []
+        p = p.cdr
+        while isinstance(p, Pair):
+            spec = p.car
+            if isinstance(spec, Pair):
+                keyword_specs.append((spec.car, spec.cdr.car))
+            else:
+                keyword_specs.append((spec, None))
+            p = p.cdr
+        return fixed, None, keyword_specs
+    return fixed, (p if p is not NIL else None), []
 
 
 # ---------------------------------------------------------------------------
@@ -471,19 +560,62 @@ class Env(dict):
     (This chain follows *lexical nesting*, not call/recursion depth, so it
     stays shallow even for deeply recursive Lisp programs.)"""
 
-    def __init__(self, params=(), args=(), outer=None, rest_param=None):
+    def __init__(self, params=(), args=(), outer=None, rest_param=None,
+                 keyword_specs=None, default_eval=None):
         """params: the FIXED parameter names (never includes the rest
         parameter, if any). rest_param: None for an ordinary fixed-arity
         call (the original, unchanged behavior -- args must match params
         exactly in count), or a Symbol to bind to a list of every
         argument beyond the fixed ones (possibly empty) -- see
         parse_params(), which is what Procedure/Macro construction uses
-        to split a parameter spec into these two pieces."""
+        to split a parameter spec into these two pieces.
+
+        keyword_specs (list of (Symbol name, default_expr_or_None), or
+        None/empty for none): when non-empty, `params` are bound
+        positionally as usual, and every arg beyond that is expected to
+        come in :key value pairs (see parse_params()'s &key docs). Each
+        keyword_specs name is bound from the matching pair if supplied;
+        otherwise to `default_eval(default_expr, self)` if a default was
+        given, else to NIL. default_eval lets the SAME binding logic serve
+        both procedure calls (args already evaluated; a default should be
+        evaluated too, in this new environment -- see the module-level
+        eval_default()) and macro expansion (args are unevaluated source
+        expressions; a default should be used as-is -- see
+        raw_default())."""
         super().__init__()
         self.outer = outer
         params = list(params)
         args = list(args)
-        if rest_param is None:
+        if keyword_specs:
+            n_fixed = len(params)
+            if len(args) < n_fixed:
+                raise LispError(
+                    "expected at least %d argument(s), got %d" % (n_fixed, len(args)))
+            for p, a in zip(params, args[:n_fixed]):
+                self[p] = a
+            tail = args[n_fixed:]
+            if len(tail) % 2 != 0:
+                raise LispError(
+                    "keyword arguments must come in :key value pairs, got a "
+                    "trailing unpaired argument: %r" % (tail[-1],))
+            supplied = {}
+            for i in range(0, len(tail), 2):
+                k, v = tail[i], tail[i + 1]
+                if not isinstance(k, Keyword):
+                    raise LispError("expected a keyword (e.g. :name), got %r" % (k,))
+                supplied[Symbol(str(k)[1:])] = v
+            for name, default_expr in keyword_specs:
+                if name in supplied:
+                    self[name] = supplied.pop(name)
+                elif default_expr is not None:
+                    self[name] = default_eval(default_expr, self)
+                else:
+                    self[name] = NIL
+            if supplied:
+                raise LispError(
+                    "unknown keyword argument(s): %s"
+                    % ", ".join(":%s" % n for n in supplied))
+        elif rest_param is None:
             if len(params) != len(args):
                 raise LispError(
                     "expected %d argument(s), got %d" % (len(params), len(args)))
@@ -522,6 +654,20 @@ class Env(dict):
         return None
 
 
+def eval_default(expr, env):
+    """The default_eval strategy for an ordinary PROCEDURE call: a keyword
+    argument's default expression is evaluated, like any other expression,
+    in the new call environment (see Env.__init__)."""
+    return seval(expr, env)
+
+
+def raw_default(expr, env):
+    """The default_eval strategy for a MACRO expansion: a keyword
+    parameter's default is used AS-IS -- unevaluated source -- exactly
+    like every other macro parameter binding (see expand_macro())."""
+    return expr
+
+
 # ---------------------------------------------------------------------------
 # Evaluator -- explicit-stack version
 # ---------------------------------------------------------------------------
@@ -555,7 +701,7 @@ class Env(dict):
 SPECIAL_FORMS = {
     "quote", "if", "define", "set!", "lambda",
     "begin", "let", "let*", "cond", "and", "or", "dolist",
-    "defmacro", "quasiquote", "breakpoint",
+    "defmacro", "quasiquote", "breakpoint", "defstruct",
 }
 
 
@@ -810,7 +956,8 @@ def expand_macro(macro, arg_exprs):
     tail-call-optimized treatment -- including a proper tail call if the
     macro expands to one (e.g. a macro-defined looping construct).
     """
-    new_env = Env(macro.params, arg_exprs, macro.env, rest_param=macro.rest_param)
+    new_env = Env(macro.params, arg_exprs, macro.env, rest_param=macro.rest_param,
+                  keyword_specs=macro.keyword_specs, default_eval=raw_default)
     return eval_body(macro.body, new_env)
 
 
@@ -839,9 +986,9 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         # may be fixed (a b), dotted/variadic (a b . rest), or a single
         # bare symbol (fully variadic) -- see parse_params().
         name = args.car
-        fixed, rest = parse_params(args.cdr.car)
+        fixed, rest, keyword_specs = parse_params(args.cdr.car)
         body = pairs_to_list(args.cdr.cdr)
-        env[name] = Macro(fixed, body, env, rest_param=rest)
+        env[name] = Macro(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs)
         value_stack.append(name)
 
     elif op == "if":
@@ -858,9 +1005,9 @@ def eval_special_form(op, args, env, control_stack, value_stack):
             # params may be fixed, dotted/variadic, or (name . rest) for
             # a fully-variadic function -- see parse_params().
             name = target.car
-            fixed, rest = parse_params(target.cdr)
+            fixed, rest, keyword_specs = parse_params(target.cdr)
             body = pairs_to_list(args.cdr)
-            env[name] = Procedure(fixed, body, env, rest_param=rest)
+            env[name] = Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs)
             value_stack.append(name)
         else:
             name = target
@@ -875,9 +1022,9 @@ def eval_special_form(op, args, env, control_stack, value_stack):
     elif op == "lambda":
         # params may be fixed (a b), dotted/variadic (a b . rest), or a
         # single bare symbol (fully variadic) -- see parse_params().
-        fixed, rest = parse_params(args.car)
+        fixed, rest, keyword_specs = parse_params(args.car)
         body = pairs_to_list(args.cdr)
-        value_stack.append(Procedure(fixed, body, env, rest_param=rest))
+        value_stack.append(Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs))
 
     elif op == "begin":
         push_sequence(pairs_to_list(args), env, control_stack, value_stack)
@@ -900,6 +1047,72 @@ def eval_special_form(op, args, env, control_stack, value_stack):
     elif op == "or":
         eval_or(pairs_to_list(args), env, control_stack, value_stack)
 
+    elif op == "defstruct":
+        # (defstruct name slot...) -- each slot is a bare symbol (default
+        # value '()) or (slot-name default-expr), exactly CL's defstruct
+        # slot-spec syntax (e.g. (visible #t)). Never evaluated itself,
+        # like defmacro's params. Builds four things and binds them into
+        # env, exactly as `define` binds a single name:
+        #   make-<name>   -- an ordinary &key Procedure (see
+        #                     parse_params()/Env.__init__) whose body calls
+        #                     the %make-struct builtin with the struct
+        #                     type (spliced in directly as a literal --
+        #                     any non-Pair/non-Symbol value is self-
+        #                     evaluating, see seval()'s EVAL case) and a
+        #                     plist built from the bound slot params. So
+        #                     struct construction is just an application
+        #                     of the general keyword-argument machinery,
+        #                     not a separate code path.
+        #   <name>-<slot>       -- accessor
+        #   <name>-<slot>-set!  -- setter (mutable slots; matches this
+        #                          codebase's vector-set!-style naming,
+        #                          not CL's setf)
+        #   <name>?             -- predicate
+        type_name = args.car
+        slots = []
+        p = args.cdr
+        while isinstance(p, Pair):
+            spec = p.car
+            if isinstance(spec, Pair):
+                slots.append((spec.car, spec.cdr.car))
+            else:
+                slots.append((spec, None))
+            p = p.cdr
+        struct_type = LispStructType(type_name, slots)
+
+        plist_items = []
+        for slot_name, _ in slots:
+            plist_items.append(list_to_pairs([Symbol("quote"), slot_name]))
+            plist_items.append(slot_name)
+        list_call = Pair(Symbol("list"), list_to_pairs(plist_items))
+        make_body = list_to_pairs([Symbol("%make-struct"), struct_type, list_call])
+        env[Symbol("make-%s" % type_name)] = Procedure(
+            [], [make_body], env, rest_param=None, keyword_specs=slots)
+
+        def make_accessor(slot_name):
+            def accessor(s):
+                if not (isinstance(s, LispStruct) and s.struct_type is struct_type):
+                    raise LispError("%s-%s: not a %s: %r" % (type_name, slot_name, type_name, s))
+                return s.values[slot_name]
+            return accessor
+
+        def make_setter(slot_name):
+            def setter(s, v):
+                if not (isinstance(s, LispStruct) and s.struct_type is struct_type):
+                    raise LispError("%s-%s-set!: not a %s: %r" % (type_name, slot_name, type_name, s))
+                s.values[slot_name] = v
+                return NIL
+            return setter
+
+        for slot_name, _ in slots:
+            env[Symbol("%s-%s" % (type_name, slot_name))] = make_accessor(slot_name)
+            env[Symbol("%s-%s-set!" % (type_name, slot_name))] = make_setter(slot_name)
+
+        env[Symbol("%s?" % type_name)] = (
+            lambda s, t=struct_type: isinstance(s, LispStruct) and s.struct_type is t)
+
+        value_stack.append(type_name)
+
     else:
         raise LispError("unknown special form: %s" % op)
 
@@ -916,7 +1129,9 @@ def seval(expr, env):
 
         if tag == 'EVAL':
             _, x, cur_env = frame
-            if isinstance(x, Symbol):
+            if isinstance(x, Keyword):
+                value_stack.append(x)          # self-evaluating, like #t/numbers
+            elif isinstance(x, Symbol):
                 value_stack.append(cur_env.find(x)[x])
             elif not isinstance(x, Pair):
                 value_stack.append(x)          # self-evaluating literal
@@ -954,7 +1169,8 @@ def seval(expr, env):
             collected.reverse()
             proc, arg_values = collected[0], collected[1:]
             if isinstance(proc, Procedure):
-                new_env = Env(proc.params, arg_values, proc.env, rest_param=proc.rest_param)
+                new_env = Env(proc.params, arg_values, proc.env, rest_param=proc.rest_param,
+                              keyword_specs=proc.keyword_specs, default_eval=eval_default)
                 push_sequence(proc.body, new_env, control_stack, value_stack)
             elif callable(proc):
                 value_stack.append(proc(*arg_values))
@@ -1034,7 +1250,8 @@ def apply_proc(proc, args):
     built-in Python callable -- with a list of already-evaluated args.
     Used by higher-order builtins (map, filter, reduce, apply, vector-map)."""
     if isinstance(proc, Procedure):
-        new_env = Env(proc.params, args, proc.env, rest_param=proc.rest_param)
+        new_env = Env(proc.params, args, proc.env, rest_param=proc.rest_param,
+                      keyword_specs=proc.keyword_specs, default_eval=eval_default)
         return eval_body(proc.body, new_env)
     if callable(proc):
         return proc(*args)
@@ -2818,16 +3035,18 @@ def tastytrade_products_fn():
     return list_to_pairs([LispString(code) for code in TASTY_PRODUCTS])
 
 
-def make_global_env(output=None, plot=None):
+def make_global_env(output=None, plot=None, columns=None):
     """Build the global environment of built-in procedures.
 
     `output` is a one-argument function that receives raw text produced by
     `display`, `newline`, and `print`. `plot` is a one-argument function
     that receives a chart spec dict (see build_chart_spec) produced by the
-    `plot-xy...` builtins. Both default to plain-text console behavior, but
-    the GUI supplies callbacks that update its on-screen log and chart tab
-    instead -- the interpreter core doesn't need to know anything about Qt
-    for this to work.
+    `plot-xy...` builtins. `columns` is a one-argument function that
+    receives a list of (name, values) tuples produced by the
+    `display-columns` builtin. All three default to plain-text console
+    behavior, but the GUI supplies callbacks that update its on-screen log,
+    chart tab, and columns table instead -- the interpreter core doesn't
+    need to know anything about Qt for this to work.
     """
     if output is None:
         output = lambda s: print(s, end="")
@@ -2855,6 +3074,17 @@ def make_global_env(output=None, plot=None):
                 lines.append(
                     "  %s regression on %s: slope=%.6g intercept=%.6g"
                     % (r["kind"], r["label"], r["model"].coefficients[0], r["model"].intercept))
+            emit("\n".join(lines) + "\n")
+
+    if columns is None:
+        def columns(name_value_pairs):
+            names = [name for name, _ in name_value_pairs]
+            rows = max((len(values) for _, values in name_value_pairs), default=0)
+            lines = ["  ".join(names)]
+            for i in range(rows):
+                lines.append("  ".join(
+                    str(values[i]) if i < len(values) else ""
+                    for _, values in name_value_pairs))
             emit("\n".join(lines) + "\n")
 
     env = Env()
@@ -3039,6 +3269,40 @@ def make_global_env(output=None, plot=None):
         "eval": lisp_eval,
         "gensym": lisp_gensym,
         "load": lisp_load,
+    })
+
+    # ---- structs (see defstruct in eval_special_form) ----
+    def make_struct_fn(struct_type, plist):
+        values = {}
+        items = pairs_to_list(plist)
+        for i in range(0, len(items), 2):
+            values[items[i]] = items[i + 1]
+        return LispStruct(struct_type, values)
+
+    def struct_ref(s, slot_name):
+        if not isinstance(s, LispStruct):
+            raise LispError("struct-ref: not a struct: %r" % (s,))
+        if slot_name not in s.values:
+            raise LispError("struct-ref: %s has no slot %s" % (s.struct_type.name, slot_name))
+        return s.values[slot_name]
+
+    def struct_set(s, slot_name, value):
+        if not isinstance(s, LispStruct):
+            raise LispError("struct-set!: not a struct: %r" % (s,))
+        if slot_name not in s.values:
+            raise LispError("struct-set!: %s has no slot %s" % (s.struct_type.name, slot_name))
+        s.values[slot_name] = value
+        return NIL
+
+    def lisp_error(*args):
+        raise LispError(" ".join(to_display_string(a) for a in args))
+
+    env.update({
+        "%make-struct": make_struct_fn,
+        "struct-ref": struct_ref,
+        "struct-set!": struct_set,
+        "struct-type-name": lambda s: s.struct_type.name,
+        "error": lisp_error,
     })
 
     # ---- strings ----
@@ -3315,6 +3579,24 @@ def make_global_env(output=None, plot=None):
         "save-chart": save_chart_fn,
     })
 
+    # ---- columns (GUI's "Columns" tab / console text table) ----
+    def display_columns_fn(name_value_pairs):
+        """(display-columns pairs) -- pairs is a list of (name . vector)
+        conses; each becomes one displayed column, headed by its name, in
+        the order given. Deliberately generic: doesn't know anything
+        about the `column` struct some higher-level Lisp library (e.g. a
+        column_engine.lsp-style modeling library) may define on top of
+        this -- that mapping from a struct instance to a (name . vector)
+        pair happens entirely in Lisp. See the `columns` callback."""
+        pairs = pairs_to_list(name_value_pairs)
+        data = [(str(p.car), list(p.cdr.items)) for p in pairs]
+        columns(data)
+        return NIL
+
+    env.update({
+        "display-columns": display_columns_fn,
+    })
+
 
     # ---- type predicates ----
     env.update({
@@ -3322,10 +3604,12 @@ def make_global_env(output=None, plot=None):
         "integer?": lambda x: isinstance(x, int) and not isinstance(x, bool),
         "string?": lambda x: isinstance(x, LispString),
         "symbol?": lambda x: isinstance(x, Symbol),
+        "keyword?": lambda x: isinstance(x, Keyword),
         "vector?": lambda x: isinstance(x, LispVector),
         "date?": lambda x: isinstance(x, LispDate),
         "procedure?": lambda x: callable(x) or isinstance(x, Procedure),
         "boolean?": lambda x: isinstance(x, bool),
+        "struct?": lambda x: isinstance(x, LispStruct),
     })
 
     # ---- I/O ----
@@ -3479,7 +3763,8 @@ def make_global_env(output=None, plot=None):
         def wrapper(*args):
             debug_call_stack.append(name)
             try:
-                new_env = Env(proc.params, list(args), proc.env, rest_param=proc.rest_param)
+                new_env = Env(proc.params, list(args), proc.env, rest_param=proc.rest_param,
+                              keyword_specs=proc.keyword_specs, default_eval=eval_default)
                 arg_strs = ", ".join(to_string(a) for a in args)
                 chain = " -> ".join(str(n) for n in debug_call_stack)
                 print("--- debug-function: entering %s(%s) ---" % (name, arg_strs))
@@ -3543,7 +3828,7 @@ def to_display_string(x):
         return "()"
     if isinstance(x, LispString):
         return x
-    if isinstance(x, (Pair, LispVector, LispDate, LispModel, LispSplineModel)):
+    if isinstance(x, (Pair, LispVector, LispDate, LispModel, LispSplineModel, LispStruct)):
         return to_string(x)
     return str(x)
 
@@ -3575,6 +3860,10 @@ def to_string(x):
         return "#<%s-model coefficients=(%s) intercept=%.6g>" % (x.kind, coeffs, x.intercept)
     if isinstance(x, LispVector):
         return "#(" + " ".join(to_string(item) for item in x.items) + ")"
+    if isinstance(x, LispStruct):
+        parts = ["%s %s" % (Keyword(":" + slot_name), to_string(x.values.get(slot_name)))
+                 for slot_name, _ in x.struct_type.slots]
+        return "#S(%s %s)" % (x.struct_type.name, " ".join(parts)) if parts else "#S(%s)" % (x.struct_type.name,)
     if isinstance(x, Pair):
         parts = []
         p = x
@@ -3661,11 +3950,17 @@ def pretty_print_string(expr):
     return "\n".join(lines)
 
 
-def _param_spec_from(params, rest_param):
+def _param_spec_from(params, rest_param, keyword_specs=()):
     """Rebuild the SOURCE-SYNTAX parameter spec (proper list, dotted
-    list, or bare symbol) that parse_params() would have parsed INTO
-    (params, rest_param) -- the exact inverse of that function. Used by
-    reconstruct_procedure_source()/reconstruct_macro_source()."""
+    list, bare symbol, or &key list) that parse_params() would have
+    parsed INTO (params, rest_param, keyword_specs) -- the exact inverse
+    of that function. Used by reconstruct_procedure_source()/
+    reconstruct_macro_source()."""
+    if keyword_specs:
+        key_items = [Symbol("&key")]
+        for name, default_expr in keyword_specs:
+            key_items.append(Pair(name, Pair(default_expr, NIL)) if default_expr is not None else name)
+        return list_to_pairs(list(params) + key_items)
     if rest_param is None:
         return list_to_pairs(params)
     if not params:
@@ -3681,7 +3976,7 @@ def reconstruct_procedure_source(proc, name=None):
     given, (define (name params...) body...) -- source form for a
     Procedure. See pretty_print_string()'s docstring for exactly what
     "rebuild" does and doesn't preserve."""
-    param_spec = _param_spec_from(proc.params, proc.rest_param)
+    param_spec = _param_spec_from(proc.params, proc.rest_param, proc.keyword_specs)
     body = list_to_pairs(proc.body)
     if name is not None:
         return Pair(Symbol("define"), Pair(Pair(name, param_spec), body))
@@ -3692,7 +3987,7 @@ def reconstruct_macro_source(macro, name=None):
     """Rebuild the (defmacro name (params...) body...) source form for a
     Macro (name defaults to a placeholder if not given, since a Macro
     value on its own doesn't carry the name it may be bound under)."""
-    param_spec = _param_spec_from(macro.params, macro.rest_param)
+    param_spec = _param_spec_from(macro.params, macro.rest_param, macro.keyword_specs)
     body = list_to_pairs(macro.body)
     return Pair(Symbol("defmacro"),
                 Pair(name if name is not None else Symbol("<anonymous>"),
@@ -3962,8 +4257,14 @@ if _PYQT_AVAILABLE:
         "  (define rows (tastytrade-futures-curve-rows creds \"CL\" 12))\n"
         "  (define fit (tastytrade-curve-fit rows 0.75))\n"
         "  (define legs (tastytrade-leg-carry rows 4.25 3.0 1.0))\n"
-        "Any top-level variable bound to a vector appears as a column in\n"
-        "the Vectors tab; plot-xy... calls draw into the Chart tab.\n"
+        "  ; structs + keyword args (see column_engine.lsp for a full\n"
+        "  ; mortgage-amortization example built on these):\n"
+        "  (defstruct point x y (label \"\"))\n"
+        "  (define p (make-point :x 1 :y 2))\n"
+        "  (display (list (point-x p) (point-y p) (point? p)))\n"
+        "  (display-columns (list (cons \"prices\" prices) (cons \"squares\" squares)))\n"
+        "display-columns populates the Columns tab; plot-xy... calls draw\n"
+        "into the Chart tab.\n"
         "Press Ctrl+Enter, or click Run, to evaluate.\n\n"
     )
 
@@ -3973,7 +4274,8 @@ if _PYQT_AVAILABLE:
             self.setWindowTitle("Simple Lisp \u2014 vectors, charts, and FRED data")
             self.resize(1150, 620)
 
-            self.env = make_global_env(output=self._write_output, plot=self._on_plot)
+            self.env = make_global_env(
+                output=self._write_output, plot=self._on_plot, columns=self._on_columns)
             load_init_file(self.env)
 
             central = QWidget()
@@ -4006,7 +4308,7 @@ if _PYQT_AVAILABLE:
             self.table_model = VectorTableModel()
             self.table_view = QTableView()
             self.table_view.setModel(self.table_model)
-            self.tabs.addTab(self.table_view, "Vectors")
+            self.tabs.addTab(self.table_view, "Columns")
 
             chart_tab = QWidget()
             chart_layout = QVBoxLayout(chart_tab)
@@ -4022,7 +4324,6 @@ if _PYQT_AVAILABLE:
             splitter.setSizes([500, 650])
 
             self._append_text(WELCOME_MESSAGE)
-            self._refresh_table()
 
         def _write_output(self, text):
             """Called directly by the Lisp `display` / `newline` / `print`
@@ -4036,6 +4337,14 @@ if _PYQT_AVAILABLE:
             self.last_chart_spec = spec
             self.chart_canvas.plot(spec)
             self.tabs.setCurrentIndex(1)
+
+        def _on_columns(self, name_value_pairs):
+            """Called directly by the Lisp `display-columns` builtin --
+            the ONLY way the Columns tab is populated (there's no more
+            automatic scan of top-level vector-valued variables; see the
+            module docstring)."""
+            self.table_model.set_vectors(name_value_pairs)
+            self.tabs.setCurrentIndex(0)
 
         def _on_save_chart(self):
             if self.last_chart_spec is None:
@@ -4073,12 +4382,6 @@ if _PYQT_AVAILABLE:
             except Exception as e:
                 self._append_text("Error: %s\n\n" % e)
             self.input_edit.clear()
-            self._refresh_table()
-
-        def _refresh_table(self):
-            vectors = [(name, value.items) for name, value in self.env.items()
-                       if isinstance(value, LispVector)]
-            self.table_model.set_vectors(vectors)
 
 
 def launch_gui():

@@ -14,8 +14,10 @@ functions" as a reference to search rather than read start to end.
 ## Running it
 
 - **No arguments** — `python3 lisp_interpreter.py` opens the PyQt6 GUI (an
-  input box, an output log, a table of currently-defined vectors, and a
-  chart tab). If PyQt6 or matplotlib isn't installed, it falls back to a
+  input box, an output log, a "Columns" table, and a chart tab). The
+  Columns table is populated only by an explicit `(display-columns ...)`
+  call (see "Columns", below) — there's no automatic scan of top-level
+  variables. If PyQt6 or matplotlib isn't installed, it falls back to a
   plain console REPL instead.
 - **A filename argument** — `python3 lisp_interpreter.py script.lsp` runs
   that file in batch mode (no GUI). `save-chart` still works in this mode
@@ -40,6 +42,7 @@ Put your own always-available definitions/macros there instead of
 | String | `"hello"` | Double-quoted; `\n`, `\t`, `\"`, `\\` escapes |
 | Boolean | `#t`, `#f` | Everything except `#f` counts as true |
 | Symbol | `foo`, `list->vector` | Identifiers |
+| Keyword | `:name`, `:x` | A `Symbol` subtype, but SELF-EVALUATING (never needs `quote`) — used at call sites for keyword arguments; see "Keyword arguments", below |
 | Pair / list | `(1 2 3)`, `'(a b c)` | Built from cons cells; `()` is the empty list |
 | Dotted pair | `(1 . 2)`, `(a b . c)` | An IMPROPER list — `.` before the last element sets the final cdr directly instead of `()`. Mainly used for variadic parameter lists (see below), but works anywhere |
 | Quasiquote | `` `(a ,b ,@c) `` | Like `quote`, but `,x` splices in the value of `x` and `,@x` splices in the elements of list `x` — see Macros below |
@@ -150,8 +153,39 @@ total                          ; => 15
 
 #### `(defmacro name (params...) body...)`
 Defines `name` as a macro — see "Macros", below, for the full explanation.
-`params` supports the same fixed/dotted/bare-symbol shapes `lambda` does.
-Returns `name`.
+`params` supports the same fixed/dotted/bare-symbol shapes `lambda` does,
+plus `&key` — see "Keyword arguments", below. Returns `name`.
+
+#### `(defstruct name slot...)`
+Common-Lisp-style record type. Each `slot` is either a bare symbol (default
+value `'()`) or `(slot-name default-expr)` — e.g. `(visible #t)`. Defines,
+and binds into the current environment:
+
+- `make-<name>` — a keyword-argument constructor (`:slot-name value ...`,
+  any order, each optional — an ordinary application of "Keyword
+  arguments", below, not a separate mechanism). A slot's `default-expr` is
+  evaluated once per call, in an environment where earlier slots are
+  already bound (so later defaults can refer to them), if that slot's
+  keyword wasn't supplied.
+- `<name>-<slot>` — an accessor, for each slot.
+- `<name>-<slot>-set!` — a setter, for each slot (slots are mutable).
+- `<name>?` — a predicate.
+
+```lisp
+(defstruct point x y (label "origin"))
+(define p (make-point :x 1 :y 2))
+(point-x p)                    ; => 1
+(point-label p)                ; => "origin"  (default, wasn't supplied)
+(point-x-set! p 99)
+(point-x p)                    ; => 99
+(point? p)                     ; => #t
+```
+
+A struct prints as `#S(name :slot1 val1 :slot2 val2 ...)`, in declared slot
+order. `struct?`, `struct-ref`, `struct-set!`, and `struct-type-name` (see
+"Structs" under Built-in functions) work generically on any struct
+instance by slot-name symbol, without needing the type-specific accessor
+names — useful when writing code that works across struct types.
 
 #### `(breakpoint)`
 Opens a nested, blocking debug REPL right where it appears, evaluating
@@ -191,6 +225,41 @@ of arguments the same way a function can. Calling a fixed-arity function or
 macro with the wrong number of arguments raises `LispError: expected N
 argument(s), got M`; a variadic one raises `LispError: expected at least N
 argument(s), got M` if you supply fewer than its fixed parameters require.
+
+### Keyword arguments
+
+A fourth parameter-list shape, mutually exclusive with the dotted/bare-symbol
+rest-parameter forms above: fixed positional parameters followed by `&key`
+and a list of keyword-parameter specs, each a bare symbol (default `'()`) or
+`(name default-expr)`:
+
+```lisp
+(define (f a &key (b 10) c) (list a b c))
+(f 1)                           ; => (1 10 ())
+(f 1 :c 30)                     ; => (1 10 30)
+(f 1 :c 30 :b 20)               ; => (1 20 30)   -- any order, each optional
+```
+
+At the call site, every argument after the fixed positional ones must come
+in `:keyword value` pairs (in any order); an unrecognized keyword, or a
+missing value for the last one, raises a `LispError`. `default-expr` is
+evaluated once per call, if that keyword wasn't supplied, in an environment
+where earlier parameters and keyword slots are already bound — so a later
+default can refer to an earlier one, same as Common Lisp.
+
+A keyword like `:b` is its own self-evaluating datatype (`Keyword`, a
+`Symbol` subtype — see the Syntax table above), so it's never quoted.
+`keyword?` tells them apart from ordinary symbols (`symbol?` is still true
+for a keyword too, same as Common Lisp).
+
+`&key` works identically for `defmacro`: a keyword parameter is bound to
+the call site's raw, unevaluated argument expression (or, if omitted, the
+raw `default-expr` itself, also unevaluated) — consistent with how every
+other macro parameter is bound (see "Macros", below).
+
+`defstruct`'s generated `make-<name>` constructor (below) is built entirely
+out of this feature — struct construction is just an ordinary `&key`
+procedure, not a separate mechanism.
 
 ### Macros
 
@@ -358,7 +427,12 @@ are a different underlying type. If in doubt, `(string? (string->list
 "ab"))`'s first element is `#f`, not `#t`.
 
 #### `(symbol? x)`
-`#t` for a symbol (an identifier like `foo` or `list->vector`).
+`#t` for a symbol (an identifier like `foo` or `list->vector`) — also `#t`
+for a keyword (`:name`), since a keyword is a kind of symbol here, same as
+Common Lisp.
+
+#### `(keyword? x)`
+`#t` only for a keyword (`:name`) — narrower than `symbol?`.
 
 #### `(procedure? x)`
 `#t` for anything callable — a built-in procedure or a user-defined one
@@ -386,6 +460,10 @@ not passed around as a value and applied).
 
 #### `(model? x)`
 `#t` for any fitted regression model — see "Regression models", below.
+
+#### `(struct? x)`
+`#t` for an instance of any `defstruct`-defined type — see "Structs",
+below.
 
 ### Pairs and lists
 
@@ -578,6 +656,27 @@ with a `default` argument, the result runs out to the length of the
 (vectors-map (lambda (a b i) (+ a b)) (list (vector 1 2 3) (vector 10 20)) 0)
 ; => #(11 22 3)
 ```
+
+### Structs
+
+See `(defstruct name slot...)` under "Special forms", above, for the
+type-specific `make-<name>`/`<name>-<slot>`/`<name>-<slot>-set!`/`<name>?`
+names it generates. These four builtins work generically on any struct
+instance, by slot-name symbol, without needing to know its specific type:
+
+#### `(struct? x)`
+`#t` for an instance of any `defstruct`-defined type.
+
+#### `(struct-ref s slot-name)`
+Returns the value of `s`'s `slot-name` slot (a symbol, e.g. `'x`). Raises
+`LispError` if `s` isn't a struct, or has no such slot.
+
+#### `(struct-set! s slot-name value)`
+Mutates `s`'s `slot-name` slot in place. Same error conditions as
+`struct-ref`. Returns `'()`.
+
+#### `(struct-type-name s)`
+Returns `s`'s struct type's name, as a symbol (e.g. `'point`).
 
 ### Dates
 
@@ -857,6 +956,29 @@ file-write failure. Returns `'()`.
 (save-chart "chart.png")
 (save-chart "chart.pdf" 10.0 7.5 300)   ; larger, higher-DPI PDF
 ```
+
+### Columns
+
+#### `(display-columns pairs)`
+`pairs` is a Lisp list of `(name . vector)` conses; each becomes one
+displayed column, headed by `name`, in the order given. In the GUI, this
+is the *only* way the "Columns" tab is populated — there's no automatic
+scan of top-level variables. In console/batch mode, prints a simple
+whitespace-aligned text table instead. Returns `'()`.
+
+```lisp
+(define prices (vector 10 20 30))
+(define squares (vector-map (lambda (x) (* x x)) prices))
+(display-columns (list (cons "prices" prices) (cons "squares" squares)))
+```
+
+Deliberately low-level — it doesn't know anything about `defstruct` or any
+particular notion of a "column". See `column_engine.lsp` (next to this
+file) for a small example library, built on `defstruct` and `&key`, that
+registers named `column` structs, calculates them row-by-row in
+dependency order (with a `lag` accessor for referring to a previous row),
+and calls `display-columns` for you — demonstrated end-to-end in
+`mortgage_amortization_example.lsp`.
 
 ### FRED (Federal Reserve Bank of St. Louis) data, and CSV loading
 
@@ -1290,6 +1412,12 @@ internally by `dolist`'s own desugaring for the same reason.
 
 #### `(load "path.lsp")`
 See "Input / output", above — documented once there.
+
+#### `(error message arg...)`
+Raises `LispError` with a message built by rendering each argument the way
+`display` would and joining them with spaces (so `(error "bad value:" x)`
+reads naturally). For signaling a problem from your own Lisp code — e.g. a
+library like `column_engine.lsp` reporting a circular dependency.
 
 ### Introspection / debugging
 
