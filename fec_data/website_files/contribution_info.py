@@ -22,7 +22,7 @@ def get_db_path():
 
 
 def get_connection():
-    return sqlite3.connect(get_db_path())
+    return sqlite3.connect(get_db_path(), timeout=60)
 
 
 class candidate_name_form(FlaskForm):

@@ -265,7 +265,7 @@ def load_config(path):
 
 def get_connection(db_path):
     os.makedirs(os.path.dirname(os.path.abspath(db_path)) or ".", exist_ok=True)
-    return sqlite3.connect(db_path)
+    return sqlite3.connect(db_path, timeout=60)
 
 
 def check_sqlite_cli():
@@ -456,6 +456,7 @@ def load_static_table(db_path, table_name, txt_path, source_file, election_cycle
 .output /dev/null
 PRAGMA journal_mode=OFF;
 PRAGMA synchronous=OFF;
+PRAGMA busy_timeout=60000;
 DROP TABLE IF EXISTS {table};
 {create}
 .mode ascii
@@ -506,6 +507,7 @@ def load_indiv_table(db_path, txt_path, source_file, election_cycle, bulk=False)
 .output /dev/null
 PRAGMA journal_mode=OFF;
 PRAGMA synchronous=OFF;
+PRAGMA busy_timeout=60000;
 PRAGMA temp_store=FILE;
 PRAGMA cache_size=-20000;
 {indiv_table}
@@ -579,6 +581,7 @@ def rebuild_indiv_indexes(db_path):
 .bail on
 PRAGMA journal_mode=OFF;
 PRAGMA synchronous=OFF;
+PRAGMA busy_timeout=60000;
 PRAGMA temp_store=FILE;
 PRAGMA cache_size=-20000;
 CREATE INDEX IF NOT EXISTS {name} ON indiv_contributions ({column});
@@ -601,6 +604,7 @@ def rebuild_indiv_m(db_path):
 .output /dev/null
 PRAGMA journal_mode=OFF;
 PRAGMA synchronous=OFF;
+PRAGMA busy_timeout=60000;
 {indiv_m_table}
 {indiv_m_state_table}
 DELETE FROM indiv_m;
@@ -646,6 +650,7 @@ def update_indiv_m(db_path):
 .output /dev/null
 PRAGMA journal_mode=OFF;
 PRAGMA synchronous=OFF;
+PRAGMA busy_timeout=60000;
 {indiv_m_table}
 {indiv_m_state_table}
 INSERT OR IGNORE INTO indiv_m_state (id, last_load_batch_id) VALUES (1, 0);
