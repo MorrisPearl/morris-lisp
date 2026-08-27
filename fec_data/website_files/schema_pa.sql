@@ -77,7 +77,6 @@ CREATE TABLE IF NOT EXISTS indiv_contributions (
 );
 CREATE INDEX IF NOT EXISTS idx_indiv_cmte_id ON indiv_contributions (cmte_id);
 CREATE INDEX IF NOT EXISTS idx_indiv_name ON indiv_contributions (name);
-CREATE INDEX IF NOT EXISTS idx_indiv_transaction_dt ON indiv_contributions (transaction_dt);
 CREATE INDEX IF NOT EXISTS idx_indiv_election_cycle ON indiv_contributions (election_cycle);
 CREATE INDEX IF NOT EXISTS idx_indiv_load_batch_id ON indiv_contributions (load_batch_id);
 
