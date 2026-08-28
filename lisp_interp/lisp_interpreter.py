@@ -2364,6 +2364,17 @@ try:
 except ImportError:
     _TASTYTRADE_AVAILABLE = False
 
+# ---- term_structure_model (SOFR forward curve): a pure (no networking,
+#      no broker dependency) model reused as-is from ../term_structure/ --
+#      see sofr_forward_curve_fn(), below, which bridges it to
+#      tastytrade-futures-curve-rows("SR3", ...). ----
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "term_structure"))
+    from term_structure_model import bootstrap_sofr_curve as _bootstrap_sofr_curve
+    _TERM_STRUCTURE_AVAILABLE = True
+except ImportError:
+    _TERM_STRUCTURE_AVAILABLE = False
+
 TASTY_MONTH_CODES = {
     1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
     7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z",
@@ -2793,6 +2804,64 @@ def tastytrade_leg_carry_fn(curve_rows, funding_rate_pct, storage_cost_pct,
             LispString(signal),
         ]))
     return list_to_pairs(out_rows)
+
+
+# CME 3-Month SOFR (SR3) futures reference a 3-month accrual quarter that
+# ENDS at the contract's delivery month -- see term_structure_model.
+# bootstrap_sofr_curve()'s docstring for exactly what start_months/
+# end_months mean and the simplifications baked into treating a whole
+# quarter as one flat forward rate. Same day-count convention
+# sofr_market_data.py uses, for consistency with the rest of that module.
+_SOFR_DAYS_PER_MONTH = 30.436875
+
+
+def sofr_forward_curve_fn(curve_rows):
+    """(sofr-forward-curve curve-rows) -> (cons months-vector forward-rates-vector)
+    curve-rows is the output of (tastytrade-futures-curve-rows creds "SR3"
+    [n-months]) -- one row per listed CME 3-Month SOFR (SR3) futures
+    contract: (delivery-month symbol days-to-delivery last-price).
+    Bootstraps a 360-month (30-year) curve of 1-month forward rates
+    implied by those futures prices, by reusing
+    term_structure_model.bootstrap_sofr_curve() as-is (see
+    term_structure/term_structure_model.py for the full methodology and
+    its documented simplifications -- flat extrapolation beyond the last
+    listed contract, no convexity adjustment, etc.) -- this function's
+    only job is shaping tastytrade-futures-curve-rows's output into the
+    {start_months, end_months, rate} dicts that function expects.
+
+    months-vector is 1..360; forward-rates-vector[i] (0-indexed) is the
+    annualized 1-month forward rate (decimal, e.g. 0.045) for month i+1
+    -- (vector-ref forward-rates-vector (- month 1)). Feed straight into
+    plot-xy, or read a period's rate by row index in a column's
+    value_calculation for a floating-rate coupon or a mortgage
+    prepayment model's rate-incentive calculation -- see
+    sofr_floating_rate_example.lsp. Pure function -- no networking --
+    so it's cheap to re-run against the same fetched curve-rows.
+    Needs at least 1 row; raises LispError if curve-rows is empty, or if
+    term_structure_model.py (and numpy) aren't importable."""
+    if not _TERM_STRUCTURE_AVAILABLE:
+        raise LispError(
+            "sofr-forward-curve: term_structure_model.py (and numpy) aren't "
+            "available -- see term_structure/ next to lisp_interp/")
+    rows = [pairs_to_list(r) for r in pairs_to_list(curve_rows)]
+    if not rows:
+        raise LispError("sofr-forward-curve: curve-rows is empty")
+
+    sofr_futures = []
+    for r in rows:
+        days = float(_tasty_row_field(r, 2))
+        price = float(_tasty_row_field(r, 3))
+        end_months = round(days / _SOFR_DAYS_PER_MONTH)
+        sofr_futures.append({
+            "start_months": end_months - 3,
+            "end_months": end_months,
+            "rate": (100.0 - price) / 100.0,
+        })
+
+    result = _bootstrap_sofr_curve(sofr_futures)
+    months = LispVector([int(m) for m in result["months"]])
+    forward_rates = LispVector([float(fr) for fr in result["forward_rates"]])
+    return Pair(months, forward_rates)
 
 
 async def _tasty_collect_greeks(session, streamer_symbols, timeout):
@@ -3534,6 +3603,7 @@ def make_global_env(output=None, plot=None, columns=None):
         "tastytrade-curve-fit": tastytrade_curve_fit_fn,
         "tastytrade-leg-carry": tastytrade_leg_carry_fn,
         "tastytrade-products": tastytrade_products_fn,
+        "sofr-forward-curve": sofr_forward_curve_fn,
     })
 
     # ---- charting: plot one X vector against one or more Y vectors ----

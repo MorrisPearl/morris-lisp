@@ -1302,6 +1302,35 @@ adjacent pair has positive day spacing.
 (define legs (tastytrade-leg-carry rows 4.25 3.0 1.0))
 ```
 
+#### `(sofr-forward-curve curve-rows)`
+Pure function — no networking. `curve-rows` is
+`(tastytrade-futures-curve-rows creds "SR3" [n-months])` — one row per
+listed CME 3-Month SOFR future. Bootstraps a 360-month (30-year) curve of
+1-month forward rates implied by those futures prices, reusing
+`term_structure/term_structure_model.py`'s `bootstrap_sofr_curve()`
+as-is (see that function's docstring for the full methodology and its
+documented simplifications — flat extrapolation beyond the last listed
+contract, no convexity adjustment, a whole reference quarter treated as
+one flat rate). Returns `(cons months-vector forward-rates-vector)`,
+1-indexed by month: `(vector-ref forward-rates-vector (- month 1))`.
+Needs `numpy` and `term_structure/term_structure_model.py` (next to this
+repo's `lisp_interp/`); raises `LispError` if either isn't importable, or
+if `curve-rows` is empty.
+
+```lisp
+(define curve (sofr-forward-curve (tastytrade-futures-curve-rows creds "SR3" 40)))
+(define sofr-months (car curve))
+(define sofr-forward-rates (cdr curve))
+(plot-xy sofr-months (list sofr-forward-rates))
+```
+
+See `sofr_floating_rate_example.lsp` (next to this file) for feeding
+`sofr-forward-rates` into `column_engine.lsp` to drive a floating-rate
+note's coupon, period by period — the same forward-rate vector is also
+what a mortgage prepayment model's rate-incentive calculation would use
+(see that file's header comment, and `prepayment_demo.lsp`/
+`term_structure/mortgage_spread.py`).
+
 **Example** (also runnable as [`tastytrade_example.lsp`](tastytrade_example.lsp) —
 `python3 lisp_interpreter.py tastytrade_example.lsp`). Exercises all
 seven `tastytrade-*` builtins:
