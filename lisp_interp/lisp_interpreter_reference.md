@@ -1356,6 +1356,136 @@ mortgage_spread.py` show a data-fit (rather than textbook-PSA) CPR model
 and a way to estimate the SOFR-to-mortgage spread the rate-incentive
 input to either kind of model would need.
 
+#### `(sofr-calibration-data credentials-path [n-futures n-underlyings n-strikes])`
+Fetches a SOFR futures curve AND a spread of SOFR futures OPTIONS in one
+tastytrade session, reusing `term_structure/sofr_market_data.py`'s
+`fetch_sofr_calibration_data()` as-is (see that module for the full
+selection methodology — options are spread evenly across every curve
+quarter with a listed chain, not just the nearest few, so `sigma1`/
+`sigma2` below are separately identifiable). A SEPARATE fetch from
+`tastytrade-futures-curve-rows` — this one also pulls option chains, not
+just futures prices. `n-futures`/`n-underlyings`/`n-strikes` default to
+`40`/`10`/`3`.
+
+Returns `(cons curve-futures-rows options-rows)`:
+- `curve-futures-rows` — one row per SR3 contract month used for the
+  curve: `(symbol start-months end-months rate)`. Feed to
+  `sofr-bootstrap-curve`.
+- `options-rows` — up to `n-underlyings * n-strikes * 2` near-the-money
+  call/put pairs: `(type strike expiry-months quarter-start-months
+  quarter-end-months market-price)`. Feed to `sofr-calibrate-model`.
+
+Needs the `tastytrade` package, a tastytrade account, and a credentials
+JSON file (see `tasty_api/README.md`).
+
+#### `(sofr-bootstrap-curve curve-futures-rows)`
+Pure function — no networking. Like `sofr-forward-curve`, but takes
+`sofr-calibration-data`'s `curve-futures-rows` shape (`(symbol
+start-months end-months rate)`) instead of `tastytrade-futures-curve-
+rows`'s — no day-count reshaping needed, since these rows already carry
+`start-months`/`end-months` directly. Same return shape: `(cons
+months-vector forward-rates-vector)`.
+
+#### `(sofr-calibrate-model forward-rates options-rows curve-real-months [n-paths seed n-grid n-rounds])`
+Pure function — no networking (cheap to re-run with different settings
+once you've fetched `options-rows` once). Fits the two-factor model's
+mean-reversion speed `a` and both volatilities — `sigma1` (the short-rate
+factor) and `sigma2` (the slower-moving mean-reversion-*level* factor) —
+directly against real SOFR futures option prices, by a "zooming grid
+search": try a grid of `(a, sigma1, sigma2)` combinations, keep whichever
+prices the options closest, shrink the search window around it, repeat
+`n-rounds` times. Reuses `term_structure_model.py`'s
+`calibrate_sofr_model()` as-is — see that function's docstring for the
+full methodology, including *why* it fits `a` against option prices
+directly rather than against today's curve shape (found, on real data, to
+meaningfully improve the fit) and how `theta_bar` (the long-run level the
+model's second factor drifts toward) gets refit in closed form at every
+candidate `a`.
+
+- `forward-rates` — `sofr-forward-curve`'s or `sofr-bootstrap-curve`'s
+  second return value.
+- `options-rows` — `sofr-calibration-data`'s second return value (or
+  anything shaped the same way).
+- `curve-real-months` — how many months of `forward-rates` are the REAL
+  (non-extrapolated) part of the curve, i.e. the largest `end-months`
+  among the `curve-futures-rows` used to build it.
+- `n-paths` (default `2000`) — Monte Carlo paths used to price EACH
+  option at EACH candidate tried; an accuracy/speed trade-off for the
+  *calibration* itself, separate from how many scenario paths
+  `sofr-simulate-rate-paths` later generates.
+- `seed` (default `42`), `n-grid` (default `7`), `n-rounds` (default
+  `4`) — grid resolution per round / how many times to zoom in. Cost is
+  roughly `O(n-grid³ × n-rounds × n-paths × number of options)` — the
+  `term_structure_model.py` module docstring reports **ten to twenty
+  seconds** for its own real-data test at these same defaults and a
+  handful of options; turn `n-paths`/`n-grid`/`n-rounds` down for a
+  quicker first pass. See `sofr_monte_carlo_example.lsp`.
+
+Returns `(list a theta-bar sigma1 sigma2 error)` — `error` is the total
+squared pricing error at the winning parameters.
+
+#### `(sofr-simulate-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths [seed a theta-bar])`
+Pure function — no networking. Simulates `n-paths` Monte Carlo scenarios
+of the two-factor model (a short-rate factor and a slower mean-reversion-
+level factor — see `term_structure/term_structure_model.py`'s module
+docstring) `horizon-years` forward, reusing that module's
+`simulate_rate_paths()` as-is. `seed` defaults to `'()` (a fresh random
+seed each call); an integer gives reproducible paths.
+
+Pass `sofr-calibrate-model`'s fitted `a`/`theta-bar` (its first two
+return values) for `a`/`theta-bar` when `forward-rates` came from
+`sofr-bootstrap-curve`/`sofr-forward-curve` — leaving them `'()` uses
+this function's own default (theta-bar as the average of `forward-
+rates`' last 2 years), which for a SOFR curve anchors theta-bar at an
+arbitrary flat-extrapolated value with no connection to real market data.
+
+Returns `(list years-vector short-rate-paths ten-year-paths)`:
+- `years-vector` — times in years: `0, 1/12, 2/12, ..., horizon-years`.
+- `short-rate-paths` / `ten-year-paths` — each a Lisp LIST of
+  `(horizon-years×12 + 1)`-element vectors, one per path. `ten-year-
+  paths[i]` is path `i`'s approximate ten-year rate, a closed-form
+  function of that path's state at each month, not a separately-
+  simulated factor.
+
+```lisp
+(define sim (sofr-simulate-rate-paths sofr-forward-rates 0.005 0.01 5.0 20 42))
+(define years (list-ref sim 0))
+(define short-rate-paths (list-ref sim 1))
+(plot-xy years short-rate-paths)   ; y-list already IS a list of vectors
+```
+
+#### `(sofr-simulate-mortgage-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths mortgage-spread [seed a theta-bar tenor-years])`
+Pure function — no networking. The same simulation as
+`sofr-simulate-rate-paths`, plus a simple proxy mortgage rate per
+path/month: `mortgage_rate = tenor-years-rate + mortgage-spread`
+(`tenor-years` defaults to `10`, the usual rate-sensitivity proxy for a
+30-year mortgage). Reuses `simulate_mortgage_rate_paths()` as-is.
+
+**SIMPLIFICATION** (from the underlying model, not this bridge): a real
+mortgage rate tracks current-coupon MBS yields — the whole curve,
+prepayment risk, origination costs — not one flat spread over one tenor
+point; `mortgage-spread` is a deliberate simplification, named so it's
+obvious where to plug in something richer (`term_structure/
+mortgage_spread.py`'s `fetch_current_mortgage_rate()` pulls FRED's
+`MORTGAGE30US` for one way to estimate it from real data instead of
+guessing).
+
+Returns `(list years-vector short-rate-paths underlying-paths
+mortgage-paths)` — `underlying-paths` is the `tenor-years` rate before
+adding the spread; `mortgage-paths` is after.
+
+**Example**: `sofr_monte_carlo_example.lsp` (next to this file) runs the
+full pipeline end to end — `sofr-calibration-data` →
+`sofr-bootstrap-curve` → `sofr-calibrate-model` →
+`sofr-simulate-mortgage-rate-paths` — then charts a few paths and writes
+all of them to CSV via `write-columns-csv` (see "Columns", above). Its
+header comment sketches feeding one simulated path into
+`mortgage_amortization_example.lsp` in place of the deterministic
+SOFR-forward-curve-derived rate, for a single Monte Carlo scenario's
+cashflows (looping over several paths, each with its own
+`column_engine.lsp` registry, is the natural next step toward a full
+Monte Carlo distribution of cashflows — not built out there).
+
 **Example** (also runnable as [`tastytrade_example.lsp`](tastytrade_example.lsp) —
 `python3 lisp_interpreter.py tastytrade_example.lsp`). Exercises all
 seven `tastytrade-*` builtins:
