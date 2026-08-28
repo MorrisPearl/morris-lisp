@@ -686,6 +686,7 @@ DELETE FROM indiv_m;
 PRAGMA journal_mode=OFF;
 PRAGMA synchronous=OFF;
 PRAGMA busy_timeout=60000;
+PRAGMA case_sensitive_like=ON;
 INSERT INTO indiv_m
 {insert_cols}
 WHERE d.election_cycle = {cycle};
@@ -699,6 +700,7 @@ WHERE d.election_cycle = {cycle};
 PRAGMA journal_mode=OFF;
 PRAGMA synchronous=OFF;
 PRAGMA busy_timeout=60000;
+PRAGMA case_sensitive_like=ON;
 INSERT INTO indiv_m
 {insert_cols};
 """.format(insert_cols=insert_cols)
@@ -741,6 +743,7 @@ def update_indiv_m(db_path):
 PRAGMA journal_mode=OFF;
 PRAGMA synchronous=OFF;
 PRAGMA busy_timeout=60000;
+PRAGMA case_sensitive_like=ON;
 {indiv_m_table}
 {indiv_m_state_table}
 INSERT OR IGNORE INTO indiv_m_state (id, last_load_batch_id) VALUES (1, 0);
@@ -780,15 +783,34 @@ def process_pending_members(db_path):
     done. This is plain Python (not a sqlite3-CLI subprocess like the
     bulk loaders) because each row is just one indexed name lookup, not
     a bulk import -- no need for the journal_mode=OFF/temp_store
-    tuning that only matters for scanning/writing millions of rows."""
+    tuning that only matters for scanning/writing millions of rows.
+
+    case_sensitive_like matters a lot here: SQLite's LIKE is
+    case-insensitive by default, and the query planner can only turn a
+    'col LIKE prefix%' into an index range seek when it can prove the
+    match is case-sensitive -- otherwise it silently falls back to a
+    full index scan. Confirmed on this database: 20+ minutes (SCAN) vs.
+    0.02s (SEARCH) for the exact same query. Since FEC names and every
+    match_name here are already uppercased, turning this on costs
+    nothing and is why this join is fast enough to run per-request-sized
+    batches at all."""
     conn = get_connection(db_path)
     cur = conn.cursor()
+    cur.execute("PRAGMA case_sensitive_like = ON")
     cur.execute(PENDING_MEMBERS_TABLE_SQL)
+    conn.commit()
+
+    # Claim rows before working on any of them (pending -> claimed), so a
+    # second invocation overlapping this one (e.g. the hourly scheduled
+    # task firing while a manual run is still going) can't pick up the
+    # same row and duplicate it into indiv_m, or fight this one for the
+    # write lock on the exact same row.
+    cur.execute("UPDATE pending_members SET status='claimed' WHERE status='pending'")
     conn.commit()
 
     cur.execute(
         "SELECT id, first_name, last_name, city, state, match_name, "
-        "priv, pub, mem, prospect FROM pending_members WHERE status = 'pending' "
+        "priv, pub, mem, prospect FROM pending_members WHERE status = 'claimed' "
         "ORDER BY id"
     )
     pending = cur.fetchall()
@@ -822,12 +844,19 @@ def process_pending_members(db_path):
                 pid, first_name, last_name, rows_matched))
         except sqlite3.Error as e:
             conn.rollback()
-            cur.execute(
-                "UPDATE pending_members SET status='error', "
-                "processed_at=? WHERE id=?",
-                (datetime.now().isoformat(sep=" ", timespec="seconds"), pid),
-            )
-            conn.commit()
+            try:
+                cur.execute(
+                    "UPDATE pending_members SET status='pending', "
+                    "processed_at=? WHERE id=?",
+                    (datetime.now().isoformat(sep=" ", timespec="seconds"), pid),
+                )
+                conn.commit()
+            except sqlite3.Error:
+                # Leave it 'claimed' rather than crash the rest of the
+                # batch -- the next run will just retry it once the
+                # thing holding the lock (or a stray 'claimed' left by a
+                # crashed prior run) has cleared.
+                pass
             print("  #{} {} {}: ERROR -- {}".format(pid, first_name, last_name, e))
     conn.close()
 
