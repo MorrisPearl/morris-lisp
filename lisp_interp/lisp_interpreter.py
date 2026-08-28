@@ -3078,12 +3078,21 @@ def make_global_env(output=None, plot=None, columns=None):
 
     if columns is None:
         def columns(name_value_pairs):
-            names = [name for name, _ in name_value_pairs]
+            # name_value_pairs' values are already display-formatted
+            # strings by this point (see display_columns_fn, below) --
+            # right-justify each column to its own widest cell (header
+            # included) so a column of numbers lines up on its ones
+            # place, the same way the GUI's monospace/right-aligned
+            # Columns tab does.
+            widths = [max([len(name)] + [len(str(v)) for v in values])
+                      for name, values in name_value_pairs]
             rows = max((len(values) for _, values in name_value_pairs), default=0)
-            lines = ["  ".join(names)]
+            def row(cells):
+                return "  ".join(str(c).rjust(w) for c, w in zip(cells, widths))
+            lines = [row([name for name, _ in name_value_pairs])]
             for i in range(rows):
-                lines.append("  ".join(
-                    str(values[i]) if i < len(values) else ""
+                lines.append(row(
+                    values[i] if i < len(values) else ""
                     for _, values in name_value_pairs))
             emit("\n".join(lines) + "\n")
 
@@ -3580,21 +3589,40 @@ def make_global_env(output=None, plot=None, columns=None):
     })
 
     # ---- columns (GUI's "Columns" tab / console text table) ----
+    def format_column_value(v):
+        """Render one cell for display-columns, using the CURRENT value
+        of the Lisp-settable *column-number-format* global (a Python
+        str.format() spec, e.g. "{:,.0f}" for comma-grouped integers, or
+        "{:,.2f}" for two decimal places -- (set! *column-number-format*
+        "{:,.2f}") changes it for every subsequent display-columns call).
+        Non-numeric values (dates, etc.) fall back to plain display
+        formatting, ignoring the numeric spec."""
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return to_display_string(v)
+        fmt = env.get(Symbol("*column-number-format*"), "{}")
+        try:
+            return str(fmt).format(v)
+        except (ValueError, TypeError):
+            return to_display_string(v)
+
     def display_columns_fn(name_value_pairs):
         """(display-columns pairs) -- pairs is a list of (name . vector)
         conses; each becomes one displayed column, headed by its name, in
-        the order given. Deliberately generic: doesn't know anything
-        about the `column` struct some higher-level Lisp library (e.g. a
-        column_engine.lsp-style modeling library) may define on top of
-        this -- that mapping from a struct instance to a (name . vector)
-        pair happens entirely in Lisp. See the `columns` callback."""
+        the order given, with every value rendered through
+        format_column_value (see *column-number-format*). Deliberately
+        generic: doesn't know anything about the `column` struct some
+        higher-level Lisp library (e.g. a column_engine.lsp-style
+        modeling library) may define on top of this -- that mapping from
+        a struct instance to a (name . vector) pair happens entirely in
+        Lisp. See the `columns` callback."""
         pairs = pairs_to_list(name_value_pairs)
-        data = [(str(p.car), list(p.cdr.items)) for p in pairs]
+        data = [(str(p.car), [format_column_value(v) for v in p.cdr.items]) for p in pairs]
         columns(data)
         return NIL
 
     env.update({
         "display-columns": display_columns_fn,
+        "*column-number-format*": LispString("{:,.0f}"),
     })
 
 
@@ -4112,7 +4140,7 @@ def repl(env):
 
 try:
     from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex
-    from PyQt6.QtGui import QTextCursor
+    from PyQt6.QtGui import QTextCursor, QFontDatabase
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QPlainTextEdit, QPushButton, QTextEdit, QTableView, QSplitter,
@@ -4168,11 +4196,20 @@ if _PYQT_AVAILABLE:
             return len(self.columns)
 
         def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+            if role == Qt.ItemDataRole.TextAlignmentRole:
+                return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             if role != Qt.ItemDataRole.DisplayRole:
                 return None
             col = self.columns[index.column()]
             row = index.row()
             if row < len(col):
+                # Values arriving here (via display-columns) are already
+                # rendered strings -- see format_column_value() and the
+                # *column-number-format* global -- so this is just a
+                # pass-through; right-aligning them (above) in the
+                # monospace font the GUI sets on this table (see
+                # LispMainWindow.__init__) is what actually makes a
+                # column of numbers line up on its ones place.
                 return str(col[row])
             return ""
 
@@ -4308,6 +4345,10 @@ if _PYQT_AVAILABLE:
             self.table_model = VectorTableModel()
             self.table_view = QTableView()
             self.table_view.setModel(self.table_model)
+            # Fixed-width font so a column of right-aligned numbers (see
+            # VectorTableModel.data()'s TextAlignmentRole) lines up
+            # vertically on its ones place, not just left-to-right.
+            self.table_view.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
             self.tabs.addTab(self.table_view, "Columns")
 
             chart_tab = QWidget()

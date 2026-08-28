@@ -963,14 +963,23 @@ file-write failure. Returns `'()`.
 `pairs` is a Lisp list of `(name . vector)` conses; each becomes one
 displayed column, headed by `name`, in the order given. In the GUI, this
 is the *only* way the "Columns" tab is populated — there's no automatic
-scan of top-level variables. In console/batch mode, prints a simple
-whitespace-aligned text table instead. Returns `'()`.
+scan of top-level variables (the tab uses a fixed-width font with
+right-aligned cells, so a column of numbers lines up on its ones place).
+In console/batch mode, prints a simple right-justified text table
+instead. Returns `'()`.
 
 ```lisp
 (define prices (vector 10 20 30))
 (define squares (vector-map (lambda (x) (* x x)) prices))
 (display-columns (list (cons "prices" prices) (cons "squares" squares)))
 ```
+
+Every numeric value is rendered through `*column-number-format*`, a
+Lisp-settable global holding a Python `str.format()` spec — defaults to
+`"{:,.0f}"` (comma-grouped integers, e.g. `12,346`). `(set!
+*column-number-format* "{:,.2f}")` switches to two decimal places for
+every subsequent `display-columns` call; non-numeric values (dates, etc.)
+are unaffected, always rendered plainly.
 
 Deliberately low-level — it doesn't know anything about `defstruct` or any
 particular notion of a "column". See `column_engine.lsp` (next to this
