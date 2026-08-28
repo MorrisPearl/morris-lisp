@@ -4,7 +4,15 @@
 ; monthly mortgage amortization table (balance/principal/interest) using
 ; column_engine.lsp's defstruct-based column engine, with prepayments
 ; (prepayment_model.lsp's PSA-style CPR curve) folded into the collateral
-; cashflows. Run it with:
+; cashflows -- and, as a proof of concept, the CPR's optional refinancing-
+; incentive term driven by real projected rates: sofr-forward-curve's
+; SOFR forward curve (see sofr_floating_rate_example.lsp) plus an assumed
+; spread stands in for "the current market mortgage rate" each period, so
+; prepayment speed responds to where rates are actually projected to go,
+; not just to loan age. Needs a tastytrade credentials file -- see
+; tasty_api/README.md -- purely for that piece; comment out the SOFR
+; section and pass psa_speed alone to cpr (as before) to run without one.
+; Run it with:
 ;   python3 lisp_interpreter.py mortgage_amortization_example.lsp
 ; or from the GUI/REPL:
 ;   (load "mortgage_amortization_example.lsp")
@@ -24,11 +32,32 @@
      (/ (* periodic_mortgage_interest_rate d_factor) (- d_factor 1.0))))
 
 ; Prepayment speed, as a percentage of "100% PSA" -- see
-; prepayment_model.lsp. 0 turns prepayments off entirely (collateral
-; amortizes exactly on its original schedule, same as before this file
-; had a prepayment_model.lsp column at all); try 150-300 to see how much
-; faster (and shorter) the collateral's life gets.
+; prepayment_model.lsp. This now only controls the AGING-based component
+; of CPR (0 turns just that part off); the refinancing-incentive term
+; below (see rate_incentive_column) is a second, independent driver, so
+; some prepayments can still occur even at psa_speed 0 if rates make
+; refinancing attractive. Try 150-300 to see how much faster (and
+; shorter) the collateral's life gets from aging alone.
 (define psa_speed 150)
+
+; --- SOFR-driven refinancing incentive (proof of concept) ---------------
+; Fetches the current SOFR forward curve (see sofr_floating_rate_example.
+; lsp) and uses it to estimate "the current market mortgage rate" each
+; period -- SOFR forward + an assumed spread -- then feeds (this loan's
+; own rate - that market rate) into prepayment_model.lsp's cpr as a
+; rate-incentive input (see rate_incentive_column, below). This is
+; deliberately the simplest possible wiring, to demonstrate the
+; MECHANISM -- fetched market data flowing all the way through into the
+; cashflows -- not a realistic mortgage-rate model; see term_structure/
+; mortgage_spread.py for a way to estimate the spread from real data
+; instead of guessing a flat number.
+(define creds "tastytrade_credentials.json")   ; edit to your credentials file's path
+(define sofr-curve (sofr-forward-curve (tastytrade-futures-curve-rows creds "SR3" 40)))
+(define sofr-forward-rates (cdr sofr-curve))   ; (vector-ref sofr-forward-rates (- month 1))
+
+(define mortgage_sofr_spread 1.75)   ; assumed spread, in points (1.75 =
+                                      ; 175bp), of the market mortgage
+                                      ; rate over 1-month SOFR
 
 ; The collateral's own P&I cashflow, WITH prepayments -- standard MBS
 ; waterfall order per period: interest, then SCHEDULED principal (off the
@@ -46,6 +75,17 @@
   :value_calculation current-row
   :visible #f)                      ; loan age in months -- bookkeeping only
 
+(defcolumn market_rate_column
+  :name "market_rate"
+  :initial_value (+ (* (vector-ref sofr-forward-rates 0) 100.0) mortgage_sofr_spread)
+  :value_calculation (+ (* (vector-ref sofr-forward-rates (- current-row 1)) 100.0)
+                        mortgage_sofr_spread))    ; percent, same units as mortgage_interest_rate
+
+(defcolumn rate_incentive_column
+  :name "rate_incentive"
+  :initial_value 0
+  :value_calculation (- mortgage_interest_rate market_rate))   ; points; >0 means refi-attractive
+
 (defcolumn interest_column
   :name "coll_interest"
   :initial_value 0
@@ -61,7 +101,7 @@
 (defcolumn smm_column
   :name "smm"
   :initial_value 0.0
-  :value_calculation (smm-from-cpr (cpr wala psa_speed)))
+  :value_calculation (smm-from-cpr (cpr wala psa_speed :incentive_points rate_incentive)))
 
 (defcolumn prepayment_column
   :name "prepayment"
