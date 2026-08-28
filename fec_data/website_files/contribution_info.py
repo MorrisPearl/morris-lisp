@@ -172,6 +172,38 @@ def get_member_list():
 
     return(cc)
 
+@app.route('/member_summary')
+def do_member_summary():
+
+    member_summary_columns = ('first_name', 'last_name', 'city', 'state', 'Count', 'Total_Donations')
+
+    c = get_member_summary()
+    return render_template("donor_report.html",
+                           title_list=member_summary_columns,
+                           name_list=c,
+                           message=" ")
+
+def get_member_summary():
+    """One row per member (grouped only by first_name/last_name/city/
+    state, unlike get_member_list() which also groups by fec_name/
+    fec_city/fec_state and so can split one member's totals across
+    several rows if their matched FEC contributions vary slightly in
+    name/city spelling)."""
+    cnx = get_connection()
+    c = cnx.cursor()
+
+    q = ("select first_name, last_name, city, state, "
+         "count(*), sum(trans_amount) "
+         "from indiv_m "
+         "group by first_name, last_name, city, state "
+         "order by last_name, first_name "   )
+
+    c.execute(q)
+
+    cc = list(c)
+
+    return(cc)
+
 @app.route('/', methods=['GET', 'POST'])
 def do_form():
     f = candidate_name_form()
