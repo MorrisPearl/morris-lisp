@@ -1326,10 +1326,13 @@ if `curve-rows` is empty.
 
 See `sofr_floating_rate_example.lsp` (next to this file) for feeding
 `sofr-forward-rates` into `column_engine.lsp` to drive a floating-rate
-note's coupon, period by period — the same forward-rate vector is also
-what a mortgage prepayment model's rate-incentive calculation would use
-(see that file's header comment, and `prepayment_demo.lsp`/
-`term_structure/mortgage_spread.py`).
+note's coupon, period by period. `prepayment_model.lsp` (a simple
+PSA-style CPR/SMM curve — see that file) is the mortgage-prepayment
+counterpart, incorporated into `mortgage_amortization_example.lsp`'s
+collateral cashflows; `prepayment_demo.lsp`/`term_structure/
+mortgage_spread.py` show a data-fit (rather than textbook-PSA) CPR model
+and a way to estimate the SOFR-to-mortgage spread the rate-incentive
+input to either kind of model would need.
 
 **Example** (also runnable as [`tastytrade_example.lsp`](tastytrade_example.lsp) —
 `python3 lisp_interpreter.py tastytrade_example.lsp`). Exercises all
