@@ -63,6 +63,11 @@ evaluated before the call happens).
 Returns `expr` completely unevaluated, as literal data. `'expr` is reader
 sugar for this.
 
+```lisp
+(quote (a b c))                ; => (a b c)
+'(a b c)                       ; => (a b c) -- the common way to write it
+```
+
 #### `` (quasiquote template) ``
 Like `quote`, but `(unquote expr)` (written `,expr`) inside the template is
 replaced by the *value* of evaluating `expr`, and `(unquote-splicing expr)`
@@ -74,10 +79,24 @@ increments a depth counter; an unquote only actually evaluates once depth is
 back down to the matching level). Works inside vector literals too, splicing
 each element. See "Macros", below, for why this matters.
 
+```lisp
+(let ((x 3))
+  `(x is ,x and doubled is ,(* x 2)))
+; => (x is 3 and doubled is 6)
+
+(let ((rest (list 2 3)))
+  `(1 ,@rest 4))               ; => (1 2 3 4) -- splices the LIST's elements in
+```
+
 #### `(if test conseq [alt])`
 Evaluates `test`; if it is not `#f` (everything else — including `0` and
 `'()` — counts as true), evaluates and returns `conseq`; otherwise
 evaluates and returns `alt`, or `'()` if `alt` was omitted.
+
+```lisp
+(if (> 3 2) 'yes 'no)          ; => yes
+(if (> 2 3) 'yes)              ; => ()  -- no alt given, test was false
+```
 
 #### `(define name expr)` / `(define (name params...) body...)`
 First form: evaluates `expr` and binds it to `name` in the current
@@ -90,6 +109,12 @@ body...))`. `params` may be a fixed list `(a b)`, a dotted/variadic list
 `(name . args)` for a fully-variadic function — see "Variadic parameters",
 below. Returns `name`.
 
+```lisp
+(define x 10)                  ; => x
+(define (square n) (* n n))    ; => square
+(square 5)                     ; => 25
+```
+
 #### `(set! name expr)`
 Evaluates `expr` and rebinds the *existing* binding of `name`, found by
 walking outward through enclosing environments. Raises `LispError: unbound
@@ -97,25 +122,49 @@ symbol: ...` if `name` isn't bound anywhere in that chain — unlike
 `define`, `set!` can never create a new binding, only change one that
 already exists.
 
+```lisp
+(define x 10)
+(set! x 20)
+x                               ; => 20
+```
+
 #### `(lambda params body...)`
 Creates and returns an anonymous procedure, closing over the environment
 active where the `lambda` appears. `params` follows the same three shapes
 `define`'s function form does (fixed, dotted, or a bare symbol collecting
 every argument).
 
+```lisp
+((lambda (x y) (+ x y)) 3 4)   ; => 7
+(define add1 (lambda (n) (+ n 1)))
+(add1 41)                      ; => 42
+```
+
 #### `(begin expr...)`
 Evaluates each expression in order, returning the value of the last one (or
 `'()` if there are none). The last expression is in tail position.
+
+```lisp
+(begin (display "a") (display "b") 42)   ; prints ab, => 42
+```
 
 #### `(let ((name val)...) body...)`
 Desugars to `((lambda (name...) body...) val...)`: every `val` is evaluated
 in the *outer* environment (none of them can see each other's bindings),
 then `body...` runs with all the names bound simultaneously.
 
+```lisp
+(let ((a 1) (b 2)) (+ a b))    ; => 3
+```
+
 #### `(let* ((name val)...) body...)`
 Like `let`, but desugars to nested single-binding `let`s, so each `val`
 expression can see every `let*` binding that came before it in the same
 form.
+
+```lisp
+(let* ((a 1) (b (+ a 1))) (list a b))   ; => (1 2) -- b's val sees a
+```
 
 #### `(cond (test body...)... [(else body...)])`
 Tries each clause's `test` in turn; for the first one that's true,
@@ -123,15 +172,31 @@ evaluates its `body...` and returns the value of the last expression. The
 literal symbol `else` (not evaluated) always matches, if present. Returns
 `'()` if no clause matches and there's no `else`.
 
+```lisp
+(cond ((= 1 2) 'no)
+      ((= 1 1) 'yes)
+      (else 'fallback))        ; => yes
+```
+
 #### `(and expr...)`
 Evaluates each expression in order, stopping and returning `#f` as soon as
 one is false; if every expression is true, returns the value of the last
 one. `(and)` (zero arguments) returns `#t`.
 
+```lisp
+(and 1 2 3)                    ; => 3  -- every expr true, returns the last
+(and 1 #f 3)                   ; => #f -- stops at the first false one
+```
+
 #### `(or expr...)`
 Evaluates each expression in order, stopping and returning the value of the
 first one that's true; if none are, returns `#f`. `(or)` (zero arguments)
 returns `#f`.
+
+```lisp
+(or #f #f 3)                   ; => 3  -- first true value
+(or #f #f)                     ; => #f -- none were true
+```
 
 #### `(dolist (var list-expr [result-expr]) body...)`
 Common-Lisp-style list iteration. Evaluates `list-expr` exactly once, then
@@ -155,6 +220,12 @@ total                          ; => 15
 Defines `name` as a macro — see "Macros", below, for the full explanation.
 `params` supports the same fixed/dotted/bare-symbol shapes `lambda` does,
 plus `&key` — see "Keyword arguments", below. Returns `name`.
+
+```lisp
+(defmacro unless (test then) `(if (not ,test) ,then '()))
+(unless (> 1 2) 'shown)        ; => shown -- see "Macros" for why this needs
+                                ;    to be a macro, not a plain function
+```
 
 #### `(defstruct name slot...)`
 Common-Lisp-style record type. Each `slot` is either a bare symbol (default
@@ -341,16 +412,35 @@ with `LispError: not a number: ...`, except where noted.
 #### `(+ a b ...)`
 Sum of zero or more numbers; `(+)` is `0`.
 
+```lisp
+(+ 1 2 3)                      ; => 6
+(+)                            ; => 0
+```
+
 #### `(- a b ...)`
 Subtracts left to right; `(- a)` (one argument) negates it. Raises
 `LispError` if called with no arguments.
 
+```lisp
+(- 10 3 2)                     ; => 5   -- (10 - 3) - 2
+(- 5)                          ; => -5
+```
+
 #### `(* a b ...)`
 Product of zero or more numbers; `(*)` is `1`.
+
+```lisp
+(* 2 3 4)                      ; => 24
+```
 
 #### `(/ a b ...)`
 Divides left to right (true/float division, not integer); `(/ a)` (one
 argument) is `1/a`. Raises `LispError` if called with no arguments.
+
+```lisp
+(/ 20 2 5)                     ; => 2.0
+(/ 4)                          ; => 0.25
+```
 
 #### `(mod a b)`, `(remainder a b)`
 Both compute Python's `a % b` (floor-modulo — the result's sign follows the
@@ -358,39 +448,86 @@ divisor `b`). Despite the names, this interpreter does not give
 `remainder` Scheme's usual distinct sign-follows-dividend behavior; the two
 are identical here.
 
+```lisp
+(mod 7 3)                      ; => 1
+(mod -7 3)                     ; => 2   -- sign follows the divisor
+(remainder -7 3)               ; => 2   -- same as mod here, NOT -1
+```
+
 #### `(quotient a b)`
 Truncating (toward zero) integer division: `int(a / b)`. Differs from `//`
 for negative operands — e.g. `(quotient -7 2)` is `-3`, not `-4`.
 
+```lisp
+(quotient -7 2)                ; => -3
+```
+
 #### `(abs x)`
 Absolute value.
 
+```lisp
+(abs -5)                       ; => 5
+```
+
 #### `(min a b ...)`, `(max a b ...)`
 Minimum / maximum of the given arguments (at least one required).
+
+```lisp
+(min 3 1 4 1 5)                ; => 1
+(max 3 1 4 1 5)                ; => 5
+```
 
 #### `(sqrt x)`
 Square root. Raises a plain Python `ValueError` (not `LispError`) for
 negative `x`.
 
+```lisp
+(sqrt 16)                      ; => 4.0
+```
+
 #### `(expt a b)`
 `a` to the power `b`, via Python's `**` — stays an exact integer for
 integer inputs, e.g. `(expt 2 10)` is `1024` (an int).
+
+```lisp
+(expt 2 10)                    ; => 1024
+```
 
 #### `(pow a b)`
 `a` to the power `b`, via `math.pow` — always returns a float, e.g.
 `(pow 2 10)` is `1024.0`.
 
+```lisp
+(pow 2 10)                     ; => 1024.0
+```
+
 #### `(log x [base])`
 Natural log of `x`, or log base `base` if given, e.g. `(log 8 2)` is `3.0`.
+
+```lisp
+(log 8 2)                      ; => 3.0
+```
 
 #### `(floor x)`, `(ceiling x)`, `(round x)`, `(truncate x)`
 Standard rounding. `round` uses banker's rounding (round-half-to-even) for
 exact ties, matching Python's built-in `round`.
 
+```lisp
+(floor 3.7)                    ; => 3
+(ceiling 3.2)                  ; => 4
+(round 2.5)                    ; => 2   -- banker's rounding: ties go to even
+(round 3.5)                    ; => 4
+(truncate -3.7)                ; => -3
+```
+
 #### `(sigmoid z)`
 `1 / (1 + e^-z)`, computed in a numerically stable way for very large
 `|z|`. The same logistic function `logistic-regression`/`model-predict`
 use internally, exposed directly for convenience.
+
+```lisp
+(sigmoid 0)                    ; => 0.5
+```
 
 ### Comparison / equality / booleans
 
@@ -399,8 +536,18 @@ Chained numeric comparisons — true only if the comparison holds between
 *every* consecutive pair of arguments, e.g. `(< 1 2 3)` checks both `1<2`
 and `2<3`. With 0 or 1 arguments, always `#t`.
 
+```lisp
+(< 1 2 3)                      ; => #t
+(< 1 3 2)                      ; => #f -- 3<2 fails
+```
+
 #### `(not x)`
 `#t` if `x` is `#f`; `#f` for everything else (including `0` and `'()`).
+
+```lisp
+(not #f)                       ; => #t
+(not 0)                        ; => #f -- 0 is truthy here
+```
 
 #### `(eq? a b)`, `(equal? a b)`
 Both are implemented as value equality here (`a is b or a == b` for `eq?`;
@@ -409,15 +556,35 @@ Scheme's usual identity-only semantics. `(eq? '(1 2) (list 1 2))` is `#t`
 here, where in most Schemes it would be `#f`. For most purposes the two are
 interchangeable in this interpreter.
 
+```lisp
+(eq? '(1 2) (list 1 2))        ; => #t
+(equal? "abc" "abc")           ; => #t
+```
+
 #### `(boolean? x)`
 `#t` only for `#t`/`#f`.
+
+```lisp
+(boolean? #t)                  ; => #t
+(boolean? 0)                   ; => #f
+```
 
 #### `(number? x)`
 `#t` for any `int` or `float`, explicitly excluding booleans.
 
+```lisp
+(number? 3.5)                  ; => #t
+(number? #t)                   ; => #f
+```
+
 #### `(integer? x)`
 `#t` for an `int` that isn't a boolean; `#f` for a float even with no
 fractional part (e.g. `3.0`).
+
+```lisp
+(integer? 3)                   ; => #t
+(integer? 3.0)                 ; => #f
+```
 
 #### `(string? x)`
 `#t` only for a genuine Lisp string (something written as a `"..."`
@@ -426,13 +593,27 @@ literal, or returned by a function documented as returning a string) —
 are a different underlying type. If in doubt, `(string? (string->list
 "ab"))`'s first element is `#f`, not `#t`.
 
+```lisp
+(string? "hi")                 ; => #t
+```
+
 #### `(symbol? x)`
 `#t` for a symbol (an identifier like `foo` or `list->vector`) — also `#t`
 for a keyword (`:name`), since a keyword is a kind of symbol here, same as
 Common Lisp.
 
+```lisp
+(symbol? 'foo)                 ; => #t
+(symbol? :foo)                 ; => #t -- keywords are symbols too
+```
+
 #### `(keyword? x)`
 `#t` only for a keyword (`:name`) — narrower than `symbol?`.
+
+```lisp
+(keyword? :foo)                ; => #t
+(keyword? 'foo)                ; => #f
+```
 
 #### `(procedure? x)`
 `#t` for anything callable — a built-in procedure or a user-defined one
@@ -440,23 +621,51 @@ made with `lambda`/`define`. **`#f` for a macro** — a macro isn't callable
 the way a procedure is (it must be invoked in operator position to expand,
 not passed around as a value and applied).
 
+```lisp
+(procedure? car)               ; => #t
+(procedure? (lambda (x) x))    ; => #t
+```
+
 #### `(pair? x)`
 `#t` for a cons cell — including an *improper* (dotted) pair like
 `(1 . 2)`, which isn't a proper list.
+
+```lisp
+(pair? (cons 1 2))             ; => #t
+(pair? '())                    ; => #f
+```
 
 #### `(list? x)`
 `#t` if `x` is `'()` or any cons cell — this does not verify the list is
 *proper* (nil-terminated); `(list? (cons 1 2))` is `#t` even though
 `(1 . 2)` is a dotted pair, not a real list.
 
+```lisp
+(list? '(1 2 3))               ; => #t
+(list? (cons 1 2))             ; => #t -- even though (1 . 2) isn't proper
+```
+
 #### `(null? x)`
 `#t` only for `'()`.
+
+```lisp
+(null? '())                    ; => #t
+(null? (list))                 ; => #t
+```
 
 #### `(vector? x)`
 `#t` for a vector (built with `vector`/`make-vector` or `#(...)`).
 
+```lisp
+(vector? #(1 2))               ; => #t
+```
+
 #### `(date? x)`
 `#t` for a date value (built with `date` or `date-add-days`).
+
+```lisp
+(date? (date 2024 1 1))        ; => #t
+```
 
 #### `(model? x)`
 `#t` for any fitted regression model — see "Regression models", below.
@@ -470,39 +679,84 @@ below.
 #### `(cons a b)`
 Builds and returns a new pair with `car = a`, `cdr = b`.
 
+```lisp
+(cons 1 2)                     ; => (1 . 2)
+(cons 1 (cons 2 '()))          ; => (1 2) -- built by hand, same as (list 1 2)
+```
+
 #### `(car p)`, `(cdr p)`
 First element / rest of a pair. Raises `LispError: car/cdr: not a pair:
 ...` if `p` isn't a pair (e.g. calling on `'()`).
 
+```lisp
+(car (cons 1 2))               ; => 1
+(cdr (cons 1 2))               ; => 2
+(car (list 10 20 30))          ; => 10
+(cdr (list 10 20 30))          ; => (20 30)
+```
+
 #### `(list a b ...)`
 Builds a proper list from its arguments (zero or more).
+
+```lisp
+(list 1 2 3)                   ; => (1 2 3)
+```
 
 #### `(append l1 l2 ... ln)`
 Concatenates any number of lists (all but the last are copied; the last is
 reused as-is for the tail). `(append)` returns `'()`.
 
+```lisp
+(append (list 1 2) (list 3 4)) ; => (1 2 3 4)
+```
+
 #### `(reverse l)`
 Returns a new list with `l`'s elements in reverse order.
 
+```lisp
+(reverse (list 1 2 3))         ; => (3 2 1)
+```
+
 #### `(length l)`
 Number of elements in a proper list.
+
+```lisp
+(length (list 1 2 3))          ; => 3
+```
 
 #### `(list-ref l n)`
 The `n`-th element (0-based). Raises `LispError: list-ref: index N out of
 range (0..M)` if `n` is out of bounds.
 
+```lisp
+(list-ref (list 10 20 30) 1)   ; => 20
+```
+
 #### `(map f l)`
 Applies `f` to each element of `l` in order, returning a new list of the
 results.
 
+```lisp
+(map (lambda (x) (* x x)) (list 1 2 3))    ; => (1 4 9)
+```
+
 #### `(filter f l)`
 Returns a new list of just the elements of `l` for which `(f x)` is true.
+
+```lisp
+(filter (lambda (x) (> x 2)) (list 1 2 3 4))   ; => (3 4)
+```
 
 #### `(reduce f l [init])`
 Left fold. With `init` given, starts the accumulator there and folds `f`
 over every element of `l`; without it, uses `l`'s first element as the
 initial accumulator and folds over the rest (an empty `l` with no `init`
 has no first element to start from, and raises an error).
+
+```lisp
+(reduce + (list 1 2 3 4))      ; => 10
+(reduce + (list 1 2 3 4) 100)  ; => 110
+```
 
 #### `(apply f arg1 arg2 ... args)`
 Calls `f` with `arg1`, `arg2`, ... as individual leading arguments,
@@ -512,44 +766,95 @@ list into positional arguments, e.g. `(apply + (list 1 2 3))` is `6`, and
 `(apply + 1 2 (list 3 4 5))` is `15`. Requires at least 2 arguments total
 (`f` and one list).
 
+```lisp
+(apply + (list 1 2 3))         ; => 6
+(apply + 1 2 (list 3 4 5))     ; => 15
+```
+
 ### Strings
 
 #### `(string-append s1 s2 ...)`
 Concatenates zero or more strings.
 
+```lisp
+(string-append "foo" "bar")    ; => "foobar"
+```
+
 #### `(string-length s)`
 Character count.
+
+```lisp
+(string-length "hello")        ; => 5
+```
 
 #### `(substring s start [end])`
 `s` from index `start` up to (not including) `end`, which defaults to the
 end of the string. Out-of-range indices are silently clamped, like a
 Python slice — not an error.
 
+```lisp
+(substring "hello world" 0 5)  ; => "hello"
+(substring "hello" 2)          ; => "llo"
+```
+
 #### `(string=? a b)`, `(string<? a b)`, `(string>? a b)`
 Two-argument lexicographic comparison (not chained/variadic like the
 numeric comparisons).
+
+```lisp
+(string=? "abc" "abc")         ; => #t
+(string<? "abc" "abd")         ; => #t
+```
 
 #### `(string->number s)`
 Parses `s` as an `int` if it contains neither `.` nor `e`/`E`, otherwise as
 a `float`. Raises a plain Python `ValueError` (not `LispError`) if `s`
 isn't a valid number.
 
+```lisp
+(string->number "3.14")        ; => 3.14
+(string->number "42")          ; => 42
+```
+
 #### `(number->string n)`
 Converts a number to its display string, e.g. `3` → `"3"`, `3.0` →
 `"3.0"`.
 
+```lisp
+(number->string 3)             ; => "3"
+```
+
 #### `(string->list s)`, `(list->string l)`
 Convert between a string and a list of its individual characters.
+
+```lisp
+(string->list "ab")            ; => (a b)  -- a list of single characters
+(list->string (string->list "ab"))   ; => "ab"
+```
 
 #### `(string-upcase s)`, `(string-downcase s)`
 Case conversion.
 
+```lisp
+(string-upcase "hi")           ; => "HI"
+(string-downcase "HI")         ; => "hi"
+```
+
 #### `(string->symbol s)`, `(symbol->string sym)`
 Convert between a string and a symbol.
+
+```lisp
+(string->symbol "foo")         ; => foo
+(symbol->string 'foo)          ; => "foo"
+```
 
 #### `(string c1 c2 ...)`
 Builds a string by concatenating its arguments (typically single
 characters from `string->list`) — the same operation as `string-append`.
+
+```lisp
+(string "a" "b" "c")           ; => "abc"
+```
 
 ### Vectors
 
@@ -564,34 +869,81 @@ Builds a vector from its arguments. `#(...)` is reader syntax for a vector
 *literal* (its contents are NOT evaluated, unlike `(vector ...)`'s
 arguments, which are).
 
+```lisp
+(vector 1 2 3)                 ; => #(1 2 3)
+#(1 2 3)                       ; => #(1 2 3)
+```
+
 #### `(make-vector n [fill])`
 A new vector of `n` copies of `fill` (default `0`).
+
+```lisp
+(make-vector 3)                ; => #(0 0 0)
+(make-vector 3 9)               ; => #(9 9 9)
+```
 
 #### `(vector-ref v i)`
 Element at index `i` (no bounds check — see caveat above).
 
+```lisp
+(vector-ref #(10 20 30) 1)     ; => 20
+```
+
 #### `(vector-set! v i x)`
 Mutates element `i` to `x` in place. Returns `'()`.
+
+```lisp
+(define v (vector 1 2 3))
+(vector-set! v 1 99)
+v                               ; => #(1 99 3)
+```
 
 #### `(vector-length v)`
 Number of elements.
 
+```lisp
+(vector-length #(1 2 3))       ; => 3
+```
+
 #### `(vector-fill! v x)`
 Mutates every element of `v` to `x` in place. Returns `'()`.
 
+```lisp
+(define v (vector 1 2 3))
+(vector-fill! v 0)
+v                               ; => #(0 0 0)
+```
+
 #### `(vector-copy v)`
 A new, independent shallow copy.
+
+```lisp
+(vector-copy #(1 2 3))         ; => #(1 2 3), a distinct vector
+```
 
 #### `(vector-map f v)`
 Applies `f` to each element of `v` (one vector only — no index argument),
 returning a new vector of the results. See `vectors-map`, below, for the
 multi-vector version.
 
+```lisp
+(vector-map (lambda (x) (* x x)) #(1 2 3))   ; => #(1 4 9)
+```
+
 #### `(vector-append v1 v2 ...)`
 Concatenates any number of vectors into a new one.
 
+```lisp
+(vector-append #(1 2) #(3 4))  ; => #(1 2 3 4)
+```
+
 #### `(vector->list v)`, `(list->vector l)`
 Convert between a vector and a proper list.
+
+```lisp
+(vector->list #(1 2 3))        ; => (1 2 3)
+(list->vector (list 1 2 3))    ; => #(1 2 3)
+```
 
 #### `(vector-iterate first count f)`
 Builds a `count`-element vector: the first element is `first`, and each
@@ -599,26 +951,55 @@ following element is `(f previous-element)`. Works for numbers or dates
 (e.g. with `date-add-days` as `f`, to build a vector of consecutive dates).
 Raises `LispError` if `count` is negative.
 
+```lisp
+(vector-iterate 1 5 (lambda (x) (* x 2)))    ; => #(1 2 4 8 16)
+```
+
 #### `(vector-sum v)`
 Sum of all elements.
+
+```lisp
+(vector-sum #(1 2 3 4))        ; => 10
+```
 
 #### `(vector-add v1 v2)`, `(vector-sub v1 v2)`
 Elementwise addition/subtraction. If the two vectors have different
 lengths, the result is only as long as the *shorter* one (extra elements
 in the longer vector are silently ignored) — not an error.
 
+```lisp
+(vector-add #(1 2 3) #(10 20 30))    ; => #(11 22 33)
+(vector-sub #(10 20 30) #(1 2 3))    ; => #(9 18 27)
+```
+
 #### `(vector-scale v s)`
 A new vector with every element multiplied by `s`.
+
+```lisp
+(vector-scale #(1 2 3) 10)     ; => #(10 20 30)
+```
 
 #### `(vector-slice v start [end])`
 Sub-vector from `start` up to (not including) `end`, which defaults to the
 end of the vector.
 
+```lisp
+(vector-slice #(1 2 3 4 5) 1 3)   ; => #(2 3)
+```
+
 #### `(vector-take v n)`
 The first `n` elements, as a new vector.
 
+```lisp
+(vector-take #(1 2 3 4 5) 2)   ; => #(1 2)
+```
+
 #### `(vector-drop v n)`
 All but the first `n` elements, as a new vector.
+
+```lisp
+(vector-drop #(1 2 3 4 5) 2)   ; => #(3 4 5)
+```
 
 #### `(vectors-shuffle (list v1 v2 ...) [seed])`
 Returns a Lisp list of new vectors, all permuted with the *same* random
@@ -667,16 +1048,37 @@ instance, by slot-name symbol, without needing to know its specific type:
 #### `(struct? x)`
 `#t` for an instance of any `defstruct`-defined type.
 
+```lisp
+(defstruct point x y)
+(struct? (make-point :x 1 :y 2))     ; => #t
+(struct? 5)                          ; => #f
+```
+
 #### `(struct-ref s slot-name)`
 Returns the value of `s`'s `slot-name` slot (a symbol, e.g. `'x`). Raises
 `LispError` if `s` isn't a struct, or has no such slot.
+
+```lisp
+(defstruct point x y)
+(define p (make-point :x 1 :y 2))
+(struct-ref p 'x)              ; => 1
+```
 
 #### `(struct-set! s slot-name value)`
 Mutates `s`'s `slot-name` slot in place. Same error conditions as
 `struct-ref`. Returns `'()`.
 
+```lisp
+(struct-set! p 'x 99)
+(struct-ref p 'x)              ; => 99
+```
+
 #### `(struct-type-name s)`
 Returns `s`'s struct type's name, as a symbol (e.g. `'point`).
+
+```lisp
+(struct-type-name p)           ; => point
+```
 
 ### Dates
 
@@ -684,19 +1086,41 @@ Returns `s`'s struct type's name, as a symbol (e.g. `'point`).
 Builds a date. Raises `LispError: date: invalid date: ...` for an invalid
 calendar date (month 13, Feb 30, etc.).
 
+```lisp
+(date 2024 3 15)               ; => 2024-03-15
+```
+
 #### `(date-year d)`, `(date-month d)`, `(date-day d)`
 Integer accessors.
 
+```lisp
+(date-year (date 2024 3 15))   ; => 2024
+(date-month (date 2024 3 15))  ; => 3
+(date-day (date 2024 3 15))    ; => 15
+```
+
 #### `(date->string d)`
 Converts to an ISO-format string, `"YYYY-MM-DD"`.
+
+```lisp
+(date->string (date 2024 3 15))    ; => "2024-03-15"
+```
 
 #### `(string->date s)`
 Parses a `"YYYY-MM-DD"` string into a date. Raises `LispError:
 string->date: invalid date string ... (want YYYY-MM-DD)` for any other
 format or an invalid date.
 
+```lisp
+(string->date "2024-03-15")    ; => 2024-03-15
+```
+
 #### `(date-add-days d n)`
 A new date `n` days after `d` (negative `n` goes earlier).
+
+```lisp
+(date-add-days (date 2024 3 15) 10)    ; => 2024-03-25
+```
 
 ### Regression models
 
@@ -802,6 +1226,19 @@ values as a candidate for `'categorical` — followed by the same
 fit-quality stats as the equivalent linear/logistic case, computed on the
 expanded basis.
 
+```lisp
+(define m (linear-regression (vector 1 2 3 4 5) (vector 10 20 29 41 51)))
+(display (model-report m))
+```
+prints something like:
+```
+Linear model:  y = -0.7 + 10.3*x1
+  x1 coefficient = 10.3
+  intercept      = -0.7
+  R-squared      = 0.998212
+  n              = 5
+```
+
 #### `(model-evaluate m x y)`
 Evaluates a fitted model's prediction quality against data — typically
 held-out data it wasn't fit on — and returns a string report. `x`/`y`
@@ -826,13 +1263,25 @@ the order the predictors were given when fitting. Only valid for
 `"linear"`/`"logistic"` models — raises an error on a spline model (use
 `model-report` instead).
 
+```lisp
+(model-coefficients m)         ; => #(10.3)
+```
+
 #### `(model-intercept m)`
 The model's fitted intercept (a plain number). Same linear/logistic-only
 restriction as `model-coefficients`.
 
+```lisp
+(model-intercept m)            ; => -0.7
+```
+
 #### `(model-kind m)`
 Returns `"linear"`, `"logistic"`, `"spline"`, or `"spline-logistic"`. Works
 on any model.
+
+```lisp
+(model-kind m)                 ; => "linear"
+```
 
 #### `(model-predict m x)`
 Predicts the fitted value at a new point. `x` may be a bare number or date
@@ -856,8 +1305,17 @@ m) 0)` — but raises a clear error if the model has more than one predictor
 (use `model-coefficients` instead). Same linear/logistic-only restriction
 as `model-coefficients`.
 
+```lisp
+(model-slope m)                ; => 10.3
+```
+
 #### `(model? x)`
 `#t` for any fitted model (linear, logistic, spline, or spline-logistic).
+
+```lisp
+(model? m)                     ; => #t
+(model? 5)                     ; => #f
+```
 
 #### `(suggest-knots x y window n)`
 Proposes up to `n` knot locations for `spline-regression`, based on where
@@ -1160,6 +1618,10 @@ backward compatibility) by `tastytrade-option-chain`. Call this to see
 the exact current list rather than relying on this document to enumerate
 every one.
 
+```lisp
+(tastytrade-products)          ; => ("ES" "MES" "NQ" "MNQ" "YM" "MYM" ... "SR3" ...)
+```
+
 #### `(tastytrade-futures-curve credentials-path product [n-months])`
 Fetches the product's futures term structure. `n-months` (default `18`) is
 how many upcoming calendar months to check for a listed contract — months
@@ -1378,6 +1840,12 @@ Returns `(cons curve-futures-rows options-rows)`:
 Needs the `tastytrade` package, a tastytrade account, and a credentials
 JSON file (see `tasty_api/README.md`).
 
+```lisp
+(define data (sofr-calibration-data creds 40 8 3))
+(define curve-futures-rows (car data))
+(define options-rows (cdr data))
+```
+
 #### `(sofr-bootstrap-curve curve-futures-rows)`
 Pure function — no networking. Like `sofr-forward-curve`, but takes
 `sofr-calibration-data`'s `curve-futures-rows` shape (`(symbol
@@ -1385,6 +1853,11 @@ start-months end-months rate)`) instead of `tastytrade-futures-curve-
 rows`'s — no day-count reshaping needed, since these rows already carry
 `start-months`/`end-months` directly. Same return shape: `(cons
 months-vector forward-rates-vector)`.
+
+```lisp
+(define curve (sofr-bootstrap-curve curve-futures-rows))
+(define sofr-forward-rates (cdr curve))
+```
 
 #### `(sofr-calibrate-model forward-rates options-rows curve-real-months [n-paths seed n-grid n-rounds])`
 Pure function — no networking (cheap to re-run with different settings
@@ -1423,6 +1896,15 @@ candidate `a`.
 
 Returns `(list a theta-bar sigma1 sigma2 error)` — `error` is the total
 squared pricing error at the winning parameters.
+
+```lisp
+(define fit (sofr-calibrate-model sofr-forward-rates options-rows 24
+                                   500 42 5 3))    ; turned down for speed
+(define fitted-a (list-ref fit 0))
+(define fitted-theta-bar (list-ref fit 1))
+(define fitted-sigma1 (list-ref fit 2))
+(define fitted-sigma2 (list-ref fit 3))
+```
 
 #### `(sofr-simulate-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths [seed a theta-bar])`
 Pure function — no networking. Simulates `n-paths` Monte Carlo scenarios
@@ -1550,11 +2032,34 @@ the current output — the console, the GUI log, or a `redirect-output`
 file, whichever is currently active — with no trailing newline. Returns
 `'()`.
 
+```lisp
+(display "hello") (newline) (display 42)
+```
+prints:
+```
+hello
+42
+```
+
 #### `(newline)`
 Writes a single newline to the current output. Returns `'()`.
 
+```lisp
+(display "a") (newline) (display "b")   ; prints a, then a newline, then b
+```
+
 #### `(print x)`
 Like `display`, but with a trailing newline.
+
+```lisp
+(print "one line")
+(print "another")
+```
+prints:
+```
+one line
+another
+```
 
 #### `(load "path.lsp")`
 Reads and evaluates every top-level form in the file at `path`, in the
@@ -1562,6 +2067,10 @@ Reads and evaluates every top-level form in the file at `path`, in the
 available afterward exactly as if you'd typed them yourself. Returns
 `'()`. This is the same mechanism the interpreter uses at startup to
 auto-load `init.lsp`.
+
+```lisp
+(load "column_engine.lsp")     ; defstruct column, register-column, ... now defined
+```
 
 #### `(redirect-output "path.txt" [append?])`
 Retargets everything `display`/`newline`/`print` write (and the console/
@@ -1571,6 +2080,13 @@ default; pass `#t` for `append?` to append instead. If a prior
 `redirect-output` is still active, its file is closed first (redirecting
 twice in a row doesn't leak a file handle). Flushes after every write, so
 output survives even if the script errors out before `reset-output`.
+
+```lisp
+(redirect-output "run.log")
+(display "this goes to run.log, not the console")
+(reset-output)
+(display "back to the console")
+```
 
 #### `(reset-output)`
 Undoes `redirect-output`: closes whatever file is currently open (if any)
@@ -1603,6 +2119,11 @@ actually type (format `%prefix-N`, with an incrementing counter;
 variable capture when hand-writing a macro — see "Macros", above. Used
 internally by `dolist`'s own desugaring for the same reason.
 
+```lisp
+(gensym)                        ; => %g-1  (an incrementing counter)
+(gensym "tmp")                  ; => %tmp-2
+```
+
 #### `(load "path.lsp")`
 See "Input / output", above — documented once there.
 
@@ -1611,6 +2132,10 @@ Raises `LispError` with a message built by rendering each argument the way
 `display` would and joining them with spaces (so `(error "bad value:" x)`
 reads naturally). For signaling a problem from your own Lisp code — e.g. a
 library like `column_engine.lsp` reporting a circular dependency.
+
+```lisp
+(error "bad value:" 42)        ; raises LispError: bad value: 42
+```
 
 ### Introspection / debugging
 
@@ -1663,10 +2188,32 @@ currently wrapped by `debug-function`, shows the original (pre-wrap)
 definition, not the wrapper. Raises `LispError` if `name` isn't a
 user-defined function.
 
+```lisp
+(define (square n) (* n n))
+(pretty-print-function square)
+```
+prints:
+```
+(define
+ (square
+  n
+ )
+ (*
+  n
+  n
+ )
+)
+```
+
 #### `(pretty-print-macro name)`
 Same idea as `pretty-print-function`, but for a macro, reconstructing
 `(defmacro name (params...) body...)`. Raises `LispError` if `name` isn't
 a macro.
+
+```lisp
+(defmacro double-it (x) `(* 2 ,x))
+(pretty-print-macro double-it)
+```
 
 #### `(defined-functions)`
 Returns a list of every name currently bound, at the top level, to a
@@ -1676,16 +2223,31 @@ registry to keep in sync — this just filters the live environment each
 time it's called, so it's always exactly correct, including brand-new
 definitions, automatically.
 
+```lisp
+(define (square n) (* n n))
+(defined-functions)            ; => (square ...plus anything else you've defined)
+```
+
 #### `(defined-macros)`
 The same idea, for user-defined macros — excludes this interpreter's own
 `pretty-print-function`/`pretty-print-macro`/`debug-function`/
 `undebug-function` convenience macros, so it reflects only what you
 actually wrote.
 
+```lisp
+(defmacro double-it (x) `(* 2 ,x))
+(defined-macros)               ; => (double-it)
+```
+
 #### `(bound-variables)`
 Returns a list of every top-level name bound to a plain *value* rather
 than a function, macro, or built-in procedure — i.e. ordinary `define`d
 data: numbers, strings, lists, vectors, dates, and so on.
+
+```lisp
+(define pi 3.14159)
+(bound-variables)              ; => (pi ...plus anything else you've define'd as data)
+```
 
 #### `(breakpoint)`
 A special form, not a function — see "Special forms", above, for the full
@@ -1693,6 +2255,13 @@ explanation of why. Repeated here for discoverability: opens a nested,
 blocking debug REPL right where it appears, with the paused code's own
 local variables live and modifiable in that REPL; type `(continue)` to
 resume. Console/batch mode only (see below).
+
+```lisp
+(define (f x)
+  (breakpoint)                 ; opens a debug REPL with x bound to 5
+  (* x 2))
+(f 5)                          ; type (continue) at the prompt to resume, => 10
+```
 
 #### `(debug-function name)`
 Wraps the user-defined function currently bound to `name` so that every
