@@ -960,34 +960,56 @@ file-write failure. Returns `'()`.
 ### Columns
 
 #### `(display-columns pairs)`
-`pairs` is a Lisp list of `(name . vector)` conses; each becomes one
-displayed column, headed by `name`, in the order given. In the GUI, this
-is the *only* way the "Columns" tab is populated — there's no automatic
-scan of top-level variables (the tab uses a fixed-width font with
-right-aligned cells, so a column of numbers lines up on its ones place).
-In console/batch mode, prints a simple right-justified text table
+`pairs` is a Lisp list where each element is either a `(name . vector)`
+cons, or a 3-element `(name vector decimals)` list to pick a per-column
+decimal-places count (rather than the global format, below) — each
+becomes one displayed column, headed by `name`, in the order given. In
+the GUI, this is the *only* way the "Columns" tab is populated — there's
+no automatic scan of top-level variables (the tab uses a fixed-width font
+with right-aligned cells, so a column of numbers lines up on its ones
+place). In console/batch mode, prints a simple right-justified text table
 instead. Returns `'()`.
 
 ```lisp
 (define prices (vector 10 20 30))
 (define squares (vector-map (lambda (x) (* x x)) prices))
 (display-columns (list (cons "prices" prices) (cons "squares" squares)))
+
+(define rate (vector 0.0435 0.041 0.038))
+(display-columns (list (list "rate" rate 4) (cons "prices" prices)))  ; mixed forms are fine
 ```
 
-Every numeric value is rendered through `*column-number-format*`, a
-Lisp-settable global holding a Python `str.format()` spec — defaults to
-`"{:,.0f}"` (comma-grouped integers, e.g. `12,346`). `(set!
-*column-number-format* "{:,.2f}")` switches to two decimal places for
-every subsequent `display-columns` call; non-numeric values (dates, etc.)
-are unaffected, always rendered plainly.
+A `(name . vector)` entry's numeric values are rendered through
+`*column-number-format*`, a Lisp-settable global holding a Python
+`str.format()` spec — defaults to `"{:,.0f}"` (comma-grouped integers,
+e.g. `12,346`). `(set! *column-number-format* "{:,.2f}")` switches to two
+decimal places for every subsequent `(name . vector)`-style entry that
+doesn't specify its own `decimals`. Non-numeric values (dates, etc.) are
+unaffected either way, always rendered plainly.
 
 Deliberately low-level — it doesn't know anything about `defstruct` or any
 particular notion of a "column". See `column_engine.lsp` (next to this
 file) for a small example library, built on `defstruct` and `&key`, that
-registers named `column` structs, calculates them row-by-row in
-dependency order (with a `lag` accessor for referring to a previous row),
-and calls `display-columns` for you — demonstrated end-to-end in
-`mortgage_amortization_example.lsp`.
+registers named `column` structs (each with its own `decimals` slot —
+e.g. `0` for a dollar amount, `4`-`6` for an interest rate/CPR/SMM
+column), calculates them row-by-row in dependency order (with a `lag`
+accessor for referring to a previous row), and calls `display-columns`
+for you — demonstrated end-to-end in `mortgage_amortization_example.lsp`.
+
+#### `(write-columns-csv filename pairs)`
+Same `pairs` shape as `display-columns` (see above) — writes a CSV file
+instead: header row = names, one data row per index, numbers rounded to
+`decimals` when given (plain numeric CSV cells — `12346`, not `"12,346"`
+— since this is for a spreadsheet or another program, not for on-screen
+reading; a `decimals` of `0` writes a plain integer, not `12346.0`). A
+column shorter than the longest one is padded with empty cells. Returns
+`'()`. `column_engine.lsp`'s `write-csv` wraps this for a list of column
+structs directly — see that function and `mortgage_amortization_example.
+lsp`'s `(write-csv "mortgage_amortization_example.csv" *columns*)` call.
+
+```lisp
+(write-columns-csv "out.csv" (list (list "rate" rate 4) (cons "prices" prices)))
+```
 
 ### FRED (Federal Reserve Bank of St. Louis) data, and CSV loading
 

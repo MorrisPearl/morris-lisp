@@ -51,7 +51,7 @@
 ; cashflows -- not a realistic mortgage-rate model; see term_structure/
 ; mortgage_spread.py for a way to estimate the spread from real data
 ; instead of guessing a flat number.
-(define creds "tastytrade_credentials.json")   ; edit to your credentials file's path
+(define creds "/Users/morris/credentials.json")   ; edit to your credentials file's path
 (define sofr-curve (sofr-forward-curve (tastytrade-futures-curve-rows creds "SR3" 40)))
 (define sofr-forward-rates (cdr sofr-curve))   ; (vector-ref sofr-forward-rates (- month 1))
 
@@ -79,12 +79,14 @@
   :name "market_rate"
   :initial_value (+ (* (vector-ref sofr-forward-rates 0) 100.0) mortgage_sofr_spread)
   :value_calculation (+ (* (vector-ref sofr-forward-rates (- current-row 1)) 100.0)
-                        mortgage_sofr_spread))    ; percent, same units as mortgage_interest_rate
+                        mortgage_sofr_spread)     ; percent, same units as mortgage_interest_rate
+  :decimals 2)
 
 (defcolumn rate_incentive_column
   :name "rate_incentive"
   :initial_value 0
-  :value_calculation (- mortgage_interest_rate market_rate))   ; points; >0 means refi-attractive
+  :value_calculation (- mortgage_interest_rate market_rate)   ; points; >0 means refi-attractive
+  :decimals 2)
 
 (defcolumn interest_column
   :name "coll_interest"
@@ -101,7 +103,8 @@
 (defcolumn smm_column
   :name "smm"
   :initial_value 0.0
-  :value_calculation (smm-from-cpr (cpr wala psa_speed :incentive_points rate_incentive)))
+  :value_calculation (smm-from-cpr (cpr wala psa_speed :incentive_points rate_incentive))
+  :decimals 6)
 
 (defcolumn prepayment_column
   :name "prepayment"
@@ -249,3 +252,8 @@
     )
 
 (calculate-all *columns* (+ mortgage_term 1))
+
+; Full cashflow tape, one row per month, every visible column (see each
+; defcolumn's :decimals above) -- for a spreadsheet, not for reading here.
+(write-csv "mortgage_amortization_example.csv" *columns*)
+(display "Wrote mortgage_amortization_example.csv") (newline)

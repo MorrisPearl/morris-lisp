@@ -3658,40 +3658,103 @@ def make_global_env(output=None, plot=None, columns=None):
         "save-chart": save_chart_fn,
     })
 
-    # ---- columns (GUI's "Columns" tab / console text table) ----
-    def format_column_value(v):
-        """Render one cell for display-columns, using the CURRENT value
-        of the Lisp-settable *column-number-format* global (a Python
-        str.format() spec, e.g. "{:,.0f}" for comma-grouped integers, or
-        "{:,.2f}" for two decimal places -- (set! *column-number-format*
-        "{:,.2f}") changes it for every subsequent display-columns call).
-        Non-numeric values (dates, etc.) fall back to plain display
-        formatting, ignoring the numeric spec."""
+    # ---- columns (GUI's "Columns" tab / console text table / CSV export) ----
+    def format_column_value(v, decimals=None):
+        """Render one cell -- either with an explicit decimal-places
+        count (decimals, e.g. from a column struct's `decimals` slot --
+        see column_engine.lsp), or, when that's None, using the CURRENT
+        value of the Lisp-settable *column-number-format* global (a
+        Python str.format() spec, e.g. "{:,.0f}" for comma-grouped
+        integers -- (set! *column-number-format* "{:,.2f}") changes it
+        for every subsequent display-columns call that doesn't specify
+        its own per-column decimals). Non-numeric values (dates, etc.)
+        fall back to plain display formatting either way."""
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             return to_display_string(v)
-        fmt = env.get(Symbol("*column-number-format*"), "{}")
+        if decimals is not None:
+            fmt = "{:,.%df}" % int(decimals)
+        else:
+            fmt = str(env.get(Symbol("*column-number-format*"), "{}"))
         try:
-            return str(fmt).format(v)
+            return fmt.format(v)
         except (ValueError, TypeError):
             return to_display_string(v)
 
+    def parse_column_pairs(name_value_pairs):
+        """Shared by display-columns and write-columns-csv: each element
+        of `name_value_pairs` is either (name . vector) -- a plain cons,
+        decimals unspecified -- or (name vector decimals), a 3-element
+        list picking a per-column decimal-places count instead of
+        relying on the global *column-number-format* (this is the shape
+        column_engine.lsp's calculate-all now builds, from each column
+        struct's `decimals` slot). Returns a list of (name, items,
+        decimals-or-None)."""
+        out = []
+        for p in pairs_to_list(name_value_pairs):
+            name = str(p.car)
+            rest = p.cdr
+            if isinstance(rest, LispVector):
+                out.append((name, rest.items, None))
+            elif isinstance(rest, Pair) and isinstance(rest.car, LispVector):
+                decimals = rest.cdr.car if isinstance(rest.cdr, Pair) else None
+                out.append((name, rest.car.items, decimals))
+            else:
+                raise LispError(
+                    "expected (name . vector) or (name vector decimals), got %r" % (p,))
+        return out
+
     def display_columns_fn(name_value_pairs):
         """(display-columns pairs) -- pairs is a list of (name . vector)
-        conses; each becomes one displayed column, headed by its name, in
-        the order given, with every value rendered through
-        format_column_value (see *column-number-format*). Deliberately
-        generic: doesn't know anything about the `column` struct some
-        higher-level Lisp library (e.g. a column_engine.lsp-style
-        modeling library) may define on top of this -- that mapping from
-        a struct instance to a (name . vector) pair happens entirely in
-        Lisp. See the `columns` callback."""
-        pairs = pairs_to_list(name_value_pairs)
-        data = [(str(p.car), [format_column_value(v) for v in p.cdr.items]) for p in pairs]
+        conses, or (name vector decimals) lists for a per-column decimal-
+        places count (see column_engine.lsp's `decimals` slot); each
+        becomes one displayed column, headed by name, in the order given,
+        with every value rendered through format_column_value.
+        Deliberately generic: doesn't know anything about the `column`
+        struct some higher-level Lisp library (e.g. a column_engine.lsp-
+        style modeling library) may define on top of this -- that mapping
+        from a struct instance to a (name . vector) / (name vector
+        decimals) entry happens entirely in Lisp. See the `columns`
+        callback."""
+        data = [(name, [format_column_value(v, decimals) for v in items])
+                for name, items, decimals in parse_column_pairs(name_value_pairs)]
         columns(data)
+        return NIL
+
+    def write_columns_csv_fn(filename, name_value_pairs):
+        """(write-columns-csv filename pairs) -- pairs is the SAME shape
+        display-columns takes: a list of (name . vector) conses, or
+        (name vector decimals) lists. Writes a CSV file: header row =
+        names, one data row per index. Numbers are rounded to `decimals`
+        places when given -- plain numeric CSV cells, not comma-grouped
+        display strings; this is for feeding a spreadsheet or another
+        program, not for on-screen reading (see display-columns for
+        that). Rows are padded with an empty cell for any column shorter
+        than the longest one. Returns '()."""
+        parsed = parse_column_pairs(name_value_pairs)
+        n_rows = max((len(items) for _, items, _ in parsed), default=0)
+        with open(str(filename), "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([name for name, _, _ in parsed])
+            for i in range(n_rows):
+                row = []
+                for _, items, decimals in parsed:
+                    if i >= len(items):
+                        row.append("")
+                        continue
+                    v = items[i]
+                    if isinstance(v, bool) or not isinstance(v, (int, float)):
+                        row.append(to_display_string(v))
+                    elif decimals is not None:
+                        d = int(decimals)
+                        row.append(int(round(float(v))) if d == 0 else round(float(v), d))
+                    else:
+                        row.append(v)
+                writer.writerow(row)
         return NIL
 
     env.update({
         "display-columns": display_columns_fn,
+        "write-columns-csv": write_columns_csv_fn,
         "*column-number-format*": LispString("{:,.0f}"),
     })
 

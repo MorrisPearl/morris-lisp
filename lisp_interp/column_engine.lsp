@@ -42,7 +42,12 @@
   after                 ; () (a root column), a single column, or a list
                          ; of columns that must be calculated first
   (series ())           ; filled in by calculate-all: an N-element vector
-  (visible #t))         ; #f = calculated but not shown by display-columns
+  (visible #t)          ; #f = calculated but not shown by display-columns
+                         ; or written out by write-csv
+  (decimals 0))         ; decimal places to display/write this column
+                         ; with -- e.g. 0 for a dollar amount, 4-6 for an
+                         ; interest rate/CPR/SMM column, where 0 decimals
+                         ; would round everything down to "0"
 
 (define *columns* '())
 
@@ -198,6 +203,15 @@
 ;             sees the current-row value instead of pass 1's carry-
 ;             forward, while an EARLIER one (or one reached via `lag`)
 ;             still only ever saw the previous row's.
+; Shared by calculate-all's own display step and write-csv, below: turns
+; a list of column structs into the (name vector decimals) shape
+; display-columns/write-columns-csv expect, keeping only the visible
+; ones (visible #f columns -- pure bookkeeping, e.g. wala/sched_principal
+; in mortgage_amortization_example.lsp -- are left out of both).
+(define (columns->display-pairs cols)
+  (map (lambda (c) (list (column-name c) (column-series c) (column-decimals c)))
+       (filter column-visible cols)))
+
 ; Finally displays every visible column via display-columns.
 (define (calculate-all columns n)
   (define ordered (topo-sort columns))
@@ -222,7 +236,14 @@
         '()))
   (compute-row 1)
   (set! current-column '())
-  (display-columns
-   (map (lambda (c) (cons (column-name c) (column-series c)))
-        (filter column-visible ordered)))
+  (display-columns (columns->display-pairs ordered))
   ordered)
+
+; (write-csv filename cols) -- writes every VISIBLE column in `cols`
+; (e.g. *columns*, or calculate-all's return value) to filename as a CSV
+; file, headed by each column's name, one row per period, each column
+; rounded to its own `decimals` slot -- see write-columns-csv. Call this
+; any time after calculate-all has run (cols' `series` vectors just need
+; to already be filled in).
+(define (write-csv filename cols)
+  (write-columns-csv filename (columns->display-pairs cols)))

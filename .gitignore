@@ -4,6 +4,9 @@ __pycache__/
 .DS_Store
 lisp_interp/prepayment_incentive_curve.png
 lisp_interp/synthetic_mbs_pools.csv
+lisp_interp/mortgage_amortization_example.csv
+lisp_interp/sofr_floating_rate_example.csv
+lisp_interp/sofr_monte_carlo_example.csv
 */files.zip
 */requirements.txt
 */.DS_Store

@@ -68,12 +68,15 @@
   :name "sofr_1m"
   :after ()
   :initial_value (vector-ref sofr-forward-rates 0)
-  :value_calculation (vector-ref sofr-forward-rates (- current-row 1)))
+  :value_calculation (vector-ref sofr-forward-rates (- current-row 1))
+  :decimals 4)                      ; a rate, not a dollar amount -- see
+                                     ; column_engine.lsp's `decimals` slot
 
 (defcolumn coupon_rate_column
   :name "coupon_rate"
   :initial_value (+ (vector-ref sofr-forward-rates 0) coupon_margin)
-  :value_calculation (+ sofr_1m coupon_margin))
+  :value_calculation (+ sofr_1m coupon_margin)
+  :decimals 4)
 
 (defcolumn balance_column
   :name "balance"
@@ -85,5 +88,9 @@
   :initial_value 0
   :value_calculation (* (lag balance 1) (/ coupon_rate 12.0)))
 
-(set! *column-number-format* "{:,.2f}")
+; No need to fiddle with *column-number-format* for this one -- balance/
+; interest use the `decimals` slot's default (0, a dollar amount), and
+; sofr_1m/coupon_rate each specify their own (4, above).
 (calculate-all *columns* (+ note_term 1))
+(write-csv "sofr_floating_rate_example.csv" *columns*)
+(display "Wrote sofr_floating_rate_example.csv") (newline)
