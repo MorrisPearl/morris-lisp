@@ -36,6 +36,15 @@ the Patriotic Millionaires donor-lookup app:
     memory stays bounded instead of accumulating across all of them in
     one long-running process (which OOM-killed on a large table even
     with temp_store=FILE/cache_size capped).
+  - The web app's "Add New Member" form doesn't join against
+    indiv_contributions itself -- that join is too slow to finish
+    inside a single page load (PythonAnywhere kills any response after
+    5 minutes, and no user will wait that long anyway). It only ever
+    inserts a row into pending_members; process-pending-members does
+    the actual join later, outside any web request. Run it on its own
+    schedule (an hourly PA scheduled task) -- nightly-update also runs
+    it once a night as a safety net, but that alone would mean a new
+    member might not show up in reports until the next midnight.
 
 Usage:
     python3 fec_loader_pa.py setup
@@ -45,6 +54,7 @@ Usage:
     python3 fec_loader_pa.py rebuild-indiv-indexes
     python3 fec_loader_pa.py rebuild-indiv-m
     python3 fec_loader_pa.py update-indiv-m
+    python3 fec_loader_pa.py process-pending-members
     python3 fec_loader_pa.py nightly-update     [--cycle 2026]
     python3 fec_loader_pa.py status
 
@@ -244,6 +254,32 @@ INDIV_M_STATE_TABLE_SQL = """
     CREATE TABLE IF NOT EXISTS indiv_m_state (
         id                  INTEGER PRIMARY KEY CHECK (id = 1),
         last_load_batch_id  INTEGER NOT NULL DEFAULT 0
+    );
+"""
+
+# Queue for "Add New Member" web requests. The join against
+# indiv_contributions (244M+ rows) is too slow to run inside a web
+# request -- PythonAnywhere kills any response after 5 minutes, well
+# past what a user will wait anyway -- so the web app only ever does a
+# fast INSERT here (match_name precomputed, no scan of indiv_contributions
+# involved) and process_pending_members() does the real join later, on a
+# schedule, outside any request.
+PENDING_MEMBERS_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS pending_members (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        first_name      TEXT,
+        last_name       TEXT,
+        city            TEXT,
+        state           TEXT,
+        match_name      TEXT NOT NULL,
+        priv            INTEGER,
+        pub             INTEGER,
+        mem             INTEGER,
+        prospect        INTEGER,
+        requested_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        processed_at    TEXT,
+        rows_matched    INTEGER,
+        status          TEXT NOT NULL DEFAULT 'pending'
     );
 """
 
@@ -737,6 +773,65 @@ DROP TABLE stg_new_indiv;
     print("  indiv_m: {} rows total ({:.0f}s).".format(n, elapsed))
 
 
+def process_pending_members(db_path):
+    """Drains pending_members: for each row queued by the web app's Add
+    New Member form, runs the same indiv_contributions join
+    add_member_to_database() used to run inline, then marks that row
+    done. This is plain Python (not a sqlite3-CLI subprocess like the
+    bulk loaders) because each row is just one indexed name lookup, not
+    a bulk import -- no need for the journal_mode=OFF/temp_store
+    tuning that only matters for scanning/writing millions of rows."""
+    conn = get_connection(db_path)
+    cur = conn.cursor()
+    cur.execute(PENDING_MEMBERS_TABLE_SQL)
+    conn.commit()
+
+    cur.execute(
+        "SELECT id, first_name, last_name, city, state, match_name, "
+        "priv, pub, mem, prospect FROM pending_members WHERE status = 'pending' "
+        "ORDER BY id"
+    )
+    pending = cur.fetchall()
+    if not pending:
+        print("No pending members to process.")
+        conn.close()
+        return
+
+    print("Processing {} pending member request(s) ...".format(len(pending)))
+    for (pid, first_name, last_name, city, state, match_name,
+         priv, pub, mem, prospect) in pending:
+        try:
+            cur.execute(
+                "INSERT INTO indiv_m "
+                "(last_name, first_name, city, state, match_name, priv, pub, mem, prospect, "
+                " fec_name, fec_city, fec_state, fec_employer, committee_id, trans_amount, trans_date) "
+                "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, name, city, state, employer, "
+                "       cmte_id, transaction_amt, transaction_dt "
+                "FROM indiv_contributions WHERE name LIKE ?",
+                (last_name, first_name, city, state, match_name,
+                 priv, pub, mem, prospect, match_name),
+            )
+            rows_matched = cur.rowcount
+            cur.execute(
+                "UPDATE pending_members SET status='done', "
+                "processed_at=?, rows_matched=? WHERE id=?",
+                (datetime.now().isoformat(sep=" ", timespec="seconds"), rows_matched, pid),
+            )
+            conn.commit()
+            print("  #{} {} {}: {} donations matched.".format(
+                pid, first_name, last_name, rows_matched))
+        except sqlite3.Error as e:
+            conn.rollback()
+            cur.execute(
+                "UPDATE pending_members SET status='error', "
+                "processed_at=? WHERE id=?",
+                (datetime.now().isoformat(sep=" ", timespec="seconds"), pid),
+            )
+            conn.commit()
+            print("  #{} {} {}: ERROR -- {}".format(pid, first_name, last_name, e))
+    conn.close()
+
+
 # --------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------
@@ -760,6 +855,7 @@ def cmd_setup(args, db_path, download_dir):
     cur.execute("CREATE INDEX IF NOT EXISTS idx_indiv_m_committee_id ON indiv_m (committee_id);")
     cur.execute(INDIV_M_STATE_TABLE_SQL)
     cur.execute("INSERT OR IGNORE INTO indiv_m_state (id, last_load_batch_id) VALUES (1, 0);")
+    cur.execute(PENDING_MEMBERS_TABLE_SQL)
     conn.commit()
     conn.close()
     print("Schema is ready ({}).".format(db_path))
@@ -803,9 +899,14 @@ def cmd_update_indiv_m(args, db_path, download_dir):
     update_indiv_m(db_path)
 
 
+def cmd_process_pending_members(args, db_path, download_dir):
+    process_pending_members(db_path)
+
+
 def cmd_nightly_update(args, db_path, download_dir):
     cmd_load_indiv(args, db_path, download_dir)
     update_indiv_m(db_path)
+    process_pending_members(db_path)
 
 
 def cmd_status(args, db_path, download_dir):
@@ -819,6 +920,8 @@ def cmd_status(args, db_path, download_dir):
     cur.execute("SELECT last_load_batch_id FROM indiv_m_state WHERE id = 1")
     row = cur.fetchone()
     print("  indiv_m_state.last_load_batch_id: {}".format(row[0] if row else "(unset)"))
+    cur.execute("SELECT COUNT(*) FROM pending_members WHERE status = 'pending'")
+    print("  pending_members awaiting processing: {}".format(cur.fetchone()[0]))
     print("\nRecent load history:")
     cur.execute(
         "SELECT load_batch_id, table_name, source_file, election_cycle, "
@@ -885,6 +988,13 @@ def build_arg_parser():
                     help="Incremental indiv_m update: only joins indiv_contributions rows "
                          "added since the last rebuild/update, appending new matches.")
 
+    sub.add_parser("process-pending-members",
+                    help="Drain pending_members: for each 'Add New Member' request queued "
+                         "by the web app, join it against indiv_contributions and mark it "
+                         "done. Run this on a schedule (an hourly PA scheduled task, plus "
+                         "nightly-update as a safety net) -- the web request itself only "
+                         "ever queues, since the join is too slow for a single page load.")
+
     sp = sub.add_parser("nightly-update",
                          help="load-indiv then update-indiv-m (incremental) -- what the "
                               "scheduled task runs.")
@@ -912,6 +1022,7 @@ def main():
         "rebuild-indiv-indexes": cmd_rebuild_indiv_indexes,
         "rebuild-indiv-m": cmd_rebuild_indiv_m,
         "update-indiv-m": cmd_update_indiv_m,
+        "process-pending-members": cmd_process_pending_members,
         "nightly-update": cmd_nightly_update,
         "status": cmd_status,
     }

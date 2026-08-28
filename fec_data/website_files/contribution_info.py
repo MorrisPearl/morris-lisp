@@ -14,6 +14,17 @@ from wtforms.validators import DataRequired
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Kept in sync with PENDING_MEMBERS_TABLE_SQL in fec_loader_pa.py.
+PENDING_MEMBERS_CREATE_SQL = (
+    "CREATE TABLE IF NOT EXISTS pending_members ("
+    " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    " first_name TEXT, last_name TEXT, city TEXT, state TEXT,"
+    " match_name TEXT NOT NULL, priv INTEGER, pub INTEGER, mem INTEGER, prospect INTEGER,"
+    " requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+    " processed_at TEXT, rows_matched INTEGER,"
+    " status TEXT NOT NULL DEFAULT 'pending')"
+)
+
 
 def get_db_path():
     cfg = configparser.ConfigParser()
@@ -47,6 +58,7 @@ class new_member_form(FlaskForm):
     state = TextAreaField('State')
     priv = BooleanField('Private')
     pub = BooleanField('Public')
+    mem = BooleanField('Member')
     pro = BooleanField('Prospect')
     submit_add = SubmitField(label="Add Person")
     submit_del = SubmitField(label="Remove Person")
@@ -73,8 +85,14 @@ def do_add_form():
 
     if f.validate_on_submit():
         if (f.submit_add.data):
-            j = add_member_to_database(f)
-            f.message.data = "Added member with %d donations!" % j
+            queued = add_member_to_database(f)
+            if queued:
+                f.message.data = ("Member queued to be added. Matching donations are "
+                                   "found by a background job that runs hourly -- check "
+                                   "back in a bit and look for them in Member Donation "
+                                   "Summary.")
+            else:
+                f.message.data = "First Name and Last Name can't both be blank -- nothing was queued."
 
         elif (f.submit_del.data):
             j = delete_member_from_database(f)
@@ -91,6 +109,17 @@ def delete_member_from_database(f):
 
     c.execute(q1, (f.last_name.data, f.first_name.data))
     j = c.rowcount
+
+    # Also cancel any not-yet-processed Add request for the same name,
+    # so a member removed right after being queued doesn't get added
+    # back the next time process-pending-members runs.
+    c.execute(PENDING_MEMBERS_CREATE_SQL)
+    c.execute(
+        "DELETE FROM pending_members WHERE status = 'pending' "
+        "AND last_name = ? AND first_name = ?",
+        (f.last_name.data, f.first_name.data),
+    )
+
     cnx.commit()
     c.close()
     cnx.close()
@@ -106,38 +135,40 @@ def build_match_name(last_name, first_name):
     return "{}, {}%".format(last, first3)
 
 def add_member_to_database(f):
+    """Queues the member for the background job (process-pending-members,
+    run hourly by a PA scheduled task) rather than joining against
+    indiv_contributions here: that join is a scan of 200M+ rows and
+    can't reliably finish inside one web request -- PythonAnywhere
+    kills any response after 5 minutes, far longer than a user would
+    wait anyway. Returns True if queued, False if refused."""
     match_name = build_match_name(f.last_name.data, f.first_name.data)
     if match_name in ("", ", %"):
         # last_name (and/or first_name) was blank -- this pattern would
         # match every row in indiv_contributions, which is never what's
         # wanted, so refuse rather than silently vacuuming in everyone.
-        return 0
+        return False
 
     cnx = get_connection()
     c = cnx.cursor()
 
     priv = int(bool(f.priv.data))
     pub = int(bool(f.pub.data))
+    mem = int(bool(f.mem.data))
     pro = int(bool(f.pro.data))
 
-    q1 = (" insert into indiv_m "
-      " (last_name, first_name, city, state, match_name, priv, pub, mem, prospect, "
-      "  fec_name, fec_city, fec_state, fec_employer, committee_id, trans_amount, trans_date) "
-      " select ?, ?, ?, ?, ?, ?, ?, ?, ?, name, "
-      " city, state, employer, "
-      " cmte_id, transaction_amt, transaction_dt "
-      " from indiv_contributions where name like ? ")
-
-    c.execute(q1, (f.last_name.data, f.first_name.data, f.city.data, f.state.data,
-                   match_name, priv, pub, (priv + pub), pro,
-                   match_name))
-
-    j = c.rowcount
+    c.execute(PENDING_MEMBERS_CREATE_SQL)
+    c.execute(
+        "INSERT INTO pending_members "
+        "(first_name, last_name, city, state, match_name, priv, pub, mem, prospect) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (f.first_name.data, f.last_name.data, f.city.data, f.state.data,
+         match_name, priv, pub, mem, pro),
+    )
 
     cnx.commit()
     c.close()
     cnx.close()
-    return j
+    return True
 
 @app.route('/list')
 def do_list():

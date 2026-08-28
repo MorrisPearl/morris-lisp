@@ -142,3 +142,25 @@ CREATE TABLE IF NOT EXISTS indiv_m_state (
     last_load_batch_id  INTEGER NOT NULL DEFAULT 0
 );
 INSERT OR IGNORE INTO indiv_m_state (id, last_load_batch_id) VALUES (1, 0);
+
+-- Queue for the "Add New Member" web form. The join against
+-- indiv_contributions is too slow to run inside a web request, so the
+-- app only inserts a row here; process_pending_members() in
+-- fec_loader_pa.py (run hourly via a PA scheduled task) does the real
+-- join later and marks each row 'done' or 'error'.
+CREATE TABLE IF NOT EXISTS pending_members (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    first_name      TEXT,
+    last_name       TEXT,
+    city            TEXT,
+    state           TEXT,
+    match_name      TEXT NOT NULL,
+    priv            INTEGER,
+    pub             INTEGER,
+    mem             INTEGER,
+    prospect        INTEGER,
+    requested_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at    TEXT,
+    rows_matched    INTEGER,
+    status          TEXT NOT NULL DEFAULT 'pending'
+);
