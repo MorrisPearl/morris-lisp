@@ -22,13 +22,23 @@ through and would silently fall back to a plain repr. See
 lisp_jupyter.py's own docstring, and the "Running in Jupyter" section of
 lisp_interpreter_reference.md, for the fuller comparison.
 
-Only two things differ from %%lisp's behavior, both improvements a
-native kernel can make that a cell magic can't:
+A few things differ from %%lisp's behavior, all improvements a native
+kernel can make that a cell magic can't:
   - errors render through Jupyter's own error display (a red traceback
     box) instead of a plain printed "Error: ..." line;
   - tab-completion is disabled outright (see do_complete, below) rather
     than falling through to IPythonKernel's Python-specific completer,
-    which would offer irrelevant Python names for a Lisp symbol prefix.
+    which would offer irrelevant Python names for a Lisp symbol prefix;
+  - Jupyter-style history variables -- `_` (the most recent result),
+    `__`/`___` (the two before that), and `_N` (specifically execution
+    N's result) -- are bound directly into the shared Lisp environment
+    after every cell that produces one (see _record_history, below).
+    This is genuinely new behavior a %%lisp cell doesn't get just by
+    running inside a real IPython kernel: `_`/`Out[N]` there are
+    IPython's OWN bookkeeping in the PYTHON namespace, tied to running
+    Python code through shell.run_cell() -- which a %%lisp cell doesn't
+    do for its Lisp forms, and which wouldn't be reachable from Lisp
+    code even if it did.
 """
 from __future__ import annotations
 
@@ -60,6 +70,31 @@ class LispKernel(IPythonKernel):
         "See lisp_interpreter_reference.md for the full language/builtin reference."
     )
 
+    # IPythonKernel.execution_count is a PROPERTY, not a plain attribute --
+    # its getter returns self.shell.execution_count, and (see its own
+    # source) its setter is a deliberate NO-OP: "Ignore the incrementing
+    # done by KernelBase, in favour of our shell's execution counter."
+    # That's exactly backwards for this kernel -- do_execute() below never
+    # calls shell.run_cell(), so self.shell.execution_count never advances,
+    # which means Kernel.execute_request()'s `self.execution_count += 1`
+    # (called BEFORE do_execute, to publish the "execute_input" message the
+    # notebook's In[N]: prompt number comes from) silently does nothing,
+    # and every cell reports execution_count 1 forever -- found by hitting
+    # this directly: prompts stuck at [1]: no matter how many cells ran.
+    # Overriding the property again here, backed by a genuinely writable
+    # instance attribute instead of the shell's counter, fixes both the
+    # prompt number and this kernel's own _record_history() (below), which
+    # reads the exact same property.
+    _execution_count = 0
+
+    @property
+    def execution_count(self):
+        return self._execution_count
+
+    @execution_count.setter
+    def execution_count(self, value):
+        self._execution_count = value
+
     def do_execute(self, code, silent, store_history=True, user_expressions=None,
                     allow_stdin=False, *, cell_meta=None, cell_id=None):
         env = lisp_jupyter.get_env()
@@ -73,6 +108,7 @@ class LispKernel(IPythonKernel):
             return self._error_reply(type(e).__name__, str(e))
 
         if not silent and result is not L.NIL:
+            self._record_history(env, result)
             self.send_response(self.iopub_socket, "execute_result", {
                 "execution_count": self.execution_count,
                 "data": {"text/plain": L.to_string(result)},
@@ -85,6 +121,21 @@ class LispKernel(IPythonKernel):
             "payload": [],
             "user_expressions": {},
         }
+
+    def _record_history(self, env, result):
+        """Jupyter-style history variables, at the Lisp level: `_` is
+        always the most recently produced (non-'()) result, `__`/`___`
+        the two before that, and `_N` is specifically execution N's
+        result -- exactly the `_`/`__`/`___`/`Out[N]` convention IPython
+        gives Python cells (see the module docstring for why this kernel
+        doesn't get that for free). Only called for a cell that actually
+        produced a value (do_execute's `result is not L.NIL` check) --
+        the same rule IPython itself uses: a (define x 10)-style cell
+        with no displayed result doesn't shift the history either."""
+        env[L.Symbol("___")] = env.get(L.Symbol("__"), L.NIL)
+        env[L.Symbol("__")] = env.get(L.Symbol("_"), L.NIL)
+        env[L.Symbol("_")] = result
+        env[L.Symbol("_%d" % self.execution_count)] = result
 
     def _error_reply(self, ename, evalue):
         """Publish a real Jupyter error display (the red traceback box)
