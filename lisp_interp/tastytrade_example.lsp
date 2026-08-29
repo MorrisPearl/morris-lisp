@@ -11,8 +11,6 @@
 ; Exercises all seven tastytrade-* builtins.
 ; ---------------------------------------------------------------------
 
-(define creds "tastytrade_credentials.json")   ; edit to your credentials file's path
-
 ; A small helper to print a Lisp list, one item per line -- this Lisp
 ; has no built-in loop construct, so iteration is just ordinary
 ; recursion.
