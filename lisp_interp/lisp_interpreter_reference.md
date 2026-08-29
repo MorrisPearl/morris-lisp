@@ -43,7 +43,29 @@ Put your own always-available definitions/macros there instead of
   table. One shared environment persists across cells, the same as typing
   into the console REPL. Needs `pandas` and `ipykernel` in addition to
   matplotlib; falls back to the console's plain-text chart/table output
-  if either isn't installed.
+  if either isn't installed. Any of these builtins that fetch over the
+  network (`tastytrade-*`, `sofr-calibration-data`) work fine here too --
+  they run their I/O via `asyncio`, and `_run_async()` (in
+  `lisp_interpreter.py`, and an identical twin in `term_structure/
+  sofr_market_data.py`) specifically handles being called from inside a
+  Jupyter kernel's own already-running event loop, which a bare
+  `asyncio.run()` call can't do.
+- **As its own native Jupyter kernel, no `%%lisp` needed at all** — run
+  `python3 install_lisp_kernel.py` once (see `lisp_kernel.py`), then pick
+  "morris_lisp" from Jupyter's kernel picker / New menu; every cell is
+  then plain Lisp source directly. Built as an `IPythonKernel` subclass
+  specifically so `lisp_jupyter.py`'s output/plot/columns callbacks work
+  completely unchanged (inline charts, pandas-table `display-columns`) --
+  see `lisp_kernel.py`'s own docstring for why that specific base class
+  matters here. Two differences from the `%%lisp` magic: errors render
+  through Jupyter's own red-traceback-box error display instead of a
+  plain printed line, and there's no tab-completion (a notebook using the
+  `%%lisp` magic on top of a normal Python kernel keeps Python's own
+  completion available for everything outside `%%lisp` cells; this
+  doesn't try to offer completions at all rather than offering irrelevant
+  Python ones). A single notebook can only use one kernel, so this is a
+  tradeoff against the magic approach: no mixing Python and Lisp cells in
+  the same notebook this way.
 
 ## Syntax
 
