@@ -1,4 +1,5 @@
 ( define api-key "/Users/morris/credentials.json" )
+( define creds "/Users/morris/credentials.json" )
 
 (defmacro while (test body)
   `(let ()
