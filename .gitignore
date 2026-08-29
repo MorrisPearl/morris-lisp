@@ -3,6 +3,9 @@ __pycache__/
 
 .ipynb_checkpoints/
 
+lisp_interp/Untitled*.ipynb
+
+
 .DS_Store
 lisp_interp/prepayment_incentive_curve.png
 lisp_interp/synthetic_mbs_pools.csv
