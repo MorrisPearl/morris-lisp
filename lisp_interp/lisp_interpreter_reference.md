@@ -33,6 +33,18 @@ exists. It's entirely optional — a missing init file is silently skipped.
 Put your own always-available definitions/macros there instead of
 `(load ...)`-ing them by hand in every script.
 
+- **From a Jupyter notebook, no GUI at all** — `%load_ext lisp_jupyter`,
+  then write `%%lisp` at the top of any cell (or `from lisp_jupyter import
+  lisp; lisp("(+ 1 2)")` without the magic). See `lisp_jupyter.py` and
+  `lisp_jupyter_demo.ipynb` (both next to this file) — charts render
+  inline (a real `matplotlib`-rendered image, not a GUI chart tab or a
+  `save-chart` file) and `(display-columns ...)` renders as a pandas
+  `DataFrame` (a real HTML table) instead of the console's plain text
+  table. One shared environment persists across cells, the same as typing
+  into the console REPL. Needs `pandas` and `ipykernel` in addition to
+  matplotlib; falls back to the console's plain-text chart/table output
+  if either isn't installed.
+
 ## Syntax
 
 | Type | Example | Notes |
