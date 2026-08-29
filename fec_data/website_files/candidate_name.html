@@ -7,6 +7,9 @@
 <a href="{{ url_for('do_add_form') }}"><button type="button">Add New Member</button></a>
 <a href="{{ url_for('do_member_summary') }}"><button type="button">Member Donation Summary</button></a>
 </div>
+<div style='margin-bottom: 20px; padding: 10px; border: 1px solid #ccc;'>
+<div id="queue-status" style="font-style: italic;">Checking status...</div>
+</div>
 Enter names of candidates in box, then press button to get report.
 <div>
 <form action="" method="post", novalidate>
@@ -32,6 +35,19 @@ Enter names of candidates in box, then press button to get report.
 
 
 </div>
+
+<script>
+    function updateQueueStatus() {
+        fetch("{{ url_for('do_status') }}")
+            .then(function (r) { return r.text(); })
+            .then(function (text) {
+                document.getElementById("queue-status").textContent = text;
+            })
+            .catch(function () {});
+    }
+    updateQueueStatus();
+    setInterval(updateQueueStatus, 60000);
+</script>
 
 </body>
 </html>
