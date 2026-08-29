@@ -6,6 +6,12 @@
 <div style='margin-bottom: 20px;'>
 <a href="{{ url_for('do_form') }}"><button type="button">Back to Donor Search</button></a>
 </div>
+<div style='margin-bottom: 20px; padding: 10px; border: 1px solid #ccc;'>
+<form action="{{ url_for('do_run_now') }}" method="post" style="display:inline;">
+<button type="submit">Process New Members Now</button>
+</form>
+<div id="queue-status" style="margin-top: 8px; font-style: italic;">Checking status...</div>
+</div>
 Fill in boxes, then press button to add member to database.
 <div>
 <form action="" method="post", novalidate>
@@ -27,6 +33,19 @@ Fill in boxes, then press button to add member to database.
 </form>
 
 </div>
+
+<script>
+    function updateQueueStatus() {
+        fetch("{{ url_for('do_status') }}")
+            .then(function (r) { return r.text(); })
+            .then(function (text) {
+                document.getElementById("queue-status").textContent = text;
+            })
+            .catch(function () {});
+    }
+    updateQueueStatus();
+    setInterval(updateQueueStatus, 60000);
+</script>
 
 </body>
 </html>

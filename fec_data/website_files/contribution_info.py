@@ -4,9 +4,12 @@
 
 import configparser
 import os
+import subprocess
+import sys
 import sqlite3
+import time
 
-from flask import Flask, render_template, request, flash
+from flask import Flask, render_template, request, flash, redirect, url_for
 
 from flask_wtf import FlaskForm
 from wtforms import StringField, BooleanField, SubmitField, SelectField, TextAreaField
@@ -30,6 +33,25 @@ def get_db_path():
     cfg = configparser.ConfigParser()
     cfg.read(os.path.join(APP_DIR, "config.ini"))
     return cfg.get("sqlite", "db_path", fallback=os.path.join(APP_DIR, "fec_pa.db"))
+
+
+def get_db_dir():
+    return os.path.dirname(os.path.abspath(get_db_path()))
+
+
+def get_status_path():
+    # Kept in sync with pending_status_path() in fec_loader_pa.py.
+    return os.path.join(get_db_dir(), "pending_members_status.txt")
+
+
+def get_lock_path():
+    # Kept in sync with pending_lock_path() in fec_loader_pa.py.
+    return os.path.join(get_db_dir(), "pending_members.lock")
+
+
+def get_loader_script_path():
+    # fec_loader_pa.py is deployed as a sibling of the database file.
+    return os.path.join(get_db_dir(), "fec_loader_pa.py")
 
 
 def get_connection():
@@ -87,10 +109,10 @@ def do_add_form():
         if (f.submit_add.data):
             queued = add_member_to_database(f)
             if queued:
-                f.message.data = ("Member queued to be added. Matching donations are "
-                                   "found by a background job that runs hourly -- check "
-                                   "back in a bit and look for them in Member Donation "
-                                   "Summary.")
+                f.message.data = ("Member queued to be added. Picked up automatically "
+                                   "overnight, or click \"Process New Members Now\" below "
+                                   "to run it right away -- watch the status line for "
+                                   "progress.")
             else:
                 f.message.data = "First Name and Last Name can't both be blank -- nothing was queued."
 
@@ -100,6 +122,37 @@ def do_add_form():
 
     return render_template("add_member.html", form=f)
     # render the template initially AND after submit.
+
+LOCK_STALE_SECONDS = 1800  # kept in sync with fec_loader_pa.py's own threshold
+
+@app.route('/edit/run_now', methods=['POST'])
+def do_run_now():
+    """Launches process-pending-members as a detached background
+    process and returns immediately -- the actual join is far too slow
+    to run inside this request (see add_member_to_database), so this
+    route only ever starts it and lets the status file (polled by the
+    page's own JS) report progress."""
+    lock_path = get_lock_path()
+    if os.path.exists(lock_path) and (time.time() - os.path.getmtime(lock_path)) < LOCK_STALE_SECONDS:
+        pass  # already running -- just go back and let the status line show it
+    else:
+        log_path = os.path.join(get_db_dir(), "pending_members_run.log")
+        with open(log_path, "a") as logf:
+            subprocess.Popen(
+                [sys.executable, get_loader_script_path(),
+                 "--db-path", get_db_path(), "process-pending-members"],
+                stdout=logf, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+    return redirect(url_for('do_add_form'))
+
+@app.route('/edit/status')
+def do_status():
+    try:
+        with open(get_status_path()) as f:
+            return f.read()
+    except FileNotFoundError:
+        return "No members have been queued yet."
 
 def delete_member_from_database(f):
     cnx = get_connection()

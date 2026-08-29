@@ -41,10 +41,12 @@ the Patriotic Millionaires donor-lookup app:
     inside a single page load (PythonAnywhere kills any response after
     5 minutes, and no user will wait that long anyway). It only ever
     inserts a row into pending_members; process-pending-members does
-    the actual join later, outside any web request. Run it on its own
-    schedule (an hourly PA scheduled task) -- nightly-update also runs
-    it once a night as a safety net, but that alone would mean a new
-    member might not show up in reports until the next midnight.
+    the actual join later, outside any web request. nightly-update
+    runs it once a night; the web app's "Process New Members Now"
+    button launches it as a detached background process for anyone who
+    doesn't want to wait for midnight (a small status file it writes,
+    polled by the page's own JS, shows progress instead of the page
+    just sitting there).
 
 Usage:
     python3 fec_loader_pa.py setup
@@ -776,6 +778,23 @@ DROP TABLE stg_new_indiv;
     print("  indiv_m: {} rows total ({:.0f}s).".format(n, elapsed))
 
 
+def pending_status_path(db_path):
+    return os.path.join(os.path.dirname(os.path.abspath(db_path)), "pending_members_status.txt")
+
+
+def pending_lock_path(db_path):
+    return os.path.join(os.path.dirname(os.path.abspath(db_path)), "pending_members.lock")
+
+
+def write_pending_status(db_path, message):
+    """Overwrites the small status file the web app polls (every ~minute,
+    from the Add New Member page) to show progress of the background
+    member-adding job without the page itself ever touching the
+    slow indiv_contributions join."""
+    with open(pending_status_path(db_path), "w") as f:
+        f.write(message)
+
+
 def process_pending_members(db_path):
     """Drains pending_members: for each row queued by the web app's Add
     New Member form, runs the same indiv_contributions join
@@ -793,72 +812,105 @@ def process_pending_members(db_path):
     0.02s (SEARCH) for the exact same query. Since FEC names and every
     match_name here are already uppercased, turning this on costs
     nothing and is why this join is fast enough to run per-request-sized
-    batches at all."""
-    conn = get_connection(db_path)
-    cur = conn.cursor()
-    cur.execute("PRAGMA case_sensitive_like = ON")
-    cur.execute(PENDING_MEMBERS_TABLE_SQL)
-    conn.commit()
+    batches at all.
 
-    # Claim rows before working on any of them (pending -> claimed), so a
-    # second invocation overlapping this one (e.g. the hourly scheduled
-    # task firing while a manual run is still going) can't pick up the
-    # same row and duplicate it into indiv_m, or fight this one for the
-    # write lock on the exact same row.
-    cur.execute("UPDATE pending_members SET status='claimed' WHERE status='pending'")
-    conn.commit()
+    Runs at most once at a time: a stale-checked lock file lets the web
+    app's "Process New Members Now" button refuse to pile on a second
+    run (and lets this function refuse to pile onto itself, e.g. if
+    nightly-update and a manual run happen to overlap) rather than
+    contending with itself for the same write lock -- on top of the
+    per-row 'pending'->'claimed' handoff below, which already keeps two
+    overlapping runs from double-processing the same row even without
+    the lock file."""
+    lock_path = pending_lock_path(db_path)
+    if os.path.exists(lock_path):
+        age = time.time() - os.path.getmtime(lock_path)
+        if age < 1800:  # 30 minutes -- generous given each row is ~0.02s
+            print("A process-pending-members run already appears to be in "
+                  "progress (lock is {:.0f}s old) -- skipping.".format(age))
+            return
+        print("Found a stale lock ({:.0f}s old, from a run that likely crashed) "
+              "-- proceeding anyway.".format(age))
 
-    cur.execute(
-        "SELECT id, first_name, last_name, city, state, match_name, "
-        "priv, pub, mem, prospect FROM pending_members WHERE status = 'claimed' "
-        "ORDER BY id"
-    )
-    pending = cur.fetchall()
-    if not pending:
-        print("No pending members to process.")
-        conn.close()
-        return
+    with open(lock_path, "w") as f:
+        f.write(datetime.now().isoformat(sep=" ", timespec="seconds"))
 
-    print("Processing {} pending member request(s) ...".format(len(pending)))
-    for (pid, first_name, last_name, city, state, match_name,
-         priv, pub, mem, prospect) in pending:
-        try:
-            cur.execute(
-                "INSERT INTO indiv_m "
-                "(last_name, first_name, city, state, match_name, priv, pub, mem, prospect, "
-                " fec_name, fec_city, fec_state, fec_employer, committee_id, trans_amount, trans_date) "
-                "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, name, city, state, employer, "
-                "       cmte_id, transaction_amt, transaction_dt "
-                "FROM indiv_contributions WHERE name LIKE ?",
-                (last_name, first_name, city, state, match_name,
-                 priv, pub, mem, prospect, match_name),
-            )
-            rows_matched = cur.rowcount
-            cur.execute(
-                "UPDATE pending_members SET status='done', "
-                "processed_at=?, rows_matched=? WHERE id=?",
-                (datetime.now().isoformat(sep=" ", timespec="seconds"), rows_matched, pid),
-            )
-            conn.commit()
-            print("  #{} {} {}: {} donations matched.".format(
-                pid, first_name, last_name, rows_matched))
-        except sqlite3.Error as e:
-            conn.rollback()
+    try:
+        conn = get_connection(db_path)
+        cur = conn.cursor()
+        cur.execute("PRAGMA case_sensitive_like = ON")
+        cur.execute(PENDING_MEMBERS_TABLE_SQL)
+        conn.commit()
+
+        # Claim rows before working on any of them (pending -> claimed), so a
+        # second invocation overlapping this one can't pick up the same row
+        # and duplicate it into indiv_m, or fight this one for the write
+        # lock on the exact same row.
+        cur.execute("UPDATE pending_members SET status='claimed' WHERE status='pending'")
+        conn.commit()
+
+        cur.execute(
+            "SELECT id, first_name, last_name, city, state, match_name, "
+            "priv, pub, mem, prospect FROM pending_members WHERE status = 'claimed' "
+            "ORDER BY id"
+        )
+        pending = cur.fetchall()
+        n = len(pending)
+        if n == 0:
+            print("No pending members to process.")
+            write_pending_status(db_path, "As of {}, checked for new members -- none waiting.".format(
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            conn.close()
+            return
+
+        print("Processing {} pending member request(s) ...".format(n))
+        for i, (pid, first_name, last_name, city, state, match_name,
+                priv, pub, mem, prospect) in enumerate(pending, start=1):
+            write_pending_status(db_path, "Found {} new member(s) to add. Working on {} {} ({} of {})...".format(
+                n, first_name, last_name, i, n))
             try:
                 cur.execute(
-                    "UPDATE pending_members SET status='pending', "
-                    "processed_at=? WHERE id=?",
-                    (datetime.now().isoformat(sep=" ", timespec="seconds"), pid),
+                    "INSERT INTO indiv_m "
+                    "(last_name, first_name, city, state, match_name, priv, pub, mem, prospect, "
+                    " fec_name, fec_city, fec_state, fec_employer, committee_id, trans_amount, trans_date) "
+                    "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, name, city, state, employer, "
+                    "       cmte_id, transaction_amt, transaction_dt "
+                    "FROM indiv_contributions WHERE name LIKE ?",
+                    (last_name, first_name, city, state, match_name,
+                     priv, pub, mem, prospect, match_name),
+                )
+                rows_matched = cur.rowcount
+                cur.execute(
+                    "UPDATE pending_members SET status='done', "
+                    "processed_at=?, rows_matched=? WHERE id=?",
+                    (datetime.now().isoformat(sep=" ", timespec="seconds"), rows_matched, pid),
                 )
                 conn.commit()
-            except sqlite3.Error:
-                # Leave it 'claimed' rather than crash the rest of the
-                # batch -- the next run will just retry it once the
-                # thing holding the lock (or a stray 'claimed' left by a
-                # crashed prior run) has cleared.
-                pass
-            print("  #{} {} {}: ERROR -- {}".format(pid, first_name, last_name, e))
-    conn.close()
+                print("  #{} {} {}: {} donations matched.".format(
+                    pid, first_name, last_name, rows_matched))
+            except sqlite3.Error as e:
+                conn.rollback()
+                try:
+                    cur.execute(
+                        "UPDATE pending_members SET status='pending', "
+                        "processed_at=? WHERE id=?",
+                        (datetime.now().isoformat(sep=" ", timespec="seconds"), pid),
+                    )
+                    conn.commit()
+                except sqlite3.Error:
+                    # Leave it 'claimed' rather than crash the rest of the
+                    # batch -- the next run will just retry it once the
+                    # thing holding the lock (or a stray 'claimed' left by a
+                    # crashed prior run) has cleared.
+                    pass
+                print("  #{} {} {}: ERROR -- {}".format(pid, first_name, last_name, e))
+        conn.close()
+
+        write_pending_status(db_path, "As of {}, finished adding {} new member(s).".format(
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), n))
+    finally:
+        if os.path.exists(lock_path):
+            os.remove(lock_path)
 
 
 # --------------------------------------------------------------------------
@@ -1020,9 +1072,9 @@ def build_arg_parser():
     sub.add_parser("process-pending-members",
                     help="Drain pending_members: for each 'Add New Member' request queued "
                          "by the web app, join it against indiv_contributions and mark it "
-                         "done. Run this on a schedule (an hourly PA scheduled task, plus "
-                         "nightly-update as a safety net) -- the web request itself only "
-                         "ever queues, since the join is too slow for a single page load.")
+                         "done. Run nightly by nightly-update, and on demand by the web "
+                         "app's 'Process New Members Now' button -- the web request itself "
+                         "only ever queues, since the join is too slow for a single page load.")
 
     sp = sub.add_parser("nightly-update",
                          help="load-indiv then update-indiv-m (incremental) -- what the "
