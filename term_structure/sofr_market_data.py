@@ -45,6 +45,7 @@ this spreads its picks evenly across every curve quarter that has one
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import datetime as dt
 import sys
 from pathlib import Path
@@ -111,6 +112,28 @@ def _calibration_price(md):
             except (TypeError, ValueError):
                 continue
     return None
+
+
+def _run_async(coro):
+    """Run an asyncio coroutine to completion and return its result --
+    works whether or not the calling thread already has its OWN running
+    event loop. With no loop already running (a plain script, or via
+    lisp_interpreter.py's console REPL/GUI/batch mode), this is exactly
+    asyncio.run(coro). With one already running -- e.g. lisp_interpreter.
+    py's Jupyter integration (lisp_jupyter.py), where ipykernel runs one
+    continuously -- asyncio.run() would raise "asyncio.run() cannot be
+    called from a running event loop", so this runs the coroutine to
+    completion on a SEPARATE thread with its own fresh event loop
+    instead, and blocks the calling thread until it's done. Either way,
+    fetch_sofr_calibration_data() just returns a plain value,
+    synchronously -- no awaiting, no nest_asyncio monkeypatching needed.
+    See the identical helper in lisp_interp/lisp_interpreter.py."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 async def _fetch_async(credentials_path: str, n_futures: int, n_underlyings: int,
@@ -279,4 +302,4 @@ def fetch_sofr_calibration_data(credentials_path: str | None = None, n_futures: 
         )
     credentials_path = credentials_path or DEFAULT_CREDENTIALS_PATH
     today = today or dt.date.today()
-    return asyncio.run(_fetch_async(credentials_path, n_futures, n_underlyings, n_strikes, today))
+    return _run_async(_fetch_async(credentials_path, n_futures, n_underlyings, n_strikes, today))

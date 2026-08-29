@@ -1,6 +1,8 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 
+.ipynb_checkpoints/
+
 .DS_Store
 lisp_interp/prepayment_incentive_curve.png
 lisp_interp/synthetic_mbs_pools.csv

@@ -5,8 +5,18 @@ Run the morris_lisp interpreter (lisp_interpreter.py) inside a Jupyter
 notebook, with no PyQt6 GUI involved at all: charts render inline via
 matplotlib, and (display-columns ...) output renders as a pandas
 DataFrame (a real HTML table) instead of the console's plain text table.
-Nothing here touches lisp_interpreter.py itself -- it's all done through
-the output/plot/columns callbacks make_global_env() already accepts.
+This module itself only wires up the output/plot/columns callbacks
+make_global_env() already accepts -- it doesn't touch lisp_interpreter.py.
+The tastytrade-*/sofr-*  builtins DO need one thing from lisp_interpreter.
+py itself to work correctly here, already in place: they run their
+network I/O via asyncio, and asyncio.run() can't be called again from
+inside a thread that already has its OWN running event loop -- which is
+exactly what a Jupyter/IPython kernel has. See _run_async() in
+lisp_interpreter.py (and its twin in term_structure/sofr_market_data.py)
+-- both fall back to running the coroutine on a separate thread with its
+own fresh loop instead of failing outright, so every tastytrade-*/sofr-*
+builtin still just returns a plain value here, synchronously, exactly as
+it does from the console REPL/GUI/a plain script.
 
 Usage
 -----

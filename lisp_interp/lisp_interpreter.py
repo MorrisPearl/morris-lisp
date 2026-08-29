@@ -172,6 +172,7 @@ import math
 import json
 import random
 import asyncio
+import concurrent.futures
 import inspect
 import calendar
 import datetime
@@ -2480,6 +2481,32 @@ async def _tasty_maybe_await(value):
     return value
 
 
+def _run_async(coro):
+    """Run an asyncio coroutine to completion and return its result --
+    works whether or not the calling thread already has its OWN running
+    event loop. With no loop already running (a plain script, the
+    console REPL, the GUI), this is exactly asyncio.run(coro). With one
+    already running -- e.g. inside a Jupyter/IPython kernel, which runs
+    one continuously; found by hitting it directly, calling any
+    tastytrade-*/sofr-calibration-data builtin from a notebook cell blew
+    up with "asyncio.run() cannot be called from a running event loop"
+    -- asyncio.run() would raise exactly that, so this runs the
+    coroutine to completion on a SEPARATE thread with its own fresh
+    event loop instead, and blocks the calling thread until it's done.
+    Either way, every caller of every _tasty_*_async coroutine in this
+    file just gets a plain return value back, synchronously -- no
+    awaiting, no nest_asyncio monkeypatching needed, no visible
+    difference depending on which context it's called from. See the
+    identical helper in term_structure/sofr_market_data.py, needed for
+    the same reason for fetch_sofr_calibration_data()."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def _tasty_root(product, name):
     root = TASTY_PRODUCTS.get(str(product).upper())
     if root is None:
@@ -2623,7 +2650,7 @@ async def _tasty_test_connection_async(credentials_path):
 def tastytrade_test_connection_fn(credentials_path):
     """(tastytrade-test-connection credentials-path) -> a status string.
     Raises a LispError on any authentication/connection failure."""
-    return LispString(asyncio.run(_tasty_test_connection_async(credentials_path)))
+    return LispString(_run_async(_tasty_test_connection_async(credentials_path)))
 
 
 async def _tasty_futures_curve_async(credentials_path, product, n_months):
@@ -2667,7 +2694,7 @@ def tastytrade_futures_curve_fn(credentials_path, product, n_months=18):
     See also tastytrade-futures-curve-rows, which additionally includes
     each contract's symbol and days-to-delivery -- needed by
     tastytrade-curve-fit and tastytrade-leg-carry."""
-    rows = asyncio.run(_tasty_futures_curve_async(credentials_path, product, int(n_months)))
+    rows = _run_async(_tasty_futures_curve_async(credentials_path, product, int(n_months)))
     dates = [LispDate(d.year, d.month, d.day) for d, _sym, _dte, _price in rows]
     prices = [price for _d, _sym, _dte, price in rows]
     return Pair(LispVector(dates), LispVector(prices))
@@ -2683,7 +2710,7 @@ def tastytrade_futures_curve_rows_fn(credentials_path, product, n_months=18):
     this, then call either analysis function as many times as you like
     with different rate/threshold assumptions, with no re-fetch needed --
     they're pure functions over the row data, no networking."""
-    rows = asyncio.run(_tasty_futures_curve_async(credentials_path, product, int(n_months)))
+    rows = _run_async(_tasty_futures_curve_async(credentials_path, product, int(n_months)))
     return list_to_pairs([
         list_to_pairs([
             LispDate(d.year, d.month, d.day),
@@ -3347,7 +3374,7 @@ def tastytrade_option_chain_fn(credentials_path, symbol, n_months=12,
     a live per-contract Greeks stream (`include-iv?` defaults to #t;
     pass #f to skip the stream entirely and fetch much faster).
     `greeks-timeout` (seconds) caps how long that stream is awaited."""
-    rows = asyncio.run(_tasty_option_chain_async(
+    rows = _run_async(_tasty_option_chain_async(
         credentials_path, symbol, int(n_months), int(max_strikes_per_expiration),
         is_true(include_iv), float(greeks_timeout)))
     return list_to_pairs([list_to_pairs(row) for row in rows])
