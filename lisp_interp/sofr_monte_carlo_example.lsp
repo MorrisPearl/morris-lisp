@@ -26,8 +26,7 @@
 ; careful fit once you've confirmed everything runs.
 
 (load "column_engine.lsp")
-
-(define creds "tastytrade_credentials.json")   ; edit to your credentials file's path
+( define creds "/Users/morris/credentials.json" )
 
 ; --- 1. fetch the curve AND calibration options in one session ---------
 (define calibration-data (sofr-calibration-data creds 40 8 3))
