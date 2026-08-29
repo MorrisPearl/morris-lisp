@@ -33,8 +33,6 @@
 
 (load "column_engine.lsp")
 
-(define creds "tastytrade_credentials.json")   ; edit to your credentials file's path
-
 ; --- 1. fetch the current SR3 strip and bootstrap the forward curve ---
 (define sofr-curve-rows (tastytrade-futures-curve-rows creds "SR3" 40))
 (define sofr-curve (sofr-forward-curve sofr-curve-rows))

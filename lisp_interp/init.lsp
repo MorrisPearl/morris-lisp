@@ -1,5 +1,6 @@
 ( define api-key "/Users/morris/credentials.json" )
 ( define creds "/Users/morris/credentials.json" )
+; some of the examples use api-key and some use creds
 
 (defmacro while (test body)
   `(let ()
@@ -31,24 +32,20 @@
       (#t 0)
       )
   )
-
 (define (prev_month d)
-    (cond
-      ((<= (date-month d) 1)
-       (date (- (date-year d) 1) 12 (date-day d)))
-      (#t
-       (date (date-year d) (- (date-month d) 1) (date-day d))
-       )
-      )
+    (if
+     (<= (date-month d) 1)
+     (date (- (date-year d) 1) 12 (date-day d))
+     (date (date-year d) (- (date-month d) 1) (date-day d))
+     )
   )
 
 (define (make_master_dates d_list  n)
-    (cond
-      (( <= n 0) d_list)
-      (#t
-       (make_master_dates (cons (prev_month (car d_list)) d_list) (- n 1))
-       )
-      )
+    (if
+     ( <= n 0)
+     d_list
+     (make_master_dates (cons (prev_month (car d_list)) d_list) (- n 1))
+     )
   )
 
 (define master_dates
@@ -60,8 +57,8 @@
 
 (define (lineup_time_series md dates values result)
     (cond
-      ((< (length md) 1) (reverse result))
-      ((< (length dates) 1) (lineup_time_series (cdr md) dates values (cons -1.0 result)))
+      ((null? md) (reverse result))
+      ((null? dates) (lineup_time_series (cdr md) dates values (cons -1.0 result)))
 
       ((< (car md) (car dates))
        (lineup_time_series (cdr md) dates values (cons -1.0 result)))
