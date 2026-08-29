@@ -154,13 +154,31 @@ def do_status():
     except FileNotFoundError:
         return "No members have been queued yet."
 
+def normalize_name_field(value):
+    """Title-cases a free-typed name/city field: first letter of each
+    word upper case, everything else lower case (e.g. 'DE los santos'
+    -> 'De Los Santos'), so members show up consistently in reports no
+    matter how a staffer happened to type them in."""
+    return (value or "").strip().title()
+
+def normalize_state_field(value):
+    """Two-letter state codes only, upper case; anything else (blank,
+    a full state name, a typo) is stored blank rather than guessed at."""
+    v = (value or "").strip().upper()
+    return v if len(v) == 2 and v.isalpha() else ""
+
 def delete_member_from_database(f):
+    # Match on the same normalized casing new members are stored with,
+    # so removal still finds them no matter how it's typed this time.
+    last_name = normalize_name_field(f.last_name.data)
+    first_name = normalize_name_field(f.first_name.data)
+
     cnx = get_connection()
     c = cnx.cursor()
     q1 = (" delete from indiv_m "
           " where last_name = ? and first_name = ? ")
 
-    c.execute(q1, (f.last_name.data, f.first_name.data))
+    c.execute(q1, (last_name, first_name))
     j = c.rowcount
 
     # Also cancel any not-yet-processed Add request for the same name,
@@ -170,7 +188,7 @@ def delete_member_from_database(f):
     c.execute(
         "DELETE FROM pending_members WHERE status = 'pending' "
         "AND last_name = ? AND first_name = ?",
-        (f.last_name.data, f.first_name.data),
+        (last_name, first_name),
     )
 
     cnx.commit()
@@ -189,12 +207,18 @@ def build_match_name(last_name, first_name):
 
 def add_member_to_database(f):
     """Queues the member for the background job (process-pending-members,
-    run hourly by a PA scheduled task) rather than joining against
-    indiv_contributions here: that join is a scan of 200M+ rows and
-    can't reliably finish inside one web request -- PythonAnywhere
-    kills any response after 5 minutes, far longer than a user would
-    wait anyway. Returns True if queued, False if refused."""
-    match_name = build_match_name(f.last_name.data, f.first_name.data)
+    run nightly and on demand via "Process New Members Now") rather
+    than joining against indiv_contributions here: that join is a scan
+    of 200M+ rows and can't reliably finish inside one web request --
+    PythonAnywhere kills any response after 5 minutes, far longer than
+    a user would wait anyway. Returns True if queued, False if
+    refused."""
+    first_name = normalize_name_field(f.first_name.data)
+    last_name = normalize_name_field(f.last_name.data)
+    city = normalize_name_field(f.city.data)
+    state = normalize_state_field(f.state.data)
+
+    match_name = build_match_name(last_name, first_name)
     if match_name in ("", ", %"):
         # last_name (and/or first_name) was blank -- this pattern would
         # match every row in indiv_contributions, which is never what's
@@ -214,7 +238,7 @@ def add_member_to_database(f):
         "INSERT INTO pending_members "
         "(first_name, last_name, city, state, match_name, priv, pub, mem, prospect) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (f.first_name.data, f.last_name.data, f.city.data, f.state.data,
+        (first_name, last_name, city, state,
          match_name, priv, pub, mem, pro),
     )
 
