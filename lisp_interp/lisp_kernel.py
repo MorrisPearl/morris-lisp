@@ -2,7 +2,7 @@
 lisp_kernel.py
 ================
 A native Jupyter kernel for the morris_lisp interpreter: every cell is
-plain Lisp source -- no %%lisp magic needed. Install it once with
+plain Lisp source, no cell magic needed. Install it once with
     python3 install_lisp_kernel.py
 then pick "morris_lisp" from Jupyter's kernel picker / New menu, same as
 any other kernel.
@@ -19,13 +19,16 @@ kernel startup -- even though do_execute() below never actually runs any
 Python code through it. The bare Kernel base class never creates that
 shell at all, so IPython.display.display() would have nothing to route
 through and would silently fall back to a plain repr. See
-lisp_jupyter.py's own docstring, and the "Running in Jupyter" section of
-lisp_interpreter_reference.md, for the fuller comparison.
+lisp_jupyter.py's own docstring, and the "Running it" section of
+lisp_interpreter_reference.md, for more.
 
-A few things differ from %%lisp's behavior, all improvements a native
-kernel can make that a cell magic can't:
+A few things worth knowing about how this differs from an ordinary Python
+kernel:
   - errors render through Jupyter's own error display (a red traceback
-    box) instead of a plain printed "Error: ..." line;
+    box), built from the LispError's message -- not a Python traceback,
+    since this interpreter's tail-call-optimized evaluator deliberately
+    doesn't keep ordinary call-frame history (see lisp_interpreter.py's
+    own module docstring);
   - tab-completion is disabled outright (see do_complete, below) rather
     than falling through to IPythonKernel's Python-specific completer,
     which would offer irrelevant Python names for a Lisp symbol prefix;
@@ -33,12 +36,13 @@ kernel can make that a cell magic can't:
     `__`/`___` (the two before that), and `_N` (specifically execution
     N's result) -- are bound directly into the shared Lisp environment
     after every cell that produces one (see _record_history, below).
-    This is genuinely new behavior a %%lisp cell doesn't get just by
-    running inside a real IPython kernel: `_`/`Out[N]` there are
-    IPython's OWN bookkeeping in the PYTHON namespace, tied to running
-    Python code through shell.run_cell() -- which a %%lisp cell doesn't
-    do for its Lisp forms, and which wouldn't be reachable from Lisp
-    code even if it did.
+    This has to be done by hand here: IPython's own `_`/`Out[N]`
+    bookkeeping is tied to running Python code through
+    `shell.run_cell()`, in the PYTHON namespace -- do_execute() below
+    never calls that (it evaluates Lisp source directly through
+    L.seval), so IPython's own history variables would never be
+    populated, and wouldn't be reachable from Lisp code even if they
+    were.
 """
 from __future__ import annotations
 

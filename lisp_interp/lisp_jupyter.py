@@ -1,12 +1,23 @@
 """
 lisp_jupyter.py
 ================
-Run the morris_lisp interpreter (lisp_interpreter.py) inside a Jupyter
-notebook, with no PyQt6 GUI involved at all: charts render inline via
-matplotlib, and (display-columns ...) output renders as a pandas
-DataFrame (a real HTML table) instead of the console's plain text table.
-This module itself only wires up the output/plot/columns callbacks
-make_global_env() already accepts -- it doesn't touch lisp_interpreter.py.
+Shared plumbing for running the morris_lisp interpreter inside a Jupyter
+notebook with no PyQt6 GUI involved at all: charts render inline via
+matplotlib, and (display-columns ...) renders as a pandas DataFrame (a
+real HTML table) instead of the console's plain text table. This module
+just wires up the output/plot/columns callbacks make_global_env() already
+accepts -- it doesn't touch lisp_interpreter.py itself.
+
+Not meant to be used directly. lisp_kernel.py -- the native "morris_lisp"
+Jupyter kernel (see install_lisp_kernel.py) -- is the supported way to use
+this in a notebook: pick "morris_lisp" from Jupyter's kernel picker/New
+menu, and every cell is plain Lisp source, no magic needed. It imports
+this module for get_env() (the environment shared across a kernel's whole
+lifetime) and the three callbacks below. (An earlier version of this file
+also registered a `%%lisp` cell magic for running Lisp cells inside an
+ordinary Python kernel; that approach was superseded by lisp_kernel.py and
+has been removed.)
+
 The tastytrade-*/sofr-*  builtins DO need one thing from lisp_interpreter.
 py itself to work correctly here, already in place: they run their
 network I/O via asyncio, and asyncio.run() can't be called again from
@@ -17,38 +28,6 @@ lisp_interpreter.py (and its twin in term_structure/sofr_market_data.py)
 own fresh loop instead of failing outright, so every tastytrade-*/sofr-*
 builtin still just returns a plain value here, synchronously, exactly as
 it does from the console REPL/GUI/a plain script.
-
-Usage
------
-As a cell magic (nicest -- run this once per notebook):
-    %load_ext lisp_jupyter
-
-then, in any cell:
-    %%lisp
-    (define x (vector 1 2 3))
-    (display-columns (list (cons "x" x)))
-
-As a plain function (works anywhere -- a plain .py script, a notebook
-that skipped %load_ext, a non-IPython REPL):
-    from lisp_jupyter import lisp
-    lisp("(define x 10)")
-    lisp("(+ x 5)")             ; => prints 15, the way the console REPL would
-
-Both share ONE persistent environment (module-level, created lazily on
-first use, with init.lsp already loaded) -- exactly like typing into the
-console REPL, so a definition from one cell is visible in the next. Call
-reset() to discard it and start fresh (e.g. after editing column_engine.
-lsp/prepayment_model.lsp/etc. on disk and wanting a clean (load ...)).
-
-Only the LAST top-level form in a `%%lisp` cell (or a `lisp(...)` call)
-has its value printed -- matching how a Jupyter/IPython cell shows only
-its last expression's value, not every intermediate one -- and it's
-skipped entirely when that value is '() (e.g. a cell that ends with
-display/write-columns-csv/calculate-all, all of which return '() and
-already produce their own output), so cells don't end with a stray "()".
-A LispError (or any other exception) is caught and printed as "Error:
-...", the same as the console REPL and GUI already do, instead of
-surfacing a raw Python traceback full of interpreter internals.
 """
 from __future__ import annotations
 
@@ -175,60 +154,17 @@ _env = None
 
 
 def get_env():
-    """The persistent environment shared by every lisp(...) call and
-    every %%lisp cell -- created lazily on first use, with init.lsp
-    already loaded (same as the console REPL/batch mode/GUI all do)."""
+    """The environment lisp_kernel.py's LispKernel evaluates every cell
+    in -- created lazily on first use (once per kernel process, since
+    this module-level `_env` starts fresh every time a new kernel
+    process launches), with init.lsp already loaded (same as the
+    console REPL/batch mode/GUI all do). There's no separate reset(): a
+    Jupyter "Restart Kernel" already starts a brand-new lisp_kernel.py
+    process -- and therefore a brand-new environment here -- so it
+    already does exactly what a reset() would."""
     global _env
     if _env is None:
         _env = L.make_global_env(output=_notebook_output, plot=_notebook_plot,
                                   columns=_notebook_columns)
         L.load_init_file(_env)
     return _env
-
-
-def reset():
-    """Discard the current environment; the next lisp(...) call/%%lisp
-    cell starts fresh (init.lsp reloaded, every prior definition gone)
-    -- handy after editing a .lsp file on disk, or just to get back to a
-    known-clean state without restarting the whole kernel."""
-    global _env
-    _env = None
-
-
-def lisp(code):
-    """Evaluate one or more top-level Lisp forms (a plain Python string
-    of Lisp source) against the shared notebook environment. Prints the
-    LAST form's value the way the console REPL would -- skipped when
-    that value is '() -- and returns that same value, so `x = lisp("(+ 1
-    2)")` works too. A LispError (or any other exception) is caught and
-    printed as "Error: ..." rather than raising a raw Python traceback."""
-    env = get_env()
-    result = L.NIL
-    try:
-        for expr in L.parse(code):
-            result = L.seval(expr, env)
-    except L.LispError as e:
-        print("Error:", e)
-        return None
-    except Exception as e:
-        print("Error:", e)
-        return None
-    if result is not L.NIL:
-        print(L.to_string(result))
-    return result
-
-
-def _lisp_cell_magic(line, cell):
-    """The actual %%lisp cell-magic implementation -- registered under
-    the name `lisp` (not this function's own name) by
-    load_ipython_extension(), below, via register_magic_function()."""
-    return lisp(cell)
-
-
-def load_ipython_extension(ipython):
-    """Called by `%load_ext lisp_jupyter` -- registers %%lisp as a cell
-    magic. Nothing is registered just from `import lisp_jupyter` alone;
-    %load_ext is the standard, explicit way every IPython extension
-    opts into this, so there's no surprise magic appearing just because
-    some other import happened to pull this module in."""
-    ipython.register_magic_function(_lisp_cell_magic, magic_kind="cell", magic_name="lisp")

@@ -33,39 +33,29 @@ exists. It's entirely optional — a missing init file is silently skipped.
 Put your own always-available definitions/macros there instead of
 `(load ...)`-ing them by hand in every script.
 
-- **From a Jupyter notebook, no GUI at all** — `%load_ext lisp_jupyter`,
-  then write `%%lisp` at the top of any cell (or `from lisp_jupyter import
-  lisp; lisp("(+ 1 2)")` without the magic). See `lisp_jupyter.py` and
-  `lisp_jupyter_demo.ipynb` (both next to this file) — charts render
-  inline (a real `matplotlib`-rendered image, not a GUI chart tab or a
-  `save-chart` file) and `(display-columns ...)` renders as a pandas
-  `DataFrame` (a real HTML table) instead of the console's plain text
-  table. One shared environment persists across cells, the same as typing
-  into the console REPL. Needs `pandas` and `ipykernel` in addition to
-  matplotlib; falls back to the console's plain-text chart/table output
-  if either isn't installed. Any of these builtins that fetch over the
-  network (`tastytrade-*`, `sofr-calibration-data`) work fine here too --
-  they run their I/O via `asyncio`, and `_run_async()` (in
-  `lisp_interpreter.py`, and an identical twin in `term_structure/
-  sofr_market_data.py`) specifically handles being called from inside a
-  Jupyter kernel's own already-running event loop, which a bare
-  `asyncio.run()` call can't do.
-- **As its own native Jupyter kernel, no `%%lisp` needed at all** — run
-  `python3 install_lisp_kernel.py` once (see `lisp_kernel.py`), then pick
-  "morris_lisp" from Jupyter's kernel picker / New menu; every cell is
-  then plain Lisp source directly. Built as an `IPythonKernel` subclass
-  specifically so `lisp_jupyter.py`'s output/plot/columns callbacks work
-  completely unchanged (inline charts, pandas-table `display-columns`) --
-  see `lisp_kernel.py`'s own docstring for why that specific base class
-  matters here. Two differences from the `%%lisp` magic: errors render
-  through Jupyter's own red-traceback-box error display instead of a
-  plain printed line, and there's no tab-completion (a notebook using the
-  `%%lisp` magic on top of a normal Python kernel keeps Python's own
-  completion available for everything outside `%%lisp` cells; this
-  doesn't try to offer completions at all rather than offering irrelevant
-  Python ones). A single notebook can only use one kernel, so this is a
-  tradeoff against the magic approach: no mixing Python and Lisp cells in
-  the same notebook this way.
+- **From a Jupyter notebook, as its own native kernel, no GUI at all** —
+  run `python3 install_lisp_kernel.py` once (see `lisp_kernel.py`), then
+  pick "morris_lisp" from Jupyter's kernel picker / New menu, same as any
+  other kernel; every cell is then plain Lisp source directly, no magic
+  prefix needed. Charts render inline (a real `matplotlib`-rendered image,
+  not a GUI chart tab or a `save-chart` file) and `(display-columns ...)`
+  renders as a pandas `DataFrame` (a real HTML table) instead of the
+  console's plain text table. One environment persists for the kernel's
+  whole lifetime, the same as typing into the console REPL — restarting
+  the kernel (Jupyter's own "Restart" button) starts a fresh one. Built as
+  an `IPythonKernel` subclass specifically so `IPython.display.display()`
+  (which the chart/table rendering uses, in `lisp_jupyter.py`) keeps
+  resolving correctly — see `lisp_kernel.py`'s own docstring for why that
+  specific base class matters, and what else is worth knowing about how it
+  behaves (error display, tab-completion, history variables `_`/`__`/
+  `___`/`_N`). Needs `pandas` and `ipykernel` in addition to matplotlib;
+  falls back to the console's plain-text chart/table output if either
+  isn't installed. Any of these builtins that fetch over the network
+  (`tastytrade-*`, `sofr-calibration-data`) work fine here too -- they run
+  their I/O via `asyncio`, and `_run_async()` (in `lisp_interpreter.py`,
+  and an identical twin in `term_structure/sofr_market_data.py`)
+  specifically handles being called from inside a Jupyter kernel's own
+  already-running event loop, which a bare `asyncio.run()` call can't do.
 
 ## Syntax
 
