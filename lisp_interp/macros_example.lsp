@@ -79,3 +79,17 @@
 (while (< i 200000)
   (begin (set! total (+ total i)) (set! i (+ i 1))))
 (display "my-while summed 0..199999 -> ") (display total) (newline)
+
+(define a '(b c d e))
+(while (not (null? a))
+  (begin
+   (define n '(1 2 3))
+   (while (not (null? n))
+     (begin
+      (print (cons (car a) (car n)))
+      (set! n (cdr n))
+      )
+     )
+   (set! a (cdr a))
+   )
+  )
