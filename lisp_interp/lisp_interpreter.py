@@ -176,6 +176,7 @@ import concurrent.futures
 import inspect
 import calendar
 import datetime
+import sqlite3
 import urllib.request
 import urllib.parse
 
@@ -258,6 +259,40 @@ class LispDate:
 
     def __repr__(self):
         return self.date.isoformat()
+
+
+class LispSQLiteConnection:
+    """An open SQLite database, from (sqlite-open "path/to/db.sqlite").
+    Thin wrapper around sqlite3.Connection so it's an ordinary, passable-
+    around Lisp value (bound to a variable, stored in a struct, etc.) --
+    see sqlite_open_fn/sqlite_query_fn/sqlite_execute_fn/sqlite_close_fn."""
+
+    def __init__(self, path):
+        self.path = str(path)
+        # isolation_level=None -> autocommit: every statement (SELECT
+        # or otherwise) takes effect immediately, with no separate
+        # sqlite-commit/sqlite-rollback builtin needed. Without this,
+        # sqlite3's default mode silently defers INSERT/UPDATE/DELETE
+        # in an open transaction that's lost if the connection is
+        # closed (or never committed) -- surprising for a single
+        # (sqlite-execute conn "INSERT ...") call, which reads as a
+        # complete, self-contained action.
+        self.connection = sqlite3.connect(self.path, isolation_level=None)
+
+    def __repr__(self):
+        return "#<sqlite-connection %s>" % (self.path,)
+
+
+class LispSQLiteCursor:
+    """An in-progress SQL query, from (sqlite-execute conn "SELECT ...").
+    Wraps a sqlite3.Cursor -- repeated (sqlite-fetch-row cursor) calls
+    pull one row at a time until the query is exhausted."""
+
+    def __init__(self, cursor):
+        self.cursor = cursor
+
+    def __repr__(self):
+        return "#<sqlite-cursor>"
 
 
 class LispStructType:
@@ -978,6 +1013,14 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         # docstring. A function/macro couldn't do this: a function only
         # ever gets already-evaluated VALUES, and a macro's transformer
         # runs in ITS OWN defining environment, not the caller's.
+        # An optional argument -- e.g. (breakpoint "entering f...") or
+        # (breakpoint (list "x=" x)) -- is evaluated in that SAME
+        # caller's environment and printed before the REPL opens, so a
+        # breakpoint hit deep in a loop or recursion can identify itself
+        # (or show a value) without needing its own (display ...) call
+        # right before it.
+        if args is not NIL:
+            print(to_display_string(seval(args.car, env)))
         debug_repl(env, label="breakpoint")
         value_stack.append(NIL)
 
@@ -2348,6 +2391,108 @@ def load_csv_fn(filename, has_header=True):
     return Pair(list_to_pairs(out_headers), list_to_pairs(out_vectors))
 
 
+def _sqlite_value_to_lisp(v):
+    """Convert one value out of a sqlite3 row into the matching Lisp
+    value: SQL NULL (None) becomes '(), TEXT becomes a LispString,
+    everything else (INTEGER/REAL, already plain int/float) passes
+    through unchanged. BLOB values (Python bytes) are decoded as UTF-8
+    text on a best-effort basis -- this interpreter has no separate
+    byte-vector type to hand them back as."""
+    if v is None:
+        return NIL
+    if isinstance(v, bytes):
+        return LispString(v.decode("utf-8", errors="replace"))
+    if isinstance(v, str):
+        return LispString(v)
+    return v
+
+
+def sqlite_open_fn(path):
+    """(sqlite-open "path/to/db.sqlite") -- open a SQLite database file
+    (creating it if it doesn't already exist, same as Python's own
+    sqlite3.connect) and return a connection value to pass to
+    sqlite-query / sqlite-execute / sqlite-close."""
+    try:
+        return LispSQLiteConnection(path)
+    except sqlite3.Error as e:
+        raise LispError("sqlite-open: could not open %r: %s" % (str(path), e))
+
+
+def sqlite_close_fn(conn):
+    """(sqlite-close conn) -- close a connection opened by sqlite-open.
+    Safe to call on an already-closed connection."""
+    if not isinstance(conn, LispSQLiteConnection):
+        raise LispError("sqlite-close: not a sqlite connection: %r" % (conn,))
+    conn.connection.close()
+    return NIL
+
+
+def _sqlite_run(conn, sql):
+    if not isinstance(conn, LispSQLiteConnection):
+        raise LispError("expected a sqlite connection (from sqlite-open), got %r" % (conn,))
+    try:
+        cursor = conn.connection.cursor()
+        cursor.execute(str(sql))
+        return cursor
+    except sqlite3.Error as e:
+        raise LispError("sqlite: %s" % e)
+
+
+def sqlite_query_fn(conn, sql):
+    """(sqlite-query conn "SELECT ...") -- run a SQL statement to
+    completion and return its result set COLUMN-WISE: a Lisp list of
+    (name . vector) pairs, one per output column, in query order --
+    exactly the shape (display-columns ...) / (write-columns-csv ...)
+    already expect, so a query's results can be shown or exported
+    directly:
+        (display-columns (sqlite-query conn "SELECT year, total FROM t"))
+    Column names come from the query itself; SQL NULL becomes '() (see
+    _sqlite_value_to_lisp). This reads the ENTIRE result set into memory
+    before returning -- for a large result you'd rather step through one
+    row at a time instead, see sqlite-execute / sqlite-fetch-row.
+
+    Streams rows one at a time straight from the cursor into per-column
+    lists, rather than fetchall()-ing the whole raw result set first and
+    transposing it afterward -- avoids ever holding a full second copy
+    of the result (as row-tuples) alongside the column-vectors being
+    built from it."""
+    cursor = _sqlite_run(conn, sql)
+    names = [d[0] for d in cursor.description] if cursor.description else []
+    columns = [[] for _ in names]
+    for row in cursor:
+        for column, v in zip(columns, row):
+            column.append(_sqlite_value_to_lisp(v))
+    return list_to_pairs([
+        Pair(LispString(name), LispVector(column))
+        for name, column in zip(names, columns)
+    ])
+
+
+def sqlite_execute_fn(conn, sql):
+    """(sqlite-execute conn "SELECT ...") -- run a SQL statement and
+    return a CURSOR without reading any rows yet. Call (sqlite-fetch-row
+    cursor) repeatedly to pull one row at a time (as a Lisp list of that
+    row's values, in column order) until it returns '(), meaning no rows
+    are left -- useful for a result set too large to materialize all at
+    once with sqlite-query, or when you'd rather process rows one by one
+    (e.g. in a `while`/`dolist` loop). Fine for a non-SELECT statement
+    too (INSERT/UPDATE/...); sqlite-fetch-row just returns '() right
+    away since there's nothing to fetch."""
+    return LispSQLiteCursor(_sqlite_run(conn, sql))
+
+
+def sqlite_fetch_row_fn(cursor):
+    """(sqlite-fetch-row cursor) -- pull the next row from a cursor
+    returned by sqlite-execute, as a Lisp list of that row's values in
+    column order, or '() once every row has already been fetched."""
+    if not isinstance(cursor, LispSQLiteCursor):
+        raise LispError("sqlite-fetch-row: not a sqlite cursor: %r" % (cursor,))
+    row = cursor.cursor.fetchone()
+    if row is None:
+        return NIL
+    return list_to_pairs([_sqlite_value_to_lisp(v) for v in row])
+
+
 # ---- tastytrade (real broker data): futures curves and futures-option
 #      chains, via the community `tastytrade` Python SDK. Modeled on
 #      tasty_api/tastytrade_source.py, but with the PyQt6/QThread plumbing
@@ -3608,6 +3753,44 @@ def make_global_env(output=None, plot=None, columns=None):
         expression some other way and wanting to run it directly."""
         return seval(expr, env)
 
+    def lisp_macroexpand_1(form):
+        """(macroexpand-1 'form) -- if `form` is a macro CALL (a list
+        whose car names a macro currently bound in the top-level
+        environment -- the same env `eval` uses), expand it ONE level
+        and return the resulting expression as DATA, without evaluating
+        it. Anything else (a non-list, or a list whose car isn't a
+        macro) is returned unchanged, matching Common Lisp's
+        macroexpand-1. Quote `form` yourself, the same way `eval`
+        expects an already-built expression rather than auto-quoting
+        its argument -- see "why gensym is needed" in the Macros
+        section for a worked example of reading an expansion this way."""
+        if not isinstance(form, Pair) or not isinstance(form.car, Symbol):
+            return form
+        macro = env.lookup_or_none(form.car)
+        if not isinstance(macro, Macro):
+            return form
+        return expand_macro(macro, pairs_to_list(form.cdr))
+
+    def lisp_macroexpand(form):
+        """(macroexpand 'form) -- like macroexpand-1, but keeps
+        re-expanding the OUTERMOST form as long as it's still a macro
+        call, so a macro that itself expands into a call to another
+        macro is fully unwound in one step (matching Common Lisp's
+        macroexpand). Does NOT expand macro calls nested inside the
+        result -- only the outermost form, same as macroexpand-1."""
+        while isinstance(form, Pair) and isinstance(form.car, Symbol) \
+                and isinstance(env.lookup_or_none(form.car), Macro):
+            form = lisp_macroexpand_1(form)
+        return form
+
+    def lisp_print_macroexpansion(form):
+        """(print-macroexpansion 'form) -- (macroexpand form), pretty-
+        printed, for a readable look at exactly what a macro call turns
+        into WITHOUT evaluating (or running any side effect of) either
+        the call or its expansion."""
+        emit(pretty_print_string(lisp_macroexpand(form)) + "\n")
+        return NIL
+
     def lisp_gensym(*base):
         """(gensym ["prefix"]) -- a symbol guaranteed not to collide with
         any name in the program, for writing your own hygienic macros by
@@ -3626,6 +3809,9 @@ def make_global_env(output=None, plot=None, columns=None):
     env.update({
         "apply": lisp_apply,
         "eval": lisp_eval,
+        "macroexpand-1": lisp_macroexpand_1,
+        "macroexpand": lisp_macroexpand,
+        "print-macroexpansion": lisp_print_macroexpansion,
         "gensym": lisp_gensym,
         "load": lisp_load,
     })
@@ -3875,6 +4061,15 @@ def make_global_env(output=None, plot=None, columns=None):
         "load-csv": load_csv_fn,
     })
 
+    # ---- SQLite ----
+    env.update({
+        "sqlite-open": sqlite_open_fn,
+        "sqlite-close": sqlite_close_fn,
+        "sqlite-query": sqlite_query_fn,
+        "sqlite-execute": sqlite_execute_fn,
+        "sqlite-fetch-row": sqlite_fetch_row_fn,
+    })
+
     # ---- tastytrade (real broker data): futures curves and futures-option chains ----
     env.update({
         "tastytrade-test-connection": tastytrade_test_connection_fn,
@@ -4057,6 +4252,8 @@ def make_global_env(output=None, plot=None, columns=None):
         "procedure?": lambda x: callable(x) or isinstance(x, Procedure),
         "boolean?": lambda x: isinstance(x, bool),
         "struct?": lambda x: isinstance(x, LispStruct),
+        "sqlite-connection?": lambda x: isinstance(x, LispSQLiteConnection),
+        "sqlite-cursor?": lambda x: isinstance(x, LispSQLiteCursor),
     })
 
     # ---- I/O ----

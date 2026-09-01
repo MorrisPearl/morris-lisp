@@ -292,7 +292,7 @@ order. `struct?`, `struct-ref`, `struct-set!`, and `struct-type-name` (see
 instance by slot-name symbol, without needing the type-specific accessor
 names — useful when writing code that works across struct types.
 
-#### `(breakpoint)`
+#### `(breakpoint [message])`
 Opens a nested, blocking debug REPL right where it appears, evaluating
 whatever you type directly in the **real lexical environment active at that
 point** — e.g. if you put `(breakpoint)` inside a function body, that
@@ -303,9 +303,14 @@ function's own parameters are variables in the debug REPL, inspectable and
 specifically to get access to the caller's actual environment object — a
 function only ever receives already-evaluated *values*, and a macro's
 transformer body runs in its *own* defining environment, not the caller's.
-See "Introspection / debugging", below, for the full writeup, including
-`debug-function` (which inserts this automatically into an existing
-function) and the GUI limitation (console/batch mode only).
+The optional `message` argument is itself evaluated in that same caller's
+environment and printed before the REPL opens — a plain string (`(breakpoint
+"entering f...")`) works, but so does any expression whose *value* is worth
+seeing right away (`(breakpoint (list "x=" x))`), without needing a separate
+`(display ...)` call right before the breakpoint. See "Introspection /
+debugging", below, for the full writeup, including `debug-function` (which
+inserts this automatically into an existing function) and the GUI limitation
+(console/batch mode only).
 
 ### Variadic parameters
 
@@ -422,6 +427,81 @@ single `(begin ...)`:
 accidental variable capture in a macro like this by hand — e.g. the `t`
 above would shadow a caller's own variable named `t`; a hand-written macro
 meant for wider use would bind `(gensym)`'s result instead of a fixed name.
+
+**Why this actually matters — a `while` variant that leaks its own loop
+counter.** `init.lsp`'s real `while` macro is already safe (its internal
+`%loop` name never appears in `,test`/`,body`, so it's never exposed to
+anything the caller wrote), but a natural variation — a `while` that also
+exposes a running iteration count to its body — shows the failure mode
+concretely:
+
+```lisp
+; count-while: like while, but the body can read `i` for "how many times
+; has this loop run so far". Looks reasonable... until `i` collides with
+; a variable the CALLER already had a different use for.
+(defmacro count-while (test body)
+  `(let ((i 0))
+     (define (%loop)
+       (if ,test
+           (begin ,body (set! i (+ i 1)) (%loop))
+           i))
+     (%loop)))
+```
+
+Nest two of these to walk a 3x3 grid, using a variable also called `i` (an
+extremely ordinary name to reach for) to total up how many inner-loop steps
+ran across the whole grid:
+
+```lisp
+(define i 0)                   ; MY total inner-loop step count, unrelated
+(define row 0)                 ; to count-while's own internal `i`
+(count-while (< row 3)
+  (begin
+    (define col 0)
+    (count-while (< col 3)
+      (begin
+        (set! i (+ i 1))       ; "increment my total" -- or so it looks
+        (set! col (+ col 1))))
+    (set! row (+ row 1))))
+(display i)                    ; => 0, NOT 9 -- silently wrong, no error
+```
+
+Every `,body` gets spliced directly into the macro's own `(let ((i 0)) ...)`
+template, so *every* `i` written inside a `count-while` body — at any
+nesting depth — resolves to that call's own freshly bound `i`, not the
+caller's outer variable of the same name. The outer `i` defined at the top
+is never touched; `count-while`'s `set!` calls are all silently redirected
+to internal counters that get thrown away the moment each `let` scope exits.
+Nothing raises an error — the bug is a wrong answer, not a crash, which is
+exactly what makes hand-written macro hygiene bugs painful to track down.
+
+The fix: generate a fresh, guaranteed-unique symbol for the counter each
+time the macro is *expanded* (not once at `defmacro` time — each call site
+needs its own), and splice that symbol in everywhere the fixed name `i`
+used to appear:
+
+```lisp
+(defmacro count-while (test body)
+  (let ((cnt (gensym "count")))
+    `(let ((,cnt 0))
+       (define (%loop)
+         (if ,test
+             (begin ,body (set! ,cnt (+ ,cnt 1)) (%loop))
+             ,cnt))
+       (%loop))))
+```
+
+The outer `(let ((cnt (gensym "count"))) ...)` is the macro's OWN body —
+ordinary Lisp code that runs once per expansion, computing a new symbol
+like `%count-7`, unrelated to (and unable to collide with) anything a user
+could type. Substituted via `,cnt`, that generated symbol — not the literal
+name `i` — is what ends up bound by the template's `let`. Re-running the
+exact same nested example above with this version now correctly prints `9`
+— the caller's own `i` was never shadowed, because nothing inside either
+`count-while` expansion is named `i` anymore. `(macroexpand-1 ...)` (see
+Metaprogramming, below) is a good way to see this difference directly —
+expanding a `count-while` call with each version shows the fixed `i` versus
+a generated `%count-N` in exactly the position that matters.
 
 A macro's own body, while it's still computing an expansion, is evaluated
 by an ordinary (recursive) Python function call, not the fully
@@ -707,6 +787,10 @@ not passed around as a value and applied).
 #### `(struct? x)`
 `#t` for an instance of any `defstruct`-defined type — see "Structs",
 below.
+
+#### `(sqlite-connection? x)`, `(sqlite-cursor? x)`
+`#t` for a connection returned by `sqlite-open`, or a cursor returned by
+`sqlite-execute`, respectively — see "SQLite", below.
 
 ### Pairs and lists
 
@@ -1596,6 +1680,74 @@ vectors-list)`: `headers-list` is a Lisp list of column-name strings,
 (define d2 (load-csv "no_header.csv" #f))   ; no header row -> Column1, Column2, ...
 ```
 
+### SQLite
+
+Five builtins for reading (and writing) a local SQLite database file, built
+directly on Python's standard-library `sqlite3` module. There are two ways
+to get a query's results, matching two different needs:
+
+- `sqlite-query` runs a statement to completion and hands back the WHOLE
+  result set at once, column-wise — a list of `(name . vector)` pairs, the
+  exact shape `display-columns`/`write-columns-csv` already expect.
+- `sqlite-execute` + `sqlite-fetch-row` run a statement and then step
+  through it one row at a time, for a result set you'd rather not
+  materialize all at once, or want to process row-by-row in a loop.
+
+#### `(sqlite-open "path/to/db.sqlite")`
+Opens (creating it first if it doesn't already exist, same as Python's
+`sqlite3.connect`) a SQLite database file and returns a connection value —
+pass it to `sqlite-query`, `sqlite-execute`, and `sqlite-close`. Raises
+`LispError` if the file can't be opened as a SQLite database.
+
+#### `(sqlite-close conn)`
+Closes a connection opened by `sqlite-open`. Returns `'()`.
+
+#### `(sqlite-query conn "SELECT ...")`
+Runs a SQL statement and returns its ENTIRE result set at once, column-wise:
+a Lisp list of `(name . vector)` pairs, one per output column, in query
+order, column names taken from the query itself. SQL `NULL` becomes `'()`;
+everything else converts number-for-number, text-for-text. Raises
+`LispError` on a SQL error (bad syntax, unknown column/table, etc) or if
+`conn` isn't a value from `sqlite-open`.
+
+```lisp
+(define conn (sqlite-open "donors.db"))
+(define cols (sqlite-query conn "SELECT name, amount FROM donors ORDER BY amount DESC"))
+(display-columns cols)                     ; straight into the Columns tab / console table
+(write-columns-csv "donors.csv" cols)      ; or straight out to a CSV file
+(sqlite-close conn)
+```
+
+#### `(sqlite-execute conn "SELECT ...")`
+Runs a SQL statement and returns a CURSOR immediately, without reading any
+rows yet — pass it to `sqlite-fetch-row`, repeatedly, to pull one row at a
+time. Also fine for a non-`SELECT` statement (`INSERT`/`UPDATE`/`CREATE
+TABLE`/...); `sqlite-fetch-row` on the resulting cursor just returns `'()`
+right away, since there's nothing to fetch. Raises `LispError` the same way
+`sqlite-query` does.
+
+#### `(sqlite-fetch-row cursor)`
+Pulls the next row from a cursor returned by `sqlite-execute`, as a Lisp
+list of that row's values in column order (same NULL/text/number
+conversion as `sqlite-query`), or `'()` once every row has already been
+fetched — so a plain `while`/`null?` loop drains a cursor one row at a time:
+
+```lisp
+(define conn (sqlite-open "donors.db"))
+(sqlite-execute conn "CREATE TABLE IF NOT EXISTS donors (name TEXT, amount REAL)")
+(define cur (sqlite-execute conn "SELECT name, amount FROM donors ORDER BY name"))
+(define row (sqlite-fetch-row cur))
+(while (not (null? row))
+  (begin
+    (display (car row)) (display ": ") (display (car (cdr row))) (newline)
+    (set! row (sqlite-fetch-row cur))))
+(sqlite-close conn)
+```
+
+`sqlite-connection?` and `sqlite-cursor?` are the matching type predicates,
+alongside `date?`/`vector?`/`struct?` and the rest (see "Comparison /
+equality / booleans").
+
 ### tastytrade (real broker data)
 
 Requires the `tastytrade` package (`pip install tastytrade`) and a
@@ -2249,6 +2401,39 @@ a macro.
 (pretty-print-macro double-it)
 ```
 
+#### `(macroexpand-1 'form)`, `(macroexpand 'form)`
+Shows what a macro CALL turns into, without evaluating (or running any side
+effect of) either the call or its expansion — the complement to
+`pretty-print-macro`, which shows a macro's *definition* rather than one
+particular *use* of it. `form` must be quoted (or otherwise already a piece
+of Lisp data) yourself — like `eval`, neither function auto-quotes its
+argument. `macroexpand-1` expands the outermost form exactly one level;
+`macroexpand` keeps re-expanding the outermost form as long as it's still a
+macro call (so a macro that itself expands into a call to another macro is
+fully unwound in one step). Neither expands macro calls nested *inside* the
+result — only the outermost form. Returns `form` unchanged if it isn't a
+macro call at all.
+
+```lisp
+(defmacro unless (test then) `(if (not ,test) ,then '()))
+(macroexpand-1 '(unless (> 1 2) 'shown))
+                                ; => (if (not (> 1 2)) (quote shown) (quote ()))
+```
+
+See "why gensym is needed" in the Macros section, above, for a worked
+example of using `macroexpand-1` to see exactly which name a
+non-hygienic macro leaks into its expansion.
+
+#### `(print-macroexpansion 'form)`
+`(macroexpand form)`, pretty-printed (via `pretty-print`) instead of
+returned as a value — the quickest way to actually look at a nested
+expansion at a glance, rather than parsing a `to_string`-formatted result
+back into your own head.
+
+```lisp
+(print-macroexpansion '(while (< i 10) (display i)))
+```
+
 #### `(defined-functions)`
 Returns a list of every name currently bound, at the top level, to a
 user-defined function (something made with `lambda`/`define` — not a
@@ -2283,18 +2468,26 @@ data: numbers, strings, lists, vectors, dates, and so on.
 (bound-variables)              ; => (pi ...plus anything else you've define'd as data)
 ```
 
-#### `(breakpoint)`
+#### `(breakpoint [message])`
 A special form, not a function — see "Special forms", above, for the full
 explanation of why. Repeated here for discoverability: opens a nested,
 blocking debug REPL right where it appears, with the paused code's own
 local variables live and modifiable in that REPL; type `(continue)` to
-resume. Console/batch mode only (see below).
+resume. Console/batch mode only (see below). The optional `message` is
+evaluated in the paused call's own environment and printed before the REPL
+opens, so a breakpoint hit deep in a loop or recursive call can identify
+itself, or show a value, without a separate `(display ...)` first.
 
 ```lisp
 (define (f x)
   (breakpoint)                 ; opens a debug REPL with x bound to 5
   (* x 2))
 (f 5)                          ; type (continue) at the prompt to resume, => 10
+
+(define (g x)
+  (breakpoint (list "entering g, x =" x))   ; prints ("entering g, x =" 7) first
+  (* x 3))
+(g 7)
 ```
 
 #### `(debug-function name)`
