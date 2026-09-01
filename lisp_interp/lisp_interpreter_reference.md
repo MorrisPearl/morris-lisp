@@ -1265,32 +1265,107 @@ fitting (for numerical stability) and converted back to the original scale
 afterward, so this is transparent to you; date values anywhere a number is
 expected are silently converted to their ordinal day count.
 
-#### `(linear-regression x y)`
-Ordinary least-squares fit of `y = intercept + sum(coefficients[i] *
-x[i])`. `x` is a vector, or a list of vectors for multiple predictors; `y`
-is a vector the same length as each predictor vector. Returns a model of
-kind `"linear"`. Raises an error if `x`/`y` lengths mismatch, a predictor
-has zero variance, or the predictors are collinear.
+**Weighted fitting.** `linear-regression`, `logistic-regression`, and
+`spline-regression` all take an optional trailing `weights` vector: one
+non-negative number per observation, the same length as `y`. Omit it (or
+pass `'()`) to weight every observation equally, exactly the original
+behavior. Fitting still minimizes a sum of squared errors (or maximizes a
+log-likelihood, for the logistic case) — weighting just means each
+observation's contribution to that sum is multiplied by its own weight, so
+a weight of `2` counts an observation as if it appeared twice, and a weight
+of `0` excludes it entirely; only the weights' *relative* sizes matter, not
+their absolute scale. This is the standard tool for fitting to **grouped**
+data — e.g. one row per rate-incentive bucket rather than one row per loan
+— where you want a bucket representing $500M of balance to influence the
+fit far more than one representing $2M, and where a bucket's own average is
+a more reliable (lower-variance) estimate the more balance stands behind
+it:
+
+```lisp
+(define bucket-rate (vector 0.02 0.04 0.06 0.08))    ; one row per rate bucket
+(define bucket-cpr   (vector 0.05 0.08 0.15 0.30))
+(define bucket-balance (vector 450000000 12000000 8000000 300000000))
+(define m (linear-regression bucket-rate bucket-cpr bucket-balance))
+```
+
+#### `(linear-regression x y [weights])`
+Ordinary (or weighted) least-squares fit of `y = intercept +
+sum(coefficients[i] * x[i])`. `x` is a vector, or a list of vectors for
+multiple predictors; `y` is a vector the same length as each predictor
+vector; `weights` is the optional per-observation weight vector described
+above. Returns a model of kind `"linear"`. Raises an error if `x`/`y`/
+`weights` lengths mismatch, a predictor has zero variance, the predictors
+are collinear, or a weight is negative.
+
+**How the coefficients are found.** Fitting minimizes the (weighted) sum of
+squared residuals —
+
+```
+sum over every observation i of:  weight[i] * (y[i] - prediction[i])^2
+```
+
+— the ordinary least-squares objective (with every `weight[i] = 1` unless
+you pass your own, per "Weighted fitting" above). That objective is
+*quadratic* in the coefficients, so its minimum has a closed-form solution:
+setting its gradient to zero gives one linear equation per coefficient (the
+"normal equations"), and the interpreter solves that linear system exactly,
+in a single step, via Gauss-Jordan elimination with partial pivoting
+(`solve_linear_system` in `lisp_interpreter.py`) — no searching, iterating,
+or approximating, unlike `logistic-regression` below. (Predictors are
+rescaled to mean 0 / unit variance first, purely to keep that linear system
+numerically well-behaved regardless of a predictor's raw scale — a huge
+ordinal date next to a small percentage, say — and the fitted coefficients
+are converted back to the original scale afterward; this doesn't change
+what's being minimized or the answer you get, only how reliably the solver
+gets there.)
 
 ```lisp
 (define m (linear-regression prices demand))
 (display (model-report m))
 ```
 
-#### `(logistic-regression x y)`
+#### `(logistic-regression x y [weights])`
 Maximum-likelihood fit of `p = sigmoid(intercept + sum(coefficients[i] *
 x[i]))`, via Newton-Raphson (up to 50 iterations, or until convergence).
-`x` as above; every value in `y` must be in `[0, 1]` (a 0/1 label, or a
-probability) — values outside that range raise an error. Returns a model
-of kind `"logistic"`. Near-perfect separability in the data can prevent
-convergence and raises a descriptive error rather than diverging silently.
+`x`/`weights` as above; every value in `y` must be in `[0, 1]` (a 0/1
+label, or a probability) — values outside that range raise an error.
+Returns a model of kind `"logistic"`. Near-perfect separability in the data
+can prevent convergence and raises a descriptive error rather than
+diverging silently.
+
+**How the coefficients are found.** Fitting maximizes the (weighted)
+log-likelihood of the data —
+
+```
+sum over every observation i of:
+  weight[i] * ( y[i]*log(p[i]) + (1-y[i])*log(1-p[i]) )
+```
+
+— where `p[i]` is this model's own `sigmoid(...)` prediction for row `i`;
+this is the standard maximum-likelihood objective for logistic regression
+(equivalently, the negative of the weighted cross-entropy loss), with
+every `weight[i] = 1` unless you pass your own. Unlike `linear-regression`'s
+objective, this one is *not* quadratic in the coefficients, so there's no
+closed-form solution — the interpreter instead finds the maximizing
+coefficients iteratively, by Newton-Raphson (the same algorithm is also
+called Iteratively Reweighted Least Squares, "IRLS", elsewhere). Starting
+from all-zero coefficients, each iteration computes this objective's
+gradient and Hessian at the current coefficients, solves for the step that
+would exactly reach the maximum if the objective were quadratic right there
+(via the very same linear-system solver `linear-regression` uses for its
+one-shot solve), and takes that step; this repeats until a step is smaller
+than `1e-8`, or 50 iterations pass without converging. If the data is
+(nearly) perfectly separable by a predictor, the TRUE maximum sends that
+coefficient toward infinity and the Hessian toward singular — caught and
+reported as a descriptive error, rather than looping forever or silently
+returning a runaway or meaningless answer.
 
 ```lisp
 (define m (logistic-regression prices demand))
 (display (model-report m))
 ```
 
-#### `(spline-regression x y [max-knots logistic?])`
+#### `(spline-regression x y [max-knots logistic? weights])`
 A simple, dependency-free way to let a model bend instead of insisting on a
 straight line. For each predictor `x`, a handful of "knot" locations are
 chosen (automatically, at quantiles of `x`'s own values, or exactly where
@@ -1300,6 +1375,18 @@ marked `'categorical`, one 0/1 indicator column per non-baseline distinct
 value instead of hinges. Fitting then just reuses `linear-regression`'s or
 `logistic-regression`'s own fitting code on this expanded feature set.
 Returns a model of kind `"spline"` (or `"spline-logistic"`).
+
+**How the coefficients are found.** There's no separate spline-fitting
+algorithm — `spline-regression` isn't a different way of minimizing
+anything, it's a different set of *columns* to feed into one of the two
+algorithms already described above. Every knot's hinge column and every
+category's 0/1 indicator column (see the table below) is computed first;
+those expanded columns are then handed to `fit_linear` (`logistic?` `#f`)
+or `fit_logistic` (`logistic?` `#t`) exactly as if you had built those
+columns yourself and called `linear-regression`/`logistic-regression`
+directly on them — same objective, same closed-form-or-Newton-Raphson
+solve, same optional `weights`, just applied to `x`'s expansion instead of
+`x` itself.
 
 `max-knots` (default `3`) controls how *every* predictor is expanded:
 
@@ -1322,6 +1409,11 @@ expanded basis is fit with logistic regression instead of OLS, so the
 resulting `[0, 1]`-valued prediction, thanks to the non-linear basis,
 doesn't have to be monotonic in `x` the way a plain `logistic-regression`
 fit would be.
+
+`weights` (optional, default: every observation weighted equally) — the
+same per-observation weight vector `linear-regression`/`logistic-regression`
+take (see "Weighted fitting", above); passed straight through to whichever
+fit runs on the expanded basis.
 
 ```lisp
 (define home-type (vector 0 1 0 1 1))          ; 0=own, 1=rent

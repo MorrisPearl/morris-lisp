@@ -1457,11 +1457,23 @@ def _unstandardize_coefficients(b0, betas, means, scales):
     return coefficients, intercept
 
 
-def fit_linear(columns, ys):
-    """Ordinary least-squares fit of y = intercept + sum(coef[i]*x[i]).
-    `columns` is a list of one or more predictor columns (each a list of
-    plain numbers, one per observation); `ys` is the list of observed
-    values. Returns a LispModel."""
+def fit_linear(columns, ys, weights=None):
+    """Ordinary (or weighted) least-squares fit of
+    y = intercept + sum(coef[i]*x[i]). `columns` is a list of one or
+    more predictor columns (each a list of plain numbers, one per
+    observation); `ys` is the list of observed values. Returns a
+    LispModel.
+
+    `weights` (optional): a list of one non-negative number per
+    observation, or None (the default) to weight every observation
+    equally. Fitting still minimizes a sum of squared errors, just a
+    WEIGHTED one -- sum(weight[i] * (y[i] - prediction[i])**2) -- which
+    is done by carrying `weight[i]` into every observation's
+    contribution to the normal equations below (each observation's row
+    of the design matrix is effectively counted `weight[i]` times). A
+    weight of 0 excludes that observation from the fit entirely, and
+    scaling every weight by the same constant doesn't change the result
+    -- only the RELATIVE size of the weights matters."""
     k = len(columns)
     n = len(ys)
     if n == 0:
@@ -1469,21 +1481,24 @@ def fit_linear(columns, ys):
     for col in columns:
         if len(col) != n:
             raise LispError("linear-regression: all vectors must be the same length")
+    if weights is None:
+        weights = [1.0] * n
 
     std_columns, means, scales = _standardize_columns(columns)
     design_rows = [[1.0] + [std_columns[j][i] for j in range(k)] for i in range(n)]
     p = k + 1
-    normal_matrix = [[sum(design_rows[i][a] * design_rows[i][b] for i in range(n))
+    normal_matrix = [[sum(weights[i] * design_rows[i][a] * design_rows[i][b] for i in range(n))
                        for b in range(p)] for a in range(p)]
-    normal_rhs = [sum(design_rows[i][a] * ys[i] for i in range(n)) for a in range(p)]
+    normal_rhs = [sum(weights[i] * design_rows[i][a] * ys[i] for i in range(n)) for a in range(p)]
     solved = solve_linear_system(normal_matrix, normal_rhs)
     coefficients, intercept = _unstandardize_coefficients(solved[0], solved[1:], means, scales)
 
     model = LispModel("linear", coefficients, intercept, {})
     predictions = [model.predict([col[i] for col in columns]) for i in range(n)]
-    mean_y = sum(ys) / n
-    ss_total = sum((y - mean_y) ** 2 for y in ys)
-    ss_residual = sum((y - p) ** 2 for y, p in zip(ys, predictions))
+    total_weight = sum(weights)
+    mean_y = sum(w * y for w, y in zip(weights, ys)) / total_weight
+    ss_total = sum(w * (y - mean_y) ** 2 for w, y in zip(weights, ys))
+    ss_residual = sum(w * (y - p) ** 2 for w, y, p in zip(weights, ys, predictions))
     model.stats = {
         "r_squared": (1 - ss_residual / ss_total) if ss_total > 0 else float("nan"),
         "n": n,
@@ -1491,11 +1506,22 @@ def fit_linear(columns, ys):
     return model
 
 
-def fit_logistic(columns, ys, max_iterations=50, tolerance=1e-8):
+def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
     """Fit p = sigmoid(intercept + sum(coef[i]*x[i])) by maximum
     likelihood, using Newton-Raphson (a.k.a. iteratively reweighted least
     squares). Each y must be in [0, 1] -- either a hard 0/1 label or a
-    probability. `columns` is a list of one or more predictor columns."""
+    probability. `columns` is a list of one or more predictor columns.
+
+    `weights` (optional): a list of one non-negative number per
+    observation, or None (the default) to weight every observation
+    equally -- see fit_linear's docstring for the general idea (and note
+    below: this is a DIFFERENT weight than the `irls_weight` computed on
+    every iteration below, which is part of the fitting ALGORITHM itself
+    and has nothing to do with this one). Maximizing a weighted
+    log-likelihood -- sum(weight[i] * observation[i]'s log-likelihood)
+    -- just means multiplying `weight[i]` into that observation's
+    contribution to the gradient, Hessian, and log-likelihood on every
+    Newton-Raphson step."""
     k = len(columns)
     n = len(ys)
     if n == 0:
@@ -1508,6 +1534,8 @@ def fit_logistic(columns, ys, max_iterations=50, tolerance=1e-8):
             raise LispError(
                 "logistic-regression: dependent-variable values must all be "
                 "between 0 and 1 (got %r)" % (y,))
+    if weights is None:
+        weights = [1.0] * n
 
     std_columns, means, scales = _standardize_columns(columns)
     design_rows = [[1.0] + [std_columns[j][i] for j in range(k)] for i in range(n)]
@@ -1526,15 +1554,17 @@ def fit_logistic(columns, ys, max_iterations=50, tolerance=1e-8):
         log_likelihood = 0.0
         for i in range(n):
             row = design_rows[i]
+            case_weight = weights[i]
             z = sum(beta[a] * row[a] for a in range(p))
             prob = sigmoid(z)
             error = prob - ys[i]
-            weight = prob * (1 - prob)
+            irls_weight = case_weight * prob * (1 - prob)
             for a in range(p):
-                gradient[a] += error * row[a]
+                gradient[a] += case_weight * error * row[a]
                 for b in range(p):
-                    hessian[a][b] += weight * row[a] * row[b]
-            log_likelihood += ys[i] * math.log(max(prob, eps)) + (1 - ys[i]) * math.log(max(1 - prob, eps))
+                    hessian[a][b] += irls_weight * row[a] * row[b]
+            log_likelihood += case_weight * (
+                ys[i] * math.log(max(prob, eps)) + (1 - ys[i]) * math.log(max(1 - prob, eps)))
 
         try:
             delta = solve_linear_system(hessian, gradient)
@@ -1553,8 +1583,10 @@ def fit_logistic(columns, ys, max_iterations=50, tolerance=1e-8):
     coefficients, intercept = _unstandardize_coefficients(beta[0], beta[1:], means, scales)
 
     # McFadden's pseudo R-squared, comparing against an intercept-only model.
-    mean_y = min(max(sum(ys) / n, eps), 1 - eps)
-    null_log_likelihood = sum(y * math.log(mean_y) + (1 - y) * math.log(1 - mean_y) for y in ys)
+    total_weight = sum(weights)
+    mean_y = min(max(sum(w * y for w, y in zip(weights, ys)) / total_weight, eps), 1 - eps)
+    null_log_likelihood = sum(
+        w * (y * math.log(mean_y) + (1 - y) * math.log(1 - mean_y)) for w, y in zip(weights, ys))
     pseudo_r_squared = (1 - log_likelihood / null_log_likelihood) if null_log_likelihood != 0 else float("nan")
 
     stats = {
@@ -1594,20 +1626,45 @@ def _predictor_columns(x_arg, n_expected):
     return columns
 
 
-def linear_regression_fn(x_arg, y_vec):
+def _optional_weights(weight_vec, n_expected, name):
+    """Convert the optional trailing `weights` argument shared by
+    linear-regression/logistic-regression/spline-regression into a plain
+    list of n_expected non-negative floats, or None if no weights were
+    given -- None means "fit every observation equally", exactly the
+    original unweighted behavior; fit_linear/fit_logistic both treat
+    None that way. A typical use is weighting each row by its dollar
+    balance, so a fit reflects the population's dollar-weighted behavior
+    rather than treating a $1,000 loan and a $1,000,000 loan as equally
+    important."""
+    if weight_vec is None or weight_vec is NIL:
+        return None
+    if not isinstance(weight_vec, LispVector):
+        raise LispError("%s: weights must be a vector" % name)
+    if len(weight_vec.items) != n_expected:
+        raise LispError("%s: weights must be the same length as y" % name)
+    weights = [numeric_value(v) for v in weight_vec.items]
+    for w in weights:
+        if w < 0:
+            raise LispError("%s: weights must not be negative (got %r)" % (name, w))
+    return weights
+
+
+def linear_regression_fn(x_arg, y_vec, weight_vec=None):
     if not isinstance(y_vec, LispVector):
         raise LispError("linear-regression: y must be a vector")
     columns = _predictor_columns(x_arg, len(y_vec.items))
     ys = [numeric_value(v) for v in y_vec.items]
-    return fit_linear(columns, ys)
+    weights = _optional_weights(weight_vec, len(ys), "linear-regression")
+    return fit_linear(columns, ys, weights)
 
 
-def logistic_regression_fn(x_arg, y_vec):
+def logistic_regression_fn(x_arg, y_vec, weight_vec=None):
     if not isinstance(y_vec, LispVector):
         raise LispError("logistic-regression: y must be a vector")
     columns = _predictor_columns(x_arg, len(y_vec.items))
     ys = [numeric_value(v) for v in y_vec.items]
-    return fit_logistic(columns, ys)
+    weights = _optional_weights(weight_vec, len(ys), "logistic-regression")
+    return fit_logistic(columns, ys, weights)
 
 
 def _is_model(x):
@@ -1951,14 +2008,16 @@ def _spline_report_lines(model):
     return lines
 
 
-def spline_regression_fn(x_arg, y_vec, max_knots=3, logistic=False):
+def spline_regression_fn(x_arg, y_vec, max_knots=3, logistic=False, weight_vec=None):
     """Fit a piecewise-linear spline model. `x_arg` is a vector or list of
     vectors (predictors). `max_knots` controls how each predictor is
     expanded -- see _resolve_all_predictor_specs for the accepted forms
     (an auto knot count, explicit knot locations, or 'categorical). If
     `logistic` is true, `y` must be in [0, 1], and a logistic regression
     (instead of ordinary least squares) is fit on the expanded basis,
-    giving a probability-in-[0,1] output."""
+    giving a probability-in-[0,1] output. `weight_vec` (optional): see
+    fit_linear's docstring -- passed straight through to whichever fit
+    runs on the expanded basis."""
     if not isinstance(y_vec, LispVector):
         raise LispError("spline-regression: y must be a vector")
 
@@ -1974,11 +2033,13 @@ def spline_regression_fn(x_arg, y_vec, max_knots=3, logistic=False):
                 raise LispError(
                     "spline-regression: with logistic #t, dependent-variable values "
                     "must all be between 0 and 1 (got %r)" % (y,))
+    weights = _optional_weights(weight_vec, n, "spline-regression")
 
     predictor_specs = _resolve_all_predictor_specs(max_knots, columns)
     expanded_columns = _spline_expand_columns(columns, predictor_specs)
 
-    inner_model = fit_logistic(expanded_columns, ys) if logistic else fit_linear(expanded_columns, ys)
+    inner_model = (fit_logistic(expanded_columns, ys, weights) if logistic
+                   else fit_linear(expanded_columns, ys, weights))
     return LispSplineModel(inner_model, predictor_specs, k)
 
 
