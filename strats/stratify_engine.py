@@ -12,6 +12,10 @@ import pandas as pd
 
 # "None" means: do not generate a standalone stratification report for this field.
 NUMERIC_METHODS = ["Equal Count Buckets", "Equal Weight Buckets", "Manual Breakpoints", "None"]
+# Same as NUMERIC_METHODS, plus "Calendar Year" -- one bucket per calendar
+# year actually present, with no equal-count/equal-weight equivalent
+# since numbers have no natural "year" grouping.
+DATE_METHODS = ["Equal Count Buckets", "Equal Weight Buckets", "Manual Breakpoints", "Calendar Year", "None"]
 CATEGORICAL_METHODS = ["Top Values + Other", "None"]
 
 # Stats that only make sense on numeric data.
@@ -19,14 +23,23 @@ NUMERIC_ONLY_STATS = [
     "Sum", "Average", "Median", "Weighted Average", "Weighted Median",
     "Percentile", "Weighted Percentile", "Min", "Max",
 ]
-# Stats that work on numeric OR text/categorical data.
+# Order-statistics that also make sense on dates (an "earliest"/"latest"/
+# "middle" date is meaningful); Sum/Average/Percentile of dates is not,
+# so those stay numeric-only.
+DATE_STATS_ONLY = ["Min", "Max", "Median"]
+# Stats that work on numeric, date, OR text/categorical data.
 GENERAL_STATS = ["Mode", "Weighted Mode", "Representative Value"]
 ALL_STATS = NUMERIC_ONLY_STATS + GENERAL_STATS
+DATE_STATS = DATE_STATS_ONLY + GENERAL_STATS
 PERCENTILE_STATS = {"Percentile", "Weighted Percentile"}
 
 
-def stats_for_field_type(is_numeric: bool) -> list:
-    return ALL_STATS if is_numeric else GENERAL_STATS
+def stats_for_field_type(field_type: str) -> list:
+    if field_type == "numeric":
+        return ALL_STATS
+    if field_type == "date":
+        return DATE_STATS
+    return GENERAL_STATS
 
 
 def stat_label(stat_cfg: dict) -> str:
@@ -44,16 +57,27 @@ def stat_label(stat_cfg: dict) -> str:
 # --------------------------------------------------------------------------
 
 def detect_field_types(df: pd.DataFrame) -> dict:
-    """Return {column_name: 'numeric' | 'categorical'}."""
+    """Return {column_name: 'numeric' | 'date' | 'categorical'}.
+
+    Tried in order: numeric first, then date, then whatever's left is
+    categorical. Numeric gets first claim specifically because an
+    8-digit integer like "20240115" parses cleanly as BOTH a number and
+    an ISO-basic date (2024-01-15) -- without this ordering, a column
+    of plain numeric IDs that happen to look date-shaped would get
+    silently reclassified as dates."""
     types = {}
     for col in df.columns:
         s = df[col].dropna()
         if len(s) == 0:
             types[col] = "categorical"
             continue
-        coerced = pd.to_numeric(s, errors="coerce")
-        # Numeric only if every non-null value converted cleanly.
-        types[col] = "numeric" if coerced.notna().all() else "categorical"
+        if pd.to_numeric(s, errors="coerce").notna().all():
+            types[col] = "numeric"
+            continue
+        if pd.to_datetime(s, errors="coerce", format="mixed").notna().all():
+            types[col] = "date"
+            continue
+        types[col] = "categorical"
     return types
 
 
@@ -155,6 +179,103 @@ def assign_numeric_buckets(series: pd.Series, weights: pd.Series, method: str,
     return labels, order
 
 
+def assign_date_buckets(series: pd.Series, weights: pd.Series, method: str,
+                         n, breakpoints=None):
+    """
+    Assign each row of `series` (dates) a string bucket label. Mirrors
+    assign_numeric_buckets exactly -- same Equal Count / Equal Weight /
+    Manual Breakpoints splitting logic, just sorting/splitting on parsed
+    dates instead of plain numbers, with date-formatted labels -- plus
+    one method numbers have no equivalent of: "Calendar Year", one
+    bucket per calendar year actually present in the data.
+
+    method: "Equal Count Buckets" | "Equal Weight Buckets" |
+            "Manual Breakpoints" | "Calendar Year"
+    Returns (labels: pd.Series[str], ordered_unique_labels: list[str])
+    """
+    if method == "None":
+        raise ValueError("Cannot bucket a field whose Method is 'None'.")
+
+    s = pd.to_datetime(series, errors="coerce", format="mixed")
+    labels = pd.Series("Missing", index=series.index, dtype=object)
+    valid_mask = s.notna()
+    valid_s = s[valid_mask]
+
+    if len(valid_s) == 0:
+        return labels, ["Missing"]
+
+    if method == "Calendar Year":
+        years = valid_s.dt.year
+        labels.loc[valid_s.index] = years.astype(str)
+        order = [str(y) for y in sorted(years.unique())]
+        if (labels == "Missing").any():
+            order.append("Missing")
+        return labels, order
+
+    w = pd.to_numeric(weights.reindex(s.index), errors="coerce").fillna(0)
+    valid_w = w[valid_mask]
+
+    if method == "Manual Breakpoints" and breakpoints:
+        edges = sorted(set(pd.Timestamp(b) for b in breakpoints))
+        edge_ns = np.array([e.value for e in edges])
+        full_edges = [None] + edges + [None]
+        bucket_num = np.searchsorted(edge_ns, valid_s.values.astype("int64"), side="right")
+        bounds = list(zip(full_edges[:-1], full_edges[1:]))
+        bucket_series = pd.Series(bucket_num, index=valid_s.index)
+        label_map = {}
+        for b in sorted(bucket_series.unique()):
+            lo, hi = bounds[b]
+            lo_s = "-inf" if lo is None else lo.strftime("%Y-%m-%d")
+            hi_s = "inf" if hi is None else hi.strftime("%Y-%m-%d")
+            label_map[b] = f"[{lo_s}, {hi_s})"
+        labels.loc[valid_s.index] = bucket_series.map(label_map)
+        order = [label_map[b] for b in sorted(label_map)]
+        if (labels == "Missing").any():
+            order.append("Missing")
+        return labels, order
+
+    # Equal Count / Equal Weight: sort by date, split into n groups by position.
+    order_idx = valid_s.sort_values(kind="mergesort").index
+    ordered_vals = valid_s.loc[order_idx]
+    n_req = max(1, min(int(n), len(ordered_vals)))
+
+    if method == "Equal Weight Buckets":
+        ordered_w = valid_w.loc[order_idx].values
+        cum_w = np.cumsum(ordered_w)
+        total_w = cum_w[-1] if len(cum_w) else 0
+        if total_w <= 0:
+            split_positions = [int(round(len(ordered_vals) * i / n_req)) for i in range(1, n_req)]
+        else:
+            thresholds = [total_w * i / n_req for i in range(1, n_req)]
+            split_positions = list(np.searchsorted(cum_w, thresholds, side="left"))
+    else:  # Equal Count Buckets (default)
+        split_positions = [int(round(len(ordered_vals) * i / n_req)) for i in range(1, n_req)]
+
+    split_positions = sorted(set(p for p in split_positions if 0 < p < len(ordered_vals)))
+    pos_bucket = np.searchsorted(split_positions, np.arange(len(ordered_vals)), side="right")
+    bucket_by_orig_index = pd.Series(pos_bucket, index=order_idx).reindex(valid_s.index)
+
+    # Build a human-readable [earliest, latest] label per bucket, de-duplicated.
+    label_map = {}
+    seen = {}
+    for b in sorted(bucket_by_orig_index.unique()):
+        vals_in_bucket = valid_s[bucket_by_orig_index == b]
+        lo, hi = vals_in_bucket.min(), vals_in_bucket.max()
+        base_label = f"[{lo.strftime('%Y-%m-%d')}, {hi.strftime('%Y-%m-%d')}]"
+        if base_label in seen:
+            seen[base_label] += 1
+            base_label = f"{base_label} ({seen[base_label]})"
+        else:
+            seen[base_label] = 0
+        label_map[b] = base_label
+
+    labels.loc[valid_s.index] = bucket_by_orig_index.map(label_map)
+    order = [label_map[b] for b in sorted(label_map)]
+    if (labels == "Missing").any():
+        order.append("Missing")
+    return labels, order
+
+
 def assign_categorical_buckets(series: pd.Series, n):
     """
     Top (n-1) most common values each get their own bucket; everything else
@@ -188,9 +309,11 @@ def assign_categorical_buckets(series: pd.Series, n):
 
 def assign_buckets(series: pd.Series, weights: pd.Series, field_type: str,
                     method: str, n, breakpoints=None):
-    """Dispatch to the numeric or categorical bucketing function."""
+    """Dispatch to the numeric, date, or categorical bucketing function."""
     if field_type == "numeric":
         return assign_numeric_buckets(series, weights, method, n, breakpoints)
+    if field_type == "date":
+        return assign_date_buckets(series, weights, method, n, breakpoints)
     return assign_categorical_buckets(series, n)
 
 
@@ -216,8 +339,11 @@ def _weighted_percentile(values: pd.Series, weights: pd.Series, pct: float) -> f
     return float(sorted_vals[idx])
 
 
-def compute_stat(values: pd.Series, weights: pd.Series, stat_cfg: dict, is_numeric: bool):
-    """Compute one summary statistic (given by stat_cfg) for one bucket / one column."""
+def compute_stat(values: pd.Series, weights: pd.Series, stat_cfg: dict, field_type: str):
+    """Compute one summary statistic (given by stat_cfg) for one bucket /
+    one column. field_type: 'numeric' | 'date' | 'categorical' -- this
+    column's own type (see DATE_STATS/ALL_STATS/GENERAL_STATS, above,
+    for which stat names are meaningful/offered for each)."""
     name = stat_cfg["stat"]
     vals = values.dropna()
 
@@ -236,8 +362,20 @@ def compute_stat(values: pd.Series, weights: pd.Series, stat_cfg: dict, is_numer
             return None
         return grouped.idxmax()
 
+    if field_type == "date":
+        if name not in DATE_STATS_ONLY:
+            return None
+        dates = pd.to_datetime(vals, errors="coerce", format="mixed").dropna()
+        if len(dates) == 0:
+            return None
+        if name == "Min":
+            return dates.min().date()
+        if name == "Max":
+            return dates.max().date()
+        return dates.median().date()  # name == "Median"
+
     # Everything else requires numeric data.
-    if not is_numeric:
+    if field_type != "numeric":
         return None
 
     numeric_vals = pd.to_numeric(vals, errors="coerce").dropna()
@@ -281,9 +419,31 @@ def _resolve_weights(df: pd.DataFrame, weight_field) -> pd.Series:
     return pd.Series(1.0, index=df.index)
 
 
+def build_overall_report(df: pd.DataFrame, field_types: dict, weight_field,
+                          stat_configs: dict) -> pd.DataFrame:
+    """
+    Build a single-row report summarizing every record in df at once --
+    no stratification, no bucketing. Every column gets its own summary
+    statistic column(s), using whatever stat_configs it's already
+    configured with elsewhere (e.g. Weighted Average for a numeric
+    field) -- the same "one row per bucket" logic build_report uses per
+    bucket, just with the whole file as the one and only "bucket".
+    """
+    weights = _resolve_weights(df, weight_field)
+    columns_spec = [(col, cfg) for col in df.columns for cfg in stat_configs.get(col, [])]
+
+    row = {"Count": int(len(df)), "Total Weight": float(weights.sum())}
+    for col, cfg in columns_spec:
+        col_type = field_types.get(col, "categorical")
+        row[f"{col} ({stat_label(cfg)})"] = compute_stat(df[col], weights, cfg, col_type)
+
+    col_order = ["Count", "Total Weight"] + [f"{c} ({stat_label(cfg)})" for c, cfg in columns_spec]
+    return pd.DataFrame([row], columns=col_order)
+
+
 def build_report(df: pd.DataFrame, strat_field: str, field_types: dict,
                   weight_field, stat_configs: dict, n, method: str = "Equal Count Buckets",
-                  breakpoints=None) -> pd.DataFrame:
+                  breakpoints=None, categorical_overrides: frozenset = frozenset()) -> pd.DataFrame:
     """
     Build one stratification report, stratified on `strat_field`.
 
@@ -291,12 +451,22 @@ def build_report(df: pd.DataFrame, strat_field: str, field_types: dict,
         the list of summary statistics to include (each becomes its own
         column). An empty/missing list means that field is left out of
         the report entirely.
+
+    categorical_overrides: field names to bucket as categorical (one
+    bucket per distinct value seen, via `method`/`n`) regardless of
+    field_types' own numeric/categorical classification -- for a field
+    that's technically numeric but only takes on a handful of known
+    values (e.g. a 0/1 flag). This ONLY affects how `strat_field` itself
+    gets bucketed here; field_types (and therefore whether OTHER columns
+    are treated as numeric for their own summary stats) is left
+    untouched, so an overridden field is still averaged normally
+    wherever IT appears as a column in some other field's report.
     """
     if method == "None":
         raise ValueError(f"Field '{strat_field}' has Method = 'None' and cannot be stratified.")
 
     weights = _resolve_weights(df, weight_field)
-    ftype = field_types.get(strat_field, "categorical")
+    ftype = "categorical" if strat_field in categorical_overrides else field_types.get(strat_field, "categorical")
     labels, order = assign_buckets(df[strat_field], weights, ftype, method, n, breakpoints)
 
     other_fields = [c for c in df.columns if c != strat_field]
@@ -313,8 +483,8 @@ def build_report(df: pd.DataFrame, strat_field: str, field_types: dict,
             "Total Weight": float(sub_w.sum()),
         }
         for col, cfg in columns_spec:
-            is_num = field_types.get(col) == "numeric"
-            row[f"{col} ({stat_label(cfg)})"] = compute_stat(sub[col], sub_w, cfg, is_num)
+            col_type = field_types.get(col, "categorical")
+            row[f"{col} ({stat_label(cfg)})"] = compute_stat(sub[col], sub_w, cfg, col_type)
         rows.append(row)
 
     col_order = ["Bucket", "Count", "Total Weight"] + [f"{c} ({stat_label(cfg)})" for c, cfg in columns_spec]
@@ -336,13 +506,17 @@ def estimate_combo_count(df: pd.DataFrame, strat_fields: list, n_by_field: dict,
 
 def build_multi_field_report(df: pd.DataFrame, strat_fields: list, field_types: dict,
                               weight_field, stat_configs: dict, n_by_field: dict,
-                              method_by_field: dict, breakpoints_by_field: dict) -> pd.DataFrame:
+                              method_by_field: dict, breakpoints_by_field: dict,
+                              categorical_overrides: frozenset = frozenset()) -> pd.DataFrame:
     """
     Build one stratification report stratified on the INTERSECTION of multiple
     fields at once. Each row of the report is one combination of buckets (one
     per stratification field) that actually occurs in the data — up to the
     product of each field's bucket count, but combinations with zero matching
     records are omitted.
+
+    categorical_overrides: see build_report -- applied per-field here too,
+    only affecting how each of `strat_fields` buckets itself.
     """
     if len(strat_fields) < 2:
         raise ValueError("A multi-field report needs at least 2 fields.")
@@ -355,7 +529,7 @@ def build_multi_field_report(df: pd.DataFrame, strat_fields: list, field_types: 
         method = method_by_field.get(f, "Equal Count Buckets")
         if method == "None":
             raise ValueError(f"Field '{f}' has Method = 'None' and cannot be used in a multi-field report.")
-        ftype = field_types.get(f, "categorical")
+        ftype = "categorical" if f in categorical_overrides else field_types.get(f, "categorical")
         labels, order = assign_buckets(df[f], weights, ftype, method, n_by_field.get(f),
                                         breakpoints_by_field.get(f))
         bucket_labels[f] = labels
@@ -388,8 +562,8 @@ def build_multi_field_report(df: pd.DataFrame, strat_fields: list, field_types: 
         row["Count"] = int(len(idx))
         row["Total Weight"] = float(sub_w.sum())
         for col, cfg in columns_spec:
-            is_num = field_types.get(col) == "numeric"
-            row[f"{col} ({stat_label(cfg)})"] = compute_stat(sub[col], sub_w, cfg, is_num)
+            col_type = field_types.get(col, "categorical")
+            row[f"{col} ({stat_label(cfg)})"] = compute_stat(sub[col], sub_w, cfg, col_type)
         rows.append(row)
 
     col_order = ([f"{f} Bucket" for f in strat_fields] + ["Count", "Total Weight"] +

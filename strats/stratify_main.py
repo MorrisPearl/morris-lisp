@@ -3,7 +3,9 @@ Stratification Report Builder
 ==============================
 
 A PyQt6 desktop app that:
-  1. Loads a delimited data file (CSV/TSV, with or without a header row).
+  1. Loads input data either from a delimited file (CSV/TSV, with or
+     without a header row) or, directly, from a table in a SQLite
+     database.
   2. Lets the user configure, per field: whether it is the WEIGHT field,
      how many buckets (N, or "All" distinct values for categorical fields)
      to stratify it into, the bucketing method (equal count / equal weight /
@@ -22,6 +24,8 @@ Run with:  python main.py
 import sys
 import os
 import json
+import sqlite3
+import datetime
 
 import pandas as pd
 from PyQt6.QtCore import Qt
@@ -34,8 +38,9 @@ from PyQt6.QtWidgets import (
 )
 
 from stratify_engine import (
-    detect_field_types, build_report, build_multi_field_report, estimate_combo_count,
-    NUMERIC_METHODS, CATEGORICAL_METHODS, stats_for_field_type, stat_label,
+    detect_field_types, build_report, build_multi_field_report, build_overall_report,
+    estimate_combo_count,
+    NUMERIC_METHODS, DATE_METHODS, CATEGORICAL_METHODS, stats_for_field_type, stat_label,
     PERCENTILE_STATS,
 )
 
@@ -90,11 +95,19 @@ class NBucketsWidget(QWidget):
         is_all = self.all_checkbox.isVisible() and self.all_checkbox.isChecked()
         self.spin.setEnabled(enabled and not is_all)
 
+    def set_categorical(self, is_categorical: bool):
+        """Show/hide the 'All' checkbox -- used when a field's effective
+        bucketing type changes on the fly (the "treat as categorical"
+        override below), rather than replacing this widget outright."""
+        self.all_checkbox.setVisible(is_categorical)
+        if not is_categorical and self.all_checkbox.isChecked():
+            self.all_checkbox.setChecked(False)
+
 
 class StatSelectorDialog(QDialog):
     """Lets the user pick one or more summary statistics for a field."""
 
-    def __init__(self, field_name: str, is_numeric: bool, current_stats: list, parent=None):
+    def __init__(self, field_name: str, field_type: str, current_stats: list, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Summary Statistics — '{field_name}'")
         self.resize(430, 420)
@@ -112,7 +125,7 @@ class StatSelectorDialog(QDialog):
 
         add_row = QHBoxLayout()
         self.stat_combo = QComboBox()
-        self.stat_combo.addItems(stats_for_field_type(is_numeric))
+        self.stat_combo.addItems(stats_for_field_type(field_type))
         self.pct_spin = QDoubleSpinBox()
         self.pct_spin.setRange(0, 100)
         self.pct_spin.setValue(50)
@@ -221,13 +234,23 @@ class MultiFieldDialog(QDialog):
 class FieldConfigTable(QTableWidget):
     COL_FIELD = 0
     COL_TYPE = 1
-    COL_WEIGHT = 2
-    COL_N = 3
-    COL_METHOD = 4
-    COL_BREAKPOINTS = 5
-    COL_STAT = 6
+    COL_CATEGORICAL = 2
+    COL_WEIGHT = 3
+    COL_N = 4
+    COL_METHOD = 5
+    COL_BREAKPOINTS = 6
+    COL_STAT = 7
 
-    HEADERS = ["Field", "Type", "Weight?", "N (buckets)", "Method", "Breakpoints", "Summary Stats"]
+    HEADERS = ["Field", "Type", "Categorical?", "Weight?", "N (buckets)", "Method", "Breakpoints",
+               "Summary Stats"]
+
+    # Defaults for a field's OWN report -- see the class docstring-ish note
+    # in populate(), below, for why weighted/equal-weight was chosen.
+    DEFAULT_NUMERIC_METHOD = "Equal Weight Buckets"
+    DEFAULT_NUMERIC_STAT = "Weighted Average"
+    DEFAULT_DATE_METHOD = "Equal Weight Buckets"
+    DEFAULT_DATE_STAT = "Representative Value"
+    DEFAULT_CATEGORICAL_METHOD = "Top Values + Other"
 
     def __init__(self, parent=None):
         super().__init__(0, len(self.HEADERS), parent)
@@ -235,6 +258,7 @@ class FieldConfigTable(QTableWidget):
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.horizontalHeader().setSectionResizeMode(self.COL_FIELD, QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setSectionResizeMode(self.COL_TYPE, QHeaderView.ResizeMode.ResizeToContents)
+        self.horizontalHeader().setSectionResizeMode(self.COL_CATEGORICAL, QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setSectionResizeMode(self.COL_WEIGHT, QHeaderView.ResizeMode.ResizeToContents)
         self.verticalHeader().setVisible(False)
         self.weight_group = QButtonGroup(self)
@@ -244,7 +268,19 @@ class FieldConfigTable(QTableWidget):
     # -- construction ---------------------------------------------------
 
     def populate(self, field_types: dict, default_n: int = 5):
-        """Build one row per field. field_types: {name: 'numeric'/'categorical'}"""
+        """Build one row per field. field_types: {name: 'numeric'/'date'/'categorical'}.
+
+        row_types (below) always holds each field's TRUE, detected type --
+        it never changes, and it's what governs which summary stats are
+        available for a field (stats_for_field_type) and how a field is
+        treated as a COLUMN in some other field's report (is it averaged,
+        summed, etc.). The "Categorical?" checkbox, by contrast, only
+        overrides how a numeric field buckets ITSELF for its own report
+        (see effective_type()/on_categorical_toggled(), below) -- e.g. a
+        0/1 flag that's technically numeric but should get one bucket per
+        value instead of being split into quantile ranges. That's a
+        purely presentational override, so it's tracked separately and
+        never touches row_types."""
         self.setRowCount(0)
         self.row_types = []
         self.weight_group = QButtonGroup(self)
@@ -263,6 +299,22 @@ class FieldConfigTable(QTableWidget):
             type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.setItem(row, self.COL_TYPE, type_item)
 
+            categorical_checkbox = QCheckBox()
+            categorical_checkbox.setToolTip(
+                "Treat this field as categorical for its OWN report, even though its\n"
+                "values look numeric -- useful for a field known to have only a\n"
+                "handful of distinct values (e.g. a 0/1 flag), so its report gets one\n"
+                "row per distinct value instead of being split into quantile ranges.\n"
+                "It's still treated as numeric (e.g. averaged normally) wherever it\n"
+                "appears as a column in some OTHER field's report.")
+            categorical_checkbox.setEnabled(ftype == "numeric")
+            categorical_wrapper = QWidget()
+            cw_layout = QHBoxLayout(categorical_wrapper)
+            cw_layout.addWidget(categorical_checkbox)
+            cw_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cw_layout.setContentsMargins(0, 0, 0, 0)
+            self.setCellWidget(row, self.COL_CATEGORICAL, categorical_wrapper)
+
             radio = QRadioButton()
             wrapper = QWidget()
             wl = QHBoxLayout(wrapper)
@@ -272,36 +324,85 @@ class FieldConfigTable(QTableWidget):
             self.weight_group.addButton(radio, row)
             self.setCellWidget(row, self.COL_WEIGHT, wrapper)
 
-            n_widget = NBucketsWidget(is_categorical=(ftype != "numeric"), default_n=default_n)
+            # "All" (no fixed bucket count) only makes sense for a true
+            # categorical field -- both numeric and date quantile
+            # bucketing always split into a specific count.
+            n_widget = NBucketsWidget(is_categorical=(ftype not in ("numeric", "date")), default_n=default_n)
             self.setCellWidget(row, self.COL_N, n_widget)
 
             method_combo = QComboBox()
-            method_combo.addItems(NUMERIC_METHODS if ftype == "numeric" else CATEGORICAL_METHODS)
             self.setCellWidget(row, self.COL_METHOD, method_combo)
 
             bp_edit = QLineEdit()
-            bp_edit.setPlaceholderText("e.g. 100, 250, 500")
+            bp_edit.setPlaceholderText("e.g. 2020-01-01, 2021-06-15" if ftype == "date" else "e.g. 100, 250, 500")
             bp_edit.setEnabled(False)
             self.setCellWidget(row, self.COL_BREAKPOINTS, bp_edit)
 
             def on_method_changed(text, edit=bp_edit, nwidget=n_widget):
-                is_none = (text == "None")
+                # Neither "None" nor "Calendar Year" (dates only) uses a
+                # fixed bucket count -- "Calendar Year" always produces
+                # one bucket per year actually present instead.
+                needs_n = text not in ("None", "Calendar Year")
                 is_manual = (text == "Manual Breakpoints")
-                nwidget.set_enabled_all(not is_none)
-                edit.setEnabled(is_manual and not is_none)
+                nwidget.set_enabled_all(needs_n)
+                edit.setEnabled(is_manual)
             method_combo.currentTextChanged.connect(on_method_changed)
+            self._fill_method_combo(method_combo, ftype)  # fires on_method_changed once
 
-            default_stats = [{"stat": "Average"}] if ftype == "numeric" else [{"stat": "Representative Value"}]
+            def on_categorical_toggled(checked, nwidget=n_widget, combo=method_combo, n=default_n):
+                effective = "categorical" if checked else "numeric"
+                nwidget.set_categorical(checked)
+                self._fill_method_combo(combo, effective)
+                nwidget.set_value("All" if checked else n)
+            categorical_checkbox.toggled.connect(on_categorical_toggled)
+
+            if ftype == "numeric":
+                default_stats = [{"stat": self.DEFAULT_NUMERIC_STAT}]
+            elif ftype == "date":
+                default_stats = [{"stat": self.DEFAULT_DATE_STAT}]
+            else:
+                default_stats = [{"stat": "Representative Value"}]
             stat_btn = QPushButton(format_stat_button_text(default_stats))
             stat_btn.stat_cfgs = default_stats
             stat_btn.clicked.connect(lambda _checked=False, r=row: self._open_stat_dialog(r))
             self.setCellWidget(row, self.COL_STAT, stat_btn)
 
+    def _fill_method_combo(self, method_combo: QComboBox, effective_type: str):
+        """(Re)fill a row's Method combo box for the given effective type
+        ("numeric", "date", or "categorical"), selecting this app's
+        default method for that type. Used both for a row's initial type
+        and whenever the "Categorical?" checkbox flips a numeric row's
+        effective type on the fly."""
+        method_combo.clear()
+        if effective_type == "numeric":
+            method_combo.addItems(NUMERIC_METHODS)
+            default = self.DEFAULT_NUMERIC_METHOD
+        elif effective_type == "date":
+            method_combo.addItems(DATE_METHODS)
+            default = self.DEFAULT_DATE_METHOD
+        else:
+            method_combo.addItems(CATEGORICAL_METHODS)
+            default = self.DEFAULT_CATEGORICAL_METHOD
+        idx = method_combo.findText(default)
+        method_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def _categorical_checkbox(self, row: int) -> QCheckBox:
+        return self.cellWidget(row, self.COL_CATEGORICAL).findChild(QCheckBox)
+
+    def effective_type(self, row: int) -> str:
+        """This row's type for BUCKETING purposes -- "categorical" if the
+        "Categorical?" override is checked, else its true row_types[row]
+        (only numeric fields can be checked in the first place)."""
+        checkbox = self._categorical_checkbox(row)
+        if checkbox is not None and checkbox.isChecked():
+            return "categorical"
+        return self.row_types[row]
+
     def _open_stat_dialog(self, row: int):
         name = self.item(row, self.COL_FIELD).text()
         ftype = self.row_types[row]
         btn = self.cellWidget(row, self.COL_STAT)
-        dlg = StatSelectorDialog(name, ftype == "numeric", getattr(btn, "stat_cfgs", []), self)
+        dlg = StatSelectorDialog(name, ftype, getattr(btn, "stat_cfgs", []), self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             stats = dlg.get_stats()
             btn.stat_cfgs = stats
@@ -335,6 +436,7 @@ class FieldConfigTable(QTableWidget):
     def get_row_config(self, row: int) -> dict:
         name = self.item(row, self.COL_FIELD).text()
         ftype = self.row_types[row]
+        categorical_override = self.effective_type(row) == "categorical" and ftype == "numeric"
         n_widget = self.cellWidget(row, self.COL_N)
         method_combo = self.cellWidget(row, self.COL_METHOD)
         bp_edit = self.cellWidget(row, self.COL_BREAKPOINTS)
@@ -342,18 +444,23 @@ class FieldConfigTable(QTableWidget):
 
         method = method_combo.currentText()
         breakpoints = None
-        if ftype == "numeric" and method == "Manual Breakpoints":
+        if not categorical_override and method == "Manual Breakpoints" and ftype in ("numeric", "date"):
             text = bp_edit.text().strip()
             breakpoints = []
             if text:
                 for piece in text.split(","):
                     piece = piece.strip()
                     if piece:
-                        breakpoints.append(float(piece))
+                        # Numeric breakpoints are parsed here; date
+                        # breakpoints are kept as plain strings and
+                        # parsed by assign_date_buckets (pd.Timestamp
+                        # accepts them directly).
+                        breakpoints.append(float(piece) if ftype == "numeric" else piece)
 
         return {
             "name": name,
             "type": ftype,
+            "categorical_override": categorical_override,
             "n": n_widget.value(),
             "method": method,
             "breakpoints": breakpoints,
@@ -374,6 +481,14 @@ class FieldConfigTable(QTableWidget):
             method_combo = self.cellWidget(row, self.COL_METHOD)
             bp_edit = self.cellWidget(row, self.COL_BREAKPOINTS)
             stat_btn = self.cellWidget(row, self.COL_STAT)
+
+            # Restore the categorical override FIRST -- it swaps the
+            # Method combo's item list (and resets N), so the method/n
+            # restored just below need to land after that reset, not
+            # before it.
+            checkbox = self._categorical_checkbox(row)
+            if checkbox is not None and checkbox.isEnabled():
+                checkbox.setChecked(bool(cfg.get("categorical_override", False)))
 
             method = cfg.get("method")
             if method:
@@ -400,6 +515,8 @@ class FieldConfigTable(QTableWidget):
 # ============================================================================
 
 class MainWindow(QMainWindow):
+    AUTOSAVE_EXCEL_NAME = "stratification_reports.xlsx"
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
@@ -414,12 +531,33 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(central)
 
         # --- 1. File loading --------------------------------------------------
-        file_box = QGroupBox("1. Load Input File")
+        file_box = QGroupBox("1. Load Input Data")
         file_layout = QGridLayout(file_box)
+
+        self.csv_radio = QRadioButton("CSV/TSV file")
+        self.csv_radio.setChecked(True)
+        self.sqlite_radio = QRadioButton("SQLite database")
+        source_group = QButtonGroup(self)
+        source_group.addButton(self.csv_radio)
+        source_group.addButton(self.sqlite_radio)
+        self.csv_radio.toggled.connect(self.update_source_mode)
+
         self.path_edit = QLineEdit()
         self.path_edit.setPlaceholderText("Choose a CSV/TSV file...")
         browse_btn = QPushButton("Browse...")
         browse_btn.clicked.connect(self.browse_file)
+
+        self.db_path_edit = QLineEdit()
+        self.db_path_edit.setPlaceholderText("Choose a SQLite database file...")
+        self.db_path_edit.editingFinished.connect(self.refresh_table_list)
+        db_browse_btn = QPushButton("Browse...")
+        db_browse_btn.clicked.connect(self.browse_database)
+        table_label = QLabel("Table:")
+        self.table_combo = QComboBox()
+        self.table_combo.setEditable(True)
+        self.table_combo.setToolTip(
+            "Pick a table from the database, or type its name directly.")
+
         load_btn = QPushButton("Load")
         load_btn.clicked.connect(self.load_file)
         self.no_header_checkbox = QCheckBox(
@@ -428,16 +566,23 @@ class MainWindow(QMainWindow):
         apply_names_btn = QPushButton("Apply Column Names")
         apply_names_btn.setToolTip("Sync any names you've typed into the Field column into the loaded data.")
         apply_names_btn.clicked.connect(self.apply_column_names)
-        self.summary_label = QLabel("No file loaded.")
+        self.summary_label = QLabel("No data loaded.")
 
-        file_layout.addWidget(QLabel("File:"), 0, 0)
-        file_layout.addWidget(self.path_edit, 0, 1)
-        file_layout.addWidget(browse_btn, 0, 2)
-        file_layout.addWidget(load_btn, 0, 3)
-        file_layout.addWidget(self.no_header_checkbox, 1, 0, 1, 3)
-        file_layout.addWidget(apply_names_btn, 1, 3)
-        file_layout.addWidget(self.summary_label, 2, 0, 1, 4)
+        file_layout.addWidget(self.csv_radio, 0, 0)
+        file_layout.addWidget(self.path_edit, 0, 1, 1, 3)
+        file_layout.addWidget(browse_btn, 0, 4)
+        file_layout.addWidget(self.sqlite_radio, 1, 0)
+        file_layout.addWidget(self.db_path_edit, 1, 1, 1, 3)
+        file_layout.addWidget(db_browse_btn, 1, 4)
+        file_layout.addWidget(table_label, 2, 1)
+        file_layout.addWidget(self.table_combo, 2, 2, 1, 2)
+        file_layout.addWidget(self.no_header_checkbox, 3, 0, 1, 4)
+        file_layout.addWidget(apply_names_btn, 3, 4)
+        file_layout.addWidget(load_btn, 4, 0)
+        file_layout.addWidget(self.summary_label, 4, 1, 1, 4)
         root.addWidget(file_box)
+
+        self.update_source_mode()
 
         # --- 2. Field configuration table --------------------------------------
         config_box = QGroupBox("2. Configure Fields")
@@ -488,7 +633,9 @@ class MainWindow(QMainWindow):
 
         # --- 5. Generate / export ------------------------------------------------
         action_box = QGroupBox("5. Generate & Export Reports")
-        action_layout = QHBoxLayout(action_box)
+        action_box_layout = QVBoxLayout(action_box)
+
+        action_layout = QHBoxLayout()
         gen_btn = QPushButton("Generate Reports")
         gen_btn.clicked.connect(self.generate_reports)
         export_xlsx_btn = QPushButton("Export All to Excel (.xlsx)")
@@ -499,6 +646,31 @@ class MainWindow(QMainWindow):
         action_layout.addWidget(export_xlsx_btn)
         action_layout.addWidget(export_csv_btn)
         action_layout.addStretch()
+        action_box_layout.addLayout(action_layout)
+
+        autosave_layout = QHBoxLayout()
+        self.autosave_checkbox = QCheckBox("Auto-save reports to a folder after generating")
+        self.autosave_checkbox.setToolTip(
+            "Handy for a report that takes a while to generate -- every report is written\n"
+            "to this folder (as separate CSV files, one per report, PLUS one combined\n"
+            f"{self.AUTOSAVE_EXCEL_NAME} workbook) right after Generate Reports finishes,\n"
+            "with no extra click, so it's there to look at later even if you've stepped away.")
+        self.autosave_checkbox.toggled.connect(self._update_autosave_enabled)
+        self.autosave_folder_edit = QLineEdit()
+        self.autosave_folder_edit.setPlaceholderText("Choose a folder...")
+        self.autosave_folder_edit.setEnabled(False)
+        autosave_browse_btn = QPushButton("Browse...")
+        autosave_browse_btn.setEnabled(False)
+        autosave_browse_btn.clicked.connect(self.browse_autosave_folder)
+        self.autosave_browse_btn = autosave_browse_btn
+        autosave_layout.addWidget(self.autosave_checkbox)
+        autosave_layout.addWidget(self.autosave_folder_edit)
+        autosave_layout.addWidget(autosave_browse_btn)
+        action_box_layout.addLayout(autosave_layout)
+
+        self.autosave_status_label = QLabel("")
+        action_box_layout.addWidget(self.autosave_status_label)
+
         root.addWidget(action_box)
 
         # --- 6. Report tabs ---------------------------------------------------------
@@ -512,6 +684,15 @@ class MainWindow(QMainWindow):
     # File loading
     # ------------------------------------------------------------------------
 
+    def update_source_mode(self):
+        """Enable/disable the CSV-only and SQLite-only controls to match
+        whichever source radio is selected."""
+        is_csv = self.csv_radio.isChecked()
+        self.path_edit.setEnabled(is_csv)
+        self.no_header_checkbox.setEnabled(is_csv)
+        self.db_path_edit.setEnabled(not is_csv)
+        self.table_combo.setEnabled(not is_csv)
+
     def browse_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Select input data file", "", "Data files (*.csv *.tsv *.txt);;All files (*)"
@@ -519,11 +700,64 @@ class MainWindow(QMainWindow):
         if path:
             self.path_edit.setText(path)
 
+    def browse_database(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select SQLite database", "",
+            "SQLite databases (*.db *.sqlite *.sqlite3);;All files (*)"
+        )
+        if path:
+            self.db_path_edit.setText(path)
+            self.refresh_table_list()
+
+    def refresh_table_list(self):
+        """Populate the Table combo box with every table in whatever
+        database db_path_edit currently points to, so the user can pick
+        one from a list instead of having to already know its name.
+        Silently does nothing if the path isn't (yet) a valid SQLite
+        file -- e.g. while the user is still typing it -- rather than
+        popping up an error for an incomplete path."""
+        db_path = self.db_path_edit.text().strip()
+        self.table_combo.clear()
+        if not db_path or not os.path.isfile(db_path):
+            return
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return
+        self.table_combo.addItems([row[0] for row in rows])
+
     def load_file(self):
+        if self.sqlite_radio.isChecked():
+            df = self._read_sqlite_table()
+        else:
+            df = self._read_csv_file()
+        if df is None:
+            return
+
+        if df.shape[1] < 2:
+            QMessageBox.warning(self, APP_TITLE, "Data must have at least 2 columns "
+                                                   "(need something to stratify and summarize).")
+
+        self.df = df
+        self.field_types = detect_field_types(df)
+        self.field_table.populate(self.field_types, default_n=5)
+        self.summary_label.setText(f"Loaded {len(df):,} rows, {df.shape[1]} fields.")
+        self.tabs.clear()
+        self.reports = {}
+        self.multi_list_widget.clear()
+
+    def _read_csv_file(self):
+        """Read the CSV/TSV file named in path_edit. Returns a DataFrame,
+        or None (after showing an error) if it couldn't be read."""
         path = self.path_edit.text().strip()
         if not path or not os.path.isfile(path):
             QMessageBox.warning(self, APP_TITLE, "Please choose a valid file first.")
-            return
+            return None
 
         no_header = self.no_header_checkbox.isChecked()
         df = None
@@ -538,22 +772,46 @@ class MainWindow(QMainWindow):
                 continue
         if df is None:
             QMessageBox.critical(self, APP_TITLE, "Could not read this file as delimited data.")
-            return
+            return None
 
         if no_header:
             df.columns = [f"Column{i + 1}" for i in range(df.shape[1])]
+        return df
 
-        if df.shape[1] < 2:
-            QMessageBox.warning(self, APP_TITLE, "File must have at least 2 columns "
-                                                   "(need something to stratify and summarize).")
+    def _read_sqlite_table(self):
+        """Read every row of the table named in table_combo from the
+        SQLite database named in db_path_edit. Returns a DataFrame, or
+        None (after showing an error) if it couldn't be read."""
+        db_path = self.db_path_edit.text().strip()
+        table = self.table_combo.currentText().strip()
+        if not db_path or not os.path.isfile(db_path):
+            QMessageBox.warning(self, APP_TITLE, "Please choose a valid SQLite database file first.")
+            return None
+        if not table:
+            QMessageBox.warning(self, APP_TITLE, "Please choose or type a table name first.")
+            return None
 
-        self.df = df
-        self.field_types = detect_field_types(df)
-        self.field_table.populate(self.field_types, default_n=5)
-        self.summary_label.setText(f"Loaded {len(df):,} rows, {df.shape[1]} fields.")
-        self.tabs.clear()
-        self.reports = {}
-        self.multi_list_widget.clear()
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                # Confirm the table actually exists before splicing its
+                # name into a SQL string -- both to give a clear error
+                # message for a typo'd/missing table, and so the name
+                # (typed by hand, not chosen from the list) can't be
+                # anything other than a real table identifier.
+                existing_tables = {row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                if table not in existing_tables:
+                    QMessageBox.critical(self, APP_TITLE, f"No table named {table!r} in this database.")
+                    return None
+                quoted_table = '"%s"' % table.replace('"', '""')
+                df = pd.read_sql_query(f"SELECT * FROM {quoted_table}", conn)
+            finally:
+                conn.close()
+        except Exception as exc:
+            QMessageBox.critical(self, APP_TITLE, f"Could not read table {table!r}:\n{exc}")
+            return None
+        return df
 
     def apply_column_names(self):
         if self.df is None:
@@ -646,22 +904,34 @@ class MainWindow(QMainWindow):
 
         weight_field = self.field_table.get_weight_field()
         stat_configs = {name: cfg["stats"] for name, cfg in configs.items()}
+        categorical_overrides = frozenset(
+            name for name, cfg in configs.items() if cfg["categorical_override"])
 
         self.tabs.clear()
         self.reports = {}
         errors = []
+
+        # --- overall report: every record in the file, as a single row ---
+        try:
+            overall_df = build_overall_report(self.df, self.field_types, weight_field, stat_configs)
+            self.reports["All Records"] = overall_df
+            self._add_report_tab("All Records", overall_df)
+        except Exception as exc:
+            errors.append(f"'All Records': {exc}")
 
         # --- single-field reports ---
         for name, cfg in configs.items():
             if cfg["method"] == "None":
                 continue
             try:
-                if cfg["type"] == "numeric" and cfg["method"] == "Manual Breakpoints" and not cfg["breakpoints"]:
+                if (not cfg["categorical_override"] and cfg["type"] in ("numeric", "date")
+                        and cfg["method"] == "Manual Breakpoints" and not cfg["breakpoints"]):
                     errors.append(f"'{name}': Manual Breakpoints selected but no breakpoints were entered.")
                     continue
                 report_df = build_report(
                     self.df, name, self.field_types, weight_field, stat_configs,
                     n=cfg["n"], method=cfg["method"], breakpoints=cfg["breakpoints"],
+                    categorical_overrides=categorical_overrides,
                 )
                 self.reports[name] = report_df
                 self._add_report_tab(name, report_df)
@@ -694,6 +964,7 @@ class MainWindow(QMainWindow):
                 report_df = build_multi_field_report(
                     self.df, fields, self.field_types, weight_field, stat_configs,
                     n_by_field, method_by_field, breakpoints_by_field,
+                    categorical_overrides=categorical_overrides,
                 )
                 tab_name = f"[Multi] {name}"
                 self.reports[tab_name] = report_df
@@ -703,6 +974,8 @@ class MainWindow(QMainWindow):
 
         if errors:
             QMessageBox.warning(self, APP_TITLE, "Some reports could not be generated:\n\n" + "\n".join(errors))
+
+        self._maybe_autosave_reports()
 
     def _add_report_tab(self, tab_name: str, report_df: pd.DataFrame):
         table = QTableWidget(report_df.shape[0], report_df.shape[1])
@@ -739,21 +1012,28 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            with pd.ExcelWriter(path, engine="openpyxl") as writer:
-                used_names = set()
-                for name, report_df in self.reports.items():
-                    sheet_name = str(name)[:31] or "Sheet"
-                    base = sheet_name
-                    i = 1
-                    while sheet_name in used_names:
-                        suffix = f"_{i}"
-                        sheet_name = base[: 31 - len(suffix)] + suffix
-                        i += 1
-                    used_names.add(sheet_name)
-                    report_df.to_excel(writer, sheet_name=sheet_name, index=False)
+            self._write_reports_to_excel(path)
             QMessageBox.information(self, APP_TITLE, f"Saved workbook to:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, APP_TITLE, f"Could not save workbook:\n{exc}")
+
+    def _write_reports_to_excel(self, path: str):
+        """The actual Excel-writing logic, shared by export_excel()
+        (explicit button, path chosen via a dialog every time) and the
+        "Auto-save" checkbox (implicit, fixed filename every time -- see
+        generate_reports())."""
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            used_names = set()
+            for name, report_df in self.reports.items():
+                sheet_name = str(name)[:31] or "Sheet"
+                base = sheet_name
+                i = 1
+                while sheet_name in used_names:
+                    suffix = f"_{i}"
+                    sheet_name = base[: 31 - len(suffix)] + suffix
+                    i += 1
+                used_names.add(sheet_name)
+                report_df.to_excel(writer, sheet_name=sheet_name, index=False)
 
     def export_csv_folder(self):
         if not self.reports:
@@ -763,13 +1043,59 @@ class MainWindow(QMainWindow):
         if not folder:
             return
         try:
-            for name, report_df in self.reports.items():
-                safe_name = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in str(name))
-                out_path = os.path.join(folder, f"{safe_name}_report.csv")
-                report_df.to_csv(out_path, index=False)
+            self._write_reports_to_csv_folder(folder)
             QMessageBox.information(self, APP_TITLE, f"Saved {len(self.reports)} CSV files to:\n{folder}")
         except Exception as exc:
             QMessageBox.critical(self, APP_TITLE, f"Could not save CSV files:\n{exc}")
+
+    def _write_reports_to_csv_folder(self, folder: str):
+        """The actual CSV-writing loop, shared by export_csv_folder()
+        (explicit button, folder chosen via a dialog every time) and the
+        "Auto-save" checkbox (implicit, same folder every time -- see
+        generate_reports())."""
+        for name, report_df in self.reports.items():
+            safe_name = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in str(name))
+            out_path = os.path.join(folder, f"{safe_name}_report.csv")
+            report_df.to_csv(out_path, index=False)
+
+    # ------------------------------------------------------------------------
+    # Auto-save
+    # ------------------------------------------------------------------------
+
+    def _update_autosave_enabled(self, checked: bool):
+        self.autosave_folder_edit.setEnabled(checked)
+        self.autosave_browse_btn.setEnabled(checked)
+
+    def browse_autosave_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Choose auto-save folder")
+        if folder:
+            self.autosave_folder_edit.setText(folder)
+
+    def _maybe_autosave_reports(self):
+        """Called at the end of generate_reports(), below. Silent on
+        success (just updates autosave_status_label) so re-generating
+        reports repeatedly while iterating on settings doesn't pop up a
+        dialog every time; still shown as a critical error on failure,
+        since that's something the user needs to actually notice."""
+        if not self.autosave_checkbox.isChecked():
+            return
+        folder = self.autosave_folder_edit.text().strip()
+        if not folder or not os.path.isdir(folder):
+            QMessageBox.warning(
+                self, APP_TITLE,
+                "Auto-save is checked, but no valid folder is set -- reports were "
+                "generated but NOT auto-saved. Choose a folder next to the checkbox.")
+            return
+        try:
+            self._write_reports_to_csv_folder(folder)
+            self._write_reports_to_excel(os.path.join(folder, self.AUTOSAVE_EXCEL_NAME))
+        except Exception as exc:
+            QMessageBox.critical(self, APP_TITLE, f"Auto-save failed:\n{exc}")
+            return
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        self.autosave_status_label.setText(
+            f"Auto-saved {len(self.reports)} report(s) as CSVs and {self.AUTOSAVE_EXCEL_NAME} "
+            f"to {folder} at {timestamp}.")
 
     # ------------------------------------------------------------------------
     # Save / load configuration
@@ -796,6 +1122,7 @@ class MainWindow(QMainWindow):
             fields_list.append({
                 "name": name,
                 "type": cfg["type"],
+                "categorical_override": cfg["categorical_override"],
                 "n": cfg["n"],
                 "method": cfg["method"],
                 "breakpoints": cfg["breakpoints"],
@@ -809,8 +1136,11 @@ class MainWindow(QMainWindow):
         data = {
             "app": APP_TITLE,
             "config_version": CONFIG_VERSION,
+            "input_source": "sqlite" if self.sqlite_radio.isChecked() else "csv",
             "input_file": self.path_edit.text(),
             "no_header": self.no_header_checkbox.isChecked(),
+            "database_file": self.db_path_edit.text(),
+            "table_name": self.table_combo.currentText(),
             "weight_field": self.field_table.get_weight_field(),
             "fields": fields_list,
             "multi_field_reports": multi_list,
@@ -833,21 +1163,32 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, APP_TITLE, f"Could not read configuration:\n{exc}")
             return
 
+        input_source = data.get("input_source", "csv")   # older configs predate SQLite support
         input_file = data.get("input_file")
         no_header = bool(data.get("no_header", False))
+        database_file = data.get("database_file")
+        table_name = data.get("table_name")
 
-        if input_file and os.path.isfile(input_file):
+        if input_source == "sqlite" and database_file and os.path.isfile(database_file):
+            self.sqlite_radio.setChecked(True)
+            self.db_path_edit.setText(database_file)
+            self.refresh_table_list()
+            self.table_combo.setCurrentText(table_name or "")
+            self.load_file()
+        elif input_source == "csv" and input_file and os.path.isfile(input_file):
+            self.csv_radio.setChecked(True)
             self.no_header_checkbox.setChecked(no_header)
             self.path_edit.setText(input_file)
             self.load_file()
         elif self.df is None:
+            missing = database_file if input_source == "sqlite" else input_file
             QMessageBox.warning(
                 self, APP_TITLE,
-                "This configuration references a data file that could not be found:\n"
-                f"{input_file}\n\nLoad a data file first, then load this configuration again "
+                "This configuration references a data source that could not be found:\n"
+                f"{missing}\n\nLoad a data source first, then load this configuration again "
                 "to apply the saved field settings.")
             return
-        # else: keep using whatever data file is already loaded
+        # else: keep using whatever data source is already loaded
 
         fields_cfg = {f["name"]: f for f in data.get("fields", [])}
         self.field_table.apply_saved_config(fields_cfg, data.get("weight_field"))
