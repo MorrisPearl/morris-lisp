@@ -3,7 +3,12 @@
 A small Lisp with vectors, dates, macros, linear/logistic/spline regression,
 XY charting, FRED economic-data access, real tastytrade broker data (futures
 and equity option chains, futures-curve rich/cheap and calendar-spread carry
-analysis), and a built-in debugger — plus an optional PyQt6 GUI.
+analysis), and a built-in debugger — plus an optional PyQt6 GUI. **Requires
+`numpy`**, unlike every other dependency mentioned in this document (PyQt6,
+matplotlib, pandas, tastytrade), which are all optional, feature-specific
+extras — numpy backs the vector datatype itself (see "Vectors", below), so
+it's needed for even the plainest console/batch-mode use of the
+interpreter.
 
 This document aims to cover **every builtin and special form** the
 interpreter provides: what its arguments mean, what it returns, and any
@@ -972,6 +977,61 @@ raises `LispError: not a number or date: ...`. `vector-ref`/`vector-set!`
 do **not** bounds-check their index; an out-of-range index raises a plain
 Python `IndexError`, not a `LispError`.
 
+**Memory: vectors are backed by numpy, not a Python list.** This matters
+once a vector reaches into the millions of elements — e.g. a large
+loan-level dataset pulled in via `sqlite-query`, or a big Monte-Carlo path
+array — where it's the difference between a couple of GB and a couple
+dozen. A plain Python list of numbers costs ~32 bytes per element (an
+8-byte pointer plus a 24-byte float/int object); a packed numpy array costs
+as little as 1 byte per element, depending on what's actually in it:
+
+| What the vector holds | dtype | bytes/element | vs. a Python list |
+|---|---|---|---|
+| Only the integers 0 and/or 1 (a flag column) | `int8` | 1 | 32x smaller |
+| Plain integers, not all 0/1 | `int32` | 4 | 8x smaller |
+| At least one non-integer number | `float32` | 4 | 8x smaller |
+| A date anywhere, or a mix of numbers and dates | `object` | ~32 | no change |
+
+A vector's dtype is picked automatically the moment it's built, from
+whatever's actually in it — nothing to configure at the Lisp level. It can
+also *widen* later: `vector-set!`/`vector-fill!` will transparently
+upgrade a vector's dtype in place if you write in a value its current
+dtype can't hold exactly (e.g. writing `50000` into a vector that's so far
+only ever held `0`/`1`, or writing a date into a numeric vector) — this
+comes up naturally with `column_engine.lsp`'s `calculate-all`, which
+pre-allocates a column with `(make-vector n initial-value)` and fills it in
+row by row, long before the real range of values it'll end up holding is
+known.
+
+**Precision: `float32`, not `float64`.** A `float32` element carries about
+7 significant decimal digits — plenty for a residential-mortgage-scale
+dollar figure (comfortably under $1,000,000) or a rate/ratio that only
+ever needs 3-4 significant figures, which is what this default is tuned
+for, but *not* enough to distinguish amounts to the penny once a single
+figure reaches into the tens of millions (e.g. a pool-level balance total).
+A value only ever loses precision once, at the moment it's written into a
+vector — every read and every downstream computation after that (including
+`linear-regression`/`logistic-regression`'s own fitting, which works from
+full-precision numbers pulled back out of the vector) happens at full
+double precision, same as always; the compact storage doesn't compound
+error across computations, only across the *display* of a value that's
+been read back out of a vector and printed later on its own (a vector
+printed directly, e.g. `(display some-vector)`, always shows the clean,
+short decimal a `float32` value actually represents — e.g. `0.964` — but
+that same value returned by `vector-ref` and printed on its own later
+shows the long, exact decimal a `float32` widens to as an ordinary Python
+number, e.g. `0.9639999866485596`; both represent the identical stored
+value, just formatted differently).
+
+If a dataset needs more precision than this default gives — dollar figures
+in the billions, say — the fix is a one-line, interpreter-wide change in
+`lisp_interpreter.py` itself, not something adjustable from Lisp code:
+`FLOAT_DTYPE`/`INT_DTYPE`/`BOOL_INT_DTYPE` are the first three lines of the
+`LispVector` class definition. Changing `FLOAT_DTYPE = np.float32` to
+`np.float64` there reverts every vector in the interpreter to full double
+precision, at the original 4x-smaller-than-a-list memory savings instead of
+8x/32x.
+
 #### `(vector a b ...)`, `#(a b ...)`
 Builds a vector from its arguments. `#(...)` is reader syntax for a vector
 *literal* (its contents are NOT evaluated, unlike `(vector ...)`'s
@@ -1307,7 +1367,13 @@ numerically well-behaved regardless of a predictor's raw scale — a huge
 ordinal date next to a small percentage, say — and the fitted coefficients
 are converted back to the original scale afterward; this doesn't change
 what's being minimized or the answer you get, only how reliably the solver
-gets there.)
+gets there.) Building the normal equations themselves is an O(n · p²)
+reduction over every observation (`n` rows, `p` coefficients including the
+intercept) — done with numpy matrix operations rather than a Python-level
+loop, so a large `n` (e.g. a multi-million-row dataset pulled in via
+`sqlite-query`) doesn't dominate fitting time; the actual `p`-by-`p` solve
+afterward stays plain Python, since `p` (a handful of predictors) is never
+the bottleneck.
 
 ```lisp
 (define m (linear-regression prices demand))
@@ -1348,7 +1414,12 @@ than `1e-8`, or 50 iterations pass without converging. If the data is
 (nearly) perfectly separable by a predictor, the TRUE maximum sends that
 coefficient toward infinity and the Hessian toward singular — caught and
 reported as a descriptive error, rather than looping forever or silently
-returning a runaway or meaningless answer.
+returning a runaway or meaningless answer. Each iteration's gradient/
+Hessian (the same O(n · p²) shape as `linear-regression`'s normal
+equations, above) is likewise built with numpy matrix operations, not a
+Python-level loop — and since this whole computation repeats up to 50
+times, it's where nearly all of `logistic-regression`'s fitting time goes
+for a large dataset.
 
 ```lisp
 (define m (logistic-regression prices demand))
@@ -2065,9 +2136,9 @@ documented simplifications — flat extrapolation beyond the last listed
 contract, no convexity adjustment, a whole reference quarter treated as
 one flat rate). Returns `(cons months-vector forward-rates-vector)`,
 1-indexed by month: `(vector-ref forward-rates-vector (- month 1))`.
-Needs `numpy` and `term_structure/term_structure_model.py` (next to this
-repo's `lisp_interp/`); raises `LispError` if either isn't importable, or
-if `curve-rows` is empty.
+Needs `term_structure/term_structure_model.py` (next to this repo's
+`lisp_interp/`); raises `LispError` if it isn't importable, or if
+`curve-rows` is empty.
 
 ```lisp
 (define curve (sofr-forward-curve (tastytrade-futures-curve-rows creds "SR3" 40)))

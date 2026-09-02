@@ -6,7 +6,9 @@ Supports:
   - integers, floats, strings, symbols, booleans
   - cons cells (pairs) and lists built from them
   - a vector datatype (of numbers and/or dates), written #(1 2 3) or built
-    with (vector ...)
+    with (vector ...) -- backed by a numpy array, not a Python list, so a
+    vector of plain numbers stores compactly (as little as 1 byte/element)
+    even at millions of elements; see the LispVector class docstring below
   - a simple date datatype: (date year month day)
   - special forms: quote, quasiquote (with unquote/unquote-splicing,
     written `, ,, and ,@), if, define, set!, lambda, begin, let, let*,
@@ -180,6 +182,8 @@ import sqlite3
 import urllib.request
 import urllib.parse
 
+import numpy as np    # LispVector's backing store -- see its class docstring
+
 verbose_mode = 0
 
 
@@ -231,17 +235,200 @@ NIL = None  # represents the empty list '()
 
 class LispVector:
     """A fixed-size, mutable vector of numbers and/or dates -- e.g.
-    #(1 2 3.5) or a vector of LispDate values. Kept deliberately simple:
-    just a thin wrapper around a Python list."""
+    #(1 2 3.5) or a vector of LispDate values.
+
+    `items` is backed by a numpy array (not a Python list) specifically
+    for memory: a Python list of N float64 objects costs ~32 bytes per
+    element (an 8-byte pointer in the list plus a 24-byte float object),
+    while a packed numpy array costs as little as 1-8 bytes per element
+    depending on dtype (see the *_DTYPE class attributes below) -- this
+    matters once vectors reach into the millions of elements (e.g. a
+    large loan-level dataset pulled in via sqlite-query, or a big
+    Monte-Carlo path array): a couple of GB of Python-list vectors would
+    otherwise balloon toward a couple dozen. numpy also lets a handful
+    of builtins below (vector-add/vector-sub/vector-scale, and the
+    regression fitting code in fit_linear/fit_logistic) do real
+    elementwise/matrix math in optimized C instead of a Python-level
+    loop, which is separately a speed win for those specific operations.
+
+    DTYPE POLICY -- change these three lines to retune memory vs.
+    precision for every vector in the interpreter at once; nothing else
+    needs to change. Defaults chosen for residential mortgage loan-level
+    data: individual balances well under $1,000,000 (float32 carries
+    ~7 significant decimal digits, comfortably enough for a sub-$1M
+    dollar figure or a rate/ratio that only ever needs 3-4 significant
+    figures), and the many 0/1 flag columns (delinquency, modification,
+    etc.) common in that kind of data, which fit in a single byte each.
+    Bump these back up (e.g. FLOAT_DTYPE = np.float64) if a future
+    dataset needs more precision than that -- e.g. dollar figures in the
+    billions, where float32's ~7 digits stop covering the cents place.
+
+    Two things every one of this class's callers has to get right, as a
+    direct consequence of using numpy underneath:
+      1. A numeric-dtype array's elements come back from indexing/
+         iteration as numpy SCALAR objects (e.g. np.float32/np.int32),
+         not Python's own float/int -- and unlike np.float64 (which
+         happens to subclass Python's float), NONE of the narrower
+         dtypes above subclass anything this interpreter's own
+         isinstance(x, (int, float))-style checks would recognize, so
+         relying on subclassing would be fragile even in the one case
+         where it happens to work. Every place a single element crosses
+         back out to "the rest of the interpreter" as a first-class Lisp
+         value goes through _lisp_scalar() (below) to convert it to a
+         genuine Python int/float first -- note this also means a value
+         only ever *loses* precision once, at the moment it's WRITTEN
+         into a vector; every read and every downstream computation
+         after that (regression fitting included, since it works from
+         plain Python lists produced by .tolist()) happens at full
+         Python float (i.e. C double / numpy float64) precision, same
+         as always. Bulk extraction (reading a WHOLE vector out as a
+         plain Python list) uses `.tolist()` instead, which does the
+         equivalent conversion for every element at once, in one fast
+         C-level pass.
+      2. Unlike a Python list, slicing a numpy array (v.items[a:b]) or
+         array-based math (v.items + w.items) produces a VIEW or a fresh
+         array respectively, not automatically the same
+         always-copy-on-construction behavior list(items) gave for
+         free. To keep every LispVector fully independent once
+         constructed -- exactly the old contract, since these are
+         MUTABLE vectors and nothing should silently alias another
+         vector's storage -- the constructor below always makes an
+         independent copy of whatever it's given: a fast native
+         .copy() when handed an already-built numpy array (the normal
+         case for a slice or an arithmetic result), or a dtype-inferring
+         _infer_array(list(items)) when handed a plain Python
+         list/iterable of Lisp values (the normal case for new vectors
+         built by a list comprehension elsewhere in this file)."""
+
+    FLOAT_DTYPE = np.float32     # any vector containing a non-integer number
+    INT_DTYPE = np.int32         # an all-integer vector, not all 0/1
+    BOOL_INT_DTYPE = np.int8     # an all-integer vector of ONLY 0 and/or 1
 
     def __init__(self, items):
-        self.items = list(items)
+        if isinstance(items, np.ndarray):
+            self.items = items.copy()
+        else:
+            self.items = LispVector._infer_array(list(items))
+
+    @staticmethod
+    def _infer_array(items):
+        """Build the numpy array for a NEW vector from a plain Python
+        list of Lisp values (numbers and/or dates) -- not from an
+        already-built numpy array; __init__ handles that case
+        separately, above, with a plain .copy(). Picks the narrowest
+        dtype the FLOAT_DTYPE/INT_DTYPE/BOOL_INT_DTYPE policy above
+        allows, preserving Lisp's own int-vs-float distinction (a float
+        value that happens to be a whole number, e.g. 5.0, still makes
+        the vector a FLOAT_DTYPE vector -- it does NOT get treated as
+        the integer 5); falls back to dtype=object -- exactly as
+        memory-hungry as the old list-based representation, but no less
+        correct -- for anything that isn't a plain, homogeneous-enough
+        number: an empty vector, a LispDate anywhere, a mix of numbers
+        AND dates, an integer too big for INT_DTYPE to hold (Python ints
+        are arbitrary-precision; INT_DTYPE isn't), or (see read_from's
+        "#(" case) unevaluated vector-literal syntax that can hold
+        arbitrary Symbols/Pairs."""
+        if items and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in items):
+            if all(isinstance(v, int) for v in items):
+                dtype = (LispVector.BOOL_INT_DTYPE if all(v in (0, 1) for v in items)
+                         else LispVector.INT_DTYPE)
+            else:
+                dtype = LispVector.FLOAT_DTYPE
+            if all(_value_fits_dtype(v, dtype) for v in items):
+                return np.array(items, dtype=dtype)
+        return np.array(items, dtype=object)
 
     def __eq__(self, other):
-        return isinstance(other, LispVector) and self.items == other.items
+        return isinstance(other, LispVector) and np.array_equal(self.items, other.items)
 
     def __repr__(self):
         return to_string(self)
+
+
+def _lisp_scalar(x):
+    """Convert one element pulled out of a LispVector's numpy-array
+    `items` back into a genuine Python value, the way the rest of the
+    interpreter (and any isinstance(x, int)-style check in it) expects.
+    A numeric-dtype array hands back a numpy scalar (np.float32/
+    np.int32/np.int8) on indexing -- .item() converts that to the
+    equivalent native Python float/int. An object-dtype array (holding
+    LispDate, or anything else that isn't a plain number) already hands
+    back the real underlying Python object directly, with no numpy
+    wrapper to strip, so those pass through unchanged."""
+    return x.item() if isinstance(x, np.generic) else x
+
+
+def _narrow_vector_result(arr):
+    """After a numpy elementwise operation combining two LispVector
+    `items` arrays (vector-add/vector-sub/vector-scale, below), clamp a
+    float64 RESULT back down to LispVector.FLOAT_DTYPE. numpy's own
+    type-promotion rules upgrade e.g. an int32 array combined with a
+    float32 array -- or with a plain Python float scalar, as
+    vector-scale's `s` usually is -- to float64, even though every
+    individual value involved already fit in float32; left alone, that
+    would silently defeat the point of running these on a large vector.
+    Integer-dtype results are left alone -- this policy's int8/int32
+    tiers never overshoot each other, only mixing in a float does."""
+    return arr.astype(LispVector.FLOAT_DTYPE) if arr.dtype == np.float64 else arr
+
+
+def _value_fits_dtype(x, dtype):
+    """Would writing plain Lisp number `x` into a numpy array of this
+    dtype preserve it EXACTLY? Checked explicitly, rather than just
+    trying the assignment and catching an exception, because numpy
+    doesn't always raise on a bad fit: writing a float into an
+    integer-dtype array SILENTLY TRUNCATES instead of erroring (e.g.
+    arr[i] = 0.5 on an int8 array quietly becomes 0) -- exactly the kind
+    of silent corruption this has to prevent, not just the loud
+    OverflowError case (an int too big for the dtype's range, e.g. 1000
+    into an int8 array, which numpy DOES raise on)."""
+    if dtype == object:
+        return True
+    if np.issubdtype(dtype, np.integer):
+        if not isinstance(x, int):
+            return False   # a float (even a whole-number one, e.g. 5.0)
+                            # would silently truncate -- see docstring
+        info = np.iinfo(dtype)
+        return info.min <= x <= info.max
+    return isinstance(x, (int, float))   # a float dtype: any number fits
+                                          # (float32 may lose PRECISION for
+                                          # a very large value, same as
+                                          # for any other float-vector
+                                          # element -- not new corruption)
+
+
+def _vector_widen_for(v, x):
+    """Before writing `x` into LispVector `v`'s numpy-array `items`
+    (vector-set!/vector-fill!, below): widen `items` to a dtype that can
+    actually hold `x`, if its current one can't (a no-op in the
+    overwhelmingly common case where it already can). This matters more
+    than it might look: column_engine.lsp's calculate-all pre-allocates
+    a column's series via (make-vector n initial_value) -- often 0 or
+    0.0 -- then fills it in row by row via vector-set! as each row gets
+    computed, so the array's dtype gets picked from the INITIAL value
+    alone, long before the real range of values it'll end up holding is
+    known -- e.g. a column that starts out looking like a 0/1 flag
+    (BOOL_INT_DTYPE), until some row's computed value turns out to
+    genuinely need more range.
+
+    Re-infers a dtype the same way a brand-new vector would -- a fresh
+    _infer_array call over this vector's EXISTING contents (read back
+    out via .tolist(), so it sees plain Python values, not numpy
+    scalars) plus the new value -- rather than jumping straight to
+    dtype=object, so e.g. a 0/1-flag-looking column widens to a plain
+    int vector for a bigger int, not all the way to a memory-hungry
+    object array. Falls back to dtype=object only if even that freshly
+    re-inferred dtype still can't hold `x` (in practice: `x` is a
+    LispDate mixed into an established numeric vector -- _infer_array's
+    own number-or-date homogeneity rule sends that straight to
+    dtype=object already -- or a plain int too big for even INT_DTYPE,
+    e.g. a huge ID or a nanosecond timestamp)."""
+    if _value_fits_dtype(x, v.items.dtype):
+        return
+    new_dtype = LispVector._infer_array(v.items.tolist() + [x]).dtype
+    if not _value_fits_dtype(x, new_dtype):
+        new_dtype = object
+    v.items = v.items.astype(new_dtype)
 
 
 class LispDate:
@@ -964,7 +1151,17 @@ def eval_quasiquote(expr, env, depth=1):
         return result
 
     if isinstance(expr, LispVector):
-        return LispVector([eval_quasiquote(x, env, depth) for x in expr.items])
+        # .tolist(), not a bare iteration over expr.items: a vector
+        # literal with no unquotes in it (unusual, but legal) is
+        # otherwise already a compact numeric-dtype array by the time
+        # quasiquote sees it, and iterating that directly would hand
+        # each element to eval_quasiquote (and then back into
+        # LispVector(...), below) as a numpy scalar rather than a
+        # plain Python int/float -- which _infer_array's own
+        # isinstance(v, (int, float)) check doesn't recognize, so the
+        # rebuilt vector would fall back to a dtype=object array
+        # instead of picking a compact dtype again.
+        return LispVector([eval_quasiquote(x, env, depth) for x in expr.items.tolist()])
 
     return expr  # atoms (numbers, strings, symbols, booleans) are literal
 
@@ -1405,6 +1602,22 @@ def sigmoid(z):
     return ez / (1.0 + ez)
 
 
+def _sigmoid_vec(z):
+    """The same numerically-stable sigmoid as sigmoid() (above), but
+    elementwise over a whole numpy array at once -- used by
+    fit_logistic's Newton-Raphson loop, below, so a whole iteration's
+    worth of predictions is one vectorized numpy call instead of a
+    Python-level loop calling the scalar sigmoid() once per
+    observation. Splits on sign the same way, just with a boolean mask
+    selecting which branch each element uses instead of an `if`."""
+    out = np.empty_like(z, dtype=np.float64)
+    pos = z >= 0
+    out[pos] = 1.0 / (1.0 + np.exp(-z[pos]))
+    ez = np.exp(z[~pos])
+    out[~pos] = ez / (1.0 + ez)
+    return out
+
+
 def solve_linear_system(matrix, rhs):
     """Solve `matrix @ x = rhs` by Gauss-Jordan elimination with partial
     pivoting. `matrix` is a list of `n` rows, each of length `n`; `rhs` is
@@ -1473,7 +1686,16 @@ def fit_linear(columns, ys, weights=None):
     of the design matrix is effectively counted `weight[i]` times). A
     weight of 0 excludes that observation from the fit entirely, and
     scaling every weight by the same constant doesn't change the result
-    -- only the RELATIVE size of the weights matters."""
+    -- only the RELATIVE size of the weights matters.
+
+    The normal-equations matrix/vector below (an O(n * p^2) reduction
+    over every observation -- n rows, p = k+1 coefficients including
+    the intercept) is built with numpy matrix ops (X.T @ X, roughly)
+    instead of a Python-level triple loop over n/p/p, which matters for
+    a large n (e.g. a multi-million-row dataset pulled in via
+    sqlite-query). The actual p-by-p linear solve afterward
+    (solve_linear_system) stays plain Python -- p is always small (a
+    handful of predictors), so that part was never the bottleneck."""
     k = len(columns)
     n = len(ys)
     if n == 0:
@@ -1485,20 +1707,23 @@ def fit_linear(columns, ys, weights=None):
         weights = [1.0] * n
 
     std_columns, means, scales = _standardize_columns(columns)
-    design_rows = [[1.0] + [std_columns[j][i] for j in range(k)] for i in range(n)]
     p = k + 1
-    normal_matrix = [[sum(weights[i] * design_rows[i][a] * design_rows[i][b] for i in range(n))
-                       for b in range(p)] for a in range(p)]
-    normal_rhs = [sum(weights[i] * design_rows[i][a] * ys[i] for i in range(n)) for a in range(p)]
-    solved = solve_linear_system(normal_matrix, normal_rhs)
+    X = np.column_stack([np.ones(n)] + [np.asarray(col, dtype=np.float64) for col in std_columns])
+    w = np.asarray(weights, dtype=np.float64)
+    y_arr = np.asarray(ys, dtype=np.float64)
+
+    normal_matrix = (X.T * w) @ X       # p x p: sum_i w[i] * X[i,a] * X[i,b]
+    normal_rhs = (X.T * w) @ y_arr      # p:     sum_i w[i] * X[i,a] * y[i]
+    solved = solve_linear_system(normal_matrix.tolist(), normal_rhs.tolist())
     coefficients, intercept = _unstandardize_coefficients(solved[0], solved[1:], means, scales)
 
     model = LispModel("linear", coefficients, intercept, {})
-    predictions = [model.predict([col[i] for col in columns]) for i in range(n)]
-    total_weight = sum(weights)
-    mean_y = sum(w * y for w, y in zip(weights, ys)) / total_weight
-    ss_total = sum(w * (y - mean_y) ** 2 for w, y in zip(weights, ys))
-    ss_residual = sum(w * (y - p) ** 2 for w, y, p in zip(weights, ys, predictions))
+    X_orig = np.column_stack([np.asarray(col, dtype=np.float64) for col in columns])
+    predictions = intercept + X_orig @ np.asarray(coefficients, dtype=np.float64)
+    total_weight = float(w.sum())
+    mean_y = float((w * y_arr).sum()) / total_weight
+    ss_total = float((w * (y_arr - mean_y) ** 2).sum())
+    ss_residual = float((w * (y_arr - predictions) ** 2).sum())
     model.stats = {
         "r_squared": (1 - ss_residual / ss_total) if ss_total > 0 else float("nan"),
         "n": n,
@@ -1521,7 +1746,15 @@ def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
     log-likelihood -- sum(weight[i] * observation[i]'s log-likelihood)
     -- just means multiplying `weight[i]` into that observation's
     contribution to the gradient, Hessian, and log-likelihood on every
-    Newton-Raphson step."""
+    Newton-Raphson step.
+
+    Each iteration's gradient/Hessian (an O(n * p^2) reduction over
+    every observation, same shape as fit_linear's normal equations) is
+    built with numpy matrix ops instead of a Python-level triple loop
+    over n/p/p -- this loop runs up to max_iterations times, so for a
+    large n this is where nearly all of fit_logistic's time goes; see
+    fit_linear's docstring for why the p-by-p linear solve itself
+    (solve_linear_system) stays plain Python either way."""
     k = len(columns)
     n = len(ys)
     if n == 0:
@@ -1538,55 +1771,50 @@ def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
         weights = [1.0] * n
 
     std_columns, means, scales = _standardize_columns(columns)
-    design_rows = [[1.0] + [std_columns[j][i] for j in range(k)] for i in range(n)]
     p = k + 1
     eps = 1e-12
+    X = np.column_stack([np.ones(n)] + [np.asarray(col, dtype=np.float64) for col in std_columns])
+    w = np.asarray(weights, dtype=np.float64)
+    y_arr = np.asarray(ys, dtype=np.float64)
 
-    beta = [0.0] * p
+    beta = np.zeros(p)
     converged = False
     iterations_used = 0
     log_likelihood = 0.0
 
     for iteration in range(1, max_iterations + 1):
         iterations_used = iteration
-        gradient = [0.0] * p
-        hessian = [[0.0] * p for _ in range(p)]
-        log_likelihood = 0.0
-        for i in range(n):
-            row = design_rows[i]
-            case_weight = weights[i]
-            z = sum(beta[a] * row[a] for a in range(p))
-            prob = sigmoid(z)
-            error = prob - ys[i]
-            irls_weight = case_weight * prob * (1 - prob)
-            for a in range(p):
-                gradient[a] += case_weight * error * row[a]
-                for b in range(p):
-                    hessian[a][b] += irls_weight * row[a] * row[b]
-            log_likelihood += case_weight * (
-                ys[i] * math.log(max(prob, eps)) + (1 - ys[i]) * math.log(max(1 - prob, eps)))
+        prob = _sigmoid_vec(X @ beta)             # n
+        error = prob - y_arr                      # n
+        irls_weight = w * prob * (1.0 - prob)      # n -- IRLS's OWN per-observation
+                                                    # weight, unrelated to the case weight `w`
+        gradient = X.T @ (w * error)               # p
+        hessian = (X.T * irls_weight) @ X          # p x p
+        log_likelihood = float((w * (
+            y_arr * np.log(np.maximum(prob, eps)) + (1.0 - y_arr) * np.log(np.maximum(1.0 - prob, eps))
+        )).sum())
 
         try:
-            delta = solve_linear_system(hessian, gradient)
+            delta = solve_linear_system(hessian.tolist(), gradient.tolist())
         except LispError:
             raise LispError(
                 "logistic-regression: fitting failed to converge -- this "
                 "usually means the data is perfectly (or almost perfectly) "
                 "separable by one of the predictors, which sends the "
                 "coefficients toward infinity; try more/noisier data")
-        for a in range(p):
-            beta[a] -= delta[a]
+        beta = beta - np.array(delta)
         if max(abs(d) for d in delta) < tolerance:
             converged = True
             break
 
-    coefficients, intercept = _unstandardize_coefficients(beta[0], beta[1:], means, scales)
+    coefficients, intercept = _unstandardize_coefficients(float(beta[0]), beta[1:].tolist(), means, scales)
 
     # McFadden's pseudo R-squared, comparing against an intercept-only model.
-    total_weight = sum(weights)
-    mean_y = min(max(sum(w * y for w, y in zip(weights, ys)) / total_weight, eps), 1 - eps)
-    null_log_likelihood = sum(
-        w * (y * math.log(mean_y) + (1 - y) * math.log(1 - mean_y)) for w, y in zip(weights, ys))
+    total_weight = float(w.sum())
+    mean_y = min(max(float((w * y_arr).sum()) / total_weight, eps), 1 - eps)
+    null_log_likelihood = float((w * (
+        y_arr * math.log(mean_y) + (1.0 - y_arr) * math.log(1 - mean_y)
+    )).sum())
     pseudo_r_squared = (1 - log_likelihood / null_log_likelihood) if null_log_likelihood != 0 else float("nan")
 
     stats = {
@@ -1622,7 +1850,7 @@ def _predictor_columns(x_arg, n_expected):
             raise LispError("regression: each predictor must be a vector")
         if len(xv.items) != n_expected:
             raise LispError("regression: all vectors must be the same length")
-        columns.append([numeric_value(v) for v in xv.items])
+        columns.append([numeric_value(v) for v in xv.items.tolist()])
     return columns
 
 
@@ -1642,7 +1870,7 @@ def _optional_weights(weight_vec, n_expected, name):
         raise LispError("%s: weights must be a vector" % name)
     if len(weight_vec.items) != n_expected:
         raise LispError("%s: weights must be the same length as y" % name)
-    weights = [numeric_value(v) for v in weight_vec.items]
+    weights = [numeric_value(v) for v in weight_vec.items.tolist()]
     for w in weights:
         if w < 0:
             raise LispError("%s: weights must not be negative (got %r)" % (name, w))
@@ -1653,7 +1881,7 @@ def linear_regression_fn(x_arg, y_vec, weight_vec=None):
     if not isinstance(y_vec, LispVector):
         raise LispError("linear-regression: y must be a vector")
     columns = _predictor_columns(x_arg, len(y_vec.items))
-    ys = [numeric_value(v) for v in y_vec.items]
+    ys = [numeric_value(v) for v in y_vec.items.tolist()]
     weights = _optional_weights(weight_vec, len(ys), "linear-regression")
     return fit_linear(columns, ys, weights)
 
@@ -1662,7 +1890,7 @@ def logistic_regression_fn(x_arg, y_vec, weight_vec=None):
     if not isinstance(y_vec, LispVector):
         raise LispError("logistic-regression: y must be a vector")
     columns = _predictor_columns(x_arg, len(y_vec.items))
-    ys = [numeric_value(v) for v in y_vec.items]
+    ys = [numeric_value(v) for v in y_vec.items.tolist()]
     weights = _optional_weights(weight_vec, len(ys), "logistic-regression")
     return fit_logistic(columns, ys, weights)
 
@@ -1758,7 +1986,7 @@ def model_evaluate(model, x_arg, y_vec):
         raise LispError(
             "model-evaluate: model has %d predictor(s), but %d given"
             % (model.k, len(columns)))
-    ys = [numeric_value(v) for v in y_vec.items]
+    ys = [numeric_value(v) for v in y_vec.items.tolist()]
     n = len(ys)
     if n == 0:
         raise LispError("model-evaluate: no data to evaluate")
@@ -2022,7 +2250,7 @@ def spline_regression_fn(x_arg, y_vec, max_knots=3, logistic=False, weight_vec=N
         raise LispError("spline-regression: y must be a vector")
 
     columns = _predictor_columns(x_arg, len(y_vec.items))
-    ys = [numeric_value(v) for v in y_vec.items]
+    ys = [numeric_value(v) for v in y_vec.items.tolist()]
     k = len(columns)
     n = len(ys)
     if n == 0:
@@ -2086,7 +2314,7 @@ def suggest_knots_fn(x_vec, y_vec, window, n):
     # (x, mean-of-y) point per distinct x first. This also happens to be the
     # statistically sensible thing to do: it's the marginal curve of y
     # against x whose bends we want to find, not the scatter of every row.
-    pairs = sorted(zip(x_vec.items, y_vec.items), key=lambda p: numeric_value(p[0]))
+    pairs = sorted(zip(x_vec.items.tolist(), y_vec.items.tolist()), key=lambda p: numeric_value(p[0]))
     groups = {}
     order = []
     for raw_xi, raw_yi in pairs:
@@ -2163,7 +2391,7 @@ def build_chart_spec(x_vec, y_vecs, labels, connect, title, regression_label, re
     if regression_kind not in ("linear", "logistic"):
         raise LispError('plot: regression kind must be "linear" or "logistic"')
 
-    xs_raw = x_vec.items
+    xs_raw = x_vec.items.tolist()
     n = len(xs_raw)
     x_is_date = any(isinstance(v, LispDate) for v in xs_raw)
     xs_plot = [v.date if isinstance(v, LispDate) else v for v in xs_raw]
@@ -2176,7 +2404,7 @@ def build_chart_spec(x_vec, y_vecs, labels, connect, title, regression_label, re
         if len(y_vec.items) != n:
             raise LispError("plot: every vector must be the same length as x")
         label = labels[i] if labels else ("Y%d" % (i + 1))
-        series_list.append({"label": label, "y": list(y_vec.items), "connect": connect})
+        series_list.append({"label": label, "y": y_vec.items.tolist(), "connect": connect})
 
     spec = {
         "title": title,
@@ -3942,28 +4170,29 @@ def make_global_env(output=None, plot=None, columns=None):
     def vector_ref(v, i):
         if not isinstance(v, LispVector):
             raise LispError("vector-ref: not a vector: %r" % (v,))
-        return v.items[i]
+        return _lisp_scalar(v.items[i])
 
     def vector_set(v, i, x):
         if not isinstance(v, LispVector):
             raise LispError("vector-set!: not a vector: %r" % (v,))
         check_vector_elements([x], "vector-set!")
+        _vector_widen_for(v, x)
         v.items[i] = x
         return NIL
 
     def vector_fill(v, x):
         check_vector_elements([x], "vector-fill!")
-        for i in range(len(v.items)):
-            v.items[i] = x
+        _vector_widen_for(v, x)
+        v.items[:] = x   # numpy broadcast -- fills every slot in one pass
         return NIL
 
     def vector_map(f, v):
-        return LispVector([apply_proc(f, [x]) for x in v.items])
+        return LispVector([apply_proc(f, [x]) for x in v.items.tolist()])
 
     def vector_append(*vs):
         items = []
         for v in vs:
-            items.extend(v.items)
+            items.extend(v.items.tolist())
         return LispVector(items)
 
     def list_to_vector(p):
@@ -3986,6 +4215,21 @@ def make_global_env(output=None, plot=None, columns=None):
                 check_vector_elements([current], "vector-iterate")
             items.append(current)
         return LispVector(items)
+
+    def vector_add(a, b):
+        # Elementwise a+b, truncated to the shorter vector's length if
+        # they differ (documented behavior -- not an error). a.items[:n]
+        # + b.items[:n] is a single vectorized numpy operation, not a
+        # Python-level loop.
+        n = min(len(a.items), len(b.items))
+        return LispVector(_narrow_vector_result(a.items[:n] + b.items[:n]))
+
+    def vector_sub(a, b):
+        n = min(len(a.items), len(b.items))
+        return LispVector(_narrow_vector_result(a.items[:n] - b.items[:n]))
+
+    def vector_scale(v, s):
+        return LispVector(_narrow_vector_result(v.items * s))
 
     def vector_slice(v, start, end=None):
         if not isinstance(v, LispVector):
@@ -4020,7 +4264,11 @@ def make_global_env(output=None, plot=None, columns=None):
         indices = list(range(n))
         rng = random.Random(seed) if seed is not None else random.Random()
         rng.shuffle(indices)
-        shuffled = [LispVector([v.items[i] for i in indices]) for v in vecs]
+        # v.items[indices] -- numpy "fancy indexing" with a list of
+        # positions -- builds the whole permuted array in one vectorized
+        # pass; LispVector(...)'s ndarray branch then makes its own
+        # independent copy of that (fresh, not aliased to v.items).
+        shuffled = [LispVector(v.items[indices]) for v in vecs]
         return list_to_pairs(shuffled)
 
     _NO_DEFAULT = object()  # sentinel: distinguishes "no default given" from "default given as NIL/0/etc."
@@ -4050,12 +4298,13 @@ def make_global_env(output=None, plot=None, columns=None):
 
         if default is _NO_DEFAULT:
             n = min(lengths)
-            return LispVector([apply_proc(f, [v.items[j] for v in vecs] + [j]) for j in range(n)])
+            return LispVector([apply_proc(f, [_lisp_scalar(v.items[j]) for v in vecs] + [j])
+                                for j in range(n)])
 
         n = max(lengths)
         result = []
         for j in range(n):
-            row = [v.items[j] if j < len(v.items) else default for v in vecs] + [j]
+            row = [_lisp_scalar(v.items[j]) if j < len(v.items) else default for v in vecs] + [j]
             result.append(apply_proc(f, row))
         return LispVector(result)
 
@@ -4066,16 +4315,16 @@ def make_global_env(output=None, plot=None, columns=None):
         "vector-set!": vector_set,
         "vector-length": lambda v: len(v.items),
         "vector-fill!": vector_fill,
-        "vector-copy": lambda v: LispVector(list(v.items)),
+        "vector-copy": lambda v: LispVector(v.items),
         "vector-map": vector_map,
         "vector-append": vector_append,
-        "vector->list": lambda v: list_to_pairs(list(v.items)),
+        "vector->list": lambda v: list_to_pairs(v.items.tolist()),
         "list->vector": list_to_vector,
         "vector-iterate": vector_iterate,
-        "vector-sum": lambda v: sum(v.items),
-        "vector-add": lambda a, b: LispVector([x + y for x, y in zip(a.items, b.items)]),
-        "vector-sub": lambda a, b: LispVector([x - y for x, y in zip(a.items, b.items)]),
-        "vector-scale": lambda v, s: LispVector([x * s for x in v.items]),
+        "vector-sum": lambda v: _lisp_scalar(v.items.sum()),
+        "vector-add": vector_add,
+        "vector-sub": vector_sub,
+        "vector-scale": vector_scale,
         "vector-slice": vector_slice,
         "vector-take": vector_take,
         "vector-drop": vector_drop,
@@ -4236,10 +4485,10 @@ def make_global_env(output=None, plot=None, columns=None):
             name = str(p.car)
             rest = p.cdr
             if isinstance(rest, LispVector):
-                out.append((name, rest.items, None))
+                out.append((name, rest.items.tolist(), None))
             elif isinstance(rest, Pair) and isinstance(rest.car, LispVector):
                 decimals = rest.cdr.car if isinstance(rest.cdr, Pair) else None
-                out.append((name, rest.car.items, decimals))
+                out.append((name, rest.car.items.tolist(), decimals))
             else:
                 raise LispError(
                     "expected (name . vector) or (name vector decimals), got %r" % (p,))
@@ -4564,6 +4813,17 @@ def to_string(x):
         coeffs = ", ".join("%.6g" % c for c in x.coefficients)
         return "#<%s-model coefficients=(%s) intercept=%.6g>" % (x.kind, coeffs, x.intercept)
     if isinstance(x, LispVector):
+        # Deliberately NOT x.items.tolist() -- str() on a numpy float32
+        # scalar prints the shortest decimal that round-trips to that
+        # SAME float32 value (e.g. "0.964"), which is what a value
+        # stored in a float32-backed vector actually IS; converting to
+        # a native Python float first (.item()/.tolist()) promotes to
+        # float64 precision and would print the long, noisy float64
+        # value closest to that float32 bit pattern instead (e.g.
+        # "0.9639999866485596") -- numerically consistent, but a much
+        # worse READING experience for no benefit, since to_string's
+        # final `return str(x)` fallback (below) handles a numpy scalar
+        # just fine without hitting any of the isinstance checks above it.
         return "#(" + " ".join(to_string(item) for item in x.items) + ")"
     if isinstance(x, LispStruct):
         parts = ["%s %s" % (Keyword(":" + slot_name), to_string(x.values.get(slot_name)))
@@ -4641,7 +4901,7 @@ def pretty_print_string(expr):
             open_col = col()
             emit_text('#(')
             first = True
-            for item in x.items:
+            for item in x.items:   # see to_string's LispVector branch for why not .tolist()
                 if not first:
                     break_line(open_col + 2)
                 write(item)
