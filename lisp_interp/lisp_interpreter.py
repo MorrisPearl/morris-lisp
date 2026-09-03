@@ -12,7 +12,7 @@ Supports:
   - a simple date datatype: (date year month day)
   - special forms: quote, quasiquote (with unquote/unquote-splicing,
     written `, ,, and ,@), if, define, set!, lambda, begin, let, let*,
-    cond, and, or, dolist, defmacro, defstruct
+    cond, and, or, dolist, defmacro, defstruct, catch-error
   - macros: (defmacro name (params...) body...) defines a macro --
     unlike a procedure, its arguments are the CALL SITE's UNEVALUATED
     source expressions, and its body's return value (typically built
@@ -41,10 +41,43 @@ Supports:
     slot a bare symbol (default '()) or (slot-name default-expr). Defines
     make-<name> (a keyword-argument constructor -- an ordinary example of
     the &key feature above, not a separate mechanism), <name>-<slot>
-    accessors, <name>-<slot>-set! setters (mutable slots), and a <name>?
-    predicate. See LispStruct/LispStructType and the "defstruct" case in
+    accessors, <name>-<slot>-set! setters (mutable slots), a <name>?
+    predicate, and a copy-<name> shallow-copy constructor. See
+    LispStruct/LispStructType and the "defstruct" case in
     eval_special_form. Generic struct-ref/struct-set!/struct-type-name/
-    struct? builtins also work on any struct instance by slot-name symbol
+    struct? builtins also work on any struct instance by slot-name symbol.
+    Optional single inheritance, CL's :include: (defstruct (child
+    (:include parent)) slot...) gives child every one of parent's slots
+    plus its own; every accessor/setter/predicate parent itself defined
+    also accepts a child instance (LispStructType.is_a), so a subtype
+    instance stands in anywhere its supertype is expected. Putting a
+    lambda in a slot, together with this, gives single-dispatch
+    virtual-function-style polymorphism -- call-method (a builtin) is
+    the "method call" syntax for it: (call-method accessor instance
+    arg...) is (accessor instance) applied to instance and arg...,
+    without writing instance twice
+  - catch-error: (catch-error protected-expr (var) handler-body...) --
+    the only way Lisp code can catch and recover from an error (this
+    interpreter's own LispError, or one of the handful of builtins that
+    raise a plain Python exception instead, e.g. sqrt's ValueError)
+    instead of it propagating to the top and ending the script; binds
+    var to the error's message and runs handler-body in its place
+  - a mutable hash table type (make-hash-table / hash-table-set!/-ref/
+    -has?/-remove!/-count/-keys/-values/->alist/-for-each) for O(1)
+    lookup against a large dataset, where an assoc list's linear scan
+    wouldn't do
+  - SQLite access (sqlite-open/-close/-query/-execute/-fetch-row) against
+    a local database file, including an optional dtypes/max-rows pair on
+    sqlite-query for allocating a huge result's vectors directly instead
+    of inferring their dtype after the fact, and a `params` argument on
+    sqlite-query/sqlite-execute for safely binding values to "?"
+    placeholders via SQLite's own parameter binding (not string-building)
+    -- see template.lsp (next to this file) for a general-purpose text
+    templating engine built on top of that, including a SQL-safe render
+    mode that can only ever produce a bound parameter, never text spliced
+    into a query
+  - a shared pseudo-random number generator (random-seed/random-float/
+    random-int), separate from vectors-shuffle's own per-call seed
   - metaprogramming builtins: (eval expr) evaluates a piece of Lisp code
     (data -- e.g. built with quasiquote, or read from a string/file) in
     the top-level environment; (apply f arg1 ... args) calls f with
@@ -71,7 +104,13 @@ Supports:
     functions at a handful of knots -- with an exact, independent maximum
     knot count per predictor if wanted -- and can optionally fit that
     expanded basis with a logistic link instead of ordinary least squares,
-    for a probability-in-[0,1] output
+    for a probability-in-[0,1] output. All three take an optional trailing
+    `weights` vector (one non-negative number per observation) for fitting
+    to grouped data, so a bucket representing a large balance influences
+    the fit more than a small one; the normal-equations/Newton-Raphson
+    fitting math itself is numpy-vectorized (fit_linear/fit_logistic), not
+    a Python-level loop, so a multi-million-row fit isn't bottlenecked on
+    that
   - GUI builtins to plot one X vector against several Y vectors (each
     with its own marker symbol, optionally connected by line segments),
     with an optional single-predictor linear or logistic regression line,
@@ -441,11 +480,40 @@ class LispDate:
     def __eq__(self, other):
         return isinstance(other, LispDate) and self.date == other.date
 
+    def __hash__(self):
+        # A date is immutable (its .date is never reassigned after
+        # construction -- date-add-days, etc. build a NEW LispDate
+        # rather than mutating one in place), so unlike Pair/LispVector/
+        # LispStruct -- genuinely mutable, deliberately left unhashable,
+        # the same rule Python's own dict/set keys follow -- there's no
+        # risk of a date's hash changing after it's used as a
+        # hash-table key. Delegates to the wrapped datetime.date's own
+        # hash, which is already correct and consistent with __eq__.
+        return hash(self.date)
+
     def __lt__(self, other):
         return isinstance(other, LispDate) and self.date < other.date
 
     def __repr__(self):
         return self.date.isoformat()
+
+
+class LispHashTable:
+    """A mutable hash table (make-hash-table / hash-table-*, below).
+    Thin wrapper around a Python dict -- keys must be hashable Lisp
+    values: numbers, strings, symbols, keywords, dates (all immutable,
+    or -- Symbol/LispString/Keyword -- backed by Python's own str,
+    already hashable). Lists, vectors, and structs are all deliberately
+    left unhashable (see e.g. Pair's docstring) since they're mutable;
+    the hash_table_set!/-ref builtins below catch Python's TypeError for
+    an unhashable key and re-raise a clear LispError instead of leaking
+    it raw."""
+
+    def __init__(self):
+        self.table = {}
+
+    def __repr__(self):
+        return "#<hash-table %d entr%s>" % (len(self.table), "y" if len(self.table) == 1 else "ies")
 
 
 class LispSQLiteConnection:
@@ -961,7 +1029,7 @@ def raw_default(expr, env):
 SPECIAL_FORMS = {
     "quote", "if", "define", "set!", "lambda",
     "begin", "let", "let*", "cond", "and", "or", "dolist",
-    "defmacro", "quasiquote", "breakpoint", "defstruct",
+    "defmacro", "quasiquote", "breakpoint", "defstruct", "catch-error",
 }
 
 
@@ -1446,7 +1514,60 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         env[Symbol("%s?" % type_name)] = (
             lambda s, t=struct_type: isinstance(s, LispStruct) and s.struct_type.is_a(t))
 
+        def copier(s, t=struct_type):
+            # A shallow copy (a new LispStruct, a fresh values dict, but
+            # the slot VALUES themselves aren't themselves copied --
+            # matching CL's copy-<name>) -- accepts a descendant
+            # instance too (same is_a rule as every other accessor
+            # here), and copies using the INSTANCE's own actual type
+            # (s.struct_type), not necessarily `t` itself, so
+            # copy-point on a point-3d instance correctly produces
+            # another point-3d, not a point missing its z.
+            if not (isinstance(s, LispStruct) and s.struct_type.is_a(t)):
+                raise LispError("copy-%s: not a %s: %r" % (type_name, type_name, s))
+            return LispStruct(s.struct_type, dict(s.values))
+        env[Symbol("copy-%s" % type_name)] = copier
+
         value_stack.append(type_name)
+
+    elif op == "catch-error":
+        # (catch-error protected-expr (var) handler-body...) -- evaluate
+        # protected-expr; if it raises ANY exception (this interpreter's
+        # own LispError, or one of the handful of builtins documented as
+        # raising a raw Python exception instead -- e.g. sqrt's
+        # ValueError for a negative argument, vector-ref's out-of-range
+        # IndexError), bind `var` to its message (a string) in a fresh
+        # child scope and evaluate handler-body there instead (implicit
+        # begin, like dolist's body), whose value becomes catch-error's
+        # own. If protected-expr succeeds, its value is returned
+        # directly and handler-body never runs. Deliberately catches
+        # Python's broad `Exception` rather than just LispError, since
+        # from Lisp code's perspective both kinds are just "something
+        # went wrong in there" -- but NOT the handful of exception types
+        # Python itself doesn't derive from Exception (KeyboardInterrupt,
+        # SystemExit, RecursionError, MemoryError, ...), which keep
+        # propagating unchanged, same as if this weren't here.
+        #
+        # Needs a real Python try/except boundary, which nothing else in
+        # this trampoline-based evaluator has -- control_stack frames
+        # can't "catch" an exception raised while a LATER frame runs, so
+        # this calls seval() directly (a nested, non-tail call), exactly
+        # the same pattern the eval/apply/load builtins already use to
+        # run Lisp code from inside Python code. One real consequence: a
+        # tail call made from inside protected-expr is tail-optimized
+        # only up to the boundary of THIS nested seval() call, not all
+        # the way out through catch-error itself -- the same limitation
+        # already true of a callback invoked from map/filter/vector-map.
+        protected_expr = args.car
+        var_name = args.cdr.car.car
+        handler_body = pairs_to_list(args.cdr.cdr)
+        try:
+            result = seval(protected_expr, env)
+        except Exception as e:
+            handler_env = Env(outer=env)
+            handler_env[var_name] = LispString(str(e))
+            result = eval_body(handler_body, handler_env)
+        value_stack.append(result)
 
     else:
         raise LispError("unknown special form: %s" % op)
@@ -4306,6 +4427,38 @@ def make_global_env(output=None, plot=None, columns=None):
             raise LispError("list-ref: index %d out of range (0..%d)" % (n, len(items) - 1))
         return items[n]
 
+    def list_tail(lst, n):
+        items = pairs_to_list(lst)
+        n = int(n)
+        if n < 0 or n > len(items):
+            raise LispError("list-tail: index %d out of range (0..%d)" % (n, len(items)))
+        return list_to_pairs(items[n:])
+
+    def lisp_assoc(key, alist):
+        """(assoc key alist) -- alist is a list of (key . value) PAIRS
+        (built with cons, e.g. (list (cons 'a 1) (cons 'b 2)) -- NOT the
+        (key value) two-element-list shape `let`-style bindings use).
+        Returns the matching (key . value) pair (so its value is
+        (cdr (assoc key alist))), or #f -- not '() -- if none match, so
+        (if (assoc ...) ...) behaves correctly (this Lisp's '() is
+        truthy, same as Scheme's; #f is the only false value)."""
+        for entry in pairs_to_list(alist):
+            if not isinstance(entry, Pair):
+                raise LispError("assoc: alist element is not a pair: %r" % (entry,))
+            if entry.car == key:
+                return entry
+        return False
+
+    def lisp_member(x, lst):
+        """(member x lst) -- the sublist of lst starting at the first
+        element equal? to x, or #f (not '()) if none match -- see
+        assoc's docstring for why #f specifically."""
+        items = pairs_to_list(lst)
+        for i, item in enumerate(items):
+            if item == x:
+                return list_to_pairs(items[i:])
+        return False
+
     env.update({
         "cons": lambda a, b: Pair(a, b),
         "car": car,
@@ -4315,6 +4468,9 @@ def make_global_env(output=None, plot=None, columns=None):
         "reverse": lambda p: list_to_pairs(list(reversed(pairs_to_list(p)))),
         "length": lambda p: len(pairs_to_list(p)),
         "list-ref": list_ref,
+        "list-tail": list_tail,
+        "assoc": lisp_assoc,
+        "member": lisp_member,
         "null?": lambda p: p is NIL,
         "pair?": lambda p: isinstance(p, Pair),
         "list?": lambda p: p is NIL or isinstance(p, Pair),
@@ -4432,15 +4588,110 @@ def make_global_env(output=None, plot=None, columns=None):
     def lisp_error(*args):
         raise LispError(" ".join(to_display_string(a) for a in args))
 
+    def call_method(accessor, instance, *args):
+        """(call-method accessor instance arg...) -- calls the
+        "method" (an ordinary lambda) stored in whichever slot
+        `accessor` reads off `instance` -- `accessor` is a struct
+        accessor FUNCTION VALUE (e.g. animal-speak, evaluated normally,
+        not quoted), not a symbol naming one. Passes `instance` as the
+        method's own first argument (its "self"), followed by any
+        extra `args`:
+            (call-method animal-speak d)
+        is exactly
+            ((animal-speak d) d)
+        just without writing `d` twice -- an ordinary function (no
+        macro needed, and so no risk of evaluating `instance` twice
+        either): Lisp already evaluates every argument exactly once."""
+        method = apply_proc(accessor, [instance])
+        return apply_proc(method, [instance] + list(args))
+
     env.update({
         "%make-struct": make_struct_fn,
         "struct-ref": struct_ref,
         "struct-set!": struct_set,
         "struct-type-name": lambda s: s.struct_type.name,
         "error": lisp_error,
+        "call-method": call_method,
+    })
+
+    # ---- hash tables ----
+    def _require_hash_table(h, name):
+        if not isinstance(h, LispHashTable):
+            raise LispError("%s: not a hash table: %r" % (name, h))
+
+    def hash_table_set(h, key, value):
+        _require_hash_table(h, "hash-table-set!")
+        try:
+            h.table[key] = value
+        except TypeError:
+            raise LispError("hash-table-set!: not a hashable key (lists/vectors/structs "
+                             "can't be hash-table keys): %r" % (key,))
+        return NIL
+
+    def hash_table_ref(h, key, *default):
+        _require_hash_table(h, "hash-table-ref")
+        try:
+            if key in h.table:
+                return h.table[key]
+        except TypeError:
+            raise LispError("hash-table-ref: not a hashable key (lists/vectors/structs "
+                             "can't be hash-table keys): %r" % (key,))
+        return default[0] if default else False
+
+    def hash_table_has(h, key):
+        _require_hash_table(h, "hash-table-has?")
+        try:
+            return key in h.table
+        except TypeError:
+            raise LispError("hash-table-has?: not a hashable key (lists/vectors/structs "
+                             "can't be hash-table keys): %r" % (key,))
+
+    def hash_table_remove(h, key):
+        _require_hash_table(h, "hash-table-remove!")
+        h.table.pop(key, None)
+        return NIL
+
+    def hash_table_for_each(f, h):
+        _require_hash_table(h, "hash-table-for-each")
+        for key, value in list(h.table.items()):
+            apply_proc(f, [key, value])
+        return NIL
+
+    env.update({
+        "make-hash-table": lambda: LispHashTable(),
+        "hash-table?": lambda x: isinstance(x, LispHashTable),
+        "hash-table-set!": hash_table_set,
+        "hash-table-ref": hash_table_ref,
+        "hash-table-has?": hash_table_has,
+        "hash-table-remove!": hash_table_remove,
+        "hash-table-count": lambda h: len(h.table),
+        "hash-table-keys": lambda h: list_to_pairs(list(h.table.keys())),
+        "hash-table-values": lambda h: list_to_pairs(list(h.table.values())),
+        "hash-table->alist": lambda h: list_to_pairs([Pair(k, v) for k, v in h.table.items()]),
+        "hash-table-for-each": hash_table_for_each,
     })
 
     # ---- strings ----
+    def string_search(haystack, needle, start=0):
+        """(string-search haystack needle [start]) -- the index of the
+        first occurrence of needle in haystack at or after start, or #f
+        (not -1, not '()) if there isn't one -- so 0 is safe to test the
+        same way (if (string-search ...) ...) is if the whole match sits
+        at the very start, unlike -1, and unlike '() (which is truthy
+        here, same as Scheme -- see assoc's docstring)."""
+        idx = str(haystack).find(str(needle), int(start))
+        return idx if idx >= 0 else False
+
+    def string_split(s, sep=None):
+        """(string-split s [sep]) -- s split on every occurrence of sep
+        (an exact substring -- consecutive separators produce an empty
+        piece between them, e.g. splitting "a,,b" on "," gives 3 pieces),
+        or, with sep omitted, on runs of whitespace with no empty pieces
+        (Python's plain str.split() convention -- handy for tokenizing
+        free-form text)."""
+        pieces = str(s).split(str(sep)) if sep is not None else str(s).split()
+        return list_to_pairs([LispString(p) for p in pieces])
+
     env.update({
         "string-append": lambda *a: LispString("".join(a)),
         "string-length": lambda s: len(s),
@@ -4457,6 +4708,11 @@ def make_global_env(output=None, plot=None, columns=None):
         "string->symbol": lambda s: Symbol(s),
         "symbol->string": lambda s: LispString(str(s)),
         "string": lambda *chars: LispString("".join(chars)),
+        "string-search": string_search,
+        "string-contains?": lambda s, sub: str(sub) in str(s),
+        "string-split": string_split,
+        "string-replace": lambda s, old, new: LispString(str(s).replace(str(old), str(new))),
+        "string-trim": lambda s: LispString(str(s).strip()),
     })
 
     # ---- vectors (fixed-size, mutable; holds numbers and/or dates) ----

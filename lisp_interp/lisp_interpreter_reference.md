@@ -1,14 +1,15 @@
 # Simple Lisp — Reference
 
-A small Lisp with vectors, dates, macros, linear/logistic/spline regression,
-XY charting, FRED economic-data access, real tastytrade broker data (futures
-and equity option chains, futures-curve rich/cheap and calendar-spread carry
-analysis), and a built-in debugger — plus an optional PyQt6 GUI. **Requires
-`numpy`**, unlike every other dependency mentioned in this document (PyQt6,
-matplotlib, pandas, tastytrade), which are all optional, feature-specific
-extras — numpy backs the vector datatype itself (see "Vectors", below), so
-it's needed for even the plainest console/batch-mode use of the
-interpreter.
+A small Lisp with vectors, dates, macros, struct inheritance,
+linear/logistic/spline regression, hash tables, SQLite access, `catch-error`
+error handling, XY charting, FRED economic-data access, real tastytrade
+broker data (futures and equity option chains, futures-curve rich/cheap and
+calendar-spread carry analysis), and a built-in debugger — plus an optional
+PyQt6 GUI. **Requires `numpy`**, unlike every other dependency mentioned in
+this document (PyQt6, matplotlib, pandas, tastytrade), which are all
+optional, feature-specific extras — numpy backs the vector datatype itself
+(see "Vectors", below), so it's needed for even the plainest console/
+batch-mode use of the interpreter.
 
 This document aims to cover **every builtin and special form** the
 interpreter provides: what its arguments mean, what it returns, and any
@@ -68,7 +69,7 @@ Put your own always-available definitions/macros there instead of
 |---|---|---|
 | Integer | `42`, `-7` | Python `int` |
 | Float | `3.14`, `-0.5` | Python `float` |
-| String | `"hello"` | Double-quoted; `\n`, `\t`, `\"`, `\\` escapes |
+| String | `"hello"` | Double-quoted; `\n`, `\t`, `\r`, `\"`, `\\` escapes |
 | Boolean | `#t`, `#f` | Everything except `#f` counts as true |
 | Symbol | `foo`, `list->vector` | Identifiers |
 | Keyword | `:name`, `:x` | A `Symbol` subtype, but SELF-EVALUATING (never needs `quote`) — used at call sites for keyword arguments; see "Keyword arguments", below |
@@ -270,6 +271,22 @@ and binds into the current environment:
 - `<name>-<slot>` — an accessor, for each slot.
 - `<name>-<slot>-set!` — a setter, for each slot (slots are mutable).
 - `<name>?` — a predicate.
+- `copy-<name>` — a shallow copy: a new, independent struct with the same
+  slot values (the values themselves aren't copied). Accepts an instance
+  of `name` or any type that `:include`s it, and copies using the
+  instance's own actual type, so `(copy-point a-point-3d-instance)`
+  correctly returns another `point-3d`, not a plain `point` missing its
+  `z`.
+
+**Naming gotcha:** `<name>-<slot>` is a fixed, predictable name — don't
+`define` your own function under that exact name (e.g. as a slot's
+`default-expr`, meaning to override it) expecting it to be preserved:
+`defstruct` binds its own accessor under that name *after* recording the
+slot's (still-unevaluated) default, so by the time the default actually
+gets evaluated (when the constructor runs), the accessor has already taken
+that name over. Give override-implementation functions a distinct name
+instead (see the worked example under "Structs", below, for the pattern
+this comes up in).
 
 ```lisp
 (defstruct point x y (label "origin"))
@@ -347,6 +364,31 @@ seeing right away (`(breakpoint (list "x=" x))`), without needing a separate
 debugging", below, for the full writeup, including `debug-function` (which
 inserts this automatically into an existing function) and the GUI limitation
 (console/batch mode only).
+
+#### `(catch-error protected-expr (var) handler-body...)`
+Evaluates `protected-expr`; if it raises an error, binds `var` to the
+error's message (a string) and evaluates `handler-body...` (implicit
+`begin`) instead, whose value becomes `catch-error`'s own. If
+`protected-expr` succeeds, its value is returned directly and
+`handler-body` never runs. Without this, any error — from `error`, or one
+of the handful of builtins that raise a plain Python exception instead of
+`LispError` (`sqrt` of a negative number, an out-of-range `vector-ref`,
+...) — propagates all the way to the top and ends the script; this is the
+only way Lisp code itself can catch one and keep going. Catches errors
+from *any* of those sources uniformly (not just `LispError`), but not
+things like running out of memory or the process being interrupted, which
+keep propagating exactly as if this weren't here. To evaluate more than
+one protected expression, wrap them in a `begin`.
+
+```lisp
+(catch-error (/ 1 0) (e) (display "division failed: ") (display e))
+; prints: division failed: division by zero
+
+(define (safe-sqrt x)
+  (catch-error (sqrt x) (e) -1))     ; -1 instead of crashing on a negative x
+(safe-sqrt -4)                       ; => -1
+(safe-sqrt 16)                       ; => 4.0
+```
 
 ### Variadic parameters
 
@@ -935,6 +977,39 @@ range (0..M)` if `n` is out of bounds.
 (list-ref (list 10 20 30) 1)   ; => 20
 ```
 
+#### `(list-tail l n)`
+The sublist of `l` starting at position `n` (0-based) — i.e. `l` with its
+first `n` elements dropped. `(list-tail l 0)` is `l` itself;
+`(list-tail l (length l))` is `'()`. Raises `LispError` if `n` is out of
+range.
+
+```lisp
+(list-tail (list 1 2 3 4 5) 2) ; => (3 4 5)
+```
+
+#### `(assoc key alist)`
+Searches `alist` — a list of `(key . value)` **pairs**, built with `cons`,
+e.g. `(list (cons 'a 1) (cons 'b 2))` — for an entry whose key is `equal?`
+to `key`. Returns the matching `(key . value)` pair (so its value is
+`(cdr (assoc key alist))`), or `#f` — not `'()`, which is truthy here,
+same as Scheme — if none match.
+
+```lisp
+(define al (list (cons 'a 1) (cons 'b 2)))
+(assoc 'b al)                  ; => (b . 2)
+(cdr (assoc 'b al))            ; => 2
+(assoc 'z al)                  ; => #f
+```
+
+#### `(member x l)`
+The sublist of `l` starting at the first element `equal?` to `x`, or `#f`
+(not `'()`, same reasoning as `assoc`) if none match.
+
+```lisp
+(member 3 (list 1 2 3 4 5))    ; => (3 4 5)
+(member 99 (list 1 2 3))       ; => #f
+```
+
 #### `(map f l)`
 Applies `f` to each element of `l` in order, returning a new list of the
 results.
@@ -972,6 +1047,80 @@ list into positional arguments, e.g. `(apply + (list 1 2 3))` is `6`, and
 ```lisp
 (apply + (list 1 2 3))         ; => 6
 (apply + 1 2 (list 3 4 5))     ; => 15
+```
+
+### Hash tables
+
+A mutable table for fast key lookup — reach for this instead of an `assoc`
+list once you're doing many lookups against the same data, since `assoc`
+is a linear scan and this isn't. Keys may be any *immutable* value: a
+number, string, symbol, keyword, or date — not a list, vector, or struct
+(none of those can be a Python `dict` key either, for the same underlying
+reason: nothing stops them being mutated after insertion, which would
+silently corrupt the table). Using one anyway raises a clear `LispError`
+rather than a raw Python exception.
+
+#### `(make-hash-table)`
+Returns a new, empty hash table.
+
+```lisp
+(define h (make-hash-table))
+```
+
+#### `(hash-table-set! h key value)`
+Sets `key`'s value in `h`, inserting it if new, overwriting it otherwise.
+Returns `'()`.
+
+```lisp
+(hash-table-set! h 'name "Ada")
+```
+
+#### `(hash-table-ref h key [default])`
+The value stored under `key`, or `default` if given and `key` isn't
+present, or `#f` otherwise — not `'()`; see `assoc`'s docstring under
+"Pairs and lists" for why. Since a stored value can itself legitimately be
+`#f`, use `hash-table-has?` (not this) when you need to tell "no such key"
+apart from "the key maps to `#f`".
+
+```lisp
+(hash-table-ref h 'name)               ; => "Ada"
+(hash-table-ref h 'missing)            ; => #f
+(hash-table-ref h 'missing "nobody")   ; => "nobody"
+```
+
+#### `(hash-table-has? h key)`
+`#t` if `key` is present in `h` (regardless of its value).
+
+```lisp
+(hash-table-set! h 'flag #f)
+(hash-table-has? h 'flag)      ; => #t  -- present, even though its value is #f
+```
+
+#### `(hash-table-remove! h key)`
+Removes `key` from `h` if present; a no-op (not an error) if it wasn't
+there. Returns `'()`.
+
+#### `(hash-table-count h)`
+The number of entries in `h`.
+
+#### `(hash-table-keys h)`, `(hash-table-values h)`
+A list of every key, or every value, in `h` (insertion order — the same
+order Python's own `dict` iterates in).
+
+#### `(hash-table->alist h)`
+Every entry in `h` as a list of `(key . value)` pairs, ready for `assoc`.
+
+```lisp
+(hash-table->alist h)          ; => ((name . "Ada") (flag . #f))
+```
+
+#### `(hash-table-for-each f h)`
+Calls `(f key value)` once for every entry in `h`, for side effects
+(building a report, summing values, ...); returns `'()`.
+
+```lisp
+(define total 0)
+(hash-table-for-each (lambda (k v) (set! total (+ total v))) h)
 ```
 
 ### Strings
@@ -1057,6 +1206,51 @@ characters from `string->list`) — the same operation as `string-append`.
 
 ```lisp
 (string "a" "b" "c")           ; => "abc"
+```
+
+#### `(string-search haystack needle [start])`
+The index of the first occurrence of `needle` in `haystack`, at or after
+`start` (default `0`), or `#f` if there isn't one — not `-1`, and not
+`'()` (which, like Scheme's, is truthy here — only `#f` is false), so a
+match right at the very start (`0`) still tests true.
+
+```lisp
+(string-search "hello world" "world")   ; => 6
+(string-search "hello world" "xyz")     ; => #f
+(if (string-search s "xyz") "found" "not found")
+```
+
+#### `(string-contains? s sub)`
+`#t` if `sub` occurs anywhere in `s`.
+
+```lisp
+(string-contains? "hello world" "wor")  ; => #t
+```
+
+#### `(string-split s [sep])`
+`s` split into a list of pieces. With `sep` (an exact substring, not a
+single character necessarily): splits on every occurrence, so consecutive
+separators produce an empty piece between them. Without `sep`: splits on
+runs of whitespace instead, with no empty pieces — for tokenizing
+free-form text.
+
+```lisp
+(string-split "a,b,,c" ",")     ; => ("a" "b" "" "c")
+(string-split "  foo  bar ")    ; => ("foo" "bar")
+```
+
+#### `(string-replace s old new)`
+`s` with every occurrence of `old` replaced by `new`.
+
+```lisp
+(string-replace "foo bar foo" "foo" "X")   ; => "X bar X"
+```
+
+#### `(string-trim s)`
+`s` with leading and trailing whitespace stripped.
+
+```lisp
+(string-trim "  hi  ")         ; => "hi"
 ```
 
 ### Vectors
@@ -1299,9 +1493,12 @@ with a `default` argument, the result runs out to the length of the
 ### Structs
 
 See `(defstruct name slot...)` under "Special forms", above, for the
-type-specific `make-<name>`/`<name>-<slot>`/`<name>-<slot>-set!`/`<name>?`
-names it generates. These four builtins work generically on any struct
-instance, by slot-name symbol, without needing to know its specific type:
+type-specific `make-<name>`/`<name>-<slot>`/`<name>-<slot>-set!`/`<name>?`/
+`copy-<name>` names it generates. `struct?`, `struct-ref`, `struct-set!`,
+and `struct-type-name` work generically on any struct instance, by
+slot-name symbol, without needing to know its specific type; `call-method`
+(below) is a different kind of generic tool, for the "lambda in a slot"
+dispatch pattern struct inheritance enables — see its own entry.
 
 #### `(struct? x)`
 `#t` for an instance of any `defstruct`-defined type.
@@ -1336,6 +1533,64 @@ Returns `s`'s struct type's name, as a symbol (e.g. `'point`).
 
 ```lisp
 (struct-type-name p)           ; => point
+```
+
+#### `(call-method accessor instance arg...)`
+Calls the value stored in whichever slot `accessor` reads off `instance`
+— `accessor` is a struct accessor **function value** (e.g. `animal-speak`,
+evaluated normally, not quoted), not a symbol naming one — passing
+`instance` as that value's own first argument, followed by any `arg`s.
+`(call-method animal-speak d)` is exactly `((animal-speak d) d)`, just
+without writing `d` twice; an ordinary function, so `instance` is only
+ever evaluated once, same as any other function call.
+
+**Putting a lambda in a slot, together with struct inheritance (see
+`defstruct`, above), gives single-dispatch virtual-function-style
+polymorphism** — `call-method` is the "method call" syntax for it. A
+function written purely in terms of a *parent* type's accessor
+automatically picks up a *child*'s override when handed a child instance,
+because the accessor just reads whatever is actually stored in that slot
+on the instance it's given:
+
+```lisp
+(defstruct animal (name "unknown") (speak (lambda (self) "...")))
+(defstruct (dog (:include animal (speak (lambda (self) "Woof!")))))
+(defstruct (cat (:include animal (speak (lambda (self) "Meow!")))))
+
+(define (make-noise a) (call-method animal-speak a))  ; only ever mentions `animal`
+
+(make-noise (make-dog))        ; => "Woof!"
+(make-noise (make-cat))        ; => "Meow!"
+(make-noise (make-animal))     ; => "..."          -- the un-overridden default
+```
+
+This genuinely dispatches per-instance (works through a mixed list of
+animals, one call site, no `dog`/`cat`-specific code anywhere), but it's
+missing two things a real `virtual` function gives you for free in a
+language like C++: there's no implicit "self" — you always pass `instance`
+by hand, as above — and there's no built-in way for an override to call
+its parent's *original* implementation (a "super" call). For the second
+one, since a slot's `default-expr` can be any expression, not just an
+inline `lambda`, the fix is to name the base implementation and have the
+override call it directly by name:
+
+```lisp
+(define (animal-speak-default self)
+  (string-append (animal-name self) " makes a sound"))
+(defstruct animal (name "unknown") (speak animal-speak-default))
+
+; NOT (define (dog-speak self) ...) -- that name collides with the
+; accessor defstruct generates for dog's OWN speak slot (dog-speak);
+; since default-expr symbols aren't evaluated until the constructor
+; actually runs, by which point the accessor has already taken that
+; name, dog-speak the function would be silently shadowed. Give the
+; override implementation a distinct name instead.
+(define (dog-speak-impl self)
+  (string-append (animal-speak-default self) ", specifically Woof!"))
+(defstruct (dog (:include animal (speak dog-speak-impl))))
+
+(call-method animal-speak (make-dog :name "Rex"))
+; => "Rex makes a sound, specifically Woof!"
 ```
 
 ### Dates
@@ -1833,11 +2088,12 @@ lsp`'s `(write-csv "mortgage_amortization_example.csv" *columns*)` call.
 ### FRED (Federal Reserve Bank of St. Louis) data, and CSV loading
 
 #### `(fred-series series-id [api-key] [start-date] [end-date])`
-Fetches one FRED economic data series and returns a two element with
-containing a list of dates and a list of values.
--— parallel, row-aligned lists of dates and numbers.
-Observations FRED marks as missing are silently skipped, so both lists
-stay the same length.
+Fetches one FRED economic data series and returns `(dates-vector .
+values-vector)` — a dotted pair (built with `cons`, not a 2-element list;
+`(cdr result)` is the values vector directly, no extra `car` needed) —
+parallel, row-aligned vectors of dates and numbers. Observations FRED
+marks as missing are silently skipped, so both vectors stay the same
+length.
 
 - `series-id` — the FRED series mnemonic, e.g. `"GDP"`, `"UNRATE"`,
   `"FEDFUNDS"`.
@@ -1877,8 +2133,11 @@ argument forms:
 ; --- 1. fetch a full series: US Real Gross Domestic Product ("GDP") ---
 (define gdp (fred-series "GDP" api-key))
 (define gdp-dates (car gdp))
-(define gdp-values (car (cdr gdp)))
-(define gdp-n (length gdp-values))
+(define gdp-values (cdr gdp))          ; NOT (car (cdr gdp)) -- (cdr gdp) IS
+                                        ; the values vector already; fred-series
+                                        ; returns a cons pair, not a 2-element list
+(define gdp-n (vector-length gdp-values))   ; vector-length, not length -- these
+                                             ; are vectors, not Lisp lists
 (display "GDP: ") (display gdp-n) (display " quarterly observations") (newline)
 
 ; --- 2. a second series, restricted to a date range given as `date` values ---
@@ -2082,7 +2341,7 @@ the `tasty_api/` desktop app, ported here as plain synchronous builtins
 `fred-series` wraps a plain `urllib` call) — no PyQt6 dependency, and
 nothing here needs a GUI running.
 
-Five of the seven functions do real network I/O and take
+Four of the seven functions do real network I/O and take
 `credentials-path` first — a local JSON file:
 ```json
 {"client_secret": "...", "refresh_token": "...", "is_test": false}
@@ -2093,12 +2352,13 @@ hold both APIs' credentials. See `tasty_api/README.md` for the one-time
 OAuth setup (create an OAuth application on tastytrade, save the client
 secret, then use "Create Grant" to generate a refresh token — refresh
 tokens don't expire; the SDK auto-renews the short-lived session token
-behind the scenes). The other two, `tastytrade-curve-fit` and
-`tastytrade-leg-carry`, are pure analysis functions — no
-`credentials-path`, no networking — that operate on data already fetched
-by `tastytrade-futures-curve-rows`, so you can fetch a curve once and
-re-run either analysis as many times as you like with different rate/
-threshold assumptions at no extra cost.
+behind the scenes). The other three take no `credentials-path` and do no
+networking: `tastytrade-products` just returns a hardcoded list of known
+product codes, and `tastytrade-curve-fit`/`tastytrade-leg-carry` are pure
+analysis functions that operate on data already fetched by
+`tastytrade-futures-curve-rows`, so you can fetch a curve once and re-run
+either analysis as many times as you like with different rate/threshold
+assumptions at no extra cost.
 
 `product` (for `tastytrade-futures-curve` and `tastytrade-futures-curve-rows`)
 must be one of the recognized futures short codes — call
@@ -2647,6 +2907,11 @@ library like `column_engine.lsp` reporting a circular dependency.
 ```lisp
 (error "bad value:" 42)        ; raises LispError: bad value: 42
 ```
+
+#### `(catch-error protected-expr (var) handler-body...)`
+See "Special forms", above — documented once there (it's a special form,
+not a function: `protected-expr` must NOT be evaluated eagerly, since the
+whole point is to catch what happens when it's evaluated).
 
 ### Introspection / debugging
 
