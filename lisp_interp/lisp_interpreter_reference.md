@@ -638,6 +638,55 @@ use internally, exposed directly for convenience.
 (sigmoid 0)                    ; => 0.5
 ```
 
+### Random numbers
+
+`random-float`/`random-int` draw from a single, shared random number
+generator (Python's own `random` module) — every call anywhere in a
+session advances the SAME underlying sequence, so `random-seed` affects
+every subsequent draw, not just calls made right after it. (This is a
+separate generator from `vectors-shuffle`'s own optional `seed` argument,
+which — see "Vectors" — always creates its own independent, one-off
+generator rather than touching this shared one, so shuffling a vector with
+an explicit seed never disturbs the sequence `random-float`/`random-int`
+are on.)
+
+#### `(random-seed [n])`
+Seeds the shared generator, so every `random-float`/`random-int` call from
+here on (in this session) produces a reproducible sequence — the same seed
+always produces the same sequence of draws. `(random-seed)` with no
+argument re-seeds unpredictably instead, from system entropy (the state
+the generator is already in before this is ever called, so this is only
+useful to intentionally "forget" an earlier seed mid-session). Returns
+`'()`.
+
+```lisp
+(random-seed 42)
+(random-float)                 ; => 0.6394267984578837
+(random-seed 42)
+(random-float)                 ; => 0.6394267984578837 again -- same seed, same draw
+```
+
+#### `(random-float [lo hi])`
+A random float, uniformly distributed over `[lo, hi)` — default `[0, 1)`
+when neither is given. Both bounds must be given together; there's no
+"just `hi`, `lo` defaults to 0" shorthand.
+
+```lisp
+(random-float)                 ; => e.g. 0.256 -- somewhere in [0, 1)
+(random-float 10 20)           ; => e.g. 16.4  -- somewhere in [10, 20)
+```
+
+#### `(random-int lo hi)`
+A random integer, uniformly distributed over `[lo, hi]` — **inclusive of
+both endpoints** (unlike `random-float`'s half-open range above), matching
+Python's own `random.randint`. `lo` and `hi` must both be plain integers;
+raises `LispError` if `lo > hi`.
+
+```lisp
+(random-int 1 6)                ; => one of 1, 2, 3, 4, 5, 6 -- a die roll
+(random-int 0 0)                ; => 0 -- a degenerate single-value range is fine
+```
+
 ### Comparison / equality / booleans
 
 #### `(= a b ...)`, `(< a b ...)`, `(> a b ...)`, `(<= a b ...)`, `(>= a b ...)`
@@ -1846,6 +1895,24 @@ to get a query's results, matching two different needs:
   through it one row at a time, for a result set you'd rather not
   materialize all at once, or want to process row-by-row in a loop.
 
+Both accept an optional trailing `params` argument — a Lisp list of values
+bound, in order, to `?` placeholders in the SQL text, via SQLite's own
+native parameter binding (not string-building), which is what makes this
+safe against SQL injection no matter what a value contains. Writing the
+placeholders and the query text that will fill them by hand is easy to get
+out of sync on a query with more than a couple of parameters; `template.lsp`
+(next to this file) is a small templating engine built to generate both
+together instead — write `{{name}}` right where a value belongs (e.g.
+`"...WHERE state = {{state}}"`), and `template-render-sql` produces the
+`"?"`-ified SQL text and the matching params list as one pair; `{{name}}` is
+ALWAYS a bound parameter there, never text spliced into the query, so it
+can't be used to build an unsafe query even by accident. `template.lsp` is
+also a general-purpose text templating engine on its own (variable
+substitution, `{{#each}}` loops, `{{#if}}` conditionals) — see its own
+header comment for the full syntax and worked examples, and
+`sqlite-query-template`/`sqlite-execute-template` (also there) for running
+a template against a connection in one call.
+
 #### `(sqlite-open "path/to/db.sqlite")`
 Opens (creating it first if it doesn't already exist, same as Python's
 `sqlite3.connect`) a SQLite database file and returns a connection value —
@@ -1855,13 +1922,14 @@ pass it to `sqlite-query`, `sqlite-execute`, and `sqlite-close`. Raises
 #### `(sqlite-close conn)`
 Closes a connection opened by `sqlite-open`. Returns `'()`.
 
-#### `(sqlite-query conn "SELECT ...")`
+#### `(sqlite-query conn "SELECT ..." [dtypes max-rows params])`
 Runs a SQL statement and returns its ENTIRE result set at once, column-wise:
 a Lisp list of `(name . vector)` pairs, one per output column, in query
-order, column names taken from the query itself. SQL `NULL` becomes `'()`;
-everything else converts number-for-number, text-for-text. Raises
-`LispError` on a SQL error (bad syntax, unknown column/table, etc) or if
-`conn` isn't a value from `sqlite-open`.
+order, column names taken from the query itself. SQL `NULL` becomes `'()`
+(unless a column is dtype-hinted — see below); everything else converts
+number-for-number, text-for-text. Raises `LispError` on a SQL error (bad
+syntax, unknown column/table, etc) or if `conn` isn't a value from
+`sqlite-open`.
 
 ```lisp
 (define conn (sqlite-open "donors.db"))
@@ -1871,13 +1939,76 @@ everything else converts number-for-number, text-for-text. Raises
 (sqlite-close conn)
 ```
 
-#### `(sqlite-execute conn "SELECT ...")`
+**`dtypes` and `max-rows`** — two optional arguments for a *huge* result
+(tens of millions of rows), where the ordinary path above — grow a plain
+Python list per column as rows stream in, then have each column's vector
+figure out its own dtype by scanning every value — means briefly holding
+the whole result twice over (once as a list of individually-boxed values,
+once as the final packed vector) and spending real time on that scan.
+
+`dtypes`: a string with exactly one character per output column, in query
+order — `"B"`/`"I"`/`"F"` (case-insensitive) for Boolean/Integer/Float,
+forcing that column straight to a vector of
+`LispVector.BOOL_INT_DTYPE`/`INT_DTYPE`/`FLOAT_DTYPE` (see "Vectors",
+above) instead of inferring it from the data. Any other character —
+conventionally `.` — leaves that one column un-hinted, inferred the normal
+way, so a `dtypes` string only needs real letters over a query's numeric
+columns; a text column, say, can be left un-hinted in an otherwise-hinted
+query. **Hints are trusted, not verified against the data**: a value the
+hinted dtype genuinely can't hold — a `NULL` in a `B`/`I` column (there's
+no integer NaN), a string, a number too big for the dtype — raises a
+`LispError` naming the row and column it happened at, but a value that
+merely doesn't *match* — e.g. a fractional number arriving in an `"I"`
+column — is silently truncated exactly the way an unchecked `vector-set!`
+would be (see "Vectors" for the general dtype-widening machinery this
+bypasses on purpose, for speed). A `NULL` in an `"F"` column becomes `NaN`
+instead of erroring, matching numpy/pandas' own convention for a missing
+float — no special handling needed for that case specifically.
+
+`max-rows`: an upper bound on how many rows the query will return. Given
+*together with* `dtypes`, every hinted column's vector is allocated once,
+up front, at this size, and each row's values are written directly into it
+as they stream from the cursor — no intermediate Python list for that
+column at all, and no separate dtype-scanning pass afterward (an un-hinted
+column, if any, still collects into a plain list either way, since its
+eventual dtype isn't known until every value's been seen). If the query
+actually returns *more* than `max-rows` rows, that's a `LispError` — raise
+the bound, or drop `max-rows` to fall back to an ordinary, unbounded
+collection — rather than silently reallocating past the bound you gave, or
+silently dropping rows.
+
+Measured on a 3-column, 2,000,000-row table: `dtypes` alone cuts query time
+by about 4x (skipping the per-value wrapping and the dtype-inference scan);
+adding `max-rows` on top cuts peak memory by roughly 45% further (skipping
+the intermediate Python list entirely, for hinted columns).
+
+```lisp
+(define big (sqlite-query conn "SELECT id, balance, delinquent FROM loans"
+                           "IFB" 10000000))    ; up to 10M rows expected
+```
+
+**`params`** (last argument, so existing 2/3/4-argument calls keep working
+unchanged): a Lisp list of values bound, in order, to `?` placeholders in
+`sql`, via SQLite's own parameter binding — the value is sent to SQLite
+separately from the SQL text, so it's never interpreted as SQL syntax no
+matter what it contains, which is what actually prevents SQL injection (as
+opposed to splicing a value into the query string, safely or not). See
+"SQLite", above, for `template.lsp`, a small templating engine for
+generating the `"?"`-placeholder text and this params list together instead
+of writing both by hand and keeping them in sync yourself.
+
+```lisp
+(sqlite-query conn "SELECT * FROM loans WHERE state = ? AND balance > ?"
+              '() '() (list "CA" 100000))
+```
+
+#### `(sqlite-execute conn "SELECT ..." [params])`
 Runs a SQL statement and returns a CURSOR immediately, without reading any
 rows yet — pass it to `sqlite-fetch-row`, repeatedly, to pull one row at a
 time. Also fine for a non-`SELECT` statement (`INSERT`/`UPDATE`/`CREATE
 TABLE`/...); `sqlite-fetch-row` on the resulting cursor just returns `'()`
-right away, since there's nothing to fetch. Raises `LispError` the same way
-`sqlite-query` does.
+right away, since there's nothing to fetch. `params`: same as
+`sqlite-query`'s. Raises `LispError` the same way `sqlite-query` does.
 
 #### `(sqlite-fetch-row cursor)`
 Pulls the next row from a cursor returned by `sqlite-execute`, as a Lisp

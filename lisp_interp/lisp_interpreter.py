@@ -2716,18 +2716,143 @@ def sqlite_close_fn(conn):
     return NIL
 
 
-def _sqlite_run(conn, sql):
+def _lisp_value_to_sqlite_param(v):
+    """Convert one Lisp value into whatever Python's sqlite3 module wants
+    to bind it as a `?` parameter: '() -> None (SQL NULL), a LispDate ->
+    its ISO string, a LispString -> a plain str (sqlite3 rejects the
+    LispString subclass otherwise -- it checks type(v) is str, not
+    isinstance), everything else (plain int/float/bool) passes through
+    unchanged -- sqlite3 already accepts those natively."""
+    if v is NIL:
+        return None
+    if isinstance(v, LispDate):
+        return v.date.isoformat()
+    if isinstance(v, LispString):
+        return str(v)
+    return v
+
+
+def _sqlite_run(conn, sql, params=None):
+    """params: None (no parameters -- the plain sqlite-query case), or a
+    Lisp list of values to bind to the SQL text's `?` placeholders, in
+    order -- passed to sqlite3's OWN parameter binding (cursor.execute(
+    sql, params)), which is what actually makes this safe against SQL
+    injection: a bound value is sent to SQLite separately from the SQL
+    text over the driver's own protocol, so it can NEVER be interpreted
+    as SQL syntax no matter what characters it contains -- unlike
+    building the query by splicing a value into the SQL string, which is
+    exactly what SQL injection is. See template.lsp's `{{name}}` in
+    "SQL mode" for the Lisp-level tool that generates a `?`-placeholder
+    query and this params list together, so a value never has to be
+    spliced into SQL text by hand at all."""
     if not isinstance(conn, LispSQLiteConnection):
         raise LispError("expected a sqlite connection (from sqlite-open), got %r" % (conn,))
     try:
         cursor = conn.connection.cursor()
-        cursor.execute(str(sql))
+        if params is None:
+            cursor.execute(str(sql))
+        else:
+            bound = [_lisp_value_to_sqlite_param(v) for v in pairs_to_list(params)]
+            cursor.execute(str(sql), bound)
         return cursor
     except sqlite3.Error as e:
         raise LispError("sqlite: %s" % e)
 
 
-def sqlite_query_fn(conn, sql):
+def _sqlite_dtype_for_code(code):
+    """Map one character of sqlite-query's optional `dtypes` hint string
+    to a numpy dtype -- 'B'/'I'/'F' (case-insensitive) for Boolean/
+    Integer/Float, picking LispVector.BOOL_INT_DTYPE/INT_DTYPE/
+    FLOAT_DTYPE respectively (looked up fresh here, not cached, so
+    changing those class attributes -- see LispVector's own docstring --
+    takes effect here too). Any other character (conventionally '.')
+    means "no hint for this column" (None) -- it falls back to
+    sqlite-query's normal per-value type inference, so a `dtypes` string
+    only needs real letters over a query's numeric columns, leaving a
+    text column (say) un-hinted."""
+    code = code.upper()
+    if code == "B":
+        return LispVector.BOOL_INT_DTYPE
+    if code == "I":
+        return LispVector.INT_DTYPE
+    if code == "F":
+        return LispVector.FLOAT_DTYPE
+    return None
+
+
+def _sqlite_query_streamed(cursor, names, hints):
+    """sqlite-query's original approach, used when no `max-rows` is
+    given: grow a plain Python list per column as rows stream in from
+    the cursor, then build each column's LispVector at the end. A
+    hinted column (see sqlite-query's own docstring for `hints`) still
+    skips per-value Lisp wrapping and has its final dtype forced
+    directly instead of inferred -- a real saving on its own for a big
+    column, since it skips re-scanning every value just to guess a
+    dtype -- but, unlike the `max-rows` path below, doesn't avoid
+    briefly holding the column twice over (once as this Python list,
+    once as the final packed array), since the eventual row count isn't
+    known ahead of time."""
+    columns_raw = [[] for _ in names]
+    for row in cursor:
+        for j, v in enumerate(row):
+            columns_raw[j].append(v if hints[j] is not None else _sqlite_value_to_lisp(v))
+
+    result = []
+    for j, values in enumerate(columns_raw):
+        if hints[j] is None:
+            result.append(LispVector(values))
+            continue
+        try:
+            result.append(LispVector(np.array(values, dtype=hints[j])))
+        except (TypeError, ValueError, OverflowError) as e:
+            raise LispError("sqlite-query: column %r doesn't fit its dtypes hint: %s" % (names[j], e))
+    return result
+
+
+def _sqlite_query_preallocated(cursor, names, hints, cap):
+    """sqlite-query's `max-rows` path -- see its own docstring. Every
+    hinted column's numpy array is allocated ONCE, at `cap` rows, before
+    a single row is even read, and each row's value is written directly
+    into it (arrays[j][row_count] = v) as it streams from the cursor --
+    no intermediate Python list, and no separate dtype-inference pass
+    afterward, for that column. Un-hinted columns still grow a plain
+    list, same as the no-max-rows path, since their eventual dtype isn't
+    known until every value's been seen."""
+    arrays = [np.empty(cap, dtype=hint) if hint is not None else None for hint in hints]
+    raw_lists = [[] if hint is None else None for hint in hints]
+
+    row_count = 0
+    j = 0
+    try:
+        for row in cursor:
+            if row_count >= cap:
+                raise LispError(
+                    "sqlite-query: the result has more than max-rows=%d rows "
+                    "(row %d found) -- raise max-rows, or drop it to collect "
+                    "an unbounded result the ordinary way" % (cap, row_count + 1))
+            for j, v in enumerate(row):
+                if hints[j] is not None:
+                    arrays[j][row_count] = v
+                else:
+                    raw_lists[j].append(_sqlite_value_to_lisp(v))
+            row_count += 1
+    except LispError:
+        raise
+    except (TypeError, ValueError, OverflowError) as e:
+        raise LispError(
+            "sqlite-query: row %d, column %r doesn't fit its dtypes hint: %s"
+            % (row_count, names[j], e))
+
+    result = []
+    for j in range(len(names)):
+        if hints[j] is not None:
+            result.append(LispVector(arrays[j][:row_count]))
+        else:
+            result.append(LispVector(raw_lists[j]))
+    return result
+
+
+def sqlite_query_fn(conn, sql, dtypes=None, max_rows=None, params=None):
     """(sqlite-query conn "SELECT ...") -- run a SQL statement to
     completion and return its result set COLUMN-WISE: a Lisp list of
     (name . vector) pairs, one per output column, in query order --
@@ -2736,28 +2861,84 @@ def sqlite_query_fn(conn, sql):
     directly:
         (display-columns (sqlite-query conn "SELECT year, total FROM t"))
     Column names come from the query itself; SQL NULL becomes '() (see
-    _sqlite_value_to_lisp). This reads the ENTIRE result set into memory
-    before returning -- for a large result you'd rather step through one
-    row at a time instead, see sqlite-execute / sqlite-fetch-row.
+    _sqlite_value_to_lisp) in an un-hinted column. This reads the ENTIRE
+    result set into memory before returning -- for a large result you'd
+    rather step through one row at a time instead, see sqlite-execute /
+    sqlite-fetch-row.
 
-    Streams rows one at a time straight from the cursor into per-column
-    lists, rather than fetchall()-ing the whole raw result set first and
-    transposing it afterward -- avoids ever holding a full second copy
-    of the result (as row-tuples) alongside the column-vectors being
-    built from it."""
-    cursor = _sqlite_run(conn, sql)
+    `params` (optional, last argument so existing 2/3/4-argument calls
+    keep working unchanged): a Lisp list of values to bind to `?`
+    placeholders in `sql`, in order -- see _sqlite_run's docstring for
+    why this (not string-building) is what actually prevents SQL
+    injection. template.lsp builds the `sql`/`params` pair for you from
+    a template and a set of named bindings; this is the low-level
+    primitive it's built on.
+
+    Two optional arguments, meant to be used TOGETHER to speed up a huge
+    result set (tens of millions of rows), where the ordinary approach
+    above -- grow a plain Python list per column, then hand each one to
+    LispVector, which scans every value to infer a dtype -- means
+    briefly holding the whole result twice over (once as boxed Python
+    values, once as the final packed numpy array) and spending real time
+    on that inference scan:
+
+      `dtypes`: a string with one character per output column, in query
+      order -- 'B'/'I'/'F' (case-insensitive) for Boolean/Integer/Float,
+      forcing that column straight to LispVector.BOOL_INT_DTYPE/
+      INT_DTYPE/FLOAT_DTYPE instead of inferring it from the data; any
+      other character (conventionally '.') leaves that one column
+      un-hinted, inferred the normal way -- handy for a query that mixes
+      numeric columns with a text one. Hints are TRUSTED, not verified
+      against the data: a value the hinted dtype genuinely can't hold (a
+      NULL in a 'B'/'I' column, since there's no integer NaN; a string;
+      a number too big for the dtype) raises a LispError naming the row
+      and column, but a value that merely doesn't match -- e.g. a
+      fractional number in an 'I' column -- is silently truncated the
+      same way an unchecked vector-set! would be (see LispVector's
+      docstring on _value_fits_dtype) -- this fast path deliberately
+      skips that check. A NULL in an 'F' column becomes NaN, same as
+      numpy/pandas' own convention for a missing float, and needs no
+      special handling.
+
+      `max-rows`: an upper bound on how many rows the query will
+      return. Given together with `dtypes`, every HINTED column's numpy
+      array is allocated once, up front, at this size, and each row's
+      values are written directly into it as they stream from the
+      cursor -- no intermediate Python list for that column at all, and
+      no separate dtype-inference pass afterward. Un-hinted columns (no
+      `dtypes` string, or a column left un-hinted within one) still
+      collect into a plain list either way, since their eventual dtype
+      isn't known until every value's been seen. If the query actually
+      returns MORE than `max-rows` rows, that's a LispError -- raise the
+      bound, or drop `max-rows` to fall back to an ordinary, unbounded
+      collection -- rather than silently reallocating past the bound you
+      gave, or silently dropping rows.
+    """
+    cursor = _sqlite_run(conn, sql, params)
     names = [d[0] for d in cursor.description] if cursor.description else []
-    columns = [[] for _ in names]
-    for row in cursor:
-        for column, v in zip(columns, row):
-            column.append(_sqlite_value_to_lisp(v))
-    return list_to_pairs([
-        Pair(LispString(name), LispVector(column))
-        for name, column in zip(names, columns)
-    ])
+    n_cols = len(names)
+
+    hints = [None] * n_cols
+    if dtypes is not None and dtypes is not NIL:
+        dtype_str = str(dtypes)
+        if len(dtype_str) != n_cols:
+            raise LispError(
+                "sqlite-query: dtypes must have exactly one character per "
+                "column (%d column(s), got a %d-character string)" % (n_cols, len(dtype_str)))
+        hints = [_sqlite_dtype_for_code(ch) for ch in dtype_str]
+
+    if max_rows is not None and max_rows is not NIL:
+        cap = int(max_rows)
+        if cap < 0:
+            raise LispError("sqlite-query: max-rows must not be negative")
+        columns = _sqlite_query_preallocated(cursor, names, hints, cap)
+    else:
+        columns = _sqlite_query_streamed(cursor, names, hints)
+
+    return list_to_pairs([Pair(LispString(name), column) for name, column in zip(names, columns)])
 
 
-def sqlite_execute_fn(conn, sql):
+def sqlite_execute_fn(conn, sql, params=None):
     """(sqlite-execute conn "SELECT ...") -- run a SQL statement and
     return a CURSOR without reading any rows yet. Call (sqlite-fetch-row
     cursor) repeatedly to pull one row at a time (as a Lisp list of that
@@ -2766,8 +2947,11 @@ def sqlite_execute_fn(conn, sql):
     once with sqlite-query, or when you'd rather process rows one by one
     (e.g. in a `while`/`dolist` loop). Fine for a non-SELECT statement
     too (INSERT/UPDATE/...); sqlite-fetch-row just returns '() right
-    away since there's nothing to fetch."""
-    return LispSQLiteCursor(_sqlite_run(conn, sql))
+    away since there's nothing to fetch.
+
+    `params` (optional): a Lisp list of values to bind to `?`
+    placeholders in `sql`, in order -- see sqlite-query's docstring."""
+    return LispSQLiteCursor(_sqlite_run(conn, sql, params))
 
 
 def sqlite_fetch_row_fn(cursor):
@@ -3951,6 +4135,29 @@ def make_global_env(output=None, plot=None, columns=None):
         ">=": lambda *a: chain_compare(lambda x, y: x >= y, a),
     })
 
+    # ---- pseudo-random numbers (Python's own `random` module, already
+    #      imported and used elsewhere -- e.g. vectors-shuffle -- but
+    #      that takes its own optional per-call seed rather than sharing
+    #      this global state) ----
+    def random_seed_fn(n=None):
+        random.seed(n)
+        return NIL
+
+    def random_float_fn(lo=0.0, hi=1.0):
+        return random.uniform(lo, hi)
+
+    def random_int_fn(lo, hi):
+        try:
+            return random.randint(lo, hi)
+        except (ValueError, TypeError) as e:
+            raise LispError("random-int: %s" % e)
+
+    env.update({
+        "random-seed": random_seed_fn,
+        "random-float": random_float_fn,
+        "random-int": random_int_fn,
+    })
+
     # ---- booleans / equality ----
     env.update({
         "not": lambda x: not is_true(x),
@@ -4187,7 +4394,7 @@ def make_global_env(output=None, plot=None, columns=None):
         return NIL
 
     def vector_map(f, v):
-        return LispVector([apply_proc(f, [x]) for x in v.items.tolist()])
+        return LispVector([apply_proc(f, [v.items[j]] ) for j in range(len(v.items))])
 
     def vector_append(*vs):
         items = []
