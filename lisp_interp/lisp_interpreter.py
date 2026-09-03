@@ -614,7 +614,7 @@ def tokenize(text):
             buf = []
             while j < n and text[j] != '"':
                 if text[j] == '\\' and j + 1 < n:
-                    escapes = {'n': '\n', 't': '\t', '"': '"', '\\': '\\'}
+                    escapes = {'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\'}
                     buf.append(escapes.get(text[j + 1], text[j + 1]))
                     j += 2
                 else:

@@ -128,15 +128,9 @@
   (scan start))
 
 (define (template--is-space? c)
-  "Space, tab, or newline. NOT also \\r: this interpreter's string
-reader has no \\r escape (only \\n, \\t, \\\", \\\\ -- see tokenize() in
-lisp_interpreter.py), so a \"\\r\" literal here would silently mean the
-one-character string \"r\" instead of an actual carriage return --
-which, found the hard way, made every letter r in a tag get treated as
-whitespace and silently eaten (e.g. \"row\" parsed as \"ow\"). A
-template with real Windows-style CRLF line endings will have to make do
-without \\r being trimmed."
-  (or (string=? c " ") (string=? c "\t") (string=? c "\n")))
+  "Space, tab, newline, or carriage return (the last one matters for a
+template loaded from a Windows-authored CRLF text file)."
+  (or (string=? c " ") (string=? c "\t") (string=? c "\n") (string=? c "\r")))
 
 (define (template--trim s)
   "Strip leading/trailing whitespace."
