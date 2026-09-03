@@ -483,16 +483,53 @@ class LispSQLiteCursor:
 
 
 class LispStructType:
-    """The record type created by (defstruct name slot...) -- see
+    """The record type created by (defstruct name slot...) or
+    (defstruct (name (:include parent)) slot...) -- see
     eval_special_form()'s "defstruct" case. Just metadata: the type's
-    name and its ordered slots (Symbol slot_name, default_expr_or_None).
-    Slot order is preserved everywhere a struct of this type is printed
-    or its constructor's keyword arguments are bound, matching the
-    source's declaration order."""
+    name, its parent LispStructType (or None for a plain, non-including
+    defstruct), and its full ordered slot list (Symbol slot_name,
+    default_expr_or_None) -- inherited slots first, in the PARENT's own
+    order (a child slot with the same name as an inherited one replaces
+    that slot's default in place rather than duplicating it, exactly CL's
+    :include behavior), then the child's own new slots, in declared
+    order. Slot order is preserved everywhere a struct of this type is
+    printed or its constructor's keyword arguments are bound.
 
-    def __init__(self, name, slots):
-        self.name = name            # Symbol
-        self.slots = slots          # [(Symbol slot_name, default_expr_or_None), ...]
+    `slots` is deliberately the single, already-flattened list any
+    consumer (the constructor, accessors, to_string, ...) needs -- none
+    of them have to know or care that some of it came from a parent;
+    only defstruct itself (building this list, below) and is_a
+    (checking substructure-of relationships for accessor/predicate
+    sharing) look at `parent` directly."""
+
+    def __init__(self, name, own_slots, parent=None):
+        self.name = name              # Symbol
+        self.parent = parent          # LispStructType or None
+        self.own_slots = own_slots    # this type's own slot declarations, unmerged
+        self.slots = LispStructType._merge_slots(parent, own_slots)
+
+    @staticmethod
+    def _merge_slots(parent, own_slots):
+        if parent is None:
+            return list(own_slots)
+        own_by_name = dict(own_slots)
+        merged = [(name, own_by_name.get(name, default)) for name, default in parent.slots]
+        inherited_names = set(name for name, _ in parent.slots)
+        merged.extend((name, default) for name, default in own_slots if name not in inherited_names)
+        return merged
+
+    def is_a(self, other_type):
+        """True if this type IS other_type, or (:include-)descends from
+        it -- i.e. an instance of this type can stand in anywhere an
+        instance of other_type is expected: other_type's accessors,
+        setters, and predicate all accept it, exactly CL's struct
+        substructure relationship."""
+        t = self
+        while t is not None:
+            if t is other_type:
+                return True
+            t = t.parent
+        return False
 
     def __repr__(self):
         return "#<struct-type %s>" % (self.name,)
@@ -1289,8 +1326,12 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         eval_or(pairs_to_list(args), env, control_stack, value_stack)
 
     elif op == "defstruct":
-        # (defstruct name slot...) -- each slot is a bare symbol (default
-        # value '()) or (slot-name default-expr), exactly CL's defstruct
+        # (defstruct name slot...), or, to inherit from an existing
+        # struct type, (defstruct (name (:include parent)) slot...) --
+        # exactly CL's defstruct name-and-options / :include syntax
+        # (only :include is supported here; CL has several other
+        # options this doesn't need). Each slot is a bare symbol
+        # (default value '()) or (slot-name default-expr), exactly CL's
         # slot-spec syntax (e.g. (visible #t)). Never evaluated itself,
         # like defmacro's params. Builds four things and binds them into
         # env, exactly as `define` binds a single name:
@@ -1300,26 +1341,79 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         #                     type (spliced in directly as a literal --
         #                     any non-Pair/non-Symbol value is self-
         #                     evaluating, see seval()'s EVAL case) and a
-        #                     plist built from the bound slot params. So
+        #                     plist built from the bound slot params
+        #                     (ALL of them -- inherited and own alike;
+        #                     LispStructType.slots is already the flat,
+        #                     merged list, see its own docstring). So
         #                     struct construction is just an application
         #                     of the general keyword-argument machinery,
         #                     not a separate code path.
-        #   <name>-<slot>       -- accessor
+        #   <name>-<slot>       -- accessor, one per slot in the FULL
+        #                          (inherited + own) slot list
         #   <name>-<slot>-set!  -- setter (mutable slots; matches this
         #                          codebase's vector-set!-style naming,
         #                          not CL's setf)
         #   <name>?             -- predicate
-        type_name = args.car
-        slots = []
+        # Every one of the four accepts not just an instance of exactly
+        # this type, but also an instance of any type that (:include)s
+        # it, directly or transitively (LispStructType.is_a) -- so a
+        # parent's own accessor works on a child instance too, matching
+        # CL's struct substructure relationship: (parent-x child-instance)
+        # and (child-x child-instance) read the very same slot. A NEWLY
+        # child-only slot's accessor, naturally, still only accepts an
+        # instance of the child (or a further descendant) -- a plain
+        # parent instance was never given a value for it.
+        name_form = args.car
+        parent_type = None
+        own_slots = []
+        if isinstance(name_form, Pair):
+            type_name = name_form.car
+            opt_p = name_form.cdr
+            while isinstance(opt_p, Pair):
+                opt = opt_p.car
+                if (isinstance(opt, Pair) and isinstance(opt.car, Keyword)
+                        and opt.car == ":include" and isinstance(opt.cdr, Pair)):
+                    parent_name = opt.cdr.car
+                    parent_type = env.lookup_or_none(Symbol("%%struct-type-%s" % parent_name))
+                    if parent_type is None:
+                        raise LispError(
+                            "defstruct: :include parent %r is not a known struct type "
+                            "(define it with defstruct first)" % (parent_name,))
+                    # (:include parent (slot new-default) ...) -- CL lets you
+                    # override an inherited slot's default right here, as an
+                    # alternative to just redeclaring that slot name in the
+                    # main slot list below (which works exactly the same way,
+                    # via LispStructType._merge_slots -- both end up in
+                    # own_slots, and a name in there always overrides that
+                    # inherited slot's default in place rather than
+                    # duplicating it).
+                    override_p = opt.cdr.cdr
+                    while isinstance(override_p, Pair):
+                        override_spec = override_p.car
+                        if not isinstance(override_spec, Pair):
+                            raise LispError(
+                                "defstruct: malformed :include slot override %r "
+                                "(expected (slot-name default-expr))" % (override_spec,))
+                        own_slots.append((override_spec.car, override_spec.cdr.car))
+                        override_p = override_p.cdr
+                else:
+                    raise LispError("defstruct: unsupported option in %r (only :include is supported)"
+                                     % (name_form,))
+                opt_p = opt_p.cdr
+        else:
+            type_name = name_form
+
         p = args.cdr
         while isinstance(p, Pair):
             spec = p.car
             if isinstance(spec, Pair):
-                slots.append((spec.car, spec.cdr.car))
+                own_slots.append((spec.car, spec.cdr.car))
             else:
-                slots.append((spec, None))
+                own_slots.append((spec, None))
             p = p.cdr
-        struct_type = LispStructType(type_name, slots)
+        struct_type = LispStructType(type_name, own_slots, parent=parent_type)
+        slots = struct_type.slots
+        env[Symbol("%%struct-type-%s" % type_name)] = struct_type  # for a later defstruct's :include
 
         plist_items = []
         for slot_name, _ in slots:
@@ -1332,14 +1426,14 @@ def eval_special_form(op, args, env, control_stack, value_stack):
 
         def make_accessor(slot_name):
             def accessor(s):
-                if not (isinstance(s, LispStruct) and s.struct_type is struct_type):
+                if not (isinstance(s, LispStruct) and s.struct_type.is_a(struct_type)):
                     raise LispError("%s-%s: not a %s: %r" % (type_name, slot_name, type_name, s))
                 return s.values[slot_name]
             return accessor
 
         def make_setter(slot_name):
             def setter(s, v):
-                if not (isinstance(s, LispStruct) and s.struct_type is struct_type):
+                if not (isinstance(s, LispStruct) and s.struct_type.is_a(struct_type)):
                     raise LispError("%s-%s-set!: not a %s: %r" % (type_name, slot_name, type_name, s))
                 s.values[slot_name] = v
                 return NIL
@@ -1350,7 +1444,7 @@ def eval_special_form(op, args, env, control_stack, value_stack):
             env[Symbol("%s-%s-set!" % (type_name, slot_name))] = make_setter(slot_name)
 
         env[Symbol("%s?" % type_name)] = (
-            lambda s, t=struct_type: isinstance(s, LispStruct) and s.struct_type is t)
+            lambda s, t=struct_type: isinstance(s, LispStruct) and s.struct_type.is_a(t))
 
         value_stack.append(type_name)
 

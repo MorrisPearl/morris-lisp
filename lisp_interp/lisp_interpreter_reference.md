@@ -256,7 +256,7 @@ plus `&key` — see "Keyword arguments", below. Returns `name`.
                                 ;    to be a macro, not a plain function
 ```
 
-#### `(defstruct name slot...)`
+#### `(defstruct name slot...)`, `(defstruct (name (:include parent [slot-override...])) slot...)`
 Common-Lisp-style record type. Each `slot` is either a bare symbol (default
 value `'()`) or `(slot-name default-expr)` — e.g. `(visible #t)`. Defines,
 and binds into the current environment:
@@ -286,6 +286,47 @@ order. `struct?`, `struct-ref`, `struct-set!`, and `struct-type-name` (see
 "Structs" under Built-in functions) work generically on any struct
 instance by slot-name symbol, without needing the type-specific accessor
 names — useful when writing code that works across struct types.
+
+**Inheritance** — `(defstruct (name (:include parent)) slot...)` gives
+`name` every one of `parent`'s slots (in `parent`'s own order) plus its own
+new `slot`s appended after, exactly CL's `:include`. `parent` must already
+be defined (with `defstruct`, earlier). Every accessor/setter/predicate
+`parent` itself defined — `parent-<slot>`, `parent-<slot>-set!`, `parent?`
+— also accepts an instance of `name` (or of anything that includes `name`,
+transitively): a subtype instance can stand in anywhere an instance of its
+supertype is expected, the same way a *value* can, so `parent-x` and
+`name-x` read the identical slot on a `name` instance. `name?` is only true
+for `name` (and its own descendants) — not for a plain `parent` instance,
+which lacks `name`'s own new slots entirely.
+
+```lisp
+(defstruct point x y)
+(defstruct (point-3d (:include point)) z)
+(define p (make-point :x 1 :y 2))
+(define c (make-point-3d :x 10 :y 20 :z 30))
+
+(point-3d-x c)                 ; => 10
+(point-x c)                    ; => 10   -- parent's own accessor works on a child instance
+(point? c)                     ; => #t   -- c is-a point too
+(point-3d? p)                  ; => #f   -- p is not a point-3d
+```
+
+An inherited slot's default can be overridden — its position in the slot
+order doesn't change, only the default value a bare `(make-name)` call
+gives it — either inside the `:include` clause itself, CL's own syntax
+(`(:include parent (slot new-default))`), or, equivalently and more simply,
+by just redeclaring that slot name in `name`'s own slot list:
+
+```lisp
+(defstruct animal (name "unknown") (legs 4))
+(defstruct (bird (:include animal (legs 2))) can-fly)   ; CL's :include syntax
+(defstruct (spider (:include animal)) (legs 8) has-web) ; equivalent: redeclare it below
+```
+
+Multi-level inheritance (a struct `:include`ing one that itself `:include`s
+another) works the same way, transitively — a grandparent's accessors work
+on a grandchild instance, and `grandparent?`/`parent?`/`child?` are all
+true for it.
 
 #### `(breakpoint [message])`
 Opens a nested, blocking debug REPL right where it appears, evaluating
