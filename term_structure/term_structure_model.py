@@ -307,6 +307,71 @@ def bootstrap_sofr_curve(sofr_futures):
     }
 
 
+def extend_curve_long_end(forward_rates, curve_real_months, treasury_yields, blend_months=12):
+    """
+    Extend a curve -- typically bootstrap_sofr_curve()'s output -- past
+    its real (non-extrapolated) coverage using a SEPARATE curve
+    bootstrapped from Treasury par yields, instead of flat-extrapolating
+    the original curve's last real rate all the way out to 30 years.
+
+    WHY: bootstrap_sofr_curve() is honest that it has no market
+    information beyond the last SOFR futures contract used to build it
+    (CME lists roughly a 5-year strip) -- everything past that is held
+    flat at that last rate. For anything priced off the FAR end of the
+    curve (a 30-year MBS, say), that flat tail is a much cruder
+    assumption than it needs to be, when a public, free, much
+    longer-dated curve (the Treasury par curve) is sitting right there on
+    FRED. This doesn't try to convert Treasury yields into a SOFR-basis
+    curve (that basis is a real, separate modeling question this
+    sidesteps) -- it just uses the TREASURY curve's own SHAPE past
+    curve_real_months, applied as-is.
+
+    forward_rates: the ORIGINAL curve's 1-month forward rates (e.g.
+        bootstrap_sofr_curve(...)['forward_rates']) -- a length-
+        TOTAL_MONTHS (360) sequence.
+    curve_real_months: how many of those months are backed by real market
+        data -- e.g. the largest end_months among the SOFR futures
+        bootstrap_sofr_curve() was given (the same quantity
+        calibrate_sofr_model()'s curve_real_months argument means).
+        Everything beyond this was flat-extrapolated by
+        bootstrap_sofr_curve() itself, and is a candidate for replacement
+        here.
+    treasury_yields: dict with bootstrap_forward_curve()'s required keys
+        ('3m', '6m', '12m', '2y', '5y', '10y', '30y'), decimals -- e.g.
+        today's most recent observation of FRED's DGS3MO/DGS6MO/DGS1/
+        DGS2/DGS5/DGS10/DGS30 series (each reported by FRED in percent,
+        so divide by 100 before passing in here).
+    blend_months: width (in months, starting at curve_real_months) of a
+        LINEAR transition from the original curve's forward rate to the
+        Treasury curve's forward rate, so the two curves -- fit to
+        different instruments, and not expected to agree exactly where
+        they meet -- don't visibly kink at the splice point.
+
+    Returns a new list of TOTAL_MONTHS forward rates (the input is not
+    modified in place).
+
+    SIMPLIFICATION: a straight linear blend, not a smoother (e.g. cubic)
+    transition -- consistent with this whole module's stated preference
+    for simplicity over polish (see the module docstring).
+    """
+    forward_rates = np.array(forward_rates, dtype=float)
+    n = len(forward_rates)
+    treasury_curve = bootstrap_forward_curve(treasury_yields)
+    treasury_forwards = np.array(treasury_curve['forward_rates'], dtype=float)
+
+    blend_start = curve_real_months
+    blend_end = min(curve_real_months + blend_months, n)
+    if blend_end > blend_start:
+        weights = np.linspace(0.0, 1.0, blend_end - blend_start, endpoint=False)
+        idx = np.arange(blend_start, blend_end)
+        forward_rates[idx] = (1 - weights) * forward_rates[idx] + weights * treasury_forwards[idx]
+    if blend_end < n:
+        idx = np.arange(blend_end, n)
+        forward_rates[idx] = treasury_forwards[idx]
+
+    return forward_rates.tolist()
+
+
 # ---------------------------------------------------------------------------
 # Step 2: two-factor Monte Carlo simulation + option pricing
 # ---------------------------------------------------------------------------

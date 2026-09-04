@@ -2630,6 +2630,44 @@ months-vector forward-rates-vector)`.
 (define sofr-forward-rates (cdr curve))
 ```
 
+#### `(sofr-extend-curve-with-treasury forward-rates curve-real-months yield-3m yield-6m yield-1y yield-2y yield-5y yield-10y yield-30y [blend-months])`
+Pure function — no networking. Replaces the flat-extrapolated tail of a
+curve from `sofr-bootstrap-curve`/`sofr-forward-curve` — past
+`curve-real-months`, everything is held at the last real futures rate —
+with the SHAPE of a separate curve bootstrapped from Treasury par yields,
+linearly blended in over `blend-months` (default `12`) so the splice
+doesn't visibly kink. Reuses `term_structure_model.py`'s
+`extend_curve_long_end()` (and, internally, `bootstrap_forward_curve()`
+for the Treasury side) as-is.
+
+CME only lists roughly a 5-year strip of SR3 contracts, so any SOFR curve
+is flat past there; for anything priced off the far end of the curve (a
+30-year MBS, say), the free, much longer-dated Treasury par curve on FRED
+is a better long-end *shape* than a flat line. This does **not** attempt
+a SOFR/Treasury basis adjustment — it borrows the Treasury curve's shape
+as-is past `curve-real-months`, a simplification worth being aware of.
+
+- `forward-rates` — the curve to extend, e.g. `sofr-bootstrap-curve`'s or
+  `sofr-forward-curve`'s second return value.
+- `curve-real-months` — same meaning as `sofr-calibrate-model`'s argument
+  of the same name: how many months of `forward-rates` are backed by real
+  market data.
+- `yield-3m`/`6m`/`1y`/`2y`/`5y`/`10y`/`30y` — today's Treasury par
+  yields, as DECIMALS (`0.045`, not `4.5`) — e.g. FRED's
+  `DGS3MO`/`DGS6MO`/`DGS1`/`DGS2`/`DGS5`/`DGS10`/`DGS30`, each divided by
+  100 (FRED reports those series in percent).
+- `blend-months` (default `12`) — width, in months starting at
+  `curve-real-months`, of the linear transition zone.
+
+Returns a new forward-rates vector (same length as the input; the input
+is not modified).
+
+```lisp
+(define extended-forward-rates
+  (sofr-extend-curve-with-treasury sofr-forward-rates curve-real-months
+                                    0.043 0.041 0.039 0.038 0.040 0.043 0.046))
+```
+
 #### `(sofr-calibrate-model forward-rates options-rows curve-real-months [n-paths seed n-grid n-rounds])`
 Pure function — no networking (cheap to re-run with different settings
 once you've fetched `options-rows` once). Fits the two-factor model's
@@ -2738,6 +2776,53 @@ SOFR-forward-curve-derived rate, for a single Monte Carlo scenario's
 cashflows (looping over several paths, each with its own
 `column_engine.lsp` registry, is the natural next step toward a full
 Monte Carlo distribution of cashflows — not built out there).
+
+That "loop over several paths" step is exactly what
+[`oas_monte_carlo.lsp`](oas_monte_carlo.lsp) does, deliberately WITHOUT
+`column_engine.lsp` (its per-row registry/topological-sort machinery is
+built for readability on a single calculated table, not for generating
+hundreds-to-thousands of per-path cashflow vectors fast). It adds:
+
+- `annualized-realized-vol` — a historical-data cross-check for
+  `sofr-calibrate-model`'s fitted `sigma1`/`sigma2` (or a quick sanity
+  check with no options data at all), from a plain rate-level vector —
+  see its docstring for a worked `fred-series "DFF"`/`"DGS10"` example.
+- `simple-mortgage-cashflows` / `mortgage-cashflows-per-path` — a fast,
+  direct (not `column_engine.lsp`-based) fixed-rate, PSA-prepaying
+  pass-through cashflow generator, reusing `prepayment_model.lsp`'s
+  `cpr`/`smm-from-cpr`, either for one path or for every path in a
+  `sofr-simulate-mortgage-rate-paths` result at once.
+- `path-present-value` / `oas-model-price` / `oas-solve` — the
+  Option-Adjusted Spread engine itself: discounts a cashflow stream along
+  one Monte Carlo path using that path's own simulated short rate plus a
+  trial spread (the SAME discounting convention `term_structure_model.py`'s
+  `price_callable_bond_mc()` uses), averages across paths for a model
+  price, then bisects for whichever spread reproduces a target market
+  price — the "solve for OAS" direction that function's own docstring
+  flags as unimplemented. Works for a single shared cashflow vector (an
+  ordinary bond) or a per-path list of cashflow vectors (a prepaying
+  mortgage, whose cashflows are path-dependent).
+
+See [`oas_monte_carlo_example.lsp`](oas_monte_carlo_example.lsp) for the
+full pipeline end to end — curve extension → (illustrated) historical-vol
+cross-check → `sofr-simulate-mortgage-rate-paths` →
+`mortgage-cashflows-per-path` → `oas-solve` — runnable with no network
+access or credentials (its curve/volatility/market-price numbers are all
+illustrative, in the same spirit as `term_structure_model.py`'s own
+`__main__` demo).
+
+[`oas_monte_carlo_live_example.lsp`](oas_monte_carlo_live_example.lsp) is
+the same pipeline against REAL data instead: the SOFR futures curve and
+calibration options from tastytrade (`sofr-calibration-data`), the
+Treasury par curve and the DFF/DGS10 historical-vol cross-check from
+`fred-series`, and the mortgage note rate from FRED's `MORTGAGE30US` —
+only the security's own market price has no live source wired up
+anywhere in this codebase, so that one number stays an assumption.
+Writes `oas_monte_carlo_live_report.txt` (and prints the same report to
+the console) listing every fetched data point and every assumption the
+run used, split into separate sections so it's clear which is which.
+Needs a credentials file with both tastytrade fields and a
+`"fred_api_key"` entry (`creds` in `init.lsp`).
 
 **Example** (also runnable as [`tastytrade_example.lsp`](tastytrade_example.lsp) —
 `python3 lisp_interpreter.py tastytrade_example.lsp`). Exercises all

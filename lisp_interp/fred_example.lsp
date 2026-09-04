@@ -29,9 +29,12 @@
 
 ; --- 1. fetch a full series: US Real Gross Domestic Product ("GDP") ---
 (define gdp (fred-series "GDP" api-key))
-(define gdp-dates (list->vector (car gdp)))
-(define gdp-values (list->vector (car (cdr gdp))))
-(define gdp-n (vector-length gdp-values))
+(define gdp-dates (car gdp))
+(define gdp-values (cdr gdp))          ; NOT (car (cdr gdp)) -- (cdr gdp) IS
+                                        ; the values vector already; fred-series
+                                        ; returns a cons pair, not a 2-element list
+(define gdp-n (vector-length gdp-values))   ; vector-length, not length -- these
+                                             ; are vectors, not Lisp lists
 (display "GDP: ") (display gdp-n) (display " quarterly observations") (newline)
 (display "  first:  ") (display (vector-ref gdp-dates 0))
 (display "  ") (display (vector-ref gdp-values 0)) (newline)
@@ -43,12 +46,12 @@
 ;        start-date/end-date, given as `date` values ---
 (define unrate (fred-series "UNRATE" api-key (date 2020 1 1) (date 2020 12 31)))
 (display "UNRATE, 2020 (civilian unemployment rate, %):") (newline)
-(print-series (list->vector (car unrate)) (list->vector (car (cdr unrate))) 0 (length (car unrate)))
+(print-series (car unrate) (cdr unrate) 0 (vector-length (car unrate)))
 (newline)
 
 ; --- 3. a third series, with the date range given as "YYYY-MM-DD"
 ;        strings instead -- both forms work interchangeably ---
 (define fedfunds (fred-series "FEDFUNDS" api-key "2023-01-01" "2023-12-31"))
 (display "FEDFUNDS, 2023 (effective federal funds rate, %):") (newline)
-(print-series (list->vector (car fedfunds() (list->vector (car (cdr fedfunds))) 0 (length (car fedfunds)))
+(print-series (car fedfunds) (cdr fedfunds) 0 (vector-length (car fedfunds)))
 (newline)

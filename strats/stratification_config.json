@@ -1,0 +1,334 @@
+{
+  "app": "Stratification Report Builder",
+  "config_version": 1,
+  "input_source": "sqlite",
+  "input_file": "",
+  "no_header": false,
+  "database_file": "/Users/morris/freddie_data/freddie_sample.db",
+  "table_name": "loan_performance",
+  "weight_field": "current_actual_upb",
+  "fields": [
+    {
+      "name": "loan_id",
+      "type": "categorical",
+      "n": 4,
+      "method": "None",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Representative Value"
+        }
+      ]
+    },
+    {
+      "name": "monthly_reporting_period",
+      "type": "categorical",
+      "n": 5,
+      "method": "Top Values + Other",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Representative Value"
+        }
+      ]
+    },
+    {
+      "name": "current_actual_upb",
+      "type": "numeric",
+      "n": 5,
+      "method": "Equal Count Buckets",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "loan_age",
+      "type": "numeric",
+      "n": 10,
+      "method": "Equal Count Buckets",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "zero_flag",
+      "type": "numeric",
+      "n": 2,
+      "method": "Manual Breakpoints",
+      "breakpoints": [
+        0.0,
+        1.0
+      ],
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "current_interest_rate",
+      "type": "numeric",
+      "n": 10,
+      "method": "Equal Weight Buckets",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "estimated_ltv",
+      "type": "numeric",
+      "n": 5,
+      "method": "Equal Weight Buckets",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "msa",
+      "type": "numeric",
+      "n": 5,
+      "method": "None",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Representative Value"
+        }
+      ]
+    },
+    {
+      "name": "maturity_date",
+      "type": "categorical",
+      "n": 5,
+      "method": "Top Values + Other",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Representative Value"
+        }
+      ]
+    },
+    {
+      "name": "num_units",
+      "type": "numeric",
+      "n": 5,
+      "method": "Equal Count Buckets",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "occupancy_primary",
+      "type": "numeric",
+      "n": 2,
+      "method": "Manual Breakpoints",
+      "breakpoints": [
+        0.0,
+        1.0
+      ],
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "occupancy_investment",
+      "type": "numeric",
+      "n": 2,
+      "method": "Manual Breakpoints",
+      "breakpoints": [
+        0.0,
+        1.0
+      ],
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "orig_dti",
+      "type": "numeric",
+      "n": 5,
+      "method": "Equal Weight Buckets",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Weighted Average"
+        }
+      ]
+    },
+    {
+      "name": "orig_upb",
+      "type": "numeric",
+      "n": 5,
+      "method": "Equal Weight Buckets",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "orig_ltv",
+      "type": "numeric",
+      "n": 5,
+      "method": "Equal Weight Buckets",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Weighted Average"
+        }
+      ]
+    },
+    {
+      "name": "orig_interest_rate",
+      "type": "numeric",
+      "n": 10,
+      "method": "Equal Weight Buckets",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Weighted Average"
+        }
+      ]
+    },
+    {
+      "name": "prepayment_penalty",
+      "type": "numeric",
+      "n": 2,
+      "method": "Manual Breakpoints",
+      "breakpoints": [
+        0.0,
+        1.0
+      ],
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "property_type_co_cp",
+      "type": "numeric",
+      "n": 2,
+      "method": "Manual Breakpoints",
+      "breakpoints": [
+        0.0,
+        1.0
+      ],
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "property_type_mh",
+      "type": "numeric",
+      "n": 2,
+      "method": "Manual Breakpoints",
+      "breakpoints": [
+        0.0,
+        1.0
+      ],
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "property_type_pu",
+      "type": "numeric",
+      "n": 2,
+      "method": "Manual Breakpoints",
+      "breakpoints": [
+        0.0,
+        1.0
+      ],
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "postal_code",
+      "type": "numeric",
+      "n": 5,
+      "method": "None",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "incentive",
+      "type": "numeric",
+      "n": 5,
+      "method": "None",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Average"
+        }
+      ]
+    },
+    {
+      "name": "price_delta",
+      "type": "numeric",
+      "n": 5,
+      "method": "None",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Weighted Average"
+        }
+      ]
+    },
+    {
+      "name": "r_incentive",
+      "type": "numeric",
+      "n": 20,
+      "method": "Equal Weight Buckets",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Weighted Average"
+        }
+      ]
+    },
+    {
+      "name": "r_price_delta",
+      "type": "numeric",
+      "n": 20,
+      "method": "Equal Weight Buckets",
+      "breakpoints": null,
+      "stats": [
+        {
+          "stat": "Weighted Average"
+        }
+      ]
+    }
+  ],
+  "multi_field_reports": []
+}

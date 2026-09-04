@@ -2748,7 +2748,7 @@ def _parse_fred_observations(observations):
         year, month, day = obs["date"].split("-")
         dates.append(LispDate(int(year), int(month), int(day)))
         values.append(value)
-    return Pair(list_to_pairs(dates), Pair(list_to_pairs(values), NIL))
+    return Pair(LispVector(dates), LispVector(values))
 
 
 def _fred_api_key_from_file(path):
@@ -3207,6 +3207,8 @@ except ImportError:
 try:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "term_structure"))
     from term_structure_model import bootstrap_sofr_curve as _bootstrap_sofr_curve
+    from term_structure_model import bootstrap_forward_curve as _bootstrap_forward_curve
+    from term_structure_model import extend_curve_long_end as _extend_curve_long_end
     from term_structure_model import simulate_rate_paths as _simulate_rate_paths
     from term_structure_model import simulate_mortgage_rate_paths as _simulate_mortgage_rate_paths
     from term_structure_model import calibrate_sofr_model as _calibrate_sofr_model
@@ -3818,6 +3820,59 @@ def sofr_bootstrap_curve_fn(curve_futures_rows):
     months = LispVector([int(m) for m in result["months"]])
     forward_rates = LispVector([float(fr) for fr in result["forward_rates"]])
     return Pair(months, forward_rates)
+
+
+def sofr_extend_curve_with_treasury_fn(forward_rates, curve_real_months,
+                                        yield_3m, yield_6m, yield_1y, yield_2y,
+                                        yield_5y, yield_10y, yield_30y, blend_months=12):
+    """(sofr-extend-curve-with-treasury forward-rates curve-real-months
+    yield-3m yield-6m yield-1y yield-2y yield-5y yield-10y yield-30y
+    [blend-months]) -> forward-rates-vector -- replaces the flat-
+    extrapolated tail of a SOFR curve (from sofr-bootstrap-curve or
+    sofr-forward-curve) past curve-real-months with a SEPARATE curve
+    bootstrapped from Treasury par yields, linearly blended in over
+    blend-months (default 12) so the splice doesn't visibly kink.
+
+    forward-rates: the curve to extend, e.g. sofr-bootstrap-curve's or
+        sofr-forward-curve's second return value.
+    curve-real-months: how many months of forward-rates are backed by
+        real market data (the same quantity sofr-calibrate-model's
+        curve-real-months argument means) -- everything past this was
+        flat-extrapolated and is a candidate for replacement.
+    yield-3m/6m/1y/2y/5y/10y/30y: today's Treasury par yields, as
+        DECIMALS (e.g. 0.045, not 4.5) -- e.g. FRED's DGS3MO/DGS6MO/
+        DGS1/DGS2/DGS5/DGS10/DGS30, each divided by 100 (FRED reports
+        those series in percent).
+    blend-months: width of the linear transition zone, in months,
+        starting at curve-real-months.
+
+    WHY: bootstrap_sofr_curve()/sofr-forward-curve are honest that they
+    have no market data beyond the last SOFR futures contract used (CME
+    lists roughly a 5-year strip) -- past that they hold the curve flat.
+    For anything priced off the far end of the curve (a 30-year MBS),
+    the free, much longer-dated Treasury par curve on FRED is a better
+    long-end shape than a flat line. This does NOT attempt a SOFR/
+    Treasury basis adjustment -- it borrows the Treasury curve's SHAPE
+    as-is past curve-real-months, which is a simplification worth being
+    aware of.
+
+    Pure function -- no networking. Reuses term_structure_model.
+    extend_curve_long_end() and bootstrap_forward_curve() as-is. Raises
+    LispError if term_structure_model.py isn't available."""
+    if not _TERM_STRUCTURE_AVAILABLE:
+        raise LispError(
+            "sofr-extend-curve-with-treasury: term_structure_model.py (and "
+            "numpy) aren't available -- see term_structure/ next to lisp_interp/")
+    forward_rates_list = [float(v) for v in forward_rates.items]
+    treasury_yields = {
+        "3m": float(yield_3m), "6m": float(yield_6m), "12m": float(yield_1y),
+        "2y": float(yield_2y), "5y": float(yield_5y), "10y": float(yield_10y),
+        "30y": float(yield_30y),
+    }
+    extended = _extend_curve_long_end(
+        forward_rates_list, int(curve_real_months), treasury_yields,
+        blend_months=int(blend_months))
+    return LispVector([float(fr) for fr in extended])
 
 
 def sofr_calibrate_model_fn(forward_rates, options_rows, curve_real_months,
@@ -4744,7 +4799,7 @@ def make_global_env(output=None, plot=None, columns=None):
         return NIL
 
     def vector_map(f, v):
-        return LispVector([apply_proc(f, [v.items[j]] ) for j in range(len(v.items))])
+        return LispVector([apply_proc(f, [_lisp_scalar(v.items[j])]) for j in range(len(v.items))])
 
     def vector_append(*vs):
         items = []
@@ -4949,6 +5004,7 @@ def make_global_env(output=None, plot=None, columns=None):
         "sofr-forward-curve": sofr_forward_curve_fn,
         "sofr-calibration-data": sofr_calibration_data_fn,
         "sofr-bootstrap-curve": sofr_bootstrap_curve_fn,
+        "sofr-extend-curve-with-treasury": sofr_extend_curve_with_treasury_fn,
         "sofr-calibrate-model": sofr_calibrate_model_fn,
         "sofr-simulate-rate-paths": sofr_simulate_rate_paths_fn,
         "sofr-simulate-mortgage-rate-paths": sofr_simulate_mortgage_rate_paths_fn,
