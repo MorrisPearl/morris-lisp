@@ -1791,12 +1791,19 @@ class LispModel:
     there's only one). `stats` holds a few kind-specific fit diagnostics
     used by `model-report`."""
 
-    def __init__(self, kind, coefficients, intercept, stats):
+    def __init__(self, kind, coefficients, intercept, stats, predictor_names=None, y_name=None):
         self.kind = kind                    # "linear" or "logistic"
         self.coefficients = coefficients    # list of floats, one per predictor
         self.intercept = intercept
         self.k = len(coefficients)          # number of predictors
         self.stats = stats                  # dict of extra fit info, kind-specific
+        # Set by linear_regression_fn/logistic_regression_fn when x/y were
+        # given as (name . vector) pairs (sqlite-query's own column-wise
+        # result shape) instead of bare vectors -- lets model_report show
+        # real names instead of x1/x2/.../y. None (the default) means no
+        # names were available; model_report falls back to x1/x2/.../y.
+        self.predictor_names = predictor_names   # list of str, one per predictor, or None
+        self.y_name = y_name                     # str, or None
 
     def predict(self, xs):
         """xs: a list of numbers, one per predictor, in the same order the
@@ -2043,22 +2050,34 @@ def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
 
 
 def _coerce_predictors(x_arg):
-    """Accept either a single vector (one predictor) or a Lisp list of
-    vectors (multiple predictors), so `(linear-regression xs ys)` keeps
-    working exactly as before, while `(linear-regression (list x1 x2) ys)`
-    fits a multi-predictor model."""
+    """Accept a single vector (one predictor), a Lisp list of vectors
+    (multiple predictors), or a Lisp list of (name . vector) pairs --
+    exactly sqlite-query's own column-wise result shape -- so a query's
+    results can be fed straight into a regression with no manual name-
+    stripping first. `(linear-regression xs ys)` and
+    `(linear-regression (list x1 x2) ys)` both keep working exactly as
+    before; `(linear-regression (cdr freddie_loans) ...)` (a list of
+    (name . vector) pairs) now also works directly.
+
+    Returns (vectors, names): `names` is a list of strings, one per
+    predictor, if every element of a list x_arg was a (name . vector)
+    pair; otherwise None (no names available)."""
     if isinstance(x_arg, LispVector):
-        return [x_arg]
+        return [x_arg], None
     if x_arg is NIL or isinstance(x_arg, Pair):
-        vecs = pairs_to_list(x_arg)
-        if not vecs:
+        items = pairs_to_list(x_arg)
+        if not items:
             raise LispError("regression: at least one predictor vector is required")
-        return vecs
-    raise LispError("regression: expected a vector, or a list of vectors, of predictors")
+        if all(isinstance(it, Pair) and isinstance(it.cdr, LispVector) for it in items):
+            return [it.cdr for it in items], [to_display_string(it.car) for it in items]
+        return items, None
+    raise LispError(
+        "regression: expected a vector, a list of vectors, or a list of "
+        "(name . vector) pairs, of predictors")
 
 
 def _predictor_columns(x_arg, n_expected):
-    x_vecs = _coerce_predictors(x_arg)
+    x_vecs, names = _coerce_predictors(x_arg)
     columns = []
     for xv in x_vecs:
         if not isinstance(xv, LispVector):
@@ -2066,7 +2085,18 @@ def _predictor_columns(x_arg, n_expected):
         if len(xv.items) != n_expected:
             raise LispError("regression: all vectors must be the same length")
         columns.append([numeric_value(v) for v in xv.items.tolist()])
-    return columns
+    return columns, names
+
+
+def _coerce_y(y_arg, name):
+    """Accept a bare vector, or a (name . vector) pair -- sqlite-query's
+    own per-column result shape, e.g. (car freddie_loans) -- for the
+    dependent variable. Returns (vector, y_name_or_None)."""
+    if isinstance(y_arg, LispVector):
+        return y_arg, None
+    if isinstance(y_arg, Pair) and isinstance(y_arg.cdr, LispVector):
+        return y_arg.cdr, to_display_string(y_arg.car)
+    raise LispError("%s: y must be a vector, or a (name . vector) pair" % name)
 
 
 def _optional_weights(weight_vec, n_expected, name):
@@ -2092,22 +2122,26 @@ def _optional_weights(weight_vec, n_expected, name):
     return weights
 
 
-def linear_regression_fn(x_arg, y_vec, weight_vec=None):
-    if not isinstance(y_vec, LispVector):
-        raise LispError("linear-regression: y must be a vector")
-    columns = _predictor_columns(x_arg, len(y_vec.items))
+def linear_regression_fn(x_arg, y_arg, weight_vec=None):
+    y_vec, y_name = _coerce_y(y_arg, "linear-regression")
+    columns, names = _predictor_columns(x_arg, len(y_vec.items))
     ys = [numeric_value(v) for v in y_vec.items.tolist()]
     weights = _optional_weights(weight_vec, len(ys), "linear-regression")
-    return fit_linear(columns, ys, weights)
+    model = fit_linear(columns, ys, weights)
+    model.predictor_names = names
+    model.y_name = y_name
+    return model
 
 
-def logistic_regression_fn(x_arg, y_vec, weight_vec=None):
-    if not isinstance(y_vec, LispVector):
-        raise LispError("logistic-regression: y must be a vector")
-    columns = _predictor_columns(x_arg, len(y_vec.items))
+def logistic_regression_fn(x_arg, y_arg, weight_vec=None):
+    y_vec, y_name = _coerce_y(y_arg, "logistic-regression")
+    columns, names = _predictor_columns(x_arg, len(y_vec.items))
     ys = [numeric_value(v) for v in y_vec.items.tolist()]
     weights = _optional_weights(weight_vec, len(ys), "logistic-regression")
-    return fit_logistic(columns, ys, weights)
+    model = fit_logistic(columns, ys, weights)
+    model.predictor_names = names
+    model.y_name = y_name
+    return model
 
 
 def _is_model(x):
@@ -2161,22 +2195,28 @@ def model_report(model):
         return LispString("\n".join(_spline_report_lines(model)))
     if not isinstance(model, LispModel):
         raise LispError("model-report: not a model: %r" % (model,))
+    # Real predictor/y names when linear-regression/logistic-regression
+    # was given (name . vector) pairs (sqlite-query's own column-wise
+    # shape) -- see _coerce_predictors/_coerce_y -- else fall back to
+    # the old x1/x2/.../y placeholders.
+    names = model.predictor_names or ["x%d" % (i + 1) for i in range(model.k)]
+    y_name = model.y_name or "y"
     lines = []
     coefficient_lines = [
-        "  x%d coefficient = %.6g" % (i + 1, c) for i, c in enumerate(model.coefficients)
+        "  %s coefficient = %.6g" % (names[i], c) for i, c in enumerate(model.coefficients)
     ]
     if model.kind == "linear":
-        lines.append("Linear model:  y = %.6g + %s" % (
-            model.intercept,
-            " + ".join("%.6g*x%d" % (c, i + 1) for i, c in enumerate(model.coefficients))))
+        lines.append("Linear model:  %s = %.6g + %s" % (
+            y_name, model.intercept,
+            " + ".join("%.6g*%s" % (c, names[i]) for i, c in enumerate(model.coefficients))))
         lines.extend(coefficient_lines)
         lines.append("  intercept      = %.6g" % model.intercept)
         lines.append("  R-squared      = %.6g" % model.stats["r_squared"])
         lines.append("  n              = %d" % model.stats["n"])
     else:
-        lines.append("Logistic model:  p = sigmoid(%.6g + %s)" % (
-            model.intercept,
-            " + ".join("%.6g*x%d" % (c, i + 1) for i, c in enumerate(model.coefficients))))
+        lines.append("Logistic model:  p(%s) = sigmoid(%.6g + %s)" % (
+            y_name, model.intercept,
+            " + ".join("%.6g*%s" % (c, names[i]) for i, c in enumerate(model.coefficients))))
         lines.extend(coefficient_lines)
         lines.append("  intercept      = %.6g" % model.intercept)
         lines.append("  log-likelihood = %.6g" % model.stats["log_likelihood"])
@@ -2194,9 +2234,8 @@ def model_evaluate(model, x_arg, y_vec):
     train/test workflow."""
     if not _is_model(model):
         raise LispError("model-evaluate: not a model: %r" % (model,))
-    if not isinstance(y_vec, LispVector):
-        raise LispError("model-evaluate: y must be a vector")
-    columns = _predictor_columns(x_arg, len(y_vec.items))
+    y_vec, _y_name = _coerce_y(y_vec, "model-evaluate")
+    columns, _names = _predictor_columns(x_arg, len(y_vec.items))
     if len(columns) != model.k:
         raise LispError(
             "model-evaluate: model has %d predictor(s), but %d given"
@@ -2333,7 +2372,7 @@ def _resolve_predictor_spec(spec, column, name):
     return _PredictorSpec("spline", knots=knots, n_distinct=n_distinct)
 
 
-def _resolve_all_predictor_specs(max_knots, columns):
+def _resolve_all_predictor_specs(max_knots, columns, names=None):
     """Resolve the `max-knots` argument into one _PredictorSpec per
     predictor. `max_knots` may be:
       - a single int or 'categorical, applied to every predictor
@@ -2341,9 +2380,14 @@ def _resolve_all_predictor_specs(max_knots, columns):
         (shorthand for explicit knot locations on that one predictor)
       - a list with exactly one entry per predictor, where each entry is
         itself an int, 'categorical, or a list of explicit knot locations
-    """
+
+    `names` (optional): real predictor names (from x being given as
+    (name . vector) pairs -- see _coerce_predictors) to use in error
+    messages and later in the report, instead of the generic x1/x2/...
+    placeholders."""
     k = len(columns)
-    names = ["x%d" % (i + 1) for i in range(k)]
+    if names is None:
+        names = ["x%d" % (i + 1) for i in range(k)]
 
     def is_knot_value(v):
         return (isinstance(v, (int, float)) and not isinstance(v, bool)) or isinstance(v, LispDate)
@@ -2405,11 +2449,16 @@ class LispSplineModel:
     kind of bendable-curve flexibility as MARS, without any external
     dependency."""
 
-    def __init__(self, inner_model, predictor_specs, k):
+    def __init__(self, inner_model, predictor_specs, k, predictor_names=None, y_name=None):
         self.inner_model = inner_model          # a LispModel fit on the expanded basis
         self.predictor_specs = predictor_specs  # list of k _PredictorSpec
         self.k = k                              # number of original predictors
         self.kind = "spline-logistic" if inner_model.kind == "logistic" else "spline"
+        # Set by spline_regression_fn when x/y were given as (name . vector)
+        # pairs -- see LispModel's own predictor_names/y_name for the same
+        # idea. None means no names were available.
+        self.predictor_names = predictor_names   # list of str, one per ORIGINAL predictor, or None
+        self.y_name = y_name                     # str, or None
 
     def predict(self, values):
         return self.inner_model.predict(_spline_expand_row(values, self.predictor_specs))
@@ -2418,24 +2467,49 @@ class LispSplineModel:
         return to_string(self)
 
 
+def _spline_feature_labels(specs, names):
+    """One label per EXPANDED feature (mirrors _spline_expand_value's own
+    per-predictor feature order exactly): a plain predictor name for its
+    linear term, "name (knot T)" for each hinge, or "name = category" for
+    each non-baseline categorical indicator."""
+    labels = []
+    for name, spec in zip(names, specs):
+        if spec.mode == "categorical":
+            for cat in spec.categories[1:]:
+                labels.append("%s = %.6g" % (name, cat))
+        else:
+            labels.append(name)
+            for t in spec.knots:
+                labels.append("%s (knot %.6g)" % (name, t))
+    return labels
+
+
 def _spline_report_lines(model):
+    names = model.predictor_names or ["x%d" % (i + 1) for i in range(model.k)]
+    y_name = model.y_name or "y"
     lines = []
     if model.kind == "spline-logistic":
-        lines.append("Piecewise-linear spline model, with a logistic link:")
+        lines.append("Piecewise-linear spline model, with a logistic link, predicting %s:" % y_name)
     else:
-        lines.append("Piecewise-linear spline model:")
+        lines.append("Piecewise-linear spline model, predicting %s:" % y_name)
     lines.append("  predictors = %d" % model.k)
-    for i, spec in enumerate(model.predictor_specs):
+    for name, spec in zip(names, model.predictor_specs):
         if spec.mode == "categorical":
             cats = ", ".join("%.6g" % c for c in spec.categories)
-            lines.append("  x%d: categorical -- categories %s (baseline %.6g)"
-                          % (i + 1, cats, spec.categories[0]))
+            lines.append("  %s: categorical -- categories %s (baseline %.6g)"
+                          % (name, cats, spec.categories[0]))
         else:
             knot_text = ", ".join("%.6g" % t for t in spec.knots) if spec.knots else "(none -- plain linear)"
             hint = ""
             if spec.n_distinct is not None and spec.n_distinct <= 3:
                 hint = "  [only %d distinct value(s) seen -- consider 'categorical]" % spec.n_distinct
-            lines.append("  x%d: knots %s%s" % (i + 1, knot_text, hint))
+            lines.append("  %s: knots %s%s" % (name, knot_text, hint))
+    lines.append("")
+    lines.append("Coefficients (on the expanded basis):")
+    feature_labels = _spline_feature_labels(model.predictor_specs, names)
+    for label, c in zip(feature_labels, model.inner_model.coefficients):
+        lines.append("  %s coefficient = %.6g" % (label, c))
+    lines.append("  intercept      = %.6g" % model.inner_model.intercept)
     lines.append("")
     stats = model.inner_model.stats
     if model.kind == "spline-logistic":
@@ -2451,9 +2525,11 @@ def _spline_report_lines(model):
     return lines
 
 
-def spline_regression_fn(x_arg, y_vec, max_knots=3, logistic=False, weight_vec=None):
-    """Fit a piecewise-linear spline model. `x_arg` is a vector or list of
-    vectors (predictors). `max_knots` controls how each predictor is
+def spline_regression_fn(x_arg, y_arg, max_knots=3, logistic=False, weight_vec=None):
+    """Fit a piecewise-linear spline model. `x_arg` is a vector, a list of
+    vectors, or a list of (name . vector) pairs (predictors) -- see
+    _coerce_predictors; `y_arg` is likewise a vector or a (name . vector)
+    pair -- see _coerce_y. `max_knots` controls how each predictor is
     expanded -- see _resolve_all_predictor_specs for the accepted forms
     (an auto knot count, explicit knot locations, or 'categorical). If
     `logistic` is true, `y` must be in [0, 1], and a logistic regression
@@ -2461,10 +2537,8 @@ def spline_regression_fn(x_arg, y_vec, max_knots=3, logistic=False, weight_vec=N
     giving a probability-in-[0,1] output. `weight_vec` (optional): see
     fit_linear's docstring -- passed straight through to whichever fit
     runs on the expanded basis."""
-    if not isinstance(y_vec, LispVector):
-        raise LispError("spline-regression: y must be a vector")
-
-    columns = _predictor_columns(x_arg, len(y_vec.items))
+    y_vec, y_name = _coerce_y(y_arg, "spline-regression")
+    columns, names = _predictor_columns(x_arg, len(y_vec.items))
     ys = [numeric_value(v) for v in y_vec.items.tolist()]
     k = len(columns)
     n = len(ys)
@@ -2478,12 +2552,12 @@ def spline_regression_fn(x_arg, y_vec, max_knots=3, logistic=False, weight_vec=N
                     "must all be between 0 and 1 (got %r)" % (y,))
     weights = _optional_weights(weight_vec, n, "spline-regression")
 
-    predictor_specs = _resolve_all_predictor_specs(max_knots, columns)
+    predictor_specs = _resolve_all_predictor_specs(max_knots, columns, names)
     expanded_columns = _spline_expand_columns(columns, predictor_specs)
 
     inner_model = (fit_logistic(expanded_columns, ys, weights) if logistic
                    else fit_linear(expanded_columns, ys, weights))
-    return LispSplineModel(inner_model, predictor_specs, k)
+    return LispSplineModel(inner_model, predictor_specs, k, names, y_name)
 
 
 def suggest_knots_fn(x_vec, y_vec, window, n):
