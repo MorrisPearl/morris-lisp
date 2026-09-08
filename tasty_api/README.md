@@ -1,6 +1,6 @@
 # CME Futures Options & Relative Value Viewer
 
-A desktop app (PyQt6) with two tabs, backed entirely by real tastytrade
+A desktop app (PyQt6) with three tabs, backed entirely by real tastytrade
 broker data (no free/unofficial scraping involved):
 
 1. **Options** — lists options on CME futures for a selected product, in
@@ -8,6 +8,9 @@ broker data (no free/unofficial scraping involved):
 2. **Futures Relative Value** — pulls the selected product's futures term
    structure and flags contract months that look rich or cheap, plus a
    calendar-spread breakdown of implied carry.
+3. **Stock Options** — enter any ticker with listed equity options; fits
+   each expiration's implied-vol smile and flags contracts trading away
+   from that fit as Rich or Cheap. See "Stock Options tab" below.
 
 ## Supported products
 
@@ -146,6 +149,41 @@ You cannot separate storage cost from convenience yield using price data
 alone — that split fundamentally requires an assumption about one of them
 (here, your `u` input). That's a property of the model, not a limitation
 of this app specifically.
+
+## Stock Options tab
+
+Enter a ticker (e.g. `AAPL`) and click **Load Chain**. This fetches the
+real equity-options chain for that symbol — not futures options — via
+`get_option_chain`, trimmed the same way as the Options tab (N upcoming
+expirations, N strikes nearest the underlying's price per expiration),
+with bid/ask/last/volume/open interest from the REST market-data
+snapshot and implied volatility + delta from the streamed Greeks feed.
+
+**How rich/cheap is decided:** within each expiration, implied vol is
+fit against log-moneyness `ln(strike / underlying price)`, pooling calls
+and puts together (put-call parity says they should imply close to the
+same vol at a given strike). A contract trading at an IV **above** its
+own expiration's fitted smile is flagged **Rich**; **below** is
+**Cheap**. The fitted IV is also re-priced through Black-Scholes (using
+your risk-free-rate/dividend-yield assumptions) into a "Fitted Price"
+and "Price vs Fitted %" column, purely as an informational dollar-terms
+view — those do not drive the Signal, since a raw price residual isn't
+comparable across strikes the way a vol residual is.
+
+Real single-name skew (OTM puts priced above ATM) is a genuine, expected
+market feature, not a mispricing — a strike is only ever compared to its
+**own** chain's fitted curve at that moment, not to some external "correct"
+smile. Always check the Bid/Ask spread and Volume/Open Interest columns
+before treating a flag as an opportunity — a wide spread or a stale,
+illiquid quote can produce an apparent flag that isn't real. This is a
+research starting point, not a trading signal, and nothing in this app
+is financial advice.
+
+**During market hours** bid/ask/last and the Greeks stream should all be
+live. **Outside market hours** (useful for testing) the REST snapshot
+still returns the prior session's last/close/bid/ask, but the Greeks
+stream may not publish anything — IV, Fitted IV, and Signal may come
+back blank in that case rather than wrong.
 
 ## Install & run
 
