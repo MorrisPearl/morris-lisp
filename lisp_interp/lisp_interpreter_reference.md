@@ -1947,6 +1947,15 @@ probability for `"logistic"`/`"spline-logistic"` models.
 (model-predict m2 50000)               ; one predictor -> bare number is fine too
 ```
 
+[`model_utils.lsp`](model_utils.lsp)'s `(model->function m)` wraps this into
+an ordinary Lisp function, one argument per predictor, instead of a list:
+
+```lisp
+(load "model_utils.lsp")
+(define f (model->function m))
+(f 50000 30)                           ; same as (model-predict m (list 50000 30))
+```
+
 #### `(model-slope m)`
 Shorthand for "the (only) coefficient" — `(vector-ref (model-coefficients
 m) 0)` — but raises a clear error if the model has more than one predictor
