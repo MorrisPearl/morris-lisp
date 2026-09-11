@@ -1,0 +1,153 @@
+HOW TO SET UP THE GMAIL "FROM" HEADER EXPORT TOOL
+(Instructions for Mac laptops)
+
+WHAT THIS DOES
+This is a small tool that looks through your Gmail and creates a brand-new
+Google Sheet listing who sent you email — their full "From" info, name,
+first name, last name, and email address. You only need to set it up once.
+It takes about 10 minutes.
+
+------------------------------------------------------------
+A FEW MAC BASICS YOU'LL USE BELOW
+------------------------------------------------------------
+- The "Command" key is the key next to the space bar with a little
+  clover-looking symbol (⌘). Most shortcuts below use it together with
+  another key — hold Command down, tap the other key once, then let go
+  of both.
+- Select All: hold Command and press A
+- Copy:       hold Command and press C
+- Paste:      hold Command and press V
+- Save:       hold Command and press S
+- To switch between two browser tabs, just click on the tab you want
+  near the top of the browser window.
+
+------------------------------------------------------------
+PART 1 — COPY THE FIRST FILE
+------------------------------------------------------------
+1. Open your web browser (Safari or Chrome — whichever icon you normally
+   click in the row of icons at the bottom of your screen).
+
+2. Click this link (or copy it and paste it into the address bar at the
+   top of the browser, then press Return):
+
+   https://raw.githubusercontent.com/MorrisPearl/morris-lisp/main/gmail_from_header_export/Code.gs
+
+   You'll see a page full of plain text/code. That's expected.
+
+3. Click anywhere in that text, then press Command+A to select all of it
+   (it will turn blue/highlighted), then press Command+C to copy it.
+
+   Keep this browser tab open — you'll come back to it.
+
+------------------------------------------------------------
+PART 2 — CREATE A NEW GOOGLE SHEET
+------------------------------------------------------------
+4. Open a new browser tab (click the small "+" next to your open tabs,
+   or press Command+T).
+
+5. Go to: sheets.google.com
+   Make sure you are signed in with your work Google account
+   (mpearl@patrioticmillionaires.org or your own org address).
+
+6. Click "Blank" to create a new, empty spreadsheet.
+
+------------------------------------------------------------
+PART 3 — OPEN THE SCRIPT EDITOR
+------------------------------------------------------------
+7. At the top of the spreadsheet, click "Extensions", then click
+   "Apps Script". A new tab will open — this is the script editor,
+   it looks very different from the spreadsheet.
+
+------------------------------------------------------------
+PART 4 — PASTE IN THE FIRST FILE
+------------------------------------------------------------
+8. In the script editor, you'll see a file called "Code.gs" already open
+   with some sample text in it.
+
+9. Click inside that text area, press Command+A to select everything
+   that's already there, then press the Delete key to remove it.
+
+10. Press Command+V to paste in the text you copied in Part 1, step 3.
+
+------------------------------------------------------------
+PART 5 — ADD THE SECOND FILE
+------------------------------------------------------------
+11. Go back to the browser tab with Part 1 open, and go to this link
+    the same way you did before:
+
+    https://raw.githubusercontent.com/MorrisPearl/morris-lisp/main/gmail_from_header_export/Dialog.html
+
+    Click in the page, Command+A to select all, Command+C to copy.
+
+12. Switch back to the script editor tab.
+
+13. On the left side, find the word "Files" with a "+" next to it.
+    Click the "+", then click "HTML".
+
+14. It will ask you to name the file. Type exactly:
+
+    Dialog
+
+    (just that word, nothing else) and press Return.
+
+15. A new file opens with some sample text already in it. Click inside
+    it, press Command+A to select it all, press Delete to remove it,
+    then press Command+V to paste in the text you copied in step 11.
+
+------------------------------------------------------------
+PART 6 — SAVE
+------------------------------------------------------------
+16. Press Command+S to save. If it asks you to name the project, you can
+    type anything you like, for example "From Header Export", then
+    click OK.
+
+------------------------------------------------------------
+PART 7 — RUN THE TOOL
+------------------------------------------------------------
+17. Switch back to the browser tab with your Google Sheet in it, and
+    reload the page (press Command+R, or click the circular arrow
+    button near the address bar).
+
+18. After it reloads, look at the menu bar near the top of the sheet
+    (next to "File", "Edit", "View"...). You should now see a new menu
+    called "From Header Export". Click it, then click
+    "Export From Headers...".
+
+19. The FIRST time you run this, Google will ask permission for the
+    tool to read your Gmail and create Sheets. This is expected —
+    click through the prompts:
+      - Click "Continue" or "Allow"
+      - Choose your work Google account if asked
+      - You may see a screen that says "Google hasn't verified this
+        app" — this is normal for a private tool like this one that
+        only you are using (it's not published publicly). Click
+        "Advanced", then click "Go to [project name] (unsafe)",
+        then click "Allow" to finish.
+
+------------------------------------------------------------
+PART 8 — USE IT
+------------------------------------------------------------
+20. A small box will pop up with some choices:
+      - "What to search" — leave as "Inbox" to search your inbox, or
+        choose "All Mail", or pick one of your Gmail labels from the
+        list.
+      - "Date range" — optional. Leave blank to include everything,
+        or pick a "From" and "To" date to narrow it down.
+      - A checkbox for "Only keep one row per unique sender" — check
+        this if you only want each person listed once.
+
+21. Click the "Create Sheet" button, then wait — for a large inbox this
+    can take a minute or two.
+
+22. When it's done, a link will appear that says "Open the new sheet".
+    Click it — a brand new Google Sheet will open with all the
+    information filled in.
+
+------------------------------------------------------------
+IF SOMETHING GOES WRONG
+------------------------------------------------------------
+- The most common mistake is naming the second file something other
+  than exactly "Dialog" — double check that in Part 5, step 14.
+- If you see red error text anywhere, take a screenshot (press
+  Command+Shift+4, then click and drag over the error to capture it)
+  and send it to Morris.
