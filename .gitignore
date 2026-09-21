@@ -19,3 +19,13 @@ lisp_interp/oas_monte_carlo_live_report.txt
 */.DS_Store
 */fec.db
 zhvi_data/zhvi.db
+
+# Emacs autosave files (e.g., #file.txt#)
+\#*\#
+
+# Emacs lockfiles / symlinks (e.g., .#file.txt)
+.\#*
+
+# Emacs backup files (e.g., file.txt~)
+*~
+
