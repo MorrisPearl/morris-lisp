@@ -58,3 +58,10 @@
   (lambda args (model-predict m args)))
 
 
+
+
+Should I expect this to be rendered on in my notebook cell?
+
+(define aapl-chain (tastytrade-option-chain creds "AAPL" 2 5 #f))
+
+(display-markdown (display_markdown_table '(1 2 3 4 5 6 7 8 9 10 11 12) aapl-chain))

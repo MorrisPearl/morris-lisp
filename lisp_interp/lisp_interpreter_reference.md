@@ -2111,6 +2111,21 @@ column), calculates them row-by-row in dependency order (with a `lag`
 accessor for referring to a previous row), and calls `display-columns`
 for you — demonstrated end-to-end in `mortgage_amortization_example.lsp`.
 
+#### `(display-markdown string)`
+Shows `string` as Markdown. In a Jupyter notebook (the `morris_lisp`
+kernel) it renders as real Markdown — tables, headings, bold — so a cell
+can build a Markdown table with `string-append` and display it neatly.
+Anywhere else (console, GUI, `redirect-output`) the raw Markdown text is
+written as ordinary output, which is still readable. Returns `'()`.
+
+```lisp
+(display-markdown
+  (string-append "| name | value |\n"
+                 "|---|---|\n"
+                 "| a | 1 |\n"
+                 "| b | 2 |\n"))
+```
+
 #### `(write-columns-csv filename pairs)`
 Same `pairs` shape as `display-columns` (see above) — writes a CSV file
 instead: header row = names, one data row per index, numbers rounded to

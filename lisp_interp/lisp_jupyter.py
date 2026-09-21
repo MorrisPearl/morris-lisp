@@ -150,6 +150,16 @@ def _notebook_columns(name_value_pairs):
     _print_columns_table(name_value_pairs)
 
 
+def _notebook_markdown(text):
+    """display-markdown -- rendered as Markdown (tables, headings, ...)
+    via IPython.display.Markdown; plain text if IPython isn't available."""
+    if _IPYTHON_AVAILABLE:
+        from IPython.display import Markdown
+        _ipy_display(Markdown(text))
+    else:
+        print(text)
+
+
 _env = None
 
 
@@ -165,6 +175,6 @@ def get_env():
     global _env
     if _env is None:
         _env = L.make_global_env(output=_notebook_output, plot=_notebook_plot,
-                                  columns=_notebook_columns)
+                                  columns=_notebook_columns, markdown=_notebook_markdown)
         L.load_init_file(_env)
     return _env

@@ -4347,7 +4347,7 @@ def tastytrade_products_fn():
     return list_to_pairs([LispString(code) for code in TASTY_PRODUCTS])
 
 
-def make_global_env(output=None, plot=None, columns=None):
+def make_global_env(output=None, plot=None, columns=None, markdown=None):
     """Build the global environment of built-in procedures.
 
     `output` is a one-argument function that receives raw text produced by
@@ -4358,7 +4358,11 @@ def make_global_env(output=None, plot=None, columns=None):
     `display-columns` builtin. All three default to plain-text console
     behavior, but the GUI supplies callbacks that update its on-screen log,
     chart tab, and columns table instead -- the interpreter core doesn't
-    need to know anything about Qt for this to work.
+    need to know anything about Qt for this to work. `markdown` is a
+    one-argument function that receives a string of Markdown text from the
+    `display-markdown` builtin; the Jupyter kernel supplies one that
+    renders it, and the default (console/GUI/redirected output) just
+    writes the raw Markdown text as ordinary output.
     """
     if output is None:
         output = lambda s: print(s, end="")
@@ -4823,6 +4827,7 @@ def make_global_env(output=None, plot=None, columns=None):
 
     env.update({
         "string-append": lambda *a: LispString("".join(a)),
+        "to-string": lambda a : LispString(to_display_string(a)),
         "string-length": lambda s: len(s),
         "substring": lambda s, start, end=None: LispString(s[start:end]),
         "string=?": lambda a, b: a == b,
@@ -5198,6 +5203,20 @@ def make_global_env(output=None, plot=None, columns=None):
         columns(data)
         return NIL
 
+    def display_markdown_fn(text):
+        """(display-markdown string) -- shows `string` as Markdown. In a
+        Jupyter notebook it renders (tables, headings, bold, ...); with no
+        renderer available (console, GUI, redirect-output) the raw
+        Markdown text is written as ordinary output instead, which is
+        still readable -- a Markdown table is legible as plain text."""
+        if not isinstance(text, LispString):
+            raise LispError("display-markdown: expected a string, got %r" % (text,))
+        if markdown is not None and output_state["fn"] is output:
+            markdown(str(text))
+        else:
+            emit(str(text) + "\n")
+        return NIL
+
     def write_columns_csv_fn(filename, name_value_pairs):
         """(write-columns-csv filename pairs) -- pairs is the SAME shape
         display-columns takes: a list of (name . vector) conses, or
@@ -5232,6 +5251,7 @@ def make_global_env(output=None, plot=None, columns=None):
 
     env.update({
         "display-columns": display_columns_fn,
+        "display-markdown": display_markdown_fn,
         "write-columns-csv": write_columns_csv_fn,
         "*column-number-format*": LispString("{:,.0f}"),
     })
