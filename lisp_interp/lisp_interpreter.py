@@ -12,7 +12,7 @@ Supports:
   - a simple date datatype: (date year month day)
   - special forms: quote, quasiquote (with unquote/unquote-splicing,
     written `, ,, and ,@), if, define, set!, lambda, begin, let, let*,
-    cond, and, or, dolist, defmacro, defstruct, catch-error
+    cond, and, or, dolist, defmacro, defstruct, with-struct, catch-error
   - macros: (defmacro name (params...) body...) defines a macro --
     unlike a procedure, its arguments are the CALL SITE's UNEVALUATED
     source expressions, and its body's return value (typically built
@@ -56,6 +56,14 @@ Supports:
     the "method call" syntax for it: (call-method accessor instance
     arg...) is (accessor instance) applied to instance and arg...,
     without writing instance twice
+  - with-struct: (with-struct struct-expr body...) -- evaluates struct-expr
+    (an instance of ANY defstruct type), binds every one of its slot names
+    to that slot's value, exactly as `let` would (a fresh scope; a
+    snapshot of the values, not a live alias), then runs body... there.
+    Saves writing (point-x p), (point-y p), ... for every slot a body
+    uses. A special form rather than a defmacro macro because which names
+    to bind depends on the struct's runtime value -- see the
+    "with-struct" case in eval_special_form and the WITH_STRUCT frame
   - catch-error: (catch-error protected-expr (var) handler-body...) --
     the only way Lisp code can catch and recover from an error (this
     interpreter's own LispError, or one of the handful of builtins that
@@ -1020,6 +1028,8 @@ def raw_default(expr, env):
 #   ('AND_CHECK', rest, env)        -- act on one `and` operand's result
 #   ('OR', exprs, env)              -- evaluate remaining `or` operands
 #   ('OR_CHECK', rest, env)         -- act on one `or` operand's result
+#   ('WITH_STRUCT', body, env)      -- bind a just-evaluated struct's slots
+#                                      as variables, then run `body`
 #
 # Frames are pushed onto control_stack (a Python list) and popped off in
 # LIFO order, exactly mirroring what Python's own call stack would have
@@ -1030,6 +1040,7 @@ SPECIAL_FORMS = {
     "quote", "if", "define", "set!", "lambda",
     "begin", "let", "let*", "cond", "and", "or", "dolist",
     "defmacro", "quasiquote", "breakpoint", "defstruct", "catch-error",
+    "with-struct",
 }
 
 
@@ -1530,6 +1541,30 @@ def eval_special_form(op, args, env, control_stack, value_stack):
 
         value_stack.append(type_name)
 
+    elif op == "with-struct":
+        # (with-struct struct-expr body...) -- evaluate struct-expr ONCE;
+        # it must yield a struct instance of ANY defstruct type. Then bind
+        # EVERY one of that instance's slot names, as a plain variable,
+        # to the slot's current value -- in a fresh child scope, exactly
+        # as `let` would -- and run body... there (implicit begin, like
+        # let's), returning the last body value.
+        #
+        # A special form rather than a defmacro-defined macro, for the same
+        # reason `breakpoint` is one: the names to bind depend on the
+        # struct's RUNTIME VALUE (its type's slot list), which a macro
+        # transformer can never see -- it only gets the call site's
+        # unevaluated source (`p`, `(make-point ...)`, whatever), and runs
+        # in its own defining environment rather than the caller's, so
+        # it couldn't even evaluate that source to peek at the value when
+        # the struct lives in a local variable. Here the struct is
+        # evaluated normally in the caller's env (pushed as an ordinary
+        # EVAL frame), and the WITH_STRUCT frame, in seval(), does the
+        # binding once its value is on the value stack.
+        if not isinstance(args, Pair):
+            raise LispError("with-struct: expected (with-struct struct-expr body...)")
+        control_stack.append(('WITH_STRUCT', pairs_to_list(args.cdr), env))
+        control_stack.append(('EVAL', args.car, env))
+
     elif op == "catch-error":
         # (catch-error protected-expr (var) handler-body...) -- evaluate
         # protected-expr; if it raises ANY exception (this interpreter's
@@ -1687,6 +1722,21 @@ def seval(expr, env):
                 value_stack.append(val)
             else:
                 eval_or(rest, or_env, control_stack, value_stack)
+
+        elif tag == 'WITH_STRUCT':
+            _, body, outer_env = frame
+            s = value_stack.pop()
+            if not isinstance(s, LispStruct):
+                raise LispError("with-struct: not a struct: %r" % (s,))
+            # The instance's own (flattened, inherited-slots-included)
+            # type decides which names get bound -- so this works for any
+            # struct, including a subtype instance seen through a parent.
+            struct_env = Env(outer=outer_env)
+            for slot_name, _default in s.struct_type.slots:
+                struct_env[slot_name] = s.values[slot_name]
+            # Same tail-call treatment as let's body: the last expression
+            # is pushed as a plain EVAL frame, nothing left to resume.
+            push_sequence(body, struct_env, control_stack, value_stack)
 
         else:
             raise LispError("unknown control frame: %r" % (tag,))

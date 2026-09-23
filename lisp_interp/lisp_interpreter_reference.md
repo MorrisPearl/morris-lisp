@@ -345,6 +345,57 @@ another) works the same way, transitively — a grandparent's accessors work
 on a grandchild instance, and `grandparent?`/`parent?`/`child?` are all
 true for it.
 
+#### `(with-struct struct-expr body...)`
+Evaluates `struct-expr` (once) — an instance of **any** `defstruct` type — and
+binds **every one of its slot names** to that slot's value, exactly as `let`
+would: in a fresh child scope, after which `body...` runs (implicit `begin`)
+and its last value is returned. It saves writing `(point-x p)`, `(point-y p)`,
+… for every slot a body uses, and it works the same way on every struct type,
+because the names it binds come from the instance itself. For an instance of
+a type that `:include`s another, the inherited slots are bound too.
+
+```lisp
+(defstruct point x y (label "origin"))
+(define p (make-point :x 3 :y 4))
+
+(with-struct p (sqrt (+ (* x x) (* y y))))   ; => 5.0
+(with-struct p label)                        ; => "origin" -- every slot is bound,
+                                              ;    including ones left at their default
+
+(defstruct (point-3d (:include point)) z)
+(with-struct (make-point-3d :x 1 :y 2 :z 3)
+  (list x y z))                              ; => (1 2 3) -- inherited slots too
+```
+
+Because it's `let`, not a live alias:
+
+- **The variables are copies of the slot values at entry.** `set!` on one
+  changes only that local variable; to change the struct itself, use its
+  setter (`point-x-set!`) or `struct-set!`. Likewise, a setter called inside
+  the body doesn't update the already-bound variable.
+- **Slot names shadow** same-named outer variables (and functions) inside
+  the body, and only there — outside the form, nothing changes. Every other
+  variable in scope stays visible. A slot named like a function you also
+  call in the body (say, a slot called `list`) hides that function for the
+  body, so it's worth knowing the struct's slot names at the call site.
+- **`define` inside the body is local** to the `with-struct` scope.
+- Closures created in the body (`lambda`) capture the bound slot variables.
+- Forms nest; an inner struct's slots shadow an outer one's of the same name.
+- The body is in **tail position**, like `let`'s: the last body expression
+  is evaluated with no frame left behind, so a self-recursive loop written
+  through `with-struct` runs in constant control-stack space.
+
+Raises `LispError` if `struct-expr` isn't a struct instance, or if it's
+missing entirely.
+
+**Why a special form and not a `defmacro`?** Which names to bind depends on the
+struct's *runtime value* (its type's slot list). A macro transformer only
+receives the call site's unevaluated source — the symbol `p`, not the struct
+`p` holds — and runs in its own defining environment rather than the caller's,
+so it can't look inside a struct that lives in a local variable. It's the same
+reason `breakpoint`, below, has to be a special form: it needs the caller's
+real environment. See `with_struct_example.lsp` for a worked example.
+
 #### `(breakpoint [message])`
 Opens a nested, blocking debug REPL right where it appears, evaluating
 whatever you type directly in the **real lexical environment active at that
@@ -1498,7 +1549,11 @@ type-specific `make-<name>`/`<name>-<slot>`/`<name>-<slot>-set!`/`<name>?`/
 and `struct-type-name` work generically on any struct instance, by
 slot-name symbol, without needing to know its specific type; `call-method`
 (below) is a different kind of generic tool, for the "lambda in a slot"
-dispatch pattern struct inheritance enables — see its own entry.
+dispatch pattern struct inheritance enables — see its own entry. To use
+*all* of an instance's slots inside a body as plain variables, see
+`(with-struct struct-expr body...)` under "Special forms", above — it's a
+special form (it needs the struct's runtime slot list to know which names to
+bind), so it's documented there rather than here.
 
 #### `(struct? x)`
 `#t` for an instance of any `defstruct`-defined type.
