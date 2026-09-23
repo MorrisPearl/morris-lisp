@@ -12,27 +12,29 @@
      (%loop)))
 
 (define (display_markdown_table headings data)
-  (define output "")
-  (set! output (string-append output  " |"))
-  (dolist (x headings)
-    (set! output (string-append output  (to-string x)))
-    (set! output (string-append output  " | ")))
-  (set! output (string-append output "\n"))
+    (let* ((output "")
+	   (aout (lambda (x) (set! output (string-append output (to-string x))))))
 
-  (set! output (string-append output  " |"))
+      (aout " | ")
+      (dolist (x headings)
+	(aout x)
+	(aout " | "))
 
-  (dolist (y (car data))
-    (set! output (string-append output  " ---: |")))
-  (set! output (string-append output "\n"))
+      (aout "\n")
+      (aout " | ")
+    
+      (dolist (y headings)
+	(aout " ---: |"))
+      (aout "\n")
 
-  (dolist (row data)
-    (set! output (string-append output  " | "))
-    (dolist (item row)
-      (set! output (string-append output  (to-string item)))
-      (set! output (string-append output " | ")))
-    (set! output (string-append output "\n"))
-    )
-  output
+      (dolist (row data)
+	(aout  " | ")
+	(dolist (item row)
+	  (aout item)
+	  (aout " | "))
+	(aout "\n"))
+      (display-markdown output)
+      )
   )
 
 ; model_utils.lsp
