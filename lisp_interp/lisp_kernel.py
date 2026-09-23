@@ -25,10 +25,11 @@ lisp_interpreter_reference.md, for more.
 A few things worth knowing about how this differs from an ordinary Python
 kernel:
   - errors render through Jupyter's own error display (a red traceback
-    box), built from the LispError's message -- not a Python traceback,
-    since this interpreter's tail-call-optimized evaluator deliberately
-    doesn't keep ordinary call-frame history (see lisp_interpreter.py's
-    own module docstring);
+    box), built from the error's message plus the Lisp chain of procedure
+    calls that led to it (see lisp_interpreter.py's "Call tracing"
+    section) -- not a Python traceback. Tail calls replace their caller's
+    frame, so a caller that tail-called its way out shows up only as a
+    "[+N tail calls]" count on the frame that replaced it;
   - tab-completion is disabled outright (see do_complete, below) rather
     than falling through to IPythonKernel's Python-specific completer,
     which would offer irrelevant Python names for a Lisp symbol prefix;
@@ -107,9 +108,9 @@ class LispKernel(IPythonKernel):
             for expr in L.parse(code):
                 result = L.seval(expr, env)
         except L.LispError as e:
-            return self._error_reply("LispError", str(e))
+            return self._error_reply("LispError", str(e), L.format_lisp_traceback(e))
         except Exception as e:
-            return self._error_reply(type(e).__name__, str(e))
+            return self._error_reply(type(e).__name__, str(e), L.format_lisp_traceback(e))
 
         if not silent and result is not L.NIL:
             self._record_history(env, result)
@@ -141,14 +142,14 @@ class LispKernel(IPythonKernel):
         env[L.Symbol("_")] = result
         env[L.Symbol("_%d" % self.execution_count)] = result
 
-    def _error_reply(self, ename, evalue):
+    def _error_reply(self, ename, evalue, lisp_traceback=""):
         """Publish a real Jupyter error display (the red traceback box)
-        and return the matching error-status execute_reply -- there's no
-        genuine traceback to show (this interpreter's tail-call-
-        optimized evaluator deliberately doesn't keep ordinary call-frame
-        history -- see lisp_interpreter.py's module docstring), so the
-        "traceback" is just the one-line error message."""
-        traceback = ["%s: %s" % (ename, evalue)]
+        and return the matching error-status execute_reply. The
+        "traceback" is the Lisp call chain that led to the error (the text
+        lisp_interpreter.format_lisp_traceback produces; empty if the error
+        happened outside any procedure call), one line per entry, followed
+        by the one-line error message."""
+        traceback = lisp_traceback.splitlines() + ["%s: %s" % (ename, evalue)]
         self.send_response(self.iopub_socket, "error", {
             "ename": ename, "evalue": evalue, "traceback": traceback,
         })

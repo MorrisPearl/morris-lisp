@@ -32,6 +32,18 @@ functions" as a reference to search rather than read start to end.
   interactively with no GUI. `save-chart` still works in this mode
   as long as matplotlib is installed (PyQt6 is not required for it).
 
+- **Verbose flags** — `-v`, `-vv`, `-vvv` (levels 1–3), `--verbose` (level 1),
+  or `--verbose=N` (N = 0–3) may come before the script name (or before
+  `-`): `python3 lisp_interpreter.py -vv script.lsp` traces every procedure
+  call as the script runs — see "Verbose mode and stack traces", below. The
+  `LISP_VERBOSE` environment variable (0–3) does the same.
+- **Errors** — in batch mode, an error ends the run with exit status 1 and
+  prints, to stderr, the chain of procedure calls that led to it followed by
+  the message (`Lisp traceback (most recent call last): ...` /
+  `Error: ...`) — the same report the REPL, the GUI log, and Jupyter show.
+  Set `LISP_PYTHON_TRACEBACK=1` to get Python's own traceback of the
+  interpreter's internals as well.
+
 Every fresh environment — batch mode, the console REPL, and the GUI alike —
 automatically loads `init.lsp` (next to `lisp_interpreter.py`; override with
 the `LISP_INIT_FILE` environment variable) before doing anything else, if it
@@ -415,6 +427,11 @@ seeing right away (`(breakpoint (list "x=" x))`), without needing a separate
 debugging", below, for the full writeup, including `debug-function` (which
 inserts this automatically into an existing function) and the GUI limitation
 (console/batch mode only).
+
+#### `(backtrace)`
+Prints the chain of procedure calls in progress right now, without needing
+an error — see "Verbose mode and stack traces", under "Introspection /
+debugging", below. Returns `'()`.
 
 #### `(catch-error protected-expr (var) handler-body...)`
 Evaluates `protected-expr`; if it raises an error, binds `var` to the
@@ -3230,10 +3247,10 @@ values, so you can inspect them (or, via `set!`, change them) before
 typing `(continue)` to actually run the body with whatever's currently in
 scope. Also prints the chain of `debug-function`-wrapped calls currently
 in progress, as a lightweight "how was this called, and from where" trace
-— **not** a full backtrace (this interpreter's tail-call optimization
-deliberately discards ordinary call-frame history — see the tail-call note
-at the end of "Special forms"), just of the specific functions you've
-asked to watch. Raises `LispError` if `name` isn't a user-defined
+— just of the specific functions you've asked to watch. For the *full*
+chain of procedure calls that led to the paused call, type `(backtrace)`
+at the debug prompt (see "Verbose mode and stack traces", below). Raises
+`LispError` if `name` isn't a user-defined
 function. Saves the original definition internally so `undebug-function`
 can restore it — while wrapped, `(pretty-print-function name)` still shows
 the real definition, and `(defined-functions)` temporarily stops listing
@@ -3256,6 +3273,142 @@ top-level REPL. Triggering it from the GUI will try to read from whatever
 stdin the GUI process has (usually none, or the terminal it was launched
 from) rather than opening any kind of dialog in the GUI window itself —
 there's no GUI-integrated debugger, just this console one.
+
+### Verbose mode and stack traces
+
+Two aids for finding out *what your program is doing* and *how it got
+into trouble*, both built on the same thing: every call of a user-defined
+procedure (or macro transformer) leaves a frame on the evaluator's control
+stack recording **which procedure was called, with which arguments**.
+
+**Names.** A procedure's name is whatever it was `define`d as:
+`(define (f x) ...)` is named `f`; `(define g (lambda ...))` names that
+lambda `g`, if it doesn't already have a name (so `(define h g)` doesn't
+rename it); a `defstruct`'s `make-<name>` constructors are named. A
+procedure never bound to a name is `<lambda>`. Procedures now print with
+their name — `#<procedure square>` — and `#<procedure>` when anonymous.
+
+#### `(verbose [level])`
+Turns call tracing on and off. With no argument, returns the current level.
+With one, sets it and returns the **previous** level, so you can restore it.
+`#t` and `#f` mean levels 1 and 0.
+
+| Level | Logged |
+|---|---|
+| `0` | nothing (the default) |
+| `1` | each call of a user-defined procedure, **by name** |
+| `2` | each call **with its arguments**, and each return **with its value** |
+| `3` | everything in 2, plus every **macro expansion** |
+
+```lisp
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+(verbose 2)
+(fact 3)
+(verbose 0)
+```
+
+```text
+> (fact 3)
+  > (fact 2)
+    > (fact 1)
+      > (fact 0)
+      < (fact 0) => 1
+    < (fact 1) => 1
+  < (fact 2) => 2
+< (fact 3) => 6
+```
+
+`>` is a call, `<` its return, indented by call depth. A call in **tail
+position** is written `>>` instead: it *replaces* its caller's frame (which
+is what makes tail calls constant-space), so it sits at the caller's depth,
+and the eventual return line says how many calls it absorbed:
+
+```text
+> (count-down 3)
+>> (count-down 2)
+>> (count-down 1)
+>> (count-down 0)
+< (count-down 0) => done  [after 3 tail calls]
+```
+
+At level 3, a macro call also logs the form and what it expanded to:
+`~ (unless #f (quote ran)) => (if (not #f) (quote ran) (quote ()))`.
+
+- Only **user-defined procedures** are traced — not built-ins like `+` or
+  `car`, and not `let`/`let*`/`dolist` scopes (which are variable scopes,
+  not calls; `dolist`'s hidden loop procedure does show up, as
+  `%dolist-loop-N`). A callback run by a built-in (`map`, `filter`, ...) is
+  traced like any other call.
+- Values are **summarized**, never printed in full — a long list shows its
+  first few elements and `...`, a big vector shows `#(7 7 7 ... n=1000000)` —
+  so tracing a call on a large dataset stays fast and readable.
+- Trace lines go **wherever `display` output goes**: the console, the GUI
+  log, a Jupyter cell, or a file after `redirect-output`. Interleaved with
+  your own output, in order.
+- Level 0 costs nothing measurable, and turning tracing on mid-run is safe
+  (indentation is counted from where you turned it on).
+- Start a whole run traced with `-v`/`-vv`/`-vvv`/`--verbose=N` on the
+  command line, or the `LISP_VERBOSE` environment variable.
+
+```lisp
+(define old (verbose 1))       ; tracing on; old is the previous level (0)
+; ... run the suspicious code ...
+(verbose old)                  ; restore whatever it was
+```
+
+#### Stack traces
+When an error escapes, it is reported together with the chain of procedure
+calls that led to it — oldest first, so the most recent call is right above
+the message, like Python's:
+
+```text
+Lisp traceback (most recent call last):
+  (outer 5)
+  (middle 5)  [+1 tail call]
+  (inner 5)
+Error: car: not a pair: 5
+```
+
+This appears wherever errors are shown — batch mode (which then exits with
+status 1), the console REPL, the GUI log, and Jupyter's error box — and it
+is always on, whether or not `verbose` is. Each line is `(name arguments...)`
+(summarized, as above), plus a note when there is something to explain:
+
+- `[+N tail calls]` — that call replaced N earlier callers by tail-calling
+  its way out (as in any tail-call-optimizing Lisp, a caller that tail-called
+  is no longer on the stack, so it can't be listed; the count accounts for
+  them). In the example, `helper` tail-called `middle`.
+- `[arguments rejected]` — the call never started because its arguments
+  were wrong (too few/many, an unknown `:keyword`): the trace names the
+  procedure that was called incorrectly, e.g. `(make-point :z 1)`.
+- `[macro transformer]` — the error happened while a macro was computing
+  its expansion, rather than in the code it expanded to.
+
+A very deep stack (say, runaway recursion) shows its outermost 10 and
+innermost 30 calls with `... N more calls ...` between. An error raised
+outside any procedure call has no chain, just the `Error:` line. A call
+that is caught with `catch-error` leaves nothing behind.
+
+#### `(backtrace)`
+Prints the same chain for the **current** point in the program, without an
+error — a special form, so it takes no arguments and can be dropped anywhere.
+It sees through callbacks (`map`, `filter`, ...) and macro transformers, and
+typed at a `(breakpoint)`'s debug prompt it shows the paused program's chain.
+Returns `'()`.
+
+```lisp
+(define (c) (backtrace) 0)
+(define (b) (list (c)))
+(define (a) (list (b)))
+(a)
+```
+
+```text
+Lisp call stack (most recent call last):
+  (a)
+  (b)
+  (c)
+```
 
 ---
 

@@ -64,6 +64,16 @@ Supports:
     uses. A special form rather than a defmacro macro because which names
     to bind depends on the struct's runtime value -- see the
     "with-struct" case in eval_special_form and the WITH_STRUCT frame
+  - call tracing and stack traces: every call of a user-defined procedure
+    (or macro transformer) leaves a ('CALL', proc, args, tails) frame on
+    the control stack, naming the procedure and its arguments. (verbose n)
+    -- or -v/-vv/-vvv/--verbose=N on the command line, or LISP_VERBOSE --
+    logs calls as they happen (1: by name, 2: with arguments and return
+    values, 3: also macro expansions); an error that escapes is reported
+    with the chain of calls that led to it (REPL, batch mode, GUI, Jupyter);
+    (backtrace) prints the current chain on demand. A call in tail position
+    replaces its caller's frame, so tail calls stay constant-space -- see
+    the "Call tracing" section above the evaluator
   - catch-error: (catch-error protected-expr (var) handler-body...) --
     the only way Lisp code can catch and recover from an error (this
     interpreter's own LispError, or one of the handful of builtins that
@@ -646,17 +656,32 @@ class Procedure:
     they're collected into a list bound to rest_param. See parse_params()
     (which builds params/rest_param from source syntax like
     `(a b . rest)` or a bare `args`) and Env.__init__'s rest_param
-    handling (which does the actual binding at call time)."""
+    handling (which does the actual binding at call time).
 
-    def __init__(self, params, body, env, rest_param=None, keyword_specs=None):
+    name (a Symbol, or None if anonymous): only used to label this
+    procedure in call traces and stack traces (see the "Call tracing"
+    section, below) -- never affects behavior. `define` sets it, and so
+    does defining an anonymous lambda's value under a name
+    ((define f (lambda ...))) if it doesn't have one yet; the
+    make-<struct> constructors defstruct builds are named too.
+
+    is_scope: True only for the throwaway procedure `let`/`let*`/`dolist`
+    desugar into ((lambda (x...) body...) v...). It's an implementation
+    detail of those forms -- a variable scope, not a real call -- so it is
+    left out of call traces and stack traces."""
+
+    def __init__(self, params, body, env, rest_param=None, keyword_specs=None,
+                 name=None, is_scope=False):
         self.params = params      # list of Symbol FIXED parameter names
         self.rest_param = rest_param
         self.keyword_specs = keyword_specs or []  # see parse_params()
         self.body = body          # list of body expressions
         self.env = env            # environment in which it was defined
+        self.name = name
+        self.is_scope = is_scope
 
     def __repr__(self):
-        return "#<procedure>"
+        return "#<procedure %s>" % (self.name,) if self.name is not None else "#<procedure>"
 
 
 class Macro:
@@ -670,14 +695,18 @@ class Macro:
     original call, in the CALLING environment. See expand_macro() and the
     macro-call check in seval(). rest_param works the same way it does
     for a Procedure -- see that class's docstring -- except what it
-    collects is unevaluated expressions rather than values."""
+    collects is unevaluated expressions rather than values.
 
-    def __init__(self, params, body, env, rest_param=None, keyword_specs=None):
+    name: the macro's name, used only to label its transformer in stack
+    traces (see Procedure.name)."""
+
+    def __init__(self, params, body, env, rest_param=None, keyword_specs=None, name=None):
         self.params = params
         self.rest_param = rest_param
         self.keyword_specs = keyword_specs or []  # see parse_params()
         self.body = body
         self.env = env
+        self.name = name
 
     def __repr__(self):
         return "#<macro>"
@@ -894,7 +923,13 @@ class Env(dict):
     """A mapping of names to values, with a link to an enclosing (outer)
     environment. Together, a chain of Envs implements lexical scoping.
     (This chain follows *lexical nesting*, not call/recursion depth, so it
-    stays shallow even for deeply recursive Lisp programs.)"""
+    stays shallow even for deeply recursive Lisp programs.)
+
+    trace_emit: only ever set on a GLOBAL environment (by make_global_env):
+    the function verbose-mode trace lines are written with, so they land
+    wherever that environment's display output does. See _trace_write()."""
+
+    trace_emit = None
 
     def __init__(self, params=(), args=(), outer=None, rest_param=None,
                  keyword_specs=None, default_eval=None):
@@ -1005,6 +1040,277 @@ def raw_default(expr, env):
 
 
 # ---------------------------------------------------------------------------
+# Call tracing and Lisp-level stack traces
+# ---------------------------------------------------------------------------
+#
+# Two debugging aids, both built on one small idea: every call of a
+# user-defined procedure (or a macro transformer) leaves a ('CALL', proc,
+# args, tails) frame on the evaluator's control stack -- see seval() -- so
+# "what procedure are we in, and what was it called with?" is always
+# answerable by looking at the stack.
+#
+#   * VERBOSE MODE -- (verbose n) -- logs calls as they happen:
+#         0  off (the default)
+#         1  each call, by procedure NAME
+#         2  each call with its ARGUMENTS, and each return with its VALUE
+#         3  everything in 2, plus every macro expansion
+#     Lines are indented by call depth. A call in tail position is marked
+#     `>>` instead of `>` (see below). Output goes wherever display output
+#     goes (console, GUI log, Jupyter cell, a redirect-output file).
+#
+#   * STACK TRACES -- when an error escapes, seval() copies the CALL
+#     frames it finds into the exception (exc.lisp_trace), so wherever the
+#     error is finally reported (REPL, batch mode, GUI, Jupyter) it can be
+#     shown with the chain of calls that led to it -- see
+#     format_lisp_traceback(). `(backtrace)` prints the same thing for
+#     the CURRENT call chain, on demand, without an error.
+#
+# TAIL CALLS AND THE STACK: a call in tail position REPLACES the caller's
+# CALL frame instead of adding one under it (that is exactly what makes a
+# tail call constant-space -- see the module docstring), so a stack trace,
+# like one from any tail-call-optimizing Lisp, doesn't list a caller that
+# tail-called its way out. The replacing frame counts how many calls it
+# absorbed, and traces show it as "[+N tail calls]" so the missing callers
+# are accounted for. let/let*/dolist scopes (Procedure.is_scope) are not
+# calls and get no frame.
+
+VERBOSE_OFF, VERBOSE_CALLS, VERBOSE_ARGS, VERBOSE_MACROS = 0, 1, 2, 3
+_verbose_level = 0      # current verbosity; change ONLY via set_verbose_level()
+_call_depth = 0         # nesting depth of traced calls, for indentation
+
+TRACE_MAX_FRAMES = 40   # a longer stack trace keeps the outermost 10 and innermost 30
+_BRIEF_MAX_ITEMS = 6    # list/vector elements shown before "..."
+_BRIEF_MAX_DEPTH = 3    # nesting shown before "(...)"
+_BRIEF_MAX_STRING = 40  # string characters shown before "..."
+
+
+def set_verbose_level(level):
+    """Set the verbosity -- 0/1/2/3, or #f/#t for 0/1 -- and return the
+    PREVIOUS level (so callers can restore it). Restarts the indentation,
+    since depth is only meaningful counted from when tracing began."""
+    global _verbose_level, _call_depth
+    if level is True:
+        level = VERBOSE_CALLS
+    elif level is False:
+        level = VERBOSE_OFF
+    if isinstance(level, bool) or not isinstance(level, int) or not VERBOSE_OFF <= level <= VERBOSE_MACROS:
+        raise LispError("verbose: level must be 0, 1, 2, 3, #f, or #t, got %s" % (to_string(level),))
+    previous = _verbose_level
+    _verbose_level = level
+    _call_depth = 0
+    return previous
+
+
+def _initial_verbose_level():
+    """The LISP_VERBOSE environment variable, if it holds 0-3."""
+    text = os.environ.get("LISP_VERBOSE", "").strip()
+    return int(text) if text in ("0", "1", "2", "3") else 0
+
+
+_verbose_level = _initial_verbose_level()
+
+
+def _brief(x, depth=0):
+    """A short, bounded rendering of any value for trace lines. Unlike
+    to_string(), the work done is limited no matter how big x is -- a
+    million-element vector or a long list is summarized, never walked in
+    full -- so tracing a call that receives huge data stays cheap."""
+    if x is True:
+        return "#t"
+    if x is False:
+        return "#f"
+    if x is NIL:
+        return "()"
+    if isinstance(x, LispString):
+        text = str(x)
+        return '"%s"' % (text if len(text) <= _BRIEF_MAX_STRING else text[:_BRIEF_MAX_STRING] + "...")
+    if isinstance(x, Pair):
+        if depth >= _BRIEF_MAX_DEPTH:
+            return "(...)"
+        parts, p = [], x
+        while isinstance(p, Pair) and len(parts) < _BRIEF_MAX_ITEMS:
+            parts.append(_brief(p.car, depth + 1))
+            p = p.cdr
+        if isinstance(p, Pair):
+            parts.append("...")
+        elif p is not NIL:
+            parts.append(". " + _brief(p, depth + 1))
+        return "(" + " ".join(parts) + ")"
+    if isinstance(x, LispVector):
+        n = len(x.items)
+        if n <= _BRIEF_MAX_ITEMS:
+            return "#(" + " ".join(to_string(item) for item in x.items) + ")"
+        return "#(" + " ".join(to_string(item) for item in x.items[:3]) + " ... n=%d)" % n
+    if isinstance(x, LispStruct):
+        if depth >= _BRIEF_MAX_DEPTH:
+            return "#S(%s ...)" % (x.struct_type.name,)
+        slots = x.struct_type.slots
+        parts = ["%s %s" % (Keyword(":" + str(name)), _brief(x.values.get(name), depth + 1))
+                 for name, _ in slots[:4]]
+        if len(slots) > 4:
+            parts.append("...")
+        return "#S(%s%s)" % (x.struct_type.name, "".join(" " + part for part in parts))
+    if isinstance(x, (Procedure, Macro)):
+        return repr(x)
+    if isinstance(x, (LispDate, LispModel, LispSplineModel)):
+        return to_string(x)
+    text = str(x)
+    return text if len(text) <= 60 else text[:57] + "..."
+
+
+def _proc_name(proc):
+    name = getattr(proc, "name", None)
+    if name is not None:
+        return str(name)
+    return "<macro>" if isinstance(proc, Macro) else "<lambda>"
+
+
+def _call_text(proc, args, with_args=True):
+    """`(name arg...)` -- or just `name` -- for one call. A macro's
+    "arguments" are its unevaluated source expressions."""
+    if not with_args:
+        return _proc_name(proc)
+    return "(" + " ".join([_proc_name(proc)] + [_brief(a) for a in args]) + ")"
+
+
+def _trace_write(env, text):
+    """Write one trace line to `env`'s own display channel (the same
+    place display/print output goes -- console, GUI log, Jupyter cell,
+    redirect-output file), found on the global environment's trace_emit;
+    stderr if there isn't one."""
+    while env is not None:
+        emit = env.trace_emit
+        if emit is not None:
+            emit(text + "\n")
+            return
+        env = env.outer
+    sys.stderr.write(text + "\n")
+
+
+def _trace_enter(proc, args, is_tail):
+    """Log the start of a call; a non-tail call also deepens the nesting.
+    A tail call takes over the frame of the call it replaces, so it is
+    indented at THAT call's depth (one level up from the current
+    nesting), the same depth the eventual return line will have."""
+    global _call_depth
+    indent = "  " * (max(0, _call_depth - 1) if is_tail else _call_depth)
+    _trace_write(proc.env, "%s%s %s" % (
+        indent, ">>" if is_tail else ">",
+        _call_text(proc, args, _verbose_level >= VERBOSE_ARGS)))
+    if not is_tail:
+        _call_depth += 1
+
+
+def _trace_leave(proc, args, tails, value):
+    """A call returned `value`: undo its nesting and, at level 2+, log it."""
+    global _call_depth
+    _call_depth = max(0, _call_depth - 1)
+    if _verbose_level >= VERBOSE_ARGS:
+        note = "  [after %d tail call%s]" % (tails, "" if tails == 1 else "s") if tails else ""
+        _trace_write(proc.env, "%s< %s => %s%s" % (
+            "  " * _call_depth, _call_text(proc, args), _brief(value), note))
+
+
+def _trace_macro_expansion(macro, form, expansion):
+    _trace_write(macro.env, "%s~ %s => %s" % ("  " * _call_depth, _brief(form), _brief(expansion)))
+
+
+def _stack_calls(control_stack):
+    """Every call in progress on a control stack, innermost first, as
+    (proc, args, tails, rejected) -- rejected is always False here; see
+    _record_rejected_call."""
+    return [(f[1], f[2], f[3], False) for f in reversed(control_stack) if f[0] == 'CALL' or f[0] == 'MCALL']
+
+
+_active_stacks = []     # the control stack of every seval() currently running, outermost first
+
+
+def _current_calls():
+    """Every call in progress right now, across ALL running evaluators
+    (a callback run by map, a macro transformer, eval, a breakpoint's own
+    debug REPL, ... each run in a nested seval with a stack of its own),
+    innermost first. What `(backtrace)` shows."""
+    calls = []
+    for stack in reversed(_active_stacks):
+        calls.extend(_stack_calls(stack))
+    return calls
+
+
+def _record_rejected_call(exc, proc, args):
+    """`proc` was called with `args` but binding them to its parameters
+    failed (wrong argument count, unknown keyword, ...) -- so the call
+    never got a frame of its own. Put it on exc's trace anyway, as its
+    innermost entry: the error is about THAT call, and the trace should
+    name the procedure that was called wrongly, not just its caller."""
+    trace = getattr(exc, "lisp_trace", None)
+    if trace is None:
+        try:
+            trace = exc.lisp_trace = []
+        except AttributeError:
+            return
+    trace.append((proc, args, 0, True))
+
+
+def _record_lisp_trace(exc, control_stack):
+    """Called as an error unwinds through a seval(): append that
+    evaluator's calls in progress to exc.lisp_trace. Nested evaluators
+    (a callback run by map, a macro transformer, eval, ...) each add
+    theirs as the error passes back out through them, so the finished list
+    runs innermost-first across all of them."""
+    trace = getattr(exc, "lisp_trace", None)
+    if trace is None:
+        try:
+            trace = exc.lisp_trace = []
+        except AttributeError:      # an exception type that won't take attributes
+            return
+    trace.extend(_stack_calls(control_stack))
+
+
+def _trace_line(proc, args, tails, rejected=False):
+    text = _call_text(proc, args)
+    if rejected:
+        text += "  [arguments rejected]"
+    elif isinstance(proc, Macro):
+        text += "  [macro transformer]"
+    if tails:
+        text += "  [+%d tail call%s]" % (tails, "" if tails == 1 else "s")
+    return "  " + text
+
+
+def format_call_stack(calls, title="Lisp traceback (most recent call last):"):
+    """Render calls (as _stack_calls / exc.lisp_trace give them, innermost
+    first) Python-style: outermost call first, so the most recent call
+    ends up right next to the error message printed after it. A very long
+    stack keeps its outermost and innermost frames and elides the middle.
+    Returns "" for an empty stack."""
+    if not calls:
+        return ""
+    ordered = list(reversed(calls))
+    if len(ordered) > TRACE_MAX_FRAMES:
+        head, tail = ordered[:10], ordered[-(TRACE_MAX_FRAMES - 10):]
+        hidden = len(ordered) - len(head) - len(tail)
+        lines = [_trace_line(*c) for c in head]
+        lines.append("  ... %d more calls ..." % hidden)
+        lines.extend(_trace_line(*c) for c in tail)
+    else:
+        lines = [_trace_line(*c) for c in ordered]
+    return title + "\n" + "\n".join(lines) + "\n"
+
+
+def format_lisp_traceback(exc):
+    """The Lisp call chain that led to `exc`, as text ("" if there was
+    none) -- see the section comment above."""
+    return format_call_stack(getattr(exc, "lisp_trace", None) or [])
+
+
+def format_error_report(exc):
+    """A complete, human-readable report of an error: the call chain (if
+    any), then `Error: message`. What the REPL, batch mode, and the GUI
+    show."""
+    return format_lisp_traceback(exc) + "Error: %s\n" % (exc,)
+
+
+# ---------------------------------------------------------------------------
 # Evaluator -- explicit-stack version
 # ---------------------------------------------------------------------------
 #
@@ -1030,6 +1336,13 @@ def raw_default(expr, env):
 #   ('OR_CHECK', rest, env)         -- act on one `or` operand's result
 #   ('WITH_STRUCT', body, env)      -- bind a just-evaluated struct's slots
 #                                      as variables, then run `body`
+#   ('CALL', proc, args, tails)     -- marks a user procedure's body: which
+#                                      procedure, its arguments, and how
+#                                      many tail calls it replaced. Popped
+#                                      on return; replaced by a tail call
+#                                      (see "Call tracing", above)
+#   ('MCALL', macro, exprs, 0)      -- the same for a macro transformer's
+#                                      body; never replaced, never logged
 #
 # Frames are pushed onto control_stack (a Python list) and popped off in
 # LIFO order, exactly mirroring what Python's own call stack would have
@@ -1040,7 +1353,7 @@ SPECIAL_FORMS = {
     "quote", "if", "define", "set!", "lambda",
     "begin", "let", "let*", "cond", "and", "or", "dolist",
     "defmacro", "quasiquote", "breakpoint", "defstruct", "catch-error",
-    "with-struct",
+    "with-struct", "%scope-lambda", "backtrace",
 }
 
 
@@ -1098,12 +1411,15 @@ def eval_or(exprs, env, control_stack, value_stack):
 
 def desugar_let(args):
     """(let ((x1 v1) (x2 v2) ...) body...)
-       => ((lambda (x1 x2 ...) body...) v1 v2 ...)"""
+       => ((lambda (x1 x2 ...) body...) v1 v2 ...)
+       where that lambda is really the internal %scope-lambda form: it
+       builds the very same Procedure `lambda` does, just flagged
+       is_scope so call traces don't mistake a `let` for a call."""
     bindings = pairs_to_list(args.car)
     body = args.cdr  # already a Pair-list, reused as the lambda's body
     names = [b.car for b in bindings]
     value_exprs = [b.cdr.car for b in bindings]
-    lambda_expr = Pair(Symbol("lambda"), Pair(list_to_pairs(names), body))
+    lambda_expr = Pair(Symbol("%scope-lambda"), Pair(list_to_pairs(names), body))
     return Pair(lambda_expr, list_to_pairs(value_exprs))
 
 
@@ -1117,7 +1433,7 @@ def desugar_let_star(args):
     bindings = pairs_to_list(args.car)
     body = args.cdr
     if not bindings:
-        lambda_expr = Pair(Symbol("lambda"), Pair(NIL, body))
+        lambda_expr = Pair(Symbol("%scope-lambda"), Pair(NIL, body))
         return Pair(lambda_expr, NIL)
     first, rest = bindings[0], bindings[1:]
     if rest:
@@ -1305,9 +1621,13 @@ def expand_macro(macro, arg_exprs):
     tail-call-optimized treatment -- including a proper tail call if the
     macro expands to one (e.g. a macro-defined looping construct).
     """
-    new_env = Env(macro.params, arg_exprs, macro.env, rest_param=macro.rest_param,
-                  keyword_specs=macro.keyword_specs, default_eval=raw_default)
-    return eval_body(macro.body, new_env)
+    try:
+        new_env = Env(macro.params, arg_exprs, macro.env, rest_param=macro.rest_param,
+                      keyword_specs=macro.keyword_specs, default_eval=raw_default)
+    except Exception as exc:
+        _record_rejected_call(exc, macro, arg_exprs)
+        raise
+    return eval_body(macro.body, new_env, call=(macro, arg_exprs))
 
 
 def eval_special_form(op, args, env, control_stack, value_stack):
@@ -1345,7 +1665,7 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         name = args.car
         fixed, rest, keyword_specs = parse_params(args.cdr.car)
         body = pairs_to_list(args.cdr.cdr)
-        env[name] = Macro(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs)
+        env[name] = Macro(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs, name=name)
         value_stack.append(name)
 
     elif op == "if":
@@ -1364,7 +1684,8 @@ def eval_special_form(op, args, env, control_stack, value_stack):
             name = target.car
             fixed, rest, keyword_specs = parse_params(target.cdr)
             body = pairs_to_list(args.cdr)
-            env[name] = Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs)
+            env[name] = Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs,
+                                  name=name)
             value_stack.append(name)
         else:
             name = target
@@ -1376,12 +1697,16 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         control_stack.append(('SET', name, env))
         control_stack.append(('EVAL', args.cdr.car, env))
 
-    elif op == "lambda":
+    elif op == "lambda" or op == "%scope-lambda":
         # params may be fixed (a b), dotted/variadic (a b . rest), or a
         # single bare symbol (fully variadic) -- see parse_params().
+        # %scope-lambda is what let/let*/dolist desugar into (see
+        # desugar_let): the very same Procedure, flagged is_scope so call
+        # traces don't count it as a call.
         fixed, rest, keyword_specs = parse_params(args.car)
         body = pairs_to_list(args.cdr)
-        value_stack.append(Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs))
+        value_stack.append(Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs,
+                                     is_scope=(op == "%scope-lambda")))
 
     elif op == "begin":
         push_sequence(pairs_to_list(args), env, control_stack, value_stack)
@@ -1501,7 +1826,8 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         list_call = Pair(Symbol("list"), list_to_pairs(plist_items))
         make_body = list_to_pairs([Symbol("%make-struct"), struct_type, list_call])
         env[Symbol("make-%s" % type_name)] = Procedure(
-            [], [make_body], env, rest_param=None, keyword_specs=slots)
+            [], [make_body], env, rest_param=None, keyword_specs=slots,
+            name=Symbol("make-%s" % type_name))
 
         def make_accessor(slot_name):
             def accessor(s):
@@ -1540,6 +1866,17 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         env[Symbol("copy-%s" % type_name)] = copier
 
         value_stack.append(type_name)
+
+    elif op == "backtrace":
+        # (backtrace) -- print the CURRENT chain of procedure calls, oldest
+        # first, exactly as an error's traceback would (see
+        # format_call_stack), without needing an error. Covers every running
+        # evaluator (see _current_calls), so it works inside a callback or a
+        # breakpoint too. (A special form only so it needs no operator
+        # lookup -- and so a user procedure named `backtrace` can't hide it.)
+        text = format_call_stack(_current_calls(), "Lisp call stack (most recent call last):")
+        _trace_write(env, (text or "Lisp call stack: (empty -- not inside any procedure call)\n").rstrip("\n"))
+        value_stack.append(NIL)
 
     elif op == "with-struct":
         # (with-struct struct-expr body...) -- evaluate struct-expr ONCE;
@@ -1608,12 +1945,44 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         raise LispError("unknown special form: %s" % op)
 
 
-def seval(expr, env):
+def seval(expr, env, call=None):
     """Evaluate a Lisp expression in an environment, using an explicit
-    stack machine rather than Python recursion."""
+    stack machine rather than Python recursion.
+
+    call (optional): (procedure_or_macro, args) -- what is being run by
+    this evaluation, when it isn't just a bare expression: apply_proc()
+    (a callback run by map/filter/...) and expand_macro() pass it so the
+    procedure or macro transformer gets a call frame of its own, exactly
+    as one called from Lisp code does, and so appears in stack traces and
+    verbose-mode traces. See "Call tracing" above.
+
+    If an error escapes, the calls in progress on this evaluator's stack
+    are recorded on the exception (exc.lisp_trace) on its way out."""
+    global _call_depth
     control_stack = [('EVAL', expr, env)]
     value_stack = []
+    entry_depth = _call_depth
+    if call is not None:
+        proc, args = call
+        if isinstance(proc, Macro):
+            control_stack.insert(0, ('MCALL', proc, args, 0))
+        else:
+            control_stack.insert(0, ('CALL', proc, args, 0))
+            if _verbose_level:
+                _trace_enter(proc, args, False)
+    _active_stacks.append(control_stack)
+    try:
+        return _run_eval_loop(control_stack, value_stack)
+    except Exception as exc:
+        _record_lisp_trace(exc, control_stack)
+        _call_depth = entry_depth
+        raise
+    finally:
+        _active_stacks.pop()
 
+
+def _run_eval_loop(control_stack, value_stack):
+    """The evaluator proper -- see seval(), its only caller."""
     while control_stack:
         frame = control_stack.pop()
         tag = frame[0]
@@ -1641,6 +2010,8 @@ def seval(expr, env):
                 macro = cur_env.lookup_or_none(op) if isinstance(op, Symbol) else None
                 if isinstance(macro, Macro):
                     expansion = expand_macro(macro, pairs_to_list(args))
+                    if _verbose_level >= VERBOSE_MACROS:
+                        _trace_macro_expansion(macro, x, expansion)
                     control_stack.append(('EVAL', expansion, cur_env))
                 else:
                     # Procedure application: evaluate operator, then each
@@ -1660,13 +2031,43 @@ def seval(expr, env):
             collected.reverse()
             proc, arg_values = collected[0], collected[1:]
             if isinstance(proc, Procedure):
-                new_env = Env(proc.params, arg_values, proc.env, rest_param=proc.rest_param,
-                              keyword_specs=proc.keyword_specs, default_eval=eval_default)
+                try:
+                    new_env = Env(proc.params, arg_values, proc.env, rest_param=proc.rest_param,
+                                  keyword_specs=proc.keyword_specs, default_eval=eval_default)
+                except Exception as exc:
+                    if not proc.is_scope:
+                        _record_rejected_call(exc, proc, arg_values)
+                    raise
+                if not proc.is_scope:
+                    # Leave a CALL frame under the body, naming this call for
+                    # stack traces (see "Call tracing" above). If the top of
+                    # the stack is already a CALL frame, nothing else was
+                    # waiting on the body's value: this is a TAIL call, so
+                    # the new frame REPLACES that one -- keeping tail calls
+                    # constant-space -- and just counts the call it absorbed.
+                    tails = 0
+                    if control_stack and control_stack[-1][0] == 'CALL':
+                        tails = control_stack.pop()[3] + 1
+                        if _verbose_level:
+                            _trace_enter(proc, arg_values, True)
+                    elif _verbose_level:
+                        _trace_enter(proc, arg_values, False)
+                    control_stack.append(('CALL', proc, arg_values, tails))
                 push_sequence(proc.body, new_env, control_stack, value_stack)
             elif callable(proc):
                 value_stack.append(proc(*arg_values))
             else:
                 raise LispError("in tag APPLY: not a procedure: %r" % (proc,))
+
+        elif tag == 'CALL':
+            # A procedure's body just finished; its value is on top of the
+            # value stack. (Only a normal return gets here: a tail call
+            # replaced this frame instead of ever popping it.)
+            if _verbose_level:
+                _trace_leave(frame[1], frame[2], frame[3], value_stack[-1])
+
+        elif tag == 'MCALL':
+            pass    # a macro transformer finished; nothing to log or unwind
 
         elif tag == 'SEQ':
             _, remaining, seq_env = frame
@@ -1680,7 +2081,10 @@ def seval(expr, env):
 
         elif tag == 'DEFINE':
             _, name, def_env = frame
-            def_env[name] = value_stack.pop()
+            value = value_stack.pop()
+            if isinstance(value, Procedure) and value.name is None and not value.is_scope:
+                value.name = name       # (define f (lambda ...)) -- f labels it in traces
+            def_env[name] = value
             value_stack.append(name)
 
         elif tag == 'SET':
@@ -1744,11 +2148,12 @@ def seval(expr, env):
     return value_stack.pop()
 
 
-def eval_body(body, env):
+def eval_body(body, env, call=None):
     """Evaluate a list of expressions in env, returning the last value.
     Used by apply_proc to call back into a user-defined Procedure from a
-    built-in higher-order function like `map` or `vector-map`."""
-    return seval(Pair(Symbol("begin"), list_to_pairs(body)), env)
+    built-in higher-order function like `map` or `vector-map`. `call` is
+    seval()'s: what is being run, for stack traces."""
+    return seval(Pair(Symbol("begin"), list_to_pairs(body)), env, call)
 
 
 def apply_proc(proc, args):
@@ -1756,9 +2161,13 @@ def apply_proc(proc, args):
     built-in Python callable -- with a list of already-evaluated args.
     Used by higher-order builtins (map, filter, reduce, apply, vector-map)."""
     if isinstance(proc, Procedure):
-        new_env = Env(proc.params, args, proc.env, rest_param=proc.rest_param,
-                      keyword_specs=proc.keyword_specs, default_eval=eval_default)
-        return eval_body(proc.body, new_env)
+        try:
+            new_env = Env(proc.params, args, proc.env, rest_param=proc.rest_param,
+                          keyword_specs=proc.keyword_specs, default_eval=eval_default)
+        except Exception as exc:
+            _record_rejected_call(exc, proc, args)
+            raise
+        return eval_body(proc.body, new_env, call=(proc, args))
     if callable(proc):
         return proc(*args)
     raise LispError("in apply_proc: not a procedure: %r" % (proc,))
@@ -4385,6 +4794,7 @@ def make_global_env(output=None, plot=None, columns=None):
             emit("\n".join(lines) + "\n")
 
     env = Env()
+    env.trace_emit = emit       # verbose-mode trace lines go where display output does
 
     # ---- arithmetic ----
     def add(*args):
@@ -4710,7 +5120,20 @@ def make_global_env(output=None, plot=None, columns=None):
         method = apply_proc(accessor, [instance])
         return apply_proc(method, [instance] + list(args))
 
+    def lisp_verbose(*args):
+        """(verbose) -- the current verbosity level. (verbose n) -- set it
+        (0 off, 1 procedure names, 2 + arguments and return values, 3 +
+        macro expansions; #f/#t mean 0/1) and return the PREVIOUS level, so
+        you can restore it: (define old (verbose 2)) ... (verbose old).
+        See "Call tracing" above the evaluator."""
+        if len(args) > 1:
+            raise LispError("verbose: expected (verbose [level])")
+        if args:
+            return set_verbose_level(args[0])
+        return _verbose_level
+
     env.update({
+        "verbose": lisp_verbose,
         "%make-struct": make_struct_fn,
         "struct-ref": struct_ref,
         "struct-set!": struct_set,
@@ -5367,10 +5790,9 @@ def make_global_env(output=None, plot=None, columns=None):
         (continue) to actually run the body with whatever's in scope at
         that point. Also prints the chain of debug-function-wrapped calls
         currently in progress, as a lightweight "how was this called, and
-        from where" trace -- NOT a full backtrace (this interpreter's
-        tail-call optimization deliberately discards ordinary call-frame
-        history; see the module docstring), just of the functions you've
-        explicitly asked to watch.
+        from where" trace, just of the functions you've explicitly asked
+        to watch. For the FULL chain of procedure calls, type (backtrace)
+        at the debug prompt (see "Call tracing" above the evaluator).
         """
         proc = env.get(name)
         if not isinstance(proc, Procedure):
@@ -5388,7 +5810,7 @@ def make_global_env(output=None, plot=None, columns=None):
                 print("    call chain: %s" % chain)
                 print("    arguments are bound in this scope -- inspect/set! them, then (continue)")
                 debug_repl(new_env, label=str(name))
-                return eval_body(proc.body, new_env)
+                return eval_body(proc.body, new_env, call=(proc, list(args)))
             finally:
                 debug_call_stack.pop()
 
@@ -5638,6 +6060,10 @@ def debug_repl(env, label="debug"):
     (usually none, or the terminal it was launched from) rather than
     opening any kind of dialog in the GUI window itself -- there's no
     GUI-integrated debugger here, just this console one.
+
+    `(backtrace)` typed at this prompt shows the paused program's chain of
+    calls: the paused evaluators are still running (registered in
+    _active_stacks) underneath the one this REPL evaluates your input with.
     """
     print("--- %s: entering debug REPL (type (continue) or press Ctrl-D to resume) ---" % label)
     buffer = ""
@@ -5657,10 +6083,8 @@ def debug_repl(env, label="debug"):
                         break
                     result = seval(expr, env)
                     print(to_string(result))
-            except LispError as e:
-                print("Error:", e)
             except Exception as e:
-                print("Error:", e)
+                print(format_error_report(e), end="")
             buffer = ""
             if resume:
                 break
@@ -5723,10 +6147,8 @@ def repl(env):
                         return
                     result = seval(expr, env)
                     print(to_string(result))
-            except LispError as e:
-                print("Error:", e)
             except Exception as e:
-                print("Error:", e)
+                print(format_error_report(e), end="")
             buffer = ""
 
 
@@ -6018,10 +6440,8 @@ if _PYQT_AVAILABLE:
                 for expr in parse(source):
                     result = seval(expr, self.env)
                 self._append_text("=> " + to_string(result) + "\n\n")
-            except LispError as e:
-                self._append_text("Error: %s\n\n" % e)
             except Exception as e:
-                self._append_text("Error: %s\n\n" % e)
+                self._append_text(format_error_report(e) + "\n")
             self.input_edit.clear()
 
 
@@ -6039,15 +6459,59 @@ def launch_gui():
     sys.exit(app.exec())
 
 
+def _verbose_flag_level(arg):
+    """The verbosity a leading command-line flag asks for: -v / -vv / -vvv
+    (levels 1-3), --verbose (level 1), or --verbose=N (N in 0-3). None if
+    `arg` isn't a verbose flag at all; -1 if it is one but N is invalid."""
+    if arg in ("-v", "-vv", "-vvv"):
+        return len(arg) - 1
+    if arg == "--verbose":
+        return VERBOSE_CALLS
+    if arg.startswith("--verbose="):
+        text = arg[len("--verbose="):]
+        return int(text) if text in ("0", "1", "2", "3") else -1
+    return None
+
+
+def run_script(path, env):
+    """Run a script file for batch mode. A Lisp error is reported the way
+    the REPL reports one -- the chain of calls that led to it, then the
+    message -- to stderr, and ends the run with exit status 1, instead of
+    dumping a Python traceback of the interpreter's own internals (set
+    LISP_PYTHON_TRACEBACK=1 to get that traceback anyway). Any other
+    exception is a Python-level failure: the Lisp call chain is printed
+    first, then Python's own traceback follows, as it always did."""
+    try:
+        run_file(path, env)
+    except LispError as e:
+        if os.environ.get("LISP_PYTHON_TRACEBACK"):
+            sys.stderr.write(format_lisp_traceback(e))
+            raise
+        sys.stdout.flush()
+        sys.stderr.write(format_error_report(e))
+        sys.exit(1)
+    except Exception as e:
+        sys.stdout.flush()
+        sys.stderr.write(format_lisp_traceback(e))
+        raise
+
+
 def main():
-    if len(sys.argv) > 1:
+    args = sys.argv[1:]
+    while args and _verbose_flag_level(args[0]) is not None:
+        level = _verbose_flag_level(args.pop(0))
+        if level < 0:
+            sys.stderr.write("--verbose=N: N must be 0, 1, 2, or 3\n")
+            sys.exit(2)
+        set_verbose_level(level)
+    if args:
         # run a script file from the console, no GUI needed.
         env = make_global_env()
         load_init_file(env)
-        if (sys.argv[1] == "-"): # or just run interactively with no GUI
+        if (args[0] == "-"): # or just run interactively with no GUI
             repl(env)
         else:
-            run_file(sys.argv[1], env)
+            run_script(args[0], env)
     else:
         # Default: launch the PyQt6 GUI.
         launch_gui()
