@@ -38,11 +38,13 @@ from PyQt6.QtWidgets import (
 )
 
 from relative_value import compute_curve_fit, compute_leg_carry
+from smile_analysis import compute_smile_fit
 from models import PandasTableModel, OptionsFilterProxyModel
 from tastytrade_source import (
     PRODUCTS, TastytradeOptionsFetchWorker, TastytradeFuturesCurveWorker,
     TastytradeTestConnectionWorker,
 )
+from stock_options_source import TastytradeStockOptionsFetchWorker
 
 
 class CredentialsBar(QWidget):
@@ -454,6 +456,231 @@ class RelativeValueTab(QWidget):
             self._worker.wait(2000)
 
 
+class StockOptionsTab(QWidget):
+    """Tab 3: single-stock option chain + implied-vol-smile rich/cheap
+    analysis. Enter any ticker with listed options; each expiration's
+    chain is fit to its own vol smile (see smile_analysis.py) and
+    contracts trading away from that fit are flagged Rich/Cheap."""
+
+    def __init__(self, credentials_bar: CredentialsBar, parent=None):
+        super().__init__(parent)
+        self.credentials_bar = credentials_bar
+        self._worker = None
+        self._raw_chain = None
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        controls = QHBoxLayout()
+
+        controls.addWidget(QLabel("Ticker:"))
+        self.ticker_edit = QLineEdit()
+        self.ticker_edit.setPlaceholderText("e.g. AAPL")
+        self.ticker_edit.setMaximumWidth(100)
+        self.ticker_edit.returnPressed.connect(lambda: self.refresh_btn.click())
+        controls.addWidget(self.ticker_edit)
+
+        controls.addWidget(QLabel("Expirations:"))
+        self.expirations_spin = QSpinBox()
+        self.expirations_spin.setRange(1, 20)
+        self.expirations_spin.setValue(6)
+        self.expirations_spin.setToolTip("How many upcoming expirations to fetch.")
+        controls.addWidget(self.expirations_spin)
+
+        controls.addWidget(QLabel("Max strikes near money (per expiration):"))
+        self.max_strikes_spin = QSpinBox()
+        self.max_strikes_spin.setRange(3, 100)
+        self.max_strikes_spin.setValue(20)
+        self.max_strikes_spin.setToolTip(
+            "Implied volatility comes from a live Greeks stream, one "
+            "subscription per contract, so the chain is trimmed to the N "
+            "strikes nearest the underlying's price per expiration."
+        )
+        controls.addWidget(self.max_strikes_spin)
+
+        controls.addWidget(QLabel("Greeks timeout (sec):"))
+        self.greeks_timeout_spin = QDoubleSpinBox()
+        self.greeks_timeout_spin.setRange(5.0, 180.0)
+        self.greeks_timeout_spin.setValue(25.0)
+        self.greeks_timeout_spin.setDecimals(0)
+        controls.addWidget(self.greeks_timeout_spin)
+
+        self.refresh_btn = QPushButton("Load Chain")
+        controls.addWidget(self.refresh_btn)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self.cancel_fetch)
+        controls.addWidget(self.cancel_btn)
+        layout.addLayout(controls)
+
+        assumptions_box = QGroupBox("Assumptions (editable — recompute instantly, no refetch needed)")
+        assumptions_layout = QHBoxLayout(assumptions_box)
+
+        assumptions_layout.addWidget(QLabel("Risk-free rate r (%):"))
+        self.rate_spin = QDoubleSpinBox()
+        self.rate_spin.setRange(-10.0, 25.0)
+        self.rate_spin.setDecimals(2)
+        self.rate_spin.setSingleStep(0.25)
+        self.rate_spin.setValue(4.25)
+        self.rate_spin.setToolTip(
+            "Used only to re-price the fitted smile's IV back into a "
+            "theoretical dollar price (Fitted Price / Price vs Fitted %). "
+            "Does not affect the Rich/Cheap signal, which is based on the "
+            "vol residual."
+        )
+        self.rate_spin.valueChanged.connect(self._recompute)
+        assumptions_layout.addWidget(self.rate_spin)
+
+        assumptions_layout.addWidget(QLabel("Dividend yield q (%):"))
+        self.dividend_spin = QDoubleSpinBox()
+        self.dividend_spin.setRange(0.0, 25.0)
+        self.dividend_spin.setDecimals(2)
+        self.dividend_spin.setSingleStep(0.25)
+        self.dividend_spin.setValue(0.0)
+        self.dividend_spin.valueChanged.connect(self._recompute)
+        assumptions_layout.addWidget(self.dividend_spin)
+
+        assumptions_layout.addWidget(QLabel("Rich/Cheap threshold (vol pts):"))
+        self.threshold_spin = QDoubleSpinBox()
+        self.threshold_spin.setRange(0.05, 20.0)
+        self.threshold_spin.setDecimals(2)
+        self.threshold_spin.setSingleStep(0.25)
+        self.threshold_spin.setValue(1.5)
+        self.threshold_spin.setToolTip(
+            "Minimum deviation from the fitted vol smile (in implied-vol "
+            "percentage points) before a contract is flagged Rich or Cheap."
+        )
+        self.threshold_spin.valueChanged.connect(self._recompute)
+        assumptions_layout.addWidget(self.threshold_spin)
+
+        layout.addWidget(assumptions_box)
+
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Type:"))
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(["All", "Call", "Put"])
+        self.type_combo.currentTextChanged.connect(self._apply_filters)
+        filter_row.addWidget(self.type_combo)
+
+        filter_row.addWidget(QLabel("Search:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("symbol, expiration...")
+        self.search_edit.textChanged.connect(self._apply_filters)
+        filter_row.addWidget(self.search_edit, stretch=1)
+        layout.addLayout(filter_row)
+
+        self.table_model = PandasTableModel()
+        self.proxy_model = OptionsFilterProxyModel()
+        self.proxy_model.setSourceModel(self.table_model)
+
+        self.table_view = QTableView()
+        self.table_view.setModel(self.proxy_model)
+        self.table_view.setSortingEnabled(True)
+        self.table_view.setAlternatingRowColors(True)
+        self.table_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table_view.horizontalHeader().setStretchLastSection(True)
+        self.table_view.verticalHeader().setVisible(False)
+        layout.addWidget(self.table_view, stretch=1)
+
+        note = QLabel(
+            "Methodology: within each expiration, implied vol is fit vs. "
+            "log-moneyness ln(strike/underlying) with calls and puts pooled "
+            "together (put-call parity says they should imply close to the "
+            "same vol at a given strike). The fit is weighted by each "
+            "contract's volume TODAY, on the assumption that the most "
+            "actively-traded strikes are the correctly-priced ones — they "
+            "anchor the curve, while untraded/thin strikes barely move it. "
+            "Rich = IV above that expiration's own fitted smile; Cheap = "
+            "below it. Fitted Price/Price vs Fitted "
+            "% re-price the fitted IV through Black-Scholes for an informational "
+            "dollar comparison and do not drive the Signal. A real, persistent "
+            "equity skew (OTM puts priced above ATM) is expected and not "
+            "itself a mispricing — a strike is only flagged relative to ITS "
+            "OWN chain's fitted curve. Check Bid/Ask spread and Volume/Open "
+            "Interest before treating a flag as an opportunity. Outside market "
+            "hours the Greeks stream may not publish at all, leaving IV/Signal "
+            "blank while Last Price/Bid/Ask still reflect the last session. "
+            "Research starting point only, not a trading signal or financial "
+            "advice."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #666; font-style: italic;")
+        layout.addWidget(note)
+
+    def _apply_filters(self):
+        self.proxy_model.setTypeFilter(self.type_combo.currentText())
+        self.proxy_model.setSearchText(self.search_edit.text())
+
+    def start_fetch(self, status_cb=None, finished_cb=None, failed_cb=None):
+        if self._worker is not None and self._worker.isRunning():
+            return
+        ticker = self.ticker_edit.text().strip().upper()
+        if not ticker:
+            if failed_cb:
+                failed_cb("Enter a ticker symbol first.")
+            return
+
+        creds_path = self.credentials_bar.credentials_path()
+        if not creds_path:
+            if failed_cb:
+                failed_cb("Set a tastytrade credentials file path above first.")
+            return
+
+        self.refresh_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+
+        self._worker = TastytradeStockOptionsFetchWorker(
+            credentials_path=creds_path,
+            ticker=ticker,
+            max_expirations=self.expirations_spin.value(),
+            max_strikes_per_expiration=self.max_strikes_spin.value(),
+            greeks_timeout=self.greeks_timeout_spin.value(),
+        )
+        if status_cb:
+            self._worker.progress.connect(status_cb)
+        self._worker.finished_ok.connect(lambda df: self._on_finished(df, finished_cb))
+        self._worker.failed.connect(lambda msg: self._on_failed(msg, failed_cb))
+        self._worker.start()
+
+    def cancel_fetch(self):
+        if self._worker is not None:
+            self._worker.cancel()
+
+    def _on_finished(self, df, finished_cb):
+        self.refresh_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self._raw_chain = df
+        self._recompute()
+        if finished_cb:
+            finished_cb(df)
+
+    def _on_failed(self, message, failed_cb):
+        self.refresh_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        if failed_cb:
+            failed_cb(message)
+
+    def _recompute(self):
+        if self._raw_chain is None or self._raw_chain.empty:
+            return
+        smile_df = compute_smile_fit(
+            self._raw_chain,
+            risk_free_rate_pct=self.rate_spin.value(),
+            dividend_yield_pct=self.dividend_spin.value(),
+            iv_residual_threshold_vol_pts=self.threshold_spin.value(),
+        )
+        self.table_model.setDataFrame(smile_df)
+        self.table_view.resizeColumnsToContents()
+
+    def shutdown(self):
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(2000)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -469,10 +696,12 @@ class MainWindow(QMainWindow):
 
         self.options_tab = OptionsTab(self.credentials_bar)
         self.rv_tab = RelativeValueTab(self.credentials_bar)
+        self.stock_options_tab = StockOptionsTab(self.credentials_bar)
 
         tabs = QTabWidget()
         tabs.addTab(self.options_tab, "Options")
         tabs.addTab(self.rv_tab, "Futures Relative Value")
+        tabs.addTab(self.stock_options_tab, "Stock Options")
         central_layout.addWidget(tabs, stretch=1)
 
         self.setCentralWidget(central)
@@ -500,6 +729,13 @@ class MainWindow(QMainWindow):
                 failed_cb=lambda msg: self._on_failed(msg),
             )
         )
+        self.stock_options_tab.refresh_btn.clicked.connect(
+            lambda: self.stock_options_tab.start_fetch(
+                status_cb=self.status.showMessage,
+                finished_cb=lambda df: self._note_update(f"{len(df)} option contracts"),
+                failed_cb=lambda msg: self._on_failed(msg),
+            )
+        )
 
     def _note_update(self, detail: str):
         now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -512,6 +748,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self.options_tab.shutdown()
         self.rv_tab.shutdown()
+        self.stock_options_tab.shutdown()
         event.accept()
 
 

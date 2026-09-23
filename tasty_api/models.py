@@ -17,6 +17,9 @@ NUMERIC_COLUMNS = {
     "Strike", "Last Price", "Implied Volatility", "Volume", "Open Interest",
     "Fitted Price", "Rich/Cheap %", "Near Price", "Far Price",
     "Implied Carry Rate %", "Implied Net Storage Cost %", "Implied Convenience Yield %",
+    "Underlying Price", "Bid", "Ask", "Mid", "Delta", "Fitted IV",
+    "IV Residual (vol pts)", "Price vs Fitted %", "Log-Moneyness",
+    "Days to Expiration",
 }
 RIGHT_ALIGN_COLUMNS = NUMERIC_COLUMNS
 
@@ -55,7 +58,7 @@ class PandasTableModel(QAbstractTableModel):
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):
             if pd.isna(value):
                 return "—"
-            if col == "Implied Volatility":
+            if col in ("Implied Volatility", "Fitted IV"):
                 try:
                     return f"{float(value) * 100:.2f}%"
                 except (TypeError, ValueError):
@@ -65,12 +68,23 @@ class PandasTableModel(QAbstractTableModel):
                     return f"{float(value):+.2f}%"
                 except (TypeError, ValueError):
                     return str(value)
-            if col in ("Last Price", "Strike", "Fitted Price", "Near Price", "Far Price"):
+            if col == "IV Residual (vol pts)":
+                try:
+                    return f"{float(value):+.2f}"
+                except (TypeError, ValueError):
+                    return str(value)
+            if col in ("Last Price", "Strike", "Fitted Price", "Near Price", "Far Price",
+                       "Underlying Price", "Bid", "Ask", "Mid"):
                 try:
                     return f"{float(value):,.2f}"
                 except (TypeError, ValueError):
                     return str(value)
-            if col in ("Volume", "Open Interest", "Days to Delivery", "Days Between"):
+            if col in ("Delta", "Log-Moneyness"):
+                try:
+                    return f"{float(value):+.4f}"
+                except (TypeError, ValueError):
+                    return str(value)
+            if col in ("Volume", "Open Interest", "Days to Delivery", "Days Between", "Days to Expiration"):
                 try:
                     return f"{int(value):,}"
                 except (TypeError, ValueError):
@@ -145,7 +159,10 @@ class OptionsFilterProxyModel(QSortFilterProxyModel):
                 return False
 
         if self._search_text:
-            searchable_cols = ["Symbol", "Delivery Month", "Underlying Future", "Expiration Date"]
+            searchable_cols = [
+                c for c in ("Symbol", "Delivery Month", "Underlying Future", "Expiration Date")
+                if c in df.columns
+            ]
             haystack = " ".join(
                 str(df.iat[source_row, df.columns.get_loc(c)]) for c in searchable_cols
             ).lower()
