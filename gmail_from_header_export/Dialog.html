@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 13px; padding: 8px 4px; }
+    label { display: block; margin-top: 14px; font-weight: bold; }
+    select, input[type=date] { margin-top: 4px; width: 100%; box-sizing: border-box; }
+    .checkbox-row { font-weight: normal; margin-top: 14px; }
+    .date-row { display: flex; gap: 10px; }
+    .date-row > div { flex: 1; }
+    .date-row label { font-weight: normal; font-size: 12px; margin-top: 0; }
+    #status { margin-top: 16px; line-height: 1.5; }
+    button { margin-top: 18px; padding: 6px 14px; }
+    a { word-break: break-all; }
+  </style>
+</head>
+<body>
+  <label for="scope">What to search:</label>
+  <select id="scope">
+    <option value="__INBOX__">Inbox (no label filter)</option>
+    <option value="__ALL__">All Mail (every folder except Spam/Trash)</option>
+  </select>
+
+  <label>Date range (optional -- leave blank to include all dates):</label>
+  <div class="date-row">
+    <div>
+      <label for="startDate">From</label>
+      <input type="date" id="startDate">
+    </div>
+    <div>
+      <label for="endDate">To</label>
+      <input type="date" id="endDate">
+    </div>
+  </div>
+
+  <label class="checkbox-row">
+    <input type="checkbox" id="dedupe">
+    Only keep one row per unique sender (dedupe by email address)
+  </label>
+
+  <button id="go">Create Sheet</button>
+  <div id="status"></div>
+
+  <script>
+    google.script.run.withSuccessHandler(function(names) {
+      if (!names.length) return;
+      var select = document.getElementById('scope');
+      var group = document.createElement('optgroup');
+      group.label = 'Labels';
+      names.forEach(function(name) {
+        var opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        group.appendChild(opt);
+      });
+      select.appendChild(group);
+    }).getLabelNames();
+
+    document.getElementById('go').addEventListener('click', function() {
+      var button = document.getElementById('go');
+      var status = document.getElementById('status');
+      button.disabled = true;
+      status.textContent = 'Scanning Gmail and building the sheet... this can take a bit for large mailboxes.';
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          status.innerHTML = 'Done! ' + result.count + ' rows written.<br><a href="' +
+            result.url + '" target="_blank">Open the new sheet</a>';
+          button.disabled = false;
+        })
+        .withFailureHandler(function(err) {
+          status.textContent = 'Error: ' + err.message;
+          button.disabled = false;
+        })
+        .runExport({
+          scope: document.getElementById('scope').value,
+          startDate: document.getElementById('startDate').value,
+          endDate: document.getElementById('endDate').value,
+          dedupe: document.getElementById('dedupe').checked
+        });
+    });
+  </script>
+</body>
+</html>

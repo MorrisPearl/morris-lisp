@@ -1757,12 +1757,24 @@ it:
 
 #### `(linear-regression x y [weights])`
 Ordinary (or weighted) least-squares fit of `y = intercept +
-sum(coefficients[i] * x[i])`. `x` is a vector, or a list of vectors for
-multiple predictors; `y` is a vector the same length as each predictor
+sum(coefficients[i] * x[i])`. `x` is a vector, a list of vectors for
+multiple predictors, **or a list of `(name . vector)` pairs** — exactly
+`sqlite-query`'s own column-wise result shape, so a query's results can be
+fed straight in with no manual name-stripping; `y` is a vector, or
+likewise a `(name . vector)` pair, the same length as each predictor
 vector; `weights` is the optional per-observation weight vector described
-above. Returns a model of kind `"linear"`. Raises an error if `x`/`y`/
-`weights` lengths mismatch, a predictor has zero variance, the predictors
-are collinear, or a weight is negative.
+above. When `x`/`y` carry names this way, `model-report` (below) uses them
+in place of the generic `x1`/`x2`/`y` placeholders. Returns a model of
+kind `"linear"`. Raises an error if `x`/`y`/`weights` lengths mismatch, a
+predictor has zero variance, the predictors are collinear, or a weight is
+negative.
+
+```lisp
+; sqlite-query's result feeds straight in -- no (map cdr ...) needed:
+(define rows (sqlite-query conn "select zero_flag, balance, loan_age from t"))
+(define m (linear-regression (cdr rows) (car rows)))
+(display (model-report m))   ; "Linear model:  zero_flag = ... + c*balance + c*loan_age"
+```
 
 **How the coefficients are found.** Fitting minimizes the (weighted) sum of
 squared residuals —
@@ -1800,11 +1812,12 @@ the bottleneck.
 #### `(logistic-regression x y [weights])`
 Maximum-likelihood fit of `p = sigmoid(intercept + sum(coefficients[i] *
 x[i]))`, via Newton-Raphson (up to 50 iterations, or until convergence).
-`x`/`weights` as above; every value in `y` must be in `[0, 1]` (a 0/1
-label, or a probability) — values outside that range raise an error.
-Returns a model of kind `"logistic"`. Near-perfect separability in the data
-can prevent convergence and raises a descriptive error rather than
-diverging silently.
+`x`/`y`/`weights` as `linear-regression`'s above (including `x`/`y`
+accepting `(name . vector)` pairs); every value in `y` must be in `[0, 1]`
+(a 0/1 label, or a probability) — values outside that range raise an
+error. Returns a model of kind `"logistic"`. Near-perfect separability in
+the data can prevent convergence and raises a descriptive error rather
+than diverging silently.
 
 **How the coefficients are found.** Fitting maximizes the (weighted)
 log-likelihood of the data —
@@ -1852,7 +1865,10 @@ knot)` per knot alongside the plain linear term — or, for a predictor
 marked `'categorical`, one 0/1 indicator column per non-baseline distinct
 value instead of hinges. Fitting then just reuses `linear-regression`'s or
 `logistic-regression`'s own fitting code on this expanded feature set.
-Returns a model of kind `"spline"` (or `"spline-logistic"`).
+Returns a model of kind `"spline"` (or `"spline-logistic"`). `x`/`y` accept
+the same shapes `linear-regression`/`logistic-regression` do — including a
+list of `(name . vector)` pairs for `x` and a `(name . vector)` pair for
+`y` — and `model-report` (below) uses those names the same way.
 
 **How the coefficients are found.** There's no separate spline-fitting
 algorithm — `spline-regression` isn't a different way of minimizing
@@ -1882,6 +1898,16 @@ linear) or `'categorical` instead. At `model-predict` time, a categorical
 value that wasn't seen while fitting raises a clear error naming the
 predictor and the categories that were seen.
 
+For a predictor with EXACTLY two distinct values (e.g. a 0/1 flag),
+`'categorical` and a knot count of `0` (plain linear) produce the
+identical fitted model — a two-category `'categorical` expansion is just
+one 0/1 indicator column for the non-baseline value, which for an
+already-0/1 predictor is the same number, unchanged. The only real
+difference is validation: `'categorical` requires at least 2 distinct
+values up front and rejects an unseen category at `model-predict` time,
+where plain linear accepts (and silently extrapolates/interpolates)
+anything numeric.
+
 `logistic?` (default `#f`) — if true, `y` must be in `[0, 1]`, and the
 expanded basis is fit with logistic regression instead of OLS, so the
 resulting `[0, 1]`-valued prediction, thanks to the non-linear basis,
@@ -1902,17 +1928,23 @@ fit runs on the expanded basis.
 ```
 
 #### `(model-report m)`
-Returns a multi-line string describing a fitted model. For `"linear"`: the
-fitted equation, each coefficient, the intercept, R-squared, and `n`. For
+Returns a multi-line string describing a fitted model. Uses real
+predictor/`y` names in place of `x1`/`x2`/.../`y` if `linear-regression`/
+`logistic-regression` was given `(name . vector)` pairs (see above) rather
+than bare vectors. For `"linear"`: the fitted equation, each coefficient,
+the intercept, R-squared, and `n`. For
 `"logistic"`: the fitted `sigmoid(...)` equation, coefficients, intercept,
 log-likelihood, McFadden's pseudo-R-squared, iteration count and
 convergence status, and `n`. For a spline model (either kind): the
 predictor count, then per-predictor either its knot locations (or "none —
 plain linear") or its categories and baseline value — flagging, as a hint
 rather than an error, any purely-linear predictor with 3 or fewer distinct
-values as a candidate for `'categorical` — followed by the same
-fit-quality stats as the equivalent linear/logistic case, computed on the
-expanded basis.
+values as a candidate for `'categorical` — then every fitted coefficient
+on the EXPANDED basis (one per hinge/category indicator, each labeled
+with its originating predictor's name — e.g. `income (knot 40000)` or
+`home_type = 1`) and the intercept — followed by the same fit-quality
+stats as the equivalent linear/logistic case, computed on the expanded
+basis.
 
 ```lisp
 (define m (linear-regression (vector 1 2 3 4 5) (vector 10 20 29 41 51)))
@@ -1985,6 +2017,15 @@ probability for `"logistic"`/`"spline-logistic"` models.
 (model-predict m (list 50000 30))      ; two predictors -> a list
 (define m2 (linear-regression income rent))
 (model-predict m2 50000)               ; one predictor -> bare number is fine too
+```
+
+[`model_utils.lsp`](model_utils.lsp)'s `(model->function m)` wraps this into
+an ordinary Lisp function, one argument per predictor, instead of a list:
+
+```lisp
+(load "model_utils.lsp")
+(define f (model->function m))
+(f 50000 30)                           ; same as (model-predict m (list 50000 30))
 ```
 
 #### `(model-slope m)`
@@ -2141,6 +2182,21 @@ e.g. `0` for a dollar amount, `4`-`6` for an interest rate/CPR/SMM
 column), calculates them row-by-row in dependency order (with a `lag`
 accessor for referring to a previous row), and calls `display-columns`
 for you — demonstrated end-to-end in `mortgage_amortization_example.lsp`.
+
+#### `(display-markdown string)`
+Shows `string` as Markdown. In a Jupyter notebook (the `morris_lisp`
+kernel) it renders as real Markdown — tables, headings, bold — so a cell
+can build a Markdown table with `string-append` and display it neatly.
+Anywhere else (console, GUI, `redirect-output`) the raw Markdown text is
+written as ordinary output, which is still readable. Returns `'()`.
+
+```lisp
+(display-markdown
+  (string-append "| name | value |\n"
+                 "|---|---|\n"
+                 "| a | 1 |\n"
+                 "| b | 2 |\n"))
+```
 
 #### `(write-columns-csv filename pairs)`
 Same `pairs` shape as `display-columns` (see above) — writes a CSV file

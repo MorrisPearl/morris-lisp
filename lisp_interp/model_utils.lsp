@@ -1,42 +1,3 @@
-( define api-key "/Users/morris/credentials.json" )
-( define creds   "/Users/morris/credentials.json" )
-
-; some of the examples use api-key and some use creds
-
-(defmacro while (test body)
-  `(let ()
-     (define (%loop)
-	 (if ,test
-             (begin ,body (%loop))
-             '()))
-     (%loop)))
-
-(define (display_markdown_table headings data)
-    (let* ((output "")
-	   (aout (lambda (x) (set! output (string-append output (to-string x))))))
-
-      (aout " | ")
-      (dolist (x headings)
-	(aout x)
-	(aout " | "))
-
-      (aout "\n")
-      (aout " | ")
-    
-      (dolist (y headings)
-	(aout " ---: |"))
-      (aout "\n")
-
-      (dolist (row data)
-	(aout  " | ")
-	(dolist (item row)
-	  (aout item)
-	  (aout " | "))
-	(aout "\n"))
-      (display-markdown output)
-      )
-  )
-
 ; model_utils.lsp
 ;
 ; A small utility for turning a fitted model -- from linear-regression,
@@ -58,5 +19,3 @@
 ; still raises a clear error naming how many predictors the model has.
 (define (model->function m)
   (lambda args (model-predict m args)))
-
-
