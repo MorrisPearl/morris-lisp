@@ -4931,6 +4931,8 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
         "sqrt": math.sqrt,
         "pow": math.pow,
         "log": math.log,
+        "exp": math.exp,
+        "erf": math.erf,
         "expt": lambda a, b: a ** b,
         "floor": lambda x: math.floor(x),
         "ceiling": lambda x: math.ceil(x),

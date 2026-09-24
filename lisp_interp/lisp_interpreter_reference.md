@@ -768,6 +768,21 @@ Natural log of `x`, or log base `base` if given, e.g. `(log 8 2)` is `3.0`.
 (log 8 2)                      ; => 3.0
 ```
 
+#### `(exp x)`
+e raised to the power `x`, via `math.exp`; always a float.
+
+```lisp
+(exp 1)                        ; => 2.718281828459045
+```
+
+#### `(erf x)`
+The error function, via `math.erf` — what a standard normal CDF is built
+from: `N(x) = 0.5 * (1 + erf(x / sqrt(2)))`. See `implied_vol.lsp`.
+
+```lisp
+(erf 0)                        ; => 0.0
+```
+
 #### `(floor x)`, `(ceiling x)`, `(round x)`, `(truncate x)`
 Standard rounding. `round` uses banker's rounding (round-half-to-even) for
 exact ties, matching Python's built-in `round`.
