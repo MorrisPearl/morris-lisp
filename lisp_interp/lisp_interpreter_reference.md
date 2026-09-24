@@ -1108,6 +1108,26 @@ Returns a new list of just the elements of `l` for which `(f x)` is true.
 (filter (lambda (x) (> x 2)) (list 1 2 3 4))   ; => (3 4)
 ```
 
+#### `(sort seq [key])`
+Returns a NEW list or vector with `seq`'s elements in ascending order;
+`seq` itself is unchanged. The sort is stable (elements that compare equal
+keep their original order). A vector of numbers is sorted with numpy, so
+even millions of elements sort in a fraction of a second.
+
+`key`, if given, is a procedure of one argument that returns what to
+compare for each element — a number or string, anything `<` can compare —
+so the elements themselves can be anything. Without `key`, the elements
+themselves are compared. Raises an error if two elements (or keys) can't
+be compared, e.g. a number and a string.
+
+```lisp
+(sort (list 3 1 2))                                  ; => (1 2 3)
+(sort (vector 3 1 2.5))                              ; => #(1.0 2.5 3.0)
+(sort (list "pear" "apple" "fig"))                   ; => ("apple" "fig" "pear")
+(sort (list (list "b" 2) (list "a" 3) (list "c" 1))
+      (lambda (row) (car (cdr row))))                ; => (("c" 1) ("b" 2) ("a" 3))
+```
+
 #### `(reduce f l [init])`
 Left fold. With `init` given, starts the accumulator there and folds `f`
 over every element of `l`; without it, uses `l`'s first element as the

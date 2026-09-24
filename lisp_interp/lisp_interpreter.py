@@ -5005,6 +5005,31 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
     def lisp_filter(f, lst):
         return list_to_pairs([x for x in pairs_to_list(lst) if is_true(apply_proc(f, [x]))])
 
+    def lisp_sort(seq, key=None):
+        """(sort seq [key]) -- a NEW list or vector with seq's elements in
+        ascending order (seq itself is not changed); the sort is stable.
+        `key`, if given, is a procedure of one argument that returns what
+        to compare for each element -- a number or string, anything `<`
+        can compare -- so (sort people person-age) orders people by age."""
+        if isinstance(seq, LispVector):
+            if key is None and seq.items.dtype != object:
+                return LispVector(np.sort(seq.items, kind="stable"))
+            items = [_lisp_scalar(x) for x in seq.items]
+            build = LispVector
+        elif seq is NIL or isinstance(seq, Pair):
+            items = pairs_to_list(seq)
+            build = list_to_pairs
+        else:
+            raise LispError("sort: expected a list or a vector, got %r" % (seq,))
+        try:
+            if key is None:
+                return build(sorted(items))
+            keyed = [(apply_proc(key, [x]), x) for x in items]
+            keyed.sort(key=lambda pair: pair[0])
+            return build([x for _, x in keyed])
+        except TypeError:
+            raise LispError("sort: elements (or their keys) can't be compared with <")
+
     def lisp_reduce(f, lst, *init):
         items = pairs_to_list(lst)
         if init:
@@ -5071,6 +5096,7 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
         "list?": lambda p: p is NIL or isinstance(p, Pair),
         "map": lisp_map,
         "filter": lisp_filter,
+        "sort": lisp_sort,
         "reduce": lisp_reduce,
     })
 
