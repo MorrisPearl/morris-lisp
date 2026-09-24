@@ -2,7 +2,7 @@
 __pycache__/
 
 .ipynb_checkpoints/
-
+.claude/*
 lisp_interp/Untitled*.ipynb
 
 
