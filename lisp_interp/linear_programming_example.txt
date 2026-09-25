@@ -2,29 +2,27 @@
 # invest $100 million in four mortgage pools, earning as much yield as
 # possible, within limits on concentration, duration, and credit risk.
 #
-# The variables are the dollars put in each pool:
-#   x1  GNMA 30-year        yield 5.4%   duration 4.5 years
-#   x2  FNMA 30-year        yield 5.8%   duration 5.0 years
-#   x3  non-agency prime    yield 6.6%   duration 5.5 years
-#   x4  CMO Z-tranche       yield 7.2%   duration 7.5 years
-#
-# Maximizing 0.054 x1 + 0.058 x2 + 0.066 x3 + 0.072 x4 (the yearly income)
-# is the same as minimizing its negative.
+# The variables are the dollars put in each pool. Each variable's
+# coefficient in the objective is its pool's yield:
+#   gnma_30      GNMA 30-year        yield 5.4%   duration 4.5 years
+#   fnma_30      FNMA 30-year        yield 5.8%   duration 5.0 years
+#   non_agency   non-agency prime    yield 6.6%   duration 5.5 years
+#   cmo_z        CMO Z-tranche       yield 7.2%   duration 7.5 years
 
-minimize
--0.054 -0.058 -0.066 -0.072
+maximize
+0.054 gnma_30 + 0.058 fnma_30 + 0.066 non_agency + 0.072 cmo_z
 
 subject to
 # invest exactly $100 million
-1 1 1 1 = 100000000
+gnma_30 + fnma_30 + non_agency + cmo_z = 100000000
 # at most $40 million in any one pool
-1 0 0 0 <= 40000000
-0 1 0 0 <= 40000000
-0 0 1 0 <= 40000000
-0 0 0 1 <= 40000000
-# average duration at most 5.5 years: 4.5 x1 + 5 x2 + 5.5 x3 + 7.5 x4 <= 5.5 * $100 million
-4.5 5.0 5.5 7.5 <= 550000000
+gnma_30 <= 40000000
+fnma_30 <= 40000000
+non_agency <= 40000000
+cmo_z <= 40000000
+# average duration at most 5.5 years: (sum of duration x dollars) <= 5.5 x $100 million
+4.5 gnma_30 + 5 fnma_30 + 5.5 non_agency + 7.5 cmo_z <= 550000000
 # at least $30 million in GNMA pools
-1 0 0 0 >= 30000000
+gnma_30 >= 30000000
 # at most $50 million in the two pools with credit risk
-0 0 1 1 <= 50000000
+non_agency + cmo_z <= 50000000

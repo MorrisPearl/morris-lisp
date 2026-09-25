@@ -3,8 +3,8 @@ simplex_solver.py
 ==================
 
 A small, easy-to-read implementation of the Simplex algorithm (Big-M method)
-for solving linear minimization problems, with a reader for a simple flat
-text file format.
+for solving linear minimization and maximization problems, with a reader for
+a simple flat text file format.
 
 The code favors clarity over performance: it uses plain Python lists and
 loops instead of numpy, and it does the tableau pivoting step by step so
@@ -16,18 +16,39 @@ FLAT FILE FORMAT
 Lines starting with '#' are treated as comments and ignored, as are
 blank lines. The file has two sections:
 
-    minimize
-    <objective coefficients, space separated>
+    minimize                       (or: maximize)
+    <the objective>
     subject to
-    <constraint row 1>
-    <constraint row 2>
+    <constraint 1>
+    <constraint 2>
     ...
 
-Each constraint row is a list of coefficients, followed by a relation
-('<=', '>=', or '=') and a right-hand-side value. All variables are
-assumed to be >= 0 (standard form).
+Each constraint is a left-hand side, then a relation ('<=', '>=', or '='),
+then a right-hand-side number. All variables are assumed to be >= 0.
 
-Example (2 variables, 3 constraints):
+There are two ways to write the objective and the constraints' left-hand
+sides. Use whichever you like; the objective's form decides which one the
+whole file uses.
+
+1. WITH VARIABLE NAMES. Write each as a sum of terms, like a formula. A
+   term is a number and a variable's name ("3 x", "0.5 rate") or just the
+   name (meaning 1 times it). Put spaces around everything, including the
+   + and - between terms. A name starts with a letter or underscore and
+   has only letters, digits, and underscores. A variable that isn't in a
+   constraint just isn't mentioned in it. The variables are numbered in the
+   order they first appear, objective first.
+
+    # Maximize 3x1 + 5x2
+    maximize
+    3 x1 + 5 x2
+    subject to
+    x1 <= 4
+    2 x2 <= 12
+    3 x1 + 2 x2 <= 18
+
+2. WITH COEFFICIENTS ONLY. Write one coefficient for each variable, in the
+   same order every time, including the zeros. The variables are named x1,
+   x2, ... .
 
     # Maximize 3x1 + 5x2  ==  minimize -3x1 - 5x2
     minimize
@@ -37,59 +58,181 @@ Example (2 variables, 3 constraints):
     0 2 <= 12
     3 2 <= 18
 
+Both of these files describe the same problem. "maximize" is solved by
+minimizing the negative of the objective; the optimal value is still
+reported as the maximum.
+
 ------------------------------------------------------------------
 """
 
 import sys
 
 
+def is_variable_name(token):
+    """Whether token is a variable's name: a letter or underscore, then
+    letters, digits, and underscores."""
+    return token.isidentifier()
+
+
+def read_number(token, line, what="a number"):
+    """The number that token spells. A token that isn't a number is an
+    error, and the message shows the whole line. `what` says what the
+    token should have been, for the message."""
+    if not is_variable_name(token):     # (a name like "inf" is a name, not a number)
+        try:
+            return float(token)
+        except ValueError:
+            pass
+    raise ValueError(f"'{token}' is not {what}: {line}")
+
+
+def split_constraint_line(line):
+    """Split a constraint like "3 x + 2 y <= 18" into its three parts:
+    (the tokens of the left-hand side, the relation, the right-hand side)."""
+    tokens = line.split()
+    if len(tokens) < 3:
+        raise ValueError(f"A constraint needs a left-hand side, a relation, and a number "
+                         f"on the right: {line}")
+    relation = tokens[-2]
+    if relation not in ("<=", ">=", "="):
+        raise ValueError(f"Unrecognized relation '{relation}' in line: {line}")
+    return tokens[:-2], relation, read_number(tokens[-1], line)
+
+
+def parse_numbered_problem(objective_line, constraint_lines):
+    """Read the objective and constraints of a file written with coefficients
+    only (form 2 in the module docstring). Returns
+    (variable_names, c, A, relations, b) -- see parse_lp_file."""
+    c = [read_number(token, objective_line) for token in objective_line.split()]
+    variable_names = [f"x{j}" for j in range(1, len(c) + 1)]
+
+    A = []
+    relations = []
+    b = []
+    for line in constraint_lines:
+        left_side, relation, rhs = split_constraint_line(line)
+        coefficients = [read_number(token, line,
+                                    "a number (the objective has no variable names, "
+                                    "so the constraints can't either)")
+                        for token in left_side]
+        if len(coefficients) != len(c):
+            raise ValueError(f"Constraint has {len(coefficients)} coefficients, "
+                              f"expected {len(c)}: {line}")
+        A.append(coefficients)
+        relations.append(relation)
+        b.append(rhs)
+
+    return variable_names, c, A, relations, b
+
+
+def parse_expression(tokens, line):
+    """Read a sum of terms, such as "3 x + y - 2.5 z" (already split into
+    tokens), into a dictionary from each variable's name to its coefficient.
+    A variable that appears twice gets both coefficients added. `line` is
+    the whole line, for error messages."""
+    coefficients = {}
+    sign = 1.0
+    position = 0
+
+    # An optional sign in front of the first term.
+    if tokens and tokens[0] in ("+", "-"):
+        sign = 1.0 if tokens[0] == "+" else -1.0
+        position = 1
+
+    while True:
+        # One term: a name, or a number and then a name.
+        size = 1.0
+        if position < len(tokens) and not is_variable_name(tokens[position]):
+            size = read_number(tokens[position], line,
+                               "a number or a variable name (put spaces around "
+                               "every number, name, +, and -)")
+            position += 1
+        if position == len(tokens) or not is_variable_name(tokens[position]):
+            raise ValueError(f"Expected a variable name in: {line}")
+        name = tokens[position]
+        coefficients[name] = coefficients.get(name, 0.0) + sign * size
+        position += 1
+
+        # Then the end of the formula, or + or - and another term.
+        if position == len(tokens):
+            return coefficients
+        if tokens[position] not in ("+", "-"):
+            raise ValueError(f"Expected + or - after '{name}', but found '{tokens[position]}': {line}")
+        sign = 1.0 if tokens[position] == "+" else -1.0
+        position += 1
+
+
+def parse_named_problem(objective_line, constraint_lines):
+    """Read the objective and constraints of a file written with variable
+    names (form 1 in the module docstring). Returns
+    (variable_names, c, A, relations, b) -- see parse_lp_file."""
+    objective = parse_expression(objective_line.split(), objective_line)
+
+    constraint_terms = []       # for each constraint, a dictionary from name to coefficient
+    relations = []
+    b = []
+    for line in constraint_lines:
+        left_side, relation, rhs = split_constraint_line(line)
+        constraint_terms.append(parse_expression(left_side, line))
+        relations.append(relation)
+        b.append(rhs)
+
+    # Number the variables in the order they first appear: the objective's
+    # first, then each constraint's. (A dictionary keeps its keys in the
+    # order they were added, so it works as an ordered set.)
+    seen = {}
+    for terms in [objective] + constraint_terms:
+        for name in terms:
+            seen[name] = None
+    variable_names = list(seen)
+
+    # A variable that a formula doesn't mention has coefficient 0 in it.
+    c = [objective.get(name, 0.0) for name in variable_names]
+    A = [[terms.get(name, 0.0) for name in variable_names] for terms in constraint_terms]
+    return variable_names, c, A, relations, b
+
+
 def parse_lp_file(filepath):
     """
-    Read a flat file describing a linear minimization problem and return:
-        c          - list of objective coefficients
-        A          - list of lists, one row of coefficients per constraint
-        relations  - list of strings, one of '<=', '>=', '=' per constraint
-        b          - list of right-hand-side values
+    Read a flat file describing a linear programming problem and return:
+        c              - list of objective coefficients
+        A              - list of lists, one row of coefficients per constraint
+        relations      - list of strings, one of '<=', '>=', '=' per constraint
+        b              - list of right-hand-side values
+        variable_names - list of the variables' names, in the order of c
+                         (x1, x2, ... if the file doesn't name them)
+        maximize       - True if the file says "maximize", False for "minimize"
+                         (c is as written in the file, not negated)
 
     See the module docstring above for the expected file format.
     """
     with open(filepath) as f:
         lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
 
-    if not lines or lines[0].lower() != "minimize":
-        raise ValueError("File must start with a 'minimize' line (after comments/blank lines).")
+    if not lines or lines[0].lower() not in ("minimize", "maximize"):
+        raise ValueError("File must start with a 'minimize' or 'maximize' line "
+                         "(after comments/blank lines).")
+    maximize = lines[0].lower() == "maximize"
 
-    c = [float(token) for token in lines[1].split()]
-
-    if lines[2].lower() != "subject to":
-        raise ValueError("Expected a 'subject to' line after the objective coefficients.")
-
-    A = []
-    relations = []
-    b = []
-    for line in lines[3:]:
-        tokens = line.split()
-        relation = tokens[-2]
-        rhs = float(tokens[-1])
-        coefficients = [float(t) for t in tokens[:-2]]
-
-        if relation not in ("<=", ">=", "="):
-            raise ValueError(f"Unrecognized relation '{relation}' in line: {line}")
-        if len(coefficients) != len(c):
-            raise ValueError(f"Constraint has {len(coefficients)} coefficients, "
-                              f"expected {len(c)}: {line}")
-
-        A.append(coefficients)
-        relations.append(relation)
-        b.append(rhs)
-
-    if not A:
+    if len(lines) < 2 or lines[1].lower() == "subject to":
+        raise ValueError(f"Expected the objective on the line after '{lines[0]}'.")
+    if len(lines) < 3 or lines[2].lower() != "subject to":
+        raise ValueError("Expected a 'subject to' line after the objective.")
+    objective_line = lines[1]
+    constraint_lines = lines[3:]
+    if not constraint_lines:
         raise ValueError("No constraints were found after 'subject to'.")
 
-    return c, A, relations, b
+    # A file that uses variable names has at least one in its objective.
+    if any(is_variable_name(token) for token in objective_line.split()):
+        variable_names, c, A, relations, b = parse_named_problem(objective_line, constraint_lines)
+    else:
+        variable_names, c, A, relations, b = parse_numbered_problem(objective_line, constraint_lines)
+
+    return c, A, relations, b, variable_names, maximize
 
 
-def solve_simplex(c, A, relations, b, max_iterations=1000):
+def solve_simplex(c, A, relations, b, maximize=False, max_iterations=None):
     """
     Solve:  minimize   c^T x
             subject to A x {<=, >=, =} b
@@ -101,12 +244,24 @@ def solve_simplex(c, A, relations, b, max_iterations=1000):
     larger than any number -- rather than set to a particular big number
     (see Step 4).
 
+    If `maximize` is True, maximize c^T x instead. (That is done by
+    minimizing -c^T x; the optimal value returned is still the maximum of
+    c^T x.)
+
     Returns (solution, optimal_value) where `solution` is a list giving
     the value of each original variable, in the same order as `c`.
+
+    `max_iterations` is how many pivots to try before giving up. By
+    default it is three times the total number of variables: the original
+    variables plus the slack, surplus, and artificial ones (see Step 2).
 
     Raises RuntimeError if the problem is infeasible, unbounded, or the
     algorithm does not converge within `max_iterations`.
     """
+    original_c = c
+    if maximize:
+        c = [-cost for cost in c]   # maximizing c^T x is minimizing -c^T x
+
     n_vars = len(c)
     n_constraints = len(A)
     A = [row[:] for row in A]   # work on copies so we don't mutate caller's data
@@ -211,6 +366,12 @@ def solve_simplex(c, A, relations, b, max_iterations=1000):
     tableau.append(m_row)
 
     # --- Step 5: the main simplex loop ---
+    # How many pivots to allow before giving up. total_vars counts every
+    # column of the tableau: the original, slack, surplus, and artificial
+    # variables.
+    if max_iterations is None:
+        max_iterations = 3 * total_vars
+
     # How close to 0 a number must be to count as 0. Rounding errors grow
     # with the size of the numbers -- with costs in the hundreds of
     # millions, an entry of obj_row that should be exactly 0 can come out
@@ -277,7 +438,7 @@ def solve_simplex(c, A, relations, b, max_iterations=1000):
 
         basis[leaving_row] = entering_col
     else:
-        raise RuntimeError("Simplex did not converge within the iteration limit.")
+        raise RuntimeError(f"Simplex did not converge within {max_iterations} iterations.")
 
     # --- Step 6: check feasibility ---
     # If an artificial variable is still basic with a positive value, the
@@ -292,21 +453,23 @@ def solve_simplex(c, A, relations, b, max_iterations=1000):
         if basic_col < n_vars:
             solution[basic_col] = tableau[i][-1]
 
-    optimal_value = sum(c[j] * solution[j] for j in range(n_vars))
+    optimal_value = sum(original_c[j] * solution[j] for j in range(n_vars))
     return solution, optimal_value
 
 
 def solve_lp_file(filepath):
-    """Convenience function: parse a flat file and solve it in one call."""
-    c, A, relations, b = parse_lp_file(filepath)
-    return solve_simplex(c, A, relations, b)
+    """Convenience function: parse a flat file and solve it in one call.
+    Returns (variable_names, solution, optimal_value)."""
+    c, A, relations, b, variable_names, maximize = parse_lp_file(filepath)
+    solution, optimal_value = solve_simplex(c, A, relations, b, maximize)
+    return variable_names, solution, optimal_value
 
 
 if __name__ == "__main__":
     path = sys.argv[1] if len(sys.argv) > 1 else "example_problem.txt"
-    solution, optimal_value = solve_lp_file(path)
+    variable_names, solution, optimal_value = solve_lp_file(path)
 
     print(f"Solved problem from: {path}")
-    for i, value in enumerate(solution, start=1):
-        print(f"  x{i} = {value:.6g}")
+    for name, value in zip(variable_names, solution):
+        print(f"  {name} = {value:.6g}")
     print(f"Optimal objective value = {optimal_value:.6g}")

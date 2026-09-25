@@ -4,17 +4,24 @@ algorithm, Big-M method, in plain Python).
 
   lp-read-file   read a problem from a text file, in the format described
                  at the top of simplex_solver.py
-  lp-solve       solve a problem: minimize the objective, subject to the
-                 constraints, with every variable >= 0
+  lp-solve       solve a problem: minimize (or maximize) the objective,
+                 subject to the constraints, with every variable >= 0
 
 A problem, as lp-read-file returns it and lp-solve takes it, is a Lisp
-association list of four lists -- the four things
-simplex_solver.parse_lp_file returns (c, A, relations, and b):
+association list of six lists -- the six things
+simplex_solver.parse_lp_file returns (c, A, relations, b, variable names,
+and whether to maximize):
 
   (("objective"   c1 c2 ...)              the objective's coefficients
    ("constraints" (a11 a12 ...) ...)      each constraint's coefficients
    ("relations"   "<=" ">=" "=" ...)      each constraint's relation
-   ("rhs"         b1 b2 ...))             each constraint's right-hand side
+   ("rhs"         b1 b2 ...)              each constraint's right-hand side
+   ("variables"   "x1" "x2" ...)          each variable's name
+   ("goal"        "minimize"))            "minimize" or "maximize"
+
+The first four are required. "variables" and "goal" are optional for
+lp-solve: with no "goal" the problem is minimized. lp-solve doesn't use the
+names; they're for the reader of the problem and its solution.
 
 If simplex/ isn't next to this directory, the builtins raise a clear error
 when called.
@@ -45,25 +52,35 @@ def lp_read_file(path):
     file and return it as a problem list (see the top of this file)."""
     _require_simplex("lp-read-file")
     try:
-        c, A, relations, b = parse_lp_file(str(path))
-    except (OSError, ValueError, IndexError) as e:
+        c, A, relations, b, variable_names, maximize = parse_lp_file(str(path))
+    except (OSError, ValueError) as e:
         raise LispError("lp-read-file: %s: %s" % (path, e))
     return list_to_pairs([
         Pair(LispString("objective"), list_to_pairs(c)),
         Pair(LispString("constraints"), list_to_pairs([list_to_pairs(row) for row in A])),
         Pair(LispString("relations"), list_to_pairs([LispString(r) for r in relations])),
         Pair(LispString("rhs"), list_to_pairs(b)),
+        Pair(LispString("variables"), list_to_pairs([LispString(name) for name in variable_names])),
+        Pair(LispString("goal"), list_to_pairs([LispString("maximize" if maximize else "minimize")])),
     ])
 
 
-def _problem_part(problem, name):
+def _find_part(problem, name):
     """The part of a problem stored under name, e.g. "objective", as a
-    Python list."""
+    Python list, or None if the problem has no part by that name."""
     for entry in pairs_to_list(problem):
         if isinstance(entry, Pair) and entry.car == name:
             return _list_items(entry.cdr, name)
-    raise LispError('lp-solve: the problem has no "%s" list -- it needs "objective", '
-                    '"constraints", "relations", and "rhs"' % name)
+    return None
+
+
+def _problem_part(problem, name):
+    """Like _find_part, but the problem must have this part."""
+    part = _find_part(problem, name)
+    if part is None:
+        raise LispError('lp-solve: the problem has no "%s" list -- it needs "objective", '
+                        '"constraints", "relations", and "rhs"' % name)
+    return part
 
 
 def _list_items(x, name):
@@ -81,17 +98,46 @@ def _numbers(items, name):
     return [float(x) for x in items]
 
 
-def lp_solve(problem):
-    """(lp-solve problem) -- minimize the problem's objective subject to its
+def _goal_is_maximize(problem):
+    """Whether the problem's "goal" is "maximize" (True) or "minimize", which
+    is also what a problem with no "goal" means (False)."""
+    goal = _find_part(problem, "goal")
+    if goal is None:
+        return False
+    if len(goal) != 1 or str(goal[0]) not in ("minimize", "maximize"):
+        raise LispError('lp-solve: "goal" must be "minimize" or "maximize", not %s'
+                        % to_string(list_to_pairs(goal)))
+    return str(goal[0]) == "maximize"
+
+
+def _check_max_iterations(max_iterations):
+    """The iteration limit for lp-solve, or None for the solver's default
+    (given as nothing, or '())."""
+    if max_iterations is None or max_iterations is NIL:
+        return None
+    if isinstance(max_iterations, bool) or not isinstance(max_iterations, int) or max_iterations < 1:
+        raise LispError("lp-solve: max-iterations must be a whole number of at least 1, not %s"
+                        % to_string(max_iterations))
+    return max_iterations
+
+
+def lp_solve(problem, max_iterations=None):
+    """(lp-solve problem [max-iterations]) -- minimize (or, if the problem's
+    goal is "maximize", maximize) the problem's objective subject to its
     constraints, with every variable >= 0. Returns
     (("solution" x1 x2 ...) ("optimal-value" . v)): the value of each
-    variable, in the objective's order, and the objective's minimum."""
+    variable, in the objective's order, and the objective's optimal value.
+    max-iterations is how many steps the solver may take before giving up;
+    the default is three times the number of variables it works with."""
     _require_simplex("lp-solve")
     c = _numbers(_problem_part(problem, "objective"), "objective")
     A = [_numbers(_list_items(row, "constraints"), "constraints")
          for row in _problem_part(problem, "constraints")]
     relations = [str(r) for r in _problem_part(problem, "relations")]
     b = _numbers(_problem_part(problem, "rhs"), "rhs")
+    maximize = _goal_is_maximize(problem)
+    max_iterations = _check_max_iterations(max_iterations)
+    variables = _find_part(problem, "variables")
 
     if not c:
         raise LispError('lp-solve: "objective" is empty')
@@ -104,12 +150,15 @@ def lp_solve(problem):
         if len(row) != len(c):
             raise LispError("lp-solve: a constraint has %d coefficients, but the objective has %d"
                             % (len(row), len(c)))
+    if variables is not None and len(variables) != len(c):
+        raise LispError('lp-solve: "variables" has %d names, but the objective has %d coefficients'
+                        % (len(variables), len(c)))
     for r in relations:
         if r not in ("<=", ">=", "="):
             raise LispError('lp-solve: a relation must be "<=", ">=", or "=", not %s' % (r,))
 
     try:
-        solution, optimal_value = solve_simplex(c, A, relations, b)
+        solution, optimal_value = solve_simplex(c, A, relations, b, maximize, max_iterations)
     except RuntimeError as e:
         raise LispError("lp-solve: %s" % e)
     return list_to_pairs([

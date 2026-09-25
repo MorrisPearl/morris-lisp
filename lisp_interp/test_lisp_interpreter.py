@@ -1957,7 +1957,8 @@ class TestLinearProgramming(LispTestCase):
         self.run_lisp('(define problem (lp-read-file "%s"))' % self.EXAMPLE_FILE.replace("\\", "/"))
         self.assertShows("problem",
                          '(("objective" -3.0 -5.0) ("constraints" (1.0 0.0) (0.0 2.0) (3.0 2.0)) '
-                         '("relations" "<=" "<=" "<=") ("rhs" 4.0 12.0 18.0))')
+                         '("relations" "<=" "<=" "<=") ("rhs" 4.0 12.0 18.0) '
+                         '("variables" "x1" "x2") ("goal" "minimize"))')
 
     def test_solve_the_example_file(self):
         self.run_lisp('(define result (lp-solve (lp-read-file "%s")))' % self.EXAMPLE_FILE.replace("\\", "/"))
@@ -1973,12 +1974,149 @@ class TestLinearProgramming(LispTestCase):
 
     def test_read_errors_say_what_is_wrong(self):
         self.assertLispError('(lp-read-file "/definitely/not/here.txt")', "No such file")
-        path = self.write_problem_file("maximize\n1 2\nsubject to\n1 1 <= 4\n")
-        self.assertLispError('(lp-read-file "%s")' % path, "must start with a 'minimize' line")
+        path = self.write_problem_file("optimize\n1 2\nsubject to\n1 1 <= 4\n")
+        self.assertLispError('(lp-read-file "%s")' % path, "must start with a 'minimize' or 'maximize' line")
         path = self.write_problem_file("minimize\n1 2\nsubject to\n1 <= 4\n")
         self.assertLispError('(lp-read-file "%s")' % path, "expected 2")
         path = self.write_problem_file("minimize\n1 2\nsubject to\n1 1 < 4\n")
         self.assertLispError('(lp-read-file "%s")' % path, "Unrecognized relation")
+
+    NAMED_FILE = """
+        # Maximize 3x1 + 5x2
+        maximize
+        3 x1 + 5 x2
+        subject to
+        x1 <= 4
+        2 x2 <= 12
+        3 x1 + 2 x2 <= 18
+    """
+
+    def test_read_a_file_with_variable_names(self):
+        path = self.write_problem_file(self.NAMED_FILE)
+        self.assertShows('(lp-read-file "%s")' % path,
+                         '(("objective" 3.0 5.0) ("constraints" (1.0 0.0) (0.0 2.0) (3.0 2.0)) '
+                         '("relations" "<=" "<=" "<=") ("rhs" 4.0 12.0 18.0) '
+                         '("variables" "x1" "x2") ("goal" "maximize"))')
+
+    def test_a_maximize_problem_gives_the_maximum(self):
+        path = self.write_problem_file(self.NAMED_FILE)
+        self.assertShows('(lp-solve (lp-read-file "%s"))' % path,
+                         '(("solution" 2.0 6.0) ("optimal-value" . 36.0))')
+
+    def test_maximize_and_negated_minimize_agree(self):
+        # Maximizing 3x1 + 5x2, and minimizing -3x1 - 5x2 in the coefficients-only form.
+        self.assertShows('(cdr (assoc "solution" (lp-solve (lp-read-file "%s"))))'
+                         % self.write_problem_file(self.NAMED_FILE), "(2.0 6.0)")
+        self.assertShows('(cdr (assoc "solution" (lp-solve (lp-read-file "%s"))))'
+                         % self.EXAMPLE_FILE.replace("\\", "/"), "(2.0 6.0)")
+
+    def test_variables_are_numbered_in_order_of_first_appearance(self):
+        # z appears in a constraint but not the objective; it costs nothing (coefficient 0).
+        path = self.write_problem_file("minimize\nb + a\nsubject to\na + z >= 3\nz <= 2\nb >= 1\n")
+        self.assertShows('(cdr (assoc "variables" (lp-read-file "%s")))' % path, '("b" "a" "z")')
+        self.assertShows('(cdr (assoc "objective" (lp-read-file "%s")))' % path, "(1.0 1.0 0.0)")
+        self.assertShows('(cdr (assoc "constraints" (lp-read-file "%s")))' % path,
+                         "((0.0 1.0 1.0) (0.0 0.0 1.0) (1.0 0.0 0.0))")
+
+    def test_a_name_used_twice_in_a_formula_has_its_coefficients_added(self):
+        path = self.write_problem_file("minimize\nx + x + y\nsubject to\nx + y >= 3\ny <= 5\n")
+        self.assertShows('(cdr (assoc "objective" (lp-read-file "%s")))' % path, "(2.0 1.0)")
+
+    def test_a_formula_can_start_with_a_sign_and_use_minus(self):
+        path = self.write_problem_file("minimize\n- x + 2 y\nsubject to\nx <= 3\ny >= 1\n")
+        self.assertShows('(lp-solve (lp-read-file "%s"))' % path,
+                         '(("solution" 3.0 1.0) ("optimal-value" . -1.0))')
+
+    def test_names_can_have_underscores_and_digits_and_are_case_sensitive(self):
+        path = self.write_problem_file("minimize\ngnma_30 + GNMA_30 + _x2\nsubject to\n"
+                                       "gnma_30 + GNMA_30 + _x2 >= 1\n")
+        self.assertShows('(cdr (assoc "variables" (lp-read-file "%s")))' % path, '("gnma_30" "GNMA_30" "_x2")')
+
+    def test_the_header_words_are_not_case_sensitive(self):
+        path = self.write_problem_file("MAXIMIZE\n2 x\nSubject To\nx <= 4\n")
+        self.assertShows('(cdr (assoc "optimal-value" (lp-solve (lp-read-file "%s"))))' % path, "8.0")
+
+    def test_named_file_errors_say_what_is_wrong(self):
+        head = "maximize\n3 x + 5 y\nsubject to\n"
+        cases = [
+            (head + "3x + 2 y <= 4\n", "'3x' is not a number or a variable name"),
+            (head + "x+y <= 4\n", "'x+y' is not a number or a variable name"),
+            (head + "x y <= 4\n", "Expected + or - after 'x', but found 'y'"),
+            (head + "3 + 2 y <= 4\n", "Expected a variable name"),
+            (head + "3 x + <= 4\n", "Expected a variable name"),
+            (head + "x + y < 4\n", "Unrecognized relation '<'"),
+            (head + "x + y <= many\n", "'many' is not a number"),
+            (head + "x <=\n", "A constraint needs a left-hand side"),
+            ("maximize\n3 x\nsubject to\n", "No constraints were found"),
+            ("maximize\nsubject to\nx <= 4\n", "Expected the objective"),
+            ("maximize\n3 x\nx <= 4\n", "Expected a 'subject to' line"),
+            ("minimize\n1 2\nsubject to\nx + y <= 4\n", "the objective has no variable names"),
+        ]
+        for text, message in cases:
+            with self.subTest(text=text):
+                self.assertLispError('(lp-read-file "%s")' % self.write_problem_file(text), message)
+
+    def test_a_problem_built_in_lisp_can_say_maximize_by_string_or_symbol(self):
+        for goal in ['"maximize"', "maximize"]:
+            with self.subTest(goal=goal):
+                self.assertShows("""(lp-solve '(("objective" 3 5) ("constraints" (1 0) (0 2) (3 2))
+                                                ("relations" <= <= <=) ("rhs" 4 12 18) ("goal" %s)))""" % goal,
+                                 '(("solution" 2.0 6.0) ("optimal-value" . 36.0))')
+
+    def test_a_problem_with_no_goal_is_minimized(self):
+        self.assertShows("""(lp-solve '(("objective" 1 1) ("constraints" (1 2) (3 1))
+                                        ("relations" >= >=) ("rhs" 4 6)))""",
+                         '(("solution" 1.6 1.2) ("optimal-value" . 2.8))')
+
+    def test_a_bad_goal_or_variables_list_is_an_error(self):
+        base = '("objective" 1 1) ("constraints" (1 1)) ("relations" <=) ("rhs" 4)'
+        self.assertLispError("(lp-solve '(%s (\"goal\" \"largest\")))" % base, '"goal" must be "minimize" or "maximize"')
+        self.assertLispError("(lp-solve '(%s (\"goal\")))" % base, '"goal" must be "minimize" or "maximize"')
+        self.assertLispError("(lp-solve '(%s (\"variables\" \"x\")))" % base,
+                             '"variables" has 1 names, but the objective has 2 coefficients')
+
+    def test_the_default_iteration_limit_is_three_times_the_number_of_variables(self):
+        # Beale's example makes this solver cycle forever. It has 4 variables and 3 constraints,
+        # each of which adds a slack variable: 7 in all, so the default limit is 21.
+        beale = """'(("objective" -0.75 20 -0.5 6)
+                      ("constraints" (0.25 -8 -1 9) (0.5 -12 -0.5 3) (0 0 1 0))
+                      ("relations" <= <= <=) ("rhs" 0 0 1))"""
+        self.assertLispError("(lp-solve %s)" % beale, "did not converge within 21 iterations")
+        self.assertLispError("(lp-solve %s 50)" % beale, "did not converge within 50 iterations")
+
+    def test_slack_surplus_and_artificial_variables_count_toward_the_default_limit(self):
+        # The same cycling problem, plus all-zero rows, which don't change the pivoting but do
+        # add columns. ">=" adds a surplus and an artificial variable, and "=" an artificial one.
+        def beale_with(extra_relations):
+            rows = "".join(" (0 0 0 0)" for _ in extra_relations)
+            return """'(("objective" -0.75 20 -0.5 6)
+                        ("constraints" (0.25 -8 -1 9) (0.5 -12 -0.5 3) (0 0 1 0)%s)
+                        ("relations" <= <= <= %s) ("rhs" 0 0 1%s))""" % (
+                rows, " ".join(extra_relations), " 0" * len(extra_relations))
+        # 4 variables + 3 slack = 7, so 21
+        self.assertLispError("(lp-solve %s)" % beale_with([]), "within 21 iterations")
+        # + 1 surplus + 1 artificial = 9, so 27
+        self.assertLispError("(lp-solve %s)" % beale_with([">="]), "within 27 iterations")
+        # + 1 artificial = 8, so 24
+        self.assertLispError("(lp-solve %s)" % beale_with(["="]), "within 24 iterations")
+        # 4 + 3 + 1 surplus + 2 artificial = 10, so 30
+        self.assertLispError("(lp-solve %s)" % beale_with([">=", "="]), "within 30 iterations")
+
+    def test_max_iterations_can_be_given_and_must_be_a_positive_whole_number(self):
+        self.assertLispError("""(lp-solve '(("objective" -3 -5) ("constraints" (1 0) (0 2) (3 2))
+                                            ("relations" <= <= <=) ("rhs" 4 12 18)) 1)""",
+                             "did not converge within 1 iterations")
+        self.assertShows("""(lp-solve '(("objective" -3 -5) ("constraints" (1 0) (0 2) (3 2))
+                                        ("relations" <= <= <=) ("rhs" 4 12 18)) 10)""",
+                         '(("solution" 2.0 6.0) ("optimal-value" . -36.0))')
+        self.assertShows("""(lp-solve '(("objective" -3 -5) ("constraints" (1 0) (0 2) (3 2))
+                                        ("relations" <= <= <=) ("rhs" 4 12 18)) '())""",
+                         '(("solution" 2.0 6.0) ("optimal-value" . -36.0))')
+        for bad in ["0", "-3", "2.5", '"many"', "#t"]:
+            with self.subTest(max_iterations=bad):
+                self.assertLispError("""(lp-solve '(("objective" -3 -5) ("constraints" (1 0) (0 2) (3 2))
+                                                    ("relations" <= <= <=) ("rhs" 4 12 18)) %s)""" % bad,
+                                     "max-iterations must be a whole number of at least 1")
 
     def test_solve_a_problem_built_in_lisp(self):
         self.assertShows("""(lp-solve (list (cons "objective" (list 1 1))
@@ -3261,7 +3399,7 @@ class TestExampleScripts(unittest.TestCase):
     def test_the_linear_programming_example_finds_the_best_allocation(self):
         out = self.results["linear_programming_example.lsp"].stdout
         self.assertIn("Yearly income: $6,200,000", out)
-        self.assertIn("  CMO Z-tranche           20,000,000    7.2%", out)
+        self.assertIn("  cmo_z                   20,000,000    7.2%", out)
         self.assertIn("    6.00     6,320,000   6.32%", out)
         self.assertIn("limited to 4 years: lp-solve: Problem is infeasible.", out)
 

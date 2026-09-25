@@ -3278,13 +3278,12 @@ data actually has, not the row count.
 (In `lisp_simplex.py`, which uses the simplex solver in
 `simplex/simplex_solver.py`, next to `lisp_interp/`.) These solve linear
 programming problems: find the values of the variables `x1, x2, ...` that
-**minimize** `c1·x1 + c2·x2 + ...`, subject to constraints of the form
-`a1·x1 + a2·x2 + ... <= b` (or `>=`, or `=`), with every variable at least
-0. To **maximize** something instead, minimize its negative: flip the
-signs of the objective's coefficients, and the optimal value comes out
-with its sign flipped.
+**minimize** (or **maximize**) `c1·x1 + c2·x2 + ...`, subject to
+constraints of the form `a1·x1 + a2·x2 + ... <= b` (or `>=`, or `=`), with
+every variable at least 0. The variables can have names of your choosing,
+such as `gnma_30`, so a problem with many variables stays readable.
 
-**A problem** is an association list of four lists (the same four things
+**A problem** is an association list of six lists (the six things
 `simplex_solver.py`'s `parse_lp_file` returns):
 
 | Part | Holds |
@@ -3293,9 +3292,14 @@ with its sign flipped.
 | `"constraints"` | one list per constraint, holding its coefficients, one per variable |
 | `"relations"` | one per constraint: `"<="`, `">="`, or `"="` |
 | `"rhs"` | one per constraint: its right-hand side |
+| `"variables"` | the variables' names, one per variable (optional in `lp-solve`) |
+| `"goal"` | `"minimize"` or `"maximize"` (optional in `lp-solve`: the default is `"minimize"`) |
 
-`lp-read-file` reads one from a file. You can also build one in Lisp; see
-`lp-solve`.
+`"objective"` and each list in `"constraints"` have one number for every
+variable, in the same order as `"variables"`, with a `0.0` for a variable a
+formula doesn't use. You don't have to write those zeros: `lp-read-file`
+fills them in from a file that uses variable names. You can also build a
+problem in Lisp; see `lp-solve`.
 
 `linear_programming_example.lsp` is a worked example. It reads a problem
 from `linear_programming_example.txt`: invest $100 million in four mortgage
@@ -3311,7 +3315,66 @@ python3 lisp_interpreter.py linear_programming_example.lsp
 
 #### `(lp-read-file path)`
 Reads a problem from a text file, and returns it as a problem list. The
-file looks like this:
+file has this shape:
+
+```
+maximize
+<the objective>
+subject to
+<constraint 1>
+<constraint 2>
+...
+```
+
+- The first line is `minimize` or `maximize` (in any mix of upper and
+  lower case), and then a line with the objective. Maximizing is solved
+  by minimizing the negative, and the optimal value is still reported as
+  the maximum: see `lp-solve`.
+- `subject to` starts the constraints, one per line. Each is a
+  left-hand side, then a relation (`<=`, `>=`, or `=`), then the
+  right-hand side, which is a single number.
+- Blank lines, and lines starting with `#`, are ignored.
+- All the numbers are read as floats.
+
+The objective and the left-hand sides can be written either of two ways.
+The objective decides which way the whole file uses.
+
+**1. With variable names.** Write each as a formula, a sum of terms. A term
+is a number and then a variable's name (`3 x`, `0.5 rate`), or just the
+name (which means 1 times it). A file like this, the same problem as the
+one in the second form below:
+
+```
+# Maximize 3x1 + 5x2
+maximize
+3 x1 + 5 x2
+subject to
+x1 <= 4
+2 x2 <= 12
+3 x1 + 2 x2 <= 18
+```
+
+The rules:
+
+- **Spaces around everything.** Write `3 x1 + 5 x2`, not `3x1+5x2`: put a
+  space between a number and a name, and around each `+` and `-`.
+  (Something like `3x1` is an error that says so.)
+- **Names** start with a letter or underscore, and have only letters,
+  digits, and underscores (`gnma_30`, `rate2`, `_x`). Upper and lower case
+  are different names. Use `_` where you'd use a space or a hyphen.
+- **Order.** The variables are numbered in the order they first appear,
+  starting with the objective, then the constraints. That's the order of
+  `"variables"`, of the coefficients, and of the solution. A variable that
+  appears only in a constraint costs nothing in the objective (its
+  coefficient there is 0), and a variable a constraint doesn't mention has
+  coefficient 0 in it.
+- **A formula** can start with a `-` (`- x + 2 y`), and a name can appear
+  more than once (`x + x` is `2 x`).
+
+**2. With coefficients only.** Write a coefficient for every variable, in the
+same order in every line, zeros included. The variables are named `x1`,
+`x2`, and so on. A file for the same problem (`simplex/example_problem.txt`
+is this file):
 
 ```
 # Maximize 3x1 + 5x2, which is the same as minimizing -3x1 - 5x2
@@ -3323,15 +3386,12 @@ subject to
 3 2 <= 18
 ```
 
-- The word `minimize`, then a line with the objective's coefficients.
-- The words `subject to`, then one line per constraint: its
-  coefficients, the relation (`<=`, `>=`, or `=`), and the right-hand
-  side, separated by spaces.
-- Blank lines, and lines starting with `#`, are ignored.
+Use this form for a problem with few variables. With many, the rows of
+zeros are long, and easy to get wrong. Constraint lines here must all have
+as many numbers as the objective does.
 
-The numbers are read as floats. A file that doesn't follow this format is
-an error that says what's wrong. For the file above
-(`simplex/example_problem.txt`):
+A file that doesn't follow the format is an error that names the problem
+and shows the line. For the second file above:
 
 ```lisp
 (define problem (lp-read-file "../simplex/example_problem.txt"))
@@ -3339,23 +3399,31 @@ problem
 ; => (("objective" -3.0 -5.0)
 ;     ("constraints" (1.0 0.0) (0.0 2.0) (3.0 2.0))
 ;     ("relations" "<=" "<=" "<=")
-;     ("rhs" 4.0 12.0 18.0))
+;     ("rhs" 4.0 12.0 18.0)
+;     ("variables" "x1" "x2")
+;     ("goal" "minimize"))
 (lp-solve problem)     ; => (("solution" 2.0 6.0) ("optimal-value" . -36.0))
 ```
 
-So `x1 = 2` and `x2 = 6`, where `3x1 + 5x2` reaches its maximum, 36.
+For the first file, saved as `problem.txt`, the problem is the same, except
+that the objective is `(3.0 5.0)` and the goal is `("maximize")`, and
+solving it gives `(("solution" 2.0 6.0) ("optimal-value" . 36.0))`: the
+same values of `x1` and `x2`, and the maximum, 36, of `3x1 + 5x2`.
 
-#### `(lp-solve problem)`
+`linear_programming_example.txt` is a larger example of the first form.
+
+#### `(lp-solve problem [max-iterations])`
 Solves a problem, returning
 
 ```
 (("solution" x1 x2 ...) ("optimal-value" . v))
 ```
 
-the value of each variable (in the same order as the objective's
-coefficients) and the minimum value of the objective. Use `assoc` to get
-each one. Here's a problem built in Lisp: minimize `x1 + x2` subject to
-`x1 + 2x2 >= 4` and `3x1 + x2 >= 6`:
+the value of each variable, in the same order as the problem's
+`"variables"` and `"objective"`, and the optimal value of the objective:
+its minimum, or, if the problem's goal is `"maximize"`, its maximum. Use
+`assoc` to get each one. Here's a problem built in Lisp: minimize `x1 + x2`
+subject to `x1 + 2x2 >= 4` and `3x1 + x2 >= 6`:
 
 ```lisp
 (define problem
@@ -3369,8 +3437,9 @@ result                                 ; => (("solution" 1.6 1.2) ("optimal-valu
 (cdr (assoc "optimal-value" result))   ; => 2.8
 ```
 
-A quoted list works too. In it, the relations are symbols (`<=`) rather
-than strings (`"<="`), which `lp-solve` also accepts:
+A quoted list works too. In it, the relations and the goal can be symbols
+(`<=`, `maximize`) rather than strings (`"<="`, `"maximize"`), which
+`lp-solve` also accepts:
 
 ```lisp
 ; Minimize 2x1 + 3x2 subject to x1 + x2 = 10 and x1 <= 6.
@@ -3378,18 +3447,57 @@ than strings (`"<="`), which `lp-solve` also accepts:
             ("constraints" (1 1) (1 0))
             ("relations" = <=)
             ("rhs" 10 6)))     ; => (("solution" 6.0 4.0) ("optimal-value" . 24.0))
+
+; Maximize 3x1 + 5x2 subject to x1 <= 4, 2x2 <= 12, and 3x1 + 2x2 <= 18.
+(lp-solve '(("objective" 3 5)
+            ("constraints" (1 0) (0 2) (3 2))
+            ("relations" <= <= <=)
+            ("rhs" 4 12 18)
+            ("goal" maximize)))  ; => (("solution" 2.0 6.0) ("optimal-value" . 36.0))
 ```
+
+To print each value beside its variable's name, go through the two lists
+together. For the problem read from the first file above:
+
+```lisp
+(define result (lp-solve problem))
+(do ((names (cdr (assoc "variables" problem)) (cdr names))
+     (values (cdr (assoc "solution" result)) (cdr values)))
+    ((null? names))
+  (display (format "{:<4}{:>8.2f}\n" (car names) (car values))))
+```
+
+prints
+
+```
+x1      2.00
+x2      6.00
+```
+
+**The iteration limit.** The solver works in steps (pivots). Give
+`max-iterations`, a whole number of at least 1, to stop it after that many
+steps; if it isn't done by then, it's an error. If you don't, the limit
+is **three times the number of variables the solver works with**. That's the
+problem's own variables, plus the ones the solver adds: a slack variable
+for each `<=` constraint, a surplus variable and an artificial variable for
+each `>=` constraint, and an artificial variable for each `=` constraint.
+A problem with 4 variables and 3 `<=` constraints has 7, so the limit is
+21. Ordinary problems finish in far fewer steps than that.
 
 It's an error, with a message saying why, if:
 
 - the problem has no solution: "Problem is infeasible" (the constraints
   contradict each other), or "Problem is unbounded" (the objective can
-  go down forever);
-- the solver doesn't finish in 1,000 steps;
+  go down forever, or up forever if maximizing);
+- the solver doesn't finish within the iteration limit ("did not
+  converge within 21 iterations", say). This can also happen, though
+  rarely, when a problem makes the solver go around in a circle, which
+  no limit would cure;
 - the problem is malformed: a missing part, a constraint with the wrong
   number of coefficients, a count of relations or right-hand sides that
-  doesn't match the constraints, or a relation other than `<=`, `>=`, or
-  `=`.
+  doesn't match the constraints, a relation other than `<=`, `>=`, or
+  `=`, a `"goal"` that isn't `"minimize"` or `"maximize"`, or a
+  `"variables"` list that doesn't have one name for each variable.
 
 Two things to know about the answers:
 
