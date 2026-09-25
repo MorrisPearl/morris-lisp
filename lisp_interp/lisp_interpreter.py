@@ -9,8 +9,9 @@ HOW TO RUN IT
     python3 lisp_interpreter.py -            the console REPL
 Put -v, -vv, -vvv, or --verbose=N before the file name to trace procedure
 calls as they happen (see (verbose n) in lisp_interpreter_reference.md).
-Every fresh environment first loads init.lsp, if it exists (see
-load_init_file in lisp_builtins.py).
+Every fresh environment first loads macros_init.lsp (the standard macros,
+while and do), then init.lsp, if it exists (see load_init_file in
+lisp_builtins.py).
 
 HOW THE CODE IS ORGANIZED
     lisp_interpreter.py   this file: the command line, console REPL, and batch mode

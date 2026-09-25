@@ -2,14 +2,7 @@
 ( define creds   "/Users/morris/credentials.json" )
 
 ; some of the examples use api-key and some use creds
-
-(defmacro while (test body)
-  `(let ()
-     (define (%loop)
-	 (if ,test
-             (begin ,body (%loop))
-             '()))
-     (%loop)))
+; (while and do are in macros_init.lsp, which loads before this file)
 
 (define (display_markdown_table headings data)
     (let* ((output "")

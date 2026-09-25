@@ -1149,20 +1149,25 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
 # The startup init file
 # ---------------------------------------------------------------------------
 
-# The file every new environment loads first (see load_init_file). Set
-# the LISP_INIT_FILE environment variable to use a different file.
+# The standard macros (while, do), which every new environment loads first.
+MACROS_INIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros_init.lsp")
+
+# Your own definitions, which every new environment loads next. Set the
+# LISP_INIT_FILE environment variable to use a different file.
 DEFAULT_INIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "init.lsp")
 
 
 def load_init_file(env, path=None):
-    """Load the init file (init.lsp, or LISP_INIT_FILE) into env, if it exists.
-    Called once for each new environment, before anything else runs. A
-    missing file is silently skipped. An error in it is reported to stderr
-    but doesn't stop the interpreter starting, so you can still fix it."""
-    path = path or os.environ.get("LISP_INIT_FILE", DEFAULT_INIT_FILE)
-    if not path or not os.path.exists(path):
-        return
-    try:
-        run_file(path, env)
-    except LispError as e:
-        sys.stderr.write("warning: error loading init file %r: %s\n" % (path, e))
+    """Load macros_init.lsp, then the init file (path, or LISP_INIT_FILE, or
+    init.lsp), into env. Called once for each new environment, before
+    anything else runs. A missing file is silently skipped. An error in one
+    is reported to stderr but doesn't stop the interpreter starting, so you
+    can still fix it."""
+    init_path = path or os.environ.get("LISP_INIT_FILE", DEFAULT_INIT_FILE)
+    for startup_path in (MACROS_INIT_FILE, init_path):
+        if not startup_path or not os.path.exists(startup_path):
+            continue
+        try:
+            run_file(startup_path, env)
+        except LispError as e:
+            sys.stderr.write("warning: error loading init file %r: %s\n" % (startup_path, e))

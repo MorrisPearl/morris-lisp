@@ -11,8 +11,10 @@ needs), and it never touches the network, the GUI, your credentials, or any
 file outside a temporary directory -- so it is safe to run anywhere, anytime.
 The two slowest example scripts (about 15s and 60s) are skipped unless you
 set LISP_TEST_SLOW=1. Not covered on purpose: anything that needs a network
-connection or an account (fred-series, tastytrade-*, sofr-calibration-data), and the PyQt6
-GUI.
+connection or an account (fred-series, tastytrade-*, sofr-calibration-data).
+The GUI and the Jupyter kernel get only a check of their error reports.
+"Running the tests" in lisp_interpreter_reference.md lists more ways to run
+it, e.g. one test class at a time.
 
 Layout: the first half tests the LANGUAGE (reader, special forms, tail
 calls, macros, structs, errors); the second half tests the BUILT-IN
@@ -1946,6 +1948,73 @@ class TestMetaprogrammingAndIO(LispTestCase):
         self.assertLispError("(pretty-print-function car)", "not a user-defined function")
 
 
+class TestStandardMacros(LispTestCase):
+    """macros_init.lsp: while and do."""
+
+    def setUp(self):
+        super().setUp()
+        lisp_core.run_file(lisp_builtins.MACROS_INIT_FILE, self.env)
+
+    def test_while_runs_several_body_forms_until_the_test_is_false(self):
+        self.run_lisp('(define i 0) (define out "")')
+        self.assertShows('(while (< i 3) (set! out (string-append out (number->string i))) (set! i (+ i 1)))',
+                         "()")
+        self.assertShows("out", '"012"')
+
+    def test_while_whose_test_starts_false_never_runs_its_body(self):
+        self.assertShows("(define ran #f) (while #f (set! ran #t)) ran", "#f")
+
+    def test_nested_whiles(self):
+        self.assertShows("""(define r 0) (define total 0)
+                            (while (< r 3)
+                              (define c 0)
+                              (while (< c 3) (set! total (+ total 1)) (set! c (+ c 1)))
+                              (set! r (+ r 1)))
+                            total""", "9")
+
+    def test_while_loop_name_does_not_capture_the_callers_names(self):
+        self.run_lisp("(define %loop 'mine) (define i 0) (define seen '())")
+        self.run_lisp("(while (< i 2) (set! seen (cons %loop seen)) (set! i (+ i 1)))")
+        self.assertShows("seen", "(mine mine)")
+
+    def test_a_long_while_loop_does_not_grow_the_stack(self):
+        self.assertShows("(define n 0) (while (< n 100000) (set! n (+ n 1))) n", "100000")
+
+    def test_do_steps_its_variables_and_returns_the_result(self):
+        self.assertShows("(do ((i 0 (+ i 1)) (total 0 (+ total i))) ((= i 5) total))", "10")
+
+    def test_do_runs_its_body_and_every_result_form(self):
+        self.assertShows("""(define n 0)
+                            (do ((i 0 (+ i 1))) ((= i 4) (set! n (* n 10)) n) (set! n (+ n 1)))""", "40")
+
+    def test_do_with_no_result_forms_returns_nil(self):
+        self.assertShows("(do ((i 0 (+ i 1))) ((= i 3)))", "()")
+
+    def test_do_variable_without_a_step_keeps_its_value(self):
+        self.assertShows("(do ((i 0 (+ i 1)) (fixed 7)) ((= i 3) fixed))", "7")
+
+    def test_do_steps_all_use_the_old_values(self):
+        self.assertShows("(do ((a 1 b) (b 2 a) (k 0 (+ k 1))) ((= k 1) (list a b)))", "(2 1)")
+
+    def test_do_with_no_variables(self):
+        self.assertShows("(define x 0) (do () ((> x 2) x) (set! x (+ x 1)))", "3")
+
+    def test_nested_do_loops(self):
+        self.assertShows("""(define pairs '())
+                            (do ((i 0 (+ i 1))) ((= i 2))
+                              (do ((j 0 (+ j 1))) ((= j 2))
+                                (set! pairs (cons (list i j) pairs))))
+                            (reverse pairs)""", "((0 0) (0 1) (1 0) (1 1))")
+
+    def test_a_long_do_loop_does_not_grow_the_stack(self):
+        self.assertShows("(do ((i 0 (+ i 1))) ((= i 100000) i))", "100000")
+
+    def test_do_rejects_a_malformed_variable_or_end_clause(self):
+        self.assertLispError("(do ((i)) ((= i 3)))", "(var init) or (var init step)")
+        self.assertLispError("(do ((i 0 1 2)) ((= i 3)))", "(var init) or (var init step)")
+        self.assertLispError("(do ((i 0 (+ i 1))) done)", "(end-test result...)")
+
+
 class TestInitFileAndRunFile(LispTestCase):
 
     def test_load_init_file_defines_things(self):
@@ -1971,12 +2040,25 @@ class TestInitFileAndRunFile(LispTestCase):
         self.assertShows("ok", "1")                                    # ran up to the error
         self.assertLispError("never", "unbound symbol")               # ...and stopped there
 
-    def test_the_shipped_init_file_loads_cleanly_and_defines_while(self):
+    def test_the_shipped_startup_files_load_cleanly_and_define_while_and_do(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             lisp_builtins.load_init_file(self.env, lisp_builtins.DEFAULT_INIT_FILE)
         self.assertEqual(err.getvalue(), "")
         self.assertShows("(define i 0) (while (< i 5) (set! i (+ i 1))) i", "5")
+        self.assertShows("(do ((i 0 (+ i 1))) ((= i 5) i))", "5")
+
+    def test_the_standard_macros_load_even_without_an_init_file(self):
+        lisp_builtins.load_init_file(self.env, "/definitely/not/here/init.lsp")
+        self.assertShows("(define i 0) (while (< i 5) (set! i (+ i 1))) i", "5")
+
+    def test_the_standard_macros_load_before_the_init_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "init.lsp")
+            with open(path, "w") as f:
+                f.write("(define n 0)\n(while (< n 3) (set! n (+ n 1)))\n")
+            lisp_builtins.load_init_file(self.env, path)
+        self.assertShows("n", "3")
 
     def test_run_file_evaluates_every_form(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2948,6 +3030,7 @@ class TestReferenceDocExamples(unittest.TestCase):
             if any(word in block for word in _RISKY_BLOCK_WORDS):
                 continue
             env = lisp_builtins.make_global_env(output=lambda s: None)
+            lisp_core.run_file(lisp_builtins.MACROS_INIT_FILE, env)     # while, do
             if use_alarm:
                 signal.alarm(10)
             try:

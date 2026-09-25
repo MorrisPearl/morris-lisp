@@ -46,12 +46,16 @@ functions" as a reference to search rather than read start to end.
   Set `LISP_PYTHON_TRACEBACK=1` to get Python's own traceback of the
   interpreter's internals as well.
 
-Every fresh environment — batch mode, the console REPL, and the GUI alike —
-automatically loads `init.lsp` (next to `lisp_interpreter.py`; override with
-the `LISP_INIT_FILE` environment variable) before doing anything else, if it
-exists. It's entirely optional — a missing init file is silently skipped.
-Put your own always-available definitions/macros there instead of
-`(load ...)`-ing them by hand in every script.
+Every fresh environment — batch mode, the console REPL, the GUI, and
+Jupyter alike — loads two Lisp files before doing anything else:
+
+1. `macros_init.lsp`, the standard macros `while` and `do` (see "Standard
+   macros", below). It's part of the interpreter, so it's always loaded.
+2. `init.lsp` (next to `lisp_interpreter.py`; override with the
+   `LISP_INIT_FILE` environment variable), if it exists. It's entirely
+   optional — a missing init file is silently skipped. Put your own
+   always-available definitions/macros there instead of `(load ...)`-ing
+   them by hand in every script.
 
 - **From a Jupyter notebook, as its own native kernel, no GUI at all** —
   run `python3 install_lisp_kernel.py` once (see `lisp_kernel.py`), then
@@ -259,6 +263,9 @@ the list is.
 (dolist (x (list 1 2 3 4 5)) (set! total (+ total x)))
 total                          ; => 15
 ```
+
+For loops that aren't over a list, see `while` and `do` under "Standard
+macros", below.
 
 #### `(defmacro name (params...) body...)`
 Defines `name` as a macro — see "Macros", below, for the full explanation.
@@ -576,12 +583,80 @@ accidental variable capture in a macro like this by hand — e.g. the `t`
 above would shadow a caller's own variable named `t`; a hand-written macro
 meant for wider use would bind `(gensym)`'s result instead of a fixed name.
 
-**Why this actually matters — a `while` variant that leaks its own loop
-counter.** `init.lsp`'s real `while` macro is already safe (its internal
-`%loop` name never appears in `,test`/`,body`, so it's never exposed to
-anything the caller wrote), but a natural variation — a `while` that also
-exposes a running iteration count to its body — shows the failure mode
-concretely:
+**What goes wrong without `gensym` — the old `while`.** `while` used to be
+defined in `init.lsp` like this, with its loop function always named
+`%loop`:
+
+```lisp
+(defmacro old-while (test body)
+  `(let ()
+     (define (%loop)
+       (if ,test
+           (begin ,body (%loop))
+           '()))
+     (%loop)))
+```
+
+It works — unless the caller's own code uses the name `%loop`. Suppose
+you have a function that happens to have that name, and call it in the
+loop's body:
+
+```lisp
+(define payments 0)
+(define (%loop) (set! payments (+ payments 1)))   ; your function
+
+(define month 0)
+(old-while (< month 3)
+  (begin
+    (set! month (+ month 1))
+    (%loop)))                  ; meant to call your function
+payments                       ; => 0, not 3
+```
+
+`macroexpand-1` shows why:
+
+```lisp
+(let ()
+  (define (%loop)
+    (if (< month 3)
+        (begin (begin (set! month (+ month 1))
+                      (%loop))          ; your call...
+               (%loop))                 ; ...and the macro's own call
+        '()))
+  (%loop))
+```
+
+Your body is pasted inside the macro's `let`, where `%loop` means the
+macro's loop function. So your `(%loop)` calls that instead of your
+function. It restarts the loop from inside its own body, `month` still
+climbs to 3 and the loop ends, and your function never runs. There's no
+error, just a wrong answer. A name starting with `%` is unlikely in code
+you write yourself, which is why the old version usually worked, but
+nothing stopped it from happening.
+
+The `while` in `macros_init.lsp` asks `gensym` for the name instead, each
+time the macro is expanded:
+
+```lisp
+(defmacro while (test . body)
+  (let ((loop-name (gensym "while-loop")))
+    `(let ()
+       (define (,loop-name)
+         (if ,test
+             (begin ,@body (,loop-name))
+             '()))
+       (,loop-name))))
+```
+
+Each `while` now gets a name like `%while-loop-12`, which no other code in
+the program uses, so the example above gives `3`. (It also takes any
+number of body forms, via `. body` and `,@body`, so the `begin` isn't
+needed.)
+
+**Another example — a `while` variant that leaks its own loop
+counter.** A fixed name can also capture one of the caller's *variables*.
+A natural variation — a `while` that also exposes a running iteration
+count to its body — shows this failure concretely:
 
 ```lisp
 ; count-while: like while, but the body can read `i` for "how many times
@@ -660,6 +735,76 @@ Python's own recursion limit. This essentially never matters in practice
 and it does NOT affect the code a macro expands *to* — once the expansion
 is produced, it's evaluated by the ordinary trampoline, tail calls and all
 (see the tail-call note at the end of "Special forms", above).
+
+### Standard macros
+
+`while` and `do` are macros written in Lisp, in `macros_init.lsp`, which
+every new environment loads at startup (see "Running it", above). Each
+turns into a small local function that calls itself to go around the loop
+again. That call is a tail call, so a loop can run any number of times
+without growing the stack. The function's name comes from `gensym`, so it
+can't clash with a name in your code. To see what a loop becomes, use
+`macroexpand-1`, e.g. `(macroexpand-1 '(while (< i 3) (set! i (+ i 1))))`.
+
+#### `(while test body...)`
+Evaluates `test`; if it's true, evaluates the `body` forms, then starts
+over. Stops the first time `test` is false, and returns `'()`. For
+example, how many months until a balance falling 10% a month is below
+500:
+
+```lisp
+(define balance 1000.0)
+(define months 0)
+(while (> balance 500)
+  (set! balance (* balance 0.9))
+  (set! months (+ months 1)))
+months                         ; => 7
+```
+
+#### `(do ((var init [step])...) (end-test result...) body...)`
+Common Lisp's `do` loop: a loop that steps one or more variables. It binds
+each `var` to its `init`, then repeats:
+
+1. If `end-test` is true, evaluate the `result` forms and return the value
+   of the last one (`'()` if there are none).
+2. Otherwise evaluate the `body` forms, give each `var` the value of its
+   `step` (a `var` with no `step` keeps its value), and go back to 1.
+
+The steps are all worked out before any variable changes, so every step
+sees the values from the pass just finished. Often the steps do all the
+work and there's no body:
+
+```lisp
+(do ((i 0 (+ i 1))
+     (total 0 (+ total i)))
+    ((= i 5) total))           ; => 10  (0 + 1 + 2 + 3 + 4)
+
+(define (balance-after balance rate-percent payment n)
+  (do ((month 0 (+ month 1))
+       (b balance (- b (- payment (* b (/ rate-percent 1200))))))
+      ((= month n) b)))
+(round (balance-after 100000 6.0 599.55 12))   ; => 98772
+
+; Fibonacci numbers: a's step uses the old b, and b's step the old a.
+(do ((a 0 b)
+     (b 1 (+ a b))
+     (k 0 (+ k 1)))
+    ((= k 10) a))              ; => 55
+```
+
+With a body, for side effects:
+
+```lisp
+(do ((year 2024 (+ year 1)))
+    ((> year 2026))
+  (display year)
+  (newline))
+```
+
+prints `2024`, `2025`, and `2026` on separate lines.
+
+Each variable must be written `(var init)` or `(var init step)`. Unlike
+Common Lisp, a bare `var` (meaning "starts as `'()`") isn't accepted.
 
 ---
 
@@ -3944,7 +4089,7 @@ Reads and evaluates every top-level form in the file at `path`, in the
 **same** (calling) global environment, so its `define`s/`defmacro`s become
 available afterward exactly as if you'd typed them yourself. Returns
 `'()`. This is the same mechanism the interpreter uses at startup to
-auto-load `init.lsp`.
+auto-load `macros_init.lsp` and `init.lsp`.
 
 ```lisp
 (load "column_engine.lsp")     ; defstruct column, register-column, ... now defined
@@ -3994,8 +4139,9 @@ list operation and a metaprogramming tool.
 Returns a symbol guaranteed not to collide with any name a user could
 actually type (format `%prefix-N`, with an incrementing counter;
 `prefix` defaults to `"g"`). The standard tool for avoiding accidental
-variable capture when hand-writing a macro — see "Macros", above. Used
-internally by `dolist`'s own desugaring for the same reason.
+variable capture when hand-writing a macro — see "Macros", above, for
+what goes wrong without it (the old `while`) and how `while` uses it
+now. Used internally by `dolist`'s own desugaring for the same reason.
 
 ```lisp
 (gensym)                        ; => %g-1  (an incrementing counter)
@@ -4147,12 +4293,13 @@ definitions, automatically.
 #### `(defined-macros)`
 The same idea, for user-defined macros — excludes this interpreter's own
 `pretty-print-function`/`pretty-print-macro`/`debug-function`/
-`undebug-function` convenience macros, so it reflects only what you
-actually wrote.
+`undebug-function` convenience macros. It does include the standard
+macros `while` and `do` (they're written in Lisp, in `macros_init.lsp`),
+and any macros from `init.lsp`.
 
 ```lisp
 (defmacro double-it (x) `(* 2 ,x))
-(defined-macros)               ; => (double-it)
+(defined-macros)               ; => (while do double-it)
 ```
 
 #### `(bound-variables)`
@@ -4401,10 +4548,91 @@ The interpreter is split into these Python files, all in `lisp_interp/`:
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |
 | `test_lisp_interpreter.py` | The test suite: `python3 -m unittest test_lisp_interpreter` |
 
+Two Lisp files are loaded into every new environment at startup (by
+`load_init_file()` in `lisp_builtins.py`): `macros_init.lsp`, the standard
+macros (`while`, `do`), and then `init.lsp`, your own definitions.
+
 Each file that adds builtins ends with a `BUILTINS` table — a Python dict
 from the Lisp name to the Python function that implements it — and
 `make_global_env()` in `lisp_builtins.py` copies each of those tables into
 every new environment.
+
+## Running the tests
+
+`test_lisp_interpreter.py`, in `lisp_interp/`, is the test suite. It has
+about 420 tests covering:
+
+- the language itself: the reader, special forms, tail calls, macros,
+  structs, and error reports;
+- every family of builtins, from numbers and strings to tables,
+  regression, and SQLite;
+- the Lisp libraries: `macros_init.lsp`, `template.lsp`,
+  `column_engine.lsp`, and the others;
+- the command line, the REPL, and the offline example scripts;
+- **this reference manual**: every ` ```lisp ` example with a `; =>`
+  result is run, and the test fails if the interpreter no longer returns
+  that value. So when you change how something behaves, the test suite
+  tells you which documented examples need updating.
+
+It needs nothing beyond what the interpreter itself needs (numpy). It
+never uses the network, your credentials, or any file outside a temporary
+directory, so it's safe to run at any time. The whole suite takes about 30
+seconds. Run it after changing the interpreter, a builtin, a `.lsp`
+library, or this manual.
+
+**Running it.** From the `lisp_interp` directory:
+
+```bash
+python3 -m unittest test_lisp_interpreter
+```
+
+It prints a dot for each test that passes, then `OK`, or a report of each
+test that failed. Other ways to run it:
+
+| Command (in `lisp_interp/`) | What it runs |
+|---|---|
+| `python3 -m unittest test_lisp_interpreter` | every test |
+| `python3 -m unittest -v test_lisp_interpreter` | every test, printing each test's name and result |
+| `python3 -m unittest test_lisp_interpreter.TestFormat` | one group of tests (a test class) |
+| `python3 -m unittest test_lisp_interpreter.TestFormat.test_decimals_and_commas` | one test |
+| `python3 -m unittest -k Format test_lisp_interpreter` | every test whose group or name contains `Format` (upper/lower case matters) |
+| `python3 test_lisp_interpreter.py` | every test; this form works from any directory, e.g. `python3 lisp_interp/test_lisp_interpreter.py` |
+| `python3 -m pytest test_lisp_interpreter.py` | every test, using pytest instead, if it's installed; add `-k format` to pick tests (upper/lower case doesn't matter) |
+
+To see the names of the groups, run `grep -n "^class Test" test_lisp_interpreter.py`.
+Each group's docstring says what it covers.
+
+**The slow examples.** Two example scripts take a while
+(`dolist_vectors_map_example.lsp`, about 15 seconds, and
+`oas_monte_carlo_example.lsp`, about 60), so they're skipped unless you
+set the `LISP_TEST_SLOW` environment variable:
+
+```bash
+LISP_TEST_SLOW=1 python3 -m unittest test_lisp_interpreter
+```
+
+**What isn't tested.** Anything that needs the network or an account:
+`fred-series`, `tastytrade-*`, and `sofr-calibration-data`. The
+`http-get-*` functions are tested against a small web server that the
+tests start on your own computer. The GUI and the Jupyter kernel get only
+a check that their error reports look right. The GUI check runs
+off-screen, so no window opens. It's skipped if PyQt6 isn't installed, and
+the Jupyter check is skipped if ipykernel isn't.
+
+**Reading a failure.** Each failure names the test and shows what was
+expected and what happened. For a test that ran Lisp code, it also shows
+that code (`source: ...`). A failing reference-manual example is listed
+like this:
+
+```
+block 239: (defined-macros)
+      doc says: (double-it)
+      got:      (while do double-it)
+```
+
+Here, either the example in the manual is out of date (fix the
+manual), or the interpreter changed when it shouldn't have (fix the
+code).
 
 ## Adding your own builtins
 
@@ -4476,7 +4704,8 @@ Python loop — that's what keeps it fast on millions of values.
 **4. Document and test it** — add an entry to this reference, in the
 section where it belongs, and a test to `test_lisp_interpreter.py`. Any
 `; =>` example you put in a ` ```lisp ` block here is checked by the test
-suite, so the documentation can't drift out of date.
+suite, so the documentation can't drift out of date. Then run the tests
+(see "Running the tests", above).
 
 ### What a builtin receives and returns
 

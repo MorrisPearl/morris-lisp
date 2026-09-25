@@ -64,9 +64,13 @@
 
 ; --- 5. a macro-defined loop -- proof that a macro's expansion, when it's
 ;        a tail call, gets the SAME constant-stack-space handling any
-;        other tail call does (see the module docstring / reference.md) ---
+;        other tail call does (see the module docstring / reference.md).
+;        It's called my-while so it doesn't replace the standard while in
+;        macros_init.lsp, which uses gensym for its loop name instead of
+;        the fixed %loop here -- see "What goes wrong without gensym" in
+;        lisp_interpreter_reference.md for why that matters ---
 
-(defmacro while (test body)
+(defmacro my-while (test body)
   `(let ()
      (define (%loop)
        (if ,test
@@ -76,15 +80,15 @@
 
 (define i 0)
 (define total 0)
-(while (< i 200000)
+(my-while (< i 200000)
   (begin (set! total (+ total i)) (set! i (+ i 1))))
 (display "my-while summed 0..199999 -> ") (display total) (newline)
 
 (define a '(b c d e))
-(while (not (null? a))
+(my-while (not (null? a))
   (begin
    (define n '(1 2 3))
-   (while (not (null? n))
+   (my-while (not (null? n))
      (begin
       (print (cons (car a) (car n)))
       (set! n (cdr n))
