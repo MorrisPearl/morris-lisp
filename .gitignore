@@ -15,7 +15,6 @@ lisp_interp/sofr_monte_carlo_example.csv
 lisp_interp/oas_monte_carlo_live_report.txt
 *.lsp~
 */files.zip
-*/requirements.txt
 */.DS_Store
 */fec.db
 zhvi_data/zhvi.db
