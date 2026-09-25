@@ -533,6 +533,17 @@ def pairs_to_list(p):
     return items
 
 
+def check_name(name):
+    """Raise a clear error unless name can be a variable's name: a symbol,
+    but not a keyword. Catches (define nan 5), which would otherwise bind
+    nothing useful, since the reader turns nan, inf, and infinity into
+    numbers."""
+    if isinstance(name, Symbol) and not isinstance(name, Keyword):
+        return
+    note = " (nan, inf, and infinity are read as numbers)" if isinstance(name, float) else ""
+    raise LispError("%s can't be used as a name -- a name must be a symbol%s" % (to_string(name), note))
+
+
 def parse_params(params_expr):
     """Split a lambda/define/defmacro parameter list into
     (fixed_names, rest_name_or_None, keyword_specs):
@@ -547,10 +558,12 @@ def parse_params(params_expr):
     &key can't be combined with a rest parameter. Env.__init__ does the
     binding when the procedure is called."""
     if isinstance(params_expr, Symbol):
+        check_name(params_expr)
         return [], params_expr, []
     fixed = []
     p = params_expr
     while isinstance(p, Pair) and p.car != Symbol("&key"):
+        check_name(p.car)
         fixed.append(p.car)
         p = p.cdr
     if isinstance(p, Pair) and p.car == Symbol("&key"):
@@ -559,12 +572,17 @@ def parse_params(params_expr):
         while isinstance(p, Pair):
             spec = p.car
             if isinstance(spec, Pair):
+                check_name(spec.car)
                 keyword_specs.append((spec.car, spec.cdr.car))
             else:
+                check_name(spec)
                 keyword_specs.append((spec, None))
             p = p.cdr
         return fixed, None, keyword_specs
-    return fixed, (p if p is not NIL else None), []
+    if p is NIL:
+        return fixed, None, []
+    check_name(p)
+    return fixed, p, []
 
 
 # ---------------------------------------------------------------------------
@@ -1196,6 +1214,7 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         if isinstance(target, Pair):
             # (define (name params...) body...) -- params as in lambda.
             name = target.car
+            check_name(name)
             fixed, rest, keyword_specs = parse_params(target.cdr)
             body = pairs_to_list(args.cdr)
             env[name] = Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs,
@@ -1203,11 +1222,13 @@ def eval_special_form(op, args, env, control_stack, value_stack):
             value_stack.append(name)
         else:
             name = target
+            check_name(name)
             control_stack.append(('DEFINE', name, env))
             control_stack.append(('EVAL', args.cdr.car, env))
 
     elif op == "set!":
         name = args.car
+        check_name(name)
         control_stack.append(('SET', name, env))
         control_stack.append(('EVAL', args.cdr.car, env))
 

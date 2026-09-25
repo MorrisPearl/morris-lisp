@@ -49,8 +49,8 @@ functions" as a reference to search rather than read start to end.
 Every fresh environment — batch mode, the console REPL, the GUI, and
 Jupyter alike — loads two Lisp files before doing anything else:
 
-1. `macros_init.lsp`, the standard macros `while`, `do`, `assert`, and
-   `with-sqlite` (see "Standard
+1. `macros_init.lsp`, the standard macros, such as `while`, `do`, and
+   `case` (see "Standard
    macros", below). It's part of the interpreter, so it's always loaded.
 2. `init.lsp` (next to `lisp_interpreter.py`; override with the
    `LISP_INIT_FILE` environment variable), if it exists. It's entirely
@@ -87,10 +87,10 @@ Jupyter alike — loads two Lisp files before doing anything else:
 | Type | Example | Notes |
 |---|---|---|
 | Integer | `42`, `-7` | Python `int` |
-| Float | `3.14`, `-0.5` | Python `float` |
+| Float | `3.14`, `-0.5`, `nan`, `inf` | Python `float`. `nan` ("not a number", the missing-value marker) and `inf` (infinity) are numbers too, so they can't be used as names (see below) |
 | String | `"hello"` | Double-quoted; `\n`, `\t`, `\r`, `\"`, `\\` escapes. The REPL prints a string the same way, in quotes and with `\"` and `\\` for a quote mark or backslash inside it, so what it prints can be typed back in (see `display`) |
 | Boolean | `#t`, `#f` | Everything except `#f` counts as true |
-| Symbol | `foo`, `list->vector` | Identifiers |
+| Symbol | `foo`, `list->vector` | Identifiers: anything that isn't read as a number or one of the types above |
 | Keyword | `:name`, `:x` | A `Symbol` subtype, but SELF-EVALUATING (never needs `quote`) — used at call sites for keyword arguments; see "Keyword arguments", below |
 | Pair / list | `(1 2 3)`, `'(a b c)` | Built from cons cells; `()` is the empty list |
 | Dotted pair | `(1 . 2)`, `(a b . c)` | An IMPROPER list — `.` before the last element sets the final cdr directly instead of `()`. Mainly used for variadic parameter lists (see below), but works anywhere |
@@ -98,6 +98,19 @@ Jupyter alike — loads two Lisp files before doing anything else:
 | Vector | `#(1 2 3)`, `(vector 1 2 3)` | Fixed-size; holds numbers, strings, and/or dates (not lists or booleans) |
 | Date | `(date 2024 3 15)` | Prints as `2024-03-15` |
 | Model | *(returned by regression)* | Prints as `#<linear-model ...>` etc. |
+
+**Words that are numbers.** The reader reads a token as a number if
+Python can read it as one, and that includes `nan`, `inf`, and
+`infinity`, in any mix of upper and lower case (`NaN`, `Inf`, `Infinity`),
+with or without a `+` or `-` in front. (Also `1_000`, which is `1000`.) So
+none of these can be the name of a variable, parameter, or function.
+Trying to use one as a name is an error, rather than something that
+silently does nothing:
+
+```lisp
+(define nan 5)       ; an error: nan can't be used as a name -- a name must be a symbol
+(let ((inf 1)) inf)  ; the same error
+```
 
 Comments run from `;` to end of line.
 
@@ -274,8 +287,8 @@ Defines `name` as a macro — see "Macros", below, for the full explanation.
 plus `&key` — see "Keyword arguments", below. Returns `name`.
 
 ```lisp
-(defmacro unless (test then) `(if (not ,test) ,then '()))
-(unless (> 1 2) 'shown)        ; => shown -- see "Macros" for why this needs
+(defmacro my-unless (test then) `(if (not ,test) ,then '()))
+(my-unless (> 1 2) 'shown)     ; => shown -- see "Macros" for why this needs
                                 ;    to be a macro, not a plain function
 ```
 
@@ -625,12 +638,13 @@ correctly, and works outside of macros too — anywhere you want "mostly
 literal data with a few computed pieces."
 
 ```lisp
-; unless: the mirror image of `if` with no else-branch. Can't be written
-; as a plain function -- a function would evaluate `then` regardless of
-; whether `test` was true.
-(defmacro unless (test then)
+; my-unless: the mirror image of `if` with no else-branch. Can't be
+; written as a plain function -- a function would evaluate `then`
+; regardless of whether `test` was true. (The standard `unless`, in
+; macros_init.lsp, is the same idea with any number of body forms.)
+(defmacro my-unless (test then)
   `(if (not ,test) ,then '()))
-(unless (> 1 2) 'shown)        ; => shown
+(my-unless (> 1 2) 'shown)     ; => shown
 
 ; swap!: mutates two variables in place. No function could do this either
 ; -- a function only ever sees the VALUES of its arguments, never the
@@ -818,8 +832,9 @@ is produced, it's evaluated by the ordinary trampoline, tail calls and all
 
 ### Standard macros
 
-`while`, `do`, `assert`, and `with-sqlite` are macros written in Lisp, in
-`macros_init.lsp`, which every new environment loads at startup (see
+`while`, `do`, `when`, `unless`, `case`, `assert`, and `with-sqlite` are
+macros written in Lisp, in `macros_init.lsp`, which every new environment
+loads at startup (see
 "Running it", above). The top of that file explains how macros are
 written with backquote (`` ` ``), `,`, and `,@`, using these macros as the
 examples, so it's a good place to start if you want to write your own.
@@ -890,6 +905,76 @@ prints `2024`, `2025`, and `2026` on separate lines.
 
 Each variable must be written `(var init)` or `(var init step)`. Unlike
 Common Lisp, a bare `var` (meaning "starts as `'()`") isn't accepted.
+
+#### `(when test body...)`, `(unless test body...)`
+`when` evaluates the `body` forms if `test` is true; `unless` evaluates
+them if `test` is false. Either returns the last body form's value, or
+`'()` if the body didn't run. Use them in place of an `if` that has no
+else branch, especially when there's more than one thing to do, since
+they need no `begin`:
+
+```lisp
+(define balance 1000)
+(define payments 0)
+(when (> balance 0)
+  (set! balance (- balance 250))
+  (set! payments (+ payments 1)))
+(list balance payments)        ; => (750 1)
+
+(unless (> balance 0) 'paid-off)   ; => ()
+(when (> balance 0) 'still-owing)  ; => still-owing
+```
+
+Remember that only `#f` is false: `0` and `'()` count as true, so
+`(when 0 'yes)` is `yes`.
+
+#### `(case key-expr clause...)`
+Picks one of several branches by matching a value against lists of
+constants. It evaluates `key-expr` once, then finds the first clause whose
+keys include that value, and evaluates that clause's body forms, returning
+the last one's value. Each clause is one of:
+
+| Clause | Matches |
+|---|---|
+| `((key1 key2 ...) body...)` | any of the keys |
+| `(key body...)` | that one key |
+| `(else body...)` | anything, if no clause before it matched; it must be the last clause (`otherwise` works the same, as in Common Lisp) |
+
+The keys are symbols, numbers, or strings, **written without a quote**
+(they aren't evaluated), and they're compared with `equal?`. If nothing
+matches and there's no `else`, `case` returns `'()`.
+
+```lisp
+(define (region state)
+  (case state
+    (("CA" "OR" "WA") 'west)
+    (("NY" "NJ" "CT") 'northeast)
+    (else 'other)))
+(region "OR")                  ; => west
+(region "TX")                  ; => other
+
+(define (months-in term)
+  (case term
+    ((annual yearly) 12)
+    (quarterly 3)
+    (monthly 1)))
+(months-in 'quarterly)         ; => 3
+(months-in 'weekly)            ; => ()
+```
+
+`case` is short for a `cond` that tests each clause with `member`; the
+example above becomes (with a `gensym` name, so `state` is evaluated only
+once):
+
+```
+(let ((%case-key-1 state))
+  (cond ((member %case-key-1 '("CA" "OR" "WA")) 'west)
+        ((member %case-key-1 '("NY" "NJ" "CT")) 'northeast)
+        (else 'other)))
+```
+
+To choose by a test rather than by matching constants (for example, a
+range of values), use `cond`.
 
 #### `(assert test [message...])`
 Does nothing (and returns `'()`) if `test` is true. If it's false, stops
@@ -1303,6 +1388,43 @@ First element / rest of a pair. Raises `LispError: car/cdr: not a pair:
 (car (list 10 20 30))          ; => 10
 (cdr (list 10 20 30))          ; => (20 30)
 ```
+
+#### `(set-car! p x)`, `(set-cdr! p x)`
+Change a pair in place: `set-car!` replaces its car (for a list, the first
+element) with `x`, and `set-cdr!` replaces its cdr (for a list, the rest of
+the list). Both return `'()`. `p` must be a pair, so `'()` is an error.
+
+```lisp
+(define lst (list 1 2 3))
+(set-car! lst 'a)
+lst                            ; => (a 2 3)
+(set-cdr! (cdr lst) (list 'x 'y))
+lst                            ; => (a 2 x y)
+```
+
+The pair itself is changed, not a copy, so every variable and list that
+shares it sees the change:
+
+```lisp
+(define a (list 1 2))
+(define b a)                   ; b is the same list as a, not a copy
+(set-car! a 9)
+b                              ; => (9 2)
+```
+
+Three cautions:
+
+- **Don't change a quoted list.** `'(1 2 3)` written in a function is
+  part of that function's code. Change it with `set-car!`, and the
+  function returns the changed list from then on. Build a list you'll
+  change with `list` or `cons`.
+- **Don't make a cycle.** `(set-cdr! p p)`, or any change that makes a
+  list lead back into itself, gives a list with no end. Printing it,
+  `length`, `equal?`, or anything else that walks to the end of it, runs
+  forever.
+- **Most code doesn't need these.** `map`, `filter`, `append`, and
+  `reverse` build new lists and leave the old ones unchanged, which is
+  usually easier to follow.
 
 #### `(list a b ...)`
 Builds a proper list from its arguments (zero or more).
@@ -4422,8 +4544,8 @@ result — only the outermost form. Returns `form` unchanged if it isn't a
 macro call at all.
 
 ```lisp
-(defmacro unless (test then) `(if (not ,test) ,then '()))
-(macroexpand-1 '(unless (> 1 2) 'shown))
+(defmacro my-unless (test then) `(if (not ,test) ,then '()))
+(macroexpand-1 '(my-unless (> 1 2) 'shown))
                                 ; => (if (not (> 1 2)) (quote shown) (quote ()))
 ```
 
@@ -4458,12 +4580,12 @@ definitions, automatically.
 The same idea, for user-defined macros — excludes this interpreter's own
 `pretty-print-function`/`pretty-print-macro`/`debug-function`/
 `undebug-function` convenience macros. It does include the standard
-macros (`while`, `do`, `assert`, `with-sqlite`; they're written in Lisp,
-in `macros_init.lsp`), and any macros from `init.lsp`.
+macros (`while`, `do`, `case`, and the others in "Standard macros"; they're
+written in Lisp, in `macros_init.lsp`), and any macros from `init.lsp`.
 
 ```lisp
 (defmacro double-it (x) `(* 2 ,x))
-(defined-macros)               ; => (while do assert with-sqlite double-it)
+(defined-macros)               ; => (while do assert with-sqlite when unless case double-it)
 ```
 
 #### `(bound-variables)`
@@ -4593,7 +4715,7 @@ and the eventual return line says how many calls it absorbed:
 ```
 
 At level 3, a macro call also logs the form and what it expanded to:
-`~ (unless #f (quote ran)) => (if (not #f) (quote ran) (quote ()))`.
+`~ (unless #f (quote ran)) => (if #f (quote ()) (begin (quote ran)))`.
 
 - Only **user-defined procedures** are traced — not built-ins like `+` or
   `car`, and not `let`/`let*`/`dolist` scopes (which are variable scopes,
@@ -4714,8 +4836,8 @@ The interpreter is split into these Python files, all in `lisp_interp/`:
 
 Two Lisp files are loaded into every new environment at startup (by
 `load_init_file()` in `lisp_builtins.py`): `macros_init.lsp`, the standard
-macros (`while`, `do`, `assert`, `with-sqlite`), and then `init.lsp`, your
-own definitions.
+macros (see "Standard macros"), and then `init.lsp`, your own
+definitions.
 
 Each file that adds builtins ends with a `BUILTINS` table — a Python dict
 from the Lisp name to the Python function that implements it — and

@@ -176,14 +176,32 @@ BOOLEAN_BUILTINS = {
 
 def car(p):
     if not isinstance(p, Pair):
-        raise LispError("car: not a pair: %r" % (p,))
+        raise LispError("car: not a pair: %s" % (to_string(p),))
     return p.car
 
 
 def cdr(p):
     if not isinstance(p, Pair):
-        raise LispError("cdr: not a pair: %r" % (p,))
+        raise LispError("cdr: not a pair: %s" % (to_string(p),))
     return p.cdr
+
+
+def set_car(p, x):
+    """(set-car! p x) -- change the car of the pair p (the first element, if p
+    is a list) to x, in place. Returns '()."""
+    if not isinstance(p, Pair):
+        raise LispError("set-car!: not a pair: %s" % (to_string(p),))
+    p.car = x
+    return NIL
+
+
+def set_cdr(p, x):
+    """(set-cdr! p x) -- change the cdr of the pair p (the rest of the list,
+    if p is a list) to x, in place. Returns '()."""
+    if not isinstance(p, Pair):
+        raise LispError("set-cdr!: not a pair: %s" % (to_string(p),))
+    p.cdr = x
+    return NIL
 
 
 def append2(a, b):
@@ -287,6 +305,8 @@ LIST_BUILTINS = {
     "cons": lambda a, b: Pair(a, b),
     "car": car,
     "cdr": cdr,
+    "set-car!": set_car,
+    "set-cdr!": set_cdr,
     "list": lambda *args: list_to_pairs(list(args)),
     "append": lisp_append,
     "reverse": lambda p: list_to_pairs(list(reversed(pairs_to_list(p)))),
@@ -1156,8 +1176,8 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
 # The startup init file
 # ---------------------------------------------------------------------------
 
-# The standard macros (while, do, assert, with-sqlite), which every new
-# environment loads first.
+# The standard macros (while, do, case, ...), which every new environment
+# loads first.
 MACROS_INIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros_init.lsp")
 
 # Your own definitions, which every new environment loads next. Set the

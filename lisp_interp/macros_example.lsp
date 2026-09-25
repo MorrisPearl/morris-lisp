@@ -9,20 +9,23 @@
 ; elements of a list.
 ; ---------------------------------------------------------------------
 
-; --- 1. unless: can't be a function -- a function would always evaluate
-;        `then`, even when test is true and it shouldn't run at all ---
+; --- 1. my-unless: can't be a function -- a function would always evaluate
+;        `then`, even when test is true and it shouldn't run at all.
+;        (The standard unless, in macros_init.lsp, is the same idea with
+;        any number of body forms; this one is named my-unless so it
+;        doesn't replace it.) ---
 
-(defmacro unless (test then)
+(defmacro my-unless (test then)
   `(if (not ,test) ,then '()))
 
-(display "(unless (> 1 2) 'shown) -> ") (display (unless (> 1 2) 'shown)) (newline)
-(display "(unless (> 2 1) 'shown) -> ") (display (unless (> 2 1) 'shown)) (newline)
+(display "(my-unless (> 1 2) 'shown) -> ") (display (my-unless (> 1 2) 'shown)) (newline)
+(display "(my-unless (> 2 1) 'shown) -> ") (display (my-unless (> 2 1) 'shown)) (newline)
 
 ; A function couldn't skip evaluating its argument -- proof: `then` here
 ; would error if it ever actually ran, since the call it contains isn't
 ; defined. Since test is #t here, `then` is never reached.
-(display "unless never touches the untaken branch: ")
-(display (unless #t (boom-undefined-if-this-ever-runs)))
+(display "my-unless never touches the untaken branch: ")
+(display (my-unless #t (boom-undefined-if-this-ever-runs)))
 (newline)
 
 ; --- 2. swap!: can't be a function either -- a function only ever sees

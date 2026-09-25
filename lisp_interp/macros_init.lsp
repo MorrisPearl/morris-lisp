@@ -8,6 +8,9 @@
 ;   (do ((var init [step])...) (end-test result...) body...)
 ;   (assert test [message...])
 ;   (with-sqlite (var path) body...)
+;   (when test body...)
+;   (unless test body...)
+;   (case key-expr ((key...) body...)... [(else body...)])
 ;
 ; while and do turn into a small local function that calls itself to run
 ; the next time around the loop. The call is a tail call, and the
@@ -231,3 +234,88 @@
        (unwind-protect
            (begin ,@body)
          (sqlite-close ,var)))))
+
+; (when test body...)
+; If test is true, evaluates the body forms and returns the last one's
+; value; otherwise returns '(). Like an if with no else, but with room for
+; several forms.
+;
+;   (when (> balance 0)
+;     (display "paying down ")
+;     (set! balance (- balance payment)))
+;
+; expands to
+;
+;   (if (> balance 0)
+;       (begin (display "paying down ") (set! balance (- balance payment)))
+;       '())
+(defmacro when (test . body)
+  `(if ,test (begin ,@body) '()))
+
+; (unless test body...)
+; The opposite of when: if test is false, evaluates the body forms and
+; returns the last one's value; otherwise returns '().
+;
+;   (unless (sqlite-connection? conn)
+;     (error "not a connection:" conn))
+(defmacro unless (test . body)
+  `(if ,test '() (begin ,@body)))
+
+; (case key-expr clause...)
+; Evaluates key-expr once, finds the first clause whose keys include its
+; value, and evaluates that clause's body forms, returning the last one's
+; value. The keys are compared with the value as member compares them
+; (with equal?), so they can be symbols, numbers, or strings. They are not
+; evaluated: write them as they are, without a quote. Each clause is one of
+;
+;   ((key1 key2 ...) body...)   several keys
+;   (key body...)               a single key
+;   (else body...)              used if no other clause matches; it must be
+;                               the last clause (otherwise works the same,
+;                               as in Common Lisp)
+;
+; If nothing matches and there's no else clause, case returns '().
+;
+;   (define (region state)
+;     (case state
+;       (("CA" "OR" "WA") 'west)
+;       (("NY" "NJ" "CT") 'northeast)
+;       (else 'other)))
+;   (region "OR")              ; => west
+;
+; expands to (with a gensym name for the key, so key-expr is evaluated
+; only once)
+;
+;   (let ((%case-key-1 state))
+;     (cond ((member %case-key-1 '("CA" "OR" "WA")) 'west)
+;           ((member %case-key-1 '("NY" "NJ" "CT")) 'northeast)
+;           (else 'other)))
+(define (case--else-clause? clause)
+  "Whether clause is an else (or otherwise) clause."
+  (or (eq? (car clause) 'else) (eq? (car clause) 'otherwise)))
+
+(define (case--cond-clause key-var clause last?)
+  "One case clause, as the cond clause it becomes. last? says whether it's
+the last clause, the only place an else clause is allowed."
+  (cond ((not (pair? clause))
+         (error "case: each clause must be ((key...) body...), (key body...), or (else body...), not"
+                clause))
+        ((case--else-clause? clause)
+         (if last?
+             (cons 'else (cdr clause))
+             (error "case: the" (car clause) "clause must be the last one")))
+        (else
+         (let ((keys (if (list? (car clause)) (car clause) (list (car clause)))))
+           (cons `(member ,key-var ',keys) (cdr clause))))))
+
+(define (case--cond-clauses key-var clauses)
+  "All the case clauses, as cond clauses."
+  (if (null? clauses)
+      '()
+      (cons (case--cond-clause key-var (car clauses) (null? (cdr clauses)))
+            (case--cond-clauses key-var (cdr clauses)))))
+
+(defmacro case (key-expr . clauses)
+  (let ((key-var (gensym "case-key")))
+    `(let ((,key-var ,key-expr))
+       (cond ,@(case--cond-clauses key-var clauses)))))

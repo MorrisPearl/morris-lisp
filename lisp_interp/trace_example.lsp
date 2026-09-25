@@ -39,9 +39,8 @@
 (count-down 3)
 (verbose 0)
 
-; --- 4. level 3 also shows every macro expansion ---
-
-(defmacro unless (test then) `(if (not ,test) ,then '()))
+; --- 4. level 3 also shows every macro expansion (unless is one of the
+;        standard macros, from macros_init.lsp) ---
 
 (display "--- level 3 ---") (newline)
 (verbose 3)

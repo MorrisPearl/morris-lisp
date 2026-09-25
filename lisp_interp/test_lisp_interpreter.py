@@ -183,6 +183,19 @@ class TestSpecialForms(LispTestCase):
     def test_quote(self):
         self.assertShows("(quote (a b))", "(a b)")
 
+    def test_nan_inf_and_infinity_are_read_as_numbers(self):
+        self.assertShows("(list nan inf -inf NaN Infinity 1_000)", "(nan inf -inf nan inf 1000)")
+
+    def test_a_number_or_keyword_cannot_be_a_name(self):
+        for src in ["(define nan 5)", "(define (f inf) 1)", "(define (g . infinity) 1)",
+                    "(define (h &key (nan 1)) 1)", "((lambda (inf) inf) 7)", "(let ((nan 1)) nan)",
+                    "(dolist (inf (list 1)) inf)", "(set! -inf 3)"]:
+            with self.subTest(src=src):
+                self.assertLispError(src, "(nan, inf, and infinity are read as numbers)")
+        self.assertLispError("(define 5 3)", "5 can't be used as a name")
+        self.assertLispError("(define (5) 3)", "5 can't be used as a name")
+        self.assertLispError("(define :k 1)", ":k can't be used as a name")
+
     def test_quasiquote_unquote_and_splicing(self):
         self.assertShows("`(1 ,(+ 1 1) ,@(list 3 4) 5)", "(1 2 3 4 5)")
         self.assertShows("(let ((rest (list 2 3))) `(1 ,@rest 4))", "(1 2 3 4)")
@@ -399,11 +412,11 @@ class TestVariadicAndKeywordArgs(LispTestCase):
 class TestMacros(LispTestCase):
 
     def test_arguments_are_not_evaluated_before_expansion(self):
-        self.run_lisp("(defmacro unless (test then) `(if (not ,test) ,then '()))")
-        self.assertShows("(unless (> 1 2) 'shown)", "shown")
-        self.assertShows("(unless (> 2 1) 'shown)", "()")
+        self.run_lisp("(defmacro my-unless (test then) `(if (not ,test) ,then '()))")
+        self.assertShows("(my-unless (> 1 2) 'shown)", "shown")
+        self.assertShows("(my-unless (> 2 1) 'shown)", "()")
         # `then` would blow up if it were ever evaluated
-        self.assertShows("(unless #t (boom-if-this-ever-runs))", "()")
+        self.assertShows("(my-unless #t (boom-if-this-ever-runs))", "()")
 
     def test_macro_can_mutate_the_callers_variables(self):
         self.run_lisp("""
@@ -1052,8 +1065,23 @@ class TestLists(LispTestCase):
         self.assertShows("(cdr (list 10 20 30))", "(20 30)")
 
     def test_car_and_cdr_of_a_non_pair_are_errors(self):
-        self.assertLispError("(car '())", "not a pair")
-        self.assertLispError("(cdr 5)", "not a pair")
+        self.assertLispError("(car '())", "car: not a pair: ()")
+        self.assertLispError("(cdr 5)", "cdr: not a pair: 5")
+
+    def test_set_car_and_set_cdr_change_the_pair_in_place(self):
+        self.run_lisp("(define lst (list 1 2 3))")
+        self.assertShows("(set-car! lst 'a)", "()")
+        self.assertShows("lst", "(a 2 3)")
+        self.run_lisp("(set-cdr! (cdr lst) (list 'x 'y))")
+        self.assertShows("lst", "(a 2 x y)")
+        self.assertShows("(define p (cons 1 2)) (set-cdr! p 3) p", "(1 . 3)")
+
+    def test_set_car_is_seen_through_every_reference_to_the_pair(self):
+        self.assertShows("(define a (list 1 2)) (define b a) (set-car! a 9) b", "(9 2)")
+
+    def test_set_car_and_set_cdr_of_a_non_pair_are_errors(self):
+        self.assertLispError("(set-car! '() 1)", "set-car!: not a pair: ()")
+        self.assertLispError("(set-cdr! 5 1)", "set-cdr!: not a pair: 5")
 
     def test_list_append_reverse_length(self):
         self.assertShows("(list)", "()")
@@ -2116,6 +2144,45 @@ class TestStandardMacros(LispTestCase):
         self.assertLispError("(do ((i 0 1 2)) ((= i 3)))", "(var init) or (var init step)")
         self.assertLispError("(do ((i 0 (+ i 1))) done)", "(end-test result...)")
 
+    def test_when_runs_its_body_only_when_the_test_is_true(self):
+        self.run_lisp("(define log '())")
+        self.assertShows("(when (> 2 1) (set! log (cons 'a log)) (set! log (cons 'b log)) 'done)", "done")
+        self.assertShows("log", "(b a)")
+        self.assertShows("(when #f (error \"never\"))", "()")
+        self.assertShows("(when 0 'yes)", "yes")          # only #f is false
+
+    def test_unless_runs_its_body_only_when_the_test_is_false(self):
+        self.assertShows("(unless #f 1 2 3)", "3")
+        self.assertShows("(unless (> 2 1) (error \"never\"))", "()")
+
+    def test_case_picks_the_clause_whose_keys_match(self):
+        self.run_lisp("""
+          (define (region state)
+            (case state
+              (("CA" "OR" "WA") 'west)
+              (("NY" "NJ" "CT") 'northeast)
+              (else 'other)))""")
+        self.assertShows('(list (region "OR") (region "NJ") (region "TX"))', "(west northeast other)")
+
+    def test_case_with_symbol_and_number_keys_and_single_keys(self):
+        self.assertShows("(case 'quarterly ((annual yearly) 12) (quarterly 3) (monthly 1))", "3")
+        self.assertShows("(case 3 ((1 2) 'low) ((3 4) 'mid))", "mid")
+
+    def test_case_otherwise_is_the_same_as_else(self):
+        self.assertShows("(case 9 ((1 2) 'low) (otherwise 'high))", "high")
+
+    def test_case_with_no_match_and_no_else_returns_nil(self):
+        self.assertShows("(case 'weekly (monthly 1))", "()")
+
+    def test_case_evaluates_its_key_once_and_runs_every_body_form(self):
+        self.run_lisp("(define n 0) (define log '())")
+        self.assertShows("(case (begin (set! n (+ n 1)) 5) ((1) 'one) ((5) (set! log (cons 'five log)) 'b))", "b")
+        self.assertShows("(list n log)", "(1 (five))")
+
+    def test_case_rejects_a_misplaced_else_or_a_malformed_clause(self):
+        self.assertLispError("(case 1 (else 'x) ((1) 'one))", "the else clause must be the last one")
+        self.assertLispError("(case 1 5)", "each clause must be")
+
     def test_assert_does_nothing_when_the_test_is_true(self):
         self.assertShows("(assert (= 1 1))", "()")
 
@@ -2508,13 +2575,13 @@ class TestCallTracing(LispTestCase):
         self.assertEqual(self.trace_of(1, "(count-down 2)"), "> count-down\n>> count-down\n>> count-down\n")
 
     def test_level_3_also_logs_macro_expansions(self):
-        self.run_lisp("(defmacro unless (test then) `(if (not ,test) ,then '()))")
-        text = self.trace_of(3, "(unless #f 'ran)")
-        self.assertEqual(text, "~ (unless #f (quote ran)) => (if (not #f) (quote ran) (quote ()))\n")
+        self.run_lisp("(defmacro my-unless (test then) `(if (not ,test) ,then '()))")
+        text = self.trace_of(3, "(my-unless #f 'ran)")
+        self.assertEqual(text, "~ (my-unless #f (quote ran)) => (if (not #f) (quote ran) (quote ()))\n")
 
     def test_macro_expansions_are_not_logged_below_level_3(self):
-        self.run_lisp("(defmacro unless (test then) `(if (not ,test) ,then '()))")
-        self.assertEqual(self.trace_of(2, "(unless #f 'ran)"), "")
+        self.run_lisp("(defmacro my-unless (test then) `(if (not ,test) ,then '()))")
+        self.assertEqual(self.trace_of(2, "(my-unless #f 'ran)"), "")
 
     def test_anonymous_procedures_show_as_lambda(self):
         self.assertEqual(self.trace_of(2, "((lambda (x) (* x 2)) 21)"),
