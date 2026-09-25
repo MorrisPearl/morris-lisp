@@ -89,7 +89,7 @@ def parse_lp_file(filepath):
     return c, A, relations, b
 
 
-def solve_simplex(c, A, relations, b, big_m=1e6, max_iterations=1000):
+def solve_simplex(c, A, relations, b, max_iterations=1000):
     """
     Solve:  minimize   c^T x
             subject to A x {<=, >=, =} b
@@ -97,7 +97,9 @@ def solve_simplex(c, A, relations, b, big_m=1e6, max_iterations=1000):
 
     using the Simplex algorithm with the Big-M method, which lets us
     handle '<=', '>=' and '=' constraints uniformly by adding slack,
-    surplus, and artificial variables.
+    surplus, and artificial variables. M is kept symbolic -- treated as
+    larger than any number -- rather than set to a particular big number
+    (see Step 4).
 
     Returns (solution, optimal_value) where `solution` is a list giving
     the value of each original variable, in the same order as `c`.
@@ -166,44 +168,84 @@ def solve_simplex(c, A, relations, b, big_m=1e6, max_iterations=1000):
 
         tableau.append(row)
 
-    # --- Step 4: build the objective row ---
+    # --- Step 4: build the objective rows ---
     # We keep the classic tableau convention: the objective row holds
     # -(objective coefficient) for the problem being MAXIMIZED, and the
     # algorithm improves the solution while some entry is negative.
     #
     # To minimize c^T x with the Big-M method, artificial variables get a
-    # huge cost `big_m` in the minimization sense. Working through the
-    # sign convention, that means:
-    #   - original variables get coefficient c[j]      in the objective row
+    # cost of M, a number so large that getting rid of them comes before
+    # anything else. Working through the sign convention, that means:
+    #   - original variables get coefficient c[j]  in the objective row
     #   - slack / surplus variables get coefficient 0
-    #   - artificial variables get coefficient big_m
+    #   - artificial variables get coefficient M
+    #
+    # We don't pick an actual number for M. Too small, and a real cost
+    # bigger than M makes a feasible problem look infeasible; too big, and
+    # floating point loses the real costs added to it. Instead M is kept
+    # symbolic, as larger than any number: every objective-row entry is
+    #     (M part) * M + (ordinary part)
+    # and the two parts are kept in two separate rows:
+    #   obj_row - the ordinary parts: c[j] for original variables, else 0
+    #   m_row   - the M parts: 1 for artificial variables, else 0
+    # Both are pivoted just like the constraint rows.
     obj_row = [0.0] * (total_vars + 1)
     obj_row[:n_vars] = c
+    m_row = [0.0] * (total_vars + 1)
     for col in range(artificial_start, total_vars):
-        obj_row[col] = big_m
+        m_row[col] = 1.0
 
-    # The artificial variables are currently basic, but the objective row
-    # above doesn't reflect that (their column should read 0 since they're
-    # basic). Fix this by subtracting big_m times each artificial row from
-    # the objective row -- standard "canonicalization" step of Big-M.
+    # The artificial variables are currently basic, but m_row doesn't
+    # reflect that (their column should read 0 since they're basic). Fix
+    # this by subtracting each artificial row from m_row -- the standard
+    # "canonicalization" step of Big-M. (obj_row needs no fixing: it's
+    # already 0 in every basic column, since the basic variables all start
+    # out as slack or artificial variables.)
     for i, basic_col in enumerate(basis):
-        if obj_row[basic_col] != 0.0:
-            factor = obj_row[basic_col]
+        if m_row[basic_col] != 0.0:
+            factor = m_row[basic_col]
             for j in range(total_vars + 1):
-                obj_row[j] -= factor * tableau[i][j]
+                m_row[j] -= factor * tableau[i][j]
 
-    tableau.append(obj_row)  # objective row lives at the end of the tableau
+    tableau.append(obj_row)  # the two objective rows live at the end of the tableau
+    tableau.append(m_row)
 
     # --- Step 5: the main simplex loop ---
-    for _ in range(max_iterations):
-        obj_row = tableau[-1]
+    # How close to 0 a number must be to count as 0. Rounding errors grow
+    # with the size of the numbers -- with costs in the hundreds of
+    # millions, an entry of obj_row that should be exactly 0 can come out
+    # as -0.00000003 -- so each tolerance grows with the numbers it's
+    # compared against:
+    #   cost_tolerance  - for entries of obj_row, which are sized like the costs
+    #   value_tolerance - for the variables' values, sized like the right-hand sides
+    cost_tolerance = 1e-9 * max([1.0] + [abs(cost) for cost in c])
+    value_tolerance = 1e-7 * max([1.0] + b)
 
-        # Choose the entering variable: the most negative coefficient in
-        # the objective row means increasing that variable improves the
-        # (implicit) objective the most.
-        entering_col = min(range(total_vars), key=lambda j: obj_row[j])
-        if obj_row[entering_col] >= -1e-9:
-            break  # no negative coefficients left: we're optimal
+    for _ in range(max_iterations):
+        obj_row = tableau[-2]
+        m_row = tableau[-1]
+
+        # Choose the entering variable: the most negative entry in the
+        # objective row means increasing that variable improves the
+        # (implicit) objective the most. Since M is larger than any number,
+        # the M parts decide first:
+        #   - if some column's M part is negative, take the most negative;
+        #   - otherwise, among the columns with no M part, take the one
+        #     whose ordinary part is most negative. (A column with a
+        #     positive M part is worth about +M, so it's never negative.)
+        entering_col = min(range(total_vars), key=lambda j: m_row[j])
+        if m_row[entering_col] >= -1e-9:
+            # No M part is negative, so the artificial variables are as
+            # small as they can be made. If one is still positive, no
+            # values of the variables satisfy all the constraints.
+            for i, basic_col in enumerate(basis):
+                if basic_col >= artificial_start and tableau[i][-1] > value_tolerance:
+                    raise RuntimeError("Problem is infeasible.")
+
+            columns_without_m = [j for j in range(total_vars) if m_row[j] <= 1e-9]
+            entering_col = min(columns_without_m, key=lambda j: obj_row[j])
+            if obj_row[entering_col] >= -cost_tolerance:
+                break  # no negative entries left: we're optimal
 
         # Ratio test: choose the leaving variable as the row with the
         # smallest non-negative ratio of RHS to the entering column's
@@ -223,7 +265,7 @@ def solve_simplex(c, A, relations, b, big_m=1e6, max_iterations=1000):
 
         # Pivot: scale the pivot row so the entering column reads 1, then
         # eliminate the entering column from every other row (including
-        # the objective row).
+        # both objective rows).
         pivot_value = tableau[leaving_row][entering_col]
         tableau[leaving_row] = [v / pivot_value for v in tableau[leaving_row]]
         for i in range(len(tableau)):
@@ -241,7 +283,7 @@ def solve_simplex(c, A, relations, b, big_m=1e6, max_iterations=1000):
     # If an artificial variable is still basic with a positive value, the
     # original problem had no feasible solution.
     for i, basic_col in enumerate(basis):
-        if basic_col >= artificial_start and tableau[i][-1] > 1e-7:
+        if basic_col >= artificial_start and tableau[i][-1] > value_tolerance:
             raise RuntimeError("Problem is infeasible.")
 
     # --- Step 7: read off the solution ---

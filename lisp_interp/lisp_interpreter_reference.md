@@ -3,7 +3,7 @@
 A small Lisp for getting data from various sources and modeling it: fast
 vector math and statistics, tables (filter, sort, group, join), monthly
 time series, linear/logistic/spline regression with standard errors and
-AUC, SQLite, CSV files, downloads from any web API, FRED economic data,
+AUC, linear programming, SQLite, CSV files, downloads from any web API, FRED economic data,
 real tastytrade broker data (futures and equity option chains,
 futures-curve rich/cheap and calendar-spread carry analysis), and XY
 charts — plus dates, macros, struct inheritance, hash tables, `catch-error`
@@ -3273,6 +3273,129 @@ sensitive to sharp, narrow features but can suggest closely-spaced knots.
 distinct-`x` steps, size it relative to how many distinct `x` values the
 data actually has, not the row count.
 
+### Linear programming
+
+(In `lisp_simplex.py`, which uses the simplex solver in
+`simplex/simplex_solver.py`, next to `lisp_interp/`.) These solve linear
+programming problems: find the values of the variables `x1, x2, ...` that
+**minimize** `c1·x1 + c2·x2 + ...`, subject to constraints of the form
+`a1·x1 + a2·x2 + ... <= b` (or `>=`, or `=`), with every variable at least
+0. To **maximize** something instead, minimize its negative: flip the
+signs of the objective's coefficients, and the optimal value comes out
+with its sign flipped.
+
+**A problem** is an association list of four lists (the same four things
+`simplex_solver.py`'s `parse_lp_file` returns):
+
+| Part | Holds |
+|---|---|
+| `"objective"` | the objective's coefficients, one per variable |
+| `"constraints"` | one list per constraint, holding its coefficients, one per variable |
+| `"relations"` | one per constraint: `"<="`, `">="`, or `"="` |
+| `"rhs"` | one per constraint: its right-hand side |
+
+`lp-read-file` reads one from a file. You can also build one in Lisp; see
+`lp-solve`.
+
+#### `(lp-read-file path)`
+Reads a problem from a text file, and returns it as a problem list. The
+file looks like this:
+
+```
+# Maximize 3x1 + 5x2, which is the same as minimizing -3x1 - 5x2
+minimize
+-3 -5
+subject to
+1 0 <= 4
+0 2 <= 12
+3 2 <= 18
+```
+
+- The word `minimize`, then a line with the objective's coefficients.
+- The words `subject to`, then one line per constraint: its
+  coefficients, the relation (`<=`, `>=`, or `=`), and the right-hand
+  side, separated by spaces.
+- Blank lines, and lines starting with `#`, are ignored.
+
+The numbers are read as floats. A file that doesn't follow this format is
+an error that says what's wrong. For the file above
+(`simplex/example_problem.txt`):
+
+```lisp
+(define problem (lp-read-file "../simplex/example_problem.txt"))
+problem
+; => (("objective" -3.0 -5.0)
+;     ("constraints" (1.0 0.0) (0.0 2.0) (3.0 2.0))
+;     ("relations" "<=" "<=" "<=")
+;     ("rhs" 4.0 12.0 18.0))
+(lp-solve problem)     ; => (("solution" 2.0 6.0) ("optimal-value" . -36.0))
+```
+
+So `x1 = 2` and `x2 = 6`, where `3x1 + 5x2` reaches its maximum, 36.
+
+#### `(lp-solve problem)`
+Solves a problem, returning
+
+```
+(("solution" x1 x2 ...) ("optimal-value" . v))
+```
+
+the value of each variable (in the same order as the objective's
+coefficients) and the minimum value of the objective. Use `assoc` to get
+each one. Here's a problem built in Lisp: minimize `x1 + x2` subject to
+`x1 + 2x2 >= 4` and `3x1 + x2 >= 6`:
+
+```lisp
+(define problem
+  (list (cons "objective"   (list 1 1))
+        (cons "constraints" (list (list 1 2) (list 3 1)))
+        (cons "relations"   (list ">=" ">="))
+        (cons "rhs"         (list 4 6))))
+(define result (lp-solve problem))
+result                                 ; => (("solution" 1.6 1.2) ("optimal-value" . 2.8))
+(cdr (assoc "solution" result))        ; => (1.6 1.2)
+(cdr (assoc "optimal-value" result))   ; => 2.8
+```
+
+A quoted list works too. In it, the relations are symbols (`<=`) rather
+than strings (`"<="`), which `lp-solve` also accepts:
+
+```lisp
+; Minimize 2x1 + 3x2 subject to x1 + x2 = 10 and x1 <= 6.
+(lp-solve '(("objective" 2 3)
+            ("constraints" (1 1) (1 0))
+            ("relations" = <=)
+            ("rhs" 10 6)))     ; => (("solution" 6.0 4.0) ("optimal-value" . 24.0))
+```
+
+It's an error, with a message saying why, if:
+
+- the problem has no solution: "Problem is infeasible" (the constraints
+  contradict each other), or "Problem is unbounded" (the objective can
+  go down forever);
+- the solver doesn't finish in 1,000 steps;
+- the problem is malformed: a missing part, a constraint with the wrong
+  number of coefficients, a count of relations or right-hand sides that
+  doesn't match the constraints, or a relation other than `<=`, `>=`, or
+  `=`.
+
+Two things to know about the answers:
+
+- **Rounding.** They're floats, so a value can come out as, say,
+  `5.999999999999999` instead of `6`. Use `format` to show them rounded.
+- **Large numbers are fine.** Costs and balances in dollars, even in the
+  hundreds of millions, don't need to be scaled down. The solver uses the
+  Big-M method, but it keeps M symbolic (as larger than any number)
+  rather than choosing a particular big number that real costs could
+  exceed. And it decides what counts as zero relative to the size of the
+  problem's numbers.
+
+```lisp
+; Costs above a million: minimize 5,000,000 x1 subject to x1 >= 1.
+(lp-solve '(("objective" 5000000) ("constraints" (1)) ("relations" >=) ("rhs" 1)))
+                               ; => (("solution" 1.0) ("optimal-value" . 5000000.0))
+```
+
 ### Charting
 
 `plot-xy`/`plot-xy-regression`/`plot-xy-full` all build a chart and hand it
@@ -4838,6 +4961,7 @@ The interpreter is split into these Python files, all in `lisp_interp/`:
 | `lisp_tables.py` | Tables: `table-filter`, `table-sort`, `table-group-by`, `table-join`, ... |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
 | `lisp_regression.py` | `linear-regression`, `logistic-regression`, `spline-regression`, `model-report`, ... |
+| `lisp_simplex.py` | `lp-read-file`, `lp-solve`: linear programming (uses `simplex/`) |
 | `lisp_charts.py` | `plot-xy`, `plot-xy-regression`, `plot-xy-full`, `save-chart` |
 | `lisp_csv.py` | `load-csv`, `write-columns-csv` |
 | `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, `sqlite-write-table`, ... |

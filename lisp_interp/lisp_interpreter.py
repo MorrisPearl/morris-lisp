@@ -22,6 +22,7 @@ HOW THE CODE IS ORGANIZED
     lisp_tables.py        tables: filter, sort, group, join, describe
     lisp_time_series.py   month numbers and monthly time series
     lisp_regression.py    linear-, logistic-, and spline-regression, model-report, ...
+    lisp_simplex.py       lp-read-file, lp-solve: linear programming (uses simplex/)
     lisp_charts.py        plot-xy, plot-xy-regression, plot-xy-full, save-chart
     lisp_csv.py           load-csv, write-columns-csv
     lisp_sqlite.py        sqlite-open, sqlite-query, sqlite-write-table, ...
@@ -59,6 +60,7 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - monthly time series, with months as plain integers
   - linear, logistic, and spline regression with any number of predictors,
     with standard errors, p-values, AUC, and lift tables
+  - linear programming (the simplex method)
   - XY charts, and saving them as PNG/PDF/SVG
   - reading data from SQLite, CSV files, any web API (with caching), FRED,
     and tastytrade; writing it to SQLite and CSV

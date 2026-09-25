@@ -1940,6 +1940,118 @@ class TestRegression(LispTestCase):
         self.assertShows("(vector-drop #(1 2 3 4 5) 3)", "#(4 5)")
 
 
+class TestLinearProgramming(LispTestCase):
+    """lp-read-file and lp-solve (lisp_simplex.py, using simplex/simplex_solver.py)."""
+
+    EXAMPLE_FILE = os.path.join(HERE, "..", "simplex", "example_problem.txt")
+
+    def write_problem_file(self, text):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        path = os.path.join(d, "problem.txt")
+        with open(path, "w") as f:
+            f.write(text)
+        return path.replace("\\", "/")
+
+    def test_read_the_example_file(self):
+        self.run_lisp('(define problem (lp-read-file "%s"))' % self.EXAMPLE_FILE.replace("\\", "/"))
+        self.assertShows("problem",
+                         '(("objective" -3.0 -5.0) ("constraints" (1.0 0.0) (0.0 2.0) (3.0 2.0)) '
+                         '("relations" "<=" "<=" "<=") ("rhs" 4.0 12.0 18.0))')
+
+    def test_solve_the_example_file(self):
+        self.run_lisp('(define result (lp-solve (lp-read-file "%s")))' % self.EXAMPLE_FILE.replace("\\", "/"))
+        self.assertShows('(cdr (assoc "solution" result))', "(2.0 6.0)")
+        self.assertShows('(cdr (assoc "optimal-value" result))', "-36.0")
+
+    def test_read_skips_comments_and_blank_lines_and_handles_every_relation(self):
+        path = self.write_problem_file("# a comment\n\nminimize\n2 3\n\nsubject to\n1 1 = 10\n"
+                                       "1 0 <= 6\n0 1 >= 1\n")
+        self.assertShows('(cdr (assoc "relations" (lp-read-file "%s")))' % path, '("=" "<=" ">=")')
+        self.assertShows('(lp-solve (lp-read-file "%s"))' % path,
+                         '(("solution" 6.0 4.0) ("optimal-value" . 24.0))')
+
+    def test_read_errors_say_what_is_wrong(self):
+        self.assertLispError('(lp-read-file "/definitely/not/here.txt")', "No such file")
+        path = self.write_problem_file("maximize\n1 2\nsubject to\n1 1 <= 4\n")
+        self.assertLispError('(lp-read-file "%s")' % path, "must start with a 'minimize' line")
+        path = self.write_problem_file("minimize\n1 2\nsubject to\n1 <= 4\n")
+        self.assertLispError('(lp-read-file "%s")' % path, "expected 2")
+        path = self.write_problem_file("minimize\n1 2\nsubject to\n1 1 < 4\n")
+        self.assertLispError('(lp-read-file "%s")' % path, "Unrecognized relation")
+
+    def test_solve_a_problem_built_in_lisp(self):
+        self.assertShows("""(lp-solve (list (cons "objective" (list 1 1))
+                                            (cons "constraints" (list (list 1 2) (list 3 1)))
+                                            (cons "relations" (list ">=" ">="))
+                                            (cons "rhs" (list 4 6))))""",
+                         '(("solution" 1.6 1.2) ("optimal-value" . 2.8))')
+
+    def test_relations_can_be_symbols_in_a_quoted_problem(self):
+        self.assertShows("""(lp-solve '(("objective" 2 3) ("constraints" (1 1) (1 0))
+                                        ("relations" = <=) ("rhs" 10 6)))""",
+                         '(("solution" 6.0 4.0) ("optimal-value" . 24.0))')
+
+    def test_infeasible_and_unbounded_problems_are_errors(self):
+        self.assertLispError("""(lp-solve '(("objective" 1) ("constraints" (1) (1))
+                                            ("relations" <= >=) ("rhs" 1 2)))""", "infeasible")
+        self.assertLispError("""(lp-solve '(("objective" -1) ("constraints" (1))
+                                            ("relations" >=) ("rhs" 1)))""", "unbounded")
+
+    def test_malformed_problems_are_errors(self):
+        cases = [
+            ("""'(("objective" 1 1) ("constraints" (1 2)) ("relations" <=))""", 'no "rhs" list'),
+            ("""'(("objective" 1 1) ("constraints" (1)) ("relations" <=) ("rhs" 4))""",
+             "a constraint has 1 coefficients, but the objective has 2"),
+            ("""'(("objective" 1 1) ("constraints" (1 1) (1 0)) ("relations" <=) ("rhs" 4))""",
+             "2 constraints, 1 relations, and 1 rhs values"),
+            ("""'(("objective" 1 1) ("constraints" (1 1)) ("relations" <) ("rhs" 4))""",
+             'a relation must be "<=", ">=", or "="'),
+            ("""'(("objective" 1 "a") ("constraints" (1 1)) ("relations" <=) ("rhs" 4))""",
+             '"objective" must hold only numbers, but it has "a"'),
+            ("""'(("objective" 1 1) ("constraints" 5) ("relations" <=) ("rhs" 4))""",
+             '"constraints" must be a list, not 5'),
+            ("""'(("objective") ("constraints" (1)) ("relations" <=) ("rhs" 4))""", '"objective" is empty'),
+        ]
+        for problem, message in cases:
+            with self.subTest(problem=problem):
+                self.assertLispError("(lp-solve %s)" % problem, message)
+
+    def test_costs_and_balances_in_the_millions(self):
+        # Costs above a million once looked infeasible (the Big-M method with M = 1e6).
+        self.assertShows("""(lp-solve '(("objective" 5000000) ("constraints" (1)) ("relations" >=) ("rhs" 1)))""",
+                         '(("solution" 1.0) ("optimal-value" . 5000000.0))')
+        # Rates on balances in the hundreds of millions.
+        self.assertShows("""(lp-solve '(("objective" 0.065 0.07) ("constraints" (1 1) (1 0))
+                                        ("relations" >= <=) ("rhs" 250000000 100000000)))""",
+                         '(("solution" 100000000.0 150000000.0) ("optimal-value" . 17000000.0))')
+        # Costs in the hundreds of millions, where rounding once made a solvable problem look unbounded.
+        self.assertShows("""(round (cdr (assoc "optimal-value"
+                                (lp-solve '(("objective" 300000000 -100000000 700000000 -400000000)
+                                            ("constraints" (-3 3 -1 2) (0 -2 4 2) (-2 6 6 2) (-2 0 6 2))
+                                            ("relations" <= <= >= <=)
+                                            ("rhs" 1 18 20 4))))))""",
+                         "-1900000000")
+
+    def test_small_fractional_costs(self):
+        self.assertShows("""(lp-solve '(("objective" 0.001 0.002) ("constraints" (1 1) (1 0))
+                                        ("relations" >= >=) ("rhs" 3 0.5)))""",
+                         '(("solution" 3.0 0.0) ("optimal-value" . 0.003))')
+
+    def test_an_infeasible_problem_is_not_called_unbounded(self):
+        # 0 * x1 = 20 can't hold; the old solver reported "unbounded".
+        self.assertLispError("""(lp-solve '(("objective" -1) ("constraints" (2) (0))
+                                            ("relations" >= =) ("rhs" 1 20)))""", "infeasible")
+
+    def test_solving_does_not_change_the_problem(self):
+        self.run_lisp("""(define problem (list (cons "objective" (list 1 1))
+                                                (cons "constraints" (list (list 1 1)))
+                                                (cons "relations" (list ">="))
+                                                (cons "rhs" (list -4))))""")
+        self.run_lisp("(lp-solve problem)")      # a negative rhs makes the solver flip the row
+        self.assertShows("problem", '(("objective" 1 1) ("constraints" (1 1)) ("relations" ">=") ("rhs" -4))')
+
+
 # ---------------------------------------------------------------------------
 # 15. SQLite
 # ---------------------------------------------------------------------------
@@ -3182,7 +3294,7 @@ class TestExampleScripts(unittest.TestCase):
 
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
-    "breakpoint", "fred-series", "tastytrade", "sofr-", "(load ", "redirect-output", "sqlite-open", "with-sqlite",
+    "breakpoint", "fred-series", "tastytrade", "sofr-", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv", "display-columns",
     "debug-function", "input", "exit", "load-init", "http-get", "http-clear-cache",
 )

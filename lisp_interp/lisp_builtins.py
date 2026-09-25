@@ -37,6 +37,7 @@ import lisp_csv
 import lisp_fred
 import lisp_http
 import lisp_regression
+import lisp_simplex
 import lisp_sofr
 import lisp_sqlite
 import lisp_tables
@@ -1154,6 +1155,7 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
     env.update(lisp_http.BUILTINS)
     env.update(lisp_tastytrade.BUILTINS)
     env.update(lisp_sofr.BUILTINS)
+    env.update(lisp_simplex.BUILTINS)
 
     # Builtins that belong to this environment.
     env.update(make_output_builtins(out, markdown))
