@@ -23,12 +23,10 @@ from lisp_core import (
 # ---------------------------------------------------------------------------
 
 class LispModel:
-    """A fitted regression model: either "linear"
-    (y = intercept + sum(coefficients[i] * x[i])) or "logistic"
-    (p = sigmoid(intercept + sum(coefficients[i] * x[i]))).
-    `coefficients` is always a list, one entry per predictor (even if
-    there's only one). `stats` holds a few kind-specific fit diagnostics
-    used by `model-report`."""
+    """A fitted linear model, y = intercept + sum(coefficients[i] * x[i]), or
+    logistic model, p = sigmoid(intercept + sum(coefficients[i] * x[i])).
+    `coefficients` has one entry per predictor; `stats` holds the fit
+    statistics model-report shows."""
 
     def __init__(self, kind, coefficients, intercept, stats, predictor_names=None, y_name=None):
         self.kind = kind                    # "linear" or "logistic"
@@ -36,11 +34,8 @@ class LispModel:
         self.intercept = intercept
         self.k = len(coefficients)          # number of predictors
         self.stats = stats                  # dict of extra fit info, kind-specific
-        # Set by linear_regression_fn/logistic_regression_fn when x/y were
-        # given as (name . vector) pairs (sqlite-query's own column-wise
-        # result shape) instead of bare vectors -- lets model_report show
-        # real names instead of x1/x2/.../y. None (the default) means no
-        # names were available; model_report falls back to x1/x2/.../y.
+        # The predictors' and y's names, when they were given as (name . vector)
+        # pairs; model-report uses them in place of x1/x2/.../y. None if unnamed.
         self.predictor_names = predictor_names   # list of str, one per predictor, or None
         self.y_name = y_name                     # str, or None
 
@@ -68,13 +63,8 @@ def sigmoid(z):
 
 
 def _sigmoid_vec(z):
-    """The same numerically-stable sigmoid as sigmoid() (above), but
-    elementwise over a whole numpy array at once -- used by
-    fit_logistic's Newton-Raphson loop, below, so a whole iteration's
-    worth of predictions is one vectorized numpy call instead of a
-    Python-level loop calling the scalar sigmoid() once per
-    observation. Splits on sign the same way, just with a boolean mask
-    selecting which branch each element uses instead of an `if`."""
+    """sigmoid() applied to every element of a numpy array at once, in the
+    same numerically stable way. Used by fit_logistic."""
     out = np.empty_like(z, dtype=np.float64)
     pos = z >= 0
     out[pos] = 1.0 / (1.0 + np.exp(-z[pos]))
@@ -84,11 +74,9 @@ def _sigmoid_vec(z):
 
 
 def solve_linear_system(matrix, rhs):
-    """Solve `matrix @ x = rhs` by Gauss-Jordan elimination with partial
-    pivoting. `matrix` is a list of `n` rows, each of length `n`; `rhs` is
-    a list of length `n`. Returns the solution as a list of length `n`.
-    Plain and O(n^3), which is plenty fast for the handful of predictors
-    a small Lisp program will realistically use."""
+    """Solve matrix @ x = rhs by Gauss-Jordan elimination with partial
+    pivoting. `matrix` is n lists of n numbers; `rhs` is n numbers. Plain
+    O(n^3) Python, which is fast for the handful of predictors a model has."""
     n = len(matrix)
     augmented = [list(matrix[i]) + [rhs[i]] for i in range(n)]
     for col in range(n):
@@ -108,11 +96,10 @@ def solve_linear_system(matrix, rhs):
 
 
 def _standardize_columns(columns):
-    """columns: a list of predictor columns (each a list of numbers, one
-    per observation). Returns (standardized_columns, means, scales).
-    Standardizing before fitting keeps both the normal-equations solve and
-    Newton-Raphson well-behaved regardless of a predictor's raw scale
-    (e.g. a huge ordinal date next to a small percentage)."""
+    """Rescale each predictor column to mean 0 and standard deviation 1, and
+    return (standardized_columns, means, scales). Fitting on standardized
+    columns keeps the math well-behaved whatever the predictors' scales
+    (e.g. a day number next to a small percentage)."""
     means, scales, standardized = [], [], []
     n = len(columns[0])
     for i, col in enumerate(columns):
@@ -136,31 +123,18 @@ def _unstandardize_coefficients(b0, betas, means, scales):
 
 
 def fit_linear(columns, ys, weights=None):
-    """Ordinary (or weighted) least-squares fit of
-    y = intercept + sum(coef[i]*x[i]). `columns` is a list of one or
-    more predictor columns (each a list of plain numbers, one per
-    observation); `ys` is the list of observed values. Returns a
-    LispModel.
+    """Least-squares fit of y = intercept + sum(coef[i] * x[i]). `columns` is
+    a list of predictor columns (lists of numbers); `ys` the observed
+    values. Returns a LispModel.
 
-    `weights` (optional): a list of one non-negative number per
-    observation, or None (the default) to weight every observation
-    equally. Fitting still minimizes a sum of squared errors, just a
-    WEIGHTED one -- sum(weight[i] * (y[i] - prediction[i])**2) -- which
-    is done by carrying `weight[i]` into every observation's
-    contribution to the normal equations below (each observation's row
-    of the design matrix is effectively counted `weight[i]` times). A
-    weight of 0 excludes that observation from the fit entirely, and
-    scaling every weight by the same constant doesn't change the result
-    -- only the RELATIVE size of the weights matters.
+    `weights` (optional): one non-negative number per observation. The fit
+    then minimizes sum(weight[i] * (y[i] - prediction[i])**2), so an
+    observation with weight 3 counts as much as three with weight 1; only
+    the weights' relative sizes matter. None weights every observation
+    equally.
 
-    The normal-equations matrix/vector below (an O(n * p^2) reduction
-    over every observation -- n rows, p = k+1 coefficients including
-    the intercept) is built with numpy matrix ops (X.T @ X, roughly)
-    instead of a Python-level triple loop over n/p/p, which matters for
-    a large n (e.g. a multi-million-row dataset pulled in via
-    sqlite-query). The actual p-by-p linear solve afterward
-    (solve_linear_system) stays plain Python -- p is always small (a
-    handful of predictors), so that part was never the bottleneck."""
+    The normal equations are built with numpy (X.T @ X, roughly), so
+    millions of rows are fast; the small p-by-p solve is plain Python."""
     k = len(columns)
     n = len(ys)
     if n == 0:
@@ -197,29 +171,14 @@ def fit_linear(columns, ys, weights=None):
 
 
 def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
-    """Fit p = sigmoid(intercept + sum(coef[i]*x[i])) by maximum
-    likelihood, using Newton-Raphson (a.k.a. iteratively reweighted least
-    squares). Each y must be in [0, 1] -- either a hard 0/1 label or a
-    probability. `columns` is a list of one or more predictor columns.
+    """Fit p = sigmoid(intercept + sum(coef[i] * x[i])) by maximum likelihood,
+    using Newton-Raphson. Each y must be between 0 and 1 (a 0/1 label or a
+    probability). `weights` works as in fit_linear: each observation's
+    log-likelihood is multiplied by its weight. (That's unrelated to
+    `irls_weight` below, which is part of the Newton-Raphson method itself.)
 
-    `weights` (optional): a list of one non-negative number per
-    observation, or None (the default) to weight every observation
-    equally -- see fit_linear's docstring for the general idea (and note
-    below: this is a DIFFERENT weight than the `irls_weight` computed on
-    every iteration below, which is part of the fitting ALGORITHM itself
-    and has nothing to do with this one). Maximizing a weighted
-    log-likelihood -- sum(weight[i] * observation[i]'s log-likelihood)
-    -- just means multiplying `weight[i]` into that observation's
-    contribution to the gradient, Hessian, and log-likelihood on every
-    Newton-Raphson step.
-
-    Each iteration's gradient/Hessian (an O(n * p^2) reduction over
-    every observation, same shape as fit_linear's normal equations) is
-    built with numpy matrix ops instead of a Python-level triple loop
-    over n/p/p -- this loop runs up to max_iterations times, so for a
-    large n this is where nearly all of fit_logistic's time goes; see
-    fit_linear's docstring for why the p-by-p linear solve itself
-    (solve_linear_system) stays plain Python either way."""
+    Each iteration's gradient and Hessian are built with numpy, so large
+    data is fast; this loop is where nearly all the fitting time goes."""
     k = len(columns)
     n = len(ys)
     if n == 0:
@@ -293,18 +252,12 @@ def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
 
 
 def _coerce_predictors(x_arg):
-    """Accept a single vector (one predictor), a Lisp list of vectors
-    (multiple predictors), or a Lisp list of (name . vector) pairs --
-    exactly sqlite-query's own column-wise result shape -- so a query's
-    results can be fed straight into a regression with no manual name-
-    stripping first. `(linear-regression xs ys)` and
-    `(linear-regression (list x1 x2) ys)` both keep working exactly as
-    before; `(linear-regression (cdr freddie_loans) ...)` (a list of
-    (name . vector) pairs) now also works directly.
+    """Accept the predictors as a single vector, a list of vectors, or a list
+    of (name . vector) pairs -- the shape sqlite-query returns, so a query's
+    columns can go straight into a regression.
 
-    Returns (vectors, names): `names` is a list of strings, one per
-    predictor, if every element of a list x_arg was a (name . vector)
-    pair; otherwise None (no names available)."""
+    Returns (vectors, names). `names` is a list of strings if every element
+    was a (name . vector) pair, otherwise None."""
     if isinstance(x_arg, LispVector):
         return [x_arg], None
     if x_arg is NIL or isinstance(x_arg, Pair):
@@ -343,15 +296,10 @@ def _coerce_y(y_arg, name):
 
 
 def _optional_weights(weight_vec, n_expected, name):
-    """Convert the optional trailing `weights` argument shared by
-    linear-regression/logistic-regression/spline-regression into a plain
-    list of n_expected non-negative floats, or None if no weights were
-    given -- None means "fit every observation equally", exactly the
-    original unweighted behavior; fit_linear/fit_logistic both treat
-    None that way. A typical use is weighting each row by its dollar
-    balance, so a fit reflects the population's dollar-weighted behavior
-    rather than treating a $1,000 loan and a $1,000,000 loan as equally
-    important."""
+    """The optional `weights` vector as a list of non-negative floats, or None
+    if it wasn't given (meaning: weight every observation equally). A common
+    use is weighting each loan by its balance, so the fit reflects dollars
+    rather than loan counts."""
     if weight_vec is None or weight_vec is NIL:
         return None
     if not isinstance(weight_vec, LispVector):
@@ -438,10 +386,7 @@ def model_report(model):
         return LispString("\n".join(_spline_report_lines(model)))
     if not isinstance(model, LispModel):
         raise LispError("model-report: not a model: %r" % (model,))
-    # Real predictor/y names when linear-regression/logistic-regression
-    # was given (name . vector) pairs (sqlite-query's own column-wise
-    # shape) -- see _coerce_predictors/_coerce_y -- else fall back to
-    # the old x1/x2/.../y placeholders.
+    # Use the real names if the data had them (see _coerce_predictors).
     names = model.predictor_names or ["x%d" % (i + 1) for i in range(model.k)]
     y_name = model.y_name or "y"
     lines = []
@@ -471,10 +416,8 @@ def model_report(model):
 
 
 def model_evaluate(model, x_arg, y_vec):
-    """Evaluate a fitted model's prediction quality against (typically
-    held-out) data it was not fit on, and return a human-readable report.
-    This is the "quality of the model on the remaining data" step of a
-    train/test workflow."""
+    """(model-evaluate m x y) -- how well a fitted model predicts other data
+    (typically data held out from fitting), as a text report."""
     if not _is_model(model):
         raise LispError("model-evaluate: not a model: %r" % (model,))
     y_vec, _y_name = _coerce_y(y_vec, "model-evaluate")
@@ -601,13 +544,9 @@ def _resolve_predictor_spec(spec, column, name):
         knots = _choose_knots(column, count)
 
     if knots and n_distinct <= 3:
-        # A knot placed among only 2-3 distinct values is liable to make a
-        # hinge column identical (or near-identical) to the plain linear
-        # term or to another hinge, making the fit singular -- and hinge
-        # knots don't really mean anything for a handful of discrete
-        # values anyway. Catch this up front with an actionable message,
-        # rather than letting it surface later as a confusing "collinear"
-        # error deep in the linear-algebra code.
+        # A knot among only 2 or 3 distinct values can make a hinge column
+        # duplicate another column, making the fit fail with a confusing
+        # "collinear" error -- so say what to do instead, up front.
         raise LispError(
             "spline-regression: %s has only %d distinct value(s), so hinge "
             "knots aren't meaningful there (and can make the fit singular). "
@@ -618,18 +557,14 @@ def _resolve_predictor_spec(spec, column, name):
 
 
 def _resolve_all_predictor_specs(max_knots, columns, names=None):
-    """Resolve the `max-knots` argument into one _PredictorSpec per
-    predictor. `max_knots` may be:
-      - a single int or 'categorical, applied to every predictor
-      - a flat list of numbers/dates, when there's exactly one predictor
-        (shorthand for explicit knot locations on that one predictor)
-      - a list with exactly one entry per predictor, where each entry is
-        itself an int, 'categorical, or a list of explicit knot locations
+    """Turn the `max-knots` argument into one _PredictorSpec per predictor.
+    `max_knots` is either one setting for every predictor -- a knot count or
+    'categorical -- or a list with one setting per predictor, each a knot
+    count, 'categorical, or a list of knot locations. With exactly one
+    predictor, a flat list of numbers means those knot locations.
 
-    `names` (optional): real predictor names (from x being given as
-    (name . vector) pairs -- see _coerce_predictors) to use in error
-    messages and later in the report, instead of the generic x1/x2/...
-    placeholders."""
+    `names` (optional): the predictors' names, for error messages and the
+    report."""
     k = len(columns)
     if names is None:
         names = ["x%d" % (i + 1) for i in range(k)]
@@ -688,20 +623,16 @@ def _spline_expand_columns(columns, specs):
 
 class LispSplineModel:
     """A piecewise-linear spline model: an ordinary linear or logistic
-    regression fit on top of a per-predictor feature expansion (hinge
-    functions and/or categorical dummy encoding -- see _resolve_predictor_spec
-    / _spline_expand_columns above), giving the model a bit of the same
-    kind of bendable-curve flexibility as MARS, without any external
-    dependency."""
+    regression fitted to an expanded set of features -- hinge functions at
+    knots, and/or 0/1 indicators for categories -- which lets the fitted
+    curve bend. See _resolve_predictor_spec and _spline_expand_columns."""
 
     def __init__(self, inner_model, predictor_specs, k, predictor_names=None, y_name=None):
         self.inner_model = inner_model          # a LispModel fit on the expanded basis
         self.predictor_specs = predictor_specs  # list of k _PredictorSpec
         self.k = k                              # number of original predictors
         self.kind = "spline-logistic" if inner_model.kind == "logistic" else "spline"
-        # Set by spline_regression_fn when x/y were given as (name . vector)
-        # pairs -- see LispModel's own predictor_names/y_name for the same
-        # idea. None means no names were available.
+        # Names as in LispModel; None if unnamed.
         self.predictor_names = predictor_names   # list of str, one per ORIGINAL predictor, or None
         self.y_name = y_name                     # str, or None
 
@@ -718,10 +649,9 @@ class LispSplineModel:
 
 
 def _spline_feature_labels(specs, names):
-    """One label per EXPANDED feature (mirrors _spline_expand_value's own
-    per-predictor feature order exactly): a plain predictor name for its
-    linear term, "name (knot T)" for each hinge, or "name = category" for
-    each non-baseline categorical indicator."""
+    """One label per expanded feature, in _spline_expand_value's order: the
+    predictor's name for its linear term, "name (knot T)" for each hinge,
+    and "name = category" for each category indicator."""
     labels = []
     for name, spec in zip(names, specs):
         if spec.mode == "categorical":
@@ -776,17 +706,11 @@ def _spline_report_lines(model):
 
 
 def spline_regression_fn(x_arg, y_arg, max_knots=3, logistic=False, weight_vec=None):
-    """Fit a piecewise-linear spline model. `x_arg` is a vector, a list of
-    vectors, or a list of (name . vector) pairs (predictors) -- see
-    _coerce_predictors; `y_arg` is likewise a vector or a (name . vector)
-    pair -- see _coerce_y. `max_knots` controls how each predictor is
-    expanded -- see _resolve_all_predictor_specs for the accepted forms
-    (an auto knot count, explicit knot locations, or 'categorical). If
-    `logistic` is true, `y` must be in [0, 1], and a logistic regression
-    (instead of ordinary least squares) is fit on the expanded basis,
-    giving a probability-in-[0,1] output. `weight_vec` (optional): see
-    fit_linear's docstring -- passed straight through to whichever fit
-    runs on the expanded basis."""
+    """(spline-regression x y [max-knots logistic? weights]) -- fit a
+    piecewise-linear spline model. x and y are as for linear-regression.
+    max-knots says how to expand each predictor (see
+    _resolve_all_predictor_specs). With logistic? #t, y must be between 0
+    and 1 and a logistic model is fitted, giving a probability."""
     y_vec, y_name = _coerce_y(y_arg, "spline-regression")
     columns, names = _predictor_columns(x_arg, len(y_vec.items))
     ys = [numeric_value(v) for v in y_vec.items.tolist()]
@@ -811,26 +735,14 @@ def spline_regression_fn(x_arg, y_arg, max_knots=3, logistic=False, weight_vec=N
 
 
 def suggest_knots_fn(x_vec, y_vec, window, n):
-    """Suggest n knot locations for spline-regression, based on where y
-    curves most sharply as a function of x.
+    """(suggest-knots x y window n) -- up to n x-values where y bends most
+    sharply, sorted, ready to pass to spline-regression as knot locations:
+    (spline-regression x y (suggest-knots x y 5 2)).
 
-    Method: first aggregate y (by mean) onto each distinct x value seen
-    (so `window` counts steps along the distinct-x curve, not raw rows --
-    important for panel/pool data where many rows often share the same x).
-    Estimate that curve's second derivative at each interior point (via
-    the standard 3-point finite-difference formula, which works whether
-    or not x is evenly spaced), smooth that sequence with a centered
-    moving average of the given `window` size (to reduce sensitivity to
-    single-point noise), then greedily pick the `window`-separated points
-    with the largest smoothed |second derivative| -- "window-separated"
-    meaning no two chosen points are within `window` of each other by
-    index, so their smoothing windows don't overlap and they represent
-    genuinely distinct bends rather than the same one picked twice.
-
-    Returns a Lisp list of up to n x-values (fewer if there aren't that
-    many usable candidates), sorted ascending -- ready to hand straight
-    to spline-regression as an explicit knot list, e.g.
-    (spline-regression x y (suggest-knots x y 5 2))."""
+    Method: average y at each distinct x value; estimate the curve's second
+    derivative at each point; smooth it with a moving average `window`
+    points wide; then pick the points with the largest |second derivative|,
+    at least `window` points apart so each is a different bend."""
     if not isinstance(x_vec, LispVector) or not isinstance(y_vec, LispVector):
         raise LispError("suggest-knots: x and y must be vectors")
     if len(x_vec.items) != len(y_vec.items):
@@ -845,14 +757,9 @@ def suggest_knots_fn(x_vec, y_vec, window, n):
     if n == 0:
         return NIL
 
-    # Sort by x, then aggregate y (by mean) onto each *distinct* x value.
-    # Real/panel data routinely has many rows sharing the same x (e.g. many
-    # pools observed at the same rate-incentive level); estimating a second
-    # derivative needs distinct neighboring x's, and `window` is meant to
-    # count "steps along the curve", not raw rows -- so we collapse to one
-    # (x, mean-of-y) point per distinct x first. This also happens to be the
-    # statistically sensible thing to do: it's the marginal curve of y
-    # against x whose bends we want to find, not the scatter of every row.
+    # Average y at each distinct x. Real data often has many rows at the same
+    # x, and the second derivative needs distinct neighboring x values;
+    # `window` counts steps along this curve, not rows.
     pairs = sorted(zip(x_vec.items.tolist(), y_vec.items.tolist()), key=lambda p: numeric_value(p[0]))
     groups = {}
     order = []
@@ -872,12 +779,10 @@ def suggest_knots_fn(x_vec, y_vec, window, n):
             "suggest-knots: need at least 3 distinct x values to estimate curvature "
             "(found %d)" % m)
 
-    # Second-derivative estimate at each interior point i (1 .. m-2):
+    # Second derivative at each interior point i, allowing uneven spacing:
     #   f''(x_i) ~= 2 * [ (y_{i+1}-y_i)/(x_{i+1}-x_i) - (y_i-y_{i-1})/(x_i-x_{i-1}) ]
     #               / (x_{i+1} - x_{i-1})
-    # which reduces to the familiar (y_{i+1} - 2y_i + y_{i-1}) / h^2 when x
-    # is evenly spaced by h, but also works for uneven spacing. Since x is
-    # now strictly increasing (we've deduplicated), h1/h2 are always > 0.
+    # (the usual (y_{i+1} - 2y_i + y_{i-1}) / h^2 when spacing is even).
     raw_d2 = [0.0] * m
     for i in range(1, m - 1):
         h1 = xs[i] - xs[i - 1]

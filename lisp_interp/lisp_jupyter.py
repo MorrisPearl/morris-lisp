@@ -1,34 +1,12 @@
-"""
-lisp_jupyter.py
-================
-Shared plumbing for running the morris_lisp interpreter inside a Jupyter
-notebook with no PyQt6 GUI involved at all: charts render inline via
-matplotlib, and (display-columns ...) renders as a pandas DataFrame (a
-real HTML table) instead of the console's plain text table. This module
-just supplies the output/plot/columns/markdown callbacks that
-lisp_builtins.make_global_env() accepts.
+"""Output callbacks for running the interpreter in a Jupyter notebook, used
+by lisp_kernel.py (the "morris_lisp" kernel -- see install_lisp_kernel.py):
+charts are drawn inline with matplotlib, display-columns shows a pandas
+DataFrame, and display-markdown renders Markdown. get_env() holds the
+one environment a kernel uses for its whole life.
 
-Not meant to be used directly. lisp_kernel.py -- the native "morris_lisp"
-Jupyter kernel (see install_lisp_kernel.py) -- is the supported way to use
-this in a notebook: pick "morris_lisp" from Jupyter's kernel picker/New
-menu, and every cell is plain Lisp source, no magic needed. It imports
-this module for get_env() (the environment shared across a kernel's whole
-lifetime) and the three callbacks below. (An earlier version of this file
-also registered a `%%lisp` cell magic for running Lisp cells inside an
-ordinary Python kernel; that approach was superseded by lisp_kernel.py and
-has been removed.)
-
-The tastytrade-*/sofr-* builtins need one thing to work correctly here,
-already in place: they run their network I/O via asyncio, and
-asyncio.run() can't be called again from inside a thread that already has
-its OWN running event loop -- which is exactly what a Jupyter/IPython
-kernel has. See _run_async() in lisp_tastytrade.py (and its twin in
-term_structure/sofr_market_data.py)
--- both fall back to running the coroutine on a separate thread with its
-own fresh loop instead of failing outright, so every tastytrade-*/sofr-*
-builtin still just returns a plain value here, synchronously, exactly as
-it does from the console REPL/GUI/a plain script.
-"""
+The tastytrade-* and sofr-calibration-data builtins work here too: a
+Jupyter kernel already has an asyncio event loop running, which
+_run_async() in lisp_tastytrade.py handles."""
 from __future__ import annotations
 
 import io
@@ -40,15 +18,9 @@ from lisp_builtins import load_init_file, make_global_env, print_columns_table
 from lisp_charts import chart_summary_text, draw_chart_on_axes
 
 try:
-    # matplotlib.figure.Figure directly, NOT pyplot -- pyplot's plt.show()
-    # depends on whatever backend happens to be active (e.g. a plain
-    # `ipykernel` without `%matplotlib inline` defaults to an
-    # INTERACTIVE backend, so plt.show() opens a real window and BLOCKS
-    # the cell until it's closed -- found by actually hitting this: a
-    # test cell hung until a stray window was killed). Rendering
-    # straight to a PNG buffer via Figure/FigureCanvasAgg and handing
-    # THAT to IPython.display.Image sidesteps backend state entirely --
-    # works the same whether or not %matplotlib inline was ever run.
+    # Figure and FigureCanvasAgg rather than pyplot: pyplot's backend may be
+    # an interactive one that opens a window and blocks the cell. Drawing
+    # straight to a PNG works the same in every notebook.
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     _MATPLOTLIB_AVAILABLE = True
@@ -83,14 +55,8 @@ def _print_chart_summary(spec):
 
 
 def _notebook_plot(spec):
-    """plot-xy/plot-xy-regression/plot-xy-full -- renders INLINE in the
-    notebook (via draw_chart_on_axes(), the same pure-matplotlib drawing
-    code save-chart uses -- no Qt involved, and no dependency on pyplot's
-    backend/`%matplotlib inline` state either -- see the Figure/
-    FigureCanvasAgg import comment above for why) instead of needing a
-    GUI chart tab or a save-chart call to a file. Falls back to a plain
-    text summary if matplotlib isn't installed, or if IPython's rich
-    display isn't available to hand the rendered image to."""
+    """plot-xy... -- draw the chart inline, as a PNG image. Falls back to the
+    console's text summary without matplotlib or IPython."""
     if not (_MATPLOTLIB_AVAILABLE and _IPYTHON_AVAILABLE):
         _print_chart_summary(spec)
         return
@@ -109,17 +75,9 @@ def _print_columns_table(name_value_pairs):
 
 
 def _notebook_columns(name_value_pairs):
-    """display-columns -- shown as a pandas DataFrame (a real HTML
-    table, sortable/scrollable in the notebook) instead of the console's
-    plain text table, when pandas and IPython are both available; falls
-    back to that plain text table otherwise. Values arrive already
-    rendered as display strings (see *column-number-format* / the
-    `decimals` slot column_engine.lsp's column struct has) -- the exact
-    same numbers you'd see in the GUI's Columns tab or the console
-    fallback, just as a nicer table; NOT the raw underlying floats (use
-    write-columns-csv, or read the column structs' own `series` vectors
-    directly, if you want those for further analysis instead of
-    display)."""
+    """display-columns -- show a pandas DataFrame (an HTML table) if pandas and
+    IPython are installed, otherwise the console's text table. The values are
+    already formatted as text; use write-columns-csv for the raw numbers."""
     if _PANDAS_AVAILABLE and _IPYTHON_AVAILABLE:
         df = pd.DataFrame({name: values for name, values in name_value_pairs})
         _ipy_display(df)
@@ -141,14 +99,9 @@ _env = None
 
 
 def get_env():
-    """The environment lisp_kernel.py's LispKernel evaluates every cell
-    in -- created lazily on first use (once per kernel process, since
-    this module-level `_env` starts fresh every time a new kernel
-    process launches), with init.lsp already loaded (same as the
-    console REPL/batch mode/GUI all do). There's no separate reset(): a
-    Jupyter "Restart Kernel" already starts a brand-new lisp_kernel.py
-    process -- and therefore a brand-new environment here -- so it
-    already does exactly what a reset() would."""
+    """The environment every cell of this kernel runs in, created (with
+    init.lsp loaded) the first time it's needed. Restarting the kernel
+    starts a new process, and so a new environment."""
     global _env
     if _env is None:
         _env = make_global_env(output=_notebook_output, plot=_notebook_plot,

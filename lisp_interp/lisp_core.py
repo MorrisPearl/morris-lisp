@@ -54,26 +54,20 @@ import numpy as np    # LispVector's backing store -- see its class docstring
 # ---------------------------------------------------------------------------
 
 class Symbol(str):
-    """A Lisp symbol. Subclassing str lets us reuse Python's string
-    machinery while still being able to tell symbols apart from Lisp
-    strings (which are represented by the separate LispString class)."""
+    """A Lisp symbol. A str subclass, kept distinct from LispString so
+    symbol? and string? can tell them apart."""
     pass
 
 
 class LispString(str):
-    """A Lisp string literal. Kept as its own subclass of str (distinct
-    from Symbol) so `string?` and `symbol?` can tell the two apart."""
+    """A Lisp string. A str subclass, kept distinct from Symbol."""
     pass
 
 
 class Keyword(Symbol):
-    """A keyword symbol, e.g. :name -- written with a leading colon (kept
-    as part of the stored name, so printing is free). Unlike an ordinary
-    Symbol, a Keyword is SELF-EVALUATING (see seval()'s EVAL case), exactly
-    like a number or #t/#f, so it can be used directly as a call-site
-    marker in keyword-argument calls, e.g. (make-column :name "balance"
-    ...), without needing to be quoted. See parse_params()/Env.__init__
-    for the &key parameter-binding side of keyword arguments."""
+    """A keyword, e.g. :name (the colon is part of the stored name). Unlike
+    a symbol, a keyword evaluates to itself, so keyword-argument calls such
+    as (make-point :x 1) need no quoting."""
     pass
 
 
@@ -96,71 +90,26 @@ NIL = None  # represents the empty list '()
 
 
 class LispVector:
-    """A fixed-size, mutable vector of numbers and/or dates -- e.g.
-    #(1 2 3.5) or a vector of LispDate values.
+    """A fixed-size, mutable vector of numbers and/or dates, e.g. #(1 2 3.5).
 
-    `items` is backed by a numpy array (not a Python list) specifically
-    for memory: a Python list of N float64 objects costs ~32 bytes per
-    element (an 8-byte pointer in the list plus a 24-byte float object),
-    while a packed numpy array costs as little as 1-8 bytes per element
-    depending on dtype (see the *_DTYPE class attributes below) -- this
-    matters once vectors reach into the millions of elements (e.g. a
-    large loan-level dataset pulled in via sqlite-query, or a big
-    Monte-Carlo path array): a couple of GB of Python-list vectors would
-    otherwise balloon toward a couple dozen. numpy also lets a handful
-    of builtins below (vector-add/vector-sub/vector-scale, and the
-    regression fitting code in fit_linear/fit_logistic) do real
-    elementwise/matrix math in optimized C instead of a Python-level
-    loop, which is separately a speed win for those specific operations.
+    `items` is a numpy array rather than a Python list, to save memory on
+    large data (a million float32 values take 4 MB, versus about 32 MB as a
+    Python list) and so a few builtins (vector-add, regression fitting) can
+    do their math in numpy.
 
-    DTYPE POLICY -- change these three lines to retune memory vs.
-    precision for every vector in the interpreter at once; nothing else
-    needs to change. Defaults chosen for residential mortgage loan-level
-    data: individual balances well under $1,000,000 (float32 carries
-    ~7 significant decimal digits, comfortably enough for a sub-$1M
-    dollar figure or a rate/ratio that only ever needs 3-4 significant
-    figures), and the many 0/1 flag columns (delinquency, modification,
-    etc.) common in that kind of data, which fit in a single byte each.
-    Bump these back up (e.g. FLOAT_DTYPE = np.float64) if a future
-    dataset needs more precision than that -- e.g. dollar figures in the
-    billions, where float32's ~7 digits stop covering the cents place.
+    DTYPE POLICY: the three *_DTYPE attributes below set how every vector
+    stores its numbers. The defaults suit loan-level mortgage data: float32
+    keeps about 7 significant digits, enough for balances under $1,000,000
+    and for rates. Set FLOAT_DTYPE = np.float64 if you need more precision.
 
-    Two things every one of this class's callers has to get right, as a
-    direct consequence of using numpy underneath:
-      1. A numeric-dtype array's elements come back from indexing/
-         iteration as numpy SCALAR objects (e.g. np.float32/np.int32),
-         not Python's own float/int -- and unlike np.float64 (which
-         happens to subclass Python's float), NONE of the narrower
-         dtypes above subclass anything this interpreter's own
-         isinstance(x, (int, float))-style checks would recognize, so
-         relying on subclassing would be fragile even in the one case
-         where it happens to work. Every place a single element crosses
-         back out to "the rest of the interpreter" as a first-class Lisp
-         value goes through _lisp_scalar() (below) to convert it to a
-         genuine Python int/float first -- note this also means a value
-         only ever *loses* precision once, at the moment it's WRITTEN
-         into a vector; every read and every downstream computation
-         after that (regression fitting included, since it works from
-         plain Python lists produced by .tolist()) happens at full
-         Python float (i.e. C double / numpy float64) precision, same
-         as always. Bulk extraction (reading a WHOLE vector out as a
-         plain Python list) uses `.tolist()` instead, which does the
-         equivalent conversion for every element at once, in one fast
-         C-level pass.
-      2. Unlike a Python list, slicing a numpy array (v.items[a:b]) or
-         array-based math (v.items + w.items) produces a VIEW or a fresh
-         array respectively, not automatically the same
-         always-copy-on-construction behavior list(items) gave for
-         free. To keep every LispVector fully independent once
-         constructed -- exactly the old contract, since these are
-         MUTABLE vectors and nothing should silently alias another
-         vector's storage -- the constructor below always makes an
-         independent copy of whatever it's given: a fast native
-         .copy() when handed an already-built numpy array (the normal
-         case for a slice or an arithmetic result), or a dtype-inferring
-         _infer_array(list(items)) when handed a plain Python
-         list/iterable of Lisp values (the normal case for new vectors
-         built by a list comprehension elsewhere in this file)."""
+    Two rules for code that uses `items`:
+      1. Indexing a numeric array returns a numpy scalar (np.float32, ...),
+         which the interpreter's isinstance(x, (int, float)) checks don't
+         recognize. Convert one element with _lisp_scalar(), or a whole
+         array with .tolist(). (So a value loses precision only once, when
+         it's stored; arithmetic on it afterward is in full double precision.)
+      2. A numpy slice is a view, not a copy. The constructor always copies
+         what it's given, so no two vectors ever share storage."""
 
     FLOAT_DTYPE = np.float32     # any vector containing a non-integer number
     INT_DTYPE = np.int32         # an all-integer vector, not all 0/1
@@ -174,22 +123,12 @@ class LispVector:
 
     @staticmethod
     def _infer_array(items):
-        """Build the numpy array for a NEW vector from a plain Python
-        list of Lisp values (numbers and/or dates) -- not from an
-        already-built numpy array; __init__ handles that case
-        separately, above, with a plain .copy(). Picks the narrowest
-        dtype the FLOAT_DTYPE/INT_DTYPE/BOOL_INT_DTYPE policy above
-        allows, preserving Lisp's own int-vs-float distinction (a float
-        value that happens to be a whole number, e.g. 5.0, still makes
-        the vector a FLOAT_DTYPE vector -- it does NOT get treated as
-        the integer 5); falls back to dtype=object -- exactly as
-        memory-hungry as the old list-based representation, but no less
-        correct -- for anything that isn't a plain, homogeneous-enough
-        number: an empty vector, a LispDate anywhere, a mix of numbers
-        AND dates, an integer too big for INT_DTYPE to hold (Python ints
-        are arbitrary-precision; INT_DTYPE isn't), or (see read_from's
-        "#(" case) unevaluated vector-literal syntax that can hold
-        arbitrary Symbols/Pairs."""
+        """Build the numpy array for a new vector from a Python list of Lisp
+        values, using the narrowest dtype that holds every value exactly:
+        BOOL_INT_DTYPE if they're all 0 or 1, INT_DTYPE for other integers, and
+        FLOAT_DTYPE if any is a float (5.0 counts as a float). Anything else --
+        an empty list, a date, an integer too big for INT_DTYPE, or the
+        unevaluated contents of a #(...) literal -- gets dtype=object."""
         if items and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in items):
             if all(isinstance(v, int) for v in items):
                 dtype = (LispVector.BOOL_INT_DTYPE if all(v in (0, 1) for v in items)
@@ -208,83 +147,42 @@ class LispVector:
 
 
 def _lisp_scalar(x):
-    """Convert one element pulled out of a LispVector's numpy-array
-    `items` back into a genuine Python value, the way the rest of the
-    interpreter (and any isinstance(x, int)-style check in it) expects.
-    A numeric-dtype array hands back a numpy scalar (np.float32/
-    np.int32/np.int8) on indexing -- .item() converts that to the
-    equivalent native Python float/int. An object-dtype array (holding
-    LispDate, or anything else that isn't a plain number) already hands
-    back the real underlying Python object directly, with no numpy
-    wrapper to strip, so those pass through unchanged."""
+    """Convert one element of a vector's `items` into a plain Python value:
+    a numpy scalar becomes an int or float, and anything else (such as a
+    LispDate in an object array) is returned unchanged."""
     return x.item() if isinstance(x, np.generic) else x
 
 
 def _narrow_vector_result(arr):
-    """After a numpy elementwise operation combining two LispVector
-    `items` arrays (vector-add/vector-sub/vector-scale, below), clamp a
-    float64 RESULT back down to LispVector.FLOAT_DTYPE. numpy's own
-    type-promotion rules upgrade e.g. an int32 array combined with a
-    float32 array -- or with a plain Python float scalar, as
-    vector-scale's `s` usually is -- to float64, even though every
-    individual value involved already fit in float32; left alone, that
-    would silently defeat the point of running these on a large vector.
-    Integer-dtype results are left alone -- this policy's int8/int32
-    tiers never overshoot each other, only mixing in a float does."""
+    """Convert a float64 result of numpy arithmetic back to
+    LispVector.FLOAT_DTYPE. Numpy promotes int32 + float32, or float32 times
+    a Python float, to float64, which would double a large vector's memory
+    for no benefit."""
     return arr.astype(LispVector.FLOAT_DTYPE) if arr.dtype == np.float64 else arr
 
 
 def _value_fits_dtype(x, dtype):
-    """Would writing plain Lisp number `x` into a numpy array of this
-    dtype preserve it EXACTLY? Checked explicitly, rather than just
-    trying the assignment and catching an exception, because numpy
-    doesn't always raise on a bad fit: writing a float into an
-    integer-dtype array SILENTLY TRUNCATES instead of erroring (e.g.
-    arr[i] = 0.5 on an int8 array quietly becomes 0) -- exactly the kind
-    of silent corruption this has to prevent, not just the loud
-    OverflowError case (an int too big for the dtype's range, e.g. 1000
-    into an int8 array, which numpy DOES raise on)."""
+    """True if number x can be stored in a numpy array of this dtype
+    exactly. Checked beforehand because numpy doesn't always complain:
+    storing 0.5 in an integer array silently stores 0."""
     if dtype == object:
         return True
     if np.issubdtype(dtype, np.integer):
         if not isinstance(x, int):
-            return False   # a float (even a whole-number one, e.g. 5.0)
-                            # would silently truncate -- see docstring
+            return False   # even 5.0 -- numpy would truncate a float
         info = np.iinfo(dtype)
         return info.min <= x <= info.max
-    return isinstance(x, (int, float))   # a float dtype: any number fits
-                                          # (float32 may lose PRECISION for
-                                          # a very large value, same as
-                                          # for any other float-vector
-                                          # element -- not new corruption)
+    return isinstance(x, (int, float))   # a float dtype holds any number (perhaps rounded)
 
 
 def _vector_widen_for(v, x):
-    """Before writing `x` into LispVector `v`'s numpy-array `items`
-    (vector-set!/vector-fill!, below): widen `items` to a dtype that can
-    actually hold `x`, if its current one can't (a no-op in the
-    overwhelmingly common case where it already can). This matters more
-    than it might look: column_engine.lsp's calculate-all pre-allocates
-    a column's series via (make-vector n initial_value) -- often 0 or
-    0.0 -- then fills it in row by row via vector-set! as each row gets
-    computed, so the array's dtype gets picked from the INITIAL value
-    alone, long before the real range of values it'll end up holding is
-    known -- e.g. a column that starts out looking like a 0/1 flag
-    (BOOL_INT_DTYPE), until some row's computed value turns out to
-    genuinely need more range.
-
-    Re-infers a dtype the same way a brand-new vector would -- a fresh
-    _infer_array call over this vector's EXISTING contents (read back
-    out via .tolist(), so it sees plain Python values, not numpy
-    scalars) plus the new value -- rather than jumping straight to
-    dtype=object, so e.g. a 0/1-flag-looking column widens to a plain
-    int vector for a bigger int, not all the way to a memory-hungry
-    object array. Falls back to dtype=object only if even that freshly
-    re-inferred dtype still can't hold `x` (in practice: `x` is a
-    LispDate mixed into an established numeric vector -- _infer_array's
-    own number-or-date homogeneity rule sends that straight to
-    dtype=object already -- or a plain int too big for even INT_DTYPE,
-    e.g. a huge ID or a nanosecond timestamp)."""
+    """Before storing x in vector v (vector-set!, vector-fill!), switch v to a
+    wider dtype if its current one can't hold x exactly. This is needed
+    because a vector's dtype comes from its initial contents -- e.g.
+    (make-vector n 0) starts as a 1-byte integer array -- before the values
+    it will eventually hold are known. The new dtype is chosen the same way
+    as for a new vector, or dtype=object if even that can't hold x (a date,
+    or a huge integer)."""
     if _value_fits_dtype(x, v.items.dtype):
         return
     new_dtype = LispVector._infer_array(v.items.tolist() + [x]).dtype
@@ -294,8 +192,7 @@ def _vector_widen_for(v, x):
 
 
 class LispDate:
-    """A simple calendar date, e.g. (date 2020 1 15). Wraps a Python
-    datetime.date so charts can format it nicely on an axis."""
+    """A calendar date, e.g. (date 2020 1 15). Wraps a Python datetime.date."""
 
     def __init__(self, year, month, day):
         self.date = datetime.date(year, month, day)
@@ -304,14 +201,7 @@ class LispDate:
         return isinstance(other, LispDate) and self.date == other.date
 
     def __hash__(self):
-        # A date is immutable (its .date is never reassigned after
-        # construction -- date-add-days, etc. build a NEW LispDate
-        # rather than mutating one in place), so unlike Pair/LispVector/
-        # LispStruct -- genuinely mutable, deliberately left unhashable,
-        # the same rule Python's own dict/set keys follow -- there's no
-        # risk of a date's hash changing after it's used as a
-        # hash-table key. Delegates to the wrapped datetime.date's own
-        # hash, which is already correct and consistent with __eq__.
+        # Dates never change once made, so they can be hash-table keys.
         return hash(self.date)
 
     def __lt__(self, other):
@@ -322,15 +212,10 @@ class LispDate:
 
 
 class LispHashTable:
-    """A mutable hash table (make-hash-table / hash-table-*, below).
-    Thin wrapper around a Python dict -- keys must be hashable Lisp
-    values: numbers, strings, symbols, keywords, dates (all immutable,
-    or -- Symbol/LispString/Keyword -- backed by Python's own str,
-    already hashable). Lists, vectors, and structs are all deliberately
-    left unhashable (see e.g. Pair's docstring) since they're mutable;
-    the hash_table_set!/-ref builtins below catch Python's TypeError for
-    an unhashable key and re-raise a clear LispError instead of leaking
-    it raw."""
+    """A mutable hash table (make-hash-table, hash-table-*): a thin wrapper
+    around a Python dict. Keys must be immutable Lisp values -- numbers,
+    strings, symbols, keywords, or dates. Lists, vectors, and structs can
+    change, so they can't be keys."""
 
     def __init__(self):
         self.table = {}
@@ -340,24 +225,13 @@ class LispHashTable:
 
 
 class LispStructType:
-    """The record type created by (defstruct name slot...) or
-    (defstruct (name (:include parent)) slot...) -- see
-    eval_special_form()'s "defstruct" case. Just metadata: the type's
-    name, its parent LispStructType (or None for a plain, non-including
-    defstruct), and its full ordered slot list (Symbol slot_name,
-    default_expr_or_None) -- inherited slots first, in the PARENT's own
-    order (a child slot with the same name as an inherited one replaces
-    that slot's default in place rather than duplicating it, exactly CL's
-    :include behavior), then the child's own new slots, in declared
-    order. Slot order is preserved everywhere a struct of this type is
-    printed or its constructor's keyword arguments are bound.
+    """The record type made by (defstruct name slot...) or
+    (defstruct (name (:include parent)) slot...).
 
-    `slots` is deliberately the single, already-flattened list any
-    consumer (the constructor, accessors, to_string, ...) needs -- none
-    of them have to know or care that some of it came from a parent;
-    only defstruct itself (building this list, below) and is_a
-    (checking substructure-of relationships for accessor/predicate
-    sharing) look at `parent` directly."""
+    `slots` is the complete, ordered list of (slot_name, default_expr)
+    pairs: the parent's slots first (a child slot with the same name just
+    replaces the parent's default), then the child's new ones. Everything
+    that uses a struct type reads `slots`; only is_a() looks at `parent`."""
 
     def __init__(self, name, own_slots, parent=None):
         self.name = name              # Symbol
@@ -376,11 +250,9 @@ class LispStructType:
         return merged
 
     def is_a(self, other_type):
-        """True if this type IS other_type, or (:include-)descends from
-        it -- i.e. an instance of this type can stand in anywhere an
-        instance of other_type is expected: other_type's accessors,
-        setters, and predicate all accept it, exactly CL's struct
-        substructure relationship."""
+        """True if this type is other_type, or includes it directly or through
+        a chain of parents -- so an instance of this type can be used wherever
+        other_type is expected."""
         t = self
         while t is not None:
             if t is other_type:
@@ -393,10 +265,8 @@ class LispStructType:
 
 
 class LispStruct:
-    """An instance of a defstruct-defined record type: a struct_type plus
-    a mutable dict of slot_name -> value. Structural equality (like
-    Pair/LispVector) rather than CL's identity-based `eql`, since this
-    language doesn't otherwise distinguish the two."""
+    """An instance of a defstruct type: its type plus a dict of slot values.
+    Two structs are equal if they have the same type and equal slot values."""
 
     def __init__(self, struct_type, values):
         self.struct_type = struct_type
@@ -412,34 +282,23 @@ class LispStruct:
 
 
 def _date_from_pydate(pydate):
-    """Wrap an existing datetime.date as a LispDate without re-validating
-    year/month/day (used by date-add-days and the FRED-data loader)."""
+    """Wrap a Python datetime.date as a LispDate."""
     obj = LispDate.__new__(LispDate)
     obj.date = pydate
     return obj
 
 
 class Procedure:
-    """A user-defined function (closure) created by `lambda` or `define`.
+    """A user-defined function, made by `lambda` or `define`.
 
-    rest_param (a Symbol, or None): if set, this procedure is variadic --
-    it accepts any number of arguments beyond its fixed `params`, and
-    they're collected into a list bound to rest_param. See parse_params()
-    (which builds params/rest_param from source syntax like
-    `(a b . rest)` or a bare `args`) and Env.__init__'s rest_param
-    handling (which does the actual binding at call time).
-
-    name (a Symbol, or None if anonymous): only used to label this
-    procedure in call traces and stack traces (see the "Call tracing"
-    section, below) -- never affects behavior. `define` sets it, and so
-    does defining an anonymous lambda's value under a name
-    ((define f (lambda ...))) if it doesn't have one yet; the
-    make-<struct> constructors defstruct builds are named too.
-
-    is_scope: True only for the throwaway procedure `let`/`let*`/`dolist`
-    desugar into ((lambda (x...) body...) v...). It's an implementation
-    detail of those forms -- a variable scope, not a real call -- so it is
-    left out of call traces and stack traces."""
+      params          the fixed parameter names
+      rest_param      for a variadic procedure, the name bound to a list of the
+                      extra arguments; otherwise None (see parse_params)
+      keyword_specs   the &key parameters, as (name, default_expr) pairs
+      body, env       the body expressions, and the environment it was defined in
+      name            used only to label it in traces and stack traces
+      is_scope        True for the procedure let/let*/dolist turn into. It's a
+                      variable scope, not a real call, so traces leave it out."""
 
     def __init__(self, params, body, env, rest_param=None, keyword_specs=None,
                  name=None, is_scope=False):
@@ -456,20 +315,10 @@ class Procedure:
 
 
 class Macro:
-    """A macro transformer created by `defmacro`. Structurally identical
-    to a Procedure (params/rest_param/body/env), but invoked completely
-    differently: a Procedure call evaluates its arguments first and binds
-    the results; a Macro call binds its parameters to the CALL SITE's
-    argument expressions UNEVALUATED (as plain source-code data --
-    Symbols, Pairs, literals), runs its body to compute a new expression
-    (the "expansion"), and that expansion is evaluated in place of the
-    original call, in the CALLING environment. See expand_macro() and the
-    macro-call check in seval(). rest_param works the same way it does
-    for a Procedure -- see that class's docstring -- except what it
-    collects is unevaluated expressions rather than values.
-
-    name: the macro's name, used only to label its transformer in stack
-    traces (see Procedure.name)."""
+    """A macro, made by `defmacro`. It has the same parts as a Procedure,
+    but when it's called, its parameters are bound to the call's UNEVALUATED
+    argument expressions, and its body returns new code (the "expansion"),
+    which is then evaluated in place of the call. See expand_macro()."""
 
     def __init__(self, params, body, env, rest_param=None, keyword_specs=None, name=None):
         self.params = params
@@ -484,7 +333,7 @@ class Macro:
 
 
 class LispError(Exception):
-    """Raised for any runtime or parse error in the interpreter."""
+    """Raised for any error in a Lisp program: reading, evaluating, or in a builtin."""
     pass
 
 
@@ -549,10 +398,8 @@ def tokenize(text):
 # ---------------------------------------------------------------------------
 
 def parse(text):
-    # This is a generator function, mainly so that if there is an
-    # error we can see where the error is (by seeing what has already been
-    # processed before the error.
-    """Parse source text into a list of top-level Lisp expressions."""
+    """Parse source text into top-level Lisp expressions, one at a time. (A
+    generator, so a file's forms before a syntax error still get run.)"""
     tokens = tokenize(text)
     while tokens:
         yield read_from(tokens)
@@ -641,30 +488,18 @@ def pairs_to_list(p):
 
 
 def parse_params(params_expr):
-    """Parse a lambda/define/defmacro parameter spec into (fixed_names,
-    rest_name_or_None, keyword_specs) -- used to give Procedure and Macro
-    variadic ("rest parameter") and keyword-argument support. params_expr
-    may be:
-      - a proper list, e.g. (a b c) -- fixed arity, no rest parameter;
-        rest_name is None
-      - an improper (dotted) list, e.g. (a b . rest) -- a and b are
-        ordinary fixed parameters; rest is bound to a LIST of every
-        additional argument beyond the fixed ones (possibly empty)
-      - a single bare symbol not wrapped in parens at all, e.g. the
-        `args` in (lambda args body) or (define (f . args) body) -- every
-        argument, with no fixed ones at all, is collected into that name
-      - a proper list whose tail is the marker symbol &key followed by
-        keyword-parameter specs, e.g. (a b &key c (d 10)) -- a and b are
-        ordinary fixed (positional) parameters; c and d are CL-style
-        keyword parameters, supplied at the call site as :c value / :d
-        value pairs AFTER the fixed arguments, in any order, each
-        optional. A bare spec (c) means "default to '()"; a spec (name
-        default-expr) supplies an explicit default, evaluated per call
-        (see Env.__init__'s keyword_specs/default_eval handling). &key
-        and a dotted/bare-symbol rest parameter are mutually exclusive in
-        this implementation. keyword_specs is [] when &key isn't present.
-    See Env.__init__ for how the actual binding at call time works.
-    """
+    """Split a lambda/define/defmacro parameter list into
+    (fixed_names, rest_name_or_None, keyword_specs):
+
+      (a b c)               three fixed parameters
+      (a b . rest)          a and b fixed; rest gets a list of any extra arguments
+      args                  (a bare symbol) every argument, as a list
+      (a b &key c (d 10))   a and b fixed; c and d are keyword parameters, passed
+                            as :c value :d value in any order. c defaults to '(),
+                            d to 10.
+
+    &key can't be combined with a rest parameter. Env.__init__ does the
+    binding when the procedure is called."""
     if isinstance(params_expr, Symbol):
         return [], params_expr, []
     fixed = []
@@ -691,39 +526,26 @@ def parse_params(params_expr):
 # ---------------------------------------------------------------------------
 
 class Env(dict):
-    """A mapping of names to values, with a link to an enclosing (outer)
-    environment. Together, a chain of Envs implements lexical scoping.
-    (This chain follows *lexical nesting*, not call/recursion depth, so it
-    stays shallow even for deeply recursive Lisp programs.)
+    """The name -> value bindings of one scope, plus a link to the enclosing
+    scope (`outer`). The chain of Envs follows how the code is nested, not
+    how calls are nested, so it stays short even in deep recursion.
 
-    trace_emit: only ever set on a GLOBAL environment (by make_global_env):
-    the function verbose-mode trace lines are written with, so they land
-    wherever that environment's display output does. See _trace_write()."""
+    trace_emit is set only on a global environment (by make_global_env): the
+    function that writes verbose-mode trace lines."""
 
     trace_emit = None
 
     def __init__(self, params=(), args=(), outer=None, rest_param=None,
                  keyword_specs=None, default_eval=None):
-        """params: the FIXED parameter names (never includes the rest
-        parameter, if any). rest_param: None for an ordinary fixed-arity
-        call (the original, unchanged behavior -- args must match params
-        exactly in count), or a Symbol to bind to a list of every
-        argument beyond the fixed ones (possibly empty) -- see
-        parse_params(), which is what Procedure/Macro construction uses
-        to split a parameter spec into these two pieces.
+        """Bind a call's arguments to its parameters.
 
-        keyword_specs (list of (Symbol name, default_expr_or_None), or
-        None/empty for none): when non-empty, `params` are bound
-        positionally as usual, and every arg beyond that is expected to
-        come in :key value pairs (see parse_params()'s &key docs). Each
-        keyword_specs name is bound from the matching pair if supplied;
-        otherwise to `default_eval(default_expr, self)` if a default was
-        given, else to NIL. default_eval lets the SAME binding logic serve
-        both procedure calls (args already evaluated; a default should be
-        evaluated too, in this new environment -- see the module-level
-        eval_default()) and macro expansion (args are unevaluated source
-        expressions; a default should be used as-is -- see
-        raw_default())."""
+        `params` are the fixed parameter names. With rest_param, any extra
+        arguments are bound to it as a list; without it, the argument count must
+        match exactly. With keyword_specs, the arguments after the fixed ones
+        must be :name value pairs, and a keyword parameter that isn't passed gets
+        default_eval(default_expr, self) -- or '() if it has no default.
+        default_eval is eval_default for a procedure call (defaults are
+        evaluated) and raw_default for a macro (defaults stay as code)."""
         super().__init__()
         self.outer = outer
         params = list(params)
@@ -772,7 +594,7 @@ class Env(dict):
             self[rest_param] = list_to_pairs(args[len(params):])
 
     def find(self, name):
-        """Return the innermost Env in which `name` is bound."""
+        """The innermost Env in which `name` is bound; an error if there's none."""
         e = self
         while e is not None:
             if name in e:
@@ -781,13 +603,8 @@ class Env(dict):
         raise LispError("unbound symbol: %s" % name)
 
     def lookup_or_none(self, name):
-        """Like find(), but returns None instead of raising when `name`
-        isn't bound anywhere in the chain. Used by seval() to check
-        whether an operator symbol names a macro without disturbing the
-        ordinary "unbound symbol" error path for everything else (a
-        symbol this returns None for just falls through to being
-        evaluated as an operator/argument as usual, which raises that
-        same error itself if it truly isn't bound)."""
+        """The value of `name`, or None if it isn't bound anywhere. Used to
+        check whether an operator names a macro, without raising an error."""
         e = self
         while e is not None:
             if name in e:
@@ -797,16 +614,14 @@ class Env(dict):
 
 
 def eval_default(expr, env):
-    """The default_eval strategy for an ordinary PROCEDURE call: a keyword
-    argument's default expression is evaluated, like any other expression,
-    in the new call environment (see Env.__init__)."""
+    """How a procedure call fills in a missing keyword argument: evaluate the
+    default expression in the new call environment. (See Env.__init__.)"""
     return seval(expr, env)
 
 
 def raw_default(expr, env):
-    """The default_eval strategy for a MACRO expansion: a keyword
-    parameter's default is used AS-IS -- unevaluated source -- exactly
-    like every other macro parameter binding (see expand_macro())."""
+    """How a macro call fills in a missing keyword argument: use the default
+    expression as-is, since macro arguments are unevaluated code."""
     return expr
 
 
@@ -814,36 +629,25 @@ def raw_default(expr, env):
 # Call tracing and Lisp-level stack traces
 # ---------------------------------------------------------------------------
 #
-# Two debugging aids, both built on one small idea: every call of a
-# user-defined procedure (or a macro transformer) leaves a ('CALL', proc,
-# args, tails) frame on the evaluator's control stack -- see seval() -- so
-# "what procedure are we in, and what was it called with?" is always
-# answerable by looking at the stack.
+# Every call of a user-defined procedure (or macro transformer) leaves a
+# ('CALL', proc, args, tails) frame on the evaluator's control stack --
+# see seval(). That gives two debugging aids:
 #
-#   * VERBOSE MODE -- (verbose n) -- logs calls as they happen:
-#         0  off (the default)
-#         1  each call, by procedure NAME
-#         2  each call with its ARGUMENTS, and each return with its VALUE
-#         3  everything in 2, plus every macro expansion
-#     Lines are indented by call depth. A call in tail position is marked
-#     `>>` instead of `>` (see below). Output goes wherever display output
-#     goes (console, GUI log, Jupyter cell, a redirect-output file).
+#   VERBOSE MODE -- (verbose n) -- logs calls as they happen:
+#       0 off (the default), 1 procedure names, 2 also arguments and
+#       return values, 3 also macro expansions.
+#     Lines are indented by call depth; a tail call is marked >> not >.
+#     Output goes wherever display output goes.
 #
-#   * STACK TRACES -- when an error escapes, seval() copies the CALL
-#     frames it finds into the exception (exc.lisp_trace), so wherever the
-#     error is finally reported (REPL, batch mode, GUI, Jupyter) it can be
-#     shown with the chain of calls that led to it -- see
-#     format_lisp_traceback(). `(backtrace)` prints the same thing for
-#     the CURRENT call chain, on demand, without an error.
+#   STACK TRACES -- when an error escapes, seval() copies the CALL frames
+#     into the exception (exc.lisp_trace), so the REPL, batch mode, GUI,
+#     and Jupyter can show the chain of calls that led to the error.
+#     (backtrace) shows the current chain without an error.
 #
-# TAIL CALLS AND THE STACK: a call in tail position REPLACES the caller's
-# CALL frame instead of adding one under it (that is exactly what makes a
-# tail call constant-space -- see the module docstring), so a stack trace,
-# like one from any tail-call-optimizing Lisp, doesn't list a caller that
-# tail-called its way out. The replacing frame counts how many calls it
-# absorbed, and traces show it as "[+N tail calls]" so the missing callers
-# are accounted for. let/let*/dolist scopes (Procedure.is_scope) are not
-# calls and get no frame.
+# A tail call REPLACES its caller's CALL frame (that's what keeps a tail call
+# constant-space), so a caller that tail-called its way out isn't listed.
+# The replacing frame counts them instead, shown as "[+N tail calls]".
+# let/let*/dolist scopes (Procedure.is_scope) aren't calls and get no frame.
 
 VERBOSE_OFF, VERBOSE_CALLS, VERBOSE_ARGS, VERBOSE_MACROS = 0, 1, 2, 3
 _verbose_level = 0      # current verbosity; change ONLY via set_verbose_level()
@@ -856,9 +660,8 @@ _BRIEF_MAX_STRING = 40  # string characters shown before "..."
 
 
 def set_verbose_level(level):
-    """Set the verbosity -- 0/1/2/3, or #f/#t for 0/1 -- and return the
-    PREVIOUS level (so callers can restore it). Restarts the indentation,
-    since depth is only meaningful counted from when tracing began."""
+    """Set the verbosity -- 0, 1, 2, 3, or #f/#t for 0/1 -- and return the
+    previous level, so the caller can restore it."""
     global _verbose_level, _call_depth
     if level is True:
         level = VERBOSE_CALLS
@@ -887,10 +690,8 @@ _verbose_level = _initial_verbose_level()
 
 
 def _brief(x, depth=0):
-    """A short, bounded rendering of any value for trace lines. Unlike
-    to_string(), the work done is limited no matter how big x is -- a
-    million-element vector or a long list is summarized, never walked in
-    full -- so tracing a call that receives huge data stays cheap."""
+    """A short rendering of a value for trace lines. Unlike to_string(), it
+    never walks all of a big list or vector, so tracing stays cheap."""
     if x is True:
         return "#t"
     if x is False:
@@ -942,18 +743,16 @@ def _proc_name(proc):
 
 
 def _call_text(proc, args, with_args=True):
-    """`(name arg...)` -- or just `name` -- for one call. A macro's
-    "arguments" are its unevaluated source expressions."""
+    """`(name arg...)`, or just `name`, for one call. A macro's arguments
+    are its unevaluated source expressions."""
     if not with_args:
         return _proc_name(proc)
     return "(" + " ".join([_proc_name(proc)] + [_brief(a) for a in args]) + ")"
 
 
 def _trace_write(env, text):
-    """Write one trace line to `env`'s own display channel (the same
-    place display/print output goes -- console, GUI log, Jupyter cell,
-    redirect-output file), found on the global environment's trace_emit;
-    stderr if there isn't one."""
+    """Write one trace line wherever `env`'s display output goes (the
+    global environment's trace_emit), or to stderr if there's nowhere."""
     while env is not None:
         emit = env.trace_emit
         if emit is not None:
@@ -964,10 +763,8 @@ def _trace_write(env, text):
 
 
 def _trace_enter(proc, args, is_tail):
-    """Log the start of a call; a non-tail call also deepens the nesting.
-    A tail call takes over the frame of the call it replaces, so it is
-    indented at THAT call's depth (one level up from the current
-    nesting), the same depth the eventual return line will have."""
+    """Log the start of a call. A tail call takes the place of the call it
+    ends, so it's indented at that call's depth instead of one deeper."""
     global _call_depth
     indent = "  " * (max(0, _call_depth - 1) if is_tail else _call_depth)
     _trace_write(proc.env, "%s%s %s" % (
@@ -978,7 +775,7 @@ def _trace_enter(proc, args, is_tail):
 
 
 def _trace_leave(proc, args, tails, value):
-    """A call returned `value`: undo its nesting and, at level 2+, log it."""
+    """A call returned `value`: undo its indentation and, at level 2+, log it."""
     global _call_depth
     _call_depth = max(0, _call_depth - 1)
     if _verbose_level >= VERBOSE_ARGS:
@@ -992,9 +789,8 @@ def _trace_macro_expansion(macro, form, expansion):
 
 
 def _stack_calls(control_stack):
-    """Every call in progress on a control stack, innermost first, as
-    (proc, args, tails, rejected) -- rejected is always False here; see
-    _record_rejected_call."""
+    """Every call in progress on one control stack, innermost first, as
+    (proc, args, tails, rejected) tuples."""
     return [(f[1], f[2], f[3], False) for f in reversed(control_stack) if f[0] == 'CALL' or f[0] == 'MCALL']
 
 
@@ -1002,10 +798,9 @@ _active_stacks = []     # the control stack of every seval() currently running, 
 
 
 def _current_calls():
-    """Every call in progress right now, across ALL running evaluators
-    (a callback run by map, a macro transformer, eval, a breakpoint's own
-    debug REPL, ... each run in a nested seval with a stack of its own),
-    innermost first. What `(backtrace)` shows."""
+    """Every call in progress right now, innermost first -- across all the
+    evaluators running (a map callback, a macro transformer, eval, ... each
+    run in a nested seval with its own stack). This is what (backtrace) shows."""
     calls = []
     for stack in reversed(_active_stacks):
         calls.extend(_stack_calls(stack))
@@ -1013,11 +808,9 @@ def _current_calls():
 
 
 def _record_rejected_call(exc, proc, args):
-    """`proc` was called with `args` but binding them to its parameters
-    failed (wrong argument count, unknown keyword, ...) -- so the call
-    never got a frame of its own. Put it on exc's trace anyway, as its
-    innermost entry: the error is about THAT call, and the trace should
-    name the procedure that was called wrongly, not just its caller."""
+    """Add a call whose arguments couldn't be bound (wrong count, unknown
+    keyword, ...) to exc's trace. The error is about that call, but it never
+    got a frame of its own, so it wouldn't otherwise appear."""
     trace = getattr(exc, "lisp_trace", None)
     if trace is None:
         try:
@@ -1028,11 +821,9 @@ def _record_rejected_call(exc, proc, args):
 
 
 def _record_lisp_trace(exc, control_stack):
-    """Called as an error unwinds through a seval(): append that
-    evaluator's calls in progress to exc.lisp_trace. Nested evaluators
-    (a callback run by map, a macro transformer, eval, ...) each add
-    theirs as the error passes back out through them, so the finished list
-    runs innermost-first across all of them."""
+    """As an error passes out of a seval(), add that evaluator's calls in
+    progress to exc.lisp_trace. Nested evaluators each add theirs on the way
+    out, so the list ends up innermost-first."""
     trace = getattr(exc, "lisp_trace", None)
     if trace is None:
         try:
@@ -1054,11 +845,9 @@ def _trace_line(proc, args, tails, rejected=False):
 
 
 def format_call_stack(calls, title="Lisp traceback (most recent call last):"):
-    """Render calls (as _stack_calls / exc.lisp_trace give them, innermost
-    first) Python-style: outermost call first, so the most recent call
-    ends up right next to the error message printed after it. A very long
-    stack keeps its outermost and innermost frames and elides the middle.
-    Returns "" for an empty stack."""
+    """Format calls (innermost first) the way Python formats a traceback:
+    outermost first, so the most recent call is next to the error message.
+    A very long stack keeps its first and last frames. "" for no calls."""
     if not calls:
         return ""
     ordered = list(reversed(calls))
@@ -1074,15 +863,13 @@ def format_call_stack(calls, title="Lisp traceback (most recent call last):"):
 
 
 def format_lisp_traceback(exc):
-    """The Lisp call chain that led to `exc`, as text ("" if there was
-    none) -- see the section comment above."""
+    """The chain of Lisp calls that led to `exc`, as text ("" if none)."""
     return format_call_stack(getattr(exc, "lisp_trace", None) or [])
 
 
 def format_error_report(exc):
-    """A complete, human-readable report of an error: the call chain (if
-    any), then `Error: message`. What the REPL, batch mode, and the GUI
-    show."""
+    """The report shown for an error by the REPL, batch mode, and the GUI:
+    the chain of calls (if any), then `Error: message`."""
     return format_lisp_traceback(exc) + "Error: %s\n" % (exc,)
 
 
@@ -1090,40 +877,28 @@ def format_error_report(exc):
 # Evaluator -- explicit-stack version
 # ---------------------------------------------------------------------------
 #
-# Rather than have seval() call itself recursively to evaluate sub-
-# expressions (which would use up Python's own call stack), we keep an
-# explicit "control stack" of pending work and an explicit "value stack" of
-# results computed so far, and drive them with a plain while-loop.
+# seval() doesn't call itself to evaluate sub-expressions. It keeps an
+# explicit "control stack" of work still to do and a "value stack" of
+# results, and runs a loop, so how deeply Lisp code can recurse is limited
+# by memory rather than by Python's recursion limit. Each control frame is
+# a tuple starting with a tag:
 #
-# A control frame is a tuple whose first element is a tag string:
-#
-#   ('EVAL', expr, env)             -- evaluate expr in env
-#   ('APPLY', nargs)                -- apply a procedure to nargs arguments
-#   ('SEQ', remaining_exprs, env)   -- discard a value, then run the rest
-#                                      of a body/begin sequence
-#   ('IF', conseq, alt, env)        -- choose a branch once the test is in
-#   ('DEFINE', name, env)           -- finish a (define name expr)
-#   ('SET', name, env)              -- finish a (set! name expr)
-#   ('COND', clauses, env)          -- try the next cond clause
-#   ('COND_BRANCH', body, rest, env)-- act on a cond test's result
-#   ('AND', exprs, env)             -- evaluate remaining `and` operands
-#   ('AND_CHECK', rest, env)        -- act on one `and` operand's result
-#   ('OR', exprs, env)              -- evaluate remaining `or` operands
-#   ('OR_CHECK', rest, env)         -- act on one `or` operand's result
-#   ('WITH_STRUCT', body, env)      -- bind a just-evaluated struct's slots
-#                                      as variables, then run `body`
-#   ('CALL', proc, args, tails)     -- marks a user procedure's body: which
-#                                      procedure, its arguments, and how
-#                                      many tail calls it replaced. Popped
-#                                      on return; replaced by a tail call
-#                                      (see "Call tracing", above)
-#   ('MCALL', macro, exprs, 0)      -- the same for a macro transformer's
-#                                      body; never replaced, never logged
-#
-# Frames are pushed onto control_stack (a Python list) and popped off in
-# LIFO order, exactly mirroring what Python's own call stack would have
-# done -- except it is a plain list under our control, so its size is
-# limited only by memory, not by sys.getrecursionlimit().
+#   ('EVAL', expr, env)             evaluate expr in env
+#   ('APPLY', nargs)                apply a procedure to nargs arguments
+#   ('SEQ', remaining_exprs, env)   discard a value, then run the rest of a body
+#   ('IF', conseq, alt, env)        choose a branch once the test's value is in
+#   ('DEFINE', name, env)           finish a (define name expr)
+#   ('SET', name, env)              finish a (set! name expr)
+#   ('COND', clauses, env)          try the next cond clause
+#   ('COND_BRANCH', body, rest, env) act on a cond test's value
+#   ('AND', exprs, env)             evaluate the remaining `and` operands
+#   ('AND_CHECK', rest, env)        act on one `and` operand's value
+#   ('OR', exprs, env)              evaluate the remaining `or` operands
+#   ('OR_CHECK', rest, env)         act on one `or` operand's value
+#   ('WITH_STRUCT', body, env)      bind a struct's slots as variables, then run body
+#   ('CALL', proc, args, tails)     marks a user procedure's body, for traces; a
+#                                   tail call replaces it (see "Call tracing")
+#   ('MCALL', macro, exprs, 0)      the same for a macro's body; never replaced
 
 SPECIAL_FORMS = {
     "quote", "if", "define", "set!", "lambda",
@@ -1139,9 +914,9 @@ def is_true(x):
 
 
 def push_sequence(exprs, env, control_stack, value_stack):
-    """Push frames to evaluate a body (list of expressions) in order,
-    discarding all but the value of the last one. Used for `begin`,
-    procedure bodies, and cond/let clause bodies."""
+    """Push frames to evaluate a body (a list of expressions) in order,
+    keeping only the last value. Used for begin, procedure bodies, and the
+    bodies of cond clauses."""
     if not exprs:
         value_stack.append(NIL)
     elif len(exprs) == 1:
@@ -1186,11 +961,9 @@ def eval_or(exprs, env, control_stack, value_stack):
 
 
 def desugar_let(args):
-    """(let ((x1 v1) (x2 v2) ...) body...)
-       => ((lambda (x1 x2 ...) body...) v1 v2 ...)
-       where that lambda is really the internal %scope-lambda form: it
-       builds the very same Procedure `lambda` does, just flagged
-       is_scope so call traces don't mistake a `let` for a call."""
+    """(let ((x1 v1) (x2 v2)) body...)  =>  ((%scope-lambda (x1 x2) body...) v1 v2)
+    %scope-lambda makes the same Procedure `lambda` does, marked is_scope so
+    traces don't count a let as a call."""
     bindings = pairs_to_list(args.car)
     body = args.cdr  # already a Pair-list, reused as the lambda's body
     names = [b.car for b in bindings]
@@ -1200,12 +973,8 @@ def desugar_let(args):
 
 
 def desugar_let_star(args):
-    """(let* ((x1 v1) (x2 v2) ... (xn vn)) body...)
-       => (let ((x1 v1)) (let* ((x2 v2) ... (xn vn)) body...))
-       bottoming out at (let () body...).
-       Note: this builds a nested AST (plain data); it does not recurse in
-       Python to *evaluate* it -- that happens later, one level at a time,
-       through the ordinary explicit-stack loop."""
+    """(let* ((x1 v1) (x2 v2) ...) body...)
+      =>  (let ((x1 v1)) (let* ((x2 v2) ...) body...)), ending with (let () body...)."""
     bindings = pairs_to_list(args.car)
     body = args.cdr
     if not bindings:
@@ -1224,50 +993,28 @@ _gensym_counter = [0]
 
 
 def gensym(base="g"):
-    """A symbol that can't collide with any name the user actually typed
-    -- used internally by desugar_dolist() for its loop-helper name and
-    loop-state parameter (so a `dolist` body that happens to use a
-    similarly-named variable of its own can't be shadowed by accident),
-    and exposed directly to Lisp code as the `gensym` builtin -- the
-    standard tool for writing YOUR OWN hygienic macros by hand (build a
-    fresh, guaranteed-unique name for anything your macro's expansion
-    needs to bind internally, e.g. a temporary in a generated `let`, so
-    it can't capture a variable of the same name from the macro's
-    caller)."""
+    """A new symbol that can't collide with any name in the program (it starts
+    with %). dolist uses it for its loop variables, and Lisp code gets it as
+    (gensym), for macros that need temporary names."""
     _gensym_counter[0] += 1
     return Symbol("%%%s-%d" % (base, _gensym_counter[0]))
 
 
 def desugar_dolist(args):
-    """(dolist (var list-expr [result-expr]) body...)
-       Common-Lisp-style list iteration: evaluates list-expr ONCE, then
-       for each element in turn, binds var to it and evaluates body... for
-       side effects (display, vector-set!, etc.) -- like `map`, but for
-       when you want the looping and don't care about collecting a
-       result. Once the list is exhausted, var is (re)bound to '() and
-       result-expr is evaluated and returned (or '() itself, if no
-       result-expr was given).
+    """(dolist (var list-expr [result-expr]) body...) runs body once for each
+    element of the list, with var bound to that element, then returns
+    result-expr (or '()). It's rewritten into a local recursive loop:
 
-       Desugars entirely into forms the evaluator already knows about
-       (let, define, if, car/cdr/null?) -- built as a self-recursive
-       local helper, via an internal `define` inside a fresh (let () ...)
-       scope so the helper doesn't leak into the surrounding environment:
+        (let ()
+          (define (%dolist-loop-N %dolist-remaining-N)
+            (if (null? %dolist-remaining-N)
+                (let ((var '())) result-expr)
+                (let ((var (car %dolist-remaining-N)))
+                  body...
+                  (%dolist-loop-N (cdr %dolist-remaining-N)))))
+          (%dolist-loop-N list-expr))
 
-           (let ()
-             (define (%dolist-loop-N %dolist-remaining-N)
-               (if (null? %dolist-remaining-N)
-                   (let ((var '())) result-expr)
-                   (let ((var (car %dolist-remaining-N)))
-                     body...
-                     (%dolist-loop-N (cdr %dolist-remaining-N)))))
-             (%dolist-loop-N list-expr))
-
-       Because the recursive call is the LAST expression of the `let`
-       that binds var each iteration, it's in TAIL POSITION -- so it gets
-       exactly the same constant-stack-space handling seval() gives any
-       other tail call (see the module docstring), and dolist can walk
-       arbitrarily long lists without growing the control stack.
-       """
+    The recursive call is a tail call, so a long list doesn't grow the stack."""
     spec = pairs_to_list(args.car)
     if len(spec) not in (2, 3):
         raise LispError(
@@ -1306,27 +1053,13 @@ def desugar_dolist(args):
 
 
 def eval_quasiquote(expr, env, depth=1):
-    """Walk a quasiquoted template: `(unquote x)` is replaced by the
-    result of evaluating x in env (once we're back at the matching
-    quasiquote level, depth == 1); `(unquote-splicing x)` as a LIST
-    ELEMENT is replaced by splicing in the elements of x's (list) value;
-    everything else is copied as literal, unevaluated data -- standard
-    Scheme quasiquote semantics. A nested `quasiquote` increases depth
-    instead of being touched, so a nested unquote/unquote-splicing only
-    "sees through" to its own matching level (decrementing depth rather
-    than evaluating, until depth is back down to 1).
+    """The value of a quasiquoted template: (unquote x) is replaced by x's
+    value, (unquote-splicing x) inside a list by the elements of x's value,
+    and everything else is copied as-is. A nested quasiquote increases the
+    depth, and unquote only evaluates at depth 1 -- the same as Scheme.
 
-    This is plain Python recursion, not the seval() trampoline -- safe
-    here because the recursion depth is bounded by how deeply NESTED the
-    quasiquote TEMPLATE is in the source code (a fixed, small number),
-    never by any runtime data size, unlike a Lisp-level loop. Each
-    unquoted subexpression IS evaluated through the ordinary trampolined
-    seval(), same as any other embedded evaluation call in this file
-    (e.g. eval_cond's test expressions).
-
-    The reader never produces an improper (dotted) list, so this doesn't
-    need to handle a non-NIL, non-Pair tail.
-    """
+    This recursion is in Python, which is fine: its depth is how deeply the
+    template is nested in the source code, never the size of any data."""
     if isinstance(expr, Pair):
         head = expr.car
         if head == Symbol("unquote") and isinstance(expr.cdr, Pair) and expr.cdr.cdr is NIL:
@@ -1359,44 +1092,17 @@ def eval_quasiquote(expr, env, depth=1):
         return result
 
     if isinstance(expr, LispVector):
-        # .tolist(), not a bare iteration over expr.items: a vector
-        # literal with no unquotes in it (unusual, but legal) is
-        # otherwise already a compact numeric-dtype array by the time
-        # quasiquote sees it, and iterating that directly would hand
-        # each element to eval_quasiquote (and then back into
-        # LispVector(...), below) as a numpy scalar rather than a
-        # plain Python int/float -- which _infer_array's own
-        # isinstance(v, (int, float)) check doesn't recognize, so the
-        # rebuilt vector would fall back to a dtype=object array
-        # instead of picking a compact dtype again.
+        # .tolist() gives plain Python numbers rather than numpy scalars, so the
+        # rebuilt vector gets a compact dtype again.
         return LispVector([eval_quasiquote(x, env, depth) for x in expr.items.tolist()])
 
     return expr  # atoms (numbers, strings, symbols, booleans) are literal
 
 
 def expand_macro(macro, arg_exprs):
-    """Run a macro's transformer body with the call site's UNEVALUATED
-    argument expressions (Symbols, Pairs, literals -- plain source code
-    as data) bound to its parameters, and return the resulting
-    expression -- the "expansion" -- which the caller (seval's macro-call
-    check) pushes back onto the control stack to be evaluated exactly
-    once, in the CALLING environment, in place of the original call.
-
-    Structurally identical to apply_proc() for an ordinary Procedure,
-    except the "arguments" are unevaluated expressions rather than
-    values, and the result is code to be evaluated rather than a final
-    answer. Like apply_proc(), this calls back into the evaluator via an
-    ordinary (recursive) Python function call rather than the trampoline,
-    so a macro transformer that itself did deep non-tail recursion while
-    BUILDING its expansion would be bounded by Python's recursion limit
-    -- the same documented limitation apply/map/filter/reduce/vector-map
-    already have (see the module docstring). In practice this essentially
-    never matters: a macro transformer builds a piece of code, it doesn't
-    loop over runtime data. The code it PRODUCES, once pushed back onto
-    the control stack for evaluation, gets the evaluator's usual fully
-    tail-call-optimized treatment -- including a proper tail call if the
-    macro expands to one (e.g. a macro-defined looping construct).
-    """
+    """Run a macro's body with the call's unevaluated argument expressions
+    bound to its parameters, and return the expansion (the new code). The
+    caller then evaluates the expansion in place of the macro call."""
     try:
         new_env = Env(macro.params, arg_exprs, macro.env, rest_param=macro.rest_param,
                       keyword_specs=macro.keyword_specs, default_eval=raw_default)
@@ -1416,28 +1122,16 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         value_stack.append(eval_quasiquote(args.car, env))
 
     elif op == "breakpoint":
-        # A special form (not a function/macro) specifically so it sees
-        # `env` -- the REAL lexical environment at the call site (e.g. a
-        # paused function's own parameters) -- see debug_repl()'s
-        # docstring. A function/macro couldn't do this: a function only
-        # ever gets already-evaluated VALUES, and a macro's transformer
-        # runs in ITS OWN defining environment, not the caller's.
-        # An optional argument -- e.g. (breakpoint "entering f...") or
-        # (breakpoint (list "x=" x)) -- is evaluated in that SAME
-        # caller's environment and printed before the REPL opens, so a
-        # breakpoint hit deep in a loop or recursion can identify itself
-        # (or show a value) without needing its own (display ...) call
-        # right before it.
+        # A special form so it sees the caller's actual environment (a paused
+        # function's own variables) -- a function or macro can't. An optional
+        # argument is evaluated there and printed first, to say where we stopped.
         if args is not NIL:
             print(to_display_string(seval(args.car, env)))
         debug_repl(env, label="breakpoint")
         value_stack.append(NIL)
 
     elif op == "defmacro":
-        # (defmacro name (params...) body...) -- name and params are
-        # never evaluated, exactly like `lambda`'s parameter list. params
-        # may be fixed (a b), dotted/variadic (a b . rest), or a single
-        # bare symbol (fully variadic) -- see parse_params().
+        # (defmacro name params body...) -- params as in lambda (see parse_params).
         name = args.car
         fixed, rest, keyword_specs = parse_params(args.cdr.car)
         body = pairs_to_list(args.cdr.cdr)
@@ -1454,9 +1148,7 @@ def eval_special_form(op, args, env, control_stack, value_stack):
     elif op == "define":
         target = args.car
         if isinstance(target, Pair):
-            # (define (name params...) body...) -- no evaluation needed.
-            # params may be fixed, dotted/variadic, or (name . rest) for
-            # a fully-variadic function -- see parse_params().
+            # (define (name params...) body...) -- params as in lambda.
             name = target.car
             fixed, rest, keyword_specs = parse_params(target.cdr)
             body = pairs_to_list(args.cdr)
@@ -1474,11 +1166,8 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         control_stack.append(('EVAL', args.cdr.car, env))
 
     elif op == "lambda" or op == "%scope-lambda":
-        # params may be fixed (a b), dotted/variadic (a b . rest), or a
-        # single bare symbol (fully variadic) -- see parse_params().
-        # %scope-lambda is what let/let*/dolist desugar into (see
-        # desugar_let): the very same Procedure, flagged is_scope so call
-        # traces don't count it as a call.
+        # See parse_params() for the forms params can take. %scope-lambda is what
+        # let/let*/dolist turn into: the same Procedure, marked is_scope.
         fixed, rest, keyword_specs = parse_params(args.car)
         body = pairs_to_list(args.cdr)
         value_stack.append(Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs,
@@ -1506,43 +1195,15 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         eval_or(pairs_to_list(args), env, control_stack, value_stack)
 
     elif op == "defstruct":
-        # (defstruct name slot...), or, to inherit from an existing
-        # struct type, (defstruct (name (:include parent)) slot...) --
-        # exactly CL's defstruct name-and-options / :include syntax
-        # (only :include is supported here; CL has several other
-        # options this doesn't need). Each slot is a bare symbol
-        # (default value '()) or (slot-name default-expr), exactly CL's
-        # slot-spec syntax (e.g. (visible #t)). Never evaluated itself,
-        # like defmacro's params. Builds four things and binds them into
-        # env, exactly as `define` binds a single name:
-        #   make-<name>   -- an ordinary &key Procedure (see
-        #                     parse_params()/Env.__init__) whose body calls
-        #                     the %make-struct builtin with the struct
-        #                     type (spliced in directly as a literal --
-        #                     any non-Pair/non-Symbol value is self-
-        #                     evaluating, see seval()'s EVAL case) and a
-        #                     plist built from the bound slot params
-        #                     (ALL of them -- inherited and own alike;
-        #                     LispStructType.slots is already the flat,
-        #                     merged list, see its own docstring). So
-        #                     struct construction is just an application
-        #                     of the general keyword-argument machinery,
-        #                     not a separate code path.
-        #   <name>-<slot>       -- accessor, one per slot in the FULL
-        #                          (inherited + own) slot list
-        #   <name>-<slot>-set!  -- setter (mutable slots; matches this
-        #                          codebase's vector-set!-style naming,
-        #                          not CL's setf)
-        #   <name>?             -- predicate
-        # Every one of the four accepts not just an instance of exactly
-        # this type, but also an instance of any type that (:include)s
-        # it, directly or transitively (LispStructType.is_a) -- so a
-        # parent's own accessor works on a child instance too, matching
-        # CL's struct substructure relationship: (parent-x child-instance)
-        # and (child-x child-instance) read the very same slot. A NEWLY
-        # child-only slot's accessor, naturally, still only accepts an
-        # instance of the child (or a further descendant) -- a plain
-        # parent instance was never given a value for it.
+        # (defstruct name slot...) or (defstruct (name (:include parent)) slot...).
+        # Each slot is a symbol (default '()) or (slot default-expr). Defines:
+        #   make-<name>          a constructor taking one keyword argument per slot --
+        #                        an ordinary &key Procedure whose body calls %make-struct
+        #   <name>-<slot>        an accessor for each slot, inherited slots included
+        #   <name>-<slot>-set!   a setter for each slot
+        #   <name>?              a predicate
+        #   copy-<name>          a shallow copy
+        # Each accepts an instance of this type or of any type that includes it.
         name_form = args.car
         parent_type = None
         own_slots = []
@@ -1559,14 +1220,8 @@ def eval_special_form(op, args, env, control_stack, value_stack):
                         raise LispError(
                             "defstruct: :include parent %r is not a known struct type "
                             "(define it with defstruct first)" % (parent_name,))
-                    # (:include parent (slot new-default) ...) -- CL lets you
-                    # override an inherited slot's default right here, as an
-                    # alternative to just redeclaring that slot name in the
-                    # main slot list below (which works exactly the same way,
-                    # via LispStructType._merge_slots -- both end up in
-                    # own_slots, and a name in there always overrides that
-                    # inherited slot's default in place rather than
-                    # duplicating it).
+                    # (:include parent (slot new-default) ...) changes an inherited slot's
+                    # default, the same as redeclaring that slot in the main slot list.
                     override_p = opt.cdr.cdr
                     while isinstance(override_p, Pair):
                         override_spec = override_p.car
@@ -1628,14 +1283,8 @@ def eval_special_form(op, args, env, control_stack, value_stack):
             lambda s, t=struct_type: isinstance(s, LispStruct) and s.struct_type.is_a(t))
 
         def copier(s, t=struct_type):
-            # A shallow copy (a new LispStruct, a fresh values dict, but
-            # the slot VALUES themselves aren't themselves copied --
-            # matching CL's copy-<name>) -- accepts a descendant
-            # instance too (same is_a rule as every other accessor
-            # here), and copies using the INSTANCE's own actual type
-            # (s.struct_type), not necessarily `t` itself, so
-            # copy-point on a point-3d instance correctly produces
-            # another point-3d, not a point missing its z.
+            # A shallow copy, of the instance's own type -- so copying a child
+            # instance through a parent's copy-<name> keeps its extra slots.
             if not (isinstance(s, LispStruct) and s.struct_type.is_a(t)):
                 raise LispError("copy-%s: not a %s: %r" % (type_name, type_name, s))
             return LispStruct(s.struct_type, dict(s.values))
@@ -1644,68 +1293,31 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         value_stack.append(type_name)
 
     elif op == "backtrace":
-        # (backtrace) -- print the CURRENT chain of procedure calls, oldest
-        # first, exactly as an error's traceback would (see
-        # format_call_stack), without needing an error. Covers every running
-        # evaluator (see _current_calls), so it works inside a callback or a
-        # breakpoint too. (A special form only so it needs no operator
-        # lookup -- and so a user procedure named `backtrace` can't hide it.)
+        # (backtrace) prints the current chain of calls, as an error report would.
+        # A special form so a user procedure named backtrace can't hide it.
         text = format_call_stack(_current_calls(), "Lisp call stack (most recent call last):")
         _trace_write(env, (text or "Lisp call stack: (empty -- not inside any procedure call)\n").rstrip("\n"))
         value_stack.append(NIL)
 
     elif op == "with-struct":
-        # (with-struct struct-expr body...) -- evaluate struct-expr ONCE;
-        # it must yield a struct instance of ANY defstruct type. Then bind
-        # EVERY one of that instance's slot names, as a plain variable,
-        # to the slot's current value -- in a fresh child scope, exactly
-        # as `let` would -- and run body... there (implicit begin, like
-        # let's), returning the last body value.
-        #
-        # A special form rather than a defmacro-defined macro, for the same
-        # reason `breakpoint` is one: the names to bind depend on the
-        # struct's RUNTIME VALUE (its type's slot list), which a macro
-        # transformer can never see -- it only gets the call site's
-        # unevaluated source (`p`, `(make-point ...)`, whatever), and runs
-        # in its own defining environment rather than the caller's, so
-        # it couldn't even evaluate that source to peek at the value when
-        # the struct lives in a local variable. Here the struct is
-        # evaluated normally in the caller's env (pushed as an ordinary
-        # EVAL frame), and the WITH_STRUCT frame, in seval(), does the
-        # binding once its value is on the value stack.
+        # (with-struct struct-expr body...) binds each slot of the struct as a
+        # variable, in a new scope, then runs body. A special form rather than a
+        # macro because which names to bind depends on the struct's type, which
+        # isn't known until struct-expr is evaluated; the WITH_STRUCT frame does
+        # the binding once its value is ready.
         if not isinstance(args, Pair):
             raise LispError("with-struct: expected (with-struct struct-expr body...)")
         control_stack.append(('WITH_STRUCT', pairs_to_list(args.cdr), env))
         control_stack.append(('EVAL', args.car, env))
 
     elif op == "catch-error":
-        # (catch-error protected-expr (var) handler-body...) -- evaluate
-        # protected-expr; if it raises ANY exception (this interpreter's
-        # own LispError, or one of the handful of builtins documented as
-        # raising a raw Python exception instead -- e.g. sqrt's
-        # ValueError for a negative argument, vector-ref's out-of-range
-        # IndexError), bind `var` to its message (a string) in a fresh
-        # child scope and evaluate handler-body there instead (implicit
-        # begin, like dolist's body), whose value becomes catch-error's
-        # own. If protected-expr succeeds, its value is returned
-        # directly and handler-body never runs. Deliberately catches
-        # Python's broad `Exception` rather than just LispError, since
-        # from Lisp code's perspective both kinds are just "something
-        # went wrong in there" -- but NOT the handful of exception types
-        # Python itself doesn't derive from Exception (KeyboardInterrupt,
-        # SystemExit, RecursionError, MemoryError, ...), which keep
-        # propagating unchanged, same as if this weren't here.
-        #
-        # Needs a real Python try/except boundary, which nothing else in
-        # this trampoline-based evaluator has -- control_stack frames
-        # can't "catch" an exception raised while a LATER frame runs, so
-        # this calls seval() directly (a nested, non-tail call), exactly
-        # the same pattern the eval/apply/load builtins already use to
-        # run Lisp code from inside Python code. One real consequence: a
-        # tail call made from inside protected-expr is tail-optimized
-        # only up to the boundary of THIS nested seval() call, not all
-        # the way out through catch-error itself -- the same limitation
-        # already true of a callback invoked from map/filter/vector-map.
+        # (catch-error protected-expr (var) handler-body...): if evaluating
+        # protected-expr raises an error -- a LispError or a Python exception from a
+        # builtin, such as sqrt's ValueError -- bind var to the message and return
+        # handler-body's value instead. (KeyboardInterrupt and the like still
+        # propagate.) This needs a real Python try/except, so protected-expr runs in
+        # a nested seval(); tail calls inside it are optimized only up to that
+        # boundary.
         protected_expr = args.car
         var_name = args.cdr.car.car
         handler_body = pairs_to_list(args.cdr.cdr)
@@ -1722,18 +1334,15 @@ def eval_special_form(op, args, env, control_stack, value_stack):
 
 
 def seval(expr, env, call=None):
-    """Evaluate a Lisp expression in an environment, using an explicit
-    stack machine rather than Python recursion.
+    """Evaluate a Lisp expression in an environment -- with an explicit stack
+    rather than Python recursion (see the comment above SPECIAL_FORMS).
 
-    call (optional): (procedure_or_macro, args) -- what is being run by
-    this evaluation, when it isn't just a bare expression: apply_proc()
-    (a callback run by map/filter/...) and expand_macro() pass it so the
-    procedure or macro transformer gets a call frame of its own, exactly
-    as one called from Lisp code does, and so appears in stack traces and
-    verbose-mode traces. See "Call tracing" above.
+    call (optional): (procedure_or_macro, args) when this evaluation is
+    running a procedure or macro body -- apply_proc() and expand_macro() pass
+    it so that call gets a frame of its own and shows up in traces.
 
-    If an error escapes, the calls in progress on this evaluator's stack
-    are recorded on the exception (exc.lisp_trace) on its way out."""
+    If an error escapes, the calls in progress are recorded on the exception
+    (exc.lisp_trace) on its way out."""
     global _call_depth
     control_stack = [('EVAL', expr, env)]
     value_stack = []
@@ -1776,13 +1385,9 @@ def _run_eval_loop(control_stack, value_stack):
                 if isinstance(op, Symbol) and op in SPECIAL_FORMS:
                     eval_special_form(op, args, cur_env, control_stack, value_stack)
                     continue
-                # Macro call? Check before evaluating anything -- a macro
-                # gets its arguments as raw, UNEVALUATED expressions, not
-                # values. Pushing the expansion as a plain EVAL frame
-                # (rather than recursively evaluating it right here) means
-                # a macro call in TAIL POSITION still gets the same
-                # constant-stack-space handling as any other tail call --
-                # see expand_macro()'s docstring.
+                # A macro gets its arguments unevaluated, so check for one before
+                # evaluating anything. Its expansion is pushed as an ordinary EVAL frame,
+                # so a macro call in tail position is still a proper tail call.
                 macro = cur_env.lookup_or_none(op) if isinstance(op, Symbol) else None
                 if isinstance(macro, Macro):
                     expansion = expand_macro(macro, pairs_to_list(args))
@@ -1790,11 +1395,8 @@ def _run_eval_loop(control_stack, value_stack):
                         _trace_macro_expansion(macro, x, expansion)
                     control_stack.append(('EVAL', expansion, cur_env))
                 else:
-                    # Procedure application: evaluate operator, then each
-                    # argument left-to-right, then apply. We push APPLY
-                    # first (so it runs last), then the arguments in
-                    # reverse (so they end up evaluated in order), then
-                    # the operator last (so it is evaluated first).
+                    # A procedure call: push APPLY first (so it runs last), then the
+                    # arguments in reverse, then the operator (so it's evaluated first).
                     arg_list = pairs_to_list(args)
                     control_stack.append(('APPLY', len(arg_list)))
                     for a in reversed(arg_list):
@@ -1815,12 +1417,10 @@ def _run_eval_loop(control_stack, value_stack):
                         _record_rejected_call(exc, proc, arg_values)
                     raise
                 if not proc.is_scope:
-                    # Leave a CALL frame under the body, naming this call for
-                    # stack traces (see "Call tracing" above). If the top of
-                    # the stack is already a CALL frame, nothing else was
-                    # waiting on the body's value: this is a TAIL call, so
-                    # the new frame REPLACES that one -- keeping tail calls
-                    # constant-space -- and just counts the call it absorbed.
+                    # Leave a CALL frame under the body, naming this call for traces. If
+                    # the top of the stack is already a CALL frame, nothing is waiting for
+                    # the caller's value: this is a TAIL call, so it replaces that frame
+                    # (keeping tail calls constant-space) and counts the call it absorbed.
                     tails = 0
                     if control_stack and control_stack[-1][0] == 'CALL':
                         tails = control_stack.pop()[3] + 1
@@ -1836,9 +1436,7 @@ def _run_eval_loop(control_stack, value_stack):
                 raise LispError("in tag APPLY: not a procedure: %r" % (proc,))
 
         elif tag == 'CALL':
-            # A procedure's body just finished; its value is on top of the
-            # value stack. (Only a normal return gets here: a tail call
-            # replaced this frame instead of ever popping it.)
+            # A procedure's body finished normally; its value is on the value stack.
             if _verbose_level:
                 _trace_leave(frame[1], frame[2], frame[3], value_stack[-1])
 
@@ -1908,9 +1506,8 @@ def _run_eval_loop(control_stack, value_stack):
             s = value_stack.pop()
             if not isinstance(s, LispStruct):
                 raise LispError("with-struct: not a struct: %r" % (s,))
-            # The instance's own (flattened, inherited-slots-included)
-            # type decides which names get bound -- so this works for any
-            # struct, including a subtype instance seen through a parent.
+            # The instance's own type decides which names are bound, so a child
+            # instance gets its extra slots too.
             struct_env = Env(outer=outer_env)
             for slot_name, _default in s.struct_type.slots:
                 struct_env[slot_name] = s.values[slot_name]
@@ -1925,17 +1522,14 @@ def _run_eval_loop(control_stack, value_stack):
 
 
 def eval_body(body, env, call=None):
-    """Evaluate a list of expressions in env, returning the last value.
-    Used by apply_proc to call back into a user-defined Procedure from a
-    built-in higher-order function like `map` or `vector-map`. `call` is
-    seval()'s: what is being run, for stack traces."""
+    """Evaluate a list of expressions in env and return the last value."""
     return seval(Pair(Symbol("begin"), list_to_pairs(body)), env, call)
 
 
 def apply_proc(proc, args):
-    """Call a procedure -- either a user-defined Procedure (closure) or a
-    built-in Python callable -- with a list of already-evaluated args.
-    Used by higher-order builtins (map, filter, reduce, apply, vector-map)."""
+    """Call a procedure -- a Lisp Procedure or a Python builtin -- with a
+    list of already-evaluated arguments. Used by builtins that take a
+    procedure argument (map, filter, sort, apply, ...)."""
     if isinstance(proc, Procedure):
         try:
             new_env = Env(proc.params, args, proc.env, rest_param=proc.rest_param,
@@ -1960,16 +1554,15 @@ def check_numbers(args, name):
 
 
 def check_vector_elements(args, name):
-    """Vectors may hold numbers and/or LispDate values (but not booleans,
-    strings, pairs, etc.)."""
+    """Vectors hold numbers and/or dates -- not booleans, strings, or lists."""
     for a in args:
         if isinstance(a, bool) or not isinstance(a, (int, float, LispDate)):
             raise LispError("%s: not a number or date: %r" % (name, a))
 
 
 def numeric_value(v):
-    """Convert a vector element to a plain number for arithmetic: dates
-    become their ordinal day count, numbers pass through unchanged."""
+    """A vector element as a plain number: a date becomes its day number
+    (date.toordinal()); a number is returned unchanged."""
     if isinstance(v, LispDate):
         return v.date.toordinal()
     return v
@@ -1994,8 +1587,8 @@ def to_display_string(x):
 
 
 def to_string(x):
-    """Render a value the way the REPL would print it (strings quoted).
-    Note: iterative rather than recursive, so very long lists print fine."""
+    """A value as the REPL prints it (strings in quotes). Loops rather than
+    recursing along a list, so a very long list prints fine."""
     if x is True:
         return "#t"
     if x is False:
@@ -2007,17 +1600,8 @@ def to_string(x):
     if isinstance(x, LispDate):
         return x.date.isoformat()
     if isinstance(x, LispVector):
-        # Deliberately NOT x.items.tolist() -- str() on a numpy float32
-        # scalar prints the shortest decimal that round-trips to that
-        # SAME float32 value (e.g. "0.964"), which is what a value
-        # stored in a float32-backed vector actually IS; converting to
-        # a native Python float first (.item()/.tolist()) promotes to
-        # float64 precision and would print the long, noisy float64
-        # value closest to that float32 bit pattern instead (e.g.
-        # "0.9639999866485596") -- numerically consistent, but a much
-        # worse READING experience for no benefit, since to_string's
-        # final `return str(x)` fallback (below) handles a numpy scalar
-        # just fine without hitting any of the isinstance checks above it.
+        # Not .tolist(): str() of a float32 prints the short value it actually
+        # holds (0.964), while a Python float would print 0.9639999866485596.
         return "#(" + " ".join(to_string(item) for item in x.items) + ")"
     if isinstance(x, LispStruct):
         parts = ["%s %s" % (Keyword(":" + slot_name), to_string(x.values.get(slot_name)))
@@ -2036,32 +1620,14 @@ def to_string(x):
 
 
 def pretty_print_string(expr):
-    """Render expr (any Lisp value or expression -- a Pair/list, vector,
-    or atom) as a deliberately VERBOSE, multi-line string: every list
-    element goes on its own line, and a list's closing parenthesis is
-    printed ALONE on its own line, directly below the COLUMN of its
-    matching opening parenthesis. This isn't meant to be attractive for
-    everyday reading -- to_string()/to_display_string() already do that
-    -- it's meant to make a mismatched or misplaced parenthesis
-    impossible to miss: scan straight down any closing paren's column and
-    you can see exactly which opening paren it closes, and whether
-    that's the one you meant.
+    """A value or expression as a deliberately spread-out, multi-line string:
+    each list element on its own line, and each closing parenthesis on its
+    own line directly below its opening one. Not meant to be pretty -- it
+    makes a misplaced parenthesis easy to spot.
 
-    Also used (via reconstruct_procedure_source() / reconstruct_macro_source())
-    to display a Procedure's or Macro's definition. That's what makes
-    `pretty-print-function` possible: a Procedure/Macro stores its
-    already-PARSED parameter list and body (the same Pairs/Symbols/
-    literals seval() walks), which is enough to rebuild a semantically
-    faithful, canonically-formatted (define ...) / (lambda ...) /
-    (defmacro ...) form -- but NOT a byte-exact copy of what was
-    originally typed, since the reader discards comments and doesn't
-    remember the original whitespace/formatting.
-
-    Plain Python recursion, like eval_quasiquote (not the seval()
-    trampoline) -- safe here because recursion depth is bounded by how
-    deeply NESTED the EXPRESSION is (fixed by the source code), never by
-    runtime data size.
-    """
+    Also used to show a procedure's or macro's definition (see
+    reconstruct_procedure_source), rebuilt from its parsed parameters and
+    body -- so comments and the original formatting aren't kept."""
     lines = ['']
 
     def col():
@@ -2110,11 +1676,8 @@ def pretty_print_string(expr):
 
 
 def _param_spec_from(params, rest_param, keyword_specs=()):
-    """Rebuild the SOURCE-SYNTAX parameter spec (proper list, dotted
-    list, bare symbol, or &key list) that parse_params() would have
-    parsed INTO (params, rest_param, keyword_specs) -- the exact inverse
-    of that function. Used by reconstruct_procedure_source()/
-    reconstruct_macro_source()."""
+    """Rebuild the source form of a parameter list from (params, rest_param,
+    keyword_specs) -- the reverse of parse_params()."""
     if keyword_specs:
         key_items = [Symbol("&key")]
         for name, default_expr in keyword_specs:
@@ -2131,10 +1694,8 @@ def _param_spec_from(params, rest_param, keyword_specs=()):
 
 
 def reconstruct_procedure_source(proc, name=None):
-    """Rebuild the (lambda (params...) body...) -- or, if `name` is
-    given, (define (name params...) body...) -- source form for a
-    Procedure. See pretty_print_string()'s docstring for exactly what
-    "rebuild" does and doesn't preserve."""
+    """(lambda (params...) body...) for a Procedure -- or, given a name,
+    (define (name params...) body...)."""
     param_spec = _param_spec_from(proc.params, proc.rest_param, proc.keyword_specs)
     body = list_to_pairs(proc.body)
     if name is not None:
@@ -2143,9 +1704,8 @@ def reconstruct_procedure_source(proc, name=None):
 
 
 def reconstruct_macro_source(macro, name=None):
-    """Rebuild the (defmacro name (params...) body...) source form for a
-    Macro (name defaults to a placeholder if not given, since a Macro
-    value on its own doesn't carry the name it may be bound under)."""
+    """(defmacro name (params...) body...) for a Macro. A Macro doesn't know
+    the name it's bound to, so pass it in."""
     param_spec = _param_spec_from(macro.params, macro.rest_param, macro.keyword_specs)
     body = list_to_pairs(macro.body)
     return Pair(Symbol("defmacro"),
@@ -2158,26 +1718,14 @@ def reconstruct_macro_source(macro, name=None):
 # ---------------------------------------------------------------------------
 
 def debug_repl(env, label="debug"):
-    """A nested REPL used by the `breakpoint` special form and
-    `debug-function`: evaluates whatever the user types directly in
-    `env` -- the ACTUAL lexical environment active at the point
-    execution paused (e.g. a paused function's own parameters are
-    variables in this env, inspectable AND, via set!, modifiable, exactly
-    as they exist at that point in the running program). Type
-    `(continue)` (or `(exit)`, or press Ctrl-D) to resume normal
-    execution from where it paused.
+    """A nested REPL, used by (breakpoint) and debug-function. What you type is
+    evaluated in `env` -- the actual environment where the program paused,
+    so you can inspect, and set!, the paused function's own variables. Type
+    (continue), (exit), or Ctrl-D to resume. (backtrace) shows how the
+    program got here.
 
-    CONSOLE/BATCH MODE ONLY: this reads from the real console via
-    input(), the same as the top-level REPL. Triggering a breakpoint from
-    the GUI will try to read from whatever stdin the GUI process has
-    (usually none, or the terminal it was launched from) rather than
-    opening any kind of dialog in the GUI window itself -- there's no
-    GUI-integrated debugger here, just this console one.
-
-    `(backtrace)` typed at this prompt shows the paused program's chain of
-    calls: the paused evaluators are still running (registered in
-    _active_stacks) underneath the one this REPL evaluates your input with.
-    """
+    It reads from the console with input(), even when the GUI is running;
+    there's no GUI debugger."""
     print("--- %s: entering debug REPL (type (continue) or press Ctrl-D to resume) ---" % label)
     buffer = ""
     while True:

@@ -34,11 +34,8 @@ except ImportError:
 if PYQT_AVAILABLE:
 
     class ChartCanvas(FigureCanvasQTAgg):
-        """Renders a chart spec (see build_chart_spec): one X vector against
-        one or more Y vectors, each with its own marker symbol and
-        optionally connected by line segments, plus an optional dashed
-        regression line/curve. Drawing itself is shared with the headless
-        save-chart path via draw_chart_on_axes()."""
+        """Shows a chart spec (see lisp_charts.build_chart_spec) in the Chart tab,
+        drawn by the same draw_chart_on_axes() that save-chart uses."""
 
         def __init__(self):
             figure = Figure(figsize=(6, 5))
@@ -80,13 +77,7 @@ if PYQT_AVAILABLE:
             col = self.columns[index.column()]
             row = index.row()
             if row < len(col):
-                # Values arriving here (via display-columns) are already
-                # rendered strings -- see format_column_value() and the
-                # *column-number-format* global -- so this is just a
-                # pass-through; right-aligning them (above) in the
-                # monospace font the GUI sets on this table (see
-                # LispMainWindow.__init__) is what actually makes a
-                # column of numbers line up on its ones place.
+                # The values are already formatted strings (see display-columns).
                 return str(col[row])
             return ""
 
@@ -222,9 +213,7 @@ if PYQT_AVAILABLE:
             self.table_model = VectorTableModel()
             self.table_view = QTableView()
             self.table_view.setModel(self.table_model)
-            # Fixed-width font so a column of right-aligned numbers (see
-            # VectorTableModel.data()'s TextAlignmentRole) lines up
-            # vertically on its ones place, not just left-to-right.
+            # A fixed-width font, so right-aligned numbers line up by digit.
             self.table_view.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
             self.tabs.addTab(self.table_view, "Columns")
 

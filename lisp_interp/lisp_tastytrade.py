@@ -123,23 +123,12 @@ async def _tasty_maybe_await(value):
 
 
 def _run_async(coro):
-    """Run an asyncio coroutine to completion and return its result --
-    works whether or not the calling thread already has its OWN running
-    event loop. With no loop already running (a plain script, the
-    console REPL, the GUI), this is exactly asyncio.run(coro). With one
-    already running -- e.g. inside a Jupyter/IPython kernel, which runs
-    one continuously; found by hitting it directly, calling any
-    tastytrade-*/sofr-calibration-data builtin from a notebook cell blew
-    up with "asyncio.run() cannot be called from a running event loop"
-    -- asyncio.run() would raise exactly that, so this runs the
-    coroutine to completion on a SEPARATE thread with its own fresh
-    event loop instead, and blocks the calling thread until it's done.
-    Either way, every caller of every _tasty_*_async coroutine in this
-    file just gets a plain return value back, synchronously -- no
-    awaiting, no nest_asyncio monkeypatching needed, no visible
-    difference depending on which context it's called from. See the
-    identical helper in term_structure/sofr_market_data.py, needed for
-    the same reason for fetch_sofr_calibration_data()."""
+    """Run an asyncio coroutine to completion and return its result, whether
+    or not this thread already has a running event loop. Normally that's
+    just asyncio.run(coro). But a Jupyter kernel keeps a loop running, and
+    asyncio.run() refuses to run inside one, so in that case the coroutine
+    runs on a separate thread with its own loop while this one waits.
+    term_structure/sofr_market_data.py has the same helper."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -158,19 +147,11 @@ def _tasty_root(product, name):
 
 
 def _tasty_resolve_symbol(symbol):
-    """Classifies a symbol for tastytrade-option-chain and returns
-    (kind, resolved) where kind is "future" or "equity":
-
-      - Already starts with "/" (tastytrade's own convention for
-        futures) -> ("future", symbol as given). Works for ANY futures
-        root, not just ones in TASTY_PRODUCTS -- no translation needed,
-        per tastytrade's own convention.
-      - A known short code from TASTY_PRODUCTS (e.g. "CL") -> ("future",
-        "/CL"), for backward compatibility with existing scripts that
-        pass the short code.
-      - Anything else (e.g. "AAPL", "SPY") -> ("equity", symbol
-        upper-cased), fetched via the equity option-chain endpoint.
-    """
+    """Classify a symbol for tastytrade-option-chain, returning
+    (kind, resolved) with kind "future" or "equity":
+      "/CL" (starts with /)           -> ("future", "/CL"), for any futures root
+      "CL" (a TASTY_PRODUCTS code)    -> ("future", "/CL")
+      anything else, e.g. "AAPL"      -> ("equity", "AAPL")"""
     s = str(symbol).strip()
     if s.startswith("/"):
         return ("future", s)
@@ -241,10 +222,9 @@ def _tasty_days_to_expiration(opt, exp_date, today):
 
 
 def _tasty_parse_delivery_month(underlying_symbol, reference_date=None):
-    """Parse a CME futures trading symbol (single-digit year, e.g.
-    '/CLZ6') into its delivery month (first-of-month date). Returns None
-    if unparseable. See tasty_api/tastytrade_source.py's
-    parse_delivery_month for the full rationale."""
+    """The delivery month (as a first-of-month date) of a CME futures symbol
+    such as '/CLZ6', or None if it can't be parsed. See parse_delivery_month
+    in tasty_api/tastytrade_source.py for how the one-digit year is read."""
     if not underlying_symbol:
         return None
     sym = underlying_symbol.lstrip("/")
@@ -326,15 +306,10 @@ async def _tasty_futures_curve_async(credentials_path, product, n_months):
 
 def tastytrade_futures_curve_fn(credentials_path, product, n_months=18):
     """(tastytrade-futures-curve credentials-path product [n-months]) ->
-    (cons delivery-dates-vector last-prices-vector), one entry per upcoming
-    contract month that actually has a price (guessed contract months that
-    don't exist for this product -- e.g. non-quarterly months for ES/NQ/ZN
-    -- are silently skipped). `product` is one of "CL", "MCL", "ES", "NQ",
-    "SR3", "ZN", "ZQ". Feed the result straight into plot-xy,
-    linear-regression, spline-regression, etc.
-    See also tastytrade-futures-curve-rows, which additionally includes
-    each contract's symbol and days-to-delivery -- needed by
-    tastytrade-curve-fit and tastytrade-leg-carry."""
+    (cons delivery-dates-vector last-prices-vector), one entry for each
+    upcoming contract month that has a price. `product` is a code from
+    (tastytrade-products), e.g. "CL". For the contract symbols and days to
+    delivery too, use tastytrade-futures-curve-rows."""
     rows = _run_async(_tasty_futures_curve_async(credentials_path, product, int(n_months)))
     dates = [LispDate(d.year, d.month, d.day) for d, _sym, _dte, _price in rows]
     prices = [price for _d, _sym, _dte, price in rows]
@@ -342,15 +317,11 @@ def tastytrade_futures_curve_fn(credentials_path, product, n_months=18):
 
 
 def tastytrade_futures_curve_rows_fn(credentials_path, product, n_months=18):
-    """(tastytrade-futures-curve-rows credentials-path product [n-months])
-    -> a Lisp list of rows, each row a 4-element list:
-       (delivery-month futures-symbol days-to-delivery last-price)
-    one per upcoming contract month that actually has a price (same
-    coverage as tastytrade-futures-curve, just with the extra fields
-    tastytrade-curve-fit and tastytrade-leg-carry need). Fetch once with
-    this, then call either analysis function as many times as you like
-    with different rate/threshold assumptions, with no re-fetch needed --
-    they're pure functions over the row data, no networking."""
+    """(tastytrade-futures-curve-rows credentials-path product [n-months]) ->
+    a list of rows (delivery-month futures-symbol days-to-delivery last-price),
+    one per upcoming contract month with a price. This is the input for
+    tastytrade-curve-fit and tastytrade-leg-carry, which don't use the
+    network -- so fetch once, then analyze as often as you like."""
     rows = _run_async(_tasty_futures_curve_async(credentials_path, product, int(n_months)))
     return list_to_pairs([
         list_to_pairs([
@@ -373,18 +344,14 @@ def tasty_row_field(row, index):
 
 def tastytrade_curve_fit_fn(curve_rows, rich_cheap_threshold_pct=0.75, poly_degree=None):
     """(tastytrade-curve-fit curve-rows [rich-cheap-threshold-pct poly-degree])
-    -> a Lisp list of rows, each row a 7-element list:
-       (delivery-month futures-symbol days-to-delivery last-price
-        fitted-price rich-cheap-pct signal)
-    `curve-rows` is the output of tastytrade-futures-curve-rows (or
-    anything shaped the same way). Fits ln(price) vs. days-to-delivery
-    with a low-order polynomial (degree = min(3, n-1) unless
-    `poly-degree` is given) across ALL rows, and flags each contract's
-    deviation from that fitted curve: `signal` is "Rich" if the contract
-    trades more than `rich-cheap-threshold-pct` above the fit, "Cheap" if
-    that far below, else "Fair". This is a pure function -- no
-    networking -- so it's cheap to re-run with different assumptions.
-    Needs at least 3 rows; returns '() if there aren't enough."""
+    -> a list of rows (delivery-month futures-symbol days-to-delivery
+    last-price fitted-price rich-cheap-pct signal).
+
+    Fits a low-degree polynomial (degree min(3, n-1) unless poly-degree is
+    given) to ln(price) against days to delivery, then compares each
+    contract to the fitted curve: signal is "Rich" if it trades more than
+    rich-cheap-threshold-pct above the fit, "Cheap" if that far below, else
+    "Fair". No network access. Returns '() with fewer than 3 rows."""
     import numpy as np
 
     rows = [pairs_to_list(r) for r in pairs_to_list(curve_rows)]
@@ -424,25 +391,20 @@ def tastytrade_leg_carry_fn(curve_rows, funding_rate_pct, storage_cost_pct,
                              leg_signal_threshold_pct=1.0):
     """(tastytrade-leg-carry curve-rows funding-rate-pct storage-cost-pct
          [leg-signal-threshold-pct])
-    -> a Lisp list of rows, each row a 9-element list:
-       (near-month far-month near-price far-price days-between
-        implied-carry-rate-pct implied-net-storage-cost-pct
-        implied-convenience-yield-pct signal)
-    Pairwise (adjacent contract month) implied cost-of-carry decomposition:
-    for each pair, c = ln(far-price/near-price)/(days-between/365) is the
-    OBSERVED implied annualized carry rate; given your `funding-rate-pct`
-    (r) and `storage-cost-pct` (u) assumptions, net storage cost = c - r
-    and convenience yield = r + u - c. `signal` flags a leg whose carry
-    rate deviates from the MEDIAN carry rate across all legs by more than
-    `leg-signal-threshold-pct` (percentage points), in either direction.
-    `storage-cost-pct`/convenience-yield are only literally meaningful for
-    a storable physical commodity (e.g. CL) -- for financial futures
-    (ES, NQ, ZN, SR3...) there's no real storage, so read those two
-    fields as an illustrative decomposition of implied carry, not an
-    actual estimate; the carry rate itself is still meaningful either
-    way. `curve-rows` is the output of tastytrade-futures-curve-rows.
-    Pure function -- no networking. Needs at least 2 rows; returns '()
-    if there aren't enough, or if no adjacent pair has positive spacing."""
+    -> a list of rows (near-month far-month near-price far-price days-between
+    implied-carry-rate-pct implied-net-storage-cost-pct
+    implied-convenience-yield-pct signal), one per pair of adjacent months.
+
+    For each pair, the implied annual carry rate is
+    c = ln(far-price / near-price) / (days-between / 365). Given your funding
+    rate r and storage cost u, net storage cost = c - r and convenience yield
+    = r + u - c. signal flags a pair whose carry rate differs from the median
+    across all pairs by more than leg-signal-threshold-pct points.
+
+    Storage cost and convenience yield only really mean something for a
+    physical commodity such as CL; for financial futures, read them as a
+    breakdown of the carry rate, which is meaningful either way. No network
+    access. Returns '() with fewer than 2 rows."""
     import numpy as np
 
     rows = [pairs_to_list(r) for r in pairs_to_list(curve_rows)]
@@ -518,12 +480,10 @@ async def _tasty_collect_greeks(session, streamer_symbols, timeout):
 
 
 async def _tasty_price_and_iv_for_options(session, opts, price_kwarg, include_iv, greeks_timeout):
-    """Shared tail end of both the futures- and equity-option fetches:
-    looks up last/close price, volume, and open interest via one-shot
-    REST calls (chunked at 100 symbols), then optionally streams implied
-    volatility via Greeks. `price_kwarg` is "future_options" or
-    "options", matching get_market_data_by_type's parameter names for
-    each instrument type."""
+    """Look up the last price, volume, and open interest of the options
+    (REST calls, 100 symbols at a time), then, if include_iv, stream their
+    implied volatility. `price_kwarg` is "future_options" or "options" --
+    get_market_data_by_type's parameter name for that instrument type."""
     option_symbols = [s for s in (getattr(o, "symbol", None) for o in opts) if s]
     option_md = []
     for i in range(0, len(option_symbols), 100):
@@ -696,32 +656,20 @@ def tastytrade_option_chain_fn(credentials_path, symbol, n_months=12,
                                 greeks_timeout=25.0):
     """(tastytrade-option-chain credentials-path symbol
          [n-months max-strikes-per-expiration include-iv? greeks-timeout])
-    -> a Lisp list of rows, each row an 11-element list:
-       (symbol type strike expiration-date days-to-expiration delivery-month
-        underlying last-price implied-volatility volume open-interest)
+    -> a list of rows (symbol type strike expiration-date days-to-expiration
+    delivery-month underlying last-price implied-volatility volume
+    open-interest). `type` is "Call" or "Put".
 
-    `symbol` can be:
-      - A futures root starting with "/" (tastytrade's own convention,
-        e.g. "/CL", "/ES") -- works for any futures product, not just
-        ones with a curated short code.
-      - A known short code from tastytrade-products (e.g. "CL"), kept
-        for backward compatibility -- translated to "/CL" automatically.
-      - Any other symbol (e.g. "AAPL", "SPY") -> fetched as an EQUITY
-        option chain. No translation needed or done.
+    `symbol` is a futures root such as "/CL", a short code from
+    (tastytrade-products) such as "CL", or anything else, e.g. "AAPL", for an
+    equity option chain. For futures, n-months is how many delivery months to
+    include; for equities, how many months ahead to look for expirations
+    (delivery-month is then '()). Each expiration keeps only the
+    max-strikes-per-expiration strikes nearest the underlying's price.
 
-    `type` is the string "Call" or "Put". `delivery-month` and
-    `underlying` are futures-specific: for equities, `delivery-month` is
-    always '() and `underlying` is just the equity symbol itself. For
-    equities, `n-months` limits results to expirations within that many
-    months from today (there's no separate "delivery month" for an
-    equity option the way there is for a futures option, so this is the
-    closest equivalent). Missing values (e.g. no recent Greeks snapshot
-    for implied-volatility) come back as '() (the empty list). Each
-    expiration is trimmed to the `max-strikes-per-expiration` strikes
-    nearest the underlying's price, since implied volatility comes from
-    a live per-contract Greeks stream (`include-iv?` defaults to #t;
-    pass #f to skip the stream entirely and fetch much faster).
-    `greeks-timeout` (seconds) caps how long that stream is awaited."""
+    Implied volatility comes from a live stream, which is slow: pass #f for
+    include-iv? to skip it, and greeks-timeout caps the wait in seconds.
+    Values tastytrade doesn't report come back as '()."""
     rows = _run_async(_tasty_option_chain_async(
         credentials_path, symbol, int(n_months), int(max_strikes_per_expiration),
         is_true(include_iv), float(greeks_timeout)))

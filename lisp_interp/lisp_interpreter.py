@@ -85,13 +85,11 @@ def repl(env):
 
 
 def run_script(path, env):
-    """Run a script file for batch mode. A Lisp error is reported the way
-    the REPL reports one -- the chain of calls that led to it, then the
-    message -- to stderr, and ends the run with exit status 1, instead of
-    dumping a Python traceback of the interpreter's own internals (set
-    LISP_PYTHON_TRACEBACK=1 to get that traceback anyway). Any other
-    exception is a Python-level failure: the Lisp call chain is printed
-    first, then Python's own traceback follows."""
+    """Run a script file in batch mode. A Lisp error is reported as the REPL
+    reports it -- the chain of calls, then the message -- on stderr, with exit
+    status 1. (Set LISP_PYTHON_TRACEBACK=1 to see Python's traceback of the
+    interpreter too.) Any other exception is a bug in the interpreter: the
+    Lisp call chain is printed, then Python's traceback."""
     try:
         run_file(path, env)
     except LispError as e:

@@ -1,50 +1,21 @@
-"""
-lisp_kernel.py
-================
-A native Jupyter kernel for the morris_lisp interpreter: every cell is
-plain Lisp source, no cell magic needed. Install it once with
+"""The "morris_lisp" Jupyter kernel: every cell is Lisp source. Install it
+once with
     python3 install_lisp_kernel.py
-then pick "morris_lisp" from Jupyter's kernel picker / New menu, same as
-any other kernel.
+then choose "morris_lisp" in Jupyter's kernel picker.
 
-Reuses lisp_jupyter.py's shared environment and output/plot/columns
-callbacks UNCHANGED (charts render inline, (display-columns ...) renders
-as a pandas DataFrame) -- this is built as an IPythonKernel subclass
-(NOT the bare ipykernel.kernelbase.Kernel) SPECIFICALLY so
-IPython.display.display() (which those callbacks call) keeps resolving
-to a real, wired-up display-publisher path: IPythonKernel.__init__
-creates and registers a genuine InteractiveShell as the process's active
-`get_ipython()` target -- a process-wide registration, done once at
-kernel startup -- even though do_execute() below never actually runs any
-Python code through it. The bare Kernel base class never creates that
-shell at all, so IPython.display.display() would have nothing to route
-through and would silently fall back to a plain repr. See
-lisp_jupyter.py's own docstring, and the "Running it" section of
-lisp_interpreter_reference.md, for more.
+Output (charts, tables, Markdown) goes through lisp_jupyter.py. The kernel
+subclasses IPythonKernel, not the bare Kernel class, because that sets up
+the IPython shell that IPython.display.display() needs -- even though no
+Python code is ever run through it.
 
-A few things worth knowing about how this differs from an ordinary Python
-kernel:
-  - errors render through Jupyter's own error display (a red traceback
-    box), built from the error's message plus the Lisp chain of procedure
-    calls that led to it (see the "Call tracing" section of
-    lisp_core.py) -- not a Python traceback. Tail calls replace their caller's
-    frame, so a caller that tail-called its way out shows up only as a
-    "[+N tail calls]" count on the frame that replaced it;
-  - tab-completion is disabled outright (see do_complete, below) rather
-    than falling through to IPythonKernel's Python-specific completer,
-    which would offer irrelevant Python names for a Lisp symbol prefix;
-  - Jupyter-style history variables -- `_` (the most recent result),
-    `__`/`___` (the two before that), and `_N` (specifically execution
-    N's result) -- are bound directly into the shared Lisp environment
-    after every cell that produces one (see _record_history, below).
-    This has to be done by hand here: IPython's own `_`/`Out[N]`
-    bookkeeping is tied to running Python code through
-    `shell.run_cell()`, in the PYTHON namespace -- do_execute() below
-    never calls that (it evaluates Lisp source directly through
-    seval), so IPython's own history variables would never be
-    populated, and wouldn't be reachable from Lisp code even if they
-    were.
-"""
+Differences from a Python kernel:
+  - An error shows the Lisp chain of calls that led to it, not a Python
+    traceback. (A tail call replaces its caller's frame, shown as
+    "[+N tail calls]".)
+  - There's no tab completion.
+  - The history variables _, __, ___, and _N (the result of cell N) are
+    set in the Lisp environment by hand (see _record_history), since
+    IPython only sets them for Python code."""
 from __future__ import annotations
 
 import os
@@ -75,21 +46,10 @@ class LispKernel(IPythonKernel):
         "See lisp_interpreter_reference.md for the full language/builtin reference."
     )
 
-    # IPythonKernel.execution_count is a PROPERTY, not a plain attribute --
-    # its getter returns self.shell.execution_count, and (see its own
-    # source) its setter is a deliberate NO-OP: "Ignore the incrementing
-    # done by KernelBase, in favour of our shell's execution counter."
-    # That's exactly backwards for this kernel -- do_execute() below never
-    # calls shell.run_cell(), so self.shell.execution_count never advances,
-    # which means Kernel.execute_request()'s `self.execution_count += 1`
-    # (called BEFORE do_execute, to publish the "execute_input" message the
-    # notebook's In[N]: prompt number comes from) silently does nothing,
-    # and every cell reports execution_count 1 forever -- found by hitting
-    # this directly: prompts stuck at [1]: no matter how many cells ran.
-    # Overriding the property again here, backed by a genuinely writable
-    # instance attribute instead of the shell's counter, fixes both the
-    # prompt number and this kernel's own _record_history() (below), which
-    # reads the exact same property.
+    # IPythonKernel.execution_count reads the IPython shell's counter and
+    # ignores assignments. This kernel never runs code through the shell, so
+    # that counter never moves and every cell would be numbered [1]. Keep our
+    # own counter instead; _record_history uses it too.
     _execution_count = 0
 
     @property
@@ -128,27 +88,18 @@ class LispKernel(IPythonKernel):
         }
 
     def _record_history(self, env, result):
-        """Jupyter-style history variables, at the Lisp level: `_` is
-        always the most recently produced (non-'()) result, `__`/`___`
-        the two before that, and `_N` is specifically execution N's
-        result -- exactly the `_`/`__`/`___`/`Out[N]` convention IPython
-        gives Python cells (see the module docstring for why this kernel
-        doesn't get that for free). Only called for a cell that actually
-        produced a value (do_execute's `result is not NIL` check) --
-        the same rule IPython itself uses: a (define x 10)-style cell
-        with no displayed result doesn't shift the history either."""
+        """Set Jupyter's history variables in the Lisp environment: _ is the
+        latest result, __ and ___ the two before it, and _N the result of
+        execution N. Only a cell that produces a value counts, as in IPython."""
         env[Symbol("___")] = env.get(Symbol("__"), NIL)
         env[Symbol("__")] = env.get(Symbol("_"), NIL)
         env[Symbol("_")] = result
         env[Symbol("_%d" % self.execution_count)] = result
 
     def _error_reply(self, ename, evalue, lisp_traceback=""):
-        """Publish a real Jupyter error display (the red traceback box)
-        and return the matching error-status execute_reply. The
-        "traceback" is the Lisp call chain that led to the error (the text
-        lisp_core.format_lisp_traceback produces; empty if the error
-        happened outside any procedure call), one line per entry, followed
-        by the one-line error message."""
+        """Show a Jupyter error box, and return the matching error reply. Its
+        "traceback" is the Lisp chain of calls that led to the error (see
+        lisp_core.format_lisp_traceback), then the error message."""
         traceback = lisp_traceback.splitlines() + ["%s: %s" % (ename, evalue)]
         self.send_response(self.iopub_socket, "error", {
             "ename": ename, "evalue": evalue, "traceback": traceback,

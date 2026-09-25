@@ -1,19 +1,16 @@
 """The built-in procedures, and make_global_env(), which builds the global
 environment every Lisp program runs in.
 
-Most builtins are ordinary module-level functions, grouped by topic below,
-each group ending in a table (a dict) mapping Lisp names to functions --
-NUMBER_BUILTINS, LIST_BUILTINS, and so on. A few builtins need something
-that belongs to ONE particular environment -- the environment itself
-(eval, load), or where its output goes (display, redirect-output) -- so
-they're created per environment by the make_..._builtins() functions near
-the bottom. make_global_env() puts all of them, plus the tables from the
-other modules (lisp_regression.BUILTINS, lisp_sqlite.BUILTINS, ...), into
-a fresh environment.
+Most builtins are plain functions, grouped by topic below; each group ends
+with a table mapping Lisp names to functions (NUMBER_BUILTINS,
+LIST_BUILTINS, ...). A few builtins need something belonging to one
+environment -- the environment itself (eval, load) or where its output
+goes (display) -- so the make_..._builtins() functions near the end create
+them per environment. make_global_env() puts all of these, plus the other
+modules' BUILTINS tables, into a new environment.
 
 To add builtins of your own, see "Adding your own builtins" in
-lisp_interpreter_reference.md.
-"""
+lisp_interpreter_reference.md."""
 
 import csv
 import datetime
@@ -206,11 +203,10 @@ def lisp_filter(f, lst):
 
 
 def lisp_sort(seq, key=None):
-    """(sort seq [key]) -- a NEW list or vector with seq's elements in
-    ascending order (seq itself is not changed); the sort is stable.
-    `key`, if given, is a procedure of one argument that returns what
-    to compare for each element -- a number or string, anything `<`
-    can compare -- so (sort people person-age) orders people by age."""
+    """(sort seq [key]) -- a new list or vector with seq's elements in
+    ascending order; seq itself is unchanged, and equal elements keep their
+    order. `key`, if given, is a procedure returning what to compare for
+    each element (a number or string), e.g. (sort people person-age)."""
     if isinstance(seq, LispVector):
         if key is None and seq.items.dtype != object:
             return LispVector(np.sort(seq.items, kind="stable"))
@@ -259,13 +255,9 @@ def list_tail(lst, n):
 
 
 def lisp_assoc(key, alist):
-    """(assoc key alist) -- alist is a list of (key . value) PAIRS
-    (built with cons, e.g. (list (cons 'a 1) (cons 'b 2)) -- NOT the
-    (key value) two-element-list shape `let`-style bindings use).
-    Returns the matching (key . value) pair (so its value is
-    (cdr (assoc key alist))), or #f -- not '() -- if none match, so
-    (if (assoc ...) ...) behaves correctly (this Lisp's '() is
-    truthy, same as Scheme's; #f is the only false value)."""
+    """(assoc key alist) -- the first (key . value) pair in alist whose key is
+    equal to `key`, or #f if there's none. Returns #f rather than '()
+    because '() counts as true in this Lisp; only #f is false."""
     for entry in pairs_to_list(alist):
         if not isinstance(entry, Pair):
             raise LispError("assoc: alist element is not a pair: %r" % (entry,))
@@ -275,9 +267,8 @@ def lisp_assoc(key, alist):
 
 
 def lisp_member(x, lst):
-    """(member x lst) -- the sublist of lst starting at the first
-    element equal? to x, or #f (not '()) if none match -- see
-    assoc's docstring for why #f specifically."""
+    """(member x lst) -- the part of lst starting at the first element equal
+    to x, or #f if there's none."""
     items = pairs_to_list(lst)
     for i, item in enumerate(items):
         if item == x:
@@ -312,10 +303,8 @@ LIST_BUILTINS = {
 # ---------------------------------------------------------------------------
 
 def lisp_apply(f, *args):
-    """(apply f arg1 arg2 ... args) -- call f with arg1, arg2, ...
-    as individual arguments, followed by the ELEMENTS of the final
-    argument `args` (a list). (apply f lst) -- just the final list,
-    no individual leading arguments -- is the common special case."""
+    """(apply f arg1 ... args) -- call f with arg1 ... followed by the
+    elements of the list `args`. Usually just (apply f lst)."""
     if not args:
         raise LispError("apply: expected at least 2 arguments (a procedure and a list)")
     *leading, last = args
@@ -323,9 +312,8 @@ def lisp_apply(f, *args):
 
 
 def lisp_gensym(*base):
-    """(gensym ["prefix"]) -- a symbol guaranteed not to collide with
-    any name in the program, for writing your own hygienic macros by
-    hand (see gensym()'s docstring in lisp_core.py)."""
+    """(gensym ["prefix"]) -- a new symbol that can't collide with any name in
+    the program, for macros that need temporary names."""
     return gensym(str(base[0]) if base else "g")
 
 
@@ -334,11 +322,10 @@ def lisp_error(*args):
 
 
 def lisp_verbose(*args):
-    """(verbose) -- the current verbosity level. (verbose n) -- set it
-    (0 off, 1 procedure names, 2 + arguments and return values, 3 +
-    macro expansions; #f/#t mean 0/1) and return the PREVIOUS level, so
-    you can restore it: (define old (verbose 2)) ... (verbose old).
-    See "Call tracing" in lisp_core.py."""
+    """(verbose) returns the current trace level; (verbose n) sets it -- 0 off,
+    1 procedure names, 2 also arguments and return values, 3 also macro
+    expansions (#f/#t mean 0/1) -- and returns the previous level, so you can
+    restore it: (define old (verbose 2)) ... (verbose old)."""
     if len(args) > 1:
         raise LispError("verbose: expected (verbose [level])")
     if args:
@@ -384,19 +371,10 @@ def struct_set(s, slot_name, value):
 
 
 def call_method(accessor, instance, *args):
-    """(call-method accessor instance arg...) -- calls the
-    "method" (an ordinary lambda) stored in whichever slot
-    `accessor` reads off `instance` -- `accessor` is a struct
-    accessor FUNCTION VALUE (e.g. animal-speak, evaluated normally,
-    not quoted), not a symbol naming one. Passes `instance` as the
-    method's own first argument (its "self"), followed by any
-    extra `args`:
-        (call-method animal-speak d)
-    is exactly
-        ((animal-speak d) d)
-    just without writing `d` twice -- an ordinary function (no
-    macro needed, and so no risk of evaluating `instance` twice
-    either): Lisp already evaluates every argument exactly once."""
+    """(call-method accessor instance arg...) -- call the procedure stored in
+    one of instance's slots, passing instance itself as the first argument.
+    (call-method animal-speak d) is ((animal-speak d) d), without writing d
+    twice. `accessor` is the accessor function itself, not its name."""
     method = apply_proc(accessor, [instance])
     return apply_proc(method, [instance] + list(args))
 
@@ -482,23 +460,16 @@ HASH_TABLE_BUILTINS = {
 # ---------------------------------------------------------------------------
 
 def string_search(haystack, needle, start=0):
-    """(string-search haystack needle [start]) -- the index of the
-    first occurrence of needle in haystack at or after start, or #f
-    (not -1, not '()) if there isn't one -- so 0 is safe to test the
-    same way (if (string-search ...) ...) is if the whole match sits
-    at the very start, unlike -1, and unlike '() (which is truthy
-    here, same as Scheme -- see assoc's docstring)."""
+    """(string-search haystack needle [start]) -- the index where needle first
+    occurs in haystack, at or after start, or #f if it doesn't. (#f rather
+    than -1, so (if (string-search ...) ...) works.)"""
     idx = str(haystack).find(str(needle), int(start))
     return idx if idx >= 0 else False
 
 
 def string_split(s, sep=None):
-    """(string-split s [sep]) -- s split on every occurrence of sep
-    (an exact substring -- consecutive separators produce an empty
-    piece between them, e.g. splitting "a,,b" on "," gives 3 pieces),
-    or, with sep omitted, on runs of whitespace with no empty pieces
-    (Python's plain str.split() convention -- handy for tokenizing
-    free-form text)."""
+    """(string-split s [sep]) -- s split at each occurrence of sep (so "a,,b"
+    split on "," gives three pieces), or, with no sep, at runs of whitespace."""
     pieces = str(s).split(str(sep)) if sep is not None else str(s).split()
     return list_to_pairs([LispString(p) for p in pieces])
 
@@ -582,9 +553,8 @@ def list_to_vector(p):
 
 
 def vector_iterate(first, count, f):
-    """Build a vector of `count` elements: the first is `first`, and
-    each following element is (f previous-element). Works for numbers
-    or dates, since `f` can be e.g. date-add-days."""
+    """(vector-iterate first count f) -- a vector of `count` elements: first,
+    (f first), (f (f first)), ... Works for dates too, e.g. with date-add-days."""
     check_vector_elements([first], "vector-iterate")
     if count < 0:
         raise LispError("vector-iterate: count must not be negative")
@@ -599,10 +569,7 @@ def vector_iterate(first, count, f):
 
 
 def vector_add(a, b):
-    # Elementwise a+b, truncated to the shorter vector's length if
-    # they differ (documented behavior -- not an error). a.items[:n]
-    # + b.items[:n] is a single vectorized numpy operation, not a
-    # Python-level loop.
+    # Elementwise a+b, as long as the shorter vector (documented behavior).
     n = min(len(a.items), len(b.items))
     return LispVector(_narrow_vector_result(a.items[:n] + b.items[:n]))
 
@@ -635,11 +602,9 @@ def vector_drop(v, n):
 
 
 def vectors_shuffle(vec_list, seed=None):
-    """(vectors-shuffle (list v1 v2 ...) [seed]) -> a Lisp list of new
-    vectors, all permuted with the SAME random ordering -- so you can
-    shuffle a set of x/y vectors together without losing the
-    row-by-row alignment between them, before splitting into a
-    training subset and a held-out subset."""
+    """(vectors-shuffle (list v1 v2 ...) [seed]) -- new vectors, all shuffled
+    into the SAME random order, so rows stay lined up across them -- e.g.
+    before splitting x and y vectors into training and test sets."""
     vecs = pairs_to_list(vec_list)
     if not vecs:
         raise LispError("vectors-shuffle: at least one vector is required")
@@ -652,10 +617,7 @@ def vectors_shuffle(vec_list, seed=None):
     indices = list(range(n))
     rng = random.Random(seed) if seed is not None else random.Random()
     rng.shuffle(indices)
-    # v.items[indices] -- numpy "fancy indexing" with a list of
-    # positions -- builds the whole permuted array in one vectorized
-    # pass; LispVector(...)'s ndarray branch then makes its own
-    # independent copy of that (fresh, not aliased to v.items).
+    # v.items[indices] builds the whole reordered array in one numpy step.
     shuffled = [LispVector(v.items[indices]) for v in vecs]
     return list_to_pairs(shuffled)
 
@@ -664,20 +626,10 @@ _NO_DEFAULT = object()  # sentinel: distinguishes "no default given" from "defau
 
 
 def vectors_map(f, vec_list, default=_NO_DEFAULT):
-    """(vectors-map f (list v1 v2 ...) [default]) -> a new vector whose
-    J-th element is (f (vector-ref v1 J) (vector-ref v2 J) ... J) -- the
-    multi-vector generalization of vector-map (which only takes one
-    vector).  The last argument to f is the integer J.
-
-    If the input vectors aren't all the same length:
-      - with no `default` argument (the default), stops at the
-        length of the SHORTEST input vector -- elements beyond that
-        are simply never visited.
-      - with a `default` argument, the result runs out to the length
-        of the LONGEST input vector, and any vector that's run out of
-        real elements contributes `default` in its place for the
-        remaining positions.
-    """
+    """(vectors-map f (list v1 v2 ...) [default]) -- a new vector whose j-th
+    element is (f v1[j] v2[j] ... j); vector-map for several vectors at
+    once. If the vectors differ in length, it stops at the shortest -- or,
+    given `default`, runs to the longest, using default for missing values."""
     vecs = pairs_to_list(vec_list)
     if not vecs:
         raise LispError("vectors-map: at least one vector is required")
@@ -781,17 +733,11 @@ DATE_BUILTINS = {
 # ---------------------------------------------------------------------------
 
 def load_csv_fn(filename, has_header=True):
-    """Load a CSV file's columns as vectors: returns
-    (cons headers-list vectors-list), where headers-list is a Lisp list
-    of column-name strings and vectors-list is the same-length Lisp list
-    of the corresponding vectors.
-
-    Each column is independently classified as numeric, as a date
-    ("YYYY-MM-DD" text), or unusable (skipped, along with its header) if
-    it's neither. A row is only included if every *usable* column has a
-    non-blank value in that row, so all returned vectors stay the same
-    length and row-aligned -- the same "skip missing observations"
-    approach used by fred-series."""
+    """(load-csv filename [has-header?]) -- a CSV file's columns as vectors:
+    (cons headers-list vectors-list). A column is kept if every non-blank
+    value is a number, or every one is a YYYY-MM-DD date; other columns are
+    skipped. A row is kept only if it has a value in every kept column, so
+    the vectors stay the same length and lined up."""
     try:
         with open(str(filename), newline="") as f:
             rows = list(csv.reader(f))
@@ -860,14 +806,10 @@ def load_csv_fn(filename, has_header=True):
 
 
 def parse_column_pairs(name_value_pairs):
-    """Shared by display-columns and write-columns-csv: each element
-    of `name_value_pairs` is either (name . vector) -- a plain cons,
-    decimals unspecified -- or (name vector decimals), a 3-element
-    list picking a per-column decimal-places count instead of
-    relying on the global *column-number-format* (this is the shape
-    column_engine.lsp's calculate-all builds, from each column
-    struct's `decimals` slot). Returns a list of (name, items,
-    decimals-or-None)."""
+    """Read the column list display-columns and write-columns-csv take: each
+    element is (name . vector), or (name vector decimals) to give that
+    column a number of decimal places. Returns (name, items,
+    decimals-or-None) tuples."""
     out = []
     for p in pairs_to_list(name_value_pairs):
         name = str(p.car)
@@ -884,15 +826,10 @@ def parse_column_pairs(name_value_pairs):
 
 
 def write_columns_csv_fn(filename, name_value_pairs):
-    """(write-columns-csv filename pairs) -- pairs is the SAME shape
-    display-columns takes: a list of (name . vector) conses, or
-    (name vector decimals) lists. Writes a CSV file: header row =
-    names, one data row per index. Numbers are rounded to `decimals`
-    places when given -- plain numeric CSV cells, not comma-grouped
-    display strings; this is for feeding a spreadsheet or another
-    program, not for on-screen reading (see display-columns for
-    that). Rows are padded with an empty cell for any column shorter
-    than the longest one. Returns '()."""
+    """(write-columns-csv filename pairs) -- write columns (the same list
+    display-columns takes) to a CSV file: a header row of names, then one
+    row per index. Numbers are plain CSV numbers, rounded to the column's
+    decimals if it has any. A shorter column is padded with empty cells."""
     parsed = parse_column_pairs(name_value_pairs)
     n_rows = max((len(items) for _, items, _ in parsed), default=0)
     with open(str(filename), "w", newline="") as f:
@@ -927,10 +864,9 @@ CSV_BUILTINS = {
 # ---------------------------------------------------------------------------
 
 class OutputChannel:
-    """Where one environment's display/newline/print text goes. Normally
-    that's the callback make_global_env() was given (the console, the GUI
-    log, or a notebook cell); (redirect-output "file") sends it to a file
-    instead, until (reset-output) switches back."""
+    """Where one environment's display/newline/print text goes: normally the
+    callback make_global_env() was given (the console, the GUI log, or a
+    notebook cell), or a file while (redirect-output "file") is in effect."""
 
     def __init__(self, write_to_default):
         self.write_to_default = write_to_default
@@ -983,28 +919,21 @@ def make_output_builtins(out, markdown):
         return NIL
 
     def redirect_output(path, append=False):
-        """(redirect-output "path.txt" [append?]) -- send everything
-        display/newline/print (and the console's chart summary) write from
-        now on to the given file instead of the console/GUI log, until
-        (reset-output) is called. Opens in overwrite mode by default; pass
-        #t for append. Closes whatever file a PRIOR redirect-output call
-        opened first, so redirecting twice in a row doesn't leak an open
-        file handle."""
+        """(redirect-output "path" [append?]) -- send display/newline/print output
+        to a file (overwriting it, unless append? is #t) until (reset-output)."""
         out.redirect_to_file(str(path), is_true(append))
         return NIL
 
     def reset_output():
-        """(reset-output) -- undo redirect-output: close its file (if
-        one is open) and go back to writing to the console/GUI log."""
+        """(reset-output) -- close the redirect-output file and go back to the
+        console/GUI/notebook."""
         out.close_file()
         return NIL
 
     def display_markdown(text):
-        """(display-markdown string) -- shows `string` as Markdown. In a
-        Jupyter notebook it renders (tables, headings, bold, ...); with no
-        renderer available (console, GUI, redirect-output) the raw
-        Markdown text is written as ordinary output instead, which is
-        still readable -- a Markdown table is legible as plain text."""
+        """(display-markdown string) -- rendered as Markdown in a Jupyter
+        notebook; elsewhere (console, GUI, redirected output) the Markdown text
+        is written as it is, which is still readable."""
         if not isinstance(text, LispString):
             raise LispError("display-markdown: expected a string, got %r" % (text,))
         if markdown is not None and not out.is_redirected():
@@ -1029,15 +958,10 @@ def make_display_columns_builtin(env, columns):
     GUI's Columns tab, a notebook table, or the console)."""
 
     def format_column_value(v, decimals=None):
-        """Render one cell -- either with an explicit decimal-places
-        count (decimals, e.g. from a column struct's `decimals` slot --
-        see column_engine.lsp), or, when that's None, using the CURRENT
-        value of the Lisp-settable *column-number-format* global (a
-        Python str.format() spec, e.g. "{:,.0f}" for comma-grouped
-        integers -- (set! *column-number-format* "{:,.2f}") changes it
-        for every subsequent display-columns call that doesn't specify
-        its own per-column decimals). Non-numeric values (dates, etc.)
-        fall back to plain display formatting either way."""
+        """One table cell as text: a number with `decimals` decimal places if
+        given, otherwise formatted by *column-number-format* (a Python format
+        string, "{:,.0f}" by default -- set! it to change every later table).
+        Anything else is shown as display would show it."""
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             return to_display_string(v)
         if decimals is not None:
@@ -1050,16 +974,10 @@ def make_display_columns_builtin(env, columns):
             return to_display_string(v)
 
     def display_columns(name_value_pairs):
-        """(display-columns pairs) -- pairs is a list of (name . vector)
-        conses, or (name vector decimals) lists for a per-column decimal-
-        places count (see column_engine.lsp's `decimals` slot); each
-        becomes one displayed column, headed by name, in the order given,
-        with every value rendered through format_column_value.
-        Deliberately generic: doesn't know anything about the `column`
-        struct some higher-level Lisp library (e.g. a column_engine.lsp-
-        style modeling library) may define on top of this -- that mapping
-        from a struct instance to a (name . vector) / (name vector
-        decimals) entry happens entirely in Lisp."""
+        """(display-columns pairs) -- show columns side by side: pairs is a list
+        of (name . vector), or (name vector decimals). Where the table appears
+        depends on the environment: the GUI's Columns tab, a notebook table, or
+        a text table on the console."""
         data = [(name, [format_column_value(v, decimals) for v in items])
                 for name, items, decimals in parse_column_pairs(name_value_pairs)]
         columns(data)
@@ -1073,25 +991,14 @@ def make_eval_builtins(env, out):
     each works in `env`, the top-level environment."""
 
     def lisp_eval(expr):
-        """(eval expr) -- evaluate a piece of Lisp code (as DATA -- e.g.
-        something built with quasiquote/list/cons, or read from a string
-        or file) in the top-level global environment. A macro's own
-        expansion is already evaluated automatically by the evaluator;
-        this is for the separate case of constructing or obtaining an
-        expression some other way and wanting to run it directly."""
+        """(eval expr) -- evaluate expr (code as data, e.g. built with quasiquote)
+        in the top-level environment."""
         return seval(expr, env)
 
     def lisp_macroexpand_1(form):
-        """(macroexpand-1 'form) -- if `form` is a macro CALL (a list
-        whose car names a macro currently bound in the top-level
-        environment -- the same env `eval` uses), expand it ONE level
-        and return the resulting expression as DATA, without evaluating
-        it. Anything else (a non-list, or a list whose car isn't a
-        macro) is returned unchanged, matching Common Lisp's
-        macroexpand-1. Quote `form` yourself, the same way `eval`
-        expects an already-built expression rather than auto-quoting
-        its argument -- see "why gensym is needed" in the Macros
-        section for a worked example of reading an expansion this way."""
+        """(macroexpand-1 'form) -- if form is a call to a macro, expand it one
+        level and return the new code without evaluating it; otherwise return
+        form unchanged. Quote the form, as with eval."""
         if not isinstance(form, Pair) or not isinstance(form.car, Symbol):
             return form
         macro = env.lookup_or_none(form.car)
@@ -1100,31 +1007,22 @@ def make_eval_builtins(env, out):
         return expand_macro(macro, pairs_to_list(form.cdr))
 
     def lisp_macroexpand(form):
-        """(macroexpand 'form) -- like macroexpand-1, but keeps
-        re-expanding the OUTERMOST form as long as it's still a macro
-        call, so a macro that itself expands into a call to another
-        macro is fully unwound in one step (matching Common Lisp's
-        macroexpand). Does NOT expand macro calls nested inside the
-        result -- only the outermost form, same as macroexpand-1."""
+        """(macroexpand 'form) -- keep expanding the outermost form while it's
+        still a macro call. Macro calls nested inside the result aren't expanded."""
         while isinstance(form, Pair) and isinstance(form.car, Symbol) \
                 and isinstance(env.lookup_or_none(form.car), Macro):
             form = lisp_macroexpand_1(form)
         return form
 
     def lisp_print_macroexpansion(form):
-        """(print-macroexpansion 'form) -- (macroexpand form), pretty-
-        printed, for a readable look at exactly what a macro call turns
-        into WITHOUT evaluating (or running any side effect of) either
-        the call or its expansion."""
+        """(print-macroexpansion 'form) -- print (macroexpand form), pretty-printed,
+        without evaluating it."""
         out.write(pretty_print_string(lisp_macroexpand(form)) + "\n")
         return NIL
 
     def lisp_load(path):
-        """(load "path/to/file.lsp") -- read and evaluate every top-level
-        form in a file, in this SAME global environment, so its
-        definitions become available afterward exactly as if you'd typed
-        them yourself. Uses the same run_file() the interpreter's own
-        startup init-file loading does (see load_init_file)."""
+        """(load "file.lsp") -- evaluate every form in a file, in the top-level
+        environment, as if you'd typed them."""
         run_file(str(path), env)
         return NIL
 
@@ -1161,10 +1059,8 @@ def make_introspection_builtins(env, out):
     debug_originals = {}       # name -> the original Procedure, so undebug-function can restore it
 
     def lisp_pretty_print(x):
-        """(pretty-print x) -- verbose, paren-column-aligned printing of
-        ANY value (see pretty_print_string()). A Procedure or Macro is
-        shown as its reconstructed, name-free (lambda ...) / (defmacro
-        <anonymous> ...) source; everything else is printed as-is."""
+        """(pretty-print x) -- print x spread out, one element per line (see
+        pretty_print_string). A procedure or macro is shown as its source."""
         if isinstance(x, Procedure):
             expr = reconstruct_procedure_source(x)
         elif isinstance(x, Macro):
@@ -1189,48 +1085,32 @@ def make_introspection_builtins(env, out):
         return NIL
 
     def defined_functions():
-        """(defined-functions) -- every name currently bound (in the top-
-        level environment) to a user-defined Procedure -- i.e. something
-        created by `lambda`/`define`, NOT a built-in. There's no separate
-        registry to keep in sync: this just filters the live environment,
-        so it's always exactly correct, in the order things were first
-        defined (a redefinition doesn't move its entry)."""
+        """(defined-functions) -- the names of the procedures you've defined (not
+        builtins), in the order they were first defined."""
         return list_to_pairs([name for name in env if isinstance(env[name], Procedure)])
 
     def defined_macros():
-        """(defined-macros) -- every name currently bound to a
-        user-defined Macro (leaving out BOOTSTRAP_MACROS, above). Same
-        live-filter approach as defined-functions()."""
+        """(defined-macros) -- the names of the macros you've defined (not the
+        BOOTSTRAP_MACROS every environment starts with)."""
         return list_to_pairs([
             name for name in env
             if isinstance(env[name], Macro) and name not in BOOTSTRAP_MACROS
         ])
 
     def bound_variables():
-        """(bound-variables) -- every top-level name bound to a plain
-        VALUE (not a function, macro, or built-in procedure) -- i.e.
-        ordinary `define`d data: numbers, strings, lists, vectors, dates,
-        etc. Built-in procedures are excluded because they're plain
-        Python callables, same as `callable(x)` already excludes them
-        from defined-functions()/defined-macros() implicitly (only
-        Procedure/Macro instances count as user-defined there)."""
+        """(bound-variables) -- the names bound to plain values (numbers, strings,
+        lists, vectors, ...) rather than to procedures or macros."""
         return list_to_pairs([
             name for name in env
             if not isinstance(env[name], (Procedure, Macro)) and not callable(env[name])
         ])
 
     def debug_function_named(name):
-        """(debug-function name) [macro -- see BOOTSTRAP_MACROS]: wraps
-        the named function so every future call opens a debug REPL
-        (debug_repl) BEFORE running the body, in an environment where the
-        function's own parameters are already bound to this call's real
-        argument values -- inspect or (via set!) change them, then
-        (continue) to actually run the body with whatever's in scope at
-        that point. Also prints the chain of debug-function-wrapped calls
-        currently in progress, as a lightweight "how was this called, and
-        from where" trace, just of the functions you've explicitly asked
-        to watch. For the FULL chain of procedure calls, type (backtrace)
-        at the debug prompt (see "Call tracing" in lisp_core.py)."""
+        """(debug-function name) -- from now on, every call to the function opens
+        a debug REPL (see debug_repl) before its body runs, with the arguments
+        already bound, so you can look at them or set! them, then (continue).
+        It also prints the chain of debug-function calls in progress; type
+        (backtrace) for the full chain of calls."""
         proc = env.get(name)
         if not isinstance(proc, Procedure):
             raise LispError("debug-function: %r is not a user-defined function" % (name,))
@@ -1255,9 +1135,8 @@ def make_introspection_builtins(env, out):
         return NIL
 
     def undebug_function_named(name):
-        """(undebug-function name) [macro]: restore the original,
-        un-wrapped definition debug-function saved before wrapping it.
-        Does nothing if `name` was never debug-function-wrapped."""
+        """(undebug-function name) -- undo debug-function. Does nothing if the
+        function isn't being debugged."""
         if name in debug_originals:
             env[name] = debug_originals.pop(name)
         return NIL
@@ -1359,25 +1238,16 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
 # The startup init file
 # ---------------------------------------------------------------------------
 
-# Loaded automatically into every fresh environment at startup (batch
-# mode, the console REPL, the GUI, and Jupyter) -- see load_init_file().
-# Defaults to init.lsp next to this file; override with the
-# LISP_INIT_FILE environment variable if you'd rather keep it somewhere
-# else (e.g. a dotfile in your home directory).
+# The file every new environment loads first (see load_init_file). Set
+# the LISP_INIT_FILE environment variable to use a different file.
 DEFAULT_INIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "init.lsp")
 
 
 def load_init_file(env, path=None):
-    """Load the interpreter's init file into env, if it exists -- called
-    once per fresh environment, right after make_global_env(), before any
-    user script/REPL input/GUI interaction. Silently does nothing if the
-    file isn't there (a fresh checkout with no init.lsp behaves exactly
-    as if this function didn't exist), the same way a missing .bashrc
-    doesn't stop a shell from starting. A LispError while loading it IS
-    reported (to stderr) but doesn't prevent startup -- same reasoning:
-    a broken init file shouldn't lock you out of the interpreter you'd
-    need to open it and fix it.
-    """
+    """Load the init file (init.lsp, or LISP_INIT_FILE) into env, if it exists.
+    Called once for each new environment, before anything else runs. A
+    missing file is silently skipped. An error in it is reported to stderr
+    but doesn't stop the interpreter starting, so you can still fix it."""
     path = path or os.environ.get("LISP_INIT_FILE", DEFAULT_INIT_FILE)
     if not path or not os.path.exists(path):
         return

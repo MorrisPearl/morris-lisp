@@ -33,10 +33,8 @@ try:
 except ImportError:
     _TERM_STRUCTURE_AVAILABLE = False
 
-# sofr_market_data fetches the SOFR futures curve AND a spread of SOFR
-# futures options in one tastytrade session, shaped for
-# calibrate_sofr_model(). Importing it doesn't require the tastytrade
-# package itself (that's checked when it's called).
+# sofr_market_data fetches SOFR futures and options from tastytrade. It
+# imports without the tastytrade package; that's checked when it's called.
 try:
     from sofr_market_data import fetch_sofr_calibration_data as _fetch_sofr_calibration_data
     _SOFR_MARKET_DATA_AVAILABLE = True
@@ -44,39 +42,23 @@ except ImportError:
     _SOFR_MARKET_DATA_AVAILABLE = False
 
 
-# CME 3-Month SOFR (SR3) futures reference a 3-month accrual quarter that
-# ENDS at the contract's delivery month -- see term_structure_model.
-# bootstrap_sofr_curve()'s docstring for exactly what start_months/
-# end_months mean and the simplifications baked into treating a whole
-# quarter as one flat forward rate. Same day-count convention
-# sofr_market_data.py uses, for consistency with the rest of that module.
+# An SR3 future covers the 3 months ending at its delivery month. Days per
+# month, the same convention sofr_market_data.py uses.
 _SOFR_DAYS_PER_MONTH = 30.436875
 
 
 def sofr_forward_curve_fn(curve_rows):
-    """(sofr-forward-curve curve-rows) -> (cons months-vector forward-rates-vector)
-    curve-rows is the output of (tastytrade-futures-curve-rows creds "SR3"
-    [n-months]) -- one row per listed CME 3-Month SOFR (SR3) futures
-    contract: (delivery-month symbol days-to-delivery last-price).
-    Bootstraps a 360-month (30-year) curve of 1-month forward rates
-    implied by those futures prices, by reusing
-    term_structure_model.bootstrap_sofr_curve() as-is (see
-    term_structure/term_structure_model.py for the full methodology and
-    its documented simplifications -- flat extrapolation beyond the last
-    listed contract, no convexity adjustment, etc.) -- this function's
-    only job is shaping tastytrade-futures-curve-rows's output into the
-    {start_months, end_months, rate} dicts that function expects.
+    """(sofr-forward-curve curve-rows) -> (cons months-vector forward-rates-vector):
+    a 360-month curve of 1-month forward rates bootstrapped from SOFR futures
+    prices. curve-rows is the output of
+    (tastytrade-futures-curve-rows creds "SR3").
 
-    months-vector is 1..360; forward-rates-vector[i] (0-indexed) is the
-    annualized 1-month forward rate (decimal, e.g. 0.045) for month i+1
-    -- (vector-ref forward-rates-vector (- month 1)). Feed straight into
-    plot-xy, or read a period's rate by row index in a column's
-    value_calculation for a floating-rate coupon or a mortgage
-    prepayment model's rate-incentive calculation -- see
-    sofr_floating_rate_example.lsp. Pure function -- no networking --
-    so it's cheap to re-run against the same fetched curve-rows.
-    Needs at least 1 row; raises LispError if curve-rows is empty, or if
-    term_structure_model.py (and numpy) aren't importable."""
+    months-vector is 1..360; element i of forward-rates-vector is the
+    annualized forward rate (a decimal, e.g. 0.045) for month i+1. Past the
+    last listed contract the curve is flat -- see
+    sofr-extend-curve-with-treasury. The method is
+    term_structure_model.bootstrap_sofr_curve(); this only reshapes the rows.
+    No network access."""
     if not _TERM_STRUCTURE_AVAILABLE:
         raise LispError(
             "sofr-forward-curve: term_structure_model.py (and numpy) aren't "
@@ -103,31 +85,21 @@ def sofr_forward_curve_fn(curve_rows):
 
 
 def sofr_calibration_data_fn(credentials_path, n_futures=40, n_underlyings=10, n_strikes=3):
-    """(sofr-calibration-data credentials-path [n-futures n-underlyings
-    n-strikes]) -> (cons curve-futures-rows options-rows) -- everything
-    needed to bootstrap a SOFR curve AND calibrate the two-factor model
-    against real SOFR futures option prices, fetched in ONE tastytrade
-    session. Reuses sofr_market_data.fetch_sofr_calibration_data() as-is
-    (see term_structure/sofr_market_data.py for the full selection
-    methodology: options spread evenly across every curve quarter that
-    has a listed chain, not just the nearest few, so sigma1 and sigma2 --
-    see sofr-calibrate-model -- are separately identifiable). A SEPARATE
-    fetch from tastytrade-futures-curve-rows -- this one also pulls
-    option chains, not just futures prices.
+    """(sofr-calibration-data credentials-path [n-futures n-underlyings n-strikes])
+    -> (cons curve-futures-rows options-rows): SOFR futures and a spread of
+    SOFR futures options, fetched from tastytrade in one session.
 
-    curve-futures-rows: one row per SR3 contract month used for the
-    curve, each (symbol start-months end-months rate) -- feed to
-    sofr-bootstrap-curve.
-    options-rows: up to n-underlyings*n-strikes*2 near-the-money call/put
-    pairs spread across n-underlyings different quarterly contracts, each
-    (type strike expiry-months quarter-start-months quarter-end-months
-    market-price) -- feed to sofr-calibrate-model.
+      curve-futures-rows  (symbol start-months end-months rate), one per contract
+                          -- for sofr-bootstrap-curve
+      options-rows        (type strike expiry-months quarter-start-months
+                          quarter-end-months market-price), near-the-money calls
+                          and puts on n-underlyings contracts -- for
+                          sofr-calibrate-model
 
-    Needs the `tastytrade` package, a tastytrade account, and a
-    credentials JSON file -- see tasty_api/README.md. Raises LispError if
-    sofr_market_data.py isn't importable (the tastytrade package itself,
-    and any fetch failure, raise their own errors from inside
-    fetch_sofr_calibration_data)."""
+    The options are spread across the whole curve, not just the nearest
+    contracts, so the model's two volatilities can be told apart. See
+    term_structure/sofr_market_data.py. Needs the tastytrade package and a
+    credentials file (tasty_api/README.md)."""
     if not _SOFR_MARKET_DATA_AVAILABLE:
         raise LispError(
             "sofr-calibration-data: sofr_market_data.py isn't available -- "
@@ -150,17 +122,8 @@ def sofr_calibration_data_fn(credentials_path, n_futures=40, n_underlyings=10, n
 
 def sofr_bootstrap_curve_fn(curve_futures_rows):
     """(sofr-bootstrap-curve curve-futures-rows) -> (cons months-vector
-    forward-rates-vector). curve-futures-rows is sofr-calibration-data's
-    FIRST return value (or anything shaped the same way: a list of
-    (symbol start-months end-months rate) rows) -- bootstraps the
-    360-month forward curve directly from it via
-    term_structure_model.bootstrap_sofr_curve(), the same underlying
-    function sofr-forward-curve uses, just taking sofr-calibration-data's
-    row shape instead of tastytrade-futures-curve-rows's (no day-count
-    reshaping needed here -- these rows already carry start-months/
-    end-months directly). Pure function -- no networking. Raises
-    LispError if curve-futures-rows is empty, or term_structure_model.py
-    isn't available."""
+    forward-rates-vector): the same curve as sofr-forward-curve, but from the
+    rows sofr-calibration-data returns. No network access."""
     if not _TERM_STRUCTURE_AVAILABLE:
         raise LispError(
             "sofr-bootstrap-curve: term_structure_model.py (and numpy) aren't "
@@ -182,39 +145,22 @@ def sofr_extend_curve_with_treasury_fn(forward_rates, curve_real_months,
                                         yield_3m, yield_6m, yield_1y, yield_2y,
                                         yield_5y, yield_10y, yield_30y, blend_months=12):
     """(sofr-extend-curve-with-treasury forward-rates curve-real-months
-    yield-3m yield-6m yield-1y yield-2y yield-5y yield-10y yield-30y
-    [blend-months]) -> forward-rates-vector -- replaces the flat-
-    extrapolated tail of a SOFR curve (from sofr-bootstrap-curve or
-    sofr-forward-curve) past curve-real-months with a SEPARATE curve
-    bootstrapped from Treasury par yields, linearly blended in over
-    blend-months (default 12) so the splice doesn't visibly kink.
+      yield-3m yield-6m yield-1y yield-2y yield-5y yield-10y yield-30y
+      [blend-months]) -> forward-rates-vector
 
-    forward-rates: the curve to extend, e.g. sofr-bootstrap-curve's or
-        sofr-forward-curve's second return value.
-    curve-real-months: how many months of forward-rates are backed by
-        real market data (the same quantity sofr-calibrate-model's
-        curve-real-months argument means) -- everything past this was
-        flat-extrapolated and is a candidate for replacement.
-    yield-3m/6m/1y/2y/5y/10y/30y: today's Treasury par yields, as
-        DECIMALS (e.g. 0.045, not 4.5) -- e.g. FRED's DGS3MO/DGS6MO/
-        DGS1/DGS2/DGS5/DGS10/DGS30, each divided by 100 (FRED reports
-        those series in percent).
-    blend-months: width of the linear transition zone, in months,
-        starting at curve-real-months.
+    A SOFR curve is flat past its last futures contract (about 5 years out).
+    This replaces that flat part with the shape of the Treasury curve, built
+    from today's par yields and blended in linearly over blend-months
+    (default 12) so there's no kink. Useful for anything priced off the far
+    end of the curve, such as a 30-year mortgage.
 
-    WHY: bootstrap_sofr_curve()/sofr-forward-curve are honest that they
-    have no market data beyond the last SOFR futures contract used (CME
-    lists roughly a 5-year strip) -- past that they hold the curve flat.
-    For anything priced off the far end of the curve (a 30-year MBS),
-    the free, much longer-dated Treasury par curve on FRED is a better
-    long-end shape than a flat line. This does NOT attempt a SOFR/
-    Treasury basis adjustment -- it borrows the Treasury curve's SHAPE
-    as-is past curve-real-months, which is a simplification worth being
-    aware of.
+      forward-rates       from sofr-forward-curve or sofr-bootstrap-curve
+      curve-real-months   how many months are backed by real futures prices
+      yield-...           Treasury par yields as DECIMALS (0.045, not 4.5) --
+                          e.g. FRED's DGS3MO ... DGS30 divided by 100
 
-    Pure function -- no networking. Reuses term_structure_model.
-    extend_curve_long_end() and bootstrap_forward_curve() as-is. Raises
-    LispError if term_structure_model.py isn't available."""
+    It borrows the Treasury curve's shape as-is; there's no SOFR/Treasury
+    basis adjustment. No network access."""
     if not _TERM_STRUCTURE_AVAILABLE:
         raise LispError(
             "sofr-extend-curve-with-treasury: term_structure_model.py (and "
@@ -234,43 +180,24 @@ def sofr_extend_curve_with_treasury_fn(forward_rates, curve_real_months,
 def sofr_calibrate_model_fn(forward_rates, options_rows, curve_real_months,
                              n_paths=2000, seed=42, n_grid=7, n_rounds=4):
     """(sofr-calibrate-model forward-rates options-rows curve-real-months
-    [n-paths seed n-grid n-rounds]) -> (list a theta-bar sigma1 sigma2
-    error) -- fits the two-factor model's mean-reversion speed (a) and
-    both volatilities (sigma1: the short-rate factor; sigma2: the
-    slower-moving mean-reversion-LEVEL factor) directly against real SOFR
-    futures option prices, by a "zooming grid search" (try a grid of
-    (a, sigma1, sigma2) combinations, keep whichever prices the options
-    closest, shrink the search window around it, repeat n-rounds times).
-    Reuses term_structure_model.calibrate_sofr_model() as-is; see that
-    function's docstring for the full methodology, including WHY it fits
-    `a` against option prices directly rather than against today's curve
-    shape (found, on real data, to noticeably improve the fit over a
-    curve-shape-only fit) and theta-bar's role (refit in closed form, so
-    cheap, at every candidate `a` tried).
+      [n-paths seed n-grid n-rounds]) -> (list a theta-bar sigma1 sigma2 error)
 
-    forward-rates: sofr-forward-curve's or sofr-bootstrap-curve's second
-        return value.
-    options-rows: sofr-calibration-data's second return value (or
-        anything shaped the same way).
-    curve-real-months: how many months of forward-rates are the REAL
-        (non-extrapolated) part of the curve -- i.e. the largest
-        end-months among the curve-futures-rows sofr-calibration-data
-        (or sofr-bootstrap-curve) was given.
-    n-paths: Monte Carlo paths used to price EACH option at EACH
-        candidate (a, sigma1, sigma2) tried -- an accuracy/speed
-        trade-off for the CALIBRATION itself, separate from how many
-        SCENARIO paths sofr-simulate-rate-paths later generates.
-    n-grid / n-rounds: grid resolution per round / how many times to zoom
-        in -- cost is roughly O(n-grid^3 * n-rounds * n-paths * number of
-        options), so raising these can get slow fast; the
-        term_structure_model.py module docstring reports ten-to-twenty
-        seconds for its own real-data test at these same defaults
-        (n-paths 2000, n-grid 7, n-rounds 4) and a handful of options.
+    Fits the two-factor model -- mean-reversion speed `a`, short-rate
+    volatility sigma1, and the volatility sigma2 of the level the short
+    rate reverts to -- to real SOFR futures option prices. It tries a grid
+    of (a, sigma1, sigma2) values, keeps the one that prices the options
+    best, narrows the grid around it, and repeats n-rounds times. theta-bar
+    is refitted at each `a`. See term_structure_model.calibrate_sofr_model().
 
-    Pure function -- no networking -- so it's cheap to re-run with
-    different options-rows/settings once you've fetched once. Raises
-    LispError if options-rows is empty, or term_structure_model.py isn't
-    available."""
+      forward-rates       from sofr-forward-curve or sofr-bootstrap-curve
+      options-rows        from sofr-calibration-data
+      curve-real-months   how many months of the curve come from real prices
+      n-paths             Monte Carlo paths per option price (accuracy vs. speed)
+      n-grid, n-rounds    grid size and number of rounds. Time grows roughly as
+                          n-grid^3 * n-rounds * n-paths * options; the defaults
+                          (2000, 7, 4) take ten to twenty seconds.
+
+    No network access, so it's cheap to rerun with other settings."""
     if not _TERM_STRUCTURE_AVAILABLE:
         raise LispError(
             "sofr-calibrate-model: term_structure_model.py (and numpy) aren't "
@@ -293,36 +220,19 @@ def sofr_calibrate_model_fn(forward_rates, options_rows, curve_real_months,
 def sofr_simulate_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths,
                                  seed=None, a=None, theta_bar=None):
     """(sofr-simulate-rate-paths forward-rates sigma1 sigma2 horizon-years
-    n-paths [seed a theta-bar]) -> (list years-vector short-rate-paths
-    ten-year-paths) -- simulates n-paths Monte Carlo scenarios of the
-    two-factor model (a short-rate factor and a slower mean-reversion-
-    level factor -- see term_structure/term_structure_model.py's module
-    docstring) forward horizon-years, reusing
-    term_structure_model.simulate_rate_paths() as-is.
+      n-paths [seed a theta-bar]) -> (list years short-rate-paths ten-year-paths)
 
-    years: a vector of times in years -- 0, 1/12, 2/12, ... out to
-        horizon-years.
-    short-rate-paths / ten-year-paths: each a Lisp LIST of
-        (horizon-years*12 + 1)-element vectors, one vector per path:
-        short-rate-paths[i] is Monte Carlo path i's short-rate factor
-        over time; ten-year-paths[i] is that SAME path's approximate
-        ten-year rate (a closed-form function of the path's state, not a
-        separately-simulated factor).
+    Simulates n-paths Monte Carlo scenarios of the two-factor model,
+    horizon-years ahead, month by month.
+      years            a vector of times: 0, 1/12, 2/12, ... horizon-years
+      short-rate-paths a list of vectors, one per scenario: the short rate
+      ten-year-paths   the same scenarios' approximate ten-year rate
 
-    a / theta-bar: pass sofr-calibrate-model's fitted `a`/theta-bar (its
-        first two return values) when forward-rates came from
-        sofr-bootstrap-curve/sofr-forward-curve, rather than leaving
-        these '() (this function's own default: a fixed mean-reversion
-        speed, and theta-bar as the average of forward-rates' last 2
-        years) -- a SOFR curve is flat-extrapolated past its last real
-        futures quarter, so that default would anchor theta-bar at an
-        arbitrary value with no connection to real market data. See
-        calibrate_sofr_model()'s docstring in term_structure_model.py.
-    seed: '() (the default) for a fresh random seed each call; an
-        integer for reproducible paths.
-
-    Pure function -- no networking. Raises LispError if
-    term_structure_model.py isn't available."""
+    Pass the `a` and theta-bar from sofr-calibrate-model: the default
+    theta-bar is the average of the curve's last 2 years, which for a SOFR
+    curve is just the flat extrapolation. seed '() (the default) gives new
+    random paths each time; an integer makes them reproducible. No network
+    access."""
     if not _TERM_STRUCTURE_AVAILABLE:
         raise LispError(
             "sofr-simulate-rate-paths: term_structure_model.py (and numpy) "
@@ -346,28 +256,18 @@ def sofr_simulate_mortgage_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_
                                           mortgage_spread, seed=None, a=None, theta_bar=None,
                                           tenor_years=10):
     """(sofr-simulate-mortgage-rate-paths forward-rates sigma1 sigma2
-    horizon-years n-paths mortgage-spread [seed a theta-bar tenor-years])
-    -> (list years-vector short-rate-paths underlying-paths
-    mortgage-paths) -- the same simulation as sofr-simulate-rate-paths,
-    plus a simple proxy mortgage rate per path/month:
-        mortgage_rate = tenor-years-rate + mortgage-spread
-    (tenor-years-rate is the model's approximate tenor-years rate --
-    defaults to 10, the usual rate-sensitivity proxy for a 30-year
-    mortgage; underlying-paths in the return is that same quantity,
-    before adding the spread). Reuses term_structure_model.
-    simulate_mortgage_rate_paths() as-is -- see its docstring, and
-    sofr-simulate-rate-paths's, for a/theta-bar/seed.
+      horizon-years n-paths mortgage-spread [seed a theta-bar tenor-years])
+    -> (list years short-rate-paths underlying-paths mortgage-paths)
 
-    SIMPLIFICATION (from the underlying model, not this bridge): a real
-    mortgage rate tracks current-coupon MBS yields -- the whole curve,
-    prepayment risk, origination costs -- not one flat spread over one
-    tenor point; mortgage-spread is a deliberate simplification, named so
-    it's obvious where to plug in something richer (see term_structure/
-    mortgage_spread.py for one way to estimate it from real data --
-    fetch_current_mortgage_rate() there pulls FRED's MORTGAGE30US).
+    The same simulation as sofr-simulate-rate-paths, plus a simple mortgage
+    rate for each scenario and month: the model's tenor-years rate (default
+    10) plus mortgage-spread. underlying-paths is that rate before adding
+    the spread.
 
-    Pure function -- no networking. Raises LispError if
-    term_structure_model.py isn't available."""
+    A real mortgage rate depends on more than one spread over one rate
+    (prepayment risk, the whole curve, costs); see
+    term_structure/mortgage_spread.py for estimating the spread from FRED's
+    MORTGAGE30US. No network access."""
     if not _TERM_STRUCTURE_AVAILABLE:
         raise LispError(
             "sofr-simulate-mortgage-rate-paths: term_structure_model.py (and "
