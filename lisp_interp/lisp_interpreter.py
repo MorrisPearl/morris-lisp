@@ -9,9 +9,9 @@ HOW TO RUN IT
     python3 lisp_interpreter.py -            the console REPL
 Put -v, -vv, -vvv, or --verbose=N before the file name to trace procedure
 calls as they happen (see (verbose n) in lisp_interpreter_reference.md).
-Every fresh environment first loads macros_init.lsp (the standard macros,
-while and do), then init.lsp, if it exists (see load_init_file in
-lisp_builtins.py).
+Every fresh environment first loads macros_init.lsp (the standard macros:
+while, do, assert, with-sqlite), then init.lsp, if it exists (see
+load_init_file in lisp_builtins.py).
 
 HOW THE CODE IS ORGANIZED
     lisp_interpreter.py   this file: the command line, console REPL, and batch mode
@@ -38,12 +38,15 @@ lisp_core.py imports none of the other files, so it can be read on its own.
 
 WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - integers, floats, strings, symbols, keywords (:name), booleans, lists
-  - vectors of numbers and/or dates, #(1 2 3), backed by numpy arrays so a
-    vector of millions of numbers stays compact
+  - vectors of numbers, strings, and/or dates, #(1 2 3), backed by numpy
+    arrays so a vector of millions of numbers stays compact
   - dates: (date year month day)
   - special forms: quote, quasiquote, if, define, set!, lambda, begin, let,
     let*, cond, and, or, dolist, defmacro, defstruct, with-struct,
-    catch-error, breakpoint, backtrace
+    catch-error, unwind-protect, catch (with the throw function),
+    breakpoint, backtrace
+  - standard macros written in Lisp (macros_init.lsp): while, do, assert,
+    with-sqlite
   - variadic procedures (a b . rest) and CL-style &key keyword arguments
   - macros (defmacro), with macroexpand/macroexpand-1/gensym for writing them
   - defstruct records with single inheritance (:include) and call-method

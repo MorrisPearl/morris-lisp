@@ -30,7 +30,7 @@ from lisp_core import (
     eval_default, expand_macro, gensym, get_verbose_level, is_true,
     list_to_pairs, pairs_to_list, parse, pretty_print_string,
     reconstruct_macro_source, reconstruct_procedure_source, run_file, seval,
-    set_verbose_level, to_display_string, to_string,
+    set_verbose_level, throw_to, to_display_string, to_string,
 )
 import lisp_charts
 import lisp_csv
@@ -328,6 +328,12 @@ def lisp_error(*args):
     raise LispError(" ".join(to_display_string(a) for a in args))
 
 
+def lisp_throw(tag, value=NIL):
+    """(throw tag [value]) -- leave the innermost (catch tag ...) now, making
+    it return value (default '()). An error if no catch for tag is running."""
+    throw_to(tag, value)
+
+
 def lisp_verbose(*args):
     """(verbose) returns the current trace level; (verbose n) sets it -- 0 off,
     1 procedure names, 2 also arguments and return values, 3 also macro
@@ -344,6 +350,7 @@ PROCEDURE_BUILTINS = {
     "apply": lisp_apply,
     "gensym": lisp_gensym,
     "error": lisp_error,
+    "throw": lisp_throw,
     "verbose": lisp_verbose,
 }
 
@@ -1149,7 +1156,8 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
 # The startup init file
 # ---------------------------------------------------------------------------
 
-# The standard macros (while, do), which every new environment loads first.
+# The standard macros (while, do, assert, with-sqlite), which every new
+# environment loads first.
 MACROS_INIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros_init.lsp")
 
 # Your own definitions, which every new environment loads next. Set the

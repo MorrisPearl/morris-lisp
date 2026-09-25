@@ -352,6 +352,37 @@ class LispError(Exception):
     pass
 
 
+class LispThrow(BaseException):
+    """Raised by (throw tag value) and caught by the matching (catch tag ...).
+    It's a BaseException, not an Exception, because a throw isn't an error:
+    catch-error, and any `except Exception` in a builtin, let it pass."""
+
+    def __init__(self, tag, value):
+        super().__init__(tag, value)
+        self.tag = tag
+        self.value = value
+
+
+# The tags of the (catch tag ...) forms now running, innermost last, so that
+# throw can report an error when nothing will catch it.
+_active_catch_tags = []
+
+
+def catch_tags_match(a, b):
+    """Whether a throw to tag a is caught by a catch of tag b: the same
+    object, or equal values of the same type (so 'done matches 'done, but 0
+    doesn't match #f)."""
+    return a is b or (type(a) is type(b) and a == b)
+
+
+def throw_to(tag, value):
+    """(throw tag [value]) -- see "catch" in eval_special_form."""
+    if not any(catch_tags_match(tag, active) for active in _active_catch_tags):
+        raise LispError("throw: nothing catches %s -- a throw must happen inside (catch %s ...)"
+                        % (to_string(tag), to_string(tag)))
+    raise LispThrow(tag, value)
+
+
 # ---------------------------------------------------------------------------
 # Tokenizer
 # ---------------------------------------------------------------------------
@@ -919,7 +950,7 @@ SPECIAL_FORMS = {
     "quote", "if", "define", "set!", "lambda",
     "begin", "let", "let*", "cond", "and", "or", "dolist",
     "defmacro", "quasiquote", "breakpoint", "defstruct", "catch-error",
-    "with-struct", "%scope-lambda", "backtrace",
+    "unwind-protect", "catch", "with-struct", "%scope-lambda", "backtrace",
 }
 
 
@@ -1344,6 +1375,43 @@ def eval_special_form(op, args, env, control_stack, value_stack):
             result = eval_body(handler_body, handler_env)
         value_stack.append(result)
 
+    elif op == "unwind-protect":
+        # (unwind-protect protected-expr cleanup-expr...): evaluate protected-expr
+        # and return its value, but run the cleanup expressions afterwards however
+        # protected-expr finishes -- normally, with an error, or by a throw. Like
+        # catch-error, this needs a Python try (here, try/finally), so
+        # protected-expr runs in a nested seval().
+        if not isinstance(args, Pair):
+            raise LispError("unwind-protect: expected (unwind-protect protected-expr cleanup-expr...)")
+        protected_expr = args.car
+        cleanup_body = pairs_to_list(args.cdr)
+        try:
+            result = seval(protected_expr, env)
+        finally:
+            eval_body(cleanup_body, env)
+        value_stack.append(result)
+
+    elif op == "catch":
+        # (catch tag body...): evaluate tag, then body. If (throw tag value) runs
+        # during body -- directly, or in any function body calls -- stop right
+        # there and return value; otherwise return body's value. The innermost
+        # catch with a matching tag (see catch_tags_match) gets the throw. The
+        # body runs in a nested seval() inside a Python try, as for catch-error.
+        if not isinstance(args, Pair):
+            raise LispError("catch: expected (catch tag body...)")
+        tag = seval(args.car, env)
+        body = pairs_to_list(args.cdr)
+        _active_catch_tags.append(tag)
+        try:
+            result = eval_body(body, env)
+        except LispThrow as thrown:
+            if not catch_tags_match(thrown.tag, tag):
+                raise
+            result = thrown.value
+        finally:
+            _active_catch_tags.pop()
+        value_stack.append(result)
+
     else:
         raise LispError("unknown special form: %s" % op)
 
@@ -1376,6 +1444,9 @@ def seval(expr, env, call=None):
     except Exception as exc:
         _record_lisp_trace(exc, control_stack)
         _call_depth = entry_depth
+        raise
+    except LispThrow:
+        _call_depth = entry_depth      # a throw isn't an error, so it gets no stack trace
         raise
     finally:
         _active_stacks.pop()
@@ -1611,7 +1682,10 @@ def to_string(x):
     if x is NIL:
         return "()"
     if isinstance(x, LispString):
-        return '"%s"' % x
+        # A backslash or quote mark inside the string is written with a backslash
+        # before it, as you'd type it, so the printed form reads back as the same
+        # string. Newlines and tabs are left as they are, so long text stays readable.
+        return '"%s"' % x.replace("\\", "\\\\").replace('"', '\\"')
     if isinstance(x, LispDate):
         return x.date.isoformat()
     if isinstance(x, LispVector):

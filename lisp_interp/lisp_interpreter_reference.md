@@ -49,7 +49,8 @@ functions" as a reference to search rather than read start to end.
 Every fresh environment — batch mode, the console REPL, the GUI, and
 Jupyter alike — loads two Lisp files before doing anything else:
 
-1. `macros_init.lsp`, the standard macros `while` and `do` (see "Standard
+1. `macros_init.lsp`, the standard macros `while`, `do`, `assert`, and
+   `with-sqlite` (see "Standard
    macros", below). It's part of the interpreter, so it's always loaded.
 2. `init.lsp` (next to `lisp_interpreter.py`; override with the
    `LISP_INIT_FILE` environment variable), if it exists. It's entirely
@@ -87,7 +88,7 @@ Jupyter alike — loads two Lisp files before doing anything else:
 |---|---|---|
 | Integer | `42`, `-7` | Python `int` |
 | Float | `3.14`, `-0.5` | Python `float` |
-| String | `"hello"` | Double-quoted; `\n`, `\t`, `\r`, `\"`, `\\` escapes |
+| String | `"hello"` | Double-quoted; `\n`, `\t`, `\r`, `\"`, `\\` escapes. The REPL prints a string the same way, in quotes and with `\"` and `\\` for a quote mark or backslash inside it, so what it prints can be typed back in (see `display`) |
 | Boolean | `#t`, `#f` | Everything except `#f` counts as true |
 | Symbol | `foo`, `list->vector` | Identifiers |
 | Keyword | `:name`, `:x` | A `Symbol` subtype, but SELF-EVALUATING (never needs `quote`) — used at call sites for keyword arguments; see "Keyword arguments", below |
@@ -467,6 +468,85 @@ one protected expression, wrap them in a `begin`.
 (safe-sqrt 16)                       ; => 4.0
 ```
 
+#### `(unwind-protect protected-expr cleanup-expr...)`
+Evaluates `protected-expr` and returns its value, but always runs the
+`cleanup-expr`s afterwards, however `protected-expr` finishes: normally,
+with an error, or by a `throw` (see `catch`, below). An error still
+carries on after the cleanup runs; `unwind-protect` doesn't catch it, it
+only makes sure the cleanup happens. Use it to release something that
+must not be left behind, such as an open database connection or a
+redirected output file. (`with-sqlite`, under "Standard macros", below, is
+built on it.) To protect more than one expression, wrap them in a `begin`.
+
+```lisp
+(define log '())
+(unwind-protect (+ 1 2)
+  (set! log (cons 'cleaned-up log)))     ; => 3
+log                                      ; => (cleaned-up)
+
+(catch-error
+  (unwind-protect (car 5)                ; an error...
+    (set! log (cons 'again log)))        ; ...but this still runs
+  (e) e)                                 ; => "car: not a pair: 5"
+log                                      ; => (again cleaned-up)
+```
+
+Nested `unwind-protect`s run their cleanups innermost first. If a cleanup
+expression itself has an error, that error is the one reported.
+
+#### `(catch tag body...)` and `(throw tag [value])`
+A way to jump out of the middle of something, such as a loop or a deep
+chain of function calls, with a value. `catch` evaluates `tag`, then the
+`body` forms, and normally returns the last one's value. But if
+`(throw tag value)` runs while the body is running, whether in the body
+itself or in any function it calls, everything in between stops at once,
+and `catch` returns `value` (`'()` if there's no value). `throw` is an
+ordinary function. `catch` and `throw` work as they do in Common Lisp.
+
+```lisp
+; The first negative number in a list, or '() if there isn't one --
+; stopping as soon as it's found.
+(define (first-negative lst)
+  (catch 'found
+    (dolist (x lst)
+      (if (< x 0) (throw 'found x)))
+    '()))
+(first-negative (list 3 1 -4 1 -5))   ; => -4
+(first-negative (list 3 1))           ; => ()
+
+; Leaving a loop that would otherwise run forever.
+(define i 0)
+(catch 'stop
+  (while #t
+    (set! i (+ i 1))
+    (if (= i 10) (throw 'stop i))))   ; => 10
+```
+
+- **Tags.** The tag is usually a quoted symbol, like `'found`. A throw goes
+  to the innermost running `catch` whose tag matches: the same symbol,
+  string, or number (`0` doesn't match `#f`, and `'x` doesn't match `:x`).
+- **No catch.** A `throw` with no matching `catch` running is an error.
+- **Cleanup still runs.** `unwind-protect` cleanups between the `throw`
+  and the `catch` run on the way out.
+- **Not an error.** A throw is not an error, so `catch-error` doesn't
+  intercept it; and `catch` doesn't intercept errors (use `catch-error`
+  for those).
+
+```lisp
+(catch 'a (catch 'b (throw 'a 1)) 2)                       ; => 1  (the outer catch gets it)
+(catch 'x (catch-error (throw 'x 'ok) (e) 'not-this))      ; => ok
+(throw 'nowhere 1)          ; an error: nothing catches nowhere
+```
+
+**How deep they can nest.** Like `catch-error`, `catch` and
+`unwind-protect` run their body in a nested evaluation, which uses some of
+Python's own stack while it's running. So they can be nested inside each
+other only a few hundred deep: a function that calls itself *through* a
+`catch`, starting a new `catch` on every call, stops with "maximum
+recursion depth exceeded" after about 250 levels (about 330 for
+`unwind-protect` and `catch-error`). A loop *inside* one `catch`, like the
+examples above, can run any number of times.
+
 ### Variadic parameters
 
 A `lambda`/`define`/`defmacro` parameter list can take three shapes:
@@ -738,13 +818,18 @@ is produced, it's evaluated by the ordinary trampoline, tail calls and all
 
 ### Standard macros
 
-`while` and `do` are macros written in Lisp, in `macros_init.lsp`, which
-every new environment loads at startup (see "Running it", above). Each
-turns into a small local function that calls itself to go around the loop
-again. That call is a tail call, so a loop can run any number of times
-without growing the stack. The function's name comes from `gensym`, so it
-can't clash with a name in your code. To see what a loop becomes, use
-`macroexpand-1`, e.g. `(macroexpand-1 '(while (< i 3) (set! i (+ i 1))))`.
+`while`, `do`, `assert`, and `with-sqlite` are macros written in Lisp, in
+`macros_init.lsp`, which every new environment loads at startup (see
+"Running it", above). The top of that file explains how macros are
+written with backquote (`` ` ``), `,`, and `,@`, using these macros as the
+examples, so it's a good place to start if you want to write your own.
+
+`while` and `do` each turn into a small local function that calls itself
+to go around the loop again. That call is a tail call, so a loop can run
+any number of times without growing the stack. The function's name comes
+from `gensym`, so it can't clash with a name in your code. To see what a
+loop becomes, use `macroexpand-1`, e.g.
+`(macroexpand-1 '(while (< i 3) (set! i (+ i 1))))`.
 
 #### `(while test body...)`
 Evaluates `test`; if it's true, evaluates the `body` forms, then starts
@@ -805,6 +890,55 @@ prints `2024`, `2025`, and `2026` on separate lines.
 
 Each variable must be written `(var init)` or `(var init step)`. Unlike
 Common Lisp, a bare `var` (meaning "starts as `'()`") isn't accepted.
+
+#### `(assert test [message...])`
+Does nothing (and returns `'()`) if `test` is true. If it's false, stops
+with an error that shows the test itself, plus the message if you give
+one. The message is any number of values, shown with spaces between them,
+as `error` shows its arguments. Use it to check something that must be
+true for the rest of the program to make sense, such as the input data
+or a result along the way:
+
+```lisp
+(define balance -5)
+(assert (>= balance 0))
+; an error: assert: (>= balance 0) is false
+(assert (>= balance 0) "balance went negative:" balance)
+; an error: assert: (>= balance 0) is false: balance went negative: -5
+(assert (< balance 0))         ; => ()
+```
+
+`assert` is a macro, not a function, so it can put the test's source code
+into the message, not just its value (`#f`). The message is evaluated
+only if the test fails.
+
+#### `(with-sqlite (var path) body...)`
+Opens the SQLite database at `path` (creating it if it doesn't exist),
+binds `var` to the connection, and evaluates the `body` forms, returning
+the last one's value. **The connection is always closed afterwards**, even
+if the body stops with an error or a `throw`, so it's never left open:
+
+```lisp
+(with-sqlite (conn "loans.db")
+  (sqlite-write-table conn "pools" pools 'replace)
+  (sqlite-query conn "SELECT count(*) AS n FROM pools"))
+```
+
+It's `sqlite-open`, then the body inside an `unwind-protect` whose cleanup
+is `sqlite-close`:
+
+```
+(let ((conn (sqlite-open "loans.db")))
+  (unwind-protect
+      (begin (sqlite-write-table conn "pools" pools 'replace)
+             (sqlite-query conn "SELECT count(*) AS n FROM pools"))
+    (sqlite-close conn)))
+```
+
+Changes are saved as each statement runs (connections use SQLite's
+autocommit mode), so there's nothing to commit before the connection
+closes. Once the body is done, `var` is gone and the connection is
+closed, so return what you need from the database as the body's value.
 
 ---
 
@@ -3360,6 +3494,16 @@ pass it to `sqlite-query`, `sqlite-execute`, and `sqlite-close`. Raises
 #### `(sqlite-close conn)`
 Closes a connection opened by `sqlite-open`. Returns `'()`.
 
+Rather than calling `sqlite-open` and `sqlite-close` yourself, you can use
+`(with-sqlite (conn "path/to/db.sqlite") body...)` (see "Standard
+macros"). It opens the database, runs the body, and closes the connection
+even if the body stops with an error:
+
+```lisp
+(with-sqlite (conn "loans.db")
+  (sqlite-query conn "SELECT * FROM pools WHERE state = ?" '() '() (list "CA")))
+```
+
 #### `(sqlite-query conn "SELECT ..." [dtypes max-rows params])`
 Runs a SQL statement and returns its ENTIRE result set at once, column-wise:
 a table — a Lisp list of `(name . vector)` columns, one per output
@@ -4064,6 +4208,19 @@ hello
 42
 ```
 
+A string inside a list or vector is shown the way you'd type it: in
+quotes, with a backslash before any quote mark or backslash in it. The
+REPL shows a result the same way. Newlines and tabs inside a string are
+shown as they are.
+
+```lisp
+(display (list "CA" "say \"hi\""))
+```
+prints:
+```
+("CA" "say \"hi\"")
+```
+
 #### `(newline)`
 Writes a single newline to the current output. Returns `'()`.
 
@@ -4165,6 +4322,13 @@ library like `column_engine.lsp` reporting a circular dependency.
 See "Special forms", above — documented once there (it's a special form,
 not a function: `protected-expr` must NOT be evaluated eagerly, since the
 whole point is to catch what happens when it's evaluated).
+
+#### `(throw tag [value])`, `(catch tag body...)`, `(unwind-protect protected-expr cleanup-expr...)`
+See "Special forms", above. `throw` jumps out to the matching `catch`;
+`unwind-protect` makes sure cleanup code runs.
+
+#### `(assert test [message...])`
+See "Standard macros", above.
 
 ### Introspection / debugging
 
@@ -4294,12 +4458,12 @@ definitions, automatically.
 The same idea, for user-defined macros — excludes this interpreter's own
 `pretty-print-function`/`pretty-print-macro`/`debug-function`/
 `undebug-function` convenience macros. It does include the standard
-macros `while` and `do` (they're written in Lisp, in `macros_init.lsp`),
-and any macros from `init.lsp`.
+macros (`while`, `do`, `assert`, `with-sqlite`; they're written in Lisp,
+in `macros_init.lsp`), and any macros from `init.lsp`.
 
 ```lisp
 (defmacro double-it (x) `(* 2 ,x))
-(defined-macros)               ; => (while do double-it)
+(defined-macros)               ; => (while do assert with-sqlite double-it)
 ```
 
 #### `(bound-variables)`
@@ -4550,7 +4714,8 @@ The interpreter is split into these Python files, all in `lisp_interp/`:
 
 Two Lisp files are loaded into every new environment at startup (by
 `load_init_file()` in `lisp_builtins.py`): `macros_init.lsp`, the standard
-macros (`while`, `do`), and then `init.lsp`, your own definitions.
+macros (`while`, `do`, `assert`, `with-sqlite`), and then `init.lsp`, your
+own definitions.
 
 Each file that adds builtins ends with a `BUILTINS` table — a Python dict
 from the Lisp name to the Python function that implements it — and

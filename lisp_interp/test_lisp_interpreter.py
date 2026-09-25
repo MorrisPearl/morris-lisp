@@ -788,6 +788,108 @@ class TestErrorsAndCatchError(LispTestCase):
             self.run_lisp("(car 1 2)")
 
 
+class TestUnwindProtect(LispTestCase):
+    """(unwind-protect protected-expr cleanup-expr...): cleanup always runs."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("(define log '()) (define (note x) (set! log (cons x log)))")
+
+    def test_returns_the_protected_value_and_runs_the_cleanup(self):
+        self.assertShows("(unwind-protect (+ 1 2) (note 'a) (note 'b))", "3")
+        self.assertShows("log", "(b a)")
+
+    def test_cleanup_runs_when_there_is_an_error(self):
+        self.assertLispError("(unwind-protect (car 5) (note 'cleaned))", "car: not a pair")
+        self.assertShows("log", "(cleaned)")
+
+    def test_cleanup_runs_when_there_is_a_throw(self):
+        self.assertShows("(catch 'out (unwind-protect (throw 'out 42) (note 'cleaned)))", "42")
+        self.assertShows("log", "(cleaned)")
+
+    def test_cleanup_runs_when_an_error_comes_from_deep_inside_a_call(self):
+        self.run_lisp("(define (f n) (if (= n 0) (error \"bottom\") (+ 1 (f (- n 1)))))")
+        self.assertShows("(catch-error (unwind-protect (f 100) (note 'cleaned)) (e) e)", '"bottom"')
+        self.assertShows("log", "(cleaned)")
+
+    def test_nested_cleanups_run_innermost_first(self):
+        self.assertLispError("(unwind-protect (unwind-protect (error \"x\") (note 'inner)) (note 'outer))", "x")
+        self.assertShows("log", "(outer inner)")
+
+    def test_an_error_in_the_cleanup_is_reported(self):
+        self.assertLispError("(unwind-protect 1 (error \"cleanup failed\"))", "cleanup failed")
+
+    def test_malformed(self):
+        self.assertLispError("(unwind-protect)", "expected (unwind-protect")
+
+
+class TestCatchAndThrow(LispTestCase):
+    """(catch tag body...) and (throw tag [value])."""
+
+    def test_throw_leaves_the_catch_with_its_value(self):
+        self.assertShows("(catch 'done (throw 'done 42) 'not-reached)", "42")
+
+    def test_catch_without_a_throw_returns_its_body_value(self):
+        self.assertShows("(catch 'done 1 2 3)", "3")
+
+    def test_throw_without_a_value_gives_nil(self):
+        self.assertShows("(catch 'done (throw 'done))", "()")
+
+    def test_early_exit_from_a_loop(self):
+        self.run_lisp("""
+          (define (first-negative lst)
+            (catch 'found
+              (dolist (x lst) (if (< x 0) (throw 'found x)))
+              '()))""")
+        self.assertShows("(first-negative (list 3 1 -4 1 -5))", "-4")
+        self.assertShows("(first-negative (list 3 1))", "()")
+
+    def test_throw_from_deep_inside_calls_and_callbacks(self):
+        self.run_lisp("(define (dig n) (if (= n 0) (throw 'deep 'bottom) (+ 1 (dig (- n 1)))))")
+        self.assertShows("(catch 'deep (dig 5000))", "bottom")
+        self.assertShows("(catch 'out (map (lambda (x) (if (< x 0) (throw 'out x) x)) (list 1 -2 3)))", "-2")
+
+    def test_the_innermost_matching_catch_gets_the_throw(self):
+        self.assertShows("(catch 'a (catch 'b (throw 'a 1)) 2)", "1")
+        self.assertShows("(catch 'a (catch 'a (throw 'a 1)) 2)", "2")
+
+    def test_tags_must_match_in_type_and_value(self):
+        self.assertShows('(catch "t" (throw "t" 7))', "7")
+        self.assertLispError("(catch 0 (throw #f 1))", "nothing catches #f")
+        self.assertLispError("(catch 'x (throw :x 1))", "nothing catches :x")
+
+    def test_catch_error_does_not_catch_a_throw(self):
+        self.assertShows("(catch 'x (catch-error (throw 'x 'passed) (e) 'wrongly-caught))", "passed")
+
+    def test_catch_does_not_catch_an_error(self):
+        self.assertLispError("(catch 'x (car 5))", "car: not a pair")
+
+    def test_a_throw_with_no_catch_is_an_error(self):
+        self.assertLispError("(throw 'nowhere 1)", "nothing catches nowhere")
+        self.assertLispError("(begin (catch 'x 1) (throw 'x 2))", "nothing catches x")   # that catch has finished
+
+    def test_malformed(self):
+        self.assertLispError("(catch)", "expected (catch tag body...)")
+
+
+class TestPrintingStrings(LispTestCase):
+    """How strings print: in quotes, with quote marks and backslashes escaped."""
+
+    def test_quote_marks_and_backslashes_are_escaped(self):
+        self.assertShows(r'"say \"hi\""', r'"say \"hi\""')
+        self.assertShows(r'"C:\\data"', r'"C:\\data"')
+        self.assertShows(r'(list "a\"b" "c")', r'("a\"b" "c")')
+
+    def test_the_printed_form_reads_back_as_the_same_string(self):
+        for text in ['say "hi"', "C:\\data", 'both \\ and "', "two\nlines"]:
+            printed = lisp_core.to_string(lisp_core.LispString(text))
+            self.assertEqual(list(lisp_core.parse(printed))[0], text)
+
+    def test_display_and_print_show_the_string_itself(self):
+        self.run_lisp(r'(display "say \"hi\"") (newline) (print "C:\\data")')
+        self.assertEqual(self.printed(), 'say "hi"\nC:\\data\n')
+
+
 # ---------------------------------------------------------------------------
 # 8. Arithmetic, comparison, equality
 # ---------------------------------------------------------------------------
@@ -1092,7 +1194,7 @@ class TestFormat(LispTestCase):
 
     def test_non_numbers_are_formatted_as_their_display_text(self):
         self.assertShows('(format "{} {} {} {}" "hi" (date 2023 1 1) \'sym (list 1 "a"))',
-                         '"hi 2023-01-01 sym (1 "a")"')     # a list shows as display shows it
+                         r'"hi 2023-01-01 sym (1 \"a\")"')     # a list shows as display shows it
         self.assertShows("(format \"{:>4}|{:>4}|{}\" #t #f '())", '"  #t|  #f|()"')
 
     def test_values_read_from_vectors_and_nan(self):
@@ -2013,6 +2115,58 @@ class TestStandardMacros(LispTestCase):
         self.assertLispError("(do ((i)) ((= i 3)))", "(var init) or (var init step)")
         self.assertLispError("(do ((i 0 1 2)) ((= i 3)))", "(var init) or (var init step)")
         self.assertLispError("(do ((i 0 (+ i 1))) done)", "(end-test result...)")
+
+    def test_assert_does_nothing_when_the_test_is_true(self):
+        self.assertShows("(assert (= 1 1))", "()")
+
+    def test_assert_names_the_failed_test(self):
+        self.run_lisp("(define balance -5)")
+        self.assertLispError("(assert (>= balance 0))", "assert: (>= balance 0) is false")
+
+    def test_assert_adds_the_message(self):
+        self.run_lisp("(define balance -5)")
+        self.assertLispError('(assert (>= balance 0) "balance went negative:" balance)',
+                             "assert: (>= balance 0) is false: balance went negative: -5")
+
+    def test_assert_evaluates_the_message_only_when_the_test_fails(self):
+        self.run_lisp('(define evaluated #f) (assert #t (begin (set! evaluated #t) "msg"))')
+        self.assertShows("evaluated", "#f")
+
+    def test_with_sqlite_returns_the_body_value_and_closes_the_connection(self):
+        self.run_lisp("""
+          (define saved '())
+          (define result
+            (with-sqlite (conn ":memory:")
+              (set! saved conn)
+              (sqlite-execute conn "CREATE TABLE t (x)")
+              (sqlite-execute conn "INSERT INTO t VALUES (7)")
+              (sqlite-query conn "SELECT x FROM t")))""")
+        self.assertShows("result", '(("x" . #(7)))')
+        self.assertLispError('(sqlite-query saved "SELECT 1")', "closed database")
+
+    def test_with_sqlite_closes_the_connection_after_an_error(self):
+        self.run_lisp("(define saved '())")
+        self.assertLispError("(with-sqlite (conn \":memory:\") (set! saved conn) (car 5))", "car: not a pair")
+        self.assertLispError('(sqlite-query saved "SELECT 1")', "closed database")
+
+    def test_with_sqlite_closes_the_connection_after_a_throw(self):
+        self.run_lisp("(define saved '())")
+        self.assertShows("(catch 'out (with-sqlite (conn \":memory:\") (set! saved conn) (throw 'out 'left)))",
+                         "left")
+        self.assertLispError('(sqlite-query saved "SELECT 1")', "closed database")
+
+    def test_with_sqlite_changes_are_saved_in_the_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "t.db").replace("\\", "/")
+            self.run_lisp("""
+              (with-sqlite (conn "%s")
+                (sqlite-write-table conn "pools" (make-table "upb" #(100 200))))""" % path)
+            self.assertShows("""(with-sqlite (conn "%s")
+                                  (cdr (car (sqlite-query conn "SELECT sum(upb) AS total FROM pools"))))""" % path,
+                             "#(300)")
+
+    def test_with_sqlite_rejects_a_malformed_spec(self):
+        self.assertLispError("(with-sqlite conn 1)", "expected (with-sqlite (var path) body...)")
 
 
 class TestInitFileAndRunFile(LispTestCase):
@@ -2938,9 +3092,9 @@ class TestExampleScripts(unittest.TestCase):
 
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
-    "breakpoint", "fred-series", "tastytrade", "sofr-", "(load ", "redirect-output", "sqlite-open",
+    "breakpoint", "fred-series", "tastytrade", "sofr-", "(load ", "redirect-output", "sqlite-open", "with-sqlite",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv", "display-columns",
-    "debug-function", "while", "input", "exit", "load-init", "http-get", "http-clear-cache",
+    "debug-function", "input", "exit", "load-init", "http-get", "http-clear-cache",
 )
 # examples whose documented value is illustrative rather than exact
 _ILLUSTRATIVE_PREFIXES = ("e.g.", "one of", "some", "a ", "an ", "somewhere", "error", "raises",
