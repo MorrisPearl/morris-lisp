@@ -173,7 +173,7 @@
 ; (further down) is unconditional the same way, for the same reason.
 
 ; 1/0, not #t/#f -- a column's series is a vector, and vectors only hold
-; numbers or dates (see check_vector_elements() in lisp_interpreter.py).
+; numbers or dates (see check_vector_elements() in lisp_core.py).
 (defcolumn z_locked_out
     :initial_value 1
     :value_calculation (if (or (> (lag bal_a 1) 0) (> (lag bal_b 1) 0) (> (lag bal_c 1) 0)) 1 0)

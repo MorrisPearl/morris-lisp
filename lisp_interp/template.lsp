@@ -38,7 +38,7 @@
 ; rendered SQL text -- never the value itself -- with the looked-up value
 ; appended to a separate list instead. That list is then handed to
 ; sqlite-query/sqlite-execute's own `params` argument, which passes it to
-; SQLite's native parameter binding (see _sqlite_run in lisp_interpreter.py):
+; SQLite's native parameter binding (see _sqlite_run in lisp_sqlite.py):
 ; SQLite receives the VALUE over a completely separate channel from the
 ; SQL TEXT, so it is structurally impossible for a value's contents --
 ; quotes, semicolons, comment markers, anything -- to be interpreted as
@@ -187,7 +187,7 @@ vector -- normalize either to a plain list for iteration."
   (if (vector? x) (vector->list x) x))
 
 (define (template--truthy? x)
-  "This Lisp's own truthiness rule (is_true in lisp_interpreter.py):
+  "This Lisp's own truthiness rule (is_true in lisp_core.py):
 everything except #f is true, '() and 0 included. Deliberately routed
 through `if` itself (not (eq? x #f) or similar) -- eq?'s equality
 fallback (a is b or a == b) treats 0 as equal to #f, because Python's
@@ -206,7 +206,7 @@ instead of reintroducing it."
 ; This is plain (non-tail) recursion -- fine here, since parse depth is
 ; bounded by how deeply {{#each}}/{{#if}} tags are NESTED IN THE
 ; TEMPLATE SOURCE (always small, a handful of levels at most), never by
-; any runtime data size, the same reasoning lisp_interpreter.py's own
+; any runtime data size, the same reasoning lisp_core.py's own
 ; eval_quasiquote uses for the same kind of recursion.
 ; ---------------------------------------------------------------------
 

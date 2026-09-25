@@ -26,8 +26,8 @@ A few things worth knowing about how this differs from an ordinary Python
 kernel:
   - errors render through Jupyter's own error display (a red traceback
     box), built from the error's message plus the Lisp chain of procedure
-    calls that led to it (see lisp_interpreter.py's "Call tracing"
-    section) -- not a Python traceback. Tail calls replace their caller's
+    calls that led to it (see the "Call tracing" section of
+    lisp_core.py) -- not a Python traceback. Tail calls replace their caller's
     frame, so a caller that tail-called its way out shows up only as a
     "[+N tail calls]" count on the frame that replaced it;
   - tab-completion is disabled outright (see do_complete, below) rather
@@ -41,7 +41,7 @@ kernel:
     bookkeeping is tied to running Python code through
     `shell.run_cell()`, in the PYTHON namespace -- do_execute() below
     never calls that (it evaluates Lisp source directly through
-    L.seval), so IPython's own history variables would never be
+    seval), so IPython's own history variables would never be
     populated, and wouldn't be reachable from Lisp code even if they
     were.
 """
@@ -51,7 +51,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import lisp_interpreter as L
+from lisp_core import LispError, NIL, Symbol, format_lisp_traceback, parse, seval, to_string
 import lisp_jupyter
 
 from ipykernel.ipkernel import IPythonKernel
@@ -103,20 +103,20 @@ class LispKernel(IPythonKernel):
     def do_execute(self, code, silent, store_history=True, user_expressions=None,
                     allow_stdin=False, *, cell_meta=None, cell_id=None):
         env = lisp_jupyter.get_env()
-        result = L.NIL
+        result = NIL
         try:
-            for expr in L.parse(code):
-                result = L.seval(expr, env)
-        except L.LispError as e:
-            return self._error_reply("LispError", str(e), L.format_lisp_traceback(e))
+            for expr in parse(code):
+                result = seval(expr, env)
+        except LispError as e:
+            return self._error_reply("LispError", str(e), format_lisp_traceback(e))
         except Exception as e:
-            return self._error_reply(type(e).__name__, str(e), L.format_lisp_traceback(e))
+            return self._error_reply(type(e).__name__, str(e), format_lisp_traceback(e))
 
-        if not silent and result is not L.NIL:
+        if not silent and result is not NIL:
             self._record_history(env, result)
             self.send_response(self.iopub_socket, "execute_result", {
                 "execution_count": self.execution_count,
-                "data": {"text/plain": L.to_string(result)},
+                "data": {"text/plain": to_string(result)},
                 "metadata": {},
             })
 
@@ -134,19 +134,19 @@ class LispKernel(IPythonKernel):
         result -- exactly the `_`/`__`/`___`/`Out[N]` convention IPython
         gives Python cells (see the module docstring for why this kernel
         doesn't get that for free). Only called for a cell that actually
-        produced a value (do_execute's `result is not L.NIL` check) --
+        produced a value (do_execute's `result is not NIL` check) --
         the same rule IPython itself uses: a (define x 10)-style cell
         with no displayed result doesn't shift the history either."""
-        env[L.Symbol("___")] = env.get(L.Symbol("__"), L.NIL)
-        env[L.Symbol("__")] = env.get(L.Symbol("_"), L.NIL)
-        env[L.Symbol("_")] = result
-        env[L.Symbol("_%d" % self.execution_count)] = result
+        env[Symbol("___")] = env.get(Symbol("__"), NIL)
+        env[Symbol("__")] = env.get(Symbol("_"), NIL)
+        env[Symbol("_")] = result
+        env[Symbol("_%d" % self.execution_count)] = result
 
     def _error_reply(self, ename, evalue, lisp_traceback=""):
         """Publish a real Jupyter error display (the red traceback box)
         and return the matching error-status execute_reply. The
         "traceback" is the Lisp call chain that led to the error (the text
-        lisp_interpreter.format_lisp_traceback produces; empty if the error
+        lisp_core.format_lisp_traceback produces; empty if the error
         happened outside any procedure call), one line per entry, followed
         by the one-line error message."""
         traceback = lisp_traceback.splitlines() + ["%s: %s" % (ename, evalue)]

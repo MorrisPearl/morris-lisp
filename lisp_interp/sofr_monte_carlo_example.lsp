@@ -9,7 +9,7 @@
 ; sofr-simulate-mortgage-rate-paths) -- all of it reusing
 ; term_structure/term_structure_model.py and sofr_market_data.py as-is;
 ; see those files (and each builtin's own docstring in
-; lisp_interpreter.py) for the full methodology and its documented
+; lisp_sofr.py) for the full methodology and its documented
 ; simplifications.
 ;
 ; Needs the `tastytrade` package (pip install tastytrade), a tastytrade

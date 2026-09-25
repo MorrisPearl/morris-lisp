@@ -5,8 +5,8 @@ Shared plumbing for running the morris_lisp interpreter inside a Jupyter
 notebook with no PyQt6 GUI involved at all: charts render inline via
 matplotlib, and (display-columns ...) renders as a pandas DataFrame (a
 real HTML table) instead of the console's plain text table. This module
-just wires up the output/plot/columns callbacks make_global_env() already
-accepts -- it doesn't touch lisp_interpreter.py itself.
+just supplies the output/plot/columns/markdown callbacks that
+lisp_builtins.make_global_env() accepts.
 
 Not meant to be used directly. lisp_kernel.py -- the native "morris_lisp"
 Jupyter kernel (see install_lisp_kernel.py) -- is the supported way to use
@@ -18,12 +18,12 @@ also registered a `%%lisp` cell magic for running Lisp cells inside an
 ordinary Python kernel; that approach was superseded by lisp_kernel.py and
 has been removed.)
 
-The tastytrade-*/sofr-*  builtins DO need one thing from lisp_interpreter.
-py itself to work correctly here, already in place: they run their
-network I/O via asyncio, and asyncio.run() can't be called again from
-inside a thread that already has its OWN running event loop -- which is
-exactly what a Jupyter/IPython kernel has. See _run_async() in
-lisp_interpreter.py (and its twin in term_structure/sofr_market_data.py)
+The tastytrade-*/sofr-* builtins need one thing to work correctly here,
+already in place: they run their network I/O via asyncio, and
+asyncio.run() can't be called again from inside a thread that already has
+its OWN running event loop -- which is exactly what a Jupyter/IPython
+kernel has. See _run_async() in lisp_tastytrade.py (and its twin in
+term_structure/sofr_market_data.py)
 -- both fall back to running the coroutine on a separate thread with its
 own fresh loop instead of failing outright, so every tastytrade-*/sofr-*
 builtin still just returns a plain value here, synchronously, exactly as
@@ -36,7 +36,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import lisp_interpreter as L
+from lisp_builtins import load_init_file, make_global_env, print_columns_table
+from lisp_charts import chart_summary_text, draw_chart_on_axes
 
 try:
     # matplotlib.figure.Figure directly, NOT pyplot -- pyplot's plt.show()
@@ -75,21 +76,10 @@ def _notebook_output(text):
 
 
 def _print_chart_summary(spec):
-    """The same plain-text chart summary make_global_env()'s own
-    console-mode default produces -- used here as the no-matplotlib
-    fallback, so a notebook without matplotlib installed still gets
-    SOME feedback from plot-xy/plot-xy-regression/plot-xy-full instead
-    of a silent no-op."""
-    lines = ["[chart] %s" % spec["title"]]
-    for s in spec["series"]:
-        how = "connected" if s["connect"] else "points only"
-        lines.append("  %s: %d points (%s)" % (s["label"], len(s["y"]), how))
-    if spec.get("regression"):
-        r = spec["regression"]
-        lines.append(
-            "  %s regression on %s: slope=%.6g intercept=%.6g"
-            % (r["kind"], r["label"], r["model"].coefficients[0], r["model"].intercept))
-    print("\n".join(lines))
+    """The no-matplotlib fallback: the same one-line-per-series summary the
+    console prints, so a notebook without matplotlib still gets SOME
+    feedback from plot-xy/plot-xy-regression/plot-xy-full."""
+    print(chart_summary_text(spec), end="")
 
 
 def _notebook_plot(spec):
@@ -107,28 +97,15 @@ def _notebook_plot(spec):
     fig = Figure(figsize=(6, 4))
     FigureCanvasAgg(fig)
     ax = fig.add_subplot(111)
-    L.draw_chart_on_axes(fig, ax, spec)
+    draw_chart_on_axes(fig, ax, spec)
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
     _ipy_display(_ipy_image(data=buf.getvalue()))
 
 
 def _print_columns_table(name_value_pairs):
-    """The no-pandas/no-IPython fallback: the same right-justified plain
-    text table make_global_env()'s own console-mode default produces."""
-    names = [name for name, _ in name_value_pairs]
-    rows = max((len(values) for _, values in name_value_pairs), default=0)
-    widths = [max([len(name)] + [len(str(v)) for v in values])
-              for name, values in name_value_pairs]
-
-    def row(cells):
-        return "  ".join(str(c).rjust(w) for c, w in zip(cells, widths))
-
-    lines = [row(names)]
-    for i in range(rows):
-        lines.append(row(values[i] if i < len(values) else ""
-                          for _, values in name_value_pairs))
-    print("\n".join(lines))
+    """The no-pandas/no-IPython fallback: the console's plain text table."""
+    print_columns_table(name_value_pairs, lambda text: print(text, end=""))
 
 
 def _notebook_columns(name_value_pairs):
@@ -174,7 +151,7 @@ def get_env():
     already does exactly what a reset() would."""
     global _env
     if _env is None:
-        _env = L.make_global_env(output=_notebook_output, plot=_notebook_plot,
-                                  columns=_notebook_columns, markdown=_notebook_markdown)
-        L.load_init_file(_env)
+        _env = make_global_env(output=_notebook_output, plot=_notebook_plot,
+                               columns=_notebook_columns, markdown=_notebook_markdown)
+        load_init_file(_env)
     return _env

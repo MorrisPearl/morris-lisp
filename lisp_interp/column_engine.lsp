@@ -1,7 +1,7 @@
 ; column_engine.lsp
 ;
 ; A small example library, built entirely on top of defstruct and &key
-; keyword arguments (see lisp_interpreter.py), for modeling row-by-row
+; keyword arguments (see lisp_core.py), for modeling row-by-row
 ; calculated series -- e.g. a mortgage amortization table, or more
 ; generally the cashflows of a structured transaction (CMO tranches and
 ; the like). This is ordinary Lisp code, not interpreter internals: read

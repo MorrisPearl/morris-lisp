@@ -43,7 +43,8 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-import lisp_interpreter as li  # noqa: E402  (needs the sys.path line above)
+import lisp_builtins  # noqa: E402  (these need the sys.path line above)
+import lisp_core     # noqa: E402
 
 INTERPRETER = os.path.join(HERE, "lisp_interpreter.py")
 REFERENCE_DOC = os.path.join(HERE, "lisp_interpreter_reference.md")
@@ -58,24 +59,24 @@ class LispTestCase(unittest.TestCase):
     display/print output is captured rather than written to the console."""
 
     def setUp(self):
-        li.set_verbose_level(0)         # verbosity is process-wide: never leak it between tests
-        self.addCleanup(li.set_verbose_level, 0)
+        lisp_core.set_verbose_level(0)         # verbosity is process-wide: never leak it between tests
+        self.addCleanup(lisp_core.set_verbose_level, 0)
         self.out = []
-        self.env = li.make_global_env(output=self.out.append)
+        self.env = lisp_builtins.make_global_env(output=self.out.append)
 
     # -- running code ------------------------------------------------------
 
     def run_lisp(self, src, env=None):
         """Evaluate every top-level form in `src`; return the last value."""
         env = self.env if env is None else env
-        result = li.NIL
-        for expr in li.parse(src):
-            result = li.seval(expr, env)
+        result = lisp_core.NIL
+        for expr in lisp_core.parse(src):
+            result = lisp_core.seval(expr, env)
         return result
 
     def show(self, src):
         """The last value's printed (REPL) form, e.g. '(1 2 3)'."""
-        return li.to_string(self.run_lisp(src))
+        return lisp_core.to_string(self.run_lisp(src))
 
     def printed(self):
         """Everything display/newline/print have written so far."""
@@ -89,7 +90,7 @@ class LispTestCase(unittest.TestCase):
     def assertLispError(self, src, fragment=""):
         """`src` must raise the interpreter's own LispError whose message
         contains `fragment`."""
-        with self.assertRaises(li.LispError, msg="source: %s" % src) as cm:
+        with self.assertRaises(lisp_core.LispError, msg="source: %s" % src) as cm:
             self.run_lisp(src)
         self.assertIn(fragment, str(cm.exception))
 
@@ -124,15 +125,15 @@ class TestReader(LispTestCase):
         self.assertEqual(self.run_lisp(r'"a\rb"'), "a\rb")
         self.assertEqual(self.run_lisp(r'"say \"hi\""'), 'say "hi"')
         self.assertEqual(self.run_lisp(r'"back\\slash"'), "back\\slash")
-        self.assertTrue(li.is_true(self.run_lisp('(string? "x")')))
+        self.assertTrue(lisp_core.is_true(self.run_lisp('(string? "x")')))
 
     def test_quote_shorthand(self):
         self.assertShows("'x", "x")
         self.assertShows("'(1 2 3)", "(1 2 3)")
-        self.assertEqual(li.to_string(list(li.parse("'x"))[0]), "(quote x)")
+        self.assertEqual(lisp_core.to_string(list(lisp_core.parse("'x"))[0]), "(quote x)")
 
     def test_quasiquote_shorthand_reads_as_expected_forms(self):
-        self.assertEqual(li.to_string(list(li.parse("`(a ,b ,@c)"))[0]),
+        self.assertEqual(lisp_core.to_string(list(lisp_core.parse("`(a ,b ,@c)"))[0]),
                          "(quasiquote (a (unquote b) (unquote-splicing c)))")
 
     def test_dotted_pairs(self):
@@ -149,7 +150,7 @@ class TestReader(LispTestCase):
 
     def test_keywords_are_self_evaluating_symbols(self):
         v = self.run_lisp(":name")
-        self.assertIsInstance(v, li.Keyword)
+        self.assertIsInstance(v, lisp_core.Keyword)
         self.assertShows("(keyword? :name)", "#t")
         self.assertShows("(keyword? 'name)", "#f")
         self.assertShows("(symbol? :name)", "#t")
@@ -158,17 +159,17 @@ class TestReader(LispTestCase):
         self.assertEqual(self.run_lisp("; nothing here\n(+ 1 ; inline\n 2)"), 3)
 
     def test_multiple_top_level_forms(self):
-        self.assertEqual(len(list(li.parse("1 2 (+ 3 4)"))), 3)
+        self.assertEqual(len(list(lisp_core.parse("1 2 (+ 3 4)"))), 3)
 
     def test_empty_source(self):
-        self.assertEqual(list(li.parse("")), [])
-        self.assertEqual(list(li.parse("; only a comment")), [])
+        self.assertEqual(list(lisp_core.parse("")), [])
+        self.assertEqual(list(lisp_core.parse("; only a comment")), [])
 
     def test_unbalanced_parens_raise(self):
-        with self.assertRaises(li.LispError):
-            list(li.parse("(1 2"))
-        with self.assertRaises(li.LispError):
-            list(li.parse(")"))
+        with self.assertRaises(lisp_core.LispError):
+            list(lisp_core.parse("(1 2"))
+        with self.assertRaises(lisp_core.LispError):
+            list(lisp_core.parse(")"))
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +276,7 @@ class TestSpecialForms(LispTestCase):
         for name in ("quote", "quasiquote", "if", "define", "set!", "lambda", "begin",
                      "let", "let*", "cond", "and", "or", "dolist", "defmacro",
                      "defstruct", "with-struct", "catch-error", "breakpoint"):
-            self.assertIn(name, li.SPECIAL_FORMS)
+            self.assertIn(name, lisp_core.SPECIAL_FORMS)
 
 
 # ---------------------------------------------------------------------------
@@ -312,13 +313,13 @@ class TestTailCallsAndRecursion(LispTestCase):
         is the same for 100 iterations as for 5000."""
         def peak_depth(n):
             peak = [0]
-            real = li.push_sequence
+            real = lisp_core.push_sequence
 
             def spy(exprs, env, control_stack, value_stack):
                 peak[0] = max(peak[0], len(control_stack))
                 return real(exprs, env, control_stack, value_stack)
 
-            with mock.patch.object(li, "push_sequence", spy):
+            with mock.patch.object(lisp_core, "push_sequence", spy):
                 self.run_lisp("(define (loop n) (if (= n 0) 'ok (loop (- n 1)))) (loop %d)" % n)
             return peak[0]
 
@@ -1183,7 +1184,7 @@ class TestVectors(LispTestCase):
         self.assertRaisesFromLisp(IndexError, "(vector-ref #(1 2 3) 10)")
 
     def test_dtype_is_chosen_from_the_contents_and_widens_on_demand(self):
-        V = li.LispVector
+        V = lisp_core.LispVector
         self.assertEqual(self.run_lisp("(vector 0 1 1 0)").items.dtype, V.BOOL_INT_DTYPE)
         self.assertEqual(self.run_lisp("(vector 1 2 300)").items.dtype, V.INT_DTYPE)
         self.assertEqual(self.run_lisp("(vector 1 2.5)").items.dtype, V.FLOAT_DTYPE)
@@ -1278,11 +1279,11 @@ class TestRegression(LispTestCase):
         self.assertAlmostEqual(self.run_lisp("(model-intercept m)"), 1.0)
 
     def test_mismatched_lengths_are_an_error(self):
-        with self.assertRaises(li.LispError):
+        with self.assertRaises(lisp_core.LispError):
             self.run_lisp("(linear-regression #(1 2 3) #(1 2))")
 
     def test_constant_predictor_is_an_error(self):
-        with self.assertRaises(li.LispError):
+        with self.assertRaises(lisp_core.LispError):
             self.run_lisp("(linear-regression #(2 2 2 2) #(1 2 3 4))")
 
     def test_logistic_fit_is_monotonic_and_bounded(self):
@@ -1293,7 +1294,7 @@ class TestRegression(LispTestCase):
         self.assertTrue(0.0 < lo < hi < 1.0)
 
     def test_logistic_rejects_y_outside_zero_one(self):
-        with self.assertRaises(li.LispError):
+        with self.assertRaises(lisp_core.LispError):
             self.run_lisp("(logistic-regression #(1 2 3 4) #(0 1 2 1))")
 
     def test_spline_fit_bends_where_a_line_cannot(self):
@@ -1312,7 +1313,7 @@ class TestRegression(LispTestCase):
     def test_spline_models_refuse_flat_coefficient_accessors(self):
         self.run_lisp("(define spl (spline-regression (vector-iterate 0 11 (lambda (x) (+ x 1))) "
                       "(vector-map (lambda (x) (abs (- x 5))) (vector-iterate 0 11 (lambda (x) (+ x 1)))) (list 5)))")
-        with self.assertRaises(li.LispError):
+        with self.assertRaises(lisp_core.LispError):
             self.run_lisp("(model-slope spl)")
 
     def test_model_report_and_evaluate_run(self):
@@ -1366,8 +1367,8 @@ class TestSqlite(LispTestCase):
 
     def test_dtype_hints_force_vector_types(self):
         cols = self.run_lisp('(sqlite-query conn "SELECT id, amount FROM t ORDER BY id" "IF" 10)')
-        self.assertEqual(cols.car.cdr.items.dtype, li.LispVector.INT_DTYPE)
-        self.assertEqual(cols.cdr.car.cdr.items.dtype, li.LispVector.FLOAT_DTYPE)
+        self.assertEqual(cols.car.cdr.items.dtype, lisp_core.LispVector.INT_DTYPE)
+        self.assertEqual(cols.cdr.car.cdr.items.dtype, lisp_core.LispVector.FLOAT_DTYPE)
 
     def test_max_rows_bound_is_enforced(self):
         self.assertLispError('(sqlite-query conn "SELECT id FROM t" "I" 2)')
@@ -1463,11 +1464,11 @@ class TestInitFileAndRunFile(LispTestCase):
             path = os.path.join(d, "init.lsp")
             with open(path, "w") as f:
                 f.write("(define from-init 123)\n(defmacro twice (x) `(* 2 ,x))\n")
-            li.load_init_file(self.env, path)
+            lisp_builtins.load_init_file(self.env, path)
         self.assertShows("(twice from-init)", "246")
 
     def test_a_missing_init_file_is_silently_skipped(self):
-        li.load_init_file(self.env, "/definitely/not/here/init.lsp")     # must not raise
+        lisp_builtins.load_init_file(self.env, "/definitely/not/here/init.lsp")     # must not raise
 
     def test_a_broken_init_file_warns_but_does_not_raise(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1476,7 +1477,7 @@ class TestInitFileAndRunFile(LispTestCase):
                 f.write("(define ok 1)\n(error \"broken init\")\n(define never 2)\n")
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                li.load_init_file(self.env, path)
+                lisp_builtins.load_init_file(self.env, path)
         self.assertIn("broken init", err.getvalue())
         self.assertShows("ok", "1")                                    # ran up to the error
         self.assertLispError("never", "unbound symbol")               # ...and stopped there
@@ -1484,7 +1485,7 @@ class TestInitFileAndRunFile(LispTestCase):
     def test_the_shipped_init_file_loads_cleanly_and_defines_while(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            li.load_init_file(self.env, li.DEFAULT_INIT_FILE)
+            lisp_builtins.load_init_file(self.env, lisp_builtins.DEFAULT_INIT_FILE)
         self.assertEqual(err.getvalue(), "")
         self.assertShows("(define i 0) (while (< i 5) (set! i (+ i 1))) i", "5")
 
@@ -1493,7 +1494,7 @@ class TestInitFileAndRunFile(LispTestCase):
             path = os.path.join(d, "s.lsp")
             with open(path, "w") as f:
                 f.write("(define a 1)\n(define b (+ a 1))\n(display b)\n")
-            li.run_file(path, self.env)
+            lisp_core.run_file(path, self.env)
         self.assertEqual(self.printed(), "2")
 
 
@@ -1546,7 +1547,7 @@ class TestTemplateLibrary(LispTestCase):
         hostile = "x'; DROP TABLE t; --"
         rendered = self.run_lisp('(template-render-sql "SELECT * FROM t WHERE name = {{n}}" '
                                  '(template-bindings (n "%s")))' % hostile)
-        sql, params = li.to_display_string(rendered.car), li.to_string(rendered.cdr)
+        sql, params = lisp_core.to_display_string(rendered.car), lisp_core.to_string(rendered.cdr)
         self.assertEqual(sql, "SELECT * FROM t WHERE name = ?")
         self.assertNotIn("DROP", sql)
         self.assertIn("DROP", params)
@@ -1577,10 +1578,10 @@ class TestColumnEngineLibrary(LispTestCase):
     documents this caveat.)"""
 
     def setUp(self):
-        li.set_verbose_level(0)
+        lisp_core.set_verbose_level(0)
         self.tables = []
         self.out = []
-        self.env = li.make_global_env(output=self.out.append, columns=self.tables.append)
+        self.env = lisp_builtins.make_global_env(output=self.out.append, columns=self.tables.append)
         self.run_lisp('(load "%s")' % os.path.join(HERE, "column_engine.lsp"))
 
     def test_columns_chain_and_lag_across_rows(self):
@@ -1666,8 +1667,8 @@ class TestProcedureNames(LispTestCase):
         self.assertEqual(str(self.run_lisp("(defmacro m (x) x) m").name), "m")
 
     def test_let_scopes_are_flagged_and_real_lambdas_are_not(self):
-        exprs = list(li.parse("(let ((x 1)) x)"))
-        self.assertIn("%scope-lambda", li.to_string(li.desugar_let(exprs[0].cdr)))
+        exprs = list(lisp_core.parse("(let ((x 1)) x)"))
+        self.assertIn("%scope-lambda", lisp_core.to_string(lisp_core.desugar_let(exprs[0].cdr)))
         self.assertFalse(self.run_lisp("(lambda (x) x)").is_scope)
 
     def test_naming_does_not_change_behavior(self):
@@ -1804,7 +1805,7 @@ class TestCallTracing(LispTestCase):
         self.run_lisp("(verbose 1)")
         with self.assertRaises(Exception):
             self.run_lisp("(boom)")
-        self.assertEqual(li._call_depth, 0)
+        self.assertEqual(lisp_core._call_depth, 0)
 
     def test_turning_tracing_on_from_inside_a_running_call_is_safe(self):
         self.run_lisp("(define (g) 1) (define (f) (verbose 1) (g))")
@@ -1829,7 +1830,7 @@ class TestCallTracing(LispTestCase):
 
     def test_each_environment_writes_to_its_own_output(self):
         other_out = []
-        other = li.make_global_env(output=other_out.append)
+        other = lisp_builtins.make_global_env(output=other_out.append)
         self.run_lisp("(define (f) 1)")
         self.run_lisp("(define (g) 2)", env=other)
         self.run_lisp("(verbose 1)")
@@ -1853,35 +1854,35 @@ class TestStackTraces(LispTestCase):
           (define (middle x) (+ 1 (inner x)))
           (define (outer x) (list (middle x)))""")
         e = self.error_of("(outer 5)")
-        self.assertEqual(li.format_lisp_traceback(e),
+        self.assertEqual(lisp_core.format_lisp_traceback(e),
                          "Lisp traceback (most recent call last):\n"
                          "  (outer 5)\n  (middle 5)\n  (inner 5)\n")
 
     def test_error_report_is_the_trace_then_the_message(self):
         self.run_lisp("(define (f x) (car x))")
-        self.assertEqual(li.format_error_report(self.error_of("(+ 1 (f 5))")),
+        self.assertEqual(lisp_core.format_error_report(self.error_of("(+ 1 (f 5))")),
                          "Lisp traceback (most recent call last):\n  (f 5)\nError: car: not a pair: 5\n")
 
     def test_no_trace_when_the_error_is_outside_any_procedure(self):
         e = self.error_of("(car 5)")
-        self.assertEqual(li.format_lisp_traceback(e), "")
-        self.assertEqual(li.format_error_report(e), "Error: car: not a pair: 5\n")
+        self.assertEqual(lisp_core.format_lisp_traceback(e), "")
+        self.assertEqual(lisp_core.format_error_report(e), "Error: car: not a pair: 5\n")
 
     def test_a_caller_that_tail_calls_is_replaced_and_counted(self):
         self.run_lisp("(define (inner x) (car x)) (define (helper x) (inner x)) (define (outer x) (helper x))")
         e = self.error_of("(list (outer 5))")
-        self.assertEqual(li.format_lisp_traceback(e),
+        self.assertEqual(lisp_core.format_lisp_traceback(e),
                          "Lisp traceback (most recent call last):\n  (inner 5)  [+2 tail calls]\n")
 
     def test_a_self_recursive_tail_loop_shows_one_frame_with_a_count(self):
         self.run_lisp("(define (loop n) (if (= n 0) (car n) (loop (- n 1))))")
         e = self.error_of("(list (loop 1000))")
-        self.assertEqual(li.format_lisp_traceback(e),
+        self.assertEqual(lisp_core.format_lisp_traceback(e),
                          "Lisp traceback (most recent call last):\n  (loop 0)  [+1000 tail calls]\n")
 
     def test_a_deep_non_tail_recursion_is_elided_in_the_middle(self):
         self.run_lisp("(define (dive n) (if (= n 0) (car 0) (+ 1 (dive (- n 1)))))")
-        lines = li.format_lisp_traceback(self.error_of("(dive 100)")).splitlines()
+        lines = lisp_core.format_lisp_traceback(self.error_of("(dive 100)")).splitlines()
         self.assertEqual(len(lines), 1 + 10 + 1 + 30)               # title, outermost, gap, innermost
         self.assertEqual(lines[1], "  (dive 100)")                  # outermost kept
         self.assertEqual(lines[-1], "  (dive 0)")                   # innermost kept
@@ -1891,7 +1892,7 @@ class TestStackTraces(LispTestCase):
         self.run_lisp("(define (check n) (if (> n 2) (error \"too big:\" n) n)) "
                       "(define (run xs) (map (lambda (n) (+ 0 (check n))) xs)) (define (go) (list (run (list 1 3))))")
         e = self.error_of("(go)")
-        text = li.format_lisp_traceback(e)
+        text = lisp_core.format_lisp_traceback(e)
         for expected in ("(go)", "(run (1 3))", "(<lambda> 3)", "(check 3)"):
             self.assertIn(expected, text)
         self.assertLess(text.index("(go)"), text.index("(run"))
@@ -1900,13 +1901,13 @@ class TestStackTraces(LispTestCase):
 
     def test_an_error_inside_a_macro_transformer_names_the_macro(self):
         self.run_lisp("(defmacro bad (x) (car x)) (define (user) (list (bad 5)))")
-        text = li.format_lisp_traceback(self.error_of("(user)"))
+        text = lisp_core.format_lisp_traceback(self.error_of("(user)"))
         self.assertIn("(bad 5)  [macro transformer]", text)
         self.assertIn("(user)", text)
 
     def test_a_call_rejected_for_its_arguments_is_named(self):
         self.run_lisp("(define (needs-two a b) (list a b)) (define (caller) (list (needs-two 1)))")
-        self.assertEqual(li.format_error_report(self.error_of("(caller)")),
+        self.assertEqual(lisp_core.format_error_report(self.error_of("(caller)")),
                          "Lisp traceback (most recent call last):\n"
                          "  (caller)\n  (needs-two 1)  [arguments rejected]\n"
                          "Error: expected 2 argument(s), got 1\n")
@@ -1914,34 +1915,34 @@ class TestStackTraces(LispTestCase):
     def test_an_unknown_keyword_names_the_constructor(self):
         self.run_lisp("(defstruct point x y)")
         self.assertIn("(make-point :z 1)  [arguments rejected]",
-                      li.format_lisp_traceback(self.error_of("(make-point :z 1)")))
+                      lisp_core.format_lisp_traceback(self.error_of("(make-point :z 1)")))
 
     def test_a_rejected_callback_call_is_named_too(self):
         self.run_lisp("(define (needs-two a b) (list a b))")
         self.assertIn("(needs-two 1)  [arguments rejected]",
-                      li.format_lisp_traceback(self.error_of("(map needs-two (list 1 2))")))
+                      lisp_core.format_lisp_traceback(self.error_of("(map needs-two (list 1 2))")))
 
     def test_a_macro_called_with_the_wrong_argument_count_is_named(self):
         self.run_lisp("(defmacro one-arg (x) x)")
-        self.assertIn("(one-arg)  [arguments rejected]", li.format_lisp_traceback(self.error_of("(one-arg)")))
+        self.assertIn("(one-arg)  [arguments rejected]", lisp_core.format_lisp_traceback(self.error_of("(one-arg)")))
 
     def test_plain_python_exceptions_from_builtins_get_a_trace_too(self):
         self.run_lisp("(define (f x) (/ 1 x))")
         e = self.error_of("(list (f 0))")
         self.assertIsInstance(e, ZeroDivisionError)
-        self.assertIn("(f 0)", li.format_lisp_traceback(e))
+        self.assertIn("(f 0)", lisp_core.format_lisp_traceback(e))
 
     def test_a_caught_error_leaves_no_trace_behind_for_the_next_one(self):
         self.run_lisp("(define (boom) (car 0)) (define (safe) (catch-error (boom) (e) 'ok)) (define (other) (car 1))")
         self.run_lisp("(safe)")
-        text = li.format_lisp_traceback(self.error_of("(list (other))"))
+        text = lisp_core.format_lisp_traceback(self.error_of("(list (other))"))
         self.assertIn("(other)", text)
         self.assertNotIn("boom", text)
         self.assertNotIn("safe", text)
 
     def test_let_and_dolist_scopes_never_appear_as_calls(self):
         self.run_lisp("(define (f xs) (let ((y 1)) (dolist (x xs) (car x)) y))")
-        text = li.format_lisp_traceback(self.error_of("(list (f (list 5)))"))
+        text = lisp_core.format_lisp_traceback(self.error_of("(list (f (list 5)))"))
         self.assertIn("(f (5))", text)
         self.assertNotIn("<lambda>", text)
 
@@ -1956,13 +1957,13 @@ class TestStackTraces(LispTestCase):
         100 iterations as for 3000."""
         def peak_depth(n):
             peak = [0]
-            real = li.push_sequence
+            real = lisp_core.push_sequence
 
             def spy(exprs, env, control_stack, value_stack):
                 peak[0] = max(peak[0], len(control_stack))
                 return real(exprs, env, control_stack, value_stack)
 
-            with mock.patch.object(li, "push_sequence", spy):
+            with mock.patch.object(lisp_core, "push_sequence", spy):
                 self.run_lisp("""
                   (define (a n) (if (= n 0) 'ok (b (- n 1))))
                   (define (b n) (if (= n 0) 'ok (c (- n 1))))
@@ -2056,7 +2057,7 @@ class TestKernelErrorReply(unittest.TestCase):
 
     def test_do_execute_reports_the_call_chain_of_a_failing_cell(self):
         import lisp_jupyter
-        li.set_verbose_level(0)
+        lisp_core.set_verbose_level(0)
         lisp_jupyter.get_env()
         reply = self.kernel.do_execute("(define (kf x) (car x)) (list (kf 5))", silent=False)
         self.assertEqual(reply["status"], "error")
@@ -2213,12 +2214,12 @@ class TestGuiErrorReport(unittest.TestCase):
     PROGRAM = r"""
 import sys
 sys.path.insert(0, %r)
-import lisp_interpreter as li
-if not li._PYQT_AVAILABLE:
+import lisp_gui
+if not lisp_gui.PYQT_AVAILABLE:
     print("NO-QT"); sys.exit(0)
 from PyQt6.QtWidgets import QApplication
 app = QApplication([])
-w = li.LispMainWindow()
+w = lisp_gui.LispMainWindow()
 w.output_view.clear()
 w.input_edit.setPlainText("(define (inner x) (car x)) (define (outer x) (list (inner x))) (outer 5)")
 w._on_run()
@@ -2400,7 +2401,7 @@ class TestReferenceDocExamples(unittest.TestCase):
     MIN_VERIFIED = 150          # guard: the checker must not silently verify nothing
 
     def test_every_documented_result_is_what_the_interpreter_returns(self):
-        self.addCleanup(li.set_verbose_level, 0)     # some doc examples turn tracing on
+        self.addCleanup(lisp_core.set_verbose_level, 0)     # some doc examples turn tracing on
         with open(REFERENCE_DOC, encoding="utf-8") as f:
             blocks = re.findall(r"```lisp\n(.*?)```", f.read(), re.S)
         self.assertGreater(len(blocks), 100, "found no lisp code blocks in the reference doc")
@@ -2423,19 +2424,19 @@ class TestReferenceDocExamples(unittest.TestCase):
         for bi, block in enumerate(blocks):
             if any(word in block for word in _RISKY_BLOCK_WORDS):
                 continue
-            env = li.make_global_env(output=lambda s: None)
+            env = lisp_builtins.make_global_env(output=lambda s: None)
             if use_alarm:
                 signal.alarm(10)
             try:
                 for text, documented in _split_doc_forms(block):
                     try:
-                        exprs = li.parse(text)
-                    except li.LispError:
+                        exprs = lisp_core.parse(text)
+                    except lisp_core.LispError:
                         break
                     stop = False
                     for expr in exprs:
                         try:
-                            value = li.seval(expr, env)
+                            value = lisp_core.seval(expr, env)
                         except TimeoutError:
                             raise
                         except Exception as e:
@@ -2449,13 +2450,13 @@ class TestReferenceDocExamples(unittest.TestCase):
                         if documented is None or documented.startswith(_ILLUSTRATIVE_PREFIXES) \
                                 or "again" in documented or any(s in text for s in _SKIPPED_FORMS):
                             continue
-                        if (_doc_value_matches(li.to_string(value), documented)
-                                or _doc_value_matches(li.to_display_string(value), documented)):
+                        if (_doc_value_matches(lisp_core.to_string(value), documented)
+                                or _doc_value_matches(lisp_core.to_display_string(value), documented)):
                             verified += 1
                         else:
                             failures.append("block %d: %s\n      doc says: %s\n      got:      %s"
                                             % (bi, text.replace("\n", " ")[:80], documented,
-                                               li.to_string(value)))
+                                               lisp_core.to_string(value)))
                     if stop:
                         break
             except TimeoutError:

@@ -18,7 +18,7 @@ weekly-updated, widely-quoted market rate (Freddie Mac's Primary Mortgage
 Market Survey -- the standard reference for "the" US 30-year mortgage
 rate) rather than something modeled or derived. The repo's
 credentials.json already carries a fred_api_key for exactly this purpose
--- see ../lisp_interp/lisp_interpreter.py's fred_series(), which this
+-- see ../lisp_interp/lisp_fred.py's fred_series(), which this
 mirrors (same REST endpoint, same credentials-file convention).
 """
 

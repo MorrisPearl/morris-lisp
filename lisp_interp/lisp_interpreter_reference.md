@@ -70,7 +70,7 @@ Put your own always-available definitions/macros there instead of
   falls back to the console's plain-text chart/table output if either
   isn't installed. Any of these builtins that fetch over the network
   (`tastytrade-*`, `sofr-calibration-data`) work fine here too -- they run
-  their I/O via `asyncio`, and `_run_async()` (in `lisp_interpreter.py`,
+  their I/O via `asyncio`, and `_run_async()` (in `lisp_tastytrade.py`,
   and an identical twin in `term_structure/sofr_market_data.py`)
   specifically handles being called from inside a Jupyter kernel's own
   already-running event loop, which a bare `asyncio.run()` call can't do.
@@ -1412,7 +1412,7 @@ value, just formatted differently).
 
 If a dataset needs more precision than this default gives — dollar figures
 in the billions, say — the fix is a one-line, interpreter-wide change in
-`lisp_interpreter.py` itself, not something adjustable from Lisp code:
+`lisp_core.py` itself, not something adjustable from Lisp code:
 `FLOAT_DTYPE`/`INT_DTYPE`/`BOOL_INT_DTYPE` are the first three lines of the
 `LispVector` class definition. Changing `FLOAT_DTYPE = np.float32` to
 `np.float64` there reverts every vector in the interpreter to full double
@@ -1824,7 +1824,7 @@ you pass your own, per "Weighted fitting" above). That objective is
 setting its gradient to zero gives one linear equation per coefficient (the
 "normal equations"), and the interpreter solves that linear system exactly,
 in a single step, via Gauss-Jordan elimination with partial pivoting
-(`solve_linear_system` in `lisp_interpreter.py`) — no searching, iterating,
+(`solve_linear_system` in `lisp_regression.py`) — no searching, iterating,
 or approximating, unlike `logistic-regression` below. (Predictors are
 rescaled to mean 0 / unit variance first, purely to keep that linear system
 numerically well-behaved regardless of a predictor's raw scale — a huge
@@ -3515,3 +3515,140 @@ Lisp call stack (most recent call last):
 (plot-xy-regression prices demand "Demand" "logistic")
 (save-chart "demand.png")
 ```
+
+---
+
+## How the code is organized
+
+The interpreter is split into these Python files, all in `lisp_interp/`:
+
+| File | What's in it |
+|---|---|
+| `lisp_interpreter.py` | The command line (what runs when you type `python3 lisp_interpreter.py ...`), the console REPL, and batch mode |
+| `lisp_core.py` | The language itself: data types, the reader, environments, the evaluator and special forms, call tracing, and the printer. It imports none of the other files. |
+| `lisp_builtins.py` | The general built-in procedures (numbers, lists, strings, vectors, dates, hash tables, output, ...) and `make_global_env()`, which builds a new environment containing every builtin |
+| `lisp_regression.py` | `linear-regression`, `logistic-regression`, `spline-regression`, `model-report`, ... |
+| `lisp_charts.py` | `plot-xy`, `plot-xy-regression`, `plot-xy-full`, `save-chart` |
+| `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, ... |
+| `lisp_fred.py` | `fred-series` (downloads from FRED) |
+| `lisp_tastytrade.py` | `tastytrade-*` (downloads from tastytrade) |
+| `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
+| `lisp_gui.py` | The PyQt6 window |
+| `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |
+| `test_lisp_interpreter.py` | The test suite: `python3 -m unittest test_lisp_interpreter` |
+
+Each file that adds builtins ends with a `BUILTINS` table — a Python dict
+from the Lisp name to the Python function that implements it — and
+`make_global_env()` in `lisp_builtins.py` copies each of those tables into
+every new environment.
+
+## Adding your own builtins
+
+**First, consider writing it in Lisp.** If a new function can be written in
+Lisp using the existing builtins, put it in a `.lsp` file (like
+`solver.lsp` or `model_utils.lsp`) and `(load ...)` it, or add it to
+`init.lsp` so every session has it. No Python changes needed.
+
+Write a builtin in Python when it needs something Lisp can't do: a Python
+package, a network or file format, or speed on large data. The steps:
+
+**1. Create a module** — a new file next to the others, e.g.
+`lisp_stats.py`. Write each builtin as an ordinary Python function, and end
+the file with a `BUILTINS` table:
+
+```python
+"""Simple statistics builtins: vector-mean and vector-stdev."""
+
+import math
+
+from lisp_core import LispError, LispVector
+
+
+def vector_mean(v):
+    """(vector-mean v) -- the average of the numbers in vector v."""
+    if not isinstance(v, LispVector):
+        raise LispError("vector-mean: not a vector: %r" % (v,))
+    values = v.items.tolist()
+    if not values:
+        raise LispError("vector-mean: the vector is empty")
+    return sum(values) / len(values)
+
+
+def vector_stdev(v, sample=True):
+    """(vector-stdev v [sample?]) -- the standard deviation of vector v:
+    the sample standard deviation (dividing by n-1) unless sample? is #f."""
+    values = v.items.tolist()
+    mean = vector_mean(v)
+    divisor = len(values) - 1 if sample is not False else len(values)
+    return math.sqrt(sum((x - mean) ** 2 for x in values) / divisor)
+
+
+BUILTINS = {
+    "vector-mean": vector_mean,
+    "vector-stdev": vector_stdev,
+}
+```
+
+**2. Register it** in `lisp_builtins.py`: import the module with the
+others at the top of the file (`import lisp_stats`), and add one line to
+`make_global_env()` next to the other modules' tables:
+
+```python
+    env.update(lisp_stats.BUILTINS)
+```
+
+**3. Try it** — restart the interpreter (or the Jupyter kernel):
+
+```lisp
+(vector-mean (vector 1 2 3 4))                    ; => 2.5
+(vector-stdev (vector 2 4 4 4 5 5 7 9) #f)        ; => 2.0
+```
+
+**4. Document and test it** — add an entry to this reference, in the
+section where it belongs, and a test to `test_lisp_interpreter.py`. Any
+`; =>` example you put in a ` ```lisp ` block here is checked by the test
+suite, so the documentation can't drift out of date.
+
+### What a builtin receives and returns
+
+A builtin is called with its arguments already evaluated, as these Python
+values (all defined in `lisp_core.py`):
+
+| Lisp value | Python value |
+|---|---|
+| number | `int` or `float` |
+| `#t` / `#f` | `True` / `False` — note that `'()` and `0` count as *true* in Lisp; only `#f` is false, so test with `x is not False` or `lisp_core.is_true(x)` |
+| string | `LispString` (a `str` subclass) |
+| symbol, keyword | `Symbol`, `Keyword` (also `str` subclasses) |
+| list | a chain of `Pair` objects ending in `NIL` (which is `None`); convert with `pairs_to_list(p)` → Python list, and back with `list_to_pairs(items)` |
+| vector | `LispVector`; its `.items` is a numpy array — use `.items.tolist()` for plain Python numbers, and `LispVector(python_list)` to build one |
+| date | `LispDate`; its `.date` is a Python `datetime.date` |
+| procedure | a Lisp procedure; call it with `apply_proc(f, [arg1, arg2])` |
+
+A few conventions keep builtins consistent with the rest:
+
+- **Errors:** raise `LispError("name: what went wrong")`. The message
+  reaches the user just like any other Lisp error, and `catch-error` can
+  catch it.
+- **Optional arguments:** give the Python parameter a default value, as
+  `sample=True` does above. Lisp passes arguments by position.
+- **Returning nothing:** return `NIL`, the way `display` and `vector-set!`
+  do.
+- **Returning a string:** wrap it as `LispString(text)`, so Lisp sees a
+  string rather than a symbol.
+- **Optional Python packages:** import them inside `try: ... except
+  ImportError:`, and have the builtin raise a `LispError` explaining what
+  to install if it's missing (see how `lisp_tastytrade.py` handles the
+  `tastytrade` package). That way the rest of the interpreter still starts
+  without the package.
+- **Naming:** Lisp names use dashes (`vector-mean`); a function that
+  answers yes/no ends in `?` (`vector?`); one that changes its argument
+  ends in `!` (`vector-set!`).
+
+A builtin that needs its *environment* — to evaluate code, read a Lisp
+variable, or write to the same place `display` does — can't be a plain
+module-level function, because there's one environment per session. For
+those, write a function that takes what it needs and returns a table,
+the way `make_eval_builtins(env, out)` and
+`lisp_charts.make_chart_builtins(plot)` do, and call it from
+`make_global_env()`.

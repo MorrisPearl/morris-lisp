@@ -58,8 +58,8 @@ at a small local JSON file holding your tastytrade API credentials.
    password is ever stored.
 
    This app doesn't use it, but this same file can also hold a
-   `"fred_api_key"` entry — the `../lisp_interp/lisp_interpreter.py`
-   Lisp interpreter's `fred-series` builtin will read it from here, so
+   `"fred_api_key"` entry — the `../lisp_interp/` Lisp interpreter's
+   `fred-series` builtin (in `lisp_fred.py`) will read it from here, so
    both tastytrade and FRED credentials can live in one file.
 5. In the app, point the "tastytrade credentials file" field at that JSON
    file (or leave the default if you named it `tastytrade_credentials.json`
