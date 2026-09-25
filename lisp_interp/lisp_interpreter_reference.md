@@ -742,8 +742,10 @@ time the macro is expanded:
        (,loop-name))))
 ```
 
-Each `while` now gets a name like `%while-loop-12`, which no other code in
-the program uses, so the example above gives `3`. (It also takes any
+Each `while` now gets a symbol printed as something like
+`%while-loop-12`. It can't be confused with anything the caller wrote,
+even a function the caller named `%while-loop-12` (see `gensym`, below),
+so the example above gives `3`. (It also takes any
 number of body forms, via `. body` and `,@body`, so the `begin` isn't
 needed.)
 
@@ -4415,17 +4417,30 @@ See "Pairs and lists", above — documented once there, since it's equally a
 list operation and a metaprogramming tool.
 
 #### `(gensym ["prefix"])`
-Returns a symbol guaranteed not to collide with any name a user could
-actually type (format `%prefix-N`, with an incrementing counter;
-`prefix` defaults to `"g"`). The standard tool for avoiding accidental
-variable capture when hand-writing a macro — see "Macros", above, for
-what goes wrong without it (the old `while`) and how `while` uses it
-now. Used internally by `dolist`'s own desugaring for the same reason.
+Returns a new symbol that can't collide with any other name in the
+program. The standard tool for avoiding accidental variable capture when
+hand-writing a macro — see "Macros", above, for what goes wrong without it
+(the old `while`) and how `while` uses it now. Used internally by
+`dolist`'s own desugaring for the same reason.
+
+It prints as `%prefix-N`, where `N` counts up (`prefix` defaults to
+`"g"`), so different ones are easy to tell apart. But the name is only for
+printing. As in Common Lisp, a gensym is an *uninterned* symbol: it's
+equal only to itself. An ordinary symbol with the same name, whether you
+typed it or made it with `string->symbol`, is a different symbol. So
+even code that happens to use the name `%g-1` can't collide with it.
 
 ```lisp
 (gensym)                        ; => %g-1  (an incrementing counter)
 (gensym "tmp")                  ; => %tmp-2
+(define g (gensym))
+(eq? g g)                                          ; => #t
+(eq? g (string->symbol (symbol->string g)))        ; => #f  (same name, different symbol)
 ```
+
+If you copy a macro expansion from `macroexpand-1` and paste it into your
+program, the pasted names are ordinary symbols, but every copy of each
+name is the same symbol, so the pasted code still works.
 
 #### `(load "path.lsp")`
 See "Input / output", above — documented once there.

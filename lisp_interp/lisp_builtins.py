@@ -340,7 +340,8 @@ def lisp_apply(f, *args):
 
 def lisp_gensym(*base):
     """(gensym ["prefix"]) -- a new symbol that can't collide with any name in
-    the program, for macros that need temporary names."""
+    the program, for macros that need temporary names. It's equal only to
+    itself, even compared with a symbol of the same name."""
     return gensym(str(base[0]) if base else "g")
 
 

@@ -71,6 +71,23 @@ class Keyword(Symbol):
     pass
 
 
+class UninternedSymbol(Symbol):
+    """A symbol made by gensym, equal only to itself. An ordinary symbol with
+    the same name -- one the reader made from text, or string->symbol made
+    -- is a different symbol, so nothing a program says can refer to it by
+    accident. (Common Lisp's gensym makes the same kind of symbol.) As a
+    dictionary key, e.g. in an Env, it's found only by itself."""
+
+    def __eq__(self, other):
+        return self is other
+
+    def __ne__(self, other):
+        return self is not other
+
+    def __hash__(self):
+        return id(self)
+
+
 class Pair:
     """A cons cell: the basic building block of Lisp lists."""
     __slots__ = ("car", "cdr")
@@ -1057,11 +1074,12 @@ _gensym_counter = [0]
 
 
 def gensym(base="g"):
-    """A new symbol that can't collide with any name in the program (it starts
-    with %). dolist uses it for its loop variables, and Lisp code gets it as
-    (gensym), for macros that need temporary names."""
+    """A new symbol that can't collide with any name in the program: an
+    UninternedSymbol, named %base-N (N counts up, so the names are easy to
+    tell apart when printed). dolist uses it for its loop variables, and Lisp
+    code gets it as (gensym), for macros that need temporary names."""
     _gensym_counter[0] += 1
-    return Symbol("%%%s-%d" % (base, _gensym_counter[0]))
+    return UninternedSymbol("%%%s-%d" % (base, _gensym_counter[0]))
 
 
 def desugar_dolist(args):

@@ -469,6 +469,29 @@ class TestMacros(LispTestCase):
         self.assertTrue(self.show("(gensym)").startswith("%"))
         self.assertTrue(self.show('(gensym "tmp")').startswith("%tmp-"))
 
+    def test_a_gensym_is_equal_only_to_itself(self):
+        self.run_lisp("(define g (gensym))")
+        self.assertShows("(symbol? g)", "#t")
+        self.assertShows("(list (eq? g g) (equal? g g))", "(#t #t)")
+        self.assertShows("(list (eq? g (string->symbol (symbol->string g)))"
+                         "      (equal? g (string->symbol (symbol->string g))))", "(#f #f)")
+
+    def test_a_gensym_cannot_collide_with_a_name_the_program_uses(self):
+        # Give a function the exact name the next while loop's gensym will
+        # print as; the loop body's call must still reach that function.
+        lisp_core.run_file(lisp_builtins.MACROS_INIT_FILE, self.env)
+        next_name = "%%while-loop-%d" % (lisp_core._gensym_counter[0] + 1)
+        self.run_lisp("(define calls 0) (define (%s) (set! calls (+ calls 1))) (define i 0)" % next_name)
+        self.run_lisp("(while (< i 3) (set! i (+ i 1)) (%s))" % next_name)
+        self.assertShows("calls", "3")
+
+    def test_a_pasted_macro_expansion_still_works(self):
+        lisp_core.run_file(lisp_builtins.MACROS_INIT_FILE, self.env)
+        expansion = self.show("(macroexpand-1 '(while (< i 3) (set! i (+ i 1))))")
+        self.run_lisp("(define i 0)")
+        self.run_lisp(expansion)                 # the printed names read back as ordinary symbols
+        self.assertShows("i", "3")
+
     def test_hygiene_with_gensym(self):
         """A macro that binds a temporary must not capture the caller's own
         variable of the same name -- the standard reason gensym exists."""
