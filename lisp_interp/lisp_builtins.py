@@ -12,7 +12,6 @@ modules' BUILTINS tables, into a new environment.
 To add builtins of your own, see "Adding your own builtins" in
 lisp_interpreter_reference.md."""
 
-import csv
 import datetime
 import math
 import os
@@ -24,7 +23,7 @@ import numpy as np
 from lisp_core import (
     Env, Keyword, LispDate, LispError, LispHashTable, LispString, LispStruct,
     LispVector, Macro, NIL, Pair, Procedure, Symbol,
-    _date_from_pydate, _lisp_scalar, _narrow_vector_result, _vector_widen_for,
+    _date_from_pydate, _lisp_scalar, _vector_widen_for,
     apply_proc, check_numbers, check_vector_elements, debug_repl, eval_body,
     eval_default, expand_macro, gensym, get_verbose_level, is_true,
     list_to_pairs, pairs_to_list, parse, pretty_print_string,
@@ -32,11 +31,17 @@ from lisp_core import (
     set_verbose_level, to_display_string, to_string,
 )
 import lisp_charts
+import lisp_csv
 import lisp_fred
+import lisp_http
 import lisp_regression
 import lisp_sofr
 import lisp_sqlite
+import lisp_tables
 import lisp_tastytrade
+import lisp_time_series
+import lisp_vector_math
+from lisp_csv import parse_column_pairs
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +505,7 @@ STRING_BUILTINS = {
 
 
 # ---------------------------------------------------------------------------
-# Vectors (fixed-size, mutable; hold numbers and/or dates)
+# Vectors: making, reading, and changing them (the math is in lisp_vector_math.py)
 # ---------------------------------------------------------------------------
 
 def make_vector_fn(*args):
@@ -566,21 +571,6 @@ def vector_iterate(first, count, f):
             check_vector_elements([current], "vector-iterate")
         items.append(current)
     return LispVector(items)
-
-
-def vector_add(a, b):
-    # Elementwise a+b, as long as the shorter vector (documented behavior).
-    n = min(len(a.items), len(b.items))
-    return LispVector(_narrow_vector_result(a.items[:n] + b.items[:n]))
-
-
-def vector_sub(a, b):
-    n = min(len(a.items), len(b.items))
-    return LispVector(_narrow_vector_result(a.items[:n] - b.items[:n]))
-
-
-def vector_scale(v, s):
-    return LispVector(_narrow_vector_result(v.items * s))
 
 
 def vector_slice(v, start, end=None):
@@ -664,10 +654,6 @@ VECTOR_BUILTINS = {
     "vector->list": lambda v: list_to_pairs(v.items.tolist()),
     "list->vector": list_to_vector,
     "vector-iterate": vector_iterate,
-    "vector-sum": lambda v: _lisp_scalar(v.items.sum()),
-    "vector-add": vector_add,
-    "vector-sub": vector_sub,
-    "vector-scale": vector_scale,
     "vector-slice": vector_slice,
     "vector-take": vector_take,
     "vector-drop": vector_drop,
@@ -725,137 +711,6 @@ DATE_BUILTINS = {
     "date->string": date_to_string,
     "string->date": string_to_date,
     "date-add-days": date_add_days,
-}
-
-
-# ---------------------------------------------------------------------------
-# CSV files: load-csv, write-columns-csv
-# ---------------------------------------------------------------------------
-
-def load_csv_fn(filename, has_header=True):
-    """(load-csv filename [has-header?]) -- a CSV file's columns as vectors:
-    (cons headers-list vectors-list). A column is kept if every non-blank
-    value is a number, or every one is a YYYY-MM-DD date; other columns are
-    skipped. A row is kept only if it has a value in every kept column, so
-    the vectors stay the same length and lined up."""
-    try:
-        with open(str(filename), newline="") as f:
-            rows = list(csv.reader(f))
-    except OSError as e:
-        raise LispError("load-csv: could not open %r: %s" % (str(filename), e))
-
-    if not rows:
-        raise LispError("load-csv: %r is empty" % (str(filename),))
-
-    if is_true(has_header):
-        header, data_rows = rows[0], rows[1:]
-    else:
-        header, data_rows = None, rows
-
-    if not data_rows:
-        raise LispError("load-csv: %r has no data rows" % (str(filename),))
-
-    n_cols = len(data_rows[0])
-    if header is None:
-        header = ["Column%d" % (i + 1) for i in range(n_cols)]
-
-    def try_float(s):
-        try:
-            return float(s)
-        except ValueError:
-            return None
-
-    def try_date(s):
-        try:
-            y, m, d = s.split("-")
-            return LispDate(int(y), int(m), int(d))
-        except Exception:
-            return None
-
-    column_kinds = []  # "number", "date", or None (unusable), per column
-    for c in range(n_cols):
-        non_blank = [row[c].strip() for row in data_rows if c < len(row) and row[c].strip() != ""]
-        if non_blank and all(try_float(v) is not None for v in non_blank):
-            column_kinds.append("number")
-        elif non_blank and all(try_date(v) is not None for v in non_blank):
-            column_kinds.append("date")
-        else:
-            column_kinds.append(None)
-
-    usable = [c for c in range(n_cols) if column_kinds[c] is not None]
-    if not usable:
-        raise LispError("load-csv: no numeric or date (YYYY-MM-DD) columns found in %r" % (str(filename),))
-
-    included_rows = [
-        row for row in data_rows
-        if len(row) >= n_cols and all(row[c].strip() != "" for c in usable)
-    ]
-    if not included_rows:
-        raise LispError("load-csv: no complete rows found for the usable columns in %r" % (str(filename),))
-
-    out_headers, out_vectors = [], []
-    for c in usable:
-        out_headers.append(LispString(header[c]))
-        if column_kinds[c] == "number":
-            items = [try_float(row[c].strip()) for row in included_rows]
-        else:
-            items = [try_date(row[c].strip()) for row in included_rows]
-        out_vectors.append(LispVector(items))
-
-    return Pair(list_to_pairs(out_headers), list_to_pairs(out_vectors))
-
-
-def parse_column_pairs(name_value_pairs):
-    """Read the column list display-columns and write-columns-csv take: each
-    element is (name . vector), or (name vector decimals) to give that
-    column a number of decimal places. Returns (name, items,
-    decimals-or-None) tuples."""
-    out = []
-    for p in pairs_to_list(name_value_pairs):
-        name = str(p.car)
-        rest = p.cdr
-        if isinstance(rest, LispVector):
-            out.append((name, rest.items.tolist(), None))
-        elif isinstance(rest, Pair) and isinstance(rest.car, LispVector):
-            decimals = rest.cdr.car if isinstance(rest.cdr, Pair) else None
-            out.append((name, rest.car.items.tolist(), decimals))
-        else:
-            raise LispError(
-                "expected (name . vector) or (name vector decimals), got %r" % (p,))
-    return out
-
-
-def write_columns_csv_fn(filename, name_value_pairs):
-    """(write-columns-csv filename pairs) -- write columns (the same list
-    display-columns takes) to a CSV file: a header row of names, then one
-    row per index. Numbers are plain CSV numbers, rounded to the column's
-    decimals if it has any. A shorter column is padded with empty cells."""
-    parsed = parse_column_pairs(name_value_pairs)
-    n_rows = max((len(items) for _, items, _ in parsed), default=0)
-    with open(str(filename), "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([name for name, _, _ in parsed])
-        for i in range(n_rows):
-            row = []
-            for _, items, decimals in parsed:
-                if i >= len(items):
-                    row.append("")
-                    continue
-                v = items[i]
-                if isinstance(v, bool) or not isinstance(v, (int, float)):
-                    row.append(to_display_string(v))
-                elif decimals is not None:
-                    d = int(decimals)
-                    row.append(int(round(float(v))) if d == 0 else round(float(v), d))
-                else:
-                    row.append(v)
-            writer.writerow(row)
-    return NIL
-
-
-CSV_BUILTINS = {
-    "load-csv": load_csv_fn,
-    "write-columns-csv": write_columns_csv_fn,
 }
 
 
@@ -1209,10 +1064,14 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
     env.update(STRING_BUILTINS)
     env.update(VECTOR_BUILTINS)
     env.update(DATE_BUILTINS)
-    env.update(CSV_BUILTINS)
+    env.update(lisp_vector_math.BUILTINS)
+    env.update(lisp_tables.BUILTINS)
+    env.update(lisp_time_series.BUILTINS)
+    env.update(lisp_csv.BUILTINS)
     env.update(lisp_regression.BUILTINS)
     env.update(lisp_sqlite.BUILTINS)
     env.update(lisp_fred.BUILTINS)
+    env.update(lisp_http.BUILTINS)
     env.update(lisp_tastytrade.BUILTINS)
     env.update(lisp_sofr.BUILTINS)
 

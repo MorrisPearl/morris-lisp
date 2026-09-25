@@ -1155,10 +1155,10 @@ class TestVectors(LispTestCase):
     def test_elementwise_arithmetic(self):
         self.assertShows("(vector-add #(1 2 3) #(10 20 30))", "#(11 22 33)")
         self.assertShows("(vector-sub #(10 20 30) #(1 2 3))", "#(9 18 27)")
-        self.assertShows("(vector-scale #(1 2 3) 10)", "#(10 20 30)")
+        self.assertShows("(vector-mul #(1 2 3) 10)", "#(10 20 30)")
 
-    def test_arithmetic_on_different_lengths_uses_the_shorter(self):
-        self.assertShows("(vector-add #(1 2 3) #(10 20))", "#(11 22)")
+    def test_arithmetic_needs_equal_lengths(self):
+        self.assertLispError("(vector-add #(1 2 3) #(10 20))", "different lengths")
 
     def test_slicing(self):
         self.assertShows("(vector-slice #(1 2 3 4 5) 1 3)", "#(2 3)")
@@ -1176,9 +1176,10 @@ class TestVectors(LispTestCase):
         self.assertShows("(vectors-map (lambda (a b i) (list a b i)) (list (vector 10 20) (vector 1 2)))",
                          "#((10 1 0) (20 2 1))")
 
-    def test_only_numbers_and_dates_are_allowed(self):
-        self.assertLispError('(vector 1 "a")', "not a number or date")
-        self.assertLispError("(vector 1 #t)", "not a number or date")
+    def test_only_numbers_strings_and_dates_are_allowed(self):
+        self.assertShows('(vector 1 "a" (date 2024 1 1))', '#(1 "a" 2024-01-01)')
+        self.assertLispError("(vector 1 #t)", "not a number, string, or date")
+        self.assertLispError("(vector 1 (list 2))", "not a number, string, or date")
 
     def test_out_of_range_index_raises_indexerror(self):
         self.assertRaisesFromLisp(IndexError, "(vector-ref #(1 2 3) 10)")
@@ -1205,8 +1206,372 @@ class TestVectors(LispTestCase):
           (define s1 (vectors-shuffle (list xs ys) 42))
           (define s2 (vectors-shuffle (list xs ys) 42))""")
         self.assertShows("(equal? s1 s2)", "#t")
-        self.assertShows("(vector-sub (car (cdr s1)) (vector-scale (car s1) 10))", "#(0 0 0 0 0 0)")
+        self.assertShows("(vector-sub (car (cdr s1)) (vector-mul (car s1) 10))", "#(0 0 0 0 0 0)")
         self.assertShows("(vector-sum (car s1))", "21")
+
+
+# ---------------------------------------------------------------------------
+# 12b. Vector math, tables, monthly series, CSV files, and downloads
+# ---------------------------------------------------------------------------
+
+class TestVectorMath(LispTestCase):
+    """lisp_vector_math.py: arithmetic, masks, statistics, and time series."""
+
+    def test_arithmetic_with_vectors_and_numbers(self):
+        self.assertShows("(vector-add #(1 2 3) 10)", "#(11 12 13)")
+        self.assertShows("(vector-sub 10 #(1 2 3))", "#(9 8 7)")
+        self.assertShows("(vector-mul #(1 2 3) #(2 2 2))", "#(2 4 6)")
+        self.assertShows("(vector-div #(1 2) #(2 0))", "#(0.5 inf)")
+        self.assertShows("(vector-pow #(2 3) 2)", "#(4.0 9.0)")
+        self.assertShows("(vector-sub (vector (date 2020 1 11)) (vector (date 2020 1 1)))", "#(10.0)")
+
+    def test_integer_arithmetic_does_not_overflow_small_storage(self):
+        # a 0/1 vector is stored in one byte per element; 1 * 200 must not wrap
+        self.assertShows("(vector-mul #(0 1 1) 200)", "#(0 200 200)")
+        self.assertShows("(vector-add #(1 1) #(127 127))", "#(128 128)")
+
+    def test_unary_math_and_clip(self):
+        self.assertShows("(vector-sqrt #(4 9))", "#(2.0 3.0)")
+        self.assertShows("(vector-log #(-1))", "#(nan)")
+        self.assertShows("(vector-round #(1.26 2.5) 1)", "#(1.3 2.5)")
+        self.assertShows("(vector-clip #(5 50 150) 10 100)", "#(10 50 100)")
+        self.assertShows("(vector-clip #(5 150) '() 100)", "#(5 100)")
+
+    def test_needs_a_vector_and_equal_lengths(self):
+        self.assertLispError("(vector-add 1 2)", "at least one vector")
+        self.assertLispError("(vector-mul #(1 2) #(1 2 3))", "different lengths")
+        self.assertLispError('(vector-add (vector "a") 1)', "isn't a number")
+
+    def test_comparisons_make_masks(self):
+        self.assertShows("(vector> #(1 5 10) 4)", "#(0 1 1)")
+        self.assertShows("(vector<= #(1 5) #(1 4))", "#(1 0)")
+        self.assertShows('(vector= (vector "CA" "NY") "CA")', "#(1 0)")
+        self.assertShows('(vector/= (vector "CA" "NY") "CA")', "#(0 1)")
+        self.assertShows("(vector= (vector 1 nan) nan)", "#(0 0)")
+        self.assertShows("(vector< (vector (date 2020 1 1) (date 2022 1 1)) (date 2021 1 1))", "#(1 0)")
+        self.assertLispError('(vector< #(1 2) "a")', "can't compare")
+
+    def test_combining_masks_and_selecting(self):
+        self.assertShows("(vector-and #(1 1 0) #(1 0 0))", "#(1 0 0)")
+        self.assertShows("(vector-or #(1 0 0) #(0 0 1) #(0 1 0))", "#(1 1 1)")
+        self.assertShows("(vector-not (vector 1 0 nan))", "#(0 1 1)")
+        self.assertShows("(vector-select #(10 20 30) #(0 1 1))", "#(20 30)")
+        self.assertShows('(vector-where #(1 0) "yes" "no")', '#("yes" "no")')
+        self.assertShows("(vector-where #(1 0) #(1 2) #(10 20))", "#(1 20)")
+
+    def test_missing_values(self):
+        self.assertShows("(vector-nan? (vector 1 nan))", "#(0 1)")
+        self.assertShows('(vector-nan? (vector "a" "b"))', "#(0 0)")
+        self.assertShows("(vector-fill-nan (vector 1.5 nan) 0)", "#(1.5 0.0)")
+        self.assertShows("(vector-fill-forward (vector nan 1.5 nan 2 nan))", "#(nan 1.5 1.5 2.0 2.0)")
+
+    def test_statistics_skip_missing_values(self):
+        self.assertShows("(vector-sum (vector 1 nan 2))", "3.0")
+        self.assertShows("(vector-count (vector 1 nan 2))", "2")
+        self.assertShows("(vector-mean (vector 1 nan 3))", "2.0")
+        self.assertShows("(vector-median #(3 1 2 10))", "2.5")
+        self.assertShows("(vector-mean (vector nan))", "nan")
+        self.assertAlmostEqual(self.run_lisp("(vector-variance #(2 4 4 4 5 5 7 9))"), 32 / 7)
+        self.assertAlmostEqual(self.run_lisp("(vector-stdev #(2 4 4 4 5 5 7 9) #t)"), 2.0)
+        self.assertShows("(vector-quantile #(1 2 3 4 5) 0.5)", "3.0")
+        self.assertLispError("(vector-quantile #(1 2) 1.5)", "between 0 and 1")
+        self.assertShows("(vector-weighted-mean (vector 5 7 nan) #(1 3 100))", "6.5")
+        self.assertAlmostEqual(self.run_lisp("(vector-correlation #(1 2 3) #(3 2 1))"), -1.0)
+        self.assertAlmostEqual(self.run_lisp("(vector-covariance #(1 2 3) #(2 4 6))"), 2.0)
+
+    def test_min_and_max_work_on_numbers_strings_and_dates(self):
+        self.assertShows("(vector-min (vector 3 nan 1))", "1.0")
+        self.assertShows('(vector-max (vector "a" "c" "b"))', '"c"')
+        self.assertShows("(vector-min (vector (date 2021 1 1) (date 2020 5 5)))", "2020-05-05")
+
+    def test_lag_default_and_groups(self):
+        self.assertShows("(vector-lag #(10 20 30))", "#(nan 10.0 20.0)")
+        self.assertShows("(vector-lag #(10 20 30) 1 0)", "#(0 10 20)")
+        self.assertShows("(vector-lag #(10 20 30) 5 -1)", "#(-1 -1 -1)")
+        self.assertShows("(vector-lag #(10 20 30) -2)", "#(30.0 nan nan)")
+        self.assertShows('(vector-lag #(1 2 3 4) 1 0 (vector "x" "x" "y" "y"))', "#(0 1 0 3)")
+        self.assertShows('(vector-lag (vector "a" "b"))', '#(() "a")')
+        self.assertShows('(vector-lag (vector "a" "b") 1 "none")', '#("none" "a")')
+
+    def test_differences_and_running_values(self):
+        self.assertShows("(vector-diff #(1 4 9))", "#(nan 3.0 5.0)")
+        self.assertShows('(vector-diff #(1 4 9 1 3) 1 (vector "a" "a" "a" "b" "b"))', "#(nan 3.0 5.0 nan 2.0)")
+        self.assertShows("(vector-pct-change #(100 150))", "#(nan 0.5)")
+        self.assertShows("(vector-cumsum (vector 1 nan 2))", "#(1.0 nan 3.0)")
+        self.assertShows("(vector-cumprod #(2 3 4))", "#(2.0 6.0 24.0)")
+        self.assertShows("(vector-rolling-sum #(1 2 3 4) 2)", "#(nan 3.0 5.0 7.0)")
+        self.assertShows("(vector-rolling-mean #(1 2) 5)", "#(nan nan)")
+
+    def test_range_and_unique(self):
+        self.assertShows("(vector-range 3)", "#(0 1 2)")
+        self.assertShows("(vector-range 1 2 0.5)", "#(1.0 1.5)")
+        self.assertShows("(vector-unique (vector 2 1 2))", "#(1 2)")
+        self.assertShows('(vector-unique (vector "b" "a" "b"))', '#("a" "b")')
+
+    def test_a_single_float_comes_back_as_its_short_decimal(self):
+        self.assertShows("(vector-ref (vector 0.964 2.5) 0)", "0.964")
+
+
+class TestTables(LispTestCase):
+    """lisp_tables.py: tables are lists of (name . vector) columns."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("""
+          (define loans (make-table "id"      (vector "a" "a" "b" "b" "c")
+                                    "month"   #(1 2 1 2 1)
+                                    "state"   (vector "CA" "CA" "NY" "NY" "CA")
+                                    "balance" #(100 90 200 195 50)
+                                    "rate"    (vector 6.0 6.0 4.5 nan 7.25)))""")
+
+    def test_looking_at_a_table(self):
+        self.assertShows("(table-column-names loans)", '("id" "month" "state" "balance" "rate")')
+        self.assertShows('(table-column loans "balance")', "#(100 90 200 195 50)")
+        self.assertShows("(table-row-count loans)", "5")
+        self.assertShows('(cdr (assoc "state" (table-row loans 2)))', '"NY"')
+        self.assertShows('(table-column (table-head loans 2) "id")', '#("a" "a")')
+        self.assertShows('(table-column (table-slice loans 3) "id")', '#("b" "c")')
+        self.assertShows("(table? loans)", "#t")
+        self.assertShows("(table? (list 1))", "#f")
+        self.assertLispError('(table-column loans "nope")', "no column named")
+        self.assertLispError("(table-row loans 99)", "out of range")
+        self.assertLispError('(make-table "a" #(1 2) "b" #(1))', "different lengths")
+
+    def test_choosing_and_changing_columns(self):
+        self.assertShows('(table-column-names (table-select loans (list "rate" "id")))', '("rate" "id")')
+        self.assertShows('(table-column-names (table-drop-columns loans (list "rate" "id")))',
+                         '("month" "state" "balance")')
+        self.assertShows('(table-column (table-add-column loans "one" 1) "one")', "#(1 1 1 1 1)")
+        self.assertShows('(table-column-names (table-add-column loans "month" #(9 9 9 9 9)))',
+                         '("id" "month" "state" "balance" "rate")')
+        self.assertLispError('(table-add-column loans "x" #(1 2))', "5 rows")
+        self.assertShows('(table-column-names (table-rename-column loans "id" "loan"))',
+                         '("loan" "month" "state" "balance" "rate")')
+
+    def test_filter_and_sort(self):
+        self.assertShows('(table-column (table-filter loans (vector> (table-column loans "balance") 95)) "id")',
+                         '#("a" "b" "b")')
+        self.assertShows('(table-column (table-sort loans "balance" #t) "balance")', "#(200 195 100 90 50)")
+        self.assertShows('(table-column (table-sort loans (list "state" "balance")) "balance")',
+                         "#(50 90 100 195 200)")
+        self.assertShows('(table-column (table-sort loans "rate") "rate")', "#(4.5 6.0 6.0 7.25 nan)")
+        self.assertLispError("(table-filter loans #(1 0))", "mask has 2")
+
+    def test_append(self):
+        self.assertShows('(table-column (table-append (table-head loans 1) (table-slice loans 4)) "id")',
+                         '#("a" "c")')
+        self.assertLispError('(table-append loans (make-table "x" #(1)))', "different columns")
+
+    def test_group_by(self):
+        self.run_lisp("""
+          (define g (table-group-by loans "state"
+                       (list (list "n" 'count) (list "upb" 'sum "balance")
+                             (list "wac" 'weighted-mean "rate" "balance")
+                             (list "avg" "mean" "rate") (list "lo" 'min "balance")
+                             (list "last_id" 'last "id") (list "med" 'median "balance"))))""")
+        self.assertShows('(table-column g "state")', '#("CA" "NY")')
+        self.assertShows('(table-column g "n")', "#(3 2)")
+        self.assertShows('(table-column g "upb")', "#(240 395)")
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column g "wac") 1)'), 4.5)
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column g "wac") 0)'),
+                               (100 * 6 + 90 * 6 + 50 * 7.25) / 240, places=5)
+        self.assertShows('(table-column g "avg")', "#(6.4166665 4.5)")
+        self.assertShows('(table-column g "lo")', "#(50 195)")
+        self.assertShows('(table-column g "last_id")', '#("c" "b")')
+        self.assertShows('(table-column g "med")', "#(90.0 197.5)")
+        self.assertShows('(table-column (table-group-by loans (list "state" "month") (list (list "n" (quote count)))) "n")',
+                         "#(2 1 1 1)")
+        self.assertLispError("(table-group-by loans \"state\" (list (list \"x\" 'bogus \"rate\")))", "unknown function")
+        self.assertLispError("(table-group-by loans \"state\" (list (list \"x\" 'weighted-mean \"rate\")))", "weight column")
+
+    def test_join(self):
+        self.run_lisp('(define rates (make-table "month" #(1 2) "mkt" #(6.5 6.25) "rate" #(1 2)))')
+        self.assertShows('(table-column (table-join loans rates "month") "mkt")', "#(6.5 6.25 6.5 6.25 6.5)")
+        self.assertShows('(table-column (table-join loans rates "month") "rate_right")', "#(1 2 1 2 1)")
+        self.run_lisp('(define few (make-table "month" #(2) "mkt" #(6.25)))')
+        self.assertShows('(table-row-count (table-join loans few "month"))', "2")
+        self.assertShows('(table-column (table-join loans few "month" (quote left)) "mkt")',
+                         "#(nan 6.25 nan 6.25 nan)")
+        # a left row matching two right rows appears twice, in left order
+        self.run_lisp('(define two (make-table "k" (vector "x" "x") "v" #(10 20)))')
+        self.assertShows('(table-column (table-join (make-table "k" (vector "x" "y")) two "k" (quote left)) "v")',
+                         "#(10.0 20.0 nan)")
+        self.assertShows('(table-column (table-join (make-table "k" (vector "y")) two "k") "v")', "#()")
+        self.assertLispError('(table-join loans rates "month" (quote outer))', "how must be")
+
+    def test_describe(self):
+        self.run_lisp("(define d (table-describe loans))")
+        self.assertShows('(table-column d "column")', '#("month" "balance" "rate")')
+        self.assertShows('(table-column d "count")', "#(5 5 4)")
+        self.assertShows('(table-column d "max")', "#(2.0 200.0 7.25)")
+
+
+class TestTimeSeries(LispTestCase):
+    """lisp_time_series.py: month numbers and monthly series."""
+
+    def test_month_numbers(self):
+        self.assertShows("(date->month-number (date 2020 1 31))", "24240")
+        self.assertShows("(month-number->date 24252)", "2021-01-01")
+        self.assertShows("(yyyymm->month-number #(202001 202012))", "#(24240 24251)")
+        self.assertShows("(month-number->yyyymm 24251)", "202012")
+        self.assertShows("(yyyymm->month-number (vector 202001 nan))", "#(24240.0 nan)")
+        self.assertLispError("(yyyymm->month-number 202000)", "YYYYMM")
+        self.assertLispError("(date->month-number 5)", "not a date")
+
+    def test_month_arithmetic(self):
+        self.assertShows("(date-add-months (date 2020 1 31) 1)", "2020-02-29")
+        self.assertShows("(date-add-months (date 2020 1 15) -13)", "2018-12-15")
+        self.assertShows("(date-add-months (vector (date 2020 1 1)) 2)", "#(2020-03-01)")
+        self.assertShows("(months-between (date 2020 12 31) (date 2021 1 1))", "1")
+        self.assertShows("(months-between (vector (date 2020 1 1)) (date 2020 6 1))", "#(5)")
+        self.assertShows("(month-range 24240 24242)", "#(24240 24241 24242)")
+
+    def test_series(self):
+        self.run_lisp("""
+          (define s (cons (vector (date 2023 1 5) (date 2023 1 20) (date 2023 3 1) (date 2023 3 9))
+                          (vector 6.0 7.0 nan 5.0)))""")
+        self.assertShows("(series-monthly s)", "(#(2023-01-01 2023-03-01) . #(6.5 5.0))")
+        self.assertShows("(series-monthly s 'first)", "(#(2023-01-01 2023-03-01) . #(6.0 5.0))")
+        self.assertShows("(series-monthly s 'sum)", "(#(2023-01-01 2023-03-01) . #(13.0 5.0))")
+        self.assertLispError("(series-monthly s 'median)", "how must be")
+        self.assertShows("(series-values-at s (month-range (date 2022 12 1) (date 2023 4 1)))",
+                         "#(nan 6.5 nan 5.0 nan)")
+        self.assertShows("(series-values-at s (month-range (date 2022 12 1) (date 2023 4 1)) #t)",
+                         "#(nan 6.5 6.5 5.0 5.0)")
+        self.assertShows("(series-values-at s (vector (date 2023 1 1)))", "#(6.5)")
+
+    def test_series_table(self):
+        self.run_lisp("""
+          (define a (cons (vector (date 2023 1 1) (date 2023 3 1)) #(1 3)))
+          (define b (cons (vector (date 2023 2 15)) #(20)))
+          (define t (series-table (list (cons "a" a) (cons "b" b))))""")
+        self.assertShows("(table-column-names t)", '("month" "date" "a" "b")')
+        self.assertShows('(table-column t "month")', "#(24276 24277 24278)")
+        self.assertShows('(table-column t "a")', "#(1.0 nan 3.0)")
+        self.assertShows('(table-column t "b")', "#(nan 20.0 nan)")
+        self.assertShows('(table-column (series-table (list (cons "b" b) (cons "a" a)) #t) "b")',
+                         "#(nan 20.0 20.0)")
+        self.assertLispError("(series-table (list (cons \"a\" 5)))", "a pair of vectors")
+
+
+class TestCsvFiles(LispTestCase):
+    """lisp_csv.py: load-csv reads a table, write-columns-csv writes one."""
+
+    def setUp(self):
+        super().setUp()
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def write(self, name, text):
+        path = os.path.join(self.dir, name)
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def test_columns_become_numbers_dates_or_strings(self):
+        path = self.write("a.csv", "id,when,us_date,amount,count\n"
+                                   "x,2024-01-31,01/31/2024,1.5,3\n"
+                                   "y,,02/29/2024,,4\n")
+        self.run_lisp('(define t (load-csv "%s"))' % path)
+        self.assertShows('(table-column t "id")', '#("x" "y")')
+        self.assertShows('(table-column t "when")', "#(2024-01-31 ())")
+        self.assertShows('(table-column t "us_date")', "#(2024-01-31 2024-02-29)")
+        self.assertShows('(table-column t "amount")', "#(1.5 nan)")
+        self.assertShows('(table-column t "count")', "#(3 4)")
+
+    def test_no_header_and_short_rows(self):
+        path = self.write("b.csv", "1,2\n3\n")
+        self.assertShows('(load-csv "%s" #f)' % path, '(("Column1" . #(1 3)) ("Column2" . #(2.0 nan)))')
+        self.assertLispError('(load-csv "%s")' % self.write("c.csv", "a\n1,2\n"), "only 1 columns")
+
+    def test_write_then_read_back(self):
+        path = os.path.join(self.dir, "out.csv")
+        self.run_lisp('''(write-columns-csv "%s" (make-table "id" (vector "a" "b")
+                                                  "x" (vector 1.5 nan)
+                                                  "d" (vector (date 2024 1 1) (date 2024 2 1))))''' % path)
+        with open(path) as f:
+            self.assertEqual(f.read().splitlines(), ["id,x,d", "a,1.5,2024-01-01", "b,,2024-02-01"])
+        self.assertShows('(load-csv "%s")' % path,
+                         '(("id" . #("a" "b")) ("x" . #(1.5 nan)) ("d" . #(2024-01-01 2024-02-01)))')
+
+
+class TestHttp(LispTestCase):
+    """lisp_http.py, against a small web server on this machine -- the test
+    suite never touches the internet."""
+
+    @classmethod
+    def setUpClass(cls):
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            hits = []
+
+            def do_GET(self):
+                Handler.hits.append(self.path)
+                if self.path.startswith("/data.json"):
+                    body, kind = b'{"rates": [{"date": "2024-01-02", "rate": 5.3}], "ok": true, "none": null}', "json"
+                elif self.path.startswith("/data.csv"):
+                    body, kind = b"date,rate\n01/02/2024,5.3\n01/03/2024,5.31\n", "csv"
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b"no such thing")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/" + kind)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        cls.handler = Handler
+        cls.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        cls.base = "http://127.0.0.1:%d" % cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+
+    def setUp(self):
+        super().setUp()
+        cache = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, cache, True)
+        patcher = mock.patch.dict(os.environ, {"LISP_HTTP_CACHE": cache})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.handler.hits.clear()
+
+    def test_json_becomes_hash_tables_and_lists(self):
+        self.run_lisp('(define r (http-get-json "%s/data.json"))' % self.base)
+        self.assertShows('(hash-table-ref r "ok")', "#t")
+        self.assertShows('(hash-table-ref r "none")', "()")
+        self.assertShows('(hash-table-ref (car (hash-table-ref r "rates")) "rate")', "5.3")
+
+    def test_csv_becomes_a_table(self):
+        self.assertShows('(table-column (http-get-csv "%s/data.csv") "date")' % self.base,
+                         "#(2024-01-02 2024-01-03)")
+
+    def test_text_and_errors(self):
+        self.assertIn("rates", self.show('(http-get-text "%s/data.json")' % self.base))
+        self.assertLispError('(http-get-text "%s/missing")' % self.base, "HTTP 404")
+
+    def test_cache_is_used_only_when_asked_for(self):
+        url = "%s/data.json" % self.base
+        self.run_lisp('(http-get-text "%s") (http-get-text "%s")' % (url, url))
+        self.assertEqual(len(self.handler.hits), 2)             # no cache-hours: downloads each time
+        self.run_lisp('(http-get-text "%s" 1) (http-get-text "%s" 1)' % (url, url))
+        self.assertEqual(len(self.handler.hits), 3)             # the second call read the cache
+        self.assertShows("(http-clear-cache)", "1")
+        self.run_lisp('(http-get-text "%s" 1)' % url)
+        self.assertEqual(len(self.handler.hits), 4)
+
+    def test_url_building(self):
+        self.assertShows('(http-url "https://x.org/a" (list (cons "q" "a b&c") (cons "n" 5)))',
+                         '"https://x.org/a?q=a+b%26c&n=5"')
+        self.assertShows('(http-url "https://x.org/a?k=1" (list (cons "n" 5)))', '"https://x.org/a?k=1&n=5"')
 
 
 # ---------------------------------------------------------------------------
@@ -1321,6 +1686,42 @@ class TestRegression(LispTestCase):
         self.assertIn("linear", self.show("(model-report m)").lower())
         self.run_lisp("(model-evaluate m #(6 7) #(13 15))")
 
+    def test_standard_errors_and_p_values(self):
+        # Checked against statsmodels: OLS of (10 20 29 41 51) on (1 2 3 4 5).
+        self.run_lisp("(define m (linear-regression (vector 1 2 3 4 5) (vector 10 20 29 41 51)))")
+        self.run_lisp("(define ct (model-coefficient-table m))")
+        self.assertShows('(table-column ct "term")', '#("intercept" "x1")')
+        std_errors = self.run_lisp('(table-column ct "std_error")').items.tolist()
+        p_values = self.run_lisp('(table-column ct "p_value")').items.tolist()
+        self.assertAlmostEqual(std_errors[0], 0.834666, places=5)
+        self.assertAlmostEqual(std_errors[1], 0.251661, places=5)
+        self.assertAlmostEqual(p_values[1] / 3.209778e-05, 1.0, places=5)     # statsmodels' value
+        report = self.show("(model-report m)")
+        self.assertIn("std error", report)
+        self.assertIn("t value", report)
+
+    def test_logistic_report_has_z_values_and_auc(self):
+        self.run_lisp("(define m (logistic-regression #(1 2 3 4 5 6 7 8) #(0 0 1 0 0 1 1 1)))")
+        self.assertIn("z value", self.show("(model-report m)"))
+        self.assertIn("AUC", self.show("(model-report m)"))
+        self.assertShows('(table-column-names (model-coefficient-table m))',
+                         '("term" "coefficient" "std_error" "z_value" "p_value")')
+        self.assertIn("AUC              = 0.875", self.show("(model-evaluate m #(1 2 3 4 5 6 7 8) #(0 0 1 0 0 1 1 1))"))
+
+    def test_lift_table(self):
+        self.run_lisp("(define m (logistic-regression #(1 2 3 4 5 6 7 8 9 10) #(0 0 1 0 0 1 0 1 1 1)))")
+        self.run_lisp("(define lt (model-lift-table m #(1 2 3 4 5 6 7 8 9 10) #(0 0 1 0 0 1 0 1 1 1) 5))")
+        self.assertShows('(table-column lt "rows")', "#(2 2 2 2 2)")
+        self.assertShows('(table-column lt "mean_actual")', "#(1.0 0.5 0.5 0.5 0.0)")
+        self.assertShows('(table-column lt "cumulative_share")', "#(0.4 0.6 0.8 1.0 1.0)")
+        self.assertLispError("(model-lift-table m #(1 2) #(0 1) 5)", "bins must be")
+
+    def test_spline_report_has_the_coefficient_table(self):
+        self.run_lisp("(define spl (spline-regression (list (cons \"x\" (vector-range 11))) "
+                      "(vector-map (lambda (x) (abs (- x 5))) (vector-range 11)) (list 5)))")
+        self.assertIn("x (knot 5)", self.show("(model-report spl)"))
+        self.assertShows('(table-column (model-coefficient-table spl) "term")', '#("intercept" "x" "x (knot 5)")')
+
     def test_train_test_split_helpers(self):
         self.assertShows("(vector-take #(1 2 3 4 5) 3)", "#(1 2 3)")
         self.assertShows("(vector-drop #(1 2 3 4 5) 3)", "#(4 5)")
@@ -1361,7 +1762,7 @@ class TestSqlite(LispTestCase):
         self.assertShows("(list (sqlite-fetch-row cur) (sqlite-fetch-row cur) (sqlite-fetch-row cur) (sqlite-fetch-row cur))",
                          "((1) (2) (3) ())")
 
-    def test_null_becomes_the_empty_list(self):
+    def test_null_in_a_text_column_is_the_empty_list(self):
         self.run_lisp('(sqlite-execute conn "INSERT INTO t VALUES (9, NULL, 1.0)")')
         self.assertShows('(vector-ref (cdr (car (sqlite-query conn "SELECT name FROM t WHERE id = 9"))) 0)', "()")
 
@@ -1391,6 +1792,36 @@ class TestSqlite(LispTestCase):
         self.assertShows("(vector-length (cdr (car (sqlite-query conn \"SELECT id FROM t\"))))", "4")
         self.assertShows("(vector-ref (cdr (car (sqlite-query conn \"SELECT name FROM t WHERE id = 7\"))) 0)",
                          '"x\'); DROP TABLE t; --"')
+
+    def test_null_in_a_numeric_column_is_nan(self):
+        self.run_lisp('(sqlite-execute conn "INSERT INTO t VALUES (9, NULL, NULL)")')
+        self.assertShows('(cdr (car (sqlite-query conn "SELECT amount FROM t ORDER BY id")))',
+                         "#(10.5 20.0 30.25 nan)")
+
+    def test_write_table_round_trip(self):
+        self.run_lisp("""
+          (define tbl (make-table "id" (vector "a" "b") "x" (vector 1.5 nan)
+                                  "d" (vector (date 2024 1 1) (date 2024 2 1)) "odd \\"name\\"" #(1 2)))""")
+        self.assertShows('(sqlite-write-table conn "w" tbl)', "2")
+        self.assertShows('(sqlite-query conn "SELECT id, x, d FROM w")',
+                         '(("id" . #("a" "b")) ("x" . #(1.5 nan)) ("d" . #(2024-01-01 2024-02-01)))')
+        names = self.run_lisp('(table-column-names (sqlite-query conn "SELECT * FROM w"))')
+        self.assertEqual(lisp_core.pairs_to_list(names)[-1], 'odd "name"')     # quoted safely
+
+    def test_write_table_modes(self):
+        self.run_lisp('(define tbl (make-table "n" #(1 2)))')
+        self.run_lisp('(sqlite-write-table conn "w" tbl)')
+        self.assertLispError('(sqlite-write-table conn "w" tbl)', "already exists")
+        self.run_lisp('(sqlite-write-table conn "w" tbl (quote append))')
+        self.assertShows('(cdr (car (sqlite-query conn "SELECT count(*) AS n FROM w")))', "#(4)")
+        self.run_lisp('(sqlite-write-table conn "w" (make-table "n" #(9)) (quote replace))')
+        self.assertShows('(cdr (car (sqlite-query conn "SELECT n FROM w")))', "#(9)")
+
+    def test_a_failed_write_changes_nothing(self):
+        self.run_lisp('(sqlite-write-table conn "w" (make-table "n" #(1)))')
+        self.assertLispError('(sqlite-write-table conn "w" (make-table "other" #(5)) (quote append))',
+                             "no column named other")
+        self.assertShows('(cdr (car (sqlite-query conn "SELECT count(*) AS n FROM w")))', "#(1)")
 
 
 # ---------------------------------------------------------------------------
@@ -1603,6 +2034,20 @@ class TestColumnEngineLibrary(LispTestCase):
           (calculate-all *columns* 3)""")
         self.assertEqual(len(self.tables), 1)
         self.assertEqual([row[0] for row in self.tables[0]], ["a"])
+
+    def test_lag_default_before_the_first_row(self):
+        self.run_lisp("""
+          (defcolumn n-col :name "n" :initial_value 1 :value_calculation (+ (lag n 1) 1))
+          (defcolumn back-col :name "back" :initial_value 0 :after n-col
+                     :value_calculation (lag n 2 -1))
+          (calculate-all *columns* 4)""")
+        self.assertShows("(column-series back-col)", "#(0 -1 1 2)")
+
+    def test_lag_without_a_default_before_the_first_row_is_an_error(self):
+        self.run_lisp("""
+          (defcolumn n-col :name "n" :initial_value 1 :value_calculation (+ (lag n 1) 1))
+          (defcolumn bad-col :name "bad" :initial_value 0 :after n-col :value_calculation (lag n 2))""")
+        self.assertLispError("(calculate-all *columns* 3)", "give lag a default")
 
     def test_after_orders_columns_by_dependency_not_declaration(self):
         self.run_lisp("""
@@ -2335,7 +2780,7 @@ class TestExampleScripts(unittest.TestCase):
 _RISKY_BLOCK_WORDS = (
     "breakpoint", "fred-series", "tastytrade", "sofr-", "(load ", "redirect-output", "sqlite-open",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv", "display-columns",
-    "debug-function", "while", "input", "exit", "load-init",
+    "debug-function", "while", "input", "exit", "load-init", "http-get", "http-clear-cache",
 )
 # examples whose documented value is illustrative rather than exact
 _ILLUSTRATIVE_PREFIXES = ("e.g.", "one of", "some", "a ", "an ", "somewhere", "error", "raises",

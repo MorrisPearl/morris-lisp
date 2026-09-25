@@ -90,17 +90,18 @@ NIL = None  # represents the empty list '()
 
 
 class LispVector:
-    """A fixed-size, mutable vector of numbers and/or dates, e.g. #(1 2 3.5).
+    """A fixed-size, mutable vector of numbers, strings, and/or dates, e.g.
+    #(1 2 3.5).
 
     `items` is a numpy array rather than a Python list, to save memory on
     large data (a million float32 values take 4 MB, versus about 32 MB as a
-    Python list) and so a few builtins (vector-add, regression fitting) can
-    do their math in numpy.
+    Python list) and so the vector math builtins can use numpy.
 
     DTYPE POLICY: the three *_DTYPE attributes below set how every vector
     stores its numbers. The defaults suit loan-level mortgage data: float32
     keeps about 7 significant digits, enough for balances under $1,000,000
     and for rates. Set FLOAT_DTYPE = np.float64 if you need more precision.
+    A vector holding strings or dates is stored as Python objects.
 
     Two rules for code that uses `items`:
       1. Indexing a numeric array returns a numpy scalar (np.float32, ...),
@@ -127,7 +128,7 @@ class LispVector:
         values, using the narrowest dtype that holds every value exactly:
         BOOL_INT_DTYPE if they're all 0 or 1, INT_DTYPE for other integers, and
         FLOAT_DTYPE if any is a float (5.0 counts as a float). Anything else --
-        an empty list, a date, an integer too big for INT_DTYPE, or the
+        an empty list, a string or date, an integer too big for INT_DTYPE, or the
         unevaluated contents of a #(...) literal -- gets dtype=object."""
         if items and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in items):
             if all(isinstance(v, int) for v in items):
@@ -149,7 +150,12 @@ class LispVector:
 def _lisp_scalar(x):
     """Convert one element of a vector's `items` into a plain Python value:
     a numpy scalar becomes an int or float, and anything else (such as a
-    LispDate in an object array) is returned unchanged."""
+    LispDate in an object array) is returned unchanged. A float32 becomes
+    the float of its shortest decimal form -- 4.01, not the
+    4.010000228881836 it would widen to -- which is also the closer value to
+    the number that was originally stored."""
+    if isinstance(x, np.float32):
+        return float(str(x))
     return x.item() if isinstance(x, np.generic) else x
 
 
@@ -206,6 +212,15 @@ class LispDate:
 
     def __lt__(self, other):
         return isinstance(other, LispDate) and self.date < other.date
+
+    def __le__(self, other):
+        return isinstance(other, LispDate) and self.date <= other.date
+
+    def __gt__(self, other):
+        return isinstance(other, LispDate) and self.date > other.date
+
+    def __ge__(self, other):
+        return isinstance(other, LispDate) and self.date >= other.date
 
     def __repr__(self):
         return self.date.isoformat()
@@ -1554,10 +1569,10 @@ def check_numbers(args, name):
 
 
 def check_vector_elements(args, name):
-    """Vectors hold numbers and/or dates -- not booleans, strings, or lists."""
+    """Vectors hold numbers, strings, and dates -- not booleans or lists."""
     for a in args:
-        if isinstance(a, bool) or not isinstance(a, (int, float, LispDate)):
-            raise LispError("%s: not a number or date: %r" % (name, a))
+        if isinstance(a, bool) or not isinstance(a, (int, float, LispString, LispDate)):
+            raise LispError("%s: not a number, string, or date: %r" % (name, a))
 
 
 def numeric_value(v):

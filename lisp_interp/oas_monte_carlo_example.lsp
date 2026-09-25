@@ -97,7 +97,7 @@
 ; cashflows down by initial-balance/100 first) -- replace with a real
 ; observed MBS price for an actual analysis.
 (define price-scale (/ 100.0 initial-balance))
-(define scaled-path-cashflows (map (lambda (cf) (vector-scale cf price-scale)) path-cashflows))
+(define scaled-path-cashflows (map (lambda (cf) (vector-mul cf price-scale)) path-cashflows))
 
 (define assumed-market-price 98.50)   ; per 100 face
 

@@ -79,14 +79,10 @@
 ;   (define dff (fred-series "DFF" api-key))
 ;   (define dff-annual-vol (annualized-realized-vol (cdr dff) 252))
 (define (annualized-realized-vol rate_levels periods_per_year)
-  (define n (vector-length rate_levels))
-  (define diffs (vector-sub (vector-drop rate_levels 1) (vector-take rate_levels (- n 1))))
-  (define count (vector-length diffs))
-  (define mean_diff (/ (vector-sum diffs) count))
-  (define centered (vector-map (lambda (d) (- d mean_diff)) diffs))
-  (define sum_sq (vector-sum (vector-map (lambda (d) (* d d)) centered)))
-  (define sample_variance (/ sum_sq (- count 1)))   ; n-1: sample (not population) variance
-  (* (sqrt sample_variance) (sqrt periods_per_year)))
+  ; the sample standard deviation of the period-to-period changes
+  ; (vector-diff's first element is NaN, which vector-stdev skips),
+  ; scaled up to a year
+  (* (vector-stdev (vector-diff rate_levels)) (sqrt periods_per_year)))
 
 ; --- 2. Monte Carlo OAS engine --------------------------------------------
 

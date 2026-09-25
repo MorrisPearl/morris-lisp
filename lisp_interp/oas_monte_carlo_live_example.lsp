@@ -127,7 +127,7 @@
 (define (fred-recent-decimal-values series n)
   (define pct_values (cdr series))
   (define len (vector-length pct_values))
-  (vector-scale (vector-drop pct_values (max 0 (- len n))) 0.01))
+  (vector-mul (vector-drop pct_values (max 0 (- len n))) 0.01))
 
 (define dff-recent (fred-recent-decimal-values dff-series vol-window-days))
 (define dgs10-recent (fred-recent-decimal-values dgs10-series vol-window-days))
@@ -185,7 +185,7 @@
 (define assumed-market-price 98.50)   ; per 100 face
 
 (define price-scale (/ 100.0 initial-balance))
-(define scaled-path-cashflows (map (lambda (cf) (vector-scale cf price-scale)) path-cashflows))
+(define scaled-path-cashflows (map (lambda (cf) (vector-mul cf price-scale)) path-cashflows))
 
 (display "Solving for OAS...") (newline)
 (define model-price-at-0-oas (oas-model-price scaled-path-cashflows short-rate-paths 0.0))

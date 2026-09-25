@@ -54,6 +54,34 @@ def _sqlite_value_to_lisp(v):
     return v
 
 
+def _parse_iso_date(text):
+    """text as a LispDate if it's exactly YYYY-MM-DD, otherwise None."""
+    if len(text) != 10 or text[4] != "-" or text[7] != "-":
+        return None
+    try:
+        return LispDate(int(text[:4]), int(text[5:7]), int(text[8:]))
+    except ValueError:
+        return None
+
+
+def column_vector(values):
+    """An un-hinted result column (a list of Lisp values) as a vector,
+    read the way load-csv reads a CSV column: if every value that isn't
+    NULL is a number, a numeric vector with NaN for NULL; if every one is
+    YYYY-MM-DD text, a vector of dates (SQLite has no date type, so
+    sqlite-write-table stores dates that way); otherwise the values as they
+    are, with NULL as '()."""
+    present = [v for v in values if v is not None]
+    if present and len(present) < len(values) and \
+            all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in present):
+        return LispVector([float("nan") if v is None else v for v in values])
+    if present and all(isinstance(v, str) for v in present):
+        dates = [_parse_iso_date(v) for v in present]
+        if all(d is not None for d in dates):
+            return LispVector([None if v is None else _parse_iso_date(v) for v in values])
+    return LispVector(values)
+
+
 def sqlite_open_fn(path):
     """(sqlite-open "file.db") -- open a SQLite database file (creating it if
     needed) and return a connection for sqlite-query, sqlite-execute, and
@@ -133,7 +161,7 @@ def _sqlite_query_streamed(cursor, names, hints):
     result = []
     for j, values in enumerate(columns_raw):
         if hints[j] is None:
-            result.append(LispVector(values))
+            result.append(column_vector(values))
             continue
         try:
             result.append(LispVector(np.array(values, dtype=hints[j])))
@@ -177,7 +205,7 @@ def _sqlite_query_preallocated(cursor, names, hints, cap):
         if hints[j] is not None:
             result.append(LispVector(arrays[j][:row_count]))
         else:
-            result.append(LispVector(raw_lists[j]))
+            result.append(column_vector(raw_lists[j]))
     return result
 
 
@@ -250,7 +278,87 @@ def sqlite_fetch_row_fn(cursor):
     return list_to_pairs([_sqlite_value_to_lisp(v) for v in row])
 
 
+def quote_identifier(name):
+    """A table or column name quoted for SQL ("like this"), so any name --
+    even one with spaces or quotes in it -- is safe to put in a statement."""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def sql_type_of(vector):
+    """The SQLite column type for a vector: INTEGER, REAL, or TEXT (for
+    strings and dates); no type if its values are a mix."""
+    items = vector.items
+    if np.issubdtype(items.dtype, np.integer):
+        return "INTEGER"
+    if np.issubdtype(items.dtype, np.floating):
+        return "REAL"
+    kinds = {type(v).__name__ for v in items.tolist() if v is not None}
+    if kinds <= {"LispString", "LispDate"}:
+        return "TEXT"
+    if kinds <= {"int"}:
+        return "INTEGER"
+    if kinds <= {"int", "float"}:
+        return "REAL"
+    return ""
+
+
+def sql_value(v):
+    """One value as SQLite stores it: a date as its YYYY-MM-DD text, a
+    missing value (NaN or '()) as NULL."""
+    if v is None or (isinstance(v, float) and v != v):
+        return None
+    if isinstance(v, LispDate):
+        return v.date.isoformat()
+    if isinstance(v, str):
+        return str(v)
+    return v
+
+
+def sqlite_write_table_fn(conn, table_name, table, mode="create"):
+    """(sqlite-write-table conn name table [mode]) -- save a table (a list of
+    (name . vector) columns) as a SQLite table, and return how many rows
+    were written. mode says what to do if a table with that name exists:
+      'create   (the default) it's an error
+      'replace  drop it and write the new table in its place
+      'append   add the rows to it (its columns must have the same names)
+    Columns get the type INTEGER, REAL, or TEXT to match their vectors;
+    dates are stored as YYYY-MM-DD text, and NaN or '() as NULL. All the
+    rows are written in one transaction, so it's fast, and a failure
+    leaves the database unchanged."""
+    from lisp_tables import table_columns     # imported here: lisp_tables doesn't need SQLite
+    if not isinstance(conn, LispSQLiteConnection):
+        raise LispError("sqlite-write-table: not a sqlite connection: %r" % (conn,))
+    mode = str(mode).lower()
+    if mode not in ("create", "replace", "append"):
+        raise LispError("sqlite-write-table: mode must be 'create, 'replace, or 'append, got %s" % mode)
+    columns = table_columns(table, "sqlite-write-table")
+    if not columns:
+        raise LispError("sqlite-write-table: the table has no columns")
+
+    name = quote_identifier(table_name)
+    column_list = ", ".join(quote_identifier(n) for n, _ in columns)
+    placeholders = ", ".join("?" for _ in columns)
+    values = [[sql_value(v) for v in vector.items.tolist()] for _, vector in columns]
+    rows = list(zip(*values))
+
+    db = conn.connection
+    db.execute("BEGIN")
+    try:
+        if mode == "replace":
+            db.execute("DROP TABLE IF EXISTS %s" % name)
+        if mode in ("create", "replace"):
+            definitions = ", ".join("%s %s" % (quote_identifier(n), sql_type_of(v)) for n, v in columns)
+            db.execute("CREATE TABLE %s (%s)" % (name, definitions))
+        db.executemany("INSERT INTO %s (%s) VALUES (%s)" % (name, column_list, placeholders), rows)
+        db.execute("COMMIT")
+    except sqlite3.Error as e:
+        db.execute("ROLLBACK")
+        raise LispError("sqlite-write-table: %s" % e)
+    return len(rows)
+
+
 BUILTINS = {
+    "sqlite-write-table": sqlite_write_table_fn,
     "sqlite-open": sqlite_open_fn,
     "sqlite-close": sqlite_close_fn,
     "sqlite-query": sqlite_query_fn,

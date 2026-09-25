@@ -4,15 +4,13 @@
 ; evaluate on held-out data, and chart the fitted curve.
 ; ---------------------------------------------------------------------
 
-(define d (load-csv "synthetic_mbs_pools.csv"))
-(define headers (car d))
-(define cols (cdr d))
-(display "Columns: ") (display headers) (newline)
+(define pools (load-csv "synthetic_mbs_pools.csv"))
+(display "Columns: ") (display (table-column-names pools)) (newline)
 
-(define incentive (list-ref cols 10))   ; rate_incentive_pct
-(define wala (list-ref cols 3))         ; wala_months
-(define purpose (list-ref cols 8))      ; purpose_refi (0/1)
-(define cpr (list-ref cols 11))         ; cpr (target, in [0,1])
+(define incentive (table-column pools "rate_incentive_pct"))
+(define wala (table-column pools "wala_months"))
+(define purpose (table-column pools "purpose_refi"))   ; 0/1
+(define cpr (table-column pools "cpr"))                 ; the target, between 0 and 1
 
 (display "n = ") (display (vector-length cpr)) (newline)
 

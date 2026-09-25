@@ -1,11 +1,13 @@
 # Simple Lisp — Reference
 
-A small Lisp with vectors, dates, macros, struct inheritance,
-linear/logistic/spline regression, hash tables, SQLite access, `catch-error`
-error handling, XY charting, FRED economic-data access, real tastytrade
-broker data (futures and equity option chains, futures-curve rich/cheap and
-calendar-spread carry analysis), and a built-in debugger — plus an optional
-PyQt6 GUI. **Requires `numpy`**, unlike every other dependency mentioned in
+A small Lisp for getting data from various sources and modeling it: fast
+vector math and statistics, tables (filter, sort, group, join), monthly
+time series, linear/logistic/spline regression with standard errors and
+AUC, SQLite, CSV files, downloads from any web API, FRED economic data,
+real tastytrade broker data (futures and equity option chains,
+futures-curve rich/cheap and calendar-spread carry analysis), and XY
+charts — plus dates, macros, struct inheritance, hash tables, `catch-error`
+error handling, a built-in debugger, and an optional PyQt6 GUI. **Requires `numpy`**, unlike every other dependency mentioned in
 this document (PyQt6, matplotlib, pandas, tastytrade), which are all
 optional, feature-specific extras — numpy backs the vector datatype itself
 (see "Vectors", below), so it's needed for even the plainest console/
@@ -1358,11 +1360,16 @@ free-form text.
 
 ### Vectors
 
-Vectors are fixed-size and mutable, holding numbers and/or dates only (not
-strings, pairs, or booleans) — an attempt to put anything else in one
-raises `LispError: not a number or date: ...`. `vector-ref`/`vector-set!`
+Vectors are fixed-size and mutable, holding numbers, strings, and/or dates
+(not lists or booleans) — an attempt to put anything else in one raises
+`LispError: not a number, string, or date: ...`. `vector-ref`/`vector-set!`
 do **not** bounds-check their index; an out-of-range index raises a plain
 Python `IndexError`, not a `LispError`.
+
+This section covers making, reading, and changing vectors. Arithmetic,
+comparisons, statistics, and time-series functions on whole vectors are in
+the next section, "Vector math and statistics"; a vector of numbers with a
+value missing holds NaN there (written `nan`).
 
 **Memory: vectors are backed by numpy, not a Python list.** This matters
 once a vector reaches into the millions of elements — e.g. a large
@@ -1377,7 +1384,7 @@ as little as 1 byte per element, depending on what's actually in it:
 | Only the integers 0 and/or 1 (a flag column) | `int8` | 1 | 32x smaller |
 | Plain integers, not all 0/1 | `int32` | 4 | 8x smaller |
 | At least one non-integer number | `float32` | 4 | 8x smaller |
-| A date anywhere, or a mix of numbers and dates | `object` | ~32 | no change |
+| Any string or date (text or date columns, or a mix) | `object` | ~32 | no change |
 
 A vector's dtype is picked automatically the moment it's built, from
 whatever's actually in it — nothing to configure at the Lisp level. It can
@@ -1401,14 +1408,9 @@ vector — every read and every downstream computation after that (including
 `linear-regression`/`logistic-regression`'s own fitting, which works from
 full-precision numbers pulled back out of the vector) happens at full
 double precision, same as always; the compact storage doesn't compound
-error across computations, only across the *display* of a value that's
-been read back out of a vector and printed later on its own (a vector
-printed directly, e.g. `(display some-vector)`, always shows the clean,
-short decimal a `float32` value actually represents — e.g. `0.964` — but
-that same value returned by `vector-ref` and printed on its own later
-shows the long, exact decimal a `float32` widens to as an ordinary Python
-number, e.g. `0.9639999866485596`; both represent the identical stored
-value, just formatted differently).
+error across computations. A value read back out of a vector (by
+`vector-ref`, `table-row`, ...) comes back as the short decimal the
+`float32` holds — `0.964`, not the `0.9639999866485596` it would widen to.
 
 If a dataset needs more precision than this default gives — dollar figures
 in the billions, say — the fix is a one-line, interpreter-wide change in
@@ -1510,30 +1512,6 @@ Raises `LispError` if `count` is negative.
 (vector-iterate 1 5 (lambda (x) (* x 2)))    ; => #(1 2 4 8 16)
 ```
 
-#### `(vector-sum v)`
-Sum of all elements.
-
-```lisp
-(vector-sum #(1 2 3 4))        ; => 10
-```
-
-#### `(vector-add v1 v2)`, `(vector-sub v1 v2)`
-Elementwise addition/subtraction. If the two vectors have different
-lengths, the result is only as long as the *shorter* one (extra elements
-in the longer vector are silently ignored) — not an error.
-
-```lisp
-(vector-add #(1 2 3) #(10 20 30))    ; => #(11 22 33)
-(vector-sub #(10 20 30) #(1 2 3))    ; => #(9 18 27)
-```
-
-#### `(vector-scale v s)`
-A new vector with every element multiplied by `s`.
-
-```lisp
-(vector-scale #(1 2 3) 10)     ; => #(10 20 30)
-```
-
 #### `(vector-slice v start [end])`
 Sub-vector from `start` up to (not including) `end`, which defaults to the
 end of the vector.
@@ -1591,6 +1569,604 @@ with a `default` argument, the result runs out to the length of the
 ; want the index, use a small lambda that just ignores its last argument:
 (vectors-map (lambda (a b i) (+ a b)) (list (vector 1 2 3) (vector 10 20)) 0)
 ; => #(11 22 3)
+```
+
+### Vector math and statistics
+
+(In `lisp_vector_math.py`.) These work on a whole vector at once, as one
+numpy operation, so they're fast even on millions of values — far faster
+than a Lisp loop over `vector-ref`. Use them in place of `vector-map` with
+a lambda whenever there's one that does the job.
+
+**Vectors and numbers.** Arithmetic and comparisons take two vectors of
+the **same length** (a different length is an error), or a vector and a
+single number, which is used with every element. A date counts as its day
+number, so subtracting two vectors of dates gives the days between them.
+
+**Missing values** are NaN, "not a number", which you write as `nan`:
+a SQLite NULL in a numeric column, a blank in a CSV column of numbers, a
+division by zero, or a lag that reaches before the start of a series.
+Arithmetic involving NaN gives NaN, and **every statistic below skips NaN
+values** (so `vector-mean` is the average of the values that are present).
+In a vector of strings or dates, `'()` plays the same role.
+
+**Results** are stored like any other vector (see "Vectors", above): whole
+numbers stay integers, anything with a fraction is `float32`, and a
+comparison gives a vector of `0` and `1`.
+
+#### Arithmetic
+
+#### `(vector-add a b)`, `(vector-sub a b)`, `(vector-mul a b)`, `(vector-div a b)`, `(vector-pow a b)`
+`a + b`, `a - b`, `a * b`, `a / b`, and `a` to the power `b`, element by
+element. Either argument (but not both) may be a single number. Dividing by
+zero gives `inf` or `nan` rather than an error.
+
+```lisp
+(vector-add #(1 2 3) #(10 20 30))    ; => #(11 22 33)
+(vector-sub #(10 20 30) 1)           ; => #(9 19 29)
+(vector-mul #(1 2 3) 2.5)            ; => #(2.5 5.0 7.5)
+(vector-div #(1 2 3) #(2 0 4))       ; => #(0.5 inf 0.75)
+(vector-pow #(1 2 3) 2)              ; => #(1.0 4.0 9.0)
+(vector-add #(1 2 3) #(10 20))       ; an error: the vectors have different lengths
+```
+
+#### `(vector-log v)`, `(vector-exp v)`, `(vector-sqrt v)`, `(vector-abs v)`
+The natural log, e to the power, square root, and absolute value of each
+element. The log or square root of a negative number is `nan`.
+
+```lisp
+(vector-sqrt #(1 4 9))               ; => #(1.0 2.0 3.0)
+(vector-abs #(-2 3))                 ; => #(2 3)
+```
+
+#### `(vector-round v [decimals])`
+Each element rounded to `decimals` places (default 0). An exact half rounds
+to the even neighbor, like `round`.
+
+```lisp
+(vector-round #(1.26 2.5 3.5) 1)     ; => #(1.3 2.5 3.5)
+(vector-round #(2.5 3.5))            ; => #(2.0 4.0)
+```
+
+#### `(vector-clip v low high)`
+Each element limited to the range `low` to `high`; pass `'()` for no limit
+on one side. Useful for capping outliers, e.g. an LTV over 150.
+
+```lisp
+(vector-clip #(5 50 150) 10 100)     ; => #(10 50 100)
+(vector-clip #(5 50 150) '() 100)    ; => #(5 50 100)
+```
+
+#### Comparisons, masks, and picking elements
+
+A comparison gives a **mask**: a vector of `1` (true) and `0` (false), one
+per element. Masks combine with `vector-and`, `vector-or`, and
+`vector-not`; `vector-select` keeps the elements where a mask is true, and
+`table-filter` keeps the rows of a table where it's true.
+
+#### `(vector= a b)`, `(vector/= a b)`, `(vector< a b)`, `(vector<= a b)`, `(vector> a b)`, `(vector>= a b)`
+Compare element by element: equal, not equal, less than, and so on. Either
+argument may be a single value. `vector=` and `vector/=` also work on
+strings and dates; ordering a number against a string is an error. A NaN
+is never equal to anything.
+
+```lisp
+(vector> #(1 5 10) 4)                        ; => #(0 1 1)
+(vector= (vector "CA" "NY" "CA") "CA")       ; => #(1 0 1)
+(vector<= (vector (date 2020 1 1) (date 2021 1 1)) (date 2020 6 1))   ; => #(1 0)
+```
+
+#### `(vector-and m1 m2 ...)`, `(vector-or m1 m2 ...)`, `(vector-not m)`
+Combine masks: `1` where every mask is true, where any is true, or where
+the mask is false. Any nonzero number counts as true; `0` and `nan` count
+as false.
+
+```lisp
+(define rates #(3.5 6.0 7.2))
+(vector-and (vector> rates 4) (vector< rates 7))   ; => #(0 1 0)
+(vector-or #(1 0 0) #(0 0 1))                      ; => #(1 0 1)
+(vector-not #(1 0 1))                              ; => #(0 1 0)
+```
+
+#### `(vector-where mask a b)`
+Element by element, `a` where the mask is true and `b` where it's false.
+`a` and `b` are vectors or single values (numbers, strings, or dates).
+
+```lisp
+(vector-where (vector> #(1 5 10) 4) "big" "small")        ; => #("small" "big" "big")
+(vector-where (vector> #(1 5 10) 4) #(100 200 300) 0)     ; => #(0 200 300)
+```
+
+#### `(vector-select v mask)`
+Just the elements of `v` where the mask is true, in order.
+
+```lisp
+(vector-select #(10 20 30 40) #(1 0 1 0))   ; => #(10 30)
+```
+
+#### `(vector-nan? v)`, `(vector-fill-nan v value)`, `(vector-fill-forward v)`
+`vector-nan?` gives a mask of the missing elements. `vector-fill-nan`
+replaces each missing element with `value`. `vector-fill-forward` replaces
+each with the nearest earlier value that isn't missing (missing values
+before the first real one stay missing) — e.g. to carry a monthly value
+through months with no new data.
+
+```lisp
+(vector-nan? (vector 1.5 nan 3))                   ; => #(0 1 0)
+(vector-fill-nan (vector 1.5 nan 3) 0)             ; => #(1.5 0.0 3.0)
+(vector-fill-forward (vector nan 1.5 nan nan 3))   ; => #(nan 1.5 1.5 1.5 3.0)
+```
+
+#### Statistics
+
+Each of these skips missing values; with no values present, the result is
+`nan`.
+
+#### `(vector-sum v)`, `(vector-count v)`
+The total of the values, and how many values aren't missing.
+
+```lisp
+(vector-sum #(1 2 3 4))              ; => 10
+(vector-sum (vector 1.5 nan 2))      ; => 3.5
+(vector-count (vector 1.5 nan 2))    ; => 2
+```
+
+#### `(vector-mean v)`, `(vector-median v)`
+The average, and the middle value (the average of the two middle values
+when there's an even number).
+
+```lisp
+(vector-mean (vector 1 2 3 nan))     ; => 2.0
+(vector-median #(5 1 3 2))           ; => 2.5
+```
+
+#### `(vector-variance v [population?])`, `(vector-stdev v [population?])`
+The variance and standard deviation. By default these are the *sample*
+statistics (dividing by n − 1); pass `#t` for the population versions
+(dividing by n).
+
+```lisp
+(vector-variance #(2 4 4 4 5 5 7 9))       ; => 4.571428571428571
+(vector-stdev #(2 4 4 4 5 5 7 9) #t)       ; => 2.0
+```
+
+#### `(vector-min v)`, `(vector-max v)`
+The smallest and largest value. These also work on vectors of dates or of
+strings (alphabetical order).
+
+```lisp
+(vector-min #(3 1 2))                                    ; => 1
+(vector-max (vector (date 2020 1 1) (date 2021 6 1)))    ; => 2021-06-01
+(vector-min (vector "pear" "apple"))                     ; => "apple"
+```
+
+#### `(vector-quantile v q)`
+The value below which a fraction `q` of the values fall (`q` between 0 and
+1; 0.5 is the median), interpolating between values. `q` may be a vector of
+fractions, giving a vector of results.
+
+```lisp
+(vector-quantile #(1 2 3 4 5) 0.25)            ; => 2.0
+(vector-quantile #(1 2 3 4 5) #(0.1 0.5 0.9))  ; => #(1.4 3.0 4.6)
+```
+
+#### `(vector-weighted-mean v weights)`
+`sum(v × w) / sum(w)` — e.g. a balance-weighted average coupon (WAC).
+Positions where either value is missing are skipped.
+
+```lisp
+(vector-weighted-mean #(5 7) #(100 300))   ; => 6.5
+```
+
+#### `(vector-correlation a b)`, `(vector-covariance a b [population?])`
+The (Pearson) correlation, between −1 and 1, and the sample covariance
+(population with `#t`). Positions where either value is missing are
+skipped.
+
+```lisp
+(vector-correlation #(1 2 3 4) #(2 4 6 8))   ; => 1.0
+(vector-covariance #(1 2 3 4) #(2 4 6 8))    ; => 3.3333333333333335
+```
+
+#### Time series
+
+These treat a vector as values in time order, one per period (e.g. one per
+month). **Loan-level data** — many loans, each with its own run of months
+— needs the optional `groups` argument (e.g. the loan-id column): then a
+lag never reaches from one loan's rows into another's. For that, the rows
+must be sorted by loan and then by month, with one row per month (see
+`table-sort`).
+
+#### `(vector-lag v [n default groups])`
+Each element's value `n` periods earlier (`n` defaults to 1; a negative
+`n` looks ahead instead). **Where that reaches before the start of the
+vector — or into another group — the result is `default`**, which is
+`nan` if you don't give one (`'()` for a vector of strings or dates).
+
+```lisp
+(vector-lag #(10 20 30 40))                   ; => #(nan 10.0 20.0 30.0)
+(vector-lag #(10 20 30 40) 2 0)               ; => #(0 0 10 20)
+(vector-lag #(10 20 30 40) -1)                ; => #(20.0 30.0 40.0 nan)
+(vector-lag #(10 20 30 40 50) 1 0 (vector "a" "a" "a" "b" "b"))   ; => #(0 10 20 0 40)
+```
+
+The last example lags each loan's balance separately: loan `"b"`'s first
+month gets the default `0`, not loan `"a"`'s last value. That's how to get
+each loan's **beginning-of-month balance** from its end-of-month balance.
+
+#### `(vector-diff v [n groups])`, `(vector-pct-change v [n groups])`
+The change from `n` periods earlier (default 1), and the fractional change
+(`0.1` means up 10%). `nan` where there's no earlier value.
+
+```lisp
+(vector-diff #(100 103 101 110))       ; => #(nan 3.0 -2.0 9.0)
+(vector-pct-change #(100 110 99))      ; => #(nan 0.1 -0.1)
+```
+
+#### `(vector-cumsum v)`, `(vector-cumprod v)`
+Running totals and running products. `vector-cumprod` turns monthly
+survival rates (1 − SMM) into the fraction of a pool still outstanding, or
+monthly discount factors into cumulative ones. A missing value counts as 0
+(for a sum) or 1 (for a product) but stays missing in the result.
+
+```lisp
+(vector-cumsum #(1 2 3 4))             ; => #(1 3 6 10)
+(vector-cumprod #(0.5 0.5 0.5))        ; => #(0.5 0.25 0.125)
+```
+
+#### `(vector-rolling-mean v window)`, `(vector-rolling-sum v window)`
+The average (or total) of each `window` consecutive values, ending at each
+element; `nan` for the first `window − 1` elements. A window containing a
+missing value is `nan`.
+
+```lisp
+(vector-rolling-mean #(1 2 3 4 5) 3)   ; => #(nan nan 2.0 3.0 4.0)
+```
+
+#### Building vectors
+
+#### `(vector-range end)`, `(vector-range start end [step])`
+The numbers from `start` (default 0) up to, but not including, `end`.
+
+```lisp
+(vector-range 5)            ; => #(0 1 2 3 4)
+(vector-range 2 10 3)       ; => #(2 5 8)
+```
+
+#### `(vector-unique v)`
+The distinct values of `v`, sorted.
+
+```lisp
+(vector-unique (vector 3 1 3 2 1))     ; => #(1 2 3)
+(vector-unique (vector "b" "a" "b"))   ; => #("a" "b")
+```
+
+### Tables
+
+(In `lisp_tables.py`.) A **table** is a list of `(name . vector)` columns,
+all the same length — exactly what `sqlite-query`, `load-csv`,
+`http-get-csv`, and `series-table` return, and what `display-columns` and
+`write-columns-csv` accept. There's no separate table type, so a table is
+ordinary Lisp data: `(car t)` is its first column, and `(cdr (car t))`
+that column's vector.
+
+The functions below select, filter, sort, group, join, and summarize
+tables. Each returns a **new** table and leaves its argument unchanged.
+They work on whole columns with numpy, so tables of millions of rows are
+practical. Column names are strings; where a function takes several, pass
+a list — `(list "state" "month")` — or just one name by itself.
+
+To look at a table, use `(display-columns t)` — a text table in the
+console, the Columns tab in the GUI, and a formatted table in Jupyter —
+together with `table-head` for a big one.
+
+Most examples in this section use this small table of loans:
+
+```lisp
+(define loans (make-table "id"      (vector "a" "a" "b" "b" "c")
+                          "month"   #(1 2 1 2 1)
+                          "state"   (vector "CA" "CA" "NY" "NY" "CA")
+                          "balance" #(100 90 200 195 50)
+                          "rate"    #(6.0 6.0 4.5 4.5 7.25)))
+```
+
+#### `(make-table name1 vector1 name2 vector2 ...)`
+A table from alternating column names and vectors, which must all be the
+same length.
+
+```lisp
+(make-table "x" #(1 2) "y" #(3 4))     ; => (("x" . #(1 2)) ("y" . #(3 4)))
+```
+
+#### `(table? x)`
+`#t` if `x` is a table: a list of `(name . vector)` columns, all the same
+length.
+
+```lisp
+(table? (make-table "x" #(1 2)))       ; => #t
+(table? (list 1 2))                    ; => #f
+```
+
+#### `(table-column-names t)`, `(table-column t name)`, `(table-row-count t)`
+The column names, the vector of one column (an error, listing the
+columns, if there's none by that name), and the number of rows.
+
+```lisp
+(define t (make-table "id" (vector "a" "b") "balance" #(100 90)))
+(table-column-names t)            ; => ("id" "balance")
+(table-column t "balance")        ; => #(100 90)
+(table-row-count t)               ; => 2
+```
+
+#### `(table-row t i)`
+Row `i` (counting from 0) as an association list of `(name . value)`
+pairs, so `(cdr (assoc "balance" row))` is that row's balance.
+
+```lisp
+(define t (make-table "id" (vector "a" "b") "balance" #(100 90)))
+(table-row t 1)                   ; => (("id" . "b") ("balance" . 90))
+```
+
+#### `(table-head t [n])`, `(table-slice t start [end])`
+The first `n` rows (default 10); and the rows from `start` up to, but not
+including, `end` (default: to the end).
+
+```lisp
+(define t (make-table "x" #(10 20 30 40)))
+(table-head t 2)                  ; => (("x" . #(10 20)))
+(table-slice t 1 3)               ; => (("x" . #(20 30)))
+```
+
+#### `(table-select t names)`, `(table-drop-columns t names)`
+Just the named columns, in the order given; or every column except those.
+
+```lisp
+(define t (make-table "id" (vector "a" "b") "balance" #(100 90) "rate" #(6.0 4.5)))
+(table-select t (list "rate" "id"))   ; => (("rate" . #(6.0 4.5)) ("id" . #("a" "b")))
+(table-drop-columns t "rate")         ; => (("id" . #("a" "b")) ("balance" . #(100 90)))
+```
+
+#### `(table-add-column t name values)`
+The table with a column added at the end — or replaced, if it already has
+one by that name. `values` is a vector with one value per row, or a single
+value to put in every row. Compute a new column with the vector math
+functions:
+
+```lisp
+(define t (make-table "balance" #(100 200) "rate" #(6.0 4.5)))
+(table-add-column t "interest" (vector-div (vector-mul (table-column t "balance")
+                                                       (table-column t "rate"))
+                                           1200))   ; => (("balance" . #(100 200)) ("rate" . #(6.0 4.5)) ("interest" . #(0.5 0.75)))
+(table-add-column t "pool" "P1")   ; => (("balance" . #(100 200)) ("rate" . #(6.0 4.5)) ("pool" . #("P1" "P1")))
+```
+
+#### `(table-rename-column t old new)`
+The table with one column renamed.
+
+```lisp
+(table-rename-column (make-table "upb" #(100)) "upb" "balance")   ; => (("balance" . #(100)))
+```
+
+#### `(table-filter t mask)`
+Just the rows where the mask is true. The mask is a vector of `1` and `0`,
+one per row, as the vector comparisons make (see "Comparisons, masks, and
+picking elements", above); combine conditions with `vector-and` and
+`vector-or`.
+
+```lisp
+(define t (make-table "state" (vector "CA" "NY" "CA") "balance" #(100 200 50)))
+(table-filter t (vector> (table-column t "balance") 75))   ; => (("state" . #("CA" "NY")) ("balance" . #(100 200)))
+(table-filter t (vector-and (vector= (table-column t "state") "CA")
+                            (vector< (table-column t "balance") 75)))   ; => (("state" . #("CA")) ("balance" . #(50)))
+```
+
+#### `(table-sort t names [descending?])`
+The rows sorted by one column, or by several (by the first name, then ties
+by the next, and so on). Ascending, unless `descending?` is `#t`. Rows that
+tie keep their original order. Missing values sort last (first when
+descending).
+
+```lisp
+(define t (make-table "state" (vector "NY" "CA" "CA") "balance" #(200 100 50)))
+(table-sort t "balance")                 ; => (("state" . #("CA" "CA" "NY")) ("balance" . #(50 100 200)))
+(table-sort t (list "state" "balance"))  ; => (("state" . #("CA" "CA" "NY")) ("balance" . #(50 100 200)))
+(table-sort t "balance" #t)              ; => (("state" . #("NY" "CA" "CA")) ("balance" . #(200 100 50)))
+```
+
+#### `(table-append t1 t2 ...)`
+The rows of each table, one table after another — e.g. to combine monthly
+files. The tables must have the same column names (matched by name, in
+the first table's order).
+
+```lisp
+(table-append (make-table "x" #(1 2)) (make-table "x" #(3)))   ; => (("x" . #(1 2 3)))
+```
+
+#### `(table-group-by t keys aggregations)`
+One row per distinct value of the key column(s), sorted by key, holding
+the key columns followed by one column per aggregation. Each aggregation
+is a list:
+
+| Aggregation | Result for each group |
+|---|---|
+| `(new-name 'count)` | the number of rows |
+| `(new-name 'sum column)` | the total |
+| `(new-name 'mean column)` | the average |
+| `(new-name 'weighted-mean column weight-column)` | `sum(column × weight) / sum(weight)` — e.g. a balance-weighted coupon |
+| `(new-name 'min column)`, `(new-name 'max column)` | the smallest and largest value (these work on strings and dates too) |
+| `(new-name 'median column)`, `(new-name 'stdev column)` | the median, and the sample standard deviation |
+| `(new-name 'first column)`, `(new-name 'last column)` | the value in the group's first or last row, in the table's order |
+
+Missing values are skipped. The function name can also be a string, e.g.
+`"sum"`.
+
+```lisp
+(define loans (make-table "state"   (vector "CA" "CA" "NY" "NY" "CA")
+                          "balance" #(100 90 200 195 50)
+                          "rate"    #(6.0 6.0 4.5 4.5 7.25)))
+(table-group-by loans "state"
+                (list (list "loans" 'count)
+                      (list "upb" 'sum "balance")
+                      (list "wac" 'weighted-mean "rate" "balance")))   ; => (("state" . #("CA" "NY")) ("loans" . #(3 2)) ("upb" . #(240 395)) ("wac" . #(6.2604165 4.5)))
+```
+
+Group by several columns by passing a list of keys, e.g.
+`(table-group-by loans (list "state" "month") ...)`.
+
+#### `(table-join left right keys [how])`
+Combine the rows of two tables whose key column(s) match. Each output row
+is a row of `left` followed by the other columns of the matching `right`
+row. `how` is:
+
+- `'inner` (the default) — keep only the `left` rows that have a match;
+- `'left` — keep every `left` row; where there's no match, the `right`
+  columns are missing (`nan`, or `'()` for strings and dates).
+
+A `left` row that matches several `right` rows appears once for each. The
+rows stay in `left`'s order. A `right` column with the same name as a
+`left` one gets `_right` added to its name. The typical use is attaching
+monthly market data to loan-month rows — see "Monthly time series", below.
+
+```lisp
+(define loans (make-table "id" (vector "a" "a" "b") "month" #(1 2 3)))
+(define rates (make-table "month" #(1 2) "mortgage_rate" #(6.5 6.25)))
+(table-join loans rates "month")   ; => (("id" . #("a" "a")) ("month" . #(1 2)) ("mortgage_rate" . #(6.5 6.25)))
+(table-join loans rates "month" 'left)   ; => (("id" . #("a" "a" "b")) ("month" . #(1 2 3)) ("mortgage_rate" . #(6.5 6.25 nan)))
+```
+
+#### `(table-describe t)`
+A table summarizing each numeric column: how many values are present,
+their mean, standard deviation, minimum, 25th percentile (`p25`), median,
+75th percentile (`p75`), and maximum. Missing values are skipped; columns
+of strings or dates are left out. A quick first look at new data:
+
+```lisp
+(table-describe (make-table "id" (vector "a" "b" "c") "balance" #(100 200 300)))   ; => (("column" . #("balance")) ("count" . #(3)) ("mean" . #(200.0)) ("stdev" . #(100.0)) ("min" . #(100.0)) ("p25" . #(150.0)) ("median" . #(200.0)) ("p75" . #(250.0)) ("max" . #(300.0)))
+```
+
+### Monthly time series
+
+(In `lisp_time_series.py`.) Mortgages work by the month, so the month is
+the basic unit of time here.
+
+**Month numbers.** A month is represented by a **month number**, the
+integer `year × 12 + (month − 1)`: January 2020 is `24240`, February 2020
+is `24241`, and January 2021 is `24252`. Because month numbers are plain
+integers, month arithmetic is ordinary arithmetic — three months later is
+`(+ m 3)`, a loan's age in months is `(- m first-payment-month)`, and
+`vector-lag` by 1 is the previous month — and joining tables on them is
+fast. The functions below convert dates, and the `YYYYMM` values loan-level
+data uses for reporting periods (e.g. `202301`), to and from month
+numbers. Each takes a single value or a whole vector.
+
+**Series.** A time series is `(dates . values)`, a pair of vectors — the
+shape `fred-series` returns. Build one from two table columns with
+`(cons (table-column t "date") (table-column t "value"))`.
+
+#### `(date->month-number d)`, `(month-number->date m)`
+A date's month number (the day of the month is ignored), and the first day
+of a month number's month.
+
+```lisp
+(date->month-number (date 2020 1 15))        ; => 24240
+(month-number->date 24241)                   ; => 2020-02-01
+(date->month-number (vector (date 2020 1 1) (date 2020 3 9)))   ; => #(24240 24242)
+```
+
+#### `(yyyymm->month-number n)`, `(month-number->yyyymm m)`
+Convert between `YYYYMM` values, as loan-level data records reporting
+periods, and month numbers. A month outside 01–12 is an error.
+
+```lisp
+(yyyymm->month-number 202301)                ; => 24276
+(yyyymm->month-number #(202212 202301))      ; => #(24275 24276)
+(month-number->yyyymm 24276)                 ; => 202301
+```
+
+#### `(date-add-months d n)`
+The date `n` months after `d` (before, if `n` is negative), for one date or
+a vector of dates. A day past the end of the new month becomes its last
+day.
+
+```lisp
+(date-add-months (date 2020 1 31) 1)         ; => 2020-02-29
+(date-add-months (date 2020 3 15) -3)        ; => 2019-12-15
+```
+
+#### `(months-between d1 d2)`
+How many calendar months from `d1` to `d2` (the day of the month is
+ignored). Either may be a vector.
+
+```lisp
+(months-between (date 2020 1 31) (date 2021 3 1))   ; => 14
+```
+
+#### `(month-range first last)`
+A vector of every month number from `first` to `last`, inclusive; `first`
+and `last` may be dates or month numbers.
+
+```lisp
+(month-range (date 2020 11 1) (date 2021 2 1))      ; => #(24250 24251 24252 24253)
+```
+
+#### `(series-monthly series [how])`
+A daily or weekly series made monthly: one value per month that has data,
+dated the first of the month. `how` chooses the value: `'mean` (the
+default), `'last`, `'first`, `'sum`, `'min`, or `'max`. Missing values are
+skipped.
+
+```lisp
+(define weekly (cons (vector (date 2023 1 5) (date 2023 1 12) (date 2023 2 2))
+                     #(6.5 6.25 6.0)))
+(series-monthly weekly)          ; => (#(2023-01-01 2023-02-01) . #(6.375 6.0))
+(series-monthly weekly 'last)    ; => (#(2023-01-01 2023-02-01) . #(6.25 6.0))
+```
+
+#### `(series-values-at series months [fill-forward?])`
+The series' value in each of the given months (a vector of month numbers,
+or of dates). Several values in one month are averaged. A month with no
+data gives `nan` — or, with `fill-forward?` `#t`, the latest earlier
+month's value. This is the simplest way to attach a market series to every
+loan-month row:
+
+```lisp
+(define weekly (cons (vector (date 2023 1 5) (date 2023 1 12) (date 2023 3 2))
+                     #(6.5 6.25 6.0)))
+(define months (month-range (date 2023 1 1) (date 2023 4 1)))
+(series-values-at weekly months)       ; => #(6.375 nan 6.0 nan)
+(series-values-at weekly months #t)    ; => #(6.375 6.375 6.0 6.0)
+```
+
+#### `(series-table (list (cons name series) ...) [fill-forward?])`
+A table lining several series up by month, with the columns `"month"`
+(month numbers), `"date"` (the first of each month), and one column per
+series, named as given. The months run from the earliest month any series
+has data to the latest, every month included. Several values in one month
+are averaged; a month with no data is `nan` — or, with `fill-forward?` `#t`,
+that series' latest earlier value.
+
+```lisp
+(define mortgage (cons (vector (date 2023 1 5) (date 2023 1 12) (date 2023 3 2))
+                       #(6.5 6.25 6.0)))
+(define cpi (cons (vector (date 2023 1 1) (date 2023 2 1)) #(300.5 301.1)))
+(series-table (list (cons "mortgage" mortgage) (cons "cpi" cpi)))   ; => (("month" . #(24276 24277 24278)) ("date" . #(2023-01-01 2023-02-01 2023-03-01)) ("mortgage" . #(6.375 nan 6.0)) ("cpi" . #(300.5 301.1 nan)))
+```
+
+**Putting it together** — attach the 30-year mortgage rate and the
+10-year Treasury yield, month by month, to loan-level rows (this needs a
+FRED API key):
+
+```lisp
+(define market (series-table (list (cons "mortgage30" (fred-series "MORTGAGE30US" creds))
+                                   (cons "dgs10" (fred-series "DGS10" creds)))
+                             #t))
+(define loans (sqlite-query conn "SELECT loan_id, monthly_reporting_period, current_interest_rate FROM loan_performance"))
+(define loans (table-add-column loans "month"
+                (yyyymm->month-number (table-column loans "monthly_reporting_period"))))
+(define loans (table-join loans market "month" 'left))
+(define loans (table-add-column loans "incentive"
+                (vector-sub (table-column loans "current_interest_rate")
+                            (table-column loans "mortgage30"))))
 ```
 
 ### Structs
@@ -1963,35 +2539,97 @@ fit runs on the expanded basis.
 ```
 
 #### `(model-report m)`
-Returns a multi-line string describing a fitted model. Uses real
-predictor/`y` names in place of `x1`/`x2`/.../`y` if `linear-regression`/
-`logistic-regression` was given `(name . vector)` pairs (see above) rather
-than bare vectors. For `"linear"`: the fitted equation, each coefficient,
-the intercept, R-squared, and `n`. For
-`"logistic"`: the fitted `sigmoid(...)` equation, coefficients, intercept,
-log-likelihood, McFadden's pseudo-R-squared, iteration count and
-convergence status, and `n`. For a spline model (either kind): the
-predictor count, then per-predictor either its knot locations (or "none —
-plain linear") or its categories and baseline value — flagging, as a hint
-rather than an error, any purely-linear predictor with 3 or fewer distinct
-values as a candidate for `'categorical` — then every fitted coefficient
-on the EXPANDED basis (one per hinge/category indicator, each labeled
-with its originating predictor's name — e.g. `income (knot 40000)` or
-`home_type = 1`) and the intercept — followed by the same fit-quality
-stats as the equivalent linear/logistic case, computed on the expanded
-basis.
+Returns a multi-line string describing a fitted model: its equation, a
+table of coefficients, and measures of fit. It uses the real predictor and
+`y` names if the model was fit on `(name . vector)` pairs (see above),
+otherwise `x1`, `x2`, ... and `y`.
+
+The coefficient table has one row for the intercept and one per
+predictor:
+
+| Column | Meaning |
+|---|---|
+| `coefficient` | the fitted value |
+| `std error` | its standard error: how much it would vary from sample to sample |
+| `t value` / `z value` | the coefficient divided by its standard error |
+| `p value` | the chance of a coefficient at least this far from 0 if the true value were 0 — a small p value (say under 0.05) means the predictor genuinely matters |
+
+A linear model uses the t distribution with n − p degrees of freedom (p
+counting the intercept); a logistic model uses the normal distribution
+(z). **With weights**, a linear model's standard errors don't depend on
+the weights' scale, only their relative sizes. For a logistic model, the
+weights are rescaled to average 1 for the standard errors, so weighting
+by balance in dollars doesn't make the model look vastly more certain
+than its row count justifies — the weights say how much each row counts
+relative to the others, not how many copies of it there are.
+
+Measures of fit: for a linear model, R-squared and `n`. For a logistic
+model, the log-likelihood, McFadden's pseudo-R-squared, the **AUC** (area
+under the ROC curve: the chance that a randomly chosen row with y = 1 gets
+a higher prediction than a randomly chosen row with y = 0; 0.5 is no
+better than guessing, 1.0 is perfect ranking), the number of Newton-Raphson
+iterations and whether it converged, and `n`.
+
+For a spline model: its predictors, each with its knot locations (or
+categories and baseline value) — flagging a purely linear predictor with 3
+or fewer distinct values as a candidate for `'categorical` — then the same
+coefficient table for the expanded features (each labeled with its
+predictor's name, e.g. `income (knot 40000)` or `home_type = 1`), and the
+same measures of fit.
 
 ```lisp
 (define m (linear-regression (vector 1 2 3 4 5) (vector 10 20 29 41 51)))
 (display (model-report m))
 ```
-prints something like:
+prints:
 ```
 Linear model:  y = -0.7 + 10.3*x1
-  x1 coefficient = 10.3
-  intercept      = -0.7
-  R-squared      = 0.998212
-  n              = 5
+  term        coefficient     std error    t value    p value
+  intercept          -0.7      0.834666    -0.8387      0.463
+  x1                 10.3      0.251661      40.93   3.21e-05
+  R-squared        = 0.998212
+  n                = 5
+```
+
+#### `(model-coefficient-table m)`
+The coefficient table from `model-report`, as a table (see "Tables") with
+the columns `term`, `coefficient`, `std_error`, `t_value` (`z_value` for a
+logistic model), and `p_value`. The first row is the intercept. Its
+numbers are kept at full precision, so it's the way to use them in further
+calculations — or `display-columns` it to see them.
+
+```lisp
+(define m (linear-regression (vector 1 2 3 4 5) (vector 10 20 29 41 51)))
+(table-column (model-coefficient-table m) "term")   ; => #("intercept" "x1")
+```
+
+#### `(model-lift-table m x y [bins weights])`
+How well a model **ranks** rows — whether its highest predictions really
+go with the highest outcomes, which is what matters when a model is used
+to pick out or project the riskiest loans. The rows are sorted by
+prediction, highest first, and split into `bins` groups of (nearly) equal
+row count — 10 by default, i.e. deciles. The result is a table with one
+row per group:
+
+| Column | Meaning |
+|---|---|
+| `bin` | 1 holds the highest predictions |
+| `rows` | the number of rows in the group |
+| `weight` | their total weight (the row count, if no weights are given) |
+| `mean_predicted` | the group's average prediction |
+| `mean_actual` | the group's average actual `y` |
+| `lift` | `mean_actual` divided by the overall average `y` |
+| `cumulative_share` | the fraction of all `y` (e.g. of all payoffs) in groups 1 through this one |
+
+With `weights` (e.g. balances), the averages are weighted. `x` and `y` are
+as for `model-evaluate`; use held-out data to judge a model fairly. Good
+ranking shows as `lift` well above 1 in the first bins and falling steadily.
+
+```lisp
+(define age #(1 2 3 4 5 6 7 8 9 10))
+(define paid #(0 0 1 0 0 1 0 1 1 1))
+(define m (logistic-regression age paid))
+(table-column (model-lift-table m age paid 5) "lift")   ; => #(2.0 1.0 1.0 1.0 0.0)
 ```
 
 #### `(model-evaluate m x y)`
@@ -2003,8 +2641,11 @@ non-probabilistic model (`"linear"`/`"spline"`): reports R-squared, RMSE,
 and MAE against this new data. For a probabilistic model
 (`"logistic"`/`"spline-logistic"`): reports log-likelihood, McFadden's
 pseudo-R-squared (against an intercept-only model fit fresh on this new
-data), and classification accuracy at a 0.5 threshold. Works uniformly
-across every model kind, including spline models.
+data), AUC (see `model-report`), and classification accuracy at a 0.5
+threshold — though for a rare outcome, such as a monthly payoff,
+accuracy says little (predicting "no payoff" for every row is usually
+99% accurate), and AUC or `model-lift-table` are more useful. Works
+uniformly across every model kind, including spline models.
 
 ```lisp
 (define n-train (floor (* (vector-length x) 0.7)))
@@ -2190,7 +2831,9 @@ the GUI, this is the *only* way the "Columns" tab is populated — there's
 no automatic scan of top-level variables (the tab uses a fixed-width font
 with right-aligned cells, so a column of numbers lines up on its ones
 place). In console/batch mode, prints a simple right-justified text table
-instead. Returns `'()`.
+instead; in Jupyter, a formatted table. Returns `'()`. A table (see
+"Tables") is exactly this kind of list, so `(display-columns t)` shows
+any table — use `(display-columns (table-head t 20))` for a big one.
 
 ```lisp
 (define prices (vector 10 20 30))
@@ -2214,9 +2857,14 @@ particular notion of a "column". See `column_engine.lsp` (next to this
 file) for a small example library, built on `defstruct` and `&key`, that
 registers named `column` structs (each with its own `decimals` slot —
 e.g. `0` for a dollar amount, `4`-`6` for an interest rate/CPR/SMM
-column), calculates them row-by-row in dependency order (with a `lag`
-accessor for referring to a previous row), and calls `display-columns`
-for you — demonstrated end-to-end in `mortgage_amortization_example.lsp`.
+column), calculates them row-by-row in dependency order, and calls
+`display-columns` for you — demonstrated end-to-end in
+`mortgage_amortization_example.lsp`. Inside a column's formula,
+`(lag NAME n [default])` is column `NAME`'s value `n` rows back; for a row
+before the first one (or past the last, with a negative `n`), it's
+`default` — or an error saying so, if no default was given. For example,
+`(lag balance 1 original_balance)` reads the previous row's balance, and
+the original balance on the first row.
 
 #### `(display-markdown string)`
 Shows `string` as Markdown. In a Jupyter notebook (the `morris_lisp`
@@ -2239,8 +2887,10 @@ instead: header row = names, one data row per index, numbers rounded to
 `decimals` when given (plain numeric CSV cells — `12346`, not `"12,346"`
 — since this is for a spreadsheet or another program, not for on-screen
 reading; a `decimals` of `0` writes a plain integer, not `12346.0`). A
-column shorter than the longest one is padded with empty cells. Returns
-`'()`. `column_engine.lsp`'s `write-csv` wraps this for a list of column
+missing value (`nan` or `'()`) is written as an empty cell, and a column
+shorter than the longest one is padded with empty cells. Any table can be
+written this way, and `load-csv` reads the file back into the same table.
+Returns `'()`. `column_engine.lsp`'s `write-csv` wraps this for a list of column
 structs directly — see that function and `mortgage_amortization_example.
 lsp`'s `(write-csv "mortgage_amortization_example.csv" *columns*)` call.
 
@@ -2316,47 +2966,112 @@ argument forms:
 ```
 
 #### `(load-csv filename [has-header?])`
-Loads a CSV file's columns as vectors. Returns `(cons headers-list
-vectors-list)`: `headers-list` is a Lisp list of column-name strings,
-`vectors-list` the parallel list of the corresponding vectors.
+(In `lisp_csv.py`.) Reads a CSV file into a table (see "Tables") — a list
+of `(name . vector)` columns, the same shape `sqlite-query` returns. Every
+column and every row is kept. Each column becomes:
 
-- `has-header?` (default `#t`) — if true, row 0 supplies column names and
-  is excluded from the data; if false, synthetic headers `"Column1"`,
-  `"Column2"`, ... are generated and every row is data.
-- Each column is independently classified: **numeric** if every value in
-  it parses as a number; else **date** if every value parses as
-  `"YYYY-MM-DD"`; else the column (and its header) is **dropped entirely**
-  — no string/categorical columns are ever returned. Raises `LispError` if
-  no column is usable at all.
-- A data row is included only if *every kept column* has a value in that
-  row, so all returned vectors stay the same length and row-aligned (the
-  same approach `fred-series` uses for missing observations). Raises
-  `LispError` if no row survives that filter, or if the file is empty/
-  unreadable/header-only.
+- a vector of **numbers**, if every non-blank value is a number (integers
+  if they all are); a blank is `nan`;
+- a vector of **dates**, if every non-blank value is a date written
+  `YYYY-MM-DD` or `MM/DD/YYYY` (the American order US government data
+  uses); a blank is `'()`;
+- otherwise a vector of **strings**; a blank is `'()`.
+
+`has-header?` (default `#t`): if true, the first row names the columns;
+with `#f`, they're named `Column1`, `Column2`, .... A row with more values
+than there are columns is an error; a row with fewer is padded with blanks.
 
 ```lisp
-(define d (load-csv "data.csv"))
-(define headers (car d))
-(define cols (cdr d))
-(define x (car cols))
-(define y (car (cdr cols)))
-(plot-xy x (list y))
+(define pools (load-csv "synthetic_mbs_pools.csv"))
+(table-column-names pools)
+(define cpr (table-column pools "cpr"))
+(define incentive (table-column pools "rate_incentive_pct"))
+(plot-xy incentive (list cpr))
 
 (define d2 (load-csv "no_header.csv" #f))   ; no header row -> Column1, Column2, ...
 ```
 
+To write a table to a CSV file, see `write-columns-csv` under "Columns".
+
+### Downloading data from the web
+
+(In `lisp_http.py`.) These reach any web API that returns JSON, CSV, or
+plain text — the New York Fed's SOFR history, the Treasury's yield curves,
+the BLS, and so on — without writing any Python.
+
+**Caching.** Each takes an optional `cache-hours`. Given a number of hours,
+the download is saved on disk, and asking for the same URL again within
+that many hours reads the saved copy instead of the network: reruns are
+fast, you stay under the API's rate limits, and a notebook gives the same
+answer twice. Without `cache-hours` (or with 0), every call downloads.
+Saved copies go in `~/.cache/morris_lisp/http`, or the directory named by
+the `LISP_HTTP_CACHE` environment variable.
+
+**Headers.** Each also takes an optional `headers`: a list of
+`(name . value)` pairs to send with the request, for an API that wants a
+key in a header.
+
+A failed download — a bad URL, no network, or an error status from the
+server — raises a `LispError` giving the URL and the server's reason.
+
+#### `(http-get-json url [cache-hours headers])`
+The JSON at `url`, as Lisp data: a JSON object becomes a hash table with
+string keys (read it with `hash-table-ref`), an array becomes a list,
+`true`/`false` become `#t`/`#f`, and `null` becomes `'()`.
+
+```lisp
+; The latest three SOFR fixings, from the New York Fed (no API key needed):
+(define reply (http-get-json "https://markets.newyorkfed.org/api/rates/secured/sofr/last/3.json" 12))
+(define fixings (hash-table-ref reply "refRates"))
+(map (lambda (f) (list (hash-table-ref f "effectiveDate") (hash-table-ref f "percentRate")))
+     fixings)
+; e.g. (("2026-09-23" 3.87) ("2026-09-22" 3.87) ("2026-09-21" 3.85))
+```
+
+#### `(http-get-csv url [has-header? cache-hours headers])`
+The CSV file at `url`, as a table, read exactly as `load-csv` reads a file.
+
+```lisp
+; The Treasury's daily par yield curve for 2026 (dates are MM/DD/YYYY, read as dates):
+(define ust (http-get-csv (string-append
+                "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+                "daily-treasury-rates.csv/2026/all?type=daily_treasury_yield_curve"
+                "&field_tdr_date_value=2026&page&_format=csv")
+              #t 12))
+(define ten-year (cons (table-column ust "Date") (table-column ust "10 Yr")))
+(series-monthly ten-year)        ; monthly averages of the 10-year yield
+```
+
+#### `(http-get-text url [cache-hours headers])`
+The page at `url`, as a string.
+
+#### `(http-url base parameters)`
+`base` with a query string built from `parameters` — a list of
+`(name . value)` pairs, or a hash table. The values are encoded properly,
+so spaces and symbols in them are safe.
+
+```lisp
+(http-url "https://x.org/data" (list (cons "series" "DGS10") (cons "limit" 5)))   ; => "https://x.org/data?series=DGS10&limit=5"
+(http-url "https://x.org/data" (list (cons "q" "a b&c")))    ; => "https://x.org/data?q=a+b%26c"
+```
+
+#### `(http-clear-cache)`
+Deletes every saved download, and returns how many there were.
+
 ### SQLite
 
-Five builtins for reading (and writing) a local SQLite database file, built
-directly on Python's standard-library `sqlite3` module. There are two ways
-to get a query's results, matching two different needs:
+(In `lisp_sqlite.py`.) Builtins for reading and writing a local SQLite
+database file, built on Python's standard-library `sqlite3` module. There
+are two ways to get a query's results, matching two different needs:
 
 - `sqlite-query` runs a statement to completion and hands back the WHOLE
-  result set at once, column-wise — a list of `(name . vector)` pairs, the
-  exact shape `display-columns`/`write-columns-csv` already expect.
+  result set at once as a table (see "Tables") — a list of
+  `(name . vector)` columns.
 - `sqlite-execute` + `sqlite-fetch-row` run a statement and then step
   through it one row at a time, for a result set you'd rather not
   materialize all at once, or want to process row-by-row in a loop.
+
+`sqlite-write-table` goes the other way, saving a table as a SQLite table.
 
 Both accept an optional trailing `params` argument — a Lisp list of values
 bound, in order, to `?` placeholders in the SQL text, via SQLite's own
@@ -2387,12 +3102,15 @@ Closes a connection opened by `sqlite-open`. Returns `'()`.
 
 #### `(sqlite-query conn "SELECT ..." [dtypes max-rows params])`
 Runs a SQL statement and returns its ENTIRE result set at once, column-wise:
-a Lisp list of `(name . vector)` pairs, one per output column, in query
-order, column names taken from the query itself. SQL `NULL` becomes `'()`
-(unless a column is dtype-hinted — see below); everything else converts
-number-for-number, text-for-text. Raises `LispError` on a SQL error (bad
-syntax, unknown column/table, etc) or if `conn` isn't a value from
-`sqlite-open`.
+a table — a Lisp list of `(name . vector)` columns, one per output
+column, in query order, named as the query names them. Each column is read
+the way `load-csv` reads a CSV column: if every value that isn't `NULL` is
+a number, the column is a vector of numbers with `nan` for `NULL`; if
+every one is text in the form `YYYY-MM-DD`, it's a vector of dates (SQLite
+has no date type, so that's how `sqlite-write-table` stores dates);
+otherwise the values come back as they are, with `NULL` as `'()`. Raises
+`LispError` on a SQL error (bad syntax, unknown column/table, etc) or if
+`conn` isn't a value from `sqlite-open`.
 
 ```lisp
 (define conn (sqlite-open "donors.db"))
@@ -2463,6 +3181,32 @@ of writing both by hand and keeping them in sync yourself.
 ```lisp
 (sqlite-query conn "SELECT * FROM loans WHERE state = ? AND balance > ?"
               '() '() (list "CA" 100000))
+```
+
+#### `(sqlite-write-table conn name table [mode])`
+Saves a table (a list of `(name . vector)` columns — see "Tables") as a
+SQLite table called `name`, and returns how many rows were written.
+`mode` says what to do if a table with that name already exists:
+
+- `'create` (the default) — it's an error, so nothing is overwritten by
+  accident;
+- `'replace` — drop it and write the new table in its place;
+- `'append` — add the rows to it (its columns must have the same names).
+
+Each column gets the SQLite type `INTEGER`, `REAL`, or `TEXT` to match its
+vector. Dates are stored as `YYYY-MM-DD` text, which `sqlite-query` reads
+back as dates; `nan` and `'()` are stored as `NULL`. All the rows are
+written in one transaction — fast, even for millions of rows — and if
+anything goes wrong, the database is left unchanged. Table and column
+names can contain spaces or other symbols; they're quoted.
+
+```lisp
+(define conn (sqlite-open ":memory:"))          ; a database held in memory
+(define t (make-table "id" (vector "a" "b") "balance" (vector 100.5 nan)
+                      "as_of" (vector (date 2024 1 1) (date 2024 2 1))))
+(sqlite-write-table conn "loans" t)              ; => 2
+(sqlite-query conn "SELECT * FROM loans")        ; => (("id" . #("a" "b")) ("balance" . #(100.5 nan)) ("as_of" . #(2024-01-01 2024-02-01)))
+(sqlite-write-table conn "loans" t 'append)      ; => 2
 ```
 
 #### `(sqlite-execute conn "SELECT ..." [params])`
@@ -3526,10 +4270,15 @@ The interpreter is split into these Python files, all in `lisp_interp/`:
 |---|---|
 | `lisp_interpreter.py` | The command line (what runs when you type `python3 lisp_interpreter.py ...`), the console REPL, and batch mode |
 | `lisp_core.py` | The language itself: data types, the reader, environments, the evaluator and special forms, call tracing, and the printer. It imports none of the other files. |
-| `lisp_builtins.py` | The general built-in procedures (numbers, lists, strings, vectors, dates, hash tables, output, ...) and `make_global_env()`, which builds a new environment containing every builtin |
+| `lisp_builtins.py` | The general built-in procedures (numbers, lists, strings, making and reading vectors, dates, hash tables, output, ...) and `make_global_env()`, which builds a new environment containing every builtin |
+| `lisp_vector_math.py` | Arithmetic, comparisons, statistics, and time-series functions on whole vectors (`vector-mul`, `vector>`, `vector-mean`, `vector-lag`, ...) |
+| `lisp_tables.py` | Tables: `table-filter`, `table-sort`, `table-group-by`, `table-join`, ... |
+| `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
 | `lisp_regression.py` | `linear-regression`, `logistic-regression`, `spline-regression`, `model-report`, ... |
 | `lisp_charts.py` | `plot-xy`, `plot-xy-regression`, `plot-xy-full`, `save-chart` |
-| `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, ... |
+| `lisp_csv.py` | `load-csv`, `write-columns-csv` |
+| `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, `sqlite-write-table`, ... |
+| `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
 | `lisp_fred.py` | `fred-series` (downloads from FRED) |
 | `lisp_tastytrade.py` | `tastytrade-*` (downloads from tastytrade) |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
@@ -3553,56 +4302,61 @@ Write a builtin in Python when it needs something Lisp can't do: a Python
 package, a network or file format, or speed on large data. The steps:
 
 **1. Create a module** — a new file next to the others, e.g.
-`lisp_stats.py`. Write each builtin as an ordinary Python function, and end
-the file with a `BUILTINS` table:
+`lisp_finance.py`. Write each builtin as an ordinary Python function, and
+end the file with a `BUILTINS` table:
 
 ```python
-"""Simple statistics builtins: vector-mean and vector-stdev."""
+"""Mortgage math builtins: level-payment and remaining-balance."""
 
-import math
-
-from lisp_core import LispError, LispVector
+from lisp_core import LispError
 
 
-def vector_mean(v):
-    """(vector-mean v) -- the average of the numbers in vector v."""
-    if not isinstance(v, LispVector):
-        raise LispError("vector-mean: not a vector: %r" % (v,))
-    values = v.items.tolist()
-    if not values:
-        raise LispError("vector-mean: the vector is empty")
-    return sum(values) / len(values)
+def level_payment(annual_rate_pct, months, principal):
+    """(level-payment rate months principal) -- the fixed monthly payment
+    that pays off `principal` over `months` at an annual rate in percent."""
+    if months <= 0:
+        raise LispError("level-payment: months must be positive")
+    r = annual_rate_pct / 1200.0
+    if r == 0:
+        return principal / months
+    return principal * r / (1 - (1 + r) ** -months)
 
 
-def vector_stdev(v, sample=True):
-    """(vector-stdev v [sample?]) -- the standard deviation of vector v:
-    the sample standard deviation (dividing by n-1) unless sample? is #f."""
-    values = v.items.tolist()
-    mean = vector_mean(v)
-    divisor = len(values) - 1 if sample is not False else len(values)
-    return math.sqrt(sum((x - mean) ** 2 for x in values) / divisor)
+def remaining_balance(annual_rate_pct, months, principal, payments_made=0):
+    """(remaining-balance rate months principal [payments-made]) -- the
+    balance left after `payments-made` level payments (default 0)."""
+    r = annual_rate_pct / 1200.0
+    payment = level_payment(annual_rate_pct, months, principal)
+    if r == 0:
+        return principal - payment * payments_made
+    growth = (1 + r) ** payments_made
+    return principal * growth - payment * (growth - 1) / r
 
 
 BUILTINS = {
-    "vector-mean": vector_mean,
-    "vector-stdev": vector_stdev,
+    "level-payment": level_payment,
+    "remaining-balance": remaining_balance,
 }
 ```
 
 **2. Register it** in `lisp_builtins.py`: import the module with the
-others at the top of the file (`import lisp_stats`), and add one line to
+others at the top of the file (`import lisp_finance`), and add one line to
 `make_global_env()` next to the other modules' tables:
 
 ```python
-    env.update(lisp_stats.BUILTINS)
+    env.update(lisp_finance.BUILTINS)
 ```
 
 **3. Try it** — restart the interpreter (or the Jupyter kernel):
 
 ```lisp
-(vector-mean (vector 1 2 3 4))                    ; => 2.5
-(vector-stdev (vector 2 4 4 4 5 5 7 9) #f)        ; => 2.0
+(level-payment 6.0 360 100000)             ; => 599.5505251527569
+(remaining-balance 6.0 360 100000 12)      ; => 98771.98828772324
 ```
+
+A builtin that works on a whole vector should use numpy on the vector's
+`items`, as the functions in `lisp_vector_math.py` do, rather than a
+Python loop — that's what keeps it fast on millions of values.
 
 **4. Document and test it** — add an entry to this reference, in the
 section where it belongs, and a test to `test_lisp_interpreter.py`. Any

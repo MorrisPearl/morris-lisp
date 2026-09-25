@@ -17,9 +17,14 @@ HOW THE CODE IS ORGANIZED
     lisp_core.py          data types, reader, evaluator, printer -- the language itself
     lisp_builtins.py      the general built-in procedures, and make_global_env(),
                           which puts every builtin into a new environment
+    lisp_vector_math.py   arithmetic, comparisons, statistics, lags on whole vectors
+    lisp_tables.py        tables: filter, sort, group, join, describe
+    lisp_time_series.py   month numbers and monthly time series
     lisp_regression.py    linear-, logistic-, and spline-regression, model-report, ...
     lisp_charts.py        plot-xy, plot-xy-regression, plot-xy-full, save-chart
-    lisp_sqlite.py        sqlite-open, sqlite-query, ...
+    lisp_csv.py           load-csv, write-columns-csv
+    lisp_sqlite.py        sqlite-open, sqlite-query, sqlite-write-table, ...
+    lisp_http.py          http-get-json, http-get-csv, ... (downloads from any web API)
     lisp_fred.py          fred-series                      (downloads from FRED)
     lisp_tastytrade.py    tastytrade-*                     (downloads from tastytrade)
     lisp_sofr.py          sofr-* interest-rate modeling    (sofr-calibration-data
@@ -44,9 +49,14 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - tail calls that run in constant stack space (see lisp_core.py)
   - call tracing, (verbose n), and Lisp-level stack traces on errors
   - hash tables, strings, sorting, pseudo-random numbers
-  - linear, logistic, and spline regression with any number of predictors
+  - fast math and statistics on whole vectors, with NaN for missing values
+  - tables: filter, sort, group-by, join, and summarize columns of data
+  - monthly time series, with months as plain integers
+  - linear, logistic, and spline regression with any number of predictors,
+    with standard errors, p-values, AUC, and lift tables
   - XY charts, and saving them as PNG/PDF/SVG
-  - SQLite, CSV files, FRED data, and tastytrade broker data
+  - reading data from SQLite, CSV files, any web API (with caching), FRED,
+    and tastytrade; writing it to SQLite and CSV
   - redirect-output / reset-output, to send display output to a file
 """
 

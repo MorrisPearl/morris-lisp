@@ -16,6 +16,7 @@ from lisp_core import (
     LispDate, LispError, LispString, LispVector, NIL, Pair, Symbol,
     list_to_pairs, numeric_value, pairs_to_list, to_display_string,
 )
+from lisp_vector_math import to_vector
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +164,23 @@ def fit_linear(columns, ys, weights=None):
     mean_y = float((w * y_arr).sum()) / total_weight
     ss_total = float((w * (y_arr - mean_y) ** 2).sum())
     ss_residual = float((w * (y_arr - predictions) ** 2).sum())
+
+    # Standard errors: the residual variance times (X'WX)^-1, with n - p
+    # degrees of freedom. Scaling every weight by the same amount doesn't
+    # change them.
+    degrees_of_freedom = n - p
+    if degrees_of_freedom > 0:
+        covariance = (ss_residual / degrees_of_freedom) * np.linalg.inv(normal_matrix)
+        std_errors = np.sqrt(np.diag(_original_scale_covariance(covariance, means, scales)))
+    else:
+        std_errors = np.full(p, np.nan)
+
     model.stats = {
         "r_squared": (1 - ss_residual / ss_total) if ss_total > 0 else float("nan"),
         "n": n,
+        "std_errors": std_errors.tolist(),      # intercept first, then each coefficient
+        "test": "t",
+        "degrees_of_freedom": degrees_of_freedom,
     }
     return model
 
@@ -241,14 +256,119 @@ def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
     )).sum())
     pseudo_r_squared = (1 - log_likelihood / null_log_likelihood) if null_log_likelihood != 0 else float("nan")
 
+    # Standard errors from the inverse of the information matrix at the
+    # fitted coefficients. The weights are first rescaled to average 1, so
+    # they say how much each row matters relative to the others, not how
+    # many copies of it there are -- otherwise weighting by loan balance
+    # (in dollars) would make the standard errors absurdly small.
+    prob = _sigmoid_vec(X @ beta)
+    relative_w = w * (n / total_weight)
+    information = (X.T * (relative_w * prob * (1.0 - prob))) @ X
+    try:
+        covariance = np.linalg.inv(information)
+        std_errors = np.sqrt(np.diag(_original_scale_covariance(covariance, means, scales)))
+    except np.linalg.LinAlgError:
+        std_errors = np.full(p, np.nan)
+
     stats = {
         "log_likelihood": log_likelihood,
         "pseudo_r_squared": pseudo_r_squared,
         "iterations": iterations_used,
         "converged": converged,
         "n": n,
+        "std_errors": std_errors.tolist(),      # intercept first, then each coefficient
+        "test": "z",
+        "auc": weighted_auc(prob, y_arr, w),
     }
     return LispModel("logistic", coefficients, intercept, stats)
+
+
+# ---------------------------------------------------------------------------
+# Standard errors, p-values, and AUC
+# ---------------------------------------------------------------------------
+
+def _original_scale_covariance(covariance, means, scales):
+    """The covariance matrix of (intercept, coefficients) on the original
+    scale, from the one fitted on standardized columns. The original
+    coefficients are a linear function of the standardized ones (see
+    _unstandardize_coefficients): original = T @ standardized, so the
+    covariance becomes T @ covariance @ T'."""
+    k = len(means)
+    T = np.zeros((k + 1, k + 1))
+    T[0, 0] = 1.0
+    for j in range(k):
+        T[0, j + 1] = -means[j] / scales[j]
+        T[j + 1, j + 1] = 1.0 / scales[j]
+    return T @ covariance @ T.T
+
+
+def _beta_continued_fraction(a, b, x):
+    """The continued fraction in the incomplete beta function (the method
+    in Numerical Recipes, "betacf")."""
+    tiny = 1e-300
+    c = 1.0
+    d = 1.0 - (a + b) * x / (a + 1)
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    result = d
+    for m in range(1, 301):
+        for numerator in (m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m)),
+                          -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1))):
+            d = 1.0 + numerator * d
+            d = 1.0 / (d if abs(d) > tiny else tiny)
+            c = 1.0 + numerator / c
+            c = c if abs(c) > tiny else tiny
+            step = c * d
+            result *= step
+        if abs(step - 1.0) < 3e-14:
+            break
+    return result
+
+
+def _incomplete_beta(a, b, x):
+    """The regularized incomplete beta function I_x(a, b)."""
+    if x <= 0:
+        return 0.0
+    if x >= 1:
+        return 1.0
+    front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+                     + a * math.log(x) + b * math.log(1 - x))
+    if x < (a + 1) / (a + b + 2):
+        return front * _beta_continued_fraction(a, b, x) / a
+    return 1.0 - front * _beta_continued_fraction(b, a, 1 - x) / b
+
+
+def two_sided_p_value(statistic, test, degrees_of_freedom=None):
+    """The chance of a statistic at least this far from 0 if the true
+    coefficient were 0: from the t distribution (test "t", for linear
+    models) or the normal distribution (test "z", for logistic models)."""
+    if statistic != statistic:                      # NaN
+        return float("nan")
+    if test == "z":
+        return math.erfc(abs(statistic) / math.sqrt(2))
+    df = degrees_of_freedom
+    return _incomplete_beta(df / 2.0, 0.5, df / (df + statistic * statistic))
+
+
+def weighted_auc(scores, ys, weights):
+    """The area under the ROC curve: the chance that a randomly chosen row
+    with y = 1 has a higher score (prediction) than a randomly chosen row
+    with y = 0, counting ties as half. 0.5 is no better than guessing; 1.0
+    ranks perfectly. A y between 0 and 1 counts as that fraction of a 1,
+    and each row counts in proportion to its weight."""
+    if len(scores) == 0:
+        return float("nan")
+    positive, negative = weights * ys, weights * (1.0 - ys)
+    order = np.argsort(scores, kind="stable")
+    scores, positive, negative = scores[order], positive[order], negative[order]
+    tie_starts = np.flatnonzero(np.concatenate([[True], scores[1:] != scores[:-1]]))
+    positive_per_score = np.add.reduceat(positive, tie_starts)
+    negative_per_score = np.add.reduceat(negative, tie_starts)
+    negatives_below = np.cumsum(negative_per_score) - negative_per_score
+    total_positive, total_negative = positive.sum(), negative.sum()
+    if total_positive == 0 or total_negative == 0:
+        return float("nan")
+    wins = (positive_per_score * (negatives_below + 0.5 * negative_per_score)).sum()
+    return float(wins / (total_positive * total_negative))
 
 
 def _coerce_predictors(x_arg):
@@ -379,84 +499,184 @@ def model_coefficients(model):
     return LispVector(list(model.coefficients))
 
 
+def _names(model):
+    """The model's predictor names, or x1, x2, ... if it has none."""
+    return model.predictor_names or ["x%d" % (i + 1) for i in range(model.k)]
+
+
+def coefficient_rows(model, terms):
+    """For a LispModel, one (term, estimate, std_error, statistic, p_value)
+    tuple for the intercept and each coefficient. `terms` names the
+    coefficients."""
+    std_errors = model.stats.get("std_errors") or [float("nan")] * (len(terms) + 1)
+    test = model.stats.get("test", "t")
+    rows = []
+    for term, estimate, std_error in zip(["intercept"] + list(terms),
+                                         [model.intercept] + list(model.coefficients), std_errors):
+        statistic = estimate / std_error if std_error and std_error == std_error else float("nan")
+        rows.append((term, estimate, std_error, statistic,
+                     two_sided_p_value(statistic, test, model.stats.get("degrees_of_freedom"))))
+    return rows
+
+
+def coefficient_table_lines(model, terms):
+    """model-report's coefficient table, one line per term."""
+    rows = coefficient_rows(model, terms)
+    width = max(len("term"), max(len(r[0]) for r in rows))
+    statistic_name = model.stats.get("test", "t") + " value"
+    lines = ["  %-*s  %12s  %12s  %9s  %9s" % (width, "term", "coefficient", "std error", statistic_name, "p value")]
+    for term, estimate, std_error, statistic, p_value in rows:
+        lines.append("  %-*s  %12.6g  %12.6g  %9.4g  %9.3g" % (width, term, estimate, std_error, statistic, p_value))
+    return lines
+
+
 def model_report(model):
-    """Produce a human-readable multi-line report of a fitted model's
-    parameters (and a couple of fit-quality diagnostics)."""
+    """(model-report m) -- a text report of a fitted model: its equation, a
+    table of coefficients with standard errors, t or z statistics, and
+    p-values, and measures of fit."""
     if isinstance(model, LispSplineModel):
         return LispString("\n".join(_spline_report_lines(model)))
     if not isinstance(model, LispModel):
         raise LispError("model-report: not a model: %r" % (model,))
-    # Use the real names if the data had them (see _coerce_predictors).
-    names = model.predictor_names or ["x%d" % (i + 1) for i in range(model.k)]
+    names = _names(model)
     y_name = model.y_name or "y"
-    lines = []
-    coefficient_lines = [
-        "  %s coefficient = %.6g" % (names[i], c) for i, c in enumerate(model.coefficients)
-    ]
+    terms = " + ".join("%.6g*%s" % (c, names[i]) for i, c in enumerate(model.coefficients))
     if model.kind == "linear":
-        lines.append("Linear model:  %s = %.6g + %s" % (
-            y_name, model.intercept,
-            " + ".join("%.6g*%s" % (c, names[i]) for i, c in enumerate(model.coefficients))))
-        lines.extend(coefficient_lines)
-        lines.append("  intercept      = %.6g" % model.intercept)
-        lines.append("  R-squared      = %.6g" % model.stats["r_squared"])
-        lines.append("  n              = %d" % model.stats["n"])
+        lines = ["Linear model:  %s = %.6g + %s" % (y_name, model.intercept, terms)]
     else:
-        lines.append("Logistic model:  p(%s) = sigmoid(%.6g + %s)" % (
-            y_name, model.intercept,
-            " + ".join("%.6g*%s" % (c, names[i]) for i, c in enumerate(model.coefficients))))
-        lines.extend(coefficient_lines)
-        lines.append("  intercept      = %.6g" % model.intercept)
-        lines.append("  log-likelihood = %.6g" % model.stats["log_likelihood"])
-        lines.append("  pseudo R-squared = %.6g  (McFadden's)" % model.stats["pseudo_r_squared"])
-        lines.append("  iterations     = %d (%s)" % (
-            model.stats["iterations"], "converged" if model.stats["converged"] else "did NOT converge"))
-        lines.append("  n              = %d" % model.stats["n"])
+        lines = ["Logistic model:  p(%s) = sigmoid(%.6g + %s)" % (y_name, model.intercept, terms)]
+    lines.extend(coefficient_table_lines(model, names))
+    lines.extend(fit_statistics_lines(model))
     return LispString("\n".join(lines))
 
 
-def model_evaluate(model, x_arg, y_vec):
-    """(model-evaluate m x y) -- how well a fitted model predicts other data
-    (typically data held out from fitting), as a text report."""
-    if not _is_model(model):
-        raise LispError("model-evaluate: not a model: %r" % (model,))
-    y_vec, _y_name = _coerce_y(y_vec, "model-evaluate")
-    columns, _names = _predictor_columns(x_arg, len(y_vec.items))
-    if len(columns) != model.k:
-        raise LispError(
-            "model-evaluate: model has %d predictor(s), but %d given"
-            % (model.k, len(columns)))
-    ys = [numeric_value(v) for v in y_vec.items.tolist()]
-    n = len(ys)
-    if n == 0:
-        raise LispError("model-evaluate: no data to evaluate")
-    predictions = [model.predict([col[i] for col in columns]) for i in range(n)]
+def fit_statistics_lines(model):
+    """The measures of fit at the end of model-report, for a LispModel."""
+    stats = model.stats
+    if model.kind == "linear":
+        return ["  R-squared        = %.6g" % stats["r_squared"],
+                "  n                = %d" % stats["n"]]
+    return ["  log-likelihood   = %.6g" % stats["log_likelihood"],
+            "  pseudo R-squared = %.6g  (McFadden's)" % stats["pseudo_r_squared"],
+            "  AUC              = %.6g" % stats["auc"],
+            "  iterations       = %d (%s)" % (stats["iterations"],
+                                               "converged" if stats["converged"] else "did NOT converge"),
+            "  n                = %d" % stats["n"]]
 
+
+def model_coefficient_table(model):
+    """(model-coefficient-table m) -- the model's coefficients as a table,
+    with columns term, coefficient, std_error, t_value (z_value for a
+    logistic model), and p_value; the first row is the intercept. For a
+    spline model, the terms are its expanded features (see model-report)."""
+    if isinstance(model, LispSplineModel):
+        inner, terms = model.inner_model, _spline_feature_labels(model.predictor_specs, _names(model))
+    elif isinstance(model, LispModel):
+        inner, terms = model, _names(model)
+    else:
+        raise LispError("model-coefficient-table: not a model: %r" % (model,))
+    rows = coefficient_rows(inner, terms)
+    statistic_name = inner.stats.get("test", "t") + "_value"
+    columns = [("term", LispVector([LispString(r[0]) for r in rows]))]
+    for j, column_name in enumerate(["coefficient", "std_error", statistic_name, "p_value"], start=1):
+        columns.append((column_name, LispVector(np.array([r[j] for r in rows], dtype=np.float64))))
+    return list_to_pairs([Pair(LispString(n), v) for n, v in columns])
+
+
+def predict_all(model, columns):
+    """The model's predictions for every row at once, as a numpy array.
+    `columns` is a list of predictor columns (lists of numbers)."""
+    if isinstance(model, LispSplineModel):
+        return predict_all(model.inner_model, _spline_expand_columns(columns, model.predictor_specs))
+    X = np.column_stack([np.asarray(col, dtype=np.float64) for col in columns])
+    z = model.intercept + X @ np.asarray(model.coefficients, dtype=np.float64)
+    return _sigmoid_vec(z) if model.kind == "logistic" else z
+
+
+def evaluation_data(model, x_arg, y_arg, name):
+    """(predictions, ys) numpy arrays for model-evaluate / model-lift-table."""
+    if not _is_model(model):
+        raise LispError("%s: not a model: %r" % (name, model))
+    y_vec, _ = _coerce_y(y_arg, name)
+    columns, _ = _predictor_columns(x_arg, len(y_vec.items))
+    if len(columns) != model.k:
+        raise LispError("%s: model has %d predictor(s), but %d given" % (name, model.k, len(columns)))
+    ys = np.array([numeric_value(v) for v in y_vec.items.tolist()], dtype=np.float64)
+    if len(ys) == 0:
+        raise LispError("%s: no data to evaluate" % name)
+    return predict_all(model, columns), ys
+
+
+def model_evaluate(model, x_arg, y_arg):
+    """(model-evaluate m x y) -- how well a fitted model predicts other data
+    (typically data held out from fitting), as a text report: R-squared,
+    RMSE, and MAE for a linear model; log-likelihood, pseudo R-squared,
+    AUC, and accuracy for a logistic one."""
+    predictions, ys = evaluation_data(model, x_arg, y_arg, "model-evaluate")
+    n = len(ys)
     lines = ["Evaluation on %d held-out observation(s):" % n]
     if not _is_probabilistic(model):
-        mean_y = sum(ys) / n
-        ss_total = sum((y - mean_y) ** 2 for y in ys)
-        ss_residual = sum((y - p) ** 2 for y, p in zip(ys, predictions))
-        r_squared = (1 - ss_residual / ss_total) if ss_total > 0 else float("nan")
-        rmse = math.sqrt(ss_residual / n)
-        mae = sum(abs(y - p) for y, p in zip(ys, predictions)) / n
-        lines.append("  R-squared = %.6g" % r_squared)
-        lines.append("  RMSE      = %.6g" % rmse)
-        lines.append("  MAE       = %.6g" % mae)
+        residuals = ys - predictions
+        ss_total = float(((ys - ys.mean()) ** 2).sum())
+        ss_residual = float((residuals ** 2).sum())
+        lines.append("  R-squared = %.6g" % ((1 - ss_residual / ss_total) if ss_total > 0 else float("nan")))
+        lines.append("  RMSE      = %.6g" % math.sqrt(ss_residual / n))
+        lines.append("  MAE       = %.6g" % float(np.abs(residuals).mean()))
     else:
         eps = 1e-12
-        log_likelihood = sum(
-            y * math.log(max(p, eps)) + (1 - y) * math.log(max(1 - p, eps))
-            for y, p in zip(ys, predictions))
-        mean_y = min(max(sum(ys) / n, eps), 1 - eps)
-        null_log_likelihood = sum(y * math.log(mean_y) + (1 - y) * math.log(1 - mean_y) for y in ys)
+        p = np.clip(predictions, eps, 1 - eps)
+        log_likelihood = float((ys * np.log(p) + (1 - ys) * np.log(1 - p)).sum())
+        mean_y = min(max(float(ys.mean()), eps), 1 - eps)
+        null_log_likelihood = float((ys * math.log(mean_y) + (1 - ys) * math.log(1 - mean_y)).sum())
         pseudo_r_squared = (1 - log_likelihood / null_log_likelihood) if null_log_likelihood != 0 else float("nan")
-        correct = sum(1 for y, p in zip(ys, predictions) if (p >= 0.5) == (y >= 0.5))
-        accuracy = correct / n
+        accuracy = float(((predictions >= 0.5) == (ys >= 0.5)).mean())
         lines.append("  log-likelihood   = %.6g" % log_likelihood)
         lines.append("  pseudo R-squared = %.6g  (McFadden's)" % pseudo_r_squared)
+        lines.append("  AUC              = %.6g" % weighted_auc(predictions, ys, np.ones(n)))
         lines.append("  accuracy         = %.6g  (at a 0.5 threshold)" % accuracy)
     return LispString("\n".join(lines))
+
+
+def model_lift_table(model, x_arg, y_arg, n_bins=10, weight_vec=None):
+    """(model-lift-table m x y [bins weights]) -- how well a model ranks
+    rows: sorted by prediction, highest first, and split into `bins`
+    groups of (nearly) equal row count -- 10 by default, i.e. deciles. One
+    row per group:
+      bin               1 holds the highest predictions
+      rows              the number of rows in the group
+      weight            their total weight (the row count, without weights)
+      mean_predicted    the group's average prediction
+      mean_actual       the group's average actual y
+      lift              mean_actual divided by the overall average y
+      cumulative_share  the fraction of all y (e.g. of all payoffs) in
+                        groups 1 through this one
+    The averages are weighted when weights are given."""
+    predictions, ys = evaluation_data(model, x_arg, y_arg, "model-lift-table")
+    weights = np.ones(len(ys)) if weight_vec is None or weight_vec is NIL else \
+        np.asarray(_optional_weights(weight_vec, len(ys), "model-lift-table"), dtype=np.float64)
+    n_bins = int(n_bins)
+    if not 1 <= n_bins <= len(ys):
+        raise LispError("model-lift-table: bins must be between 1 and the number of rows (%d)" % len(ys))
+    order = np.argsort(-predictions, kind="stable")
+    groups = np.array_split(order, n_bins)
+    overall = float((weights * ys).sum() / weights.sum())
+    total_y = float((weights * ys).sum())
+    rows, weight, mean_predicted, mean_actual, share = [], [], [], [], []
+    captured = 0.0
+    for group in groups:
+        w = weights[group]
+        rows.append(len(group))
+        weight.append(w.sum())
+        mean_predicted.append((w * predictions[group]).sum() / w.sum())
+        mean_actual.append((w * ys[group]).sum() / w.sum())
+        captured += (w * ys[group]).sum()
+        share.append(captured / total_y if total_y else float("nan"))
+    lift = [a / overall if overall else float("nan") for a in mean_actual]
+    columns = [("bin", np.arange(1, n_bins + 1)), ("rows", np.array(rows)),
+               ("weight", np.array(weight)), ("mean_predicted", np.array(mean_predicted)),
+               ("mean_actual", np.array(mean_actual)), ("lift", np.array(lift)),
+               ("cumulative_share", np.array(share))]
+    return list_to_pairs([Pair(LispString(n), to_vector(v)) for n, v in columns])
 
 
 # ---------------------------------------------------------------------------
@@ -686,22 +906,10 @@ def _spline_report_lines(model):
             lines.append("  %s: knots %s%s" % (name, knot_text, hint))
     lines.append("")
     lines.append("Coefficients (on the expanded basis):")
-    feature_labels = _spline_feature_labels(model.predictor_specs, names)
-    for label, c in zip(feature_labels, model.inner_model.coefficients):
-        lines.append("  %s coefficient = %.6g" % (label, c))
-    lines.append("  intercept      = %.6g" % model.inner_model.intercept)
+    lines.extend(coefficient_table_lines(model.inner_model, _spline_feature_labels(model.predictor_specs, names)))
     lines.append("")
-    stats = model.inner_model.stats
-    if model.kind == "spline-logistic":
-        lines.append("Logistic fit on the expanded basis:")
-        lines.append("  log-likelihood   = %.6g" % stats["log_likelihood"])
-        lines.append("  pseudo R-squared = %.6g  (McFadden's)" % stats["pseudo_r_squared"])
-        lines.append("  iterations       = %d (%s)" % (
-            stats["iterations"], "converged" if stats["converged"] else "did NOT converge"))
-    else:
-        lines.append("Linear fit on the expanded basis:")
-        lines.append("  R-squared = %.6g" % stats["r_squared"])
-    lines.append("  n = %d" % stats["n"])
+    lines.append("Fit:")
+    lines.extend(fit_statistics_lines(model.inner_model))
     return lines
 
 
@@ -835,6 +1043,8 @@ BUILTINS = {
     "model-report": model_report,
     "model-predict": model_predict,
     "model-evaluate": model_evaluate,
+    "model-coefficient-table": model_coefficient_table,
+    "model-lift-table": model_lift_table,
     "model-slope": model_slope,
     "model-coefficients": model_coefficients,
     "model-intercept": model_intercept,

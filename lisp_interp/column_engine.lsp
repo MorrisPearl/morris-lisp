@@ -23,10 +23,11 @@
 ;     depend on column B's previous-row value, with neither needing exact
 ;     `after` bookkeeping to avoid an unbound-variable error. See
 ;     calculate-all's two-pass compute-row, below.
-;   - (lag NAME n) resolves to that column's value n rows back, always
-;     precisely (never a same-row value), by reading NAME's series vector
-;     directly through the column registry -- see the `lag` macro and
-;     find-column
+;   - (lag NAME n [default]) resolves to that column's value n rows back,
+;     always precisely (never a same-row value), by reading NAME's series
+;     vector directly through the column registry -- see the `lag` macro
+;     and find-column. If n rows back is before the first row, it's
+;     `default` -- or an error, if no default was given.
 ;
 ; CAVEAT: because a column's declared name becomes a real global variable
 ; while calculating, a column named e.g. "list" would shadow the builtin
@@ -144,8 +145,20 @@
            (#t best)))
        (scan matches last-match)))))
 
-(defmacro lag (name n)
-  `(vector-ref (column-series (find-column ',name)) (- current-row ,n)))
+; (lag NAME n [default]) -- NAME's value n rows back (n rows ahead, if n
+; is negative). A row that doesn't exist -- before the first row, or past
+; the last -- gives `default`, or an error if there's no default.
+(defmacro lag (name n . default)
+  (let ((series (gensym "lag-series"))
+        (row (gensym "lag-row")))
+    `(let* ((,series (column-series (find-column ',name)))
+            (,row (- current-row ,n)))
+       (if (and (>= ,row 0) (< ,row (vector-length ,series)))
+           (vector-ref ,series ,row)
+           ,(if (null? default)
+                `(error "lag: column" ',name "has no row" ,row
+                        "-- give lag a default, e.g. (lag" ',name ,n "0)")
+                (car default))))))
 
 ; Normalize a column's `after` slot into a list of prerequisite columns:
 ; () stays (), a single column becomes a one-element list, and a list
