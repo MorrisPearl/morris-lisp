@@ -3215,8 +3215,9 @@ print(w.output_view.toPlainText())
 
 class TestExampleScripts(unittest.TestCase):
     """Smoke tests: each offline example must run to completion. Every
-    script runs ONCE (in setUpClass), in a temporary copy of the .lsp/.csv
-    files so anything it writes lands there, never in the repository.
+    script runs ONCE (in setUpClass), in a temporary copy of the .lsp,
+    .csv, and .txt files so anything it writes lands there, never in the
+    repository.
 
     The two slowest examples (about 15s and 60s) only run when the
     environment variable LISP_TEST_SLOW is set."""
@@ -3227,6 +3228,7 @@ class TestExampleScripts(unittest.TestCase):
         "trace_example.lsp",
         "metaprogramming_example.lsp",
         "prepayment_demo.lsp",
+        "linear_programming_example.lsp",
     ]
     SLOW_EXAMPLES = [
         "dolist_vectors_map_example.lsp",
@@ -3237,7 +3239,7 @@ class TestExampleScripts(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
         for name in os.listdir(HERE):
-            if name.endswith((".lsp", ".csv")):
+            if name.endswith((".lsp", ".csv", ".txt")):
                 shutil.copy(os.path.join(HERE, name), cls.tmp)
         names = cls.FAST_EXAMPLES + (cls.SLOW_EXAMPLES if os.environ.get("LISP_TEST_SLOW") else [])
         cls.results = {name: run_cli(os.path.join(cls.tmp, name), cwd=cls.tmp) for name in names}
@@ -3255,6 +3257,13 @@ class TestExampleScripts(unittest.TestCase):
         out = self.results["macros_example.lsp"].stdout
         self.assertIn("after swap!:  p=2 q=1", out)
         self.assertIn("my-while summed 0..199999 -> 19999900000", out)
+
+    def test_the_linear_programming_example_finds_the_best_allocation(self):
+        out = self.results["linear_programming_example.lsp"].stdout
+        self.assertIn("Yearly income: $6,200,000", out)
+        self.assertIn("  CMO Z-tranche           20,000,000    7.2%", out)
+        self.assertIn("    6.00     6,320,000   6.32%", out)
+        self.assertIn("limited to 4 years: lp-solve: Problem is infeasible.", out)
 
     def test_the_trace_example_produces_its_documented_output(self):
         out = self.results["trace_example.lsp"].stdout

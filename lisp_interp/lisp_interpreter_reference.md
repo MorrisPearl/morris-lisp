@@ -3297,6 +3297,18 @@ with its sign flipped.
 `lp-read-file` reads one from a file. You can also build one in Lisp; see
 `lp-solve`.
 
+`linear_programming_example.lsp` is a worked example. It reads a problem
+from `linear_programming_example.txt`: invest $100 million in four mortgage
+pools for the most yield, within limits on concentration, average
+duration, and credit risk. It solves the problem and prints the
+allocation. Then it changes the problem in Lisp to see how the income
+depends on the duration limit, and shows how an impossible limit is
+reported. Run it from `lisp_interp/`:
+
+```bash
+python3 lisp_interpreter.py linear_programming_example.lsp
+```
+
 #### `(lp-read-file path)`
 Reads a problem from a text file, and returns it as a problem list. The
 file looks like this:
