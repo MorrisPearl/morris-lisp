@@ -49,6 +49,7 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - tail calls that run in constant stack space (see lisp_core.py)
   - call tracing, (verbose n), and Lisp-level stack traces on errors
   - hash tables, strings, sorting, pseudo-random numbers
+  - format, for numbers with commas and decimals in fixed-width fields
   - fast math and statistics on whole vectors, with NaN for missing values
   - tables: filter, sort, group-by, join, and summarize columns of data
   - monthly time series, with months as plain integers

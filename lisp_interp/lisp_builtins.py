@@ -14,8 +14,10 @@ lisp_interpreter_reference.md."""
 
 import datetime
 import math
+import numbers
 import os
 import random
+import string
 import sys
 
 import numpy as np
@@ -479,6 +481,54 @@ def string_split(s, sep=None):
     return list_to_pairs([LispString(p) for p in pieces])
 
 
+def format_value(value, spec=""):
+    """(format-value x [spec]) -- x as a string, laid out by spec, which is a
+    Python format spec: e.g. ",.2f" (commas, 2 decimals), ">12" (right-
+    justified in 12 characters), "^8" (centered), "<20" (left-justified).
+    A number is formatted as a number; anything else (a string, date, list,
+    ...) is formatted as its display text."""
+    spec = str(spec)
+    is_number = isinstance(value, numbers.Number) and not isinstance(value, bool)
+    text_or_number = value if is_number else to_display_string(value)
+    try:
+        return LispString(format(text_or_number, spec))
+    except ValueError as e:
+        if not is_number:
+            raise LispError('format: can\'t format %s with "%s" -- it isn\'t a number, so '
+                            'only a width, alignment, and .N (maximum length) apply'
+                            % (to_string(value), spec))
+        raise LispError('format: can\'t format %s with "%s" (%s)' % (to_string(value), spec, e))
+
+
+def lisp_format(template, *args):
+    """(format template arg...) -- template with each {} or {:spec}
+    placeholder replaced by the next argument, formatted as format-value
+    formats it with that spec. {{ and }} stand for a literal { and }."""
+    try:
+        parts = list(string.Formatter().parse(str(template)))
+    except ValueError as e:
+        raise LispError("format: bad template %s (%s)" % (to_string(template), e))
+    pieces = []
+    next_arg = 0
+    for literal_text, field_name, spec, conversion in parts:
+        pieces.append(literal_text)
+        if field_name is None:     # the text after the last placeholder
+            continue
+        if field_name != "" or conversion is not None:
+            raise LispError("format: write each placeholder as {} or {:spec}, not {%s%s%s}"
+                            % (field_name, "!" + conversion if conversion else "",
+                               ":" + spec if spec else ""))
+        if next_arg == len(args):
+            raise LispError("format: the template has more placeholders than the %d argument%s given"
+                            % (len(args), "" if len(args) == 1 else "s"))
+        pieces.append(format_value(args[next_arg], spec))
+        next_arg += 1
+    if next_arg < len(args):
+        raise LispError("format: %d arguments given, but the template has only %d placeholder%s"
+                        % (len(args), next_arg, "" if next_arg == 1 else "s"))
+    return LispString("".join(pieces))
+
+
 STRING_BUILTINS = {
     "string-append": lambda *a: LispString("".join(a)),
     "to-string": lambda a: LispString(to_display_string(a)),
@@ -501,6 +551,8 @@ STRING_BUILTINS = {
     "string-split": string_split,
     "string-replace": lambda s, old, new: LispString(str(s).replace(str(old), str(new))),
     "string-trim": lambda s: LispString(str(s).strip()),
+    "format": lisp_format,
+    "format-value": format_value,
 }
 
 

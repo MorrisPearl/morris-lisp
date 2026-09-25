@@ -90,7 +90,7 @@ Put your own always-available definitions/macros there instead of
 | Pair / list | `(1 2 3)`, `'(a b c)` | Built from cons cells; `()` is the empty list |
 | Dotted pair | `(1 . 2)`, `(a b . c)` | An IMPROPER list — `.` before the last element sets the final cdr directly instead of `()`. Mainly used for variadic parameter lists (see below), but works anywhere |
 | Quasiquote | `` `(a ,b ,@c) `` | Like `quote`, but `,x` splices in the value of `x` and `,@x` splices in the elements of list `x` — see Macros below |
-| Vector | `#(1 2 3)`, `(vector 1 2 3)` | Fixed-size, holds numbers and/or dates only (not strings, pairs, booleans) |
+| Vector | `#(1 2 3)`, `(vector 1 2 3)` | Fixed-size; holds numbers, strings, and/or dates (not lists or booleans) |
 | Date | `(date 2024 3 15)` | Prints as `2024-03-15` |
 | Model | *(returned by regression)* | Prints as `#<linear-model ...>` etc. |
 
@@ -1357,6 +1357,120 @@ free-form text.
 ```lisp
 (string-trim "  hi  ")         ; => "hi"
 ```
+
+### Formatting numbers and text
+
+`format` builds a line of text, such as a report row, a log message, or a file
+name, with numbers rounded to a set number of decimals, grouped with
+commas, and lined up in fixed-width fields. It fills each `{}` placeholder
+in a template string with the next argument:
+
+```lisp
+(format "{} loans, {:,.2f} total balance" 42 12345678.9)   ; => "42 loans, 12,345,678.90 total balance"
+```
+
+**Format specs.** The text after the colon in `{:spec}` is a **format
+spec**: how to lay out that value. It's the spec language of Python's
+`format()`, and the same one `*column-number-format*` uses (see
+"Columns"). A spec is made of these parts, each optional, in this order:
+
+| Part | Meaning | Spec | Value | Result |
+|---|---|---|---|---|
+| fill and alignment | `<` left, `^` center, or `>` right in the field, optionally after a fill character (default: a space) | `*^9` | `"mid"` | `"***mid***"` |
+| sign | `+` puts a `+` on positive numbers | `+.1f` | `3.14` | `"+3.1"` |
+| `0` | pad a number with zeros, not spaces | `05d` | `42` | `"00042"` |
+| width | the field's width, in characters | `>8` | `"CA"` | `"      CA"` |
+| `,` | group the thousands with commas | `,` | `1234567` | `"1,234,567"` |
+| `.N` | for a number (with `f` or `%`), the number of decimals; for text, the most characters to keep | `.2f` | `6.256` | `"6.26"` |
+| type | `f` fixed decimals, `%` a percentage (× 100, followed by `%`), `d` a whole number, `e` scientific notation | `.2%` | `0.0525` | `"5.25%"` |
+
+So `>12,.2f` means "right-justified in 12 characters, with commas and 2
+decimals", and `<20` means "left-justified in 20 characters". Things to
+know:
+
+- With a width but no alignment, numbers are right-justified and text is
+  left-justified, which is usually what a table wants.
+- A value longer than its field isn't cut off; the field just grows. For
+  text, `.N` cuts it to `N` characters (`<8.3` of `"abcdef"` is
+  `"abc     "`).
+- Rounding is to the nearest value; a tie goes to the even digit, as with
+  `round`: `{:.1f}` of `6.25` is `"6.2"`. This rarely comes up, because
+  most decimals (like `6.35`) aren't stored exactly, so they're not a
+  true tie.
+- `d` needs a whole number; to round a fraction to a whole number, use
+  `.0f`. Number-only parts (`f`, `%`, `d`, `,`, `.N` with a type) on text
+  are an error.
+- A value that isn't a number (a string, date, symbol, list, `#t`, ...)
+  is laid out as its display text, as `display` would show it, so the
+  width and alignment parts work on it. `nan` is written `nan`.
+
+#### `(format template arg...)`
+`template` with each `{}` replaced by the next argument's display text,
+and each `{:spec}` by the next argument laid out by `spec`. There must be
+exactly one argument per placeholder. For a literal `{` or `}`, write
+`{{` or `}}`. Returns the string; show it with `display`.
+
+```lisp
+(format "{:,.2f}" 1234567.891)                               ; => "1,234,567.89"
+(format "[{:<8}] [{:^8}] [{:>8}]" "CA" "NY" "TX")            ; => "[CA      ] [   NY   ] [      TX]"
+(format "[{:>10,.2f}]" 1234.5)                               ; => "[  1,234.50]"
+(format "WAC {:.3f}%, as of {}" 6.2604165 (date 2023 1 1))   ; => "WAC 6.260%, as of 2023-01-01"
+(format "{:.2%}" 0.0525)                                     ; => "5.25%"
+(format "{:+.1f} {:05d} {:*^9}" 3.14159 42 "mid")            ; => "+3.1 00042 ***mid***"
+(format "{{}} is a placeholder")                              ; => "{} is a placeholder"
+(format "{} {}" 1)          ; an error: two placeholders, one argument
+(format "{:.2f}" "CA")      ; an error: .2f is for numbers
+```
+
+A small report, one `format` per line (`apply` passes each row's
+elements as the arguments):
+
+```lisp
+(define rows (list (list "CA" 1234567.5 6.25)
+                   (list "NY" 987654.25 5.875)
+                   (list "TX" 45000 7.1)))
+(display (format "{:<6}{:>15}{:>8}\n" "State" "Balance" "WAC"))
+(dolist (r rows)
+  (display (apply format "{:<6}{:>15,.2f}{:>8.3f}\n" r)))
+```
+
+prints
+
+```
+State         Balance     WAC
+CA       1,234,567.50   6.250
+NY         987,654.25   5.875
+TX          45,000.00   7.100
+```
+
+#### `(format-value x [spec])`
+One value as a string, laid out by `spec`, or as its display text if
+there's no spec. `(format-value x ",.2f")` is the same as
+`(format "{:,.2f}" x)`. It's handy when the spec is worked out as the
+program runs, such as a width chosen from the data:
+
+```lisp
+(format-value 1234567.891 ",.2f")          ; => "1,234,567.89"
+(format-value "abcdef" "<8.3")             ; => "abc     "
+(define width 10)
+(format-value "CA" (format ">{}" width))   ; => "        CA"
+```
+
+#### Format specs in templates: `{{name:spec}}`
+`template.lsp`'s `template-render` (see its header comment, and "SQLite",
+below) takes the same specs. `{{name}}` inserts the value bound to `name`,
+and `{{name:spec}}` inserts it laid out by `spec`. Everything after the
+colon is the spec, exactly as written.
+
+```lisp
+(load "template.lsp")
+(template-render "Pool {{pool}}: {{loans:,}} loans, balance {{upb:,.2f}}, WAC {{wac:.3f}}%"
+                 (template-bindings (pool "P1") (loans 1204) (upb 245678901.5) (wac 6.2604)))
+; => "Pool P1: 1,204 loans, balance 245,678,901.50, WAC 6.260%"
+```
+
+In `template-render-sql`, a spec is an error: there, `{{name}}` becomes a
+`?` parameter, and the value goes to SQLite as it is, not as text.
 
 ### Vectors
 
@@ -3086,7 +3200,8 @@ together instead — write `{{name}}` right where a value belongs (e.g.
 ALWAYS a bound parameter there, never text spliced into the query, so it
 can't be used to build an unsafe query even by accident. `template.lsp` is
 also a general-purpose text templating engine on its own (variable
-substitution, `{{#each}}` loops, `{{#if}}` conditionals) — see its own
+substitution, with format specs as `format` takes them, `{{#each}}`
+loops, `{{#if}}` conditionals) — see its own
 header comment for the full syntax and worked examples, and
 `sqlite-query-template`/`sqlite-execute-template` (also there) for running
 a template against a connection in one call.

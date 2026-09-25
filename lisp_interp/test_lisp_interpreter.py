@@ -1062,6 +1062,64 @@ class TestStrings(LispTestCase):
         self.assertShows(r'(string-length "a\nb")', "3")
 
 
+class TestFormat(LispTestCase):
+    """format and format-value: Python format specs applied to Lisp values."""
+
+    def test_decimals_and_commas(self):
+        self.assertShows('(format "{:,.2f}" 1234567.891)', '"1,234,567.89"')
+        self.assertShows('(format "{:,}" 1234567)', '"1,234,567"')
+        self.assertShows('(format "{:.0f}" 2.7)', '"3"')
+        self.assertShows('(format "{:.2%}" 0.0525)', '"5.25%"')
+
+    def test_left_center_and_right_justification_of_text_and_numbers(self):
+        self.assertShows('(format "[{:<6}][{:^6}][{:>6}]" "ab" "ab" "ab")', '"[ab    ][  ab  ][    ab]"')
+        self.assertShows('(format "[{:<8.1f}][{:^8,}][{:>8.2f}]" 1.25 1000 3)',
+                         '"[1.2     ][ 1,000  ][    3.00]"')
+
+    def test_default_alignment_is_right_for_numbers_and_left_for_text(self):
+        self.assertShows('(format "[{:5}][{:5}]" 42 "ab")', '"[   42][ab   ]"')
+
+    def test_fill_character_sign_and_zero_padding(self):
+        self.assertShows('(format "{:*^9}" "mid")', '"***mid***"')
+        self.assertShows('(format "{:+.1f}" 3.14159)', '"+3.1"')
+        self.assertShows('(format "{:05d}" 42)', '"00042"')
+
+    def test_text_precision_truncates_and_long_values_are_not_cut(self):
+        self.assertShows('(format "[{:<6.3}]" "abcdef")', '"[abc   ]"')
+        self.assertShows('(format "[{:>3}]" "abcdef")', '"[abcdef]"')
+
+    def test_non_numbers_are_formatted_as_their_display_text(self):
+        self.assertShows('(format "{} {} {} {}" "hi" (date 2023 1 1) \'sym (list 1 "a"))',
+                         '"hi 2023-01-01 sym (1 "a")"')     # a list shows as display shows it
+        self.assertShows("(format \"{:>4}|{:>4}|{}\" #t #f '())", '"  #t|  #f|()"')
+
+    def test_values_read_from_vectors_and_nan(self):
+        self.assertShows('(format "{:.2f}" (vector-ref #(1.5 2.25) 1))', '"2.25"')
+        self.assertShows('(format "{:,.2f}" nan)', '"nan"')
+
+    def test_literal_braces(self):
+        self.assertShows('(format "{{}} and {{x}} {}" 1)', '"{} and {x} 1"')
+
+    def test_argument_count_must_match_the_placeholders(self):
+        self.assertLispError('(format "{} {}" 1)', "more placeholders")
+        self.assertLispError('(format "{}" 1 2)', "only 1 placeholder")
+
+    def test_only_plain_placeholders_are_allowed(self):
+        self.assertLispError('(format "{0}" 1)', "{} or {:spec}")
+        self.assertLispError('(format "{name}" 1)', "{} or {:spec}")
+        self.assertLispError('(format "{!r}" 1)', "{} or {:spec}")
+        self.assertLispError('(format "oops }" 1)', "bad template")
+
+    def test_a_number_spec_on_text_or_a_bad_spec_is_an_error(self):
+        self.assertLispError('(format "{:.2f}" "CA")', "isn't a number")
+        self.assertLispError('(format "{:d}" 5.5)', "can't format 5.5")
+
+    def test_format_value(self):
+        self.assertShows('(format-value 1234567.891 ",.2f")', '"1,234,567.89"')
+        self.assertShows('(format-value 5.5)', '"5.5"')
+        self.assertShows('(format-value "CA" (format ">{}" 4))', '"  CA"')
+
+
 # ---------------------------------------------------------------------------
 # 11. Hash tables
 # ---------------------------------------------------------------------------
@@ -1992,6 +2050,26 @@ class TestTemplateLibrary(LispTestCase):
                       (template-bindings (n "safe' OR '1'='1"))))""")
         # the injection attempt matches nothing (a real injection would return 'safe')
         self.assertShows("(vector-length (cdr (car r)))", "0")
+
+    def test_format_spec_in_a_tag(self):
+        self.assertShows('(template-render "{{state:<6}}{{upb:>15,.2f}}{{wac:>8.3f}}" '
+                         '(template-bindings (state "CA") (upb 1234567.5) (wac 6.25)))',
+                         '"CA       1,234,567.50   6.250"')
+
+    def test_format_spec_inside_an_each_loop(self):
+        self.assertShows('(template-render "{{#each x in xs}}[{{x:^7,}}]{{/each}}" '
+                         '(template-bindings (xs (list 1000 25))))',
+                         '"[ 1,000 ][  25   ]"')
+
+    def test_spaces_around_the_name_are_ignored(self):
+        self.assertShows('(template-render "{{ n :>4}}|" (template-bindings (n 5)))', '"   5|"')
+
+    def test_a_bad_format_spec_in_a_tag_is_an_error(self):
+        self.assertLispError('(template-render "{{x:.2f}}" (template-bindings (x "CA")))', "isn't a number")
+
+    def test_sql_mode_rejects_a_format_spec(self):
+        self.assertLispError('(template-render-sql "WHERE a = {{a:.2f}}" (template-bindings (a 5)))',
+                             "{{a:.2f}}")
 
     def test_parse_once_render_many_times(self):
         self.run_lisp('(define parsed (template-parse "n={{n}}"))')

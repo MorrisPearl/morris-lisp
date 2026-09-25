@@ -61,11 +61,23 @@
 ; ---------------------------------------------------------------------
 ;   {{name}}
 ;     Substitute the value bound to `name`. In template-render (plain
-;     text), this is the value's display text (via number->string, which
-;     -- despite the name -- stringifies any Lisp value: numbers,
-;     strings, symbols, lists, ...). In template-render-sql, this is
-;     ALWAYS a literal "?", with the value going into the params list
-;     instead -- see above.
+;     text), this is the value's display text (as `display` would show
+;     it). In template-render-sql, this is ALWAYS a literal "?", with the
+;     value going into the params list instead -- see above.
+;
+;   {{name:spec}}
+;     The same, but laid out by a format spec -- the same specs `format`
+;     and `format-value` take (see "Formatting strings" in
+;     lisp_interpreter_reference.md). Everything after the colon is the
+;     spec, exactly as written:
+;
+;       (template-render "{{state:<6}}{{upb:>15,.2f}}{{wac:>8.3f}}"
+;                        (template-bindings (state "CA") (upb 1234567.5) (wac 6.25)))
+;       ; => "CA       1,234,567.50   6.250"
+;
+;     Only template-render uses the spec; in template-render-sql a spec is
+;     an error, because there the value is passed to SQLite as a
+;     parameter, not written into the text.
 ;
 ;   {{#each item in list}} ... {{item}} ... {{/each}}
 ;     Renders the body once per element of the list bound to `list`
@@ -200,7 +212,7 @@ instead of reintroducing it."
 ; ---------------------------------------------------------------------
 ; Parser: template-parse turns a template string into a list of nodes --
 ;   (text "literal text")
-;   (var name)
+;   (var name spec)       spec is "" when the tag has none
 ;   (each itemvar listname sepvar-or-'() body-nodes)
 ;   (if condname then-nodes else-nodes)
 ; This is plain (non-tail) recursion -- fine here, since parse depth is
@@ -256,10 +268,15 @@ tag-start after-tag-pos), or '() if there are no more tags."
       (error "template-parse: malformed {{#if ...}} tag:" content)))
 
 (define (template--parse-var-tag content)
-  (define tokens (template--split-whitespace content))
+  "content, e.g. \"balance\" or \"balance:>12,.2f\" -> (list name-symbol spec),
+spec being everything after the first colon, or \"\" if there's no colon."
+  (define colon (template--index-of-from content ":" 0))
+  (define name-text (if (= colon -1) content (substring content 0 colon)))
+  (define spec (if (= colon -1) "" (substring content (+ colon 1))))
+  (define tokens (template--split-whitespace name-text))
   (if (= (length tokens) 1)
-      (string->symbol (car tokens))
-      (error "template-parse: malformed {{...}} tag (expected one name):" content)))
+      (list (string->symbol (car tokens)) spec)
+      (error "template-parse: malformed {{...}} tag (expected one name, optionally followed by :spec):" content)))
 
 (define (template--parse-nodes s pos end-tags)
   "Parse nodes from pos until hitting a tag whose trimmed content is one
@@ -323,9 +340,11 @@ being '() at end-of-string."
                         (list-ref rest-result 2))))))
 
          (else
-          (let* ((varname (template--parse-var-tag content))
+          (let* ((var-spec (template--parse-var-tag content))
+                 (varname (list-ref var-spec 0))
+                 (spec (list-ref var-spec 1))
                  (rest-result (template--parse-nodes s after-pos end-tags)))
-            (list (append before-nodes (list (list 'var varname)) (list-ref rest-result 0))
+            (list (append before-nodes (list (list 'var varname spec)) (list-ref rest-result 0))
                   (list-ref rest-result 1)
                   (list-ref rest-result 2)))))))))
 
@@ -362,7 +381,8 @@ string directly otherwise."
   (define kind (car node))
   (cond
     ((eq? kind 'text) (list-ref node 1))
-    ((eq? kind 'var) (number->string (template--alist-get bindings (list-ref node 1) "")))
+    ((eq? kind 'var) (format-value (template--alist-get bindings (list-ref node 1) "")
+                                   (list-ref node 2)))
     ((eq? kind 'each)
      (let* ((itemvar (list-ref node 1))
             (listname (list-ref node 2))
@@ -419,7 +439,13 @@ out of untrusted data -- use template-render-sql for that."
   (define kind (car node))
   (cond
     ((eq? kind 'text) (cons (list-ref node 1) '()))
-    ((eq? kind 'var) (cons "?" (list (template--alist-get bindings (list-ref node 1) '()))))
+    ((eq? kind 'var)
+     (if (string=? (list-ref node 2) "")
+         (cons "?" (list (template--alist-get bindings (list-ref node 1) '())))
+         (error (string-append "template-render-sql: {{" (symbol->string (list-ref node 1))
+                               ":" (list-ref node 2) "}} -- a format spec can't be used in a"
+                               " SQL template, because the value is passed to SQLite as a"
+                               " parameter, not written into the text"))))
     ((eq? kind 'each)
      (let* ((itemvar (list-ref node 1))
             (listname (list-ref node 2))
