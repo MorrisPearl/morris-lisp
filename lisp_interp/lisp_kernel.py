@@ -13,6 +13,10 @@ Differences from a Python kernel:
     traceback. (A tail call replaces its caller's frame, shown as
     "[+N tail calls]".)
   - There's no tab completion.
+  - The debug REPL that (breakpoint) and (break f) open reads the console, which a
+    notebook doesn't have. Register a debug hook that prints, and doesn't call
+    (debug-repl), instead: see "Debugging" in lisp_interpreter_reference.md.
+  - (abort) ends the cell with an "Aborted" error.
   - The history variables _, __, ___, and _N (the result of cell N) are
     set in the Lisp environment by hand (see _record_history), since
     IPython only sets them for Python code."""
@@ -22,7 +26,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lisp_core import LispError, NIL, Symbol, format_lisp_traceback, parse, seval, to_string
+from lisp_core import LispAbort, LispError, NIL, Symbol, format_lisp_traceback, parse, seval, to_string
 import lisp_jupyter
 
 from ipykernel.ipkernel import IPythonKernel
@@ -67,6 +71,8 @@ class LispKernel(IPythonKernel):
         try:
             for expr in parse(code):
                 result = seval(expr, env)
+        except LispAbort:
+            return self._error_reply("Aborted", "the computation was abandoned by (abort)")
         except LispError as e:
             return self._error_reply("LispError", str(e), format_lisp_traceback(e))
         except Exception as e:

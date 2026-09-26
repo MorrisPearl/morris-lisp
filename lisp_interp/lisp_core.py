@@ -15,7 +15,7 @@ Sections, in order:
   Evaluator         seval() and the special forms
   Helpers           check_numbers(), check_vector_elements(), numeric_value()
   Printer           to_string(), to_display_string(), pretty_print_string()
-  Debugging         debug_repl() -- used by (breakpoint) and debug-function
+  Debugging         breakpoints, the debug hook, and debug_repl()
   Running files     run_file()
 
 HOW THE EVALUATOR WORKS: seval() does NOT use Python function recursion to
@@ -378,6 +378,15 @@ class LispThrow(BaseException):
         super().__init__(tag, value)
         self.tag = tag
         self.value = value
+
+
+class LispAbort(BaseException):
+    """Raised by (abort): abandon the whole computation and go back to the top
+    level -- the REPL prompt, the GUI's input box, the Jupyter cell -- or, in a
+    script, end the run. Like LispThrow it's a BaseException, not an Exception,
+    so catch-error doesn't stop it; unwind-protect cleanups still run on the
+    way out. Each top level catches it (lisp_interpreter.py, lisp_gui.py,
+    lisp_kernel.py)."""
 
 
 # The tags of the (catch tag ...) forms now running, innermost last, so that
@@ -1206,10 +1215,9 @@ def eval_special_form(op, args, env, control_stack, value_stack):
     elif op == "breakpoint":
         # A special form so it sees the caller's actual environment (a paused
         # function's own variables) -- a function or macro can't. An optional
-        # argument is evaluated there and printed first, to say where we stopped.
-        if args is not NIL:
-            print(to_display_string(seval(args.car, env)))
-        debug_repl(env, label="breakpoint")
+        # argument is evaluated there, to say where we stopped.
+        message = seval(args.car, env) if args is not NIL else NIL
+        stop_program("breakpoint", message, [], env)
         value_stack.append(NIL)
 
     elif op == "defmacro":
@@ -1406,8 +1414,12 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         protected_expr = args.car
         var_name = args.cdr.car.car
         handler_body = pairs_to_list(args.cdr.cdr)
+        debug_state.catch_error_depth += 1      # so break-on-error leaves the errors this will handle alone
         try:
-            result = seval(protected_expr, env)
+            try:
+                result = seval(protected_expr, env)
+            finally:
+                debug_state.catch_error_depth -= 1
         except Exception as e:
             handler_env = Env(outer=env)
             handler_env[var_name] = LispString(str(e))
@@ -1479,13 +1491,17 @@ def seval(expr, env, call=None):
                 _trace_enter(proc, args, False)
     _active_stacks.append(control_stack)
     try:
+        if call is not None and isinstance(call[0], Procedure):
+            check_breakpoint(call[0], call[1], env)     # see "Debugging", below
         return _run_eval_loop(control_stack, value_stack)
     except Exception as exc:
         _record_lisp_trace(exc, control_stack)
         _call_depth = entry_depth
+        if debug_state.break_on_error:
+            stop_on_error(exc, env)
         raise
-    except LispThrow:
-        _call_depth = entry_depth      # a throw isn't an error, so it gets no stack trace
+    except (LispThrow, LispAbort):
+        _call_depth = entry_depth      # neither is an error, so neither gets a stack trace
         raise
     finally:
         _active_stacks.pop()
@@ -1554,6 +1570,7 @@ def _run_eval_loop(control_stack, value_stack):
                     elif _verbose_level:
                         _trace_enter(proc, arg_values, False)
                     control_stack.append(('CALL', proc, arg_values, tails))
+                    check_breakpoint(proc, arg_values, new_env)     # see "Debugging", below
                 push_sequence(proc.body, new_env, control_stack, value_stack)
             elif callable(proc):
                 value_stack.append(proc(*arg_values))
@@ -1842,42 +1859,224 @@ def reconstruct_macro_source(macro, name=None):
 
 
 # ---------------------------------------------------------------------------
-# Debugging: the nested REPL used by (breakpoint) and debug-function
+# Debugging: breakpoints, the debug hook, and the debug REPL
 # ---------------------------------------------------------------------------
+#
+# The program STOPS at a breakpoint. There are three kinds, and each calls
+# stop_program():
+#
+#   'break'       a procedure with a (break ...) on its name was just entered
+#                 (check_breakpoint, called where the evaluator enters procedures)
+#   'breakpoint'  a (breakpoint) form was reached
+#   'error'       an error just happened, with (break-on-error #t) on
+#                 (stop_on_error, called by seval as the error passes through)
+#
+# What a stop does depends on whether a debug hook is registered
+# (set-debug-hook!). With none, the debug REPL opens. With one, the hook is
+# called, and it decides: it can print something, look around with (locals),
+# and either call (debug-repl) to open the debug REPL, (abort) to give up, or
+# just return, and the program carries on.
+#
+# The Lisp-callable functions for all this are in lisp_debug.py.
 
-def debug_repl(env, label="debug"):
-    """A nested REPL, used by (breakpoint) and debug-function. What you type is
-    evaluated in `env` -- the actual environment where the program paused,
-    so you can inspect, and set!, the paused function's own variables. Type
-    (continue), (exit), or Ctrl-D to resume. (backtrace) shows how the
-    program got here.
+class DebugState:
+    """What the debugger is keeping track of. There's one, debug_state, shared
+    by the whole process -- like the verbosity level -- and tests reset it."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.breakpoints = {}        # name of a procedure -> the condition to test when it's entered
+                                     # (an expression, evaluated in its scope), or None for always
+        self.hook = None             # the procedure registered with set-debug-hook!, or None
+        self.break_on_error = False  # whether an error stops the program where it happened
+        self.pauses = []             # a Pause for each stop in progress, innermost last
+        self.hook_running = False    # True while the hook runs: the calls it makes don't stop
+        self.catch_error_depth = 0   # how many catch-error forms are running: they'll handle errors
+
+
+debug_state = DebugState()
+
+
+class Pause:
+    """Where the program is stopped: why (kind: 'break', 'breakpoint', or
+    'error'), what (name, and the arguments as a Python list), and the
+    environment to look around in -- for a procedure, the scope its
+    parameters are bound in. For a 'breakpoint', name is the message given to
+    (breakpoint), or '(); for an 'error', it's the error message."""
+
+    def __init__(self, kind, name, args, env):
+        self.kind = kind
+        self.name = name
+        self.args = args
+        self.env = env
+
+
+def current_pause():
+    """The innermost stop in progress, or None if the program isn't stopped."""
+    return debug_state.pauses[-1] if debug_state.pauses else None
+
+
+def check_breakpoint(proc, args, env):
+    """A procedure has just been entered, with its parameters bound in env. Stop
+    if there's a breakpoint on its name, unless the breakpoint has a condition
+    that's false here."""
+    if not debug_state.breakpoints or proc.name not in debug_state.breakpoints:
+        return
+    if debug_state.hook_running:
+        return
+    condition = debug_state.breakpoints[proc.name]
+    if condition is not None and not is_true(seval(condition, env)):
+        return
+    stop_program("break", proc.name, args, env)
+
+
+def stop_on_error(exc, env):
+    """An error is passing out of the innermost seval() that saw it, and
+    break-on-error is on: stop where it happened, before the calls it's
+    unwinding are gone. Not for an error that a catch-error will handle, one
+    that happens while the debugger is already stopped, one already stopped for
+    at a deeper level, or running out of stack (no room left to debug in)."""
+    if debug_state.catch_error_depth or debug_state.pauses or isinstance(exc, RecursionError):
+        return
+    if getattr(exc, "lisp_stopped", False):
+        return
+    try:
+        exc.lisp_stopped = True
+    except AttributeError:      # an exception type that won't take attributes
+        pass
+    stop_program("error", LispString(str(exc)), [], _env_at_error(exc, env))
+
+
+def _env_at_error(exc, default):
+    """The environment the evaluator was working in when exc was raised. The
+    evaluator loop keeps it in a local variable, cur_env, which is still there
+    in the exception's traceback. `default` is used if it can't be found."""
+    env = default
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code is _run_eval_loop.__code__:
+            env = tb.tb_frame.f_locals.get("cur_env", env)
+        tb = tb.tb_next
+    return env
+
+
+def stop_program(kind, name, args, env):
+    """The program has reached a breakpoint: see the comment at the top of this
+    section. `args` is a Python list. Returns when the program is to carry on."""
+    if debug_state.hook_running:
+        return          # the hook itself is running: what it does can't stop again
+    pause = Pause(kind, name, args, env)
+    debug_state.pauses.append(pause)
+    try:
+        if debug_state.hook is None:
+            print_stop(pause)
+            open_debug_repl()
+        else:
+            was_running = debug_state.hook_running
+            debug_state.hook_running = True
+            try:
+                apply_proc(debug_state.hook, [Symbol(kind), name, list_to_pairs(args)])
+            finally:
+                debug_state.hook_running = was_running
+    finally:
+        debug_state.pauses.pop()
+
+
+def print_stop(pause):
+    """Say where the program stopped, as it's printed when there's no hook."""
+    if pause.kind == "break":
+        arg_texts = ", ".join(to_string(a) for a in pause.args)
+        print("--- break: entering %s(%s) ---" % (pause.name, arg_texts))
+    elif pause.kind == "error":
+        print("--- error: %s ---" % (pause.name,))
+    elif pause.name is not NIL:
+        print(to_display_string(pause.name))
+
+
+def open_debug_repl():
+    """Open the debug REPL at the innermost stop. This is (debug-repl), which is
+    also what a stop does when there's no hook."""
+    pause = current_pause()
+    if pause is None:
+        raise LispError("debug-repl: the program isn't stopped anywhere. (debug-repl) is for "
+                        "a debug hook; to stop in your own code, write (breakpoint).")
+    label = str(pause.name) if pause.kind == "break" else pause.kind
+    resume = "lets the error go on" if pause.kind == "error" else "resumes"
+    debug_repl(pause.env, label, resume)
+
+
+def visible_variables(env):
+    """The variables visible from env, innermost scope first, as a Lisp
+    association list of (name . value) -- leaving out the global ones, and the
+    hidden %names the evaluator makes for itself. A name hidden by an inner
+    scope's variable of the same name is left out."""
+    found = []
+    seen = set()
+    scope = env
+    while scope.outer is not None:      # the global environment is the one with no outer
+        for name, value in scope.items():
+            if name not in seen and not str(name).startswith("%"):
+                seen.add(name)
+                found.append(Pair(name, value))
+        scope = scope.outer
+    return list_to_pairs(found)
+
+
+DEBUG_REPL_MAX_CHARS = 2000     # a longer result is cut off, so a big vector can't flood the console
+
+
+def debug_repl(env, label="debug", resume="resumes"):
+    """A nested REPL, opened at a stop. What you type is evaluated in `env` --
+    the actual environment where the program stopped, so you can inspect, and
+    set!, the stopped procedure's own variables. Commands:
+
+      (continue)   or (exit), or Ctrl-D: resume the program
+      (abort)      abandon the computation and go back to the top level
+      (locals)     the variables you can see, with their values
+      (backtrace)  the chain of calls that led here
 
     It reads from the console with input(), even when the GUI is running;
-    there's no GUI debugger."""
-    print("--- %s: entering debug REPL (type (continue) or press Ctrl-D to resume) ---" % label)
-    buffer = ""
-    while True:
-        try:
-            line = input("  ... " if buffer else "%s> " % label)
-        except EOFError:
-            print()
-            break
-        buffer += line + "\n"
-        if buffer.count("(") <= buffer.count(")"):
-            resume = False
+    there's no GUI debugger. (In the GUI or Jupyter, use a debug hook that
+    prints, and doesn't call (debug-repl).)"""
+    print("--- %s: debug REPL -- (continue) %s, (abort) abandons the computation, "
+          "(locals) shows the variables ---" % (label, resume))
+    was_running = debug_state.hook_running
+    debug_state.hook_running = False        # calls made here should stop, as they would anywhere
+    try:
+        buffer = ""
+        while True:
             try:
-                for expr in parse(buffer):
-                    if isinstance(expr, Pair) and expr.car in (Symbol("continue"), Symbol("exit")):
-                        resume = True
-                        break
-                    result = seval(expr, env)
-                    print(to_string(result))
-            except Exception as e:
-                print(format_error_report(e), end="")
-            buffer = ""
-            if resume:
+                line = input("  ... " if buffer else "%s> " % label)
+            except EOFError:
+                print()
                 break
+            buffer += line + "\n"
+            if buffer.count("(") <= buffer.count(")"):
+                resume_now = False
+                try:
+                    for expr in parse(buffer):
+                        if isinstance(expr, Pair) and expr.car in (Symbol("continue"), Symbol("exit")):
+                            resume_now = True
+                            break
+                        result = seval(expr, env)
+                        print(_cut_off(to_string(result)))
+                except Exception as e:
+                    print(format_error_report(e), end="")
+                buffer = ""
+                if resume_now:
+                    break
+    finally:
+        debug_state.hook_running = was_running
     print("--- %s: resuming ---" % label)
+
+
+def _cut_off(text):
+    """text, or its first DEBUG_REPL_MAX_CHARS characters and a note."""
+    if len(text) <= DEBUG_REPL_MAX_CHARS:
+        return text
+    return "%s ... [%d more characters]" % (text[:DEBUG_REPL_MAX_CHARS], len(text) - DEBUG_REPL_MAX_CHARS)
 
 
 # ---------------------------------------------------------------------------

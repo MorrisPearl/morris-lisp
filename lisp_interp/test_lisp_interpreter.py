@@ -63,6 +63,14 @@ class LispTestCase(unittest.TestCase):
     def setUp(self):
         lisp_core.set_verbose_level(0)         # verbosity is process-wide: never leak it between tests
         self.addCleanup(lisp_core.set_verbose_level, 0)
+        lisp_core.debug_state.reset()          # so are breakpoints and the debug hook
+        self.addCleanup(lisp_core.debug_state.reset)
+        # A stop that opens the debug REPL reads the keyboard. Tests that expect
+        # one use run_with_input; any other must fail, not wait for a person.
+        patcher = mock.patch("builtins.input", side_effect=AssertionError(
+            "the debug REPL asked for input -- use run_with_input to answer it"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.out = []
         self.env = lisp_builtins.make_global_env(output=self.out.append)
 
@@ -84,6 +92,19 @@ class LispTestCase(unittest.TestCase):
         """Everything display/newline/print have written so far."""
         return "".join(self.out)
 
+    def run_with_input(self, src, lines):
+        """Run `src` with the debug REPL reading `lines` as if they were typed;
+        return what was printed to the console (the REPL's own output), and
+        keep it in self.console and the value in self.result. If the program
+        stops more often than there are lines, input() raises StopIteration, so
+        the test fails instead of waiting for the keyboard."""
+        feed = iter(lines)
+        self.console = io.StringIO()
+        with mock.patch("builtins.input", lambda prompt="": next(feed)):
+            with contextlib.redirect_stdout(self.console):
+                self.result = self.run_lisp(src)
+        return self.console.getvalue()
+
     # -- assertions --------------------------------------------------------
 
     def assertShows(self, src, expected):
@@ -95,6 +116,11 @@ class LispTestCase(unittest.TestCase):
         with self.assertRaises(lisp_core.LispError, msg="source: %s" % src) as cm:
             self.run_lisp(src)
         self.assertIn(fragment, str(cm.exception))
+
+    def assertAborts(self, src):
+        """`src` must be abandoned by (abort), which no catch-error stops."""
+        with self.assertRaises(lisp_core.LispAbort, msg="source: %s" % src):
+            self.run_lisp(src)
 
     def assertRaisesFromLisp(self, exc_type, src):
         """`src` must raise `exc_type` (for the few builtins documented as
@@ -3103,14 +3129,6 @@ class TestBacktrace(LispTestCase):
 class TestDebugReplBacktrace(LispTestCase):
     """The breakpoint debugger's own (backtrace) shows the PAUSED program's calls."""
 
-    def run_with_input(self, src, lines):
-        feed = iter(lines)
-        stdout = io.StringIO()
-        with mock.patch("builtins.input", lambda prompt="": next(feed)):
-            with contextlib.redirect_stdout(stdout):
-                self.run_lisp(src)
-        return stdout.getvalue()
-
     def test_backtrace_at_a_breakpoint_shows_the_paused_programs_calls(self):
         self.run_with_input(
             "(define (inner) (breakpoint) 1) (define (outer) (list (inner))) (outer)",
@@ -3128,6 +3146,321 @@ class TestDebugReplBacktrace(LispTestCase):
         self.assertIn("(wrap)", text)
         self.assertIn("(boom)", text)
         self.assertIn("Error: car: not a pair", text)
+
+
+class TestBreakpoints(LispTestCase):
+    """(break ...), (unbreak ...), and (breakpoints): stop when a procedure is called."""
+
+    def test_break_stops_at_the_call_with_the_arguments_bound(self):
+        text = self.run_with_input("(define (f x) (* x 2)) (break f) (f 5)", ["x", "(continue)"])
+        self.assertIn("--- break: entering f(5) ---", text)
+        self.assertIn("5", text.splitlines())               # typing x showed its value
+        self.assertEqual(self.result, 10)
+
+    def test_the_debug_repl_can_change_an_argument_before_the_body_runs(self):
+        self.run_with_input("(define (f x) (* x 2)) (break f) (f 5)", ["(set! x 100)", "(continue)"])
+        self.assertEqual(self.result, 200)
+
+    def test_it_stops_at_every_call_including_recursive_and_tail_calls(self):
+        text = self.run_with_input(
+            "(define (fact n acc) (if (= n 0) acc (fact (- n 1) (* n acc)))) (break fact) (fact 2 1)",
+            ["(continue)"] * 3)
+        self.assertEqual(text.count("entering fact("), 3)
+        self.assertEqual(self.result, 2)
+
+    def test_it_stops_at_calls_made_by_map_and_other_builtins(self):
+        text = self.run_with_input("(define (f x) x) (break f) (map f (list 1 2))", ["(continue)"] * 2)
+        self.assertEqual(text.count("entering f("), 2)
+
+    def test_the_breakpoint_stays_when_the_function_is_redefined(self):
+        self.run_lisp("(define (f x) x) (break f) (define (f x) (+ x 100))")
+        text = self.run_with_input("(f 1)", ["(continue)"])
+        self.assertIn("entering f(1)", text)
+        self.assertEqual(self.result, 101)
+
+    def test_a_function_made_by_define_and_lambda_can_have_a_breakpoint(self):
+        text = self.run_with_input("(define k (lambda (x) x)) (break k) (k 3)", ["(continue)"])
+        self.assertIn("entering k(3)", text)
+
+    def test_a_condition_makes_it_stop_only_when_it_is_true(self):
+        text = self.run_with_input("(define (f x) x) (break f '(> x 5)) (list (f 1) (f 9))", ["(continue)"])
+        self.assertEqual(text.count("entering f("), 1)
+        self.assertIn("entering f(9)", text)
+
+    def test_a_condition_that_fails_is_an_error(self):
+        self.run_lisp("(define (f x) x) (break f '(> x no-such-variable))")
+        self.assertLispError("(f 1)", "unbound symbol")
+
+    def test_break_takes_the_procedure_a_symbol_or_a_string(self):
+        self.run_lisp("(define (f x) x) (define (g x) x) (define (h x) x)")
+        self.assertShows("(break f)", "f")
+        self.assertShows("(break 'g)", "g")
+        self.assertShows('(break "h")', "h")
+        self.assertShows("(breakpoints)", "((f) (g) (h))")
+
+    def test_breakpoints_lists_each_with_its_condition(self):
+        self.run_lisp("(define (f x) x) (define (g x) x) (break f) (break g '(> x 5))")
+        self.assertShows("(breakpoints)", "((f) (g (> x 5)))")
+
+    def test_break_again_replaces_the_condition(self):
+        self.run_lisp("(define (f x) x) (break f '(> x 5)) (break f)")
+        self.assertShows("(breakpoints)", "((f))")
+
+    def test_unbreak_removes_one_breakpoint_or_all_of_them(self):
+        self.run_lisp("(define (f x) x) (define (g x) x) (break f) (break g)")
+        self.run_lisp("(unbreak f)")
+        self.assertShows("(breakpoints)", "((g))")
+        self.run_lisp("(break f) (unbreak)")
+        self.assertShows("(breakpoints)", "()")
+        self.run_with_input("(f 1) (g 1)", [])              # no stops: there's no input to answer one
+        self.run_lisp("(unbreak 'never-set)")              # removing what isn't there is fine
+        self.assertLispError("(unbreak 'f 'g)", "at most one argument")
+
+    def test_debug_function_and_undebug_function_are_other_names_for_break_and_unbreak(self):
+        self.run_lisp("(define (f x) x) (debug-function f)")
+        self.assertShows("(breakpoints)", "((f))")
+        self.run_lisp("(undebug-function f)")
+        self.assertShows("(breakpoints)", "()")
+
+    def test_a_name_that_is_not_defined_yet_gets_a_note_but_the_breakpoint_applies_later(self):
+        self.assertShows("(break 'later)", "later")
+        self.assertIn("no function named later is defined yet", self.printed())
+        text = self.run_with_input("(define (later x) x) (later 1)", ["(continue)"])
+        self.assertIn("entering later(1)", text)
+
+    def test_break_rejects_builtins_macros_unnamed_procedures_and_other_values(self):
+        self.run_lisp("(defmacro m (x) x)")
+        self.assertLispError("(break car)", "built-in")
+        self.assertLispError("(break m)", "a macro can't have a breakpoint")
+        self.assertLispError("(break (lambda (x) x))", "has no name")
+        self.assertLispError("(break 5)", "expected a procedure or its name")
+
+    def test_a_stop_inside_a_stop_works_when_a_broken_function_is_called_from_the_repl(self):
+        text = self.run_with_input("(define (f x) (* x 2)) (define (g y) y) (break f) (break g) (f 1)",
+                                   ["(g 7)", "(continue)", "(continue)"])
+        self.assertIn("entering g(7)", text)
+        self.assertEqual(self.result, 2)
+        self.assertIsNone(lisp_core.current_pause())
+
+
+class TestDebugHook(LispTestCase):
+    """(set-debug-hook! ...): a procedure that decides what happens at a stop."""
+
+    def test_a_hook_is_called_with_the_kind_the_name_and_the_arguments(self):
+        self.run_lisp("(define log '()) (define (f x y) (+ x y))"
+                      "(set-debug-hook! (lambda (kind name args) (set! log (cons (list kind name args) log))))"
+                      "(break f)")
+        self.assertShows("(f 1 2)", "3")                   # the hook returned, so the program carried on
+        self.assertShows("log", "((break f (1 2)))")
+
+    def test_a_hook_decides_to_open_the_debug_repl_by_calling_it(self):
+        text = self.run_with_input(
+            "(define (f x) (* x 2)) (break f)"
+            "(set-debug-hook! (lambda (kind name args) (if (> (car args) 5) (debug-repl))))"
+            "(list (f 1) (f 9))",
+            ["x", "(continue)"])
+        self.assertEqual(text.count("debug REPL"), 1)         # for (f 9) only
+        self.assertIn("9", text.splitlines())               # x, typed in the REPL
+        self.assertEqual(lisp_core.to_string(self.result), "(2 18)")
+
+    def test_a_hook_sees_breakpoint_forms_with_their_message(self):
+        self.run_lisp("(define log '())"
+                      "(set-debug-hook! (lambda (kind name args) (set! log (list kind name args))))"
+                      "(define (h z) (breakpoint (list \"z is\" z)) z)")
+        self.assertShows("(h 3)", "3")
+        self.assertShows("log", '(breakpoint ("z is" 3) ())')
+        self.run_lisp("(breakpoint)")
+        self.assertShows("log", "(breakpoint () ())")
+
+    def test_a_hook_that_does_nothing_silences_every_breakpoint(self):
+        self.run_with_input("(set-debug-hook! (lambda (k n a) '()))"
+                            "(define (f x) (breakpoint) x) (break f) (f 4)", [])
+        self.assertEqual(self.result, 4)
+
+    def test_set_debug_hook_returns_the_previous_hook_and_can_remove_it(self):
+        self.assertShows("(debug-hook)", "()")
+        self.assertShows("(set-debug-hook! (lambda (k n a) 1))", "()")
+        self.assertShows("(procedure? (debug-hook))", "#t")
+        self.run_lisp("(define first-hook (debug-hook))")
+        self.assertShows("(eq? (set-debug-hook! (lambda (k n a) 2)) first-hook)", "#t")
+        self.run_lisp("(set-debug-hook! '())")
+        self.assertShows("(debug-hook)", "()")
+
+    def test_the_hook_must_be_a_procedure(self):
+        self.assertLispError("(set-debug-hook! 5)", "expected a procedure")
+
+    def test_calls_the_hook_makes_do_not_stop_again(self):
+        self.run_lisp("(define count 0) (define (helper x) x) (define (f x) x) (break helper) (break f)"
+                      "(set-debug-hook! (lambda (k n a) (set! count (+ count 1)) (helper 1)))")
+        self.run_lisp("(f 1)")
+        self.assertShows("count", "1")
+        self.run_lisp("(helper 2)")                        # outside the hook, it stops again
+        self.assertShows("count", "2")
+
+    def test_a_hook_can_leave_the_computation_with_throw(self):
+        self.run_lisp("(define (f x) x) (break f) (set-debug-hook! (lambda (k n a) (throw 'out 'thrown)))")
+        self.assertShows("(catch 'out (list (f 1) 'not-reached))", "thrown")
+        self.assertIsNone(lisp_core.current_pause())
+        self.assertFalse(lisp_core.debug_state.hook_running)
+        self.run_lisp("(set-debug-hook! '()) (unbreak)")
+        self.assertShows("(f 2)", "2")                      # the debugger is back to normal
+
+    def test_an_error_in_the_hook_is_an_error_of_the_program(self):
+        self.run_lisp("(define (f x) x) (break f) (set-debug-hook! (lambda (k n a) (error \"hook failed\")))")
+        self.assertLispError("(f 1)", "hook failed")
+        self.assertIsNone(lisp_core.current_pause())
+        self.assertFalse(lisp_core.debug_state.hook_running)
+
+    def test_debug_repl_and_locals_need_a_stop(self):
+        self.assertLispError("(debug-repl)", "isn't stopped anywhere")
+        self.assertLispError("(locals)", "isn't stopped anywhere")
+
+    def test_locals_lists_the_variables_innermost_first_without_globals(self):
+        self.run_lisp("(define global-one 1) (define log '())"
+                      "(set-debug-hook! (lambda (k n a) (set! log (locals))))"
+                      "(define (f x) (let ((y 2)) (breakpoint) y))")
+        self.run_lisp("(f 5)")
+        self.assertShows("log", "((y . 2) (x . 5))")
+
+    def test_locals_shows_only_the_innermost_of_two_variables_with_one_name(self):
+        self.run_lisp("(define log '())"
+                      "(set-debug-hook! (lambda (k n a) (set! log (locals))))"
+                      "(define (f x) (let ((x 9)) (breakpoint)))")
+        self.run_lisp("(f 1)")
+        self.assertShows("log", "((x . 9))")
+
+    def test_locals_leaves_out_the_evaluators_own_hidden_names(self):
+        self.run_lisp("(define log '())"
+                      "(set-debug-hook! (lambda (k n a) (set! log (locals))))"
+                      "(define (f xs) (dolist (x xs) (breakpoint)))")
+        self.run_lisp("(f (list 10 20))")
+        self.assertShows("log", "((x . 20) (xs 10 20))")
+
+    def test_locals_includes_the_scope_of_an_enclosing_function(self):
+        self.run_lisp("(define log '())"
+                      "(set-debug-hook! (lambda (k n a) (set! log (map car (locals)))))"
+                      "(define (outer a) (define (inner b) (breakpoint) b) (inner (+ a 1)))")
+        self.run_lisp("(outer 1)")
+        self.assertShows("log", "(b a inner)")
+
+    def test_the_debug_repl_cuts_off_a_very_long_result(self):
+        text = self.run_with_input("(breakpoint)", ["(vector-range 5000)", "(continue)"])
+        self.assertIn("more characters]", text)
+        self.assertLess(len(text), 3000)
+
+
+class TestAbort(LispTestCase):
+    """(abort): abandon the computation and go back to the top level."""
+
+    def test_abort_is_not_caught_by_catch_error_but_unwind_protect_cleans_up(self):
+        self.run_lisp("(define cleaned #f)")
+        self.assertAborts("(unwind-protect (catch-error (abort) (e) 'caught) (set! cleaned #t))")
+        self.assertShows("cleaned", "#t")
+
+    def test_abort_typed_in_the_debug_repl_abandons_the_whole_computation(self):
+        self.run_lisp("(define (f x) (* x 2)) (define (g y) (list (f y) 'not-reached)) (break f)")
+        with self.assertRaises(lisp_core.LispAbort):
+            self.run_with_input("(g 5)", ["(abort)"])
+        self.assertIsNone(lisp_core.current_pause())        # the debugger is no longer stopped
+        self.assertFalse(lisp_core.debug_state.hook_running)
+        self.assertEqual(lisp_core._active_stacks, [])      # no evaluator is left half-run
+        self.run_lisp("(unbreak)")
+        self.assertShows("(g 5)", "(10 not-reached)")       # and the interpreter works as before
+
+    def test_abort_called_by_a_hook(self):
+        self.run_lisp("(define (f x) x) (break f) (set-debug-hook! (lambda (k n a) (abort)))")
+        self.assertAborts("(f 1)")
+        self.assertIsNone(lisp_core.current_pause())
+        self.assertFalse(lisp_core.debug_state.hook_running)
+
+    def test_abort_ends_a_stop_inside_a_stop(self):
+        self.run_lisp("(define (f x) x) (define (g y) y) (break f) (break g)")
+        with self.assertRaises(lisp_core.LispAbort):
+            self.run_with_input("(f 1)", ["(g 2)", "(abort)"])
+        self.assertIsNone(lisp_core.current_pause())
+
+
+class TestBreakOnError(LispTestCase):
+    """(break-on-error #t): stop where an error happens."""
+
+    RISKY = ("(define (risky a) (let ((c (+ a 1))) (car c)))"
+             "(define (outer n) (list (risky n)))")
+
+    def test_it_is_off_until_turned_on_and_returns_the_previous_setting(self):
+        self.assertShows("(break-on-error)", "#f")
+        self.assertShows("(break-on-error #t)", "#f")
+        self.assertShows("(break-on-error)", "#t")
+        self.assertShows("(break-on-error #f)", "#t")
+        self.assertLispError("(break-on-error #t #t)", "at most one argument")
+
+    def test_nothing_stops_for_an_error_while_it_is_off(self):
+        self.run_lisp(self.RISKY + "(set-debug-hook! (lambda (k n a) (error \"stopped\")))")
+        self.assertLispError("(outer 1)", "car: not a pair")
+
+    def test_it_stops_where_the_error_happened_with_the_variables_there(self):
+        self.run_lisp(self.RISKY + "(define seen '())"
+                      "(set-debug-hook! (lambda (k n a) (set! seen (list k n (locals)))))"
+                      "(break-on-error #t)")
+        self.assertLispError("(outer 1)", "car: not a pair: 2")      # the error still goes on
+        self.assertShows("seen", '(error "car: not a pair: 2" ((c . 2) (a . 1)))')
+
+    def test_it_leaves_alone_an_error_that_catch_error_will_handle(self):
+        self.run_lisp(self.RISKY + "(define count 0)"
+                      "(set-debug-hook! (lambda (k n a) (set! count (+ count 1))))"
+                      "(break-on-error #t)")
+        self.assertShows("(catch-error (outer 1) (e) 'handled)", "handled")
+        self.assertShows("count", "0")
+        self.assertLispError("(outer 1)", "car: not a pair")
+        self.assertShows("count", "1")
+
+    def test_an_error_in_a_catch_error_handler_is_not_protected_by_it(self):
+        self.run_lisp("(define count 0)"
+                      "(set-debug-hook! (lambda (k n a) (set! count (+ count 1))))"
+                      "(break-on-error #t)")
+        self.assertLispError("(catch-error (car 1) (e) (cdr 2))", "cdr: not a pair")
+        self.assertShows("count", "1")                      # only the handler's error stopped
+
+    def test_it_stops_once_as_the_error_passes_out_of_nested_evaluations(self):
+        self.run_lisp("(define count 0) (define seen '())"
+                      "(set-debug-hook! (lambda (k n a) (set! count (+ count 1)) (set! seen (locals))))"
+                      "(define (f xs) (map (lambda (x) (car x)) xs))"
+                      "(break-on-error #t)")
+        self.assertLispError("(f (list 1))", "car: not a pair")
+        self.assertShows("count", "1")
+        self.assertShows("seen", "((x . 1) (xs 1))")        # the callback's scope, where it happened, then f's
+
+    def test_a_python_error_from_a_builtin_stops_too(self):
+        self.run_lisp("(define count 0) (set-debug-hook! (lambda (k n a) (set! count (+ count 1))))"
+                      "(break-on-error #t)")
+        self.assertRaisesFromLisp(ZeroDivisionError, "(/ 1 0)")
+        self.assertShows("count", "1")
+
+    def test_the_debug_repl_for_an_error_can_be_left_with_continue_and_the_error_goes_on(self):
+        self.run_lisp("(break-on-error #t)")
+        with self.assertRaises(lisp_core.LispError):
+            self.run_with_input("(car 5)", ["(continue)"])
+        text = self.console.getvalue()
+        self.assertIn("--- error: car: not a pair: 5 ---", text)
+        self.assertIn("(continue) lets the error go on", text)
+
+    def test_an_error_typed_in_the_debug_repl_is_reported_and_does_not_stop_again(self):
+        self.run_lisp("(break-on-error #t)")
+        text = self.run_with_input("(define (f x) (breakpoint) x) (f 1)", ["(car 5)", "(continue)"])
+        self.assertIn("Error: car: not a pair: 5", text)
+        self.assertEqual(text.count("--- error:"), 0)
+        self.assertEqual(self.result, 1)
+
+    def test_a_hook_can_abort_at_an_error(self):
+        self.run_lisp("(set-debug-hook! (lambda (k n a) (abort))) (break-on-error #t)")
+        self.assertAborts("(car 5)")
+        self.assertIsNone(lisp_core.current_pause())
+
+    def test_running_out_of_stack_is_not_debugged(self):
+        self.run_lisp("(define count 0) (set-debug-hook! (lambda (k n a) (set! count (+ count 1))))"
+                      "(break-on-error #t)")
+        self.assertRaisesFromLisp(RecursionError, "(eval '(define (loop-forever) (+ 1 (eval '(loop-forever)))))"
+                                                  " (eval '(loop-forever))")
+        self.assertShows("count", "0")
 
 
 class TestKernelErrorReply(unittest.TestCase):
@@ -3150,6 +3483,13 @@ class TestKernelErrorReply(unittest.TestCase):
                          ["Lisp traceback (most recent call last):", "  (f 1)", "LispError: boom"])
         self.assertEqual(self.sent[0][0], "error")
         self.assertEqual(self.sent[0][1]["traceback"], reply["traceback"])
+
+    def test_do_execute_reports_an_abort_as_an_error_reply(self):
+        import lisp_jupyter
+        lisp_jupyter.get_env()
+        reply = self.kernel.do_execute("(abort)", silent=False)
+        self.assertEqual(reply["status"], "error")
+        self.assertEqual(reply["ename"], "Aborted")
 
     def test_error_reply_without_a_trace_is_just_the_message(self):
         self.assertEqual(self.kernel._error_reply("LispError", "boom")["traceback"], ["LispError: boom"])
@@ -3305,6 +3645,44 @@ class TestCommandLineTracing(unittest.TestCase):
         self.assertIn("> f", r.stdout)
 
 
+class TestDebuggerCommandLine(unittest.TestCase):
+    """What (abort) does at each top level of the console interpreter."""
+
+    def test_abort_in_the_repl_goes_back_to_the_prompt_and_the_session_carries_on(self):
+        r = run_cli("-", stdin="(define (f x) (* x 2))\n(break f)\n(f 5)\n(abort)\n(+ 1 2)\n(exit)\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--- break: entering f(5) ---", r.stdout)
+        self.assertRegex(r.stdout, r"Aborted -- back at the top level\.\nlisp> 3\n")
+
+    def test_the_repl_stop_shows_the_variables_and_can_be_resumed(self):
+        r = run_cli("-", stdin="(define (f x) (* x 2))\n(break f)\n(f 5)\n(locals)\n(continue)\n(exit)\n")
+        self.assertIn("((x . 5))", r.stdout)
+        self.assertIn("--- f: resuming ---", r.stdout)
+        self.assertRegex(r.stdout, r"resuming ---\n10\n")
+
+    def test_abort_in_a_script_ends_the_run_with_status_1(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "s.lsp")
+            with open(path, "w") as f:
+                f.write('(define (f x) (* x 2)) (break f) (display "before ") (f 5) (display "after")')
+            r = run_cli(path, stdin="(abort)\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("before", r.stdout)
+        self.assertNotIn("after", r.stdout)
+        self.assertIn("Aborted.", r.stderr)
+
+    def test_a_debug_hook_works_in_a_script_with_no_console_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "s.lsp")
+            with open(path, "w") as f:
+                f.write("(define (f x) (* x 2))\n(break f)\n"
+                        "(set-debug-hook! (lambda (kind name args) (display (list kind name args)) (newline)))\n"
+                        "(display (f 5)) (newline)\n")
+            r = run_cli(path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "(break f (5))\n10\n")
+
+
 class TestGuiErrorReport(unittest.TestCase):
     """The GUI's log shows the same call-chain error report as the console.
     Runs in a subprocess on Qt's offscreen platform so no window ever opens
@@ -3346,6 +3724,38 @@ print(w.output_view.toPlainText())
                       failing)
         self.assertIn("> (sq 3)\n< (sq 3) => 9\n=> 9", traced)
 
+    ABORT_PROGRAM = r"""
+import sys
+sys.path.insert(0, %r)
+import lisp_gui
+if not lisp_gui.PYQT_AVAILABLE:
+    print("NO-QT"); sys.exit(0)
+from PyQt6.QtWidgets import QApplication
+app = QApplication([])
+w = lisp_gui.LispMainWindow()
+w.output_view.clear()
+w.input_edit.setPlainText("(define (f x) x) (abort) (f 1)")
+w._on_run()
+print(w.output_view.toPlainText())
+w.output_view.clear()
+w.input_edit.setPlainText("(+ 1 2)")
+w._on_run()
+print("=====")
+print(w.output_view.toPlainText())
+""" % HERE
+
+    def test_abort_in_the_gui_says_so_and_the_window_carries_on(self):
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen",
+                   LISP_INIT_FILE=os.path.join(tempfile.gettempdir(), "no-such-init.lsp"))
+        r = subprocess.run([sys.executable, "-c", self.ABORT_PROGRAM], capture_output=True, text=True,
+                           env=env, timeout=120)
+        if "NO-QT" in r.stdout:
+            self.skipTest("PyQt6/matplotlib not installed")
+        self.assertEqual(r.returncode, 0, r.stderr[-800:])
+        aborted, next_run = r.stdout.split("=====")
+        self.assertIn("Aborted.", aborted)
+        self.assertIn("=> 3", next_run)
+
 
 # ---------------------------------------------------------------------------
 # 19. The example scripts (offline ones only) still run
@@ -3367,6 +3777,7 @@ class TestExampleScripts(unittest.TestCase):
         "metaprogramming_example.lsp",
         "prepayment_demo.lsp",
         "linear_programming_example.lsp",
+        "debugging_example.lsp",
     ]
     SLOW_EXAMPLES = [
         "dolist_vectors_map_example.lsp",
@@ -3402,6 +3813,17 @@ class TestExampleScripts(unittest.TestCase):
         self.assertIn("  cmo_z                   20,000,000    7.2%", out)
         self.assertIn("    6.00     6,320,000   6.32%", out)
         self.assertIn("limited to 4 years: lp-solve: Problem is infeasible.", out)
+
+    def test_the_debugging_example_logs_calls_and_reports_the_error_stop(self):
+        out = self.results["debugging_example.lsp"].stdout
+        self.assertIn("   called: level-payment (200000 6.0 360)\n   called: monthly-rate (6.0)\n", out)
+        self.assertIn("   payment = 1199.1\n", out)
+        self.assertIn("The breakpoints are ((level-payment (> balance 500000)))\n"
+                      "   called: level-payment (800000 6.0 360)\n", out)
+        self.assertNotIn("called: level-payment (200000 6.0 360)\n\n2.", out)
+        self.assertIn("   stopped by an error: division by zero\n", out)
+        self.assertIn("   variables there: ((r . 0.0) (balance . 100000) (annual-percent . 0) (months . 360))\n", out)
+        self.assertIn("   result = no-payment\n", out)
 
     def test_the_trace_example_produces_its_documented_output(self):
         out = self.results["trace_example.lsp"].stdout
@@ -3441,7 +3863,8 @@ class TestExampleScripts(unittest.TestCase):
 
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
-    "breakpoint", "fred-series", "tastytrade", "sofr-", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
+    "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
+    "fred-series", "tastytrade", "sofr-", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv", "display-columns",
     "debug-function", "input", "exit", "load-init", "http-get", "http-clear-cache",
 )
@@ -3510,6 +3933,13 @@ class TestReferenceDocExamples(unittest.TestCase):
 
     def test_every_documented_result_is_what_the_interpreter_returns(self):
         self.addCleanup(lisp_core.set_verbose_level, 0)     # some doc examples turn tracing on
+        self.addCleanup(lisp_core.debug_state.reset)        # ...and set breakpoints and hooks
+        # An example that stops the program and opens the debug REPL would wait
+        # for the keyboard. Make that a failure instead.
+        patcher = mock.patch("builtins.input", side_effect=AssertionError(
+            "a doc example opened the debug REPL"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         with open(REFERENCE_DOC, encoding="utf-8") as f:
             blocks = re.findall(r"```lisp\n(.*?)```", f.read(), re.S)
         self.assertGreater(len(blocks), 100, "found no lisp code blocks in the reference doc")
@@ -3534,6 +3964,7 @@ class TestReferenceDocExamples(unittest.TestCase):
                 continue
             env = lisp_builtins.make_global_env(output=lambda s: None)
             lisp_core.run_file(lisp_builtins.MACROS_INIT_FILE, env)     # while, do
+            lisp_core.debug_state.reset()       # breakpoints belong to the whole process, not one block
             if use_alarm:
                 signal.alarm(10)
             try:

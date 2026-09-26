@@ -23,17 +23,17 @@ import sys
 import numpy as np
 
 from lisp_core import (
-    Env, Keyword, LispDate, LispError, LispHashTable, LispString, LispStruct,
+    Env, Keyword, LispAbort, LispDate, LispError, LispHashTable, LispString, LispStruct,
     LispVector, Macro, NIL, Pair, Procedure, Symbol,
     _date_from_pydate, _lisp_scalar, _vector_widen_for,
-    apply_proc, check_numbers, check_vector_elements, debug_repl, eval_body,
-    eval_default, expand_macro, gensym, get_verbose_level, is_true,
+    apply_proc, check_numbers, check_vector_elements, expand_macro, gensym, get_verbose_level, is_true,
     list_to_pairs, pairs_to_list, parse, pretty_print_string,
     reconstruct_macro_source, reconstruct_procedure_source, run_file, seval,
     set_verbose_level, throw_to, to_display_string, to_string,
 )
 import lisp_charts
 import lisp_csv
+import lisp_debug
 import lisp_fred
 import lisp_http
 import lisp_regression
@@ -974,25 +974,20 @@ def make_eval_builtins(env, out):
 # The small convenience macros every environment starts with, so you can
 # write the NAME directly -- (pretty-print-function my-func) -- instead of
 # quoting it. They're ordinary defmacro macros; defined-macros leaves them
-# out, so it lists only the macros you wrote yourself.
+# out, so it lists only the macros you wrote yourself. (debug-function and
+# undebug-function are older names for break and unbreak.)
 BOOTSTRAP_MACROS = {
     "pretty-print-function": "(defmacro pretty-print-function (name) `(pretty-print-function-named ',name ,name))",
     "pretty-print-macro": "(defmacro pretty-print-macro (name) `(pretty-print-macro-named ',name ,name))",
-    "debug-function": "(defmacro debug-function (name) `(debug-function-named ',name))",
-    "undebug-function": "(defmacro undebug-function (name) `(undebug-function-named ',name))",
+    "debug-function": "(defmacro debug-function (name) `(break ',name))",
+    "undebug-function": "(defmacro undebug-function (name) `(unbreak ',name))",
 }
 
 
 def make_introspection_builtins(env, out):
     """pretty-print, pretty-print-function-named, pretty-print-macro-named,
-    defined-functions, defined-macros, bound-variables,
-    debug-function-named, and undebug-function-named -- each looks at (or
-    changes) the top-level environment `env`."""
-
-    # State for debug-function/undebug-function, kept per environment so
-    # separate sessions in the same process don't share it.
-    debug_call_stack = []      # names of debug-function-wrapped calls currently in progress
-    debug_originals = {}       # name -> the original Procedure, so undebug-function can restore it
+    defined-functions, defined-macros, and bound-variables -- each looks at
+    the top-level environment `env`."""
 
     def lisp_pretty_print(x):
         """(pretty-print x) -- print x spread out, one element per line (see
@@ -1007,8 +1002,6 @@ def make_introspection_builtins(env, out):
         return NIL
 
     def lisp_pretty_print_function_named(name, value):
-        if not isinstance(value, Procedure) and name in debug_originals:
-            value = debug_originals[name]  # show the real definition even while debug-wrapped
         if not isinstance(value, Procedure):
             raise LispError("pretty-print-function: %r is not a user-defined function" % (name,))
         out.write(pretty_print_string(reconstruct_procedure_source(value, name)) + "\n")
@@ -1041,42 +1034,6 @@ def make_introspection_builtins(env, out):
             if not isinstance(env[name], (Procedure, Macro)) and not callable(env[name])
         ])
 
-    def debug_function_named(name):
-        """(debug-function name) -- from now on, every call to the function opens
-        a debug REPL (see debug_repl) before its body runs, with the arguments
-        already bound, so you can look at them or set! them, then (continue).
-        It also prints the chain of debug-function calls in progress; type
-        (backtrace) for the full chain of calls."""
-        proc = env.get(name)
-        if not isinstance(proc, Procedure):
-            raise LispError("debug-function: %r is not a user-defined function" % (name,))
-        debug_originals[name] = proc
-
-        def wrapper(*args):
-            debug_call_stack.append(name)
-            try:
-                new_env = Env(proc.params, list(args), proc.env, rest_param=proc.rest_param,
-                              keyword_specs=proc.keyword_specs, default_eval=eval_default)
-                arg_strs = ", ".join(to_string(a) for a in args)
-                chain = " -> ".join(str(n) for n in debug_call_stack)
-                print("--- debug-function: entering %s(%s) ---" % (name, arg_strs))
-                print("    call chain: %s" % chain)
-                print("    arguments are bound in this scope -- inspect/set! them, then (continue)")
-                debug_repl(new_env, label=str(name))
-                return eval_body(proc.body, new_env, call=(proc, list(args)))
-            finally:
-                debug_call_stack.pop()
-
-        env[name] = wrapper
-        return NIL
-
-    def undebug_function_named(name):
-        """(undebug-function name) -- undo debug-function. Does nothing if the
-        function isn't being debugged."""
-        if name in debug_originals:
-            env[name] = debug_originals.pop(name)
-        return NIL
-
     return {
         "pretty-print": lisp_pretty_print,
         "pretty-print-function-named": lisp_pretty_print_function_named,
@@ -1084,8 +1041,6 @@ def make_introspection_builtins(env, out):
         "defined-functions": defined_functions,
         "defined-macros": defined_macros,
         "bound-variables": bound_variables,
-        "debug-function-named": debug_function_named,
-        "undebug-function-named": undebug_function_named,
     }
 
 
@@ -1163,6 +1118,7 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
     env.update(lisp_charts.make_chart_builtins(plot))
     env.update(make_eval_builtins(env, out))
     env.update(make_introspection_builtins(env, out))
+    env.update(lisp_debug.make_debug_builtins(env, out))
 
     # A global variable: how display-columns formats numbers (see
     # format_column_value in make_display_columns_builtin).
@@ -1192,8 +1148,8 @@ def load_init_file(env, path=None):
     """Load macros_init.lsp, then the init file (path, or LISP_INIT_FILE, or
     init.lsp), into env. Called once for each new environment, before
     anything else runs. A missing file is silently skipped. An error in one
-    is reported to stderr but doesn't stop the interpreter starting, so you
-    can still fix it."""
+    (or an (abort)) is reported to stderr but doesn't stop the interpreter
+    starting, so you can still fix it."""
     init_path = path or os.environ.get("LISP_INIT_FILE", DEFAULT_INIT_FILE)
     for startup_path in (MACROS_INIT_FILE, init_path):
         if not startup_path or not os.path.exists(startup_path):
@@ -1202,3 +1158,5 @@ def load_init_file(env, path=None):
             run_file(startup_path, env)
         except LispError as e:
             sys.stderr.write("warning: error loading init file %r: %s\n" % (startup_path, e))
+        except LispAbort:
+            sys.stderr.write("warning: init file %r was aborted\n" % (startup_path,))

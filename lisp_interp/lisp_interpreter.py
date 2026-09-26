@@ -16,8 +16,10 @@ in lisp_builtins.py).
 HOW THE CODE IS ORGANIZED
     lisp_interpreter.py   this file: the command line, console REPL, and batch mode
     lisp_core.py          data types, reader, evaluator, printer -- the language itself
+                          (and the machinery of the debugger)
     lisp_builtins.py      the general built-in procedures, and make_global_env(),
                           which puts every builtin into a new environment
+    lisp_debug.py         break, unbreak, set-debug-hook!, abort, locals, ...
     lisp_vector_math.py   arithmetic, comparisons, statistics, lags on whole vectors
     lisp_tables.py        tables: filter, sort, group, join, describe
     lisp_time_series.py   month numbers and monthly time series
@@ -53,6 +55,9 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - defstruct records with single inheritance (:include) and call-method
   - tail calls that run in constant stack space (see lisp_core.py)
   - call tracing, (verbose n), and Lisp-level stack traces on errors
+  - a debugger: (break f) stops when a procedure is called, a debug hook
+    (set-debug-hook!) decides what to do at each stop, (break-on-error #t)
+    stops where an error happens, and (abort) goes back to the top level
   - hash tables, strings, sorting, pseudo-random numbers
   - format, for numbers with commas and decimals in fixed-width fields
   - fast math and statistics on whole vectors, with NaN for missing values
@@ -71,7 +76,7 @@ import os
 import sys
 
 from lisp_core import (
-    LispError, Pair, Symbol, VERBOSE_CALLS, format_error_report,
+    LispAbort, LispError, Pair, Symbol, VERBOSE_CALLS, format_error_report,
     format_lisp_traceback, parse, run_file, seval, set_verbose_level, to_string,
 )
 from lisp_builtins import load_init_file, make_global_env
@@ -96,6 +101,8 @@ def repl(env):
                         return
                     result = seval(expr, env)
                     print(to_string(result))
+            except LispAbort:
+                print("Aborted -- back at the top level.")
             except Exception as e:
                 print(format_error_report(e), end="")
             buffer = ""
@@ -106,9 +113,14 @@ def run_script(path, env):
     reports it -- the chain of calls, then the message -- on stderr, with exit
     status 1. (Set LISP_PYTHON_TRACEBACK=1 to see Python's traceback of the
     interpreter too.) Any other exception is a bug in the interpreter: the
-    Lisp call chain is printed, then Python's traceback."""
+    Lisp call chain is printed, then Python's traceback. An (abort) ends the
+    run, with exit status 1."""
     try:
         run_file(path, env)
+    except LispAbort:
+        sys.stdout.flush()
+        sys.stderr.write("Aborted.\n")
+        sys.exit(1)
     except LispError as e:
         if os.environ.get("LISP_PYTHON_TRACEBACK"):
             sys.stderr.write(format_lisp_traceback(e))

@@ -7,7 +7,7 @@ AUC, linear programming, SQLite, CSV files, downloads from any web API, FRED eco
 real tastytrade broker data (futures and equity option chains,
 futures-curve rich/cheap and calendar-spread carry analysis), and XY
 charts — plus dates, macros, struct inheritance, hash tables, `catch-error`
-error handling, a built-in debugger, and an optional PyQt6 GUI. **Requires `numpy`**, unlike every other dependency mentioned in
+error handling, a debugger (breakpoints, a debug hook), and an optional PyQt6 GUI. **Requires `numpy`**, unlike every other dependency mentioned in
 this document (PyQt6, matplotlib, pandas, tastytrade), which are all
 optional, feature-specific extras — numpy backs the vector datatype itself
 (see "Vectors", below), so it's needed for even the plainest console/
@@ -446,10 +446,11 @@ The optional `message` argument is itself evaluated in that same caller's
 environment and printed before the REPL opens — a plain string (`(breakpoint
 "entering f...")`) works, but so does any expression whose *value* is worth
 seeing right away (`(breakpoint (list "x=" x))`), without needing a separate
-`(display ...)` call right before the breakpoint. See "Introspection /
-debugging", below, for the full writeup, including `debug-function` (which
-inserts this automatically into an existing function) and the GUI limitation
-(console/batch mode only).
+`(display ...)` call right before the breakpoint. If a debug hook is
+registered, the hook is called instead of the REPL opening, with the kind
+`breakpoint` and the message. See "Debugging", below, for the hook, for
+`(break f)` (which stops at every call of a procedure without editing it),
+for `(abort)`, and for the GUI limitation (the REPL is console-only).
 
 #### `(backtrace)`
 Prints the chain of procedure calls in progress right now, without needing
@@ -4756,10 +4757,8 @@ visually hunting down a paren-matching mistake in a function definition.
 Because a `Procedure` value stores its already-parsed parameter list and
 body, this reconstruction is semantically faithful, but **not** a
 byte-exact copy of what you originally typed: the reader discards comments
-and doesn't remember your original whitespace/formatting. If `name` is
-currently wrapped by `debug-function`, shows the original (pre-wrap)
-definition, not the wrapper. Raises `LispError` if `name` isn't a
-user-defined function.
+and doesn't remember your original whitespace/formatting. Raises
+`LispError` if `name` isn't a user-defined function.
 
 ```lisp
 (define (square n) (* n n))
@@ -4857,63 +4856,292 @@ data: numbers, strings, lists, vectors, dates, and so on.
 ```
 
 #### `(breakpoint [message])`
-A special form, not a function — see "Special forms", above, for the full
-explanation of why. Repeated here for discoverability: opens a nested,
-blocking debug REPL right where it appears, with the paused code's own
-local variables live and modifiable in that REPL; type `(continue)` to
-resume. Console/batch mode only (see below). The optional `message` is
-evaluated in the paused call's own environment and printed before the REPL
-opens, so a breakpoint hit deep in a loop or recursive call can identify
-itself, or show a value, without a separate `(display ...)` first.
+A special form: see "Special forms", above. It stops the program right where
+it's written; see "Debugging", below, for what a stop does.
 
-```lisp
-(define (f x)
-  (breakpoint)                 ; opens a debug REPL with x bound to 5
-  (* x 2))
-(f 5)                          ; type (continue) at the prompt to resume, => 10
+### Debugging
 
-(define (g x)
-  (breakpoint (list "entering g, x =" x))   ; prints ("entering g, x =" 7) first
-  (* x 3))
-(g 7)
+A running program can be **stopped**, to look at its variables, change
+them, and see how it got there. There are three ways to stop it:
+
+- **`(breakpoint)`**, written in your code, stops right where it is.
+- **`(break f)`** stops each time the procedure `f` is called, without
+  touching `f`'s code.
+- **`(break-on-error #t)`** stops where an error happens, while the calls
+  it's about to leave are still there to look at.
+
+**What a stop does.** If no debug hook is registered, the **debug REPL**
+opens. If one is (see `set-debug-hook!`), the hook is called instead, and
+*it* decides: it can print something, look around with `(locals)`, and then
+call `(debug-repl)` to open the debug REPL, call `(abort)` to give up, or
+just return, and the program carries on. A hook needs no console, so hooks
+work in scripts, in Jupyter, and in the GUI.
+
+**The debug REPL** is a prompt, opened in the middle of the program. What
+you type is evaluated in the scope where the program stopped: for a
+procedure that's stopped by `break`, the scope where its parameters are
+bound to the arguments of this call, so you can look at them and change
+them with `set!`. These commands are also there:
+
+| Type | What happens |
+|---|---|
+| `(continue)`, `(exit)`, or Ctrl-D | The program resumes. (At a stop for an error, that lets the error go on its way.) |
+| `(abort)` | The whole computation is abandoned, back to the top level. |
+| `(locals)` | The variables you can see, with their values. |
+| `(backtrace)` | The chain of calls that led here (see "Verbose mode and stack traces"). |
+| anything else | Evaluated, and the result printed (cut off after 2,000 characters, so a big vector doesn't flood the console). An error is reported, and you stay at the prompt. |
+
+A session at the console:
+
+```
+lisp> (define (payment balance rate) (* balance (/ rate 12)))
+payment
+lisp> (break payment)
+payment
+lisp> (payment 1000 0.06)
+--- break: entering payment(1000, 0.06) ---
+--- payment: debug REPL -- (continue) resumes, (abort) abandons the computation, (locals) shows the variables ---
+payment> (locals)
+((balance . 1000) (rate . 0.06))
+payment> (set! rate 0.12)
+()
+payment> (continue)
+--- payment: resuming ---
+10.0
 ```
 
-#### `(debug-function name)`
-Wraps the user-defined function currently bound to `name` so that every
-future call opens the same blocking debug REPL `breakpoint` uses — but
-automatically, on every call, without editing the function's own source.
-The debug REPL opens in an environment where the function's real
-parameters for that specific call are already bound to the actual argument
-values, so you can inspect them (or, via `set!`, change them) before
-typing `(continue)` to actually run the body with whatever's currently in
-scope. Also prints the chain of `debug-function`-wrapped calls currently
-in progress, as a lightweight "how was this called, and from where" trace
-— just of the specific functions you've asked to watch. For the *full*
-chain of procedure calls that led to the paused call, type `(backtrace)`
-at the debug prompt (see "Verbose mode and stack traces", below). Raises
-`LispError` if `name` isn't a user-defined
-function. Saves the original definition internally so `undebug-function`
-can restore it — while wrapped, `(pretty-print-function name)` still shows
-the real definition, and `(defined-functions)` temporarily stops listing
-`name` (it's a plain wrapper, not a `Procedure`, while wrapped).
+The rate was changed from 0.06 to 0.12 at the stop, so the result is 10.0,
+not 5.0. Calling a `break`-ed procedure from the debug REPL stops again,
+one level deeper; `(continue)` returns to the stop above, and `(abort)`
+ends them all.
 
-```lisp
-(define (square n) (* n n))
-(debug-function square)
-(square 5)    ; opens a debug REPL with n bound to 5; type (continue) to proceed
-(undebug-function square)
+`debugging_example.lsp` is a worked example that uses a hook, so it needs no
+console: it logs calls, stops on a condition, and looks at the variables
+where an error happened. Run it from `lisp_interp/`:
+
+```bash
+python3 lisp_interpreter.py debugging_example.lsp
 ```
 
-#### `(undebug-function name)`
-Restores the original, un-wrapped definition of `name` that
-`debug-function` saved. Does nothing if `name` was never wrapped.
+#### `(break procedure-or-name [condition])`
+Sets a breakpoint: from now on, the program stops each time a procedure
+with this name is called, after its parameters are bound to the arguments
+and before its body runs. Give the procedure itself or its name, as a
+symbol or a string. `(break f)` and `(break 'f)` do the same thing, because
+`(break f)` gets the procedure `f` and uses its name. Returns the name.
 
-**Console/batch mode only, for both `breakpoint` and `debug-function`:**
-the debug REPL reads from the real console via `input()`, the same as the
-top-level REPL. Triggering it from the GUI will try to read from whatever
-stdin the GUI process has (usually none, or the terminal it was launched
-from) rather than opening any kind of dialog in the GUI window itself —
-there's no GUI-integrated debugger, just this console one.
+```lisp
+(define (payment balance rate) (* balance (/ rate 12)))
+(break payment)                    ; => payment
+(break 'payment)                   ; => payment  (the same breakpoint)
+(breakpoints)                      ; => ((payment))
+```
+
+- **It goes on the name.** Every procedure called `payment` stops,
+  including one you define later, a local one, and a new definition that
+  replaces the old one. Every call stops: recursive calls, tail calls, and
+  calls made by `map` and other functions that take a procedure. If the name
+  isn't a global function yet, `break` says so in a note, and the breakpoint
+  is set anyway.
+- **A condition.** The optional second argument is an expression, evaluated
+  in the procedure's scope, so it can use the parameters by name. The program
+  stops only when it's true. It's quoted, because `break` is a function and
+  the expression is to be evaluated later, at each call. An error in the
+  condition is an error of the program.
+
+```lisp
+(define (payment balance rate) (* balance (/ rate 12)))
+(break payment)
+(break payment '(> balance 5000))  ; => payment  (only for big loans; this replaces the old breakpoint)
+(breakpoints)                      ; => ((payment (> balance 5000)))
+```
+
+- **Not for everything.** Only functions you define can have breakpoints:
+  `(break car)` and a macro are errors, and so is a procedure with no name
+  (a `lambda` that was never `define`d).
+- **The stop** prints `--- break: entering payment(1000, 0.06) ---` and opens
+  the debug REPL, or, if there's a hook, calls it with the kind `break`.
+
+#### `(unbreak [procedure-or-name])`
+Removes the breakpoint on a procedure. `(unbreak)` with no argument removes
+every breakpoint. Removing one that isn't there does nothing. Returns `'()`.
+
+```lisp
+(define (payment balance rate) (* balance (/ rate 12)))
+(break payment)
+(unbreak payment)
+(breakpoints)                      ; => ()
+```
+
+#### `(breakpoints)`
+The breakpoints that are set, as a list with one entry for each: `(name)`,
+or `(name condition)` if it has a condition. It has the same shape as the
+`break` call that made it.
+
+```lisp
+(define (f x) x)
+(define (g x) x)
+(break f)
+(break g '(> x 5))
+(breakpoints)                      ; => ((f) (g (> x 5)))
+```
+
+#### `(set-debug-hook! procedure)`, `(debug-hook)`
+`(set-debug-hook! procedure)` registers a **debug hook**: a procedure that's
+called at every stop, in place of opening the debug REPL. It takes three
+arguments:
+
+| Argument | For `break` | For `breakpoint` | For `error` |
+|---|---|---|---|
+| `kind` | the symbol `break` | `breakpoint` | `error` |
+| `name` | the procedure's name | the message given to `(breakpoint message)`, or `'()` | the error message, as a string |
+| `args` | the list of the arguments | `'()` | `'()` |
+
+`kind` is a symbol, so compare it with `eq?`: `(eq? kind 'error)`. The
+hook's return value is ignored. What it does decides what happens next:
+
+- **Just return** (after printing or counting something, say), and the
+  program carries on. A hook that only prints is a way to trace particular
+  procedures with your own output.
+- **`(debug-repl)`** opens the debug REPL, at this stop.
+- **`(abort)`** abandons the computation. **`(throw tag value)`** leaves it
+  for a `catch` you wrote, so the program can recover.
+- Inside the hook, **`(locals)`** gives the variables where the program
+  stopped, and `(backtrace)` shows the calls that led there.
+
+`(set-debug-hook! '())` removes the hook. `set-debug-hook!` returns the hook
+that was there before (or `'()`), so you can put it back, and `(debug-hook)`
+returns the current one. Something that isn't a procedure is an error.
+
+```lisp
+(define (payment balance rate) (* balance (/ rate 12)))
+(define log '())
+(define (note kind name args)
+  (set! log (cons (list kind name args) log)))
+(set-debug-hook! note)
+(break payment)
+(payment 1000 0.06)                ; => 5.0  (the hook returned, so the program went on)
+log                                ; => ((break payment (1000 0.06)))
+```
+
+A hook that decides whether to open the debug REPL, here only for a large
+loan:
+
+```
+(set-debug-hook!
+  (lambda (kind name args)
+    (display (format "called {} {}\n" name args))
+    (if (> (car args) 5000)
+        (debug-repl))))
+```
+
+Two more things to know. **Calls the hook itself makes never stop**, so a
+hook can call a procedure that has a breakpoint without setting off
+itself; the debug REPL is different, because you may want to stop there.
+And **an error in the hook is an error of the program**, reported like any
+other.
+
+A hook that does nothing, `(set-debug-hook! (lambda (kind name args) '()))`,
+silences every breakpoint, `(breakpoint)` forms included, without editing
+any code.
+
+#### `(debug-repl)`
+Opens the debug REPL at the stop the program is at. It's for a debug hook:
+when there's no hook, this is what a stop does anyway. Outside a stop it's an
+error (to stop in your own code, write `(breakpoint)`). Returns `'()` when
+the REPL is left with `(continue)`.
+
+#### `(abort)`
+Abandons the whole computation, and goes back to the top level, from the
+debug REPL or from a hook (or anywhere else). What "the top level" is
+depends on where you're running:
+
+| Where | What `(abort)` does |
+|---|---|
+| The console REPL | Prints `Aborted -- back at the top level.` and gives you the next prompt. |
+| A script | Ends the run, printing `Aborted.` on stderr, with exit status 1. (There's nothing to go back to, and going on with a computation whose result is missing would only produce more errors.) |
+| The GUI | Writes `Aborted.` in the log; the window carries on. |
+| Jupyter | The cell ends with an `Aborted` error. |
+
+`catch-error` doesn't catch an abort, because it isn't an error, and
+`unwind-protect` cleanups run on the way out, so a connection that
+`with-sqlite` opened is still closed.
+
+#### `(locals)`
+The variables visible where the program is stopped, as an association list
+of `(name . value)`, innermost scope first: for a procedure, its parameters
+and internal definitions, then those of any procedures it's inside. Global
+variables are left out, and so are the hidden `%` names the interpreter
+makes for itself (for `dolist`, say). If a name is in two scopes, only the
+innermost is shown. Use it in the debug REPL or in a hook; anywhere else it's
+an error, because the program isn't stopped.
+
+```
+payment> (locals)
+((balance . 1000) (rate . 0.06))
+```
+
+Values are returned as they are, so a hook that prints `(locals)` can print a
+lot when a variable holds a big vector.
+
+#### `(break-on-error [flag])`
+`(break-on-error #t)` makes the program stop where an error happens, while
+the calls it's about to leave are still in progress, so you can look at the
+variables in the failing scope. `(break-on-error #f)` turns it off, and it's
+off to begin with. `(break-on-error)` says which it is now. Setting it returns
+the previous setting.
+
+The stop has the kind `error`, and prints `--- error: car: not a pair: 5 ---`
+before the debug REPL opens (or calls the hook, with the message as `name`).
+The REPL says `(continue)` "lets the error go on": the error can't be undone,
+so continuing is the same as if there had been no stop, and it's reported
+in the usual way. `(abort)` leaves without the report.
+
+Not every error stops. **An error that a `catch-error` will handle doesn't**,
+because the program expects it, and neither does running out of stack. An
+error typed at the debug REPL is just reported, without stopping again.
+
+With a hook that prints, this gives an error report that includes the
+variables at the failure, in any front end. This hook shows them and then
+recovers with `throw`, as `debugging_example.lsp` does:
+
+```
+(set-debug-hook!
+  (lambda (kind name args)
+    (if (eq? kind 'error)
+        (begin
+          (display (format "stopped by an error: {}\n" name))
+          (display (format "variables there: {}\n" (locals)))
+          (throw 'gave-up 'no-payment)))))
+(break-on-error #t)
+(catch 'gave-up (level-payment 100000 0 360))
+```
+
+prints
+
+```
+stopped by an error: division by zero
+variables there: ((r . 0.0) (balance . 100000) (annual-percent . 0) (months . 360))
+```
+
+and the `catch` returns `no-payment`.
+
+#### `(debug-function name)`, `(undebug-function name)`
+Older names for `(break name)` and `(unbreak name)`, as macros that take the
+bare name, like `pretty-print-function`.
+
+**Where the debug REPL works.** The debug REPL reads from the real console
+with `input()`, the same as the top-level REPL. It works when you run
+the interpreter in a terminal (with a script or interactively). In the
+GUI, it would read from whatever stdin the GUI process has (usually none, or the
+terminal it was launched from), and in Jupyter there's no console at all:
+use a hook that prints, and don't call `(debug-repl)`, in those.
+
+**Good to know.** Breakpoints, the hook, and `break-on-error` belong to the
+whole interpreter, like `verbose`, not to one environment. They cost
+nothing when there are no breakpoints. A breakpoint stops *procedures*
+being called; to look at what a procedure does inside, put `(breakpoint)`
+there, or use `(verbose 2)` to see every call and return.
 
 ### Verbose mode and stack traces
 
@@ -5080,6 +5308,7 @@ The interpreter is split into these Python files, all in `lisp_interp/`:
 | `lisp_vector_math.py` | Arithmetic, comparisons, statistics, and time-series functions on whole vectors (`vector-mul`, `vector>`, `vector-mean`, `vector-lag`, ...) |
 | `lisp_tables.py` | Tables: `table-filter`, `table-sort`, `table-group-by`, `table-join`, ... |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
+| `lisp_debug.py` | `break`, `unbreak`, `set-debug-hook!`, `abort`, `locals`, `break-on-error`, ...: the debugging functions (the machinery is in `lisp_core.py`) |
 | `lisp_regression.py` | `linear-regression`, `logistic-regression`, `spline-regression`, `model-report`, ... |
 | `lisp_simplex.py` | `lp-read-file`, `lp-solve`: linear programming (uses `simplex/`) |
 | `lisp_charts.py` | `plot-xy`, `plot-xy-regression`, `plot-xy-full`, `save-chart` |

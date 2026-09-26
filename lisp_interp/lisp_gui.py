@@ -10,7 +10,7 @@ everything else works without PyQt6.
 
 import sys
 
-from lisp_core import LispError, NIL, format_error_report, parse, seval, to_string
+from lisp_core import LispAbort, LispError, NIL, format_error_report, parse, seval, to_string
 from lisp_builtins import load_init_file, make_global_env
 from lisp_charts import MATPLOTLIB_AVAILABLE, draw_chart_on_axes, render_chart_to_file
 
@@ -282,6 +282,8 @@ if PYQT_AVAILABLE:
                 for expr in parse(source):
                     result = seval(expr, self.env)
                 self._append_text("=> " + to_string(result) + "\n\n")
+            except LispAbort:
+                self._append_text("Aborted.\n\n")
             except Exception as e:
                 self._append_text(format_error_report(e) + "\n")
             self.input_edit.clear()
