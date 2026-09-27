@@ -505,14 +505,14 @@ class TestMacros(LispTestCase):
     def test_a_gensym_cannot_collide_with_a_name_the_program_uses(self):
         # Give a function the exact name the next while loop's gensym will
         # print as; the loop body's call must still reach that function.
-        lisp_core.run_file(lisp_builtins.MACROS_INIT_FILE, self.env)
+        lisp_builtins.load_standard_macros(self.env)
         next_name = "%%while-loop-%d" % (lisp_core._gensym_counter[0] + 1)
         self.run_lisp("(define calls 0) (define (%s) (set! calls (+ calls 1))) (define i 0)" % next_name)
         self.run_lisp("(while (< i 3) (set! i (+ i 1)) (%s))" % next_name)
         self.assertShows("calls", "3")
 
     def test_a_pasted_macro_expansion_still_works(self):
-        lisp_core.run_file(lisp_builtins.MACROS_INIT_FILE, self.env)
+        lisp_builtins.load_standard_macros(self.env)
         expansion = self.show("(macroexpand-1 '(while (< i 3) (set! i (+ i 1))))")
         self.run_lisp("(define i 0)")
         self.run_lisp(expansion)                 # the printed names read back as ordinary symbols
@@ -538,6 +538,73 @@ class TestMacros(LispTestCase):
     def test_defined_macros_lists_user_macros(self):
         self.run_lisp("(defmacro my-mac (x) x)")
         self.assertIn("my-mac", self.show("(defined-macros)"))
+
+
+class TestMacroExpansionCache(LispTestCase):
+    """A macro call is expanded once, the first time it's evaluated, and the
+    expansion is remembered for that call."""
+
+    def setUp(self):
+        super().setUp()
+        lisp_builtins.load_standard_macros(self.env)
+        self.run_lisp("(define expansions 0)"
+                      "(defmacro counted (x) (set! expansions (+ expansions 1)) x)")
+
+    def test_a_call_in_a_function_is_expanded_once_however_often_it_runs(self):
+        self.run_lisp("(define (f) (counted 5))")
+        self.assertShows("(list (f) (f) (f))", "(5 5 5)")
+        self.assertShows("expansions", "1")
+
+    def test_a_call_in_a_loop_body_is_expanded_once(self):
+        self.run_lisp("(define n 0) (while (< n 100) (counted 1) (set! n (+ n 1)))")
+        self.assertShows("expansions", "1")
+
+    def test_separate_calls_of_the_same_macro_are_expanded_separately(self):
+        self.run_lisp("(define (f) (counted 1)) (define (g) (counted 2)) (f) (g) (f) (g)")
+        self.assertShows("expansions", "2")
+
+    def test_the_same_source_typed_twice_is_two_calls(self):
+        self.run_lisp("(counted 1)")
+        self.run_lisp("(counted 1)")
+        self.assertShows("expansions", "2")
+
+    def test_redefining_the_macro_makes_old_calls_expand_again(self):
+        self.run_lisp("(defmacro m () 1) (define (f) (m))")
+        self.assertShows("(f)", "1")
+        self.run_lisp("(defmacro m () 2)")
+        self.assertShows("(f)", "2")
+
+    def test_a_macro_that_fails_is_not_remembered(self):
+        self.run_lisp("(define fail #t) (defmacro m () (if fail (error \"not yet\") 7)) (define (f) (m))")
+        self.assertLispError("(f)", "not yet")
+        self.run_lisp("(set! fail #f)")
+        self.assertShows("(f)", "7")
+
+    def test_macroexpand_always_expands_afresh(self):
+        self.run_lisp("(macroexpand-1 '(counted 1)) (macroexpand-1 '(counted 1)) (macroexpand '(counted 1))")
+        self.assertShows("expansions", "3")
+
+    def test_an_expansion_can_hold_a_gensym_and_run_many_times(self):
+        self.run_lisp("(defmacro with-tmp (value body) (let ((tmp (gensym))) `(let ((,tmp ,value)) (+ ,tmp ,body))))"
+                      "(define (f x) (with-tmp x 1))")
+        self.assertShows("(list (f 1) (f 2) (f 3))", "(2 3 4)")
+
+    def test_a_recursive_function_using_a_macro_works(self):
+        self.run_lisp("(defmacro twice (x) `(* 2 ,x)) (define (f n) (if (= n 0) 0 (+ (twice 1) (f (- n 1)))))")
+        self.assertShows("(f 50)", "100")
+
+    def test_verbose_level_3_still_logs_every_evaluation_of_a_cached_call(self):
+        self.run_lisp("(defmacro m1 (x) `(+ ,x 1)) (define (f) (m1 5)) (f)")       # expanded
+        lisp_core.set_verbose_level(3)
+        self.run_lisp("(f)")
+        self.assertIn("~ (m1 5) => (+ 5 1)", self.printed())                        # ...and logged again
+
+    def test_the_cache_is_emptied_when_it_gets_too_big(self):
+        with mock.patch.object(lisp_core, "EXPANSION_CACHE_LIMIT", 10):
+            for i in range(25):
+                self.run_lisp("(counted %d)" % i)
+            self.assertLessEqual(len(lisp_core._expansion_cache), 10)
+        self.assertShows("expansions", "25")
 
 
 # ---------------------------------------------------------------------------
@@ -2382,7 +2449,7 @@ class TestStandardMacros(LispTestCase):
 
     def setUp(self):
         super().setUp()
-        lisp_core.run_file(lisp_builtins.MACROS_INIT_FILE, self.env)
+        lisp_builtins.load_standard_macros(self.env)
 
     def test_while_runs_several_body_forms_until_the_test_is_false(self):
         self.run_lisp('(define i 0) (define out "")')
@@ -2535,6 +2602,458 @@ class TestStandardMacros(LispTestCase):
         self.assertLispError("(with-sqlite conn 1)", "expected (with-sqlite (var path) body...)")
 
 
+class TestLoop(LispTestCase):
+    """loop.lsp: the Common Lisp loop macro."""
+
+    def setUp(self):
+        super().setUp()
+        lisp_builtins.load_standard_macros(self.env)
+
+    def assertAll(self, cases):
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertShows(source, expected)
+
+    # -- stepping ----------------------------------------------------------
+
+    def test_counting(self):
+        self.assertAll([
+            ("(loop for i from 1 to 5 collect i)", "(1 2 3 4 5)"),
+            ("(loop for i to 3 collect i)", "(0 1 2 3)"),
+            ("(loop for i upto 3 collect i)", "(0 1 2 3)"),
+            ("(loop for i below 3 collect i)", "(0 1 2)"),
+            ("(loop for i from 2 below 5 collect i)", "(2 3 4)"),
+            ("(loop for i upfrom 2 to 4 collect i)", "(2 3 4)"),
+            ("(loop for i from 0 to 10 by 5 collect i)", "(0 5 10)"),
+            ("(loop for i from 0 below 10 by 3 collect i)", "(0 3 6 9)"),
+            ("(loop for i from 1 to 0 collect i)", "()"),
+        ])
+
+    def test_counting_down(self):
+        self.assertAll([
+            ("(loop for i from 10 downto 7 collect i)", "(10 9 8 7)"),
+            ("(loop for i from 5 above 2 collect i)", "(5 4 3)"),
+            ("(loop for i downfrom 3 to 1 collect i)", "(3 2 1)"),
+            ("(loop for i downfrom 3 above 0 collect i)", "(3 2 1)"),
+            ("(loop for i from 6 downto 0 by 2 collect i)", "(6 4 2 0)"),
+            ("(loop for i downfrom 6 by 2 repeat 3 collect i)", "(6 4 2)"),
+            ("(loop for i from 1 downto 3 collect i)", "()"),
+        ])
+
+    def test_counting_with_no_end_goes_on_until_something_stops_it(self):
+        self.assertShows("(loop for i from 1 until (> i 4) collect i)", "(1 2 3 4)")
+        self.assertShows("(loop for i from 5 repeat 3 collect i)", "(5 6 7)")
+
+    def test_counting_uses_a_limit_and_a_step_evaluated_once(self):
+        self.run_lisp("(define calls 0) (define (limit) (set! calls (+ calls 1)) 3) (define (step) (set! calls (+ calls 10)) 1)")
+        self.assertShows("(loop for i from 1 to (limit) by (step) collect i)", "(1 2 3)")
+        self.assertShows("calls", "11")
+
+    def test_counting_by_a_fraction(self):
+        self.assertShows("(loop for x from 0 to 1 by 0.25 collect x)", "(0 0.25 0.5 0.75 1.0)")
+
+    def test_for_in_steps_through_a_list(self):
+        self.assertAll([
+            ("(loop for x in '(1 2 3) collect (* x 10))", "(10 20 30)"),
+            ("(loop for x in '() collect x)", "()"),
+            ("(loop for x in (list 1 2) for y in (list 3 4) collect (+ x y))", "(4 6)"),
+            ("(loop for x in '(1 2 3) for y in '(a b) collect (list x y))", "((1 a) (2 b))"),
+        ])
+
+    def test_the_list_is_evaluated_once(self):
+        self.run_lisp("(define calls 0) (define (items) (set! calls (+ calls 1)) (list 1 2 3))")
+        self.assertShows("(loop for x in (items) collect x)", "(1 2 3)")
+        self.assertShows("calls", "1")
+
+    def test_for_on_steps_through_the_tails(self):
+        self.assertShows("(loop for x on '(1 2 3) collect x)", "((1 2 3) (2 3) (3))")
+        self.assertShows("(loop for x on '(1 2 3 4) when (> (length x) 2) collect (car x))", "(1 2)")
+
+    def test_for_across_steps_through_a_vector(self):
+        self.assertAll([
+            ("(loop for x across #(1 2 3) sum x)", "6"),
+            ("(loop for x across (vector) collect x)", "()"),
+            ("(loop for x across #(1.5 2.5) collect (* x 2))", "(3.0 5.0)"),
+        ])
+
+    def test_for_equals_then(self):
+        self.assertAll([
+            ("(loop for x = 1 then (* x 2) repeat 5 collect x)", "(1 2 4 8 16)"),
+            ("(loop for x = 5 repeat 3 collect x)", "(5 5 5)"),
+            ("(loop for i from 1 to 3 for x = (* i 10) collect x)", "(10 20 30)"),
+            ("(loop for i from 1 to 3 for prev = 0 then i collect (list i prev))", "((1 0) (2 2) (3 3))"),
+            ("(loop for a = 1 then b for b = 2 then (+ a b) repeat 4 collect (list a b))", "((1 2) (2 4) (4 8) (8 16))"),
+        ])
+
+    def test_for_equals_without_then_is_evaluated_each_time(self):
+        self.run_lisp("(define n 0) (define (next!) (set! n (+ n 1)) n)")
+        self.assertShows("(loop for x = (next!) repeat 3 collect x)", "(1 2 3)")
+
+    def test_for_over_a_hash_table(self):
+        self.run_lisp("(define h (make-hash-table)) (hash-table-set! h 'a 1) (hash-table-set! h 'b 2)")
+        self.assertAll([
+            ("(loop for k being the hash-keys of h collect k)", "(a b)"),
+            ("(loop for v being the hash-values of h sum v)", "3"),
+            ("(loop for k being the hash-keys in h using (hash-value v) collect (list k v))", "((a 1) (b 2))"),
+            ("(loop for v being each hash-value of h using (hash-key k) collect (list v k))", "((1 a) (2 b))"),
+        ])
+
+    def test_patterns_take_a_list_apart(self):
+        self.assertAll([
+            ("(loop for (a b) in '((1 2) (3 4)) collect (+ a b))", "(3 7)"),
+            ("(loop for (k . v) in '((a . 1) (b . 2)) collect (list v k))", "((1 a) (2 b))"),
+            ("(loop for (a (b c)) in '((1 (2 3))) collect (list c b a))", "((3 2 1))"),
+            ("(loop for (a () c) in '((1 2 3)) collect (list a c))", "((1 3))"),
+            ("(loop for (a b) on '(1 2 3) collect (list a b))", "((1 2) (2 3) (3 ()))"),
+            ("(loop for (a b c) in '((1) (2 3)) collect (list a b c))", "((1 () ()) (2 3 ()))"),
+            ("(loop for (a . b) in '((1 2 3) (4)) collect (list a b))", "((1 (2 3)) (4 ()))"),
+            ("(loop for (a b) in '(5 (6 7)) collect (list a b))", "((() ()) (6 7))"),
+            ("(loop for (a b) = '(1 2) repeat 2 collect (+ a b))", "(3 3)"),
+        ])
+
+    def test_repeat(self):
+        self.assertAll([
+            ("(loop repeat 3 collect 'x)", "(x x x)"),
+            ("(loop repeat 0 collect 'x)", "()"),
+            ("(loop repeat (+ 1 1) sum 5)", "10"),
+        ])
+
+    def test_variables_take_the_last_value_they_were_given_after_the_loop(self):
+        self.assertShows("(loop for i from 1 to 3 finally (return i))", "3")
+
+    # -- accumulating ------------------------------------------------------
+
+    def test_collect_append_sum_count_maximize_minimize(self):
+        self.assertAll([
+            ("(loop for x in '(1 2 3) collect x)", "(1 2 3)"),
+            ("(loop for x in '((1 2) (3) (4 5)) append x)", "(1 2 3 4 5)"),
+            ("(loop for x in '((1 2) (3) (4 5)) nconc x)", "(1 2 3 4 5)"),
+            ("(loop for x in '(1 2 3) sum x)", "6"),
+            ("(loop for x in '(1.5 2.5) sum x)", "4.0"),
+            ("(loop for x in '(3 1 4 1 5) count (> x 2))", "3"),
+            ("(loop for x in '(3 1 4 1 5) maximize x)", "5"),
+            ("(loop for x in '(3 1 4 1 5) minimize x)", "1"),
+            ("(loop for x in '(3 1 4 1 5) maximize (- x))", "-1"),
+        ])
+
+    def test_an_empty_loop_returns_the_starting_value(self):
+        self.assertAll([
+            ("(loop for x in '() collect x)", "()"),
+            ("(loop for x in '() append x)", "()"),
+            ("(loop for x in '() sum x)", "0"),
+            ("(loop for x in '() count x)", "0"),
+            ("(loop for x in '() maximize x)", "()"),
+            ("(loop for x in '() minimize x)", "()"),
+        ])
+
+    def test_the_words_can_be_written_as_participles(self):
+        self.assertAll([
+            ("(loop for x in '(1 2) collecting x)", "(1 2)"),
+            ("(loop for x in '((1) (2)) appending x)", "(1 2)"),
+            ("(loop for x in '(1 2) summing x)", "3"),
+            ("(loop for x in '(1 2) counting (> x 1))", "1"),
+            ("(loop for x in '(1 2) maximizing x)", "2"),
+            ("(loop for x in '(1 2) minimizing x)", "1"),
+            ("(loop as x in '(1 2) collect x)", "(1 2)"),
+            ("(loop for x in '(1 2) doing (display x))", "()"),
+        ])
+
+    def test_into_accumulates_in_a_named_variable_and_the_loop_returns_nothing_itself(self):
+        self.assertShows("(loop for x in '(1 2 3) collect x into xs)", "()")
+        self.assertAll([
+            ("(loop for x in '(1 2 3) collect x into xs finally (return xs))", "(1 2 3)"),
+            ("(loop for x in '(1 2 3) sum x into total finally (return total))", "6"),
+            ("(loop for x in '(3 1 4) maximize x into m finally (return (* m 10)))", "40"),
+            ("(loop for x in '(1 2 3) collect x into a collect (* x 10) into b finally (return (list a b)))",
+             "((1 2 3) (10 20 30))"),
+            ("(loop for x in '(1 2 3) sum x into s count #t into n finally (return (/ s n)))", "2.0"),
+        ])
+
+    def test_an_into_list_is_in_order_and_usable_while_the_loop_runs(self):
+        self.assertShows("(loop for x in '(1 2 3) collect x into xs collect (length xs) into lengths "
+                         "finally (return lengths))", "(1 2 3)")
+
+    def test_several_collects_share_one_list_and_collect_mixes_with_append(self):
+        self.assertAll([
+            ("(loop for x in '(1 2) collect x collect (* x 10))", "(1 10 2 20)"),
+            ("(loop for x in '(1 2) collect x append (list x x))", "(1 1 1 2 2 2)"),
+            ("(loop for x in '(1 2 3) sum x count #t)", "9"),
+        ])
+
+    def test_accumulators_do_not_change_the_list_they_were_given(self):
+        self.run_lisp("(define xs (list 1 2 3))")
+        self.assertShows("(loop for x in xs collect x into copy finally (return (list xs copy)))", "((1 2 3) (1 2 3))")
+        self.run_lisp("(define ys (loop for x in xs append (list x)))")
+        self.run_lisp("(set-car! ys 99)")
+        self.assertShows("xs", "(1 2 3)")
+
+    def test_a_big_collect_is_fast_enough_and_correct(self):
+        self.assertShows("(length (loop for i from 1 to 20000 collect i))", "20000")
+        self.assertShows("(loop for i from 1 to 20000 sum i)", "200010000")
+
+    # -- conditionals ------------------------------------------------------
+
+    def test_when_unless_if(self):
+        self.assertAll([
+            ("(loop for x in '(1 2 3 4 5 6) when (> x 3) collect x)", "(4 5 6)"),
+            ("(loop for x in '(1 2 3 4 5 6) if (> x 3) collect x)", "(4 5 6)"),
+            ("(loop for x in '(1 2 3 4 5 6) unless (> x 3) collect x)", "(1 2 3)"),
+            ("(loop for i from 1 to 6 when (= (mod i 2) 0) sum i)", "12"),
+        ])
+
+    def test_else_and_end(self):
+        self.assertAll([
+            ("(loop for x in '(1 2 3 4) if (< x 3) collect x else collect (- x))", "(1 2 -3 -4)"),
+            ("(loop for x in '(1 2 3 4) unless (< x 3) collect x else collect (- x))", "(-1 -2 3 4)"),
+            ("(loop for x in '(1 2 3 4) when (< x 3) collect x else collect (- x) end collect 0)",
+             "(1 0 2 0 -3 0 -4 0)"),
+            ("(loop for x in '(1 2 3 4) when (> x 2) do (display x) end collect x)", "(1 2 3 4)"),
+        ])
+        self.assertEqual(self.printed(), "34")
+
+    def test_and_joins_clauses_in_a_branch(self):
+        self.assertShows("(loop for x in '(1 2 3 4 5) when (> x 2) collect x and sum x into total "
+                         "finally (return total))", "12")
+        self.assertShows("(loop for x in '(1 2 3 4) if (< x 3) collect x into small and count #t into n "
+                         "else collect x into big finally (return (list small big n)))", "((1 2) (3 4) 2)")
+
+    def test_when_can_be_nested_and_an_else_belongs_to_the_nearest_when(self):
+        self.assertAll([
+            ("(loop for x in '(1 2 3 4 5 6) when (> x 1) when (< x 5) collect x)", "(2 3 4)"),
+            # the else goes with the inner when, as in Common Lisp...
+            ("(loop for x in '(1 2 3 4 5 6) when (> x 1) when (< x 5) collect x else collect 0)", "(2 3 4 0 0)"),
+            # ...unless an end closes the inner one first
+            ("(loop for x in '(1 2 3 4 5 6) when (> x 1) when (< x 5) collect x end else collect 0)", "(0 2 3 4)"),
+        ])
+
+    def test_when_can_hold_do_with_several_forms(self):
+        self.run_lisp("(define seen '())")
+        self.run_lisp("(loop for x in '(1 2 3) when (> x 1) do (set! seen (cons x seen)) (set! seen (cons 'x seen)))")
+        self.assertShows("seen", "(x 3 x 2)")
+
+    # -- do, initially, finally, with --------------------------------------
+
+    def test_do_runs_its_forms_and_the_loop_returns_nothing(self):
+        self.assertShows("(loop for i from 1 to 3 do (display i))", "()")
+        self.assertEqual(self.printed(), "123")
+
+    def test_do_takes_several_forms_and_stops_at_the_next_word(self):
+        self.assertShows("(loop for i from 1 to 2 do (display i) (display \"-\") collect i)", "(1 2)")
+        self.assertEqual(self.printed(), "1-2-")
+
+    def test_initially_and_finally(self):
+        self.assertShows("(loop initially (display \"[\") for i from 1 to 3 do (display i) finally (display \"]\"))", "()")
+        self.assertEqual(self.printed(), "[123]")
+
+    def test_finally_can_return_the_answer(self):
+        self.assertShows("(loop for i from 1 to 5 sum i into total finally (return (* total 2)))", "30")
+
+    def test_finally_runs_after_a_while_or_until_stops_the_loop(self):
+        self.assertShows("(loop for i from 1 to 10 while (< i 4) finally (return i))", "4")
+
+    def test_with_binds_variables_once(self):
+        self.assertAll([
+            ("(loop with x = 10 for i from 1 to 3 collect (+ x i))", "(11 12 13)"),
+            ("(loop with a = 1 and b = 2 for i from 1 to 2 collect (+ a b i))", "(4 5)"),
+            ("(loop with a = 1 with b = (+ a 1) for i from 1 to 2 collect (list a b))", "((1 2) (1 2))"),
+            ("(loop with n = 3 for i from 1 to n collect i)", "(1 2 3)"),
+            ("(loop with x for i from 1 to 2 collect x)", "(() ())"),
+        ])
+
+    def test_with_can_hold_state_changed_by_the_body(self):
+        self.assertShows("(loop with total = 0 for x in '(1 2 3) do (set! total (+ total x)) finally (return total))", "6")
+
+    # -- stopping ----------------------------------------------------------
+
+    def test_while_and_until(self):
+        self.assertAll([
+            ("(loop for i from 1 to 10 while (< i 4) collect i)", "(1 2 3)"),
+            ("(loop for i from 1 to 10 until (> i 3) collect i)", "(1 2 3)"),
+            ("(loop for x in '(1 2 3 4) while (< x 3) collect x)", "(1 2)"),
+            ("(loop for i from 1 to 3 collect i while (< i 2))", "(1 2)"),
+        ])
+
+    def test_a_while_in_the_middle_ends_the_pass_at_that_point(self):
+        self.run_lisp("(define log '())")
+        self.run_lisp("(loop for i from 1 to 5 do (set! log (cons (list 'a i) log)) while (< i 2) do (set! log (cons (list 'b i) log)))")
+        self.assertShows("(reverse log)", "((a 1) (b 1) (a 2))")
+
+    def test_always_never_thereis(self):
+        self.assertAll([
+            ("(loop for x in '(1 2 3) always (> x 0))", "#t"),
+            ("(loop for x in '(1 2 3) always (> x 1))", "#f"),
+            ("(loop for x in '() always #f)", "#t"),
+            ("(loop for x in '(1 2 3) never (> x 5))", "#t"),
+            ("(loop for x in '(1 2 3) never (> x 2))", "#f"),
+            ("(loop for x in '(1 2 3) thereis (> x 2))", "#t"),
+            ("(loop for x in '(1 2 3) thereis (> x 5))", "#f"),
+            ("(loop for x in '(1 2 3 4) thereis (and (> x 2) (* x 10)))", "30"),
+        ])
+
+    def test_always_stops_at_the_first_failure(self):
+        self.run_lisp("(define seen '())")
+        self.run_lisp("(loop for x in '(1 2 3 4) do (set! seen (cons x seen)) always (< x 2))")
+        self.assertShows("seen", "(2 1)")
+
+    def test_a_failed_always_skips_finally(self):
+        self.run_lisp("(define ran #f)")
+        self.assertShows("(loop for x in '(1 2) always (> x 1) finally (set! ran #t))", "#f")
+        self.assertShows("ran", "#f")
+        self.assertShows("(loop for x in '(2 3) always (> x 1) finally (set! ran #t))", "#t")
+        self.assertShows("ran", "#t")
+
+    # -- return, named loops, the simple loop ------------------------------
+
+    def test_return_leaves_the_loop_with_a_value(self):
+        self.assertAll([
+            ("(loop for x in '(1 2 3 4) do (if (= x 3) (return x)))", "3"),
+            ("(loop for x in '(1 2 3 4) when (> x 2) return x)", "3"),
+            ("(loop for x in '(1 2 3 4) when (> x 9) return x)", "()"),
+            ("(loop for x in '(1 2 3) do (return))", "()"),
+            ("(loop for x in '(1 2 3) collect x do (return 'early))", "early"),
+        ])
+
+    def test_return_skips_finally_and_the_accumulated_value(self):
+        self.run_lisp("(define ran #f)")
+        self.assertShows("(loop for x in '(1 2 3) collect x do (if (= x 2) (return 'stopped)) finally (set! ran #t))", "stopped")
+        self.assertShows("ran", "#f")
+
+    def test_return_can_be_deep_inside_the_forms_of_the_loop(self):
+        self.assertAll([
+            ("(loop for x in '(1 2 3 4) do (let ((y (* x 10))) (if (> y 25) (return y))))", "30"),
+            ("(loop for x in '(1 2 3 4) do (map (lambda (n) (if (> n 25) (return n))) (list (* x 10))))", "30"),
+        ])
+
+    def test_a_return_in_a_function_the_loop_calls_is_not_found(self):
+        # Like return in Common Lisp, it belongs to the loop it's written in. (The loop only
+        # sets up a place for it to go when it sees a return in its own clauses.)
+        self.run_lisp("(define (check x) (if (> x 2) (return x)))")
+        self.assertLispError("(loop for x in '(1 2 3 4) do (check x))", "nothing catches loop-nil")
+        self.assertShows("(catch 'loop-nil (loop for x in '(1 2 3 4) do (check x)))", "3")     # throw and catch do it
+
+    def test_return_leaves_only_the_innermost_loop(self):
+        self.assertShows("(loop for i from 1 to 3 collect (loop for j from 1 to 5 do (if (> j i) (return j))))", "(2 3 4)")
+
+    def test_a_named_loop_and_return_from(self):
+        self.assertShows("(loop named search for i from 1 to 3 do (loop for j from 1 to 3 "
+                         "do (if (= (* i j) 6) (return-from search (list i j)))))", "(2 3)")
+        self.assertShows("(loop named outer for i from 1 to 3 do (loop for j from 1 to 3 "
+                         "do (if (= (* i j) 4) (return-from outer (list i j)))))", "(2 2)")
+
+    def test_return_from_an_outer_loop_can_be_used_with_an_inner_unnamed_one(self):
+        self.assertShows("(loop named a for i from 1 to 3 collect (loop for j from 1 to 3 "
+                         "do (if (= i 2) (return-from a 'gone)) (if (= j 2) (return j))))", "gone")
+
+    def test_the_simple_loop_repeats_until_return(self):
+        self.assertAll([
+            ("(loop (return 5))", "5"),
+            ("(begin (define i 0) (loop (set! i (+ i 1)) (if (> i 4) (return i))))", "5"),
+            ("(begin (define j 0) (loop (set! j (+ j 1)) (if (> j 3) (return (* j 2)))))", "8"),
+        ])
+
+    def test_return_and_return_from_outside_a_loop_are_errors(self):
+        self.assertLispError("(return 5)", "nothing catches loop-nil")
+        self.assertLispError("(return-from nowhere 5)", "nothing catches nowhere")
+
+    def test_return_works_from_a_loop_in_a_function_called_again_and_again(self):
+        self.run_lisp("(define (first-big xs) (loop for x in xs when (> x 10) return x))")
+        self.assertShows("(list (first-big '(1 20 3)) (first-big '(1 2 3)) (first-big '(50)))", "(20 () 50)")
+
+    # -- hygiene and scope -------------------------------------------------
+
+    def test_the_hidden_variables_do_not_clash_with_yours(self):
+        # the names the loop makes for itself all start with %, and can't be typed
+        self.run_lisp("(define rest '(9 9)) (define result 'mine) (define tail 'mine) (define next 'mine) (define limit 'mine)")
+        self.assertShows("(loop for x in '(1 2 3) collect x)", "(1 2 3)")
+        self.assertShows("(loop for i from 1 to 3 sum i)", "6")
+        self.assertShows("(list rest result tail next limit)", "((9 9) mine mine mine mine)")
+
+    def test_nested_loops_over_the_same_variable_names(self):
+        self.assertShows("(loop for i from 1 to 2 collect (loop for i from 1 to 3 collect (* i 10)))",
+                         "((10 20 30) (10 20 30))")
+
+    def test_the_loop_variable_is_not_visible_outside_the_loop(self):
+        self.run_lisp("(loop for zzz from 1 to 3 collect zzz)")
+        self.assertLispError("zzz", "unbound symbol")
+
+    def test_a_loop_variable_can_shadow_a_global_one(self):
+        self.run_lisp("(define x 'global)")
+        self.assertShows("(loop for x in '(1 2) collect x)", "(1 2)")
+        self.assertShows("x", "global")
+
+    def test_a_loop_in_a_recursive_function(self):
+        self.run_lisp("(define (depth tree) (if (pair? tree) (+ 1 (loop for child in tree maximize (depth child))) 0))")
+        self.assertShows("(depth '((1 2) ((3)) 4))", "3")
+
+    def test_closures_made_in_a_loop_share_the_variable(self):
+        # As in Common Lisp, a loop steps one variable, it doesn't make a new one on each pass.
+        self.run_lisp("(define fs (loop for i from 1 to 3 collect (lambda () i)))")
+        self.assertShows("(map (lambda (f) (f)) fs)", "(3 3 3)")
+
+    def test_a_loop_can_be_used_where_a_value_is_wanted(self):
+        self.assertShows("(+ 1 (loop for i from 1 to 3 sum i))", "7")
+        self.assertShows("(list (loop repeat 2 collect 'a) (loop repeat 1 collect 'b))", "((a a) (b))")
+
+    def test_a_long_loop_does_not_use_up_the_stack(self):
+        self.assertShows("(loop for i from 1 to 50000 count (> i 25000))", "25000")
+
+    # -- clauses happen in order -------------------------------------------
+
+    def test_clauses_happen_in_order(self):
+        # a stepping clause after a body clause steps at that point of each pass
+        self.assertShows("(loop for i from 1 to 3 collect i for j = (* i 10) collect j)", "(1 10 2 20 3 30)")
+
+    # -- reading the clauses -----------------------------------------------
+
+    def test_a_loop_with_no_body_clauses_just_runs(self):
+        self.assertShows("(loop for i from 1 to 3)", "()")
+
+    def test_keyword_words_can_also_be_variable_names_in_expressions(self):
+        self.run_lisp("(define count 5) (define sum 7)")
+        self.assertShows("(loop for i from 1 to 2 collect (+ count sum i))", "(13 14)")
+
+    def test_a_pasted_expansion_still_works(self):
+        expansion = self.show("(macroexpand-1 '(loop for i from 1 to 3 collect i))")
+        self.assertShows(expansion, "(1 2 3)")
+
+    def test_it_is_expanded_only_once_however_often_it_runs(self):
+        self.run_lisp("(define n 0) (define (f) (loop for i from 1 to 2 sum i)) (define calls 0)")
+        before = lisp_core._gensym_counter[0]
+        self.run_lisp("(f)")
+        after_first = lisp_core._gensym_counter[0]
+        self.run_lisp("(f) (f) (f)")
+        self.assertGreater(after_first, before)
+        self.assertEqual(lisp_core._gensym_counter[0], after_first)     # no new expansion, so no new gensyms
+
+    # -- mistakes get clear messages ---------------------------------------
+
+    def test_errors_say_what_is_wrong(self):
+        cases = [
+            ("(loop for x in '(1 2) frobnicate x)", "don't know the loop word frobnicate"),
+            ("(loop for x in '(1 2) (print x))", "needs do in front of it"),
+            ("(loop for x in)", "the clauses ended where a list after in was expected"),
+            ("(loop for x)", "the clauses ended where"),
+            ("(loop for)", "the clauses ended where a variable after for was expected"),
+            ("(loop for x in '(1 2) collect)", "an expression after collect was expected"),
+            ("(loop for x in '(1 2) collect x into)", "a variable after into was expected"),
+            ("(loop for x in '(1 2) collect x sum x)", "can't accumulate a number and a list in the same variable"),
+            ("(loop for x in '(1 2) maximize x minimize x)", "can't accumulate a minimize and a maximize"),
+            ("(loop for i downto 1 collect i)", "counting down needs a starting value"),
+            ("(loop for (a b) from 1 to 3 collect a)", "counting needs a single variable"),
+            ("(loop for x in '(1) for y in '(2) and z in '(3) collect x)", "and can only join clauses inside a when"),
+            ("(loop for x in '(1 2) when (> x 1) while (< x 5) collect x)", "while can't be inside a when"),
+            ("(loop for x in '(1 2) when (> x 1) for y in '(3) collect y)", "for can't be inside a when"),
+            ("(loop for x being the elements of '(1 2) collect x)", "expected hash-keys or hash-values, not elements"),
+            ("(loop for x in '(1 2) when)", "the clauses ended where a test after when"),
+            ("(loop named)", "a name after named was expected"),
+            ("(loop with)", "a variable after with was expected"),
+            ("(loop repeat)", "a number after repeat was expected"),
+        ]
+        for source, message in cases:
+            with self.subTest(source=source):
+                self.assertLispError(source, message)
+
+
 class TestInitFileAndRunFile(LispTestCase):
 
     def test_load_init_file_defines_things(self):
@@ -2560,13 +3079,14 @@ class TestInitFileAndRunFile(LispTestCase):
         self.assertShows("ok", "1")                                    # ran up to the error
         self.assertLispError("never", "unbound symbol")               # ...and stopped there
 
-    def test_the_shipped_startup_files_load_cleanly_and_define_while_and_do(self):
+    def test_the_shipped_startup_files_load_cleanly_and_define_while_do_and_loop(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             lisp_builtins.load_init_file(self.env, lisp_builtins.DEFAULT_INIT_FILE)
         self.assertEqual(err.getvalue(), "")
         self.assertShows("(define i 0) (while (< i 5) (set! i (+ i 1))) i", "5")
         self.assertShows("(do ((i 0 (+ i 1))) ((= i 5) i))", "5")
+        self.assertShows("(loop for i from 1 to 3 collect i)", "(1 2 3)")
 
     def test_the_standard_macros_load_even_without_an_init_file(self):
         lisp_builtins.load_init_file(self.env, "/definitely/not/here/init.lsp")
@@ -3963,7 +4483,7 @@ class TestReferenceDocExamples(unittest.TestCase):
             if any(word in block for word in _RISKY_BLOCK_WORDS):
                 continue
             env = lisp_builtins.make_global_env(output=lambda s: None)
-            lisp_core.run_file(lisp_builtins.MACROS_INIT_FILE, env)     # while, do
+            lisp_builtins.load_standard_macros(env)     # while, do, loop, ...
             lisp_core.debug_state.reset()       # breakpoints belong to the whole process, not one block
             if use_alarm:
                 signal.alarm(10)

@@ -9,9 +9,9 @@ HOW TO RUN IT
     python3 lisp_interpreter.py -            the console REPL
 Put -v, -vv, -vvv, or --verbose=N before the file name to trace procedure
 calls as they happen (see (verbose n) in lisp_interpreter_reference.md).
-Every fresh environment first loads macros_init.lsp (the standard macros,
-such as while and case), then init.lsp, if it exists (see load_init_file
-in lisp_builtins.py).
+Every fresh environment first loads macros_init.lsp and loop.lsp (the
+standard macros, such as while, case, and loop), then init.lsp, if it exists
+(see load_init_file in lisp_builtins.py).
 
 HOW THE CODE IS ORGANIZED
     lisp_interpreter.py   this file: the command line, console REPL, and batch mode
@@ -50,6 +50,9 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
     breakpoint, backtrace
   - standard macros written in Lisp (macros_init.lsp): while, do, when,
     unless, case, assert, with-sqlite
+  - loop, the Common Lisp loop macro (loop.lsp): for x in / on / across,
+    counting, collect / sum / count / maximize, when / unless, return, ...
+  - macro expansion is remembered, so each macro call is expanded only once
   - variadic procedures (a b . rest) and CL-style &key keyword arguments
   - macros (defmacro), with macroexpand/macroexpand-1/gensym for writing them
   - defstruct records with single inheritance (:include) and call-method

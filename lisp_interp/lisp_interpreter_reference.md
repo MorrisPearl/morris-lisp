@@ -47,11 +47,11 @@ functions" as a reference to search rather than read start to end.
   interpreter's internals as well.
 
 Every fresh environment — batch mode, the console REPL, the GUI, and
-Jupyter alike — loads two Lisp files before doing anything else:
+Jupyter alike — loads these Lisp files before doing anything else:
 
-1. `macros_init.lsp`, the standard macros, such as `while`, `do`, and
-   `case` (see "Standard
-   macros", below). It's part of the interpreter, so it's always loaded.
+1. `macros_init.lsp` and `loop.lsp`, the standard macros, such as `while`,
+   `do`, `case`, and `loop` (see "Standard macros", below). They're part of
+   the interpreter, so they're always loaded.
 2. `init.lsp` (next to `lisp_interpreter.py`; override with the
    `LISP_INIT_FILE` environment variable), if it exists. It's entirely
    optional — a missing init file is silently skipped. Put your own
@@ -823,6 +823,29 @@ Metaprogramming, below) is a good way to see this difference directly —
 expanding a `count-while` call with each version shows the fixed `i` versus
 a generated `%count-N` in exactly the position that matters.
 
+**A macro call is expanded once.** The first time a call such as
+`(when (> x 0) ...)` is evaluated, the macro runs and produces the code, and
+that code is remembered for that call. Every later evaluation of the same
+call — the next time the function it's in is called, or the next time round a
+loop — uses the remembered code, without running the macro again. A big macro
+such as `loop` takes milliseconds to expand, so without this, a `loop` in a
+function called 10,000 times would spend most of its time expanding. (The
+`case` macro used to cost about nine times a hand-written `cond` for the same
+reason.) Things to know:
+
+- The macro sees only its arguments, and the expansion is the same each time,
+  as it is in Common Lisp. A macro that also reads a global variable while
+  it expands, or counts how often it's expanded, is expanded once, with
+  whatever it found the first time.
+- Redefining the macro with `defmacro` makes every existing call expand
+  again, with the new definition. Redefining a *function* that the macro's
+  body calls doesn't: the calls already in your functions keep their old
+  expansions, until you `define` the function that contains the call again.
+- `macroexpand` and `macroexpand-1` always expand afresh, and
+  `(verbose 3)` still logs the expansion each time a call is evaluated.
+- Two calls that only look alike are separate. Code you build and run with
+  `eval` is a new list each time, so it's expanded each time.
+
 A macro's own body, while it's still computing an expansion, is evaluated
 by an ordinary (recursive) Python function call, not the fully
 tail-call-optimized evaluator loop — so a transformer that itself did deep
@@ -835,12 +858,13 @@ is produced, it's evaluated by the ordinary trampoline, tail calls and all
 
 ### Standard macros
 
-`while`, `do`, `when`, `unless`, `case`, `assert`, and `with-sqlite` are
-macros written in Lisp, in `macros_init.lsp`, which every new environment
-loads at startup (see
-"Running it", above). The top of that file explains how macros are
-written with backquote (`` ` ``), `,`, and `,@`, using these macros as the
-examples, so it's a good place to start if you want to write your own.
+`while`, `do`, `loop`, `when`, `unless`, `case`, `assert`, and `with-sqlite`
+are macros written in Lisp, in `macros_init.lsp` and `loop.lsp`, which every
+new environment loads at startup (see "Running it", above). The top of
+`macros_init.lsp` explains how macros are written with backquote (`` ` ``),
+`,`, and `,@`, using these macros as the examples, so it's a good place to
+start if you want to write your own. `loop.lsp` is a larger example: a
+macro that reads a small language of its own.
 
 `while` and `do` each turn into a small local function that calls itself
 to go around the loop again. That call is a tail call, so a loop can run
@@ -908,6 +932,214 @@ prints `2024`, `2025`, and `2026` on separate lines.
 
 Each variable must be written `(var init)` or `(var init step)`. Unlike
 Common Lisp, a bare `var` (meaning "starts as `'()`") isn't accepted.
+
+#### `(loop clause...)`
+Common Lisp's `loop`: a loop written as a list of **clauses**, which read a
+little like English. Each clause says one thing: what to step through, what to
+do on each pass, when to stop, what to give back. It's the loop to reach for
+when you're stepping through a list or counting, and collecting, adding up,
+or searching.
+
+```lisp
+(loop for i from 1 to 5 collect (* i i))                        ; => (1 4 9 16 25)
+(loop for x in '(3 1 4 1 5) sum x)                              ; => 14
+(loop for x in '(3 1 4 1 5) maximize x)                         ; => 5
+(loop for x in '(1 2 3 4 5 6) when (> x 3) collect x)           ; => (4 5 6)
+(loop for x in '(1 2 3) for y in '(a b c) collect (list x y))   ; => ((1 a) (2 b) (3 c))
+(loop for x in '(1 2 3 4) thereis (and (> x 2) (* x 10)))       ; => 30
+
+; Months until a balance growing 0.5% a month passes 300,000:
+(loop for month from 1
+      for balance = 200000 then (* balance 1.005)
+      until (> balance 300000)
+      finally (return month))                                   ; => 83
+```
+
+The loop goes round and round. On each **pass**, the clauses happen in the
+order they're written. A stepping clause (`for x in list`) ends the loop when
+it runs out. The loop's value is what its accumulating clause built up
+(`collect` gives a list, `sum` a total), or, if it has none, `'()`, unless a
+`return` or `finally` says otherwise. Write the stepping clauses (`for`,
+`repeat`) first, and the clauses that do things after them, as in Common Lisp.
+The **variables** are ones the loop makes: `x` and `i` above exist only in
+the loop.
+
+##### Stepping: `for`, `as`, `repeat`
+`as` means the same as `for`. Give each `for` its own variable; `for x in
+xs for y in ys` steps through both together and stops when the shorter runs
+out.
+
+| Clause | The variable is... |
+|---|---|
+| `for x in list` | each element of the list |
+| `for x on list` | the list, then what follows its first element, and so on |
+| `for x across vector` | each element of the vector |
+| `for i from 1 to 10` | 1, 2, ... 10 (`upto` means `to`; leave out `from` to start at 0) |
+| `for i from 1 below 10` | 1, 2, ... 9 |
+| `for i from 10 downto 1` | 10, 9, ... 1 (also `above 1` to stop before 1, and `downfrom 10 to 1`) |
+| `for i from 0 to 100 by 25` | 0, 25, 50, 75, 100 (`by` is a positive step, up or down) |
+| `for x = a then b` | `a` on the first pass, then `b` (which can use `x`, and other variables) on each later one |
+| `for x = a` | `a`, worked out again on every pass |
+| `for k being the hash-keys of table` | each key of a hash table; add `using (hash-value v)` for the value too |
+| `for v being the hash-values of table` | each value; add `using (hash-key k)` for the key too |
+| `repeat n` | (no variable) go round `n` times |
+
+The list, vector, hash table, start, end, and step are worked out once, when
+the loop starts.
+
+```lisp
+(loop for i from 0 to 100 by 25 collect i)                      ; => (0 25 50 75 100)
+(loop for i from 10 downto 7 collect i)                         ; => (10 9 8 7)
+(loop for x on '(1 2 3) collect x)                              ; => ((1 2 3) (2 3) (3))
+(loop for x across #(1 2 3) sum x)                              ; => 6
+(loop for x = 1 then (* x 2) repeat 5 collect x)                ; => (1 2 4 8 16)
+(loop repeat 3 collect 'x)                                      ; => (x x x)
+```
+
+A variable in `for x in`, `on`, and `=` can be a **pattern**, which takes each
+element apart: `(a b)` for a two-element list, `(key . value)` for a pair.
+A `()` in a pattern skips that part, and a pattern with more variables than
+there are elements gives the extra ones the value `'()`.
+
+```lisp
+(loop for (a b) in '((1 2) (3 4)) collect (+ a b))              ; => (3 7)
+(loop for (name . rate) in '((a . 5) (b . 6)) collect (* rate 2))   ; => (10 12)
+(loop for (a b c) in '((1 2)) collect (list a b c))             ; => ((1 2 ()))
+```
+
+##### Accumulating: `collect`, `append`, `sum`, `count`, `maximize`, `minimize`
+Each takes an expression, worked out on every pass. (The `-ing` forms
+work too: `collecting`, `summing`, ...)
+
+| Clause | The loop returns |
+|---|---|
+| `collect x` | a list of the values of `x` |
+| `append x` | a list of all the elements of the lists `x` (the lists aren't changed; `nconc` means the same) |
+| `sum x` | the total of the values of `x` (0 if there were none) |
+| `count test` | how many times the test was true (0 if none) |
+| `maximize x` / `minimize x` | the largest / smallest value of `x` (`'()` if there were none) |
+
+```lisp
+(loop for x in '((1 2) (3) (4 5)) append x)                     ; => (1 2 3 4 5)
+(loop for x in '(3 1 4 1 5) count (> x 2))                      ; => 3
+(loop for x in '(3 1 4 1 5) minimize x)                         ; => 1
+(loop for x in '() sum x)                                       ; => 0
+```
+
+Several clauses that collect share one list, in order: `collect x collect (* 10
+x)` gives `(1 10 2 20 ...)`. Ones of different kinds can't share: `collect` with `sum` is
+an error.
+
+**`into`.** End an accumulating clause with `into var`, and it builds up the
+variable `var` instead. The loop makes `var`, so it can be used in the loop's
+later clauses, and in `finally`. The loop then has no value of its own; use
+`finally (return ...)` to return what you like.
+
+```lisp
+(loop for x in '(3 1 4 1 5)
+      sum x into total
+      count #t into n
+      finally (return (/ total n)))                             ; => 2.8
+```
+
+##### Conditions: `when`, `unless`, `if`
+`when test clause [and clause]... [else clause [and clause]...] [end]`. The
+clauses inside can be `do`, `return`, an accumulating clause, or another
+`when`. `and` joins clauses in one branch. `unless` is `when` with the
+branches swapped, and `if` is another word for `when`. An `else` goes with the
+nearest `when`; write `end` to close one early.
+
+```lisp
+(loop for x in '(1 2 3 4) if (< x 3) collect x else collect (- x))    ; => (1 2 -3 -4)
+(loop for x in '(1 2 3 4 5) unless (= x 3) sum x)                     ; => 12
+(loop for x in '(1 2 3 4 5)
+      when (> x 2) collect x into big and sum x into total
+      finally (return (list big total)))                              ; => ((3 4 5) 12)
+```
+
+##### Ending the loop
+| Clause | What it does |
+|---|---|
+| `while test` | ends the loop, at that point in the pass, when the test is false |
+| `until test` | ends the loop when the test is true |
+| `always test` | if the test is ever false, the loop ends at once and returns `#f`; otherwise it returns `#t` |
+| `never test` | the same, for a test that is ever true |
+| `thereis test` | if the test is ever true, the loop ends at once and returns its value; otherwise it returns `#f` |
+| `return value` | leaves the loop, returning the value |
+
+```lisp
+(loop for i from 1 to 10 while (< i 4) collect i)               ; => (1 2 3)
+(loop for x in '(1 2 3) always (> x 0))                         ; => #t
+(loop for x in '(1 2 3) never (> x 2))                          ; => #f
+(loop for x in '(1 2 3 4 5) when (> x 3) return x)              ; => 4
+```
+
+The loop's clauses after `while` or `until` don't happen on the pass that
+ends it, but `finally` does. **`return` skips `finally`**, and so does a
+failed `always`, `never`, or `thereis`.
+
+##### Doing things, and before and after
+| Clause | |
+|---|---|
+| `do form...` | evaluate the forms on every pass (any number of them; a form that's a list is part of the `do`, and a word starts the next clause) |
+| `with x = a [and y = b]...` | variables that get their value once, at the start (`with x` alone starts as `'()`), and that you can change with `set!` |
+| `initially form...` | evaluate the forms once, before the first pass |
+| `finally form...` | evaluate the forms once, after the last pass |
+
+```lisp
+(loop with total = 0
+      for x in '(1 2 3)
+      do (set! total (+ total x))
+      finally (return total))                                   ; => 6
+```
+
+##### Leaving a loop: `return`, `return-from`, and `named`
+`(return value)` leaves the nearest loop and makes it return the value.
+`(loop named search ...)` gives a loop a name, and
+`(return-from search value)` leaves that one, from inside a loop inside it, say.
+
+```lisp
+(loop named search
+      for i from 1 to 3
+      do (loop for j from 1 to 3
+               do (if (= (* i j) 6) (return-from search (list i j)))))   ; => (2 3)
+(loop for x in '(1 2 3 4) do (if (> x 2) (return x)))          ; => 3
+```
+
+A `(loop clauses...)` whose first clause is a list, not a word, is the
+**simple loop**: it repeats those forms until one does `(return value)`. It
+needs a `return`.
+
+`return` and `return-from` are macros that `throw` to a `catch` around the
+loop. The loop only makes that `catch` when it sees `return` or `return-from`
+in its clauses, so **a `return` has to be written inside the loop**, as in Common
+Lisp. Written in a separate function that the loop calls, it's an error:
+"nothing catches loop-nil". (Use `throw` and `catch` yourself for that.) A
+`return` outside a loop is the same error. They aren't available in `dolist`,
+`do`, or `while`.
+
+##### How it works, and how fast it is
+`loop` is a macro that turns the clauses into ordinary code (a `let*` for the
+variables, and a `while` round the pass), and the code is made once, the first
+time the loop runs (see "A macro call is expanded once", under "Macros"). The
+hidden variables it makes have `gensym` names, so they can't clash with
+yours. To see the code for a loop, use `print-macroexpansion`:
+
+```
+(print-macroexpansion '(loop for x in prices when (> x 100) collect x))
+```
+
+`loop.lsp` explains the expansion, clause by clause. Each pass of a `loop`
+does a little more bookkeeping than `do` does, so for simple work such as
+adding numbers it takes about twice as long per pass. For the hottest loops over
+numbers, use the vector functions (`vector-sum`, `vector-mul`, ...), which
+work on a whole vector at once.
+
+**Differences from Common Lisp.** The booleans are `#t` and `#f`, not `t` and
+`nil`. Not supported: `for ... and for ...` (stepping in parallel), the
+variable `it`, `by` with `in` and `on`, `being the elements of`, type
+declarations, `loop-finish`, and multiple values. Clause words are not
+case-sensitive in Common Lisp but are here, so write them in lower case.
 
 #### `(when test body...)`, `(unless test body...)`
 `when` evaluates the `body` forms if `test` is true; `unless` evaluates
@@ -4614,7 +4846,7 @@ Reads and evaluates every top-level form in the file at `path`, in the
 **same** (calling) global environment, so its `define`s/`defmacro`s become
 available afterward exactly as if you'd typed them yourself. Returns
 `'()`. This is the same mechanism the interpreter uses at startup to
-auto-load `macros_init.lsp` and `init.lsp`.
+auto-load `macros_init.lsp`, `loop.lsp`, and `init.lsp`.
 
 ```lisp
 (load "column_engine.lsp")     ; defstruct column, register-column, ... now defined
@@ -4837,12 +5069,14 @@ definitions, automatically.
 The same idea, for user-defined macros — excludes this interpreter's own
 `pretty-print-function`/`pretty-print-macro`/`debug-function`/
 `undebug-function` convenience macros. It does include the standard
-macros (`while`, `do`, `case`, and the others in "Standard macros"; they're
-written in Lisp, in `macros_init.lsp`), and any macros from `init.lsp`.
+macros (`while`, `do`, `case`, `loop`, and the others in "Standard macros";
+they're written in Lisp, in `macros_init.lsp` and `loop.lsp`), which come
+first, and then any macros from `init.lsp`, and yours.
 
 ```lisp
 (defmacro double-it (x) `(* 2 ,x))
-(defined-macros)               ; => (while do assert with-sqlite when unless case double-it)
+(member 'double-it (defined-macros))      ; => (double-it)
+(member 'loop (defined-macros))           ; => (loop return return-from double-it)
 ```
 
 #### `(bound-variables)`
@@ -5200,7 +5434,9 @@ and the eventual return line says how many calls it absorbed:
 < (count-down 0) => done  [after 3 tail calls]
 ```
 
-At level 3, a macro call also logs the form and what it expanded to:
+At level 3, a macro call also logs the form and what it expanded to (each
+time the call is evaluated, though the macro itself runs only the first
+time; see "Macros"):
 `~ (unless #f (quote ran)) => (if #f (quote ()) (begin (quote ran)))`.
 
 - Only **user-defined procedures** are traced — not built-ins like `+` or
@@ -5322,9 +5558,9 @@ The interpreter is split into these Python files, all in `lisp_interp/`:
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |
 | `test_lisp_interpreter.py` | The test suite: `python3 -m unittest test_lisp_interpreter` |
 
-Two Lisp files are loaded into every new environment at startup (by
-`load_init_file()` in `lisp_builtins.py`): `macros_init.lsp`, the standard
-macros (see "Standard macros"), and then `init.lsp`, your own
+Some Lisp files are loaded into every new environment at startup (by
+`load_init_file()` in `lisp_builtins.py`): `macros_init.lsp` and `loop.lsp`,
+the standard macros (see "Standard macros"), and then `init.lsp`, your own
 definitions.
 
 Each file that adds builtins ends with a `BUILTINS` table — a Python dict
@@ -5341,7 +5577,7 @@ about 420 tests covering:
   structs, and error reports;
 - every family of builtins, from numbers and strings to tables,
   regression, and SQLite;
-- the Lisp libraries: `macros_init.lsp`, `template.lsp`,
+- the Lisp libraries: `macros_init.lsp`, `loop.lsp`, `template.lsp`,
   `column_engine.lsp`, and the others;
 - the command line, the REPL, and the offline example scripts;
 - **this reference manual**: every ` ```lisp ` example with a `; =>`

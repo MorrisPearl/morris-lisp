@@ -1135,23 +1135,31 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
 # The startup init file
 # ---------------------------------------------------------------------------
 
-# The standard macros (while, do, case, ...), which every new environment
-# loads first.
+# The standard macros, which every new environment loads first: while, do,
+# case, ... (macros_init.lsp), and then loop (loop.lsp, which uses them).
 MACROS_INIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros_init.lsp")
+LOOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "loop.lsp")
+STANDARD_MACRO_FILES = (MACROS_INIT_FILE, LOOP_FILE)
 
 # Your own definitions, which every new environment loads next. Set the
 # LISP_INIT_FILE environment variable to use a different file.
 DEFAULT_INIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "init.lsp")
 
 
+def load_standard_macros(env):
+    """Load just the standard macros (macros_init.lsp and loop.lsp) into env."""
+    for path in STANDARD_MACRO_FILES:
+        run_file(path, env)
+
+
 def load_init_file(env, path=None):
-    """Load macros_init.lsp, then the init file (path, or LISP_INIT_FILE, or
-    init.lsp), into env. Called once for each new environment, before
-    anything else runs. A missing file is silently skipped. An error in one
-    (or an (abort)) is reported to stderr but doesn't stop the interpreter
-    starting, so you can still fix it."""
+    """Load the standard macros (macros_init.lsp and loop.lsp), then the init
+    file (path, or LISP_INIT_FILE, or init.lsp), into env. Called once for
+    each new environment, before anything else runs. A missing file is
+    silently skipped. An error in one (or an (abort)) is reported to stderr
+    but doesn't stop the interpreter starting, so you can still fix it."""
     init_path = path or os.environ.get("LISP_INIT_FILE", DEFAULT_INIT_FILE)
-    for startup_path in (MACROS_INIT_FILE, init_path):
+    for startup_path in STANDARD_MACRO_FILES + (init_path,):
         if not startup_path or not os.path.exists(startup_path):
             continue
         try:

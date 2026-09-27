@@ -1203,6 +1203,30 @@ def expand_macro(macro, arg_exprs):
     return eval_body(macro.body, new_env, call=(macro, arg_exprs))
 
 
+# A macro call is expanded the first time it's evaluated, and the expansion is
+# remembered for that call, so a macro used in a function that's called a
+# million times is expanded once, not a million times. A big macro such as
+# loop takes milliseconds to expand; without this it would dominate the run
+# time. The cache is keyed on the call form itself (the same list of code,
+# not an equal one), holds the macro that expanded it, and forgets an entry if
+# that macro has been redefined.
+_expansion_cache = {}       # id(call form) -> (the form, the macro, the expansion)
+EXPANSION_CACHE_LIMIT = 20000       # code built and evaluated on the fly can't fill memory
+
+
+def expand_macro_call(macro, form):
+    """The expansion of `form`, a call of `macro`: expanded now if this exact
+    form hasn't been expanded before (by this macro), otherwise remembered."""
+    entry = _expansion_cache.get(id(form))
+    if entry is not None and entry[0] is form and entry[1] is macro:
+        return entry[2]
+    expansion = expand_macro(macro, pairs_to_list(form.cdr))
+    if len(_expansion_cache) >= EXPANSION_CACHE_LIMIT:
+        _expansion_cache.clear()
+    _expansion_cache[id(form)] = (form, macro, expansion)      # holding form keeps its id from being reused
+    return expansion
+
+
 def eval_special_form(op, args, env, control_stack, value_stack):
     """Handle one of the special forms in SPECIAL_FORMS by pushing whatever
     control frames are needed to carry out its evaluation."""
@@ -1531,7 +1555,7 @@ def _run_eval_loop(control_stack, value_stack):
                 # so a macro call in tail position is still a proper tail call.
                 macro = cur_env.lookup_or_none(op) if isinstance(op, Symbol) else None
                 if isinstance(macro, Macro):
-                    expansion = expand_macro(macro, pairs_to_list(args))
+                    expansion = expand_macro_call(macro, x)
                     if _verbose_level >= VERBOSE_MACROS:
                         _trace_macro_expansion(macro, x, expansion)
                     control_stack.append(('EVAL', expansion, cur_env))
