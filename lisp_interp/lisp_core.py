@@ -2028,7 +2028,12 @@ def open_debug_repl():
                         "a debug hook; to stop in your own code, write (breakpoint).")
     label = str(pause.name) if pause.kind == "break" else pause.kind
     resume = "lets the error go on" if pause.kind == "error" else "resumes"
-    debug_repl(pause.env, label, resume)
+    was_running = debug_state.hook_running
+    debug_state.hook_running = False        # calls made in the REPL should stop, as they would anywhere
+    try:
+        debug_repl_function(pause.env, label, resume)
+    finally:
+        debug_state.hook_running = was_running
 
 
 def visible_variables(env):
@@ -2066,41 +2071,54 @@ def debug_repl(env, label="debug", resume="resumes"):
     prints, and doesn't call (debug-repl).)"""
     print("--- %s: debug REPL -- (continue) %s, (abort) abandons the computation, "
           "(locals) shows the variables ---" % (label, resume))
-    was_running = debug_state.hook_running
-    debug_state.hook_running = False        # calls made here should stop, as they would anywhere
-    try:
-        buffer = ""
-        while True:
+    buffer = ""
+    while True:
+        try:
+            line = input("  ... " if buffer else "%s> " % label)
+        except EOFError:
+            print()
+            break
+        buffer += line + "\n"
+        if buffer.count("(") <= buffer.count(")"):
+            resume_now = False
             try:
-                line = input("  ... " if buffer else "%s> " % label)
-            except EOFError:
-                print()
+                for expr in parse(buffer):
+                    if isinstance(expr, Pair) and expr.car in (Symbol("continue"), Symbol("exit")):
+                        resume_now = True
+                        break
+                    result = seval(expr, env)
+                    print(cut_off(to_string(result)))
+            except Exception as e:
+                print(format_error_report(e), end="")
+            buffer = ""
+            if resume_now:
                 break
-            buffer += line + "\n"
-            if buffer.count("(") <= buffer.count(")"):
-                resume_now = False
-                try:
-                    for expr in parse(buffer):
-                        if isinstance(expr, Pair) and expr.car in (Symbol("continue"), Symbol("exit")):
-                            resume_now = True
-                            break
-                        result = seval(expr, env)
-                        print(_cut_off(to_string(result)))
-                except Exception as e:
-                    print(format_error_report(e), end="")
-                buffer = ""
-                if resume_now:
-                    break
-    finally:
-        debug_state.hook_running = was_running
     print("--- %s: resuming ---" % label)
 
 
-def _cut_off(text):
-    """text, or its first DEBUG_REPL_MAX_CHARS characters and a note."""
+def cut_off(text):
+    """text, or its first DEBUG_REPL_MAX_CHARS characters and a note. (The debug
+    REPLs use it, so a big vector can't flood the screen.)"""
     if len(text) <= DEBUG_REPL_MAX_CHARS:
         return text
     return "%s ... [%d more characters]" % (text[:DEBUG_REPL_MAX_CHARS], len(text) - DEBUG_REPL_MAX_CHARS)
+
+
+# The function that opens the debug REPL at a stop: debug_repl, which reads the
+# console, unless a front end that has no console installs one of its own. It
+# is called with (env, label, resume), as debug_repl is, and returns when the
+# program is to resume; to abandon the computation it raises LispAbort.
+debug_repl_function = debug_repl
+
+
+def set_debug_repl(function):
+    """Open the debug REPL with `function(env, label, resume)` from now on.
+    Returns the function it replaces. The Jupyter kernel uses this to install
+    the REPL made with ipywidgets (lisp_jupyter_debug.py)."""
+    global debug_repl_function
+    previous = debug_repl_function
+    debug_repl_function = function
+    return previous
 
 
 # ---------------------------------------------------------------------------

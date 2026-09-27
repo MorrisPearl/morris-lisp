@@ -35,6 +35,7 @@ HOW THE CODE IS ORGANIZED
                                                             downloads from tastytrade)
     lisp_gui.py           the PyQt6 window
     lisp_kernel.py        the Jupyter kernel (with lisp_jupyter.py)
+    lisp_jupyter_debug.py the debug REPL in Jupyter, made with ipywidgets
 Each module that adds builtins lists them in a BUILTINS table at its end;
 lisp_builtins.make_global_env() adds those tables to every environment.
 lisp_core.py imports none of the other files, so it can be read on its own.

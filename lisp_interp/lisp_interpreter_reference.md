@@ -75,7 +75,9 @@ Jupyter alike — loads these Lisp files before doing anything else:
   behaves (error display, tab-completion, history variables `_`/`__`/
   `___`/`_N`). Needs `pandas` and `ipykernel` in addition to matplotlib;
   falls back to the console's plain-text chart/table output if either
-  isn't installed. Any of these builtins that fetch over the network
+  isn't installed. A `(breakpoint)`, a `(break f)`, or an error with
+  `break-on-error` opens a debug REPL made with `ipywidgets` in the
+  running cell's output (see "Debugging", below). Any of these builtins that fetch over the network
   (`tastytrade-*`, `sofr-calibration-data`) work fine here too -- they run
   their I/O via `asyncio`, and `_run_async()` (in `lisp_tastytrade.py`,
   and an identical twin in `term_structure/sofr_market_data.py`)
@@ -5105,7 +5107,9 @@ them, and see how it got there. There are three ways to stop it:
   it's about to leave are still there to look at.
 
 **What a stop does.** If no debug hook is registered, the **debug REPL**
-opens. If one is (see `set-debug-hook!`), the hook is called instead, and
+opens (at a terminal, a prompt; in a Jupyter notebook, a set of widgets: see
+"Where the debug REPL works", below). If one is (see `set-debug-hook!`),
+the hook is called instead, and
 *it* decides: it can print something, look around with `(locals)`, and then
 call `(debug-repl)` to open the debug REPL, call `(abort)` to give up, or
 just return, and the program carries on. A hook needs no console, so hooks
@@ -5364,12 +5368,52 @@ and the `catch` returns `no-payment`.
 Older names for `(break name)` and `(unbreak name)`, as macros that take the
 bare name, like `pretty-print-function`.
 
-**Where the debug REPL works.** The debug REPL reads from the real console
-with `input()`, the same as the top-level REPL. It works when you run
-the interpreter in a terminal (with a script or interactively). In the
-GUI, it would read from whatever stdin the GUI process has (usually none, or the
-terminal it was launched from), and in Jupyter there's no console at all:
-use a hook that prints, and don't call `(debug-repl)`, in those.
+**Where the debug REPL works.** At a **terminal** (running a script, or
+interactively) it reads the real console with `input()`, as described above.
+In a **Jupyter notebook**, JupyterLab or Notebook, it's made of widgets, in the
+output of the cell that's running (see below). In the **GUI**, it would read
+from whatever stdin the GUI process has (usually none, or the terminal it was
+launched from), so use a hook that prints there, and don't call `(debug-repl)`.
+
+**The debug REPL in Jupyter.** When the program stops in a notebook cell, the
+cell shows:
+
+- the stop, `--- break: entering payment(1000, 0.06) ---`, and a heading such
+  as `payment> debug REPL`;
+- a **text area** with a **Run** button. Type Lisp and press Run, and it's
+  evaluated in the scope where the program stopped, as at the console (any
+  number of forms; an error stops the rest). The text stays in the box, so you can
+  change it and run it again. The pair is made with ipywidgets'
+  `interact_manual`, which runs its function when the button is pressed;
+- **Continue** and **Abort** buttons (the same as typing `(continue)` or
+  `(abort)`), and **Locals** and **Backtrace** buttons, for the two commonest
+  commands;
+- a **transcript** of what you typed and what came back, including what your
+  Lisp `display`ed, and long results cut off as at the console.
+
+The cell is still running the whole time (its `[*]` and the kernel's "Busy"
+stay up), and the widgets work: that's the point. When you press Continue
+or Abort, or leave with `(continue)` or `(abort)`, the controls switch
+off, the transcript stays, and the cell carries on or ends with an
+`Aborted` error. Some things to know:
+
+- **Other cells wait their turn.** Cells you've already sent to the kernel,
+  such as the ones below in "Run All", stay queued, in order, until the
+  stopped cell is finished, exactly as they would if it were merely slow.
+- **A stop inside a stop works.** Type a call to a procedure with a breakpoint
+  and it stops again, with a second set of widgets (in the output of the Run that
+  caused it). Continue that one to return to the first, and so on.
+- **Interrupt Kernel and Restart Kernel** abort the computation, and close the
+  REPL, instead of leaving the kernel waiting.
+- It needs **ipywidgets**, which Jupyter installs. Without it, the
+  debug REPL says so, and the program carries on. A debug hook
+  that prints needs no widgets at all.
+- This is the `morris_lisp` kernel (`lisp_kernel.py`). Running
+  `python3 lisp_interpreter.py` in a terminal, in a notebook or not,
+  still has the console REPL.
+
+`lisp_jupyter_debug.py` has the details of how a widget click reaches the
+kernel while a cell is still running, which a kernel normally doesn't allow.
 
 **Good to know.** Breakpoints, the hook, and `break-on-error` belong to the
 whole interpreter, like `verbose`, not to one environment. They cost
@@ -5556,6 +5600,7 @@ The interpreter is split into these Python files, all in `lisp_interp/`:
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |
+| `lisp_jupyter_debug.py` | The debug REPL in Jupyter, made with ipywidgets |
 | `test_lisp_interpreter.py` | The test suite: `python3 -m unittest test_lisp_interpreter` |
 
 Some Lisp files are loaded into every new environment at startup (by
@@ -5625,10 +5670,12 @@ LISP_TEST_SLOW=1 python3 -m unittest test_lisp_interpreter
 **What isn't tested.** Anything that needs the network or an account:
 `fred-series`, `tastytrade-*`, and `sofr-calibration-data`. The
 `http-get-*` functions are tested against a small web server that the
-tests start on your own computer. The GUI and the Jupyter kernel get only
-a check that their error reports look right. The GUI check runs
-off-screen, so no window opens. It's skipped if PyQt6 isn't installed, and
-the Jupyter check is skipped if ipykernel isn't.
+tests start on your own computer. The GUI gets only a check that its error
+report looks right; it runs off-screen, so no window opens, and it's skipped
+if PyQt6 isn't installed. The Jupyter kernel is tested by starting a real
+one, which takes a few seconds: its error boxes, and the debug REPL, which a
+scripted stand-in for the browser types into and clicks. Those tests are
+skipped if ipykernel or ipywidgets isn't installed.
 
 **Reading a failure.** Each failure names the test and shows what was
 expected and what happened. For a test that ran Lisp code, it also shows

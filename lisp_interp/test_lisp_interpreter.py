@@ -31,7 +31,9 @@ displayed (`printed`).
 """
 
 import contextlib
+import importlib.util
 import io
+import json
 import os
 import re
 import shutil
@@ -39,6 +41,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -47,6 +50,7 @@ sys.path.insert(0, HERE)
 
 import lisp_builtins  # noqa: E402  (these need the sys.path line above)
 import lisp_core     # noqa: E402
+import lisp_jupyter_debug  # noqa: E402
 
 INTERPRETER = os.path.join(HERE, "lisp_interpreter.py")
 REFERENCE_DOC = os.path.join(HERE, "lisp_interpreter_reference.md")
@@ -3981,6 +3985,581 @@ class TestBreakOnError(LispTestCase):
         self.assertRaisesFromLisp(RecursionError, "(eval '(define (loop-forever) (+ 1 (eval '(loop-forever)))))"
                                                   " (eval '(loop-forever))")
         self.assertShows("count", "0")
+
+
+class TestDebugReplFunction(LispTestCase):
+    """set_debug_repl: a front end with no console installs its own debug REPL."""
+
+    def test_a_stop_opens_the_installed_repl_with_where_and_why(self):
+        opened = []
+        previous = lisp_core.set_debug_repl(lambda env, label, resume: opened.append((label, resume, env)))
+        self.addCleanup(lisp_core.set_debug_repl, previous)
+        self.run_lisp("(define (f x) (* x 2)) (break f) (define answer (f 5))")
+        self.assertShows("answer", "10")
+        self.assertEqual([(label, resume) for label, resume, _ in opened], [("f", "resumes")])
+        self.assertEqual(lisp_core.to_string(lisp_core.visible_variables(opened[0][2])), "((x . 5))")
+
+    def test_an_error_stop_says_that_continuing_lets_the_error_go_on(self):
+        opened = []
+        previous = lisp_core.set_debug_repl(lambda env, label, resume: opened.append((label, resume)))
+        self.addCleanup(lisp_core.set_debug_repl, previous)
+        self.run_lisp("(break-on-error #t)")
+        self.assertLispError("(car 5)", "not a pair")
+        self.assertEqual(opened, [("error", "lets the error go on")])
+
+    def test_calls_made_in_the_installed_repl_can_stop_again(self):
+        stops = []
+
+        def repl(env, label, resume):
+            stops.append(label)
+            if label == "f":
+                lisp_core.seval(list(lisp_core.parse("(g 1)"))[0], env)      # what typing (g 1) would do
+
+        previous = lisp_core.set_debug_repl(repl)
+        self.addCleanup(lisp_core.set_debug_repl, previous)
+        self.run_lisp("(define (f x) x) (define (g x) x) (break f) (break g) (f 1)")
+        self.assertEqual(stops, ["f", "g"])
+
+    def test_the_installed_repl_can_abort(self):
+        def repl(env, label, resume):
+            raise lisp_core.LispAbort()
+        previous = lisp_core.set_debug_repl(repl)
+        self.addCleanup(lisp_core.set_debug_repl, previous)
+        self.run_lisp("(define (f x) x) (break f)")
+        self.assertAborts("(f 1)")
+        self.assertIsNone(lisp_core.current_pause())
+        self.assertFalse(lisp_core.debug_state.hook_running)
+
+
+class FakeShellFrame:
+    """What zmq gives the kernel for a message part: something with .bytes."""
+    def __init__(self, data):
+        self.bytes = data
+
+
+class FakeKernel:
+    """Just enough of an ipykernel for KernelMessagePump: a queue of shell
+    messages, a session to read them with, and the parent-message calls."""
+
+    def __init__(self):
+        import queue
+        from jupyter_client.session import Session
+        self.session = Session()
+        self.msg_queue = queue.Queue()
+        self.shell_stream = mock.Mock()
+        self._parent_ident = {"shell": b"the-cell"}
+        self.parent = {"header": {"msg_id": "the-cell's-execute-request"}}
+        self.set_parent_calls = []
+        self.handled = []              # the types of the messages the kernel handled
+        self.counter = 0
+
+    def get_parent(self, channel=None):
+        return self.parent
+
+    def set_parent(self, ident, parent, channel="shell"):
+        self.set_parent_calls.append((ident, parent, channel))
+        self._parent_ident[channel] = ident
+        self.parent = parent
+
+    def queue_message(self, msg_type):
+        frames = [FakeShellFrame(b"client"), FakeShellFrame(b"<IDS|MSG>")] + \
+                 [FakeShellFrame(part) for part in self.session.serialize(self.session.msg(msg_type, {}))[1:]]
+        kernel = self
+
+        async def dispatch(message_frames):
+            kernel.handled.append(msg_type)
+        self.counter += 1
+        self.msg_queue.put_nowait((self.counter, dispatch, (frames,)))
+
+    def queued_types(self):
+        types = []
+        for item in list(self.msg_queue.queue):
+            types.append(lisp_jupyter_debug.KernelMessagePump(self).message_type(item[2]))
+        return types
+
+
+class TestKernelMessagePump(unittest.TestCase):
+    """The pump handles the widget messages that reach a kernel while a cell is
+    running, and leaves everything else in the queue, in order."""
+
+    def setUp(self):
+        try:
+            self.kernel = FakeKernel()
+        except ImportError:
+            self.skipTest("jupyter_client is not installed")
+        self.pump = lisp_jupyter_debug.KernelMessagePump(self.kernel)
+
+    def test_widget_messages_are_handled_and_the_others_stay_queued_in_order(self):
+        for msg_type in ["execute_request", "comm_msg", "execute_request", "comm_open",
+                         "kernel_info_request", "comm_close", "comm_info_request"]:
+            self.kernel.queue_message(msg_type)
+        self.pump.handle_widget_messages()
+        self.assertEqual(self.kernel.handled, ["comm_msg", "comm_open", "comm_close", "comm_info_request"])
+        self.assertEqual(self.kernel.queued_types(), ["execute_request", "execute_request", "kernel_info_request"])
+
+    def test_messages_that_arrive_later_come_after_the_ones_that_were_held(self):
+        self.kernel.queue_message("execute_request")
+        self.pump.handle_widget_messages()
+        self.kernel.queue_message("execute_request")
+        self.kernel.queue_message("comm_msg")
+        self.pump.handle_widget_messages()
+        self.assertEqual(self.kernel.handled, ["comm_msg"])
+        ids = [item[0] for item in list(self.kernel.msg_queue.queue)]
+        self.assertEqual(ids, sorted(ids))                          # still in the order they came
+
+    def test_it_asks_the_stream_for_the_messages_that_are_waiting(self):
+        self.pump.handle_widget_messages()
+        self.kernel.shell_stream.flush.assert_called_once()
+
+    def test_an_empty_queue_is_fine(self):
+        self.pump.handle_widget_messages()
+        self.assertEqual(self.kernel.handled, [])
+
+    def test_the_cell_is_the_current_message_again_afterwards(self):
+        cell = self.kernel.parent
+        self.kernel.queue_message("comm_msg")
+        self.pump.handle_widget_messages()
+        self.assertEqual(self.kernel.set_parent_calls, [(b"the-cell", cell, "shell")])
+        self.assertIs(self.kernel.get_parent(), cell)
+
+    def test_a_message_that_cannot_be_read_stays_queued(self):
+        self.kernel.msg_queue.put_nowait((1, None, ([FakeShellFrame(b"garbage")],)))
+        self.pump.handle_widget_messages()
+        self.assertEqual(self.kernel.msg_queue.qsize(), 1)
+
+    def test_a_widget_message_that_would_have_to_wait_is_an_error(self):
+        import asyncio
+        kernel = self.kernel
+        kernel.queue_message("comm_msg")
+        item = kernel.msg_queue.get_nowait()
+
+        async def dispatch_that_waits(frames):
+            await asyncio.Future()
+        kernel.msg_queue.put_nowait((item[0], dispatch_that_waits, item[2]))
+        with self.assertRaises(RuntimeError):
+            self.pump.handle_widget_messages()
+
+    def test_a_kernel_without_the_pieces_is_refused(self):
+        with self.assertRaises(RuntimeError):
+            lisp_jupyter_debug.KernelMessagePump(object())
+
+
+class TestWidgetDebugRepl(LispTestCase):
+    """The debug REPL made with ipywidgets: what the buttons and the text area do.
+    No kernel is needed; the pump is played by a fake."""
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import ipywidgets
+        except ImportError:
+            self.skipTest("ipywidgets is not installed")
+        self.widgets = ipywidgets
+        # Like a notebook's, this environment's display output goes to stdout.
+        self.env = lisp_builtins.make_global_env(output=lambda text: print(text, end=""))
+        self.run_lisp("(define (f x) (* x 2)) (define x 5)")
+        # interact asks matplotlib for its backend, which a test process shouldn't
+        patcher = mock.patch("ipywidgets.widgets.interaction.show_inline_matplotlib_plots")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.repl = lisp_jupyter_debug.WidgetDebugRepl(self.env, "f", "resumes")
+        with contextlib.redirect_stdout(io.StringIO()):         # display() prints, outside a notebook
+            self.repl.show()
+
+    def transcript(self):
+        return "".join(o.get("text", "") for o in self.repl.transcript.outputs)
+
+    def button(self, description):
+        for control in self.repl.controls:
+            if isinstance(control, self.widgets.Button) and control.description == description:
+                return control
+        self.fail("no %s button" % description)
+
+    def text_area(self):
+        return [c for c in self.repl.controls if isinstance(c, self.widgets.Textarea)][0]
+
+    def test_it_shows_a_text_area_and_the_buttons(self):
+        descriptions = sorted(c.description for c in self.repl.controls if isinstance(c, self.widgets.Button))
+        self.assertEqual(descriptions, ["Abort", "Backtrace", "Continue", "Locals", "Run"])
+        self.assertEqual(self.transcript(), "")                 # nothing has been run yet
+
+    def test_typing_and_pressing_run_evaluates_in_the_stopped_scope(self):
+        self.text_area().value = "(* x 3)"
+        self.button("Run").click()
+        self.assertEqual(self.transcript(), "f> (* x 3)\n15\n")
+
+    def test_what_is_typed_can_change_variables_and_call_functions(self):
+        self.repl.run_text("(set! x 20)")
+        self.repl.run_text("(f x)")
+        self.assertEqual(self.transcript(), "f> (set! x 20)\n()\nf> (f x)\n40\n")
+        self.assertShows("x", "20")
+
+    def test_what_the_lisp_displays_goes_in_the_transcript(self):
+        self.repl.run_text('(display "hi") (+ 1 2)')
+        self.assertEqual(self.transcript(), 'f> (display "hi") (+ 1 2)\nhi()\n3\n')
+
+    def test_an_error_is_reported_and_stops_the_rest_of_what_was_typed(self):
+        self.repl.run_text("(car 5) (+ 1 2)")
+        self.assertIn("Error: car: not a pair: 5", self.transcript())
+        self.assertNotIn("\n3\n", self.transcript())
+        self.assertIsNone(self.repl.action)                     # and we're still stopped
+
+    def test_a_long_result_is_cut_off(self):
+        self.repl.run_text("(vector-range 5000)")
+        self.assertIn("more characters]", self.transcript())
+        self.assertLess(len(self.transcript()), 2200)
+
+    def test_blank_input_does_nothing(self):
+        self.repl.run_text("   \n ")
+        self.assertEqual(self.transcript(), "")
+
+    def test_typing_continue_or_exit_chooses_to_continue(self):
+        self.repl.run_text("(continue)")
+        self.assertEqual(self.repl.action, "continue")
+        other = lisp_jupyter_debug.WidgetDebugRepl(self.env, "f", "resumes")
+        other.transcript = self.widgets.Output()
+        other.run_text("(exit)")
+        self.assertEqual(other.action, "continue")
+
+    def test_typing_abort_chooses_to_abort(self):
+        self.repl.run_text("(+ 1 1) (abort) (+ 2 2)")
+        self.assertEqual(self.repl.action, "abort")
+        self.assertNotIn("4", self.transcript().split("\n"))     # the rest wasn't run
+
+    def test_the_buttons_choose_and_the_first_choice_stands(self):
+        self.button("Continue").click()
+        self.button("Abort").click()
+        self.assertEqual(self.repl.action, "continue")
+
+    def test_the_locals_and_backtrace_buttons_run_those_commands(self):
+        self.button("Locals").click()
+        self.assertIn("f> (locals)\n", self.transcript())
+        self.button("Backtrace").click()
+        self.assertIn("f> (backtrace)\n", self.transcript())
+
+    def test_wait_looks_for_widget_messages_until_a_choice_is_made(self):
+        looks = []
+
+        class Pump:
+            def handle_widget_messages(pump):
+                looks.append(1)
+                if len(looks) == 3:
+                    self.repl.choose("continue")
+
+        with mock.patch.object(lisp_jupyter_debug, "POLL_SECONDS", 0):
+            self.repl.wait(Pump())
+        self.assertEqual(len(looks), 3)
+        self.assertTrue(all(control.disabled for control in self.repl.controls))
+        self.assertTrue(self.transcript().endswith("--- f: resuming ---\n"))
+
+    def test_wait_raises_lispabort_when_the_choice_is_abort(self):
+        class Pump:
+            def handle_widget_messages(pump):
+                self.repl.choose("abort")
+
+        with mock.patch.object(lisp_jupyter_debug, "POLL_SECONDS", 0):
+            with self.assertRaises(lisp_core.LispAbort):
+                self.repl.wait(Pump())
+        self.assertTrue(all(control.disabled for control in self.repl.controls))
+        self.assertTrue(self.transcript().endswith("--- f: aborted ---\n"))
+
+    def test_interrupt_kernel_while_waiting_aborts(self):
+        class Pump:
+            def handle_widget_messages(pump):
+                raise KeyboardInterrupt
+
+        with mock.patch.object(lisp_jupyter_debug, "POLL_SECONDS", 0):
+            with self.assertRaises(lisp_core.LispAbort):
+                self.repl.wait(Pump())
+
+    def test_the_controls_are_switched_off_even_when_the_program_is_thrown_out(self):
+        class Pump:
+            def handle_widget_messages(pump):
+                raise lisp_core.LispThrow("out", 1)
+
+        with mock.patch.object(lisp_jupyter_debug, "POLL_SECONDS", 0):
+            with self.assertRaises(lisp_core.LispThrow):
+                self.repl.wait(Pump())
+        self.assertTrue(all(control.disabled for control in self.repl.controls))
+
+    def test_a_stop_inside_a_stop_evaluates_in_the_inner_scope(self):
+        # typing (g 1) in the REPL for f stops in g, whose own REPL evaluates there
+        previous = lisp_core.set_debug_repl(lambda env, label, resume: self.repl.run_text("y"))
+        self.addCleanup(lisp_core.set_debug_repl, previous)
+        self.run_lisp("(define (g y) (+ y 100)) (break g)")
+        self.repl.run_text("(g 41)")
+        self.assertIn("141", self.transcript())
+
+
+class TestOpeningTheWidgetReplFromAKernel(LispTestCase):
+
+    def test_without_ipywidgets_the_program_just_resumes_with_a_message(self):
+        console = io.StringIO()
+        with mock.patch("importlib.util.find_spec", return_value=None):
+            with contextlib.redirect_stdout(console):
+                lisp_jupyter_debug.open_widget_debug_repl(object(), self.env, "f", "resumes")
+        self.assertIn("needs ipywidgets", console.getvalue())
+        self.assertIn("resuming", console.getvalue())
+
+    def test_a_kernel_that_is_not_running_just_resumes_with_a_message(self):
+        console = io.StringIO()
+        with contextlib.redirect_stdout(console):
+            lisp_jupyter_debug.open_widget_debug_repl(object(), self.env, "f", "resumes")
+        self.assertIn("can only open while a notebook cell is running", console.getvalue())
+
+
+class ScriptedFrontend:
+    """A stand-in for JupyterLab, for testing the debug REPL against a real kernel:
+    it runs cells, watches for the widgets they show, and types and clicks in
+    them the way the browser would (by sending the widgets' comm messages)."""
+
+    class Cell:
+        def __init__(self, msg_id):
+            self.msg_id = msg_id
+            self.streams, self.results, self.errors = [], [], []
+            self.done = False
+            self.finished_at = None
+
+    def __init__(self, kernel_name):
+        from jupyter_client.manager import start_new_kernel
+        self.km, self.kc = start_new_kernel(kernel_name=kernel_name, startup_timeout=60)
+        self.cells = {}
+        self.widgets = []       # (comm id, model name, description), in the order made
+        self.outputs = {}       # comm id -> the text of that Output widget
+
+    def close(self):
+        self.kc.stop_channels()
+        self.km.shutdown_kernel(now=True)
+
+    def start(self, code):
+        cell = self.Cell(self.kc.execute(code))
+        self.cells[cell.msg_id] = cell
+        return cell
+
+    def run(self, code, timeout=20):
+        """Run a cell that doesn't stop, and wait for it."""
+        cell = self.start(code)
+        self.wait_for(lambda: cell.done, timeout)
+        return cell
+
+    def process(self, wait=0.2):
+        while True:
+            try:
+                msg = self.kc.get_iopub_msg(timeout=wait)
+            except Exception:
+                return
+            wait = 0.01
+            kind, content = msg["msg_type"], msg["content"]
+            cell = self.cells.get(msg["parent_header"].get("msg_id"))
+            if kind == "comm_open":
+                state = content["data"].get("state", {})
+                self.widgets.append((content["comm_id"], state.get("_model_name"), state.get("description", "")))
+            elif kind == "comm_msg":
+                state = content["data"].get("state", {})
+                if "outputs" in state:
+                    self.outputs[content["comm_id"]] = "".join(
+                        o.get("text", "") for o in state["outputs"] if o.get("output_type") == "stream")
+            elif cell is not None:
+                if kind == "stream":
+                    cell.streams.append(content["text"])
+                elif kind == "execute_result":
+                    cell.results.append(content["data"]["text/plain"])
+                elif kind == "error":
+                    cell.errors.append("%s: %s" % (content["ename"], content["evalue"]))
+                elif kind == "status" and content["execution_state"] == "idle":
+                    cell.done = True
+                    cell.finished_at = time.time()
+
+    def wait_for(self, condition, timeout=20):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self.process()
+            if condition():
+                return True
+        return False
+
+    def buttons(self, description):
+        return [w[0] for w in self.widgets if w[1] == "ButtonModel" and w[2] == description]
+
+    def text_area(self):
+        return [w[0] for w in self.widgets if w[1] == "TextareaModel"][-1]
+
+    def transcript(self):
+        """The text in the debug REPL's transcript (the last Output widget made)."""
+        ids = [w[0] for w in self.widgets if w[1] == "OutputModel"]
+        return self.outputs.get(ids[-1], "") if ids else ""
+
+    def stopped(self, how_many=1, timeout=20):
+        """Wait for the debug REPL to be shown."""
+        return self.wait_for(lambda: len(self.buttons("Continue")) >= how_many, timeout)
+
+    def type_and_run(self, text):
+        comm = self.kc.shell_channel
+        comm.send(self.kc.session.msg("comm_msg", {"comm_id": self.text_area(), "data": {
+            "method": "update", "state": {"value": text}, "buffer_paths": []}}))
+        self.click(self.buttons("Run")[-1])
+
+    def click(self, comm_id):
+        self.kc.shell_channel.send(self.kc.session.msg("comm_msg", {"comm_id": comm_id, "data": {
+            "method": "custom", "content": {"event": "click"}}}))
+
+    def transcript_has(self, text, timeout=10):
+        return self.wait_for(lambda: text in self.transcript(), timeout)
+
+
+class TestJupyterDebugger(unittest.TestCase):
+    """The debug REPL in a real Jupyter kernel, with a scripted frontend: a stop
+    in the middle of a cell shows widgets, the widgets work while the cell is
+    still running, and the cell carries on, or is abandoned, as they say."""
+
+    @classmethod
+    def setUpClass(cls):
+        for name in ("ipykernel", "ipywidgets", "jupyter_client"):
+            if importlib.util.find_spec(name) is None:
+                raise unittest.SkipTest("%s is needed" % name)
+        cls.tmp = tempfile.mkdtemp()
+        spec_dir = os.path.join(cls.tmp, "kernels", "lisp-debug-test")
+        os.makedirs(spec_dir)
+        with open(os.path.join(spec_dir, "kernel.json"), "w") as f:
+            json.dump({"argv": [sys.executable, os.path.join(HERE, "lisp_kernel.py"), "-f", "{connection_file}"],
+                       "display_name": "lisp-debug-test", "language": "scheme",
+                       "env": {"LISP_INIT_FILE": os.path.join(cls.tmp, "no-such-init.lsp")}}, f)
+        try:
+            with mock.patch.dict(os.environ, {"JUPYTER_PATH": cls.tmp}):
+                cls.frontend = ScriptedFrontend("lisp-debug-test")
+        except Exception as e:
+            shutil.rmtree(cls.tmp, ignore_errors=True)
+            raise unittest.SkipTest("couldn't start a kernel: %s" % e)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.frontend.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        self.fe = self.frontend
+        self.fe.widgets.clear()
+        self.fe.outputs.clear()
+        self.fe.run("(unbreak) (break-on-error #f) (set-debug-hook! '()) "
+                    "(define (f x) (* x 2)) (define (g y) (+ y 1)) (break f)")
+
+    def tearDown(self):
+        self.fe.process(0.05)
+        self.fe.run("(unbreak) (break-on-error #f) (set-debug-hook! '())")
+
+    def test_the_repl_is_shown_while_the_cell_runs_and_its_widgets_work(self):
+        cell = self.fe.start("(f 5)")
+        self.assertTrue(self.fe.stopped())
+        self.assertFalse(cell.done)                                # the cell is still running
+        self.assertEqual(cell.streams, ["--- break: entering f(5) ---\n"])
+        self.fe.type_and_run("(locals)")
+        self.assertTrue(self.fe.transcript_has("((x . 5))"))
+        self.fe.type_and_run("(set! x 100)")
+        self.assertTrue(self.fe.transcript_has("f> (set! x 100)\n()\n"))
+        self.fe.click(self.fe.buttons("Continue")[-1])
+        self.assertTrue(self.fe.wait_for(lambda: cell.done))
+        self.assertEqual(cell.results, ["200"])                    # the argument was changed at the stop
+        self.assertEqual(cell.errors, [])
+        self.assertEqual(self.fe.transcript(), "f> (locals)\n((x . 5))\nf> (set! x 100)\n()\n--- f: resuming ---\n")
+
+    def test_the_abort_button_abandons_the_cell(self):
+        cell = self.fe.start("(list (f 5) 'not-reached)")
+        self.assertTrue(self.fe.stopped())
+        self.fe.click(self.fe.buttons("Abort")[-1])
+        self.assertTrue(self.fe.wait_for(lambda: cell.done))
+        self.assertEqual(cell.results, [])
+        self.assertEqual(cell.errors, ["Aborted: the computation was abandoned by (abort)"])
+        self.assertTrue(self.fe.transcript_has("--- f: aborted ---"))
+
+    def test_typing_continue_or_abort_works_like_the_buttons(self):
+        cell = self.fe.start("(f 6)")
+        self.fe.stopped()
+        self.fe.type_and_run("(continue)")
+        self.assertTrue(self.fe.wait_for(lambda: cell.done))
+        self.assertEqual(cell.results, ["12"])
+        self.fe.widgets.clear()
+        cell = self.fe.start("(f 6)")
+        self.fe.stopped()
+        self.fe.type_and_run("(abort)")
+        self.assertTrue(self.fe.wait_for(lambda: cell.done))
+        self.assertEqual(cell.errors, ["Aborted: the computation was abandoned by (abort)"])
+
+    def test_output_errors_and_long_results_go_in_the_transcript(self):
+        cell = self.fe.start("(f 8)")
+        self.fe.stopped()
+        self.fe.type_and_run('(display "hello") (car 5)')
+        self.assertTrue(self.fe.transcript_has("Error: car: not a pair: 5"))
+        self.assertIn("hello", self.fe.transcript())
+        self.fe.type_and_run("(vector-range 5000)")
+        self.assertTrue(self.fe.transcript_has("more characters]"))
+        self.fe.click(self.fe.buttons("Backtrace")[-1])
+        self.assertTrue(self.fe.transcript_has("(f 8)"))           # the call stack, with the stopped call in it
+        self.fe.click(self.fe.buttons("Continue")[-1])
+        self.assertTrue(self.fe.wait_for(lambda: cell.done))
+        self.assertEqual(cell.results, ["16"])
+
+    def test_cells_queued_behind_a_paused_cell_wait_for_it(self):
+        first = self.fe.start("(f 7)")
+        self.fe.stopped()
+        second = self.fe.start("(+ 1 2)")                          # as Run All would queue it
+        self.assertFalse(self.fe.wait_for(lambda: second.done, timeout=1.5))
+        self.fe.click(self.fe.buttons("Continue")[-1])
+        self.assertTrue(self.fe.wait_for(lambda: first.done and second.done))
+        self.assertEqual((first.results, second.results), (["14"], ["3"]))
+        self.assertLessEqual(first.finished_at, second.finished_at)
+
+    def test_a_stop_inside_a_stop(self):
+        self.fe.run("(break g)")
+        cell = self.fe.start("(f 9)")
+        self.fe.stopped(1)
+        self.fe.type_and_run("(g 41)")
+        self.assertTrue(self.fe.stopped(2))                        # g's REPL, inside f's
+        outer_continue, inner_continue = self.fe.buttons("Continue")[-2:]
+        self.fe.click(inner_continue)
+        self.assertTrue(self.fe.wait_for(lambda: "42" in "".join(self.fe.outputs.values())))
+        self.assertFalse(cell.done)                                # f is still stopped
+        self.fe.click(outer_continue)
+        self.assertTrue(self.fe.wait_for(lambda: cell.done))
+        self.assertEqual(cell.results, ["18"])
+
+    def test_break_on_error_shows_the_variables_and_continuing_lets_the_error_go_on(self):
+        self.fe.run("(unbreak) (break-on-error #t)")
+        cell = self.fe.start("(let ((c 2)) (car c))")
+        self.assertTrue(self.fe.stopped())
+        self.fe.click(self.fe.buttons("Locals")[-1])
+        self.assertTrue(self.fe.transcript_has("((c . 2))"))
+        self.fe.click(self.fe.buttons("Continue")[-1])
+        self.assertTrue(self.fe.wait_for(lambda: cell.done))
+        self.assertEqual(cell.errors, ["LispError: car: not a pair: 2"])
+
+    def test_interrupt_kernel_while_stopped_abandons_the_cell(self):
+        cell = self.fe.start("(f 10)")
+        self.fe.stopped()
+        self.fe.km.interrupt_kernel()
+        self.assertTrue(self.fe.wait_for(lambda: cell.done))
+        self.assertEqual(cell.errors, ["Aborted: the computation was abandoned by (abort)"])
+        after = self.fe.run("(+ 20 22)")
+        self.assertEqual(after.results, ["42"])                    # the kernel is fine afterwards
+
+    def test_a_debug_hook_takes_the_place_of_the_widgets(self):
+        cell = self.fe.run('(set-debug-hook! (lambda (kind name args) (display "hooked "))) (f 3)')
+        self.assertEqual(cell.results, ["6"])
+        self.assertIn("hooked ", "".join(cell.streams))
+        self.assertEqual(self.fe.buttons("Continue"), [])
+
+    def test_the_hook_can_still_open_the_repl_with_debug_repl(self):
+        cell = self.fe.start('(set-debug-hook! (lambda (kind name args) (if (> (car args) 5) (debug-repl)))) '
+                             '(list (f 1) (f 9))')
+        self.assertTrue(self.fe.stopped())
+        self.assertFalse(cell.done)
+        self.fe.click(self.fe.buttons("Continue")[-1])
+        self.assertTrue(self.fe.wait_for(lambda: cell.done))
+        self.assertEqual(cell.results, ["(2 18)"])
+
+    def test_drawing_a_chart_still_works_in_the_kernel(self):
+        # the kernel sets matplotlib's backend early, for ipywidgets.interact's sake
+        cell = self.fe.run("(plot-xy #(1 2 3) (list #(1 4 9)))")
+        self.assertEqual(cell.errors, [])
 
 
 class TestKernelErrorReply(unittest.TestCase):

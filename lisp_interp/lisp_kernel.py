@@ -13,9 +13,11 @@ Differences from a Python kernel:
     traceback. (A tail call replaces its caller's frame, shown as
     "[+N tail calls]".)
   - There's no tab completion.
-  - The debug REPL that (breakpoint) and (break f) open reads the console, which a
-    notebook doesn't have. Register a debug hook that prints, and doesn't call
-    (debug-repl), instead: see "Debugging" in lisp_interpreter_reference.md.
+  - The debug REPL that (breakpoint) and (break f) open is made with ipywidgets:
+    a text area and a Run button, with Continue and Abort, in the output of the
+    running cell (see lisp_jupyter_debug.py). A debug hook that prints, and
+    doesn't call (debug-repl), needs no widgets: see "Debugging" in
+    lisp_interpreter_reference.md.
   - (abort) ends the cell with an "Aborted" error.
   - The history variables _, __, ___, and _N (the result of cell N) are
     set in the Lisp environment by hand (see _record_history), since
@@ -25,9 +27,19 @@ from __future__ import annotations
 import os
 import sys
 
+# ipykernel makes matplotlib's default backend the notebook's own ("inline"),
+# but only once the kernel has started, and lisp_jupyter (below) has imported
+# matplotlib before then; matplotlib reads the setting when it's imported. The
+# debug REPL's ipywidgets.interact asks matplotlib for its backend, and would
+# be told the desktop one (macosx, on a Mac), which a kernel can't use. So make
+# the setting first, as ipykernel would.
+os.environ.setdefault("MPLBACKEND", "module://matplotlib_inline.backend_inline")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lisp_core import LispAbort, LispError, NIL, Symbol, format_lisp_traceback, parse, seval, to_string
+import lisp_core
 import lisp_jupyter
+import lisp_jupyter_debug
 
 from ipykernel.ipkernel import IPythonKernel
 
@@ -63,6 +75,15 @@ class LispKernel(IPythonKernel):
     @execution_count.setter
     def execution_count(self, value):
         self._execution_count = value
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        lisp_core.set_debug_repl(self.open_debug_repl)      # a notebook has no console to read
+
+    def open_debug_repl(self, env, label, resume):
+        """The debug REPL, when the program stops: made with ipywidgets, in the
+        output of the running cell (see lisp_jupyter_debug.py)."""
+        lisp_jupyter_debug.open_widget_debug_repl(self, env, label, resume)
 
     def do_execute(self, code, silent, store_history=True, user_expressions=None,
                     allow_stdin=False, *, cell_meta=None, cell_id=None):
