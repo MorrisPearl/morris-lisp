@@ -19,6 +19,48 @@ non-obvious behavior or error conditions. For a quicker orientation, read
 "Running it", "Syntax", and "Special forms" first, then treat "Built-in
 functions" as a reference to search rather than read start to end.
 
+## Contents
+
+- [Running it](#running-it)
+- [Syntax](#syntax)
+  - [Special forms](#special-forms)
+  - [Variadic parameters](#variadic-parameters)
+  - [Keyword arguments](#keyword-arguments)
+  - [Macros](#macros)
+  - [Standard macros](#standard-macros)
+- [Built-in functions](#built-in-functions)
+  - [Arithmetic](#arithmetic)
+  - [Random numbers](#random-numbers)
+  - [Comparison / equality / booleans](#comparison--equality--booleans)
+  - [Pairs and lists](#pairs-and-lists)
+  - [Hash tables](#hash-tables)
+  - [Strings](#strings)
+  - [Formatting numbers and text](#formatting-numbers-and-text)
+  - [Vectors](#vectors)
+  - [Vector math and statistics](#vector-math-and-statistics)
+  - [Tables](#tables)
+  - [Monthly time series](#monthly-time-series)
+  - [Structs](#structs)
+  - [Dates](#dates)
+  - [Regression models](#regression-models)
+  - [Linear programming](#linear-programming)
+  - [Charting](#charting)
+  - [Columns](#columns)
+  - [FRED (Federal Reserve Bank of St. Louis) data, and CSV loading](#fred-federal-reserve-bank-of-st-louis-data-and-csv-loading)
+  - [Downloading data from the web](#downloading-data-from-the-web)
+  - [SQLite](#sqlite)
+  - [tastytrade (real broker data)](#tastytrade-real-broker-data)
+  - [Input / output](#input--output)
+  - [Metaprogramming](#metaprogramming)
+  - [Introspection / debugging](#introspection--debugging)
+  - [Debugging](#debugging)
+  - [Verbose mode and stack traces](#verbose-mode-and-stack-traces)
+- [A short example](#a-short-example)
+- [How the code is organized](#how-the-code-is-organized)
+- [Running the tests](#running-the-tests)
+- [Adding your own builtins](#adding-your-own-builtins)
+  - [What a builtin receives and returns](#what-a-builtin-receives-and-returns)
+
 ## Running it
 
 - **No arguments** — `python3 lisp_interpreter.py` opens the PyQt6 GUI (an
