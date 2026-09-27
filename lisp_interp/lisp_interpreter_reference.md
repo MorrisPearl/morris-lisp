@@ -24,10 +24,37 @@ functions" as a reference to search rather than read start to end.
 - [Running it](#running-it)
 - [Syntax](#syntax)
   - [Special forms (e.g. quote, if, lambda, let, cond and/or define, throw/catch)](#special-forms)
+    - [quote](#quote)
+	- [quasiquote](#quasiquote)
+	- [if](#if)
+	- [define](#define)
+	- [set!](#set!)
+	- [lambda](#lambda)
+	- [begin](#begin)	
+	- [let](#let)	
+	- [cond](#cond)	
+	- [and](#and)
+	- [or](#or)
+	- [dolist](#dolist)
+	- [defmacro](#defmacro)
+	- [defstruct](#defstruct)
+	- [with-struct](#with-struct)
+	- [breakpoint](#breakpoint)
+	- [backtrace](#backtrace)
+	- [catch-error](#catch-error)
+	- [unwind-protect](#unwind-protect)
+	- [catch throw](#catch-throw)
   - [Variadic parameters](#variadic-parameters)
   - [Keyword arguments](#keyword-arguments)
   - [Macros](#macros)
-  - [Standard macros: (while, do, loop, when, unless, case, assert, with-sqlite)](#standard-macros)
+  - [Standard macros](#standard-macros)
+  	- [while](#while)
+	- [do](#do)
+	- [loop](#loop)
+	- [when](#when)
+	- [case](#case)
+	- [assert](#assert)
+	- [with-sqlite](#with-sqlite)
 - [Built-in functions](#built-in-functions)
   - [Arithmetic](#arithmetic)
   - [Random numbers](#random-numbers)
@@ -166,6 +193,7 @@ decides what, if anything, to evaluate and when — which is what
 distinguishes them from ordinary procedure calls (where every argument is
 evaluated before the call happens).
 
+#### quote
 #### `(quote expr)`
 Returns `expr` completely unevaluated, as literal data. `'expr` is reader
 sugar for this.
@@ -175,6 +203,7 @@ sugar for this.
 '(a b c)                       ; => (a b c) -- the common way to write it
 ```
 
+#### quasiquote
 #### `` (quasiquote template) ``
 Like `quote`, but `(unquote expr)` (written `,expr`) inside the template is
 replaced by the *value* of evaluating `expr`, and `(unquote-splicing expr)`
@@ -194,7 +223,7 @@ each element. See "Macros", below, for why this matters.
 (let ((rest (list 2 3)))
   `(1 ,@rest 4))               ; => (1 2 3 4) -- splices the LIST's elements in
 ```
-
+#### if
 #### `(if test conseq [alt])`
 Evaluates `test`; if it is not `#f` (everything else — including `0` and
 `'()` — counts as true), evaluates and returns `conseq`; otherwise
@@ -204,7 +233,7 @@ evaluates and returns `alt`, or `'()` if `alt` was omitted.
 (if (> 3 2) 'yes 'no)          ; => yes
 (if (> 2 3) 'yes)              ; => ()  -- no alt given, test was false
 ```
-
+#### define
 #### `(define name expr)` / `(define (name params...) body...)`
 First form: evaluates `expr` and binds it to `name` in the current
 environment (creating the binding if it doesn't already exist there).
@@ -221,7 +250,7 @@ below. Returns `name`.
 (define (square n) (* n n))    ; => square
 (square 5)                     ; => 25
 ```
-
+#### set!
 #### `(set! name expr)`
 Evaluates `expr` and rebinds the *existing* binding of `name`, found by
 walking outward through enclosing environments. Raises `LispError: unbound
@@ -234,7 +263,7 @@ already exists.
 (set! x 20)
 x                               ; => 20
 ```
-
+#### lambda
 #### `(lambda params body...)`
 Creates and returns an anonymous procedure, closing over the environment
 active where the `lambda` appears. `params` follows the same three shapes
@@ -246,7 +275,7 @@ every argument).
 (define add1 (lambda (n) (+ n 1)))
 (add1 41)                      ; => 42
 ```
-
+#### begin
 #### `(begin expr...)`
 Evaluates each expression in order, returning the value of the last one (or
 `'()` if there are none). The last expression is in tail position.
@@ -254,7 +283,7 @@ Evaluates each expression in order, returning the value of the last one (or
 ```lisp
 (begin (display "a") (display "b") 42)   ; prints ab, => 42
 ```
-
+#### let
 #### `(let ((name val)...) body...)`
 Desugars to `((lambda (name...) body...) val...)`: every `val` is evaluated
 in the *outer* environment (none of them can see each other's bindings),
@@ -272,7 +301,7 @@ form.
 ```lisp
 (let* ((a 1) (b (+ a 1))) (list a b))   ; => (1 2) -- b's val sees a
 ```
-
+#### cond
 #### `(cond (test body...)... [(else body...)])`
 Tries each clause's `test` in turn; for the first one that's true,
 evaluates its `body...` and returns the value of the last expression. The
@@ -284,7 +313,7 @@ literal symbol `else` (not evaluated) always matches, if present. Returns
       ((= 1 1) 'yes)
       (else 'fallback))        ; => yes
 ```
-
+#### and
 #### `(and expr...)`
 Evaluates each expression in order, stopping and returning `#f` as soon as
 one is false; if every expression is true, returns the value of the last
@@ -294,7 +323,7 @@ one. `(and)` (zero arguments) returns `#t`.
 (and 1 2 3)                    ; => 3  -- every expr true, returns the last
 (and 1 #f 3)                   ; => #f -- stops at the first false one
 ```
-
+#### or
 #### `(or expr...)`
 Evaluates each expression in order, stopping and returning the value of the
 first one that's true; if none are, returns `#f`. `(or)` (zero arguments)
@@ -304,7 +333,7 @@ returns `#f`.
 (or #f #f 3)                   ; => 3  -- first true value
 (or #f #f)                     ; => #f -- none were true
 ```
-
+#### dolist
 #### `(dolist (var list-expr [result-expr]) body...)`
 Common-Lisp-style list iteration. Evaluates `list-expr` exactly once, then
 for each element in turn binds `var` to it and runs `body...` for side
@@ -326,6 +355,7 @@ total                          ; => 15
 For loops that aren't over a list, see `while` and `do` under "Standard
 macros", below.
 
+#### defmacro
 #### `(defmacro name (params...) body...)`
 Defines `name` as a macro — see "Macros", below, for the full explanation.
 `params` supports the same fixed/dotted/bare-symbol shapes `lambda` does,
@@ -336,7 +366,7 @@ plus `&key` — see "Keyword arguments", below. Returns `name`.
 (my-unless (> 1 2) 'shown)     ; => shown -- see "Macros" for why this needs
                                 ;    to be a macro, not a plain function
 ```
-
+#### defstruct
 #### `(defstruct name slot...)`, `(defstruct (name (:include parent [slot-override...])) slot...)`
 Common-Lisp-style record type. Each `slot` is either a bare symbol (default
 value `'()`) or `(slot-name default-expr)` — e.g. `(visible #t)`. Defines,
@@ -425,6 +455,7 @@ another) works the same way, transitively — a grandparent's accessors work
 on a grandchild instance, and `grandparent?`/`parent?`/`child?` are all
 true for it.
 
+#### with-struct
 #### `(with-struct struct-expr body...)`
 Evaluates `struct-expr` (once) — an instance of **any** `defstruct` type — and
 binds **every one of its slot names** to that slot's value, exactly as `let`
@@ -476,6 +507,8 @@ so it can't look inside a struct that lives in a local variable. It's the same
 reason `breakpoint`, below, has to be a special form: it needs the caller's
 real environment. See `with_struct_example.lsp` for a worked example.
 
+#### breakpoint
+
 #### `(breakpoint [message])`
 Opens a nested, blocking debug REPL right where it appears, evaluating
 whatever you type directly in the **real lexical environment active at that
@@ -502,6 +535,7 @@ Prints the chain of procedure calls in progress right now, without needing
 an error — see "Verbose mode and stack traces", under "Introspection /
 debugging", below. Returns `'()`.
 
+#### catch-error
 #### `(catch-error protected-expr (var) handler-body...)`
 Evaluates `protected-expr`; if it raises an error, binds `var` to the
 error's message (a string) and evaluates `handler-body...` (implicit
@@ -526,7 +560,7 @@ one protected expression, wrap them in a `begin`.
 (safe-sqrt -4)                       ; => -1
 (safe-sqrt 16)                       ; => 4.0
 ```
-
+#### unwind-protect
 #### `(unwind-protect protected-expr cleanup-expr...)`
 Evaluates `protected-expr` and returns its value, but always runs the
 `cleanup-expr`s afterwards, however `protected-expr` finishes: normally,
@@ -553,6 +587,7 @@ log                                      ; => (again cleaned-up)
 Nested `unwind-protect`s run their cleanups innermost first. If a cleanup
 expression itself has an error, that error is the one reported.
 
+#### catch throw
 #### `(catch tag body...)` and `(throw tag [value])`
 A way to jump out of the middle of something, such as a loop or a deep
 chain of function calls, with a value. `catch` evaluates `tag`, then the
@@ -918,6 +953,7 @@ from `gensym`, so it can't clash with a name in your code. To see what a
 loop becomes, use `macroexpand-1`, e.g.
 `(macroexpand-1 '(while (< i 3) (set! i (+ i 1))))`.
 
+#### while
 #### `(while test body...)`
 Evaluates `test`; if it's true, evaluates the `body` forms, then starts
 over. Stops the first time `test` is false, and returns `'()`. For
@@ -932,7 +968,7 @@ example, how many months until a balance falling 10% a month is below
   (set! months (+ months 1)))
 months                         ; => 7
 ```
-
+#### do
 #### `(do ((var init [step])...) (end-test result...) body...)`
 Common Lisp's `do` loop: a loop that steps one or more variables. It binds
 each `var` to its `init`, then repeats:
@@ -978,6 +1014,7 @@ prints `2024`, `2025`, and `2026` on separate lines.
 Each variable must be written `(var init)` or `(var init step)`. Unlike
 Common Lisp, a bare `var` (meaning "starts as `'()`") isn't accepted.
 
+#### loop
 #### `(loop clause...)`
 Common Lisp's `loop`: a loop written as a list of **clauses**, which read a
 little like English. Each clause says one thing: what to step through, what to
@@ -1186,6 +1223,7 @@ variable `it`, `by` with `in` and `on`, `being the elements of`, type
 declarations, `loop-finish`, and multiple values. Clause words are not
 case-sensitive in Common Lisp but are here, so write them in lower case.
 
+#### when
 #### `(when test body...)`, `(unless test body...)`
 `when` evaluates the `body` forms if `test` is true; `unless` evaluates
 them if `test` is false. Either returns the last body form's value, or
@@ -1208,6 +1246,7 @@ they need no `begin`:
 Remember that only `#f` is false: `0` and `'()` count as true, so
 `(when 0 'yes)` is `yes`.
 
+#### case
 #### `(case key-expr clause...)`
 Picks one of several branches by matching a value against lists of
 constants. It evaluates `key-expr` once, then finds the first clause whose
@@ -1256,6 +1295,7 @@ once):
 To choose by a test rather than by matching constants (for example, a
 range of values), use `cond`.
 
+#### assert
 #### `(assert test [message...])`
 Does nothing (and returns `'()`) if `test` is true. If it's false, stops
 with an error that shows the test itself, plus the message if you give
@@ -1277,6 +1317,7 @@ or a result along the way:
 into the message, not just its value (`#f`). The message is evaluated
 only if the test fails.
 
+#### with-sqlite
 #### `(with-sqlite (var path) body...)`
 Opens the SQLite database at `path` (creating it if it doesn't exist),
 binds `var` to the connection, and evaluates the `body` forms, returning
