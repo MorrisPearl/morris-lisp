@@ -23,11 +23,11 @@ functions" as a reference to search rather than read start to end.
 
 - [Running it](#running-it)
 - [Syntax](#syntax)
-  - [Special forms](#special-forms)
+  - [Special forms (e.g. quote, if, lambda, let, cond and/or define, throw/catch)](#special-forms)
   - [Variadic parameters](#variadic-parameters)
   - [Keyword arguments](#keyword-arguments)
   - [Macros](#macros)
-  - [Standard macros](#standard-macros)
+  - [Standard macros: (while, do, loop, when, unless, case, assert, with-sqlite)](#standard-macros)
 - [Built-in functions](#built-in-functions)
   - [Arithmetic](#arithmetic)
   - [Random numbers](#random-numbers)
@@ -135,6 +135,7 @@ Jupyter alike — loads these Lisp files before doing anything else:
 | String | `"hello"` | Double-quoted; `\n`, `\t`, `\r`, `\"`, `\\` escapes. The REPL prints a string the same way, in quotes and with `\"` and `\\` for a quote mark or backslash inside it, so what it prints can be typed back in (see `display`) |
 | Boolean | `#t`, `#f` | Everything except `#f` counts as true |
 | Symbol | `foo`, `list->vector` | Identifiers: anything that isn't read as a number or one of the types above |
+| quote | `'(a b c)` , `'(1 2 3)` , `'f`| Something that is not to be evaluated, but is treated as data |
 | Keyword | `:name`, `:x` | A `Symbol` subtype, but SELF-EVALUATING (never needs `quote`) — used at call sites for keyword arguments; see "Keyword arguments", below |
 | Pair / list | `(1 2 3)`, `'(a b c)` | Built from cons cells; `()` is the empty list |
 | Dotted pair | `(1 . 2)`, `(a b . c)` | An IMPROPER list — `.` before the last element sets the final cdr directly instead of `()`. Mainly used for variadic parameter lists (see below), but works anywhere |
