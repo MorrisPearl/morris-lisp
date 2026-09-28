@@ -6,8 +6,10 @@ Each builtin here is a single numpy operation over the whole vector, so
 it's fast even on millions of values -- far faster than a Lisp loop over
 vector-ref.
 
-Arithmetic and comparisons take two vectors of the same length, or a
-vector and a single number (which is used with every element).
+The ordinary arithmetic builtins -- +, -, *, /, <, =, sqrt, max, ... (in
+lisp_builtins.py) -- use elementwise() and compare(), below, when an
+argument is a vector. The arguments are vectors of the same length, or
+single numbers, which are used with every element.
 
 MISSING VALUES are NaN ("not a number", written `nan` in Lisp): a SQLite
 NULL in a numeric column, a division by zero, or a lag that reaches
@@ -18,11 +20,12 @@ missing values; vector-fill-nan and vector-fill-forward replace them.
 """
 
 import math
+import operator
 
 import numpy as np
 
 from lisp_core import (
-    LispDate, LispError, LispVector, NIL, _lisp_scalar, is_true, numeric_value, to_string,
+    LispDate, LispError, LispVector, NIL, _brief, _lisp_scalar, is_true, numeric_value, to_string,
 )
 
 
@@ -83,7 +86,16 @@ def operand(x, name):
     numpy array, or a single number as it is."""
     if is_number(x):
         return x
+    if not isinstance(x, LispVector):
+        raise LispError("%s: not a number or a vector: %s" % (name, _brief(x)))
     return numbers_of(x, name)
+
+
+def is_whole_numbers(x):
+    """True for an integer, or a numpy array of integers."""
+    if isinstance(x, np.ndarray):
+        return np.issubdtype(x.dtype, np.integer)
+    return isinstance(x, int) and not isinstance(x, bool)
 
 
 def check_lengths(name, *arrays):
@@ -150,43 +162,78 @@ _NO_DEFAULT = object()   # marks an optional argument that wasn't given
 # Arithmetic
 # ---------------------------------------------------------------------------
 
-def elementwise(name, a, b, operation):
-    """Apply a numpy operation to two vectors, or a vector and a number."""
-    x, y = operand(a, name), operand(b, name)
-    check_lengths(name, x, y)
+def elementwise(name, args, operation):
+    """Arithmetic with vectors: `operation`, a function of two numbers or
+    numpy arrays, applied to the arguments left to right -- ((a op b) op c)
+    ... -- element by element. A single number is used with every element.
+    This is what +, -, *, /, expt, max, ... do when an argument is a vector,
+    and what vector-add, vector-sub, ... do."""
+    values = [operand(a, name) for a in args]
+    check_lengths(name, *values)
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        return to_vector(operation(x, y))
+        result = values[0]
+        for value in values[1:]:
+            result = operation(result, value)
+    return to_vector(result)
+
+
+def truncated_quotient(x, y):
+    """quotient, element by element: x / y truncated toward zero. Whole
+    numbers if x and y are (and nothing was divided by zero)."""
+    q = np.trunc(np.true_divide(x, y))
+    if is_whole_numbers(x) and is_whole_numbers(y) and np.all(np.isfinite(q)):
+        return q.astype(np.int64)
+    return q
+
+
+def power(x, y):
+    """expt, element by element, in floating point (so a negative or
+    fractional power of a whole number works)."""
+    return np.power(np.asarray(x, dtype=np.float64), y)
 
 
 def vector_add(a, b):
     """(vector-add a b) -- a + b, element by element."""
-    return elementwise("vector-add", a, b, np.add)
+    return elementwise("vector-add", [a, b], np.add)
 
 
 def vector_sub(a, b):
     """(vector-sub a b) -- a - b, element by element."""
-    return elementwise("vector-sub", a, b, np.subtract)
+    return elementwise("vector-sub", [a, b], np.subtract)
 
 
 def vector_mul(a, b):
     """(vector-mul a b) -- a * b, element by element."""
-    return elementwise("vector-mul", a, b, np.multiply)
+    return elementwise("vector-mul", [a, b], np.multiply)
 
 
 def vector_div(a, b):
     """(vector-div a b) -- a / b, element by element; dividing by zero gives
     NaN or infinity rather than an error."""
-    return elementwise("vector-div", a, b, np.true_divide)
+    return elementwise("vector-div", [a, b], np.true_divide)
 
 
 def vector_pow(a, b):
     """(vector-pow a b) -- a raised to the power b, element by element."""
-    return elementwise("vector-pow", a, b, lambda x, y: np.power(np.asarray(x, dtype=np.float64), y))
+    return elementwise("vector-pow", [a, b], power)
 
 
 def unary(name, v, operation):
+    """A math function of one number (sqrt, log, ...) applied to each element
+    of the vector v."""
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
         return to_vector(operation(numbers_of(v, name)))
+
+
+def whole_number_results(name, v, operation):
+    """floor, ceiling, round, or truncate, applied to each element of v. The
+    results are whole numbers, stored as integers unless some are missing
+    (NaN), which only a float can hold."""
+    with np.errstate(invalid="ignore"):
+        result = operation(numbers_of(v, name))
+    if np.all(np.isfinite(result)):
+        result = result.astype(np.int64)
+    return to_vector(result)
 
 
 def vector_round(v, decimals=0):
@@ -236,17 +283,25 @@ def comparable(x, name):
     return numbers_of(x, name)
 
 
-def compare(name, a, b, operation):
-    x, y = comparable(a, name), comparable(b, name)
-    check_lengths(name, x, y)
-    length = len(x) if isinstance(x, np.ndarray) else len(y)
-    try:
-        with np.errstate(invalid="ignore"):
-            result = np.asarray(operation(x, y), dtype=bool)
-    except TypeError:
-        raise LispError("%s: can't compare these values (e.g. a number with a string)" % name)
-    if result.shape != (length,):          # numpy gave one answer for the whole vector
-        result = np.full(length, bool(result))
+def compare(name, args, operation):
+    """A comparison with vectors: a mask, 1 where each argument is related to
+    the next by `operation` -- as (< a b c) means a < b and b < c -- element
+    by element. A single value is compared with every element. This is what
+    =, <, >, <=, and >= do when an argument is a vector, and what vector=,
+    vector<, ... do."""
+    values = [comparable(a, name) for a in args]
+    check_lengths(name, *values)
+    length = next(len(v) for v in values if isinstance(v, np.ndarray))
+    result = np.ones(length, dtype=bool)
+    for x, y in zip(values, values[1:]):
+        try:
+            with np.errstate(invalid="ignore"):
+                step = np.asarray(operation(x, y), dtype=bool)
+        except TypeError:
+            raise LispError("%s: can't compare these values (e.g. a number with a string)" % name)
+        if step.shape != (length,):          # numpy gave one answer for the whole vector
+            step = np.full(length, bool(step))
+        result &= step
     return to_vector(result)
 
 
@@ -336,12 +391,12 @@ def vector_fill_forward(v):
 
 
 COMPARISON_BUILTINS = {
-    "vector=": lambda a, b: compare("vector=", a, b, lambda x, y: x == y),
-    "vector/=": lambda a, b: compare("vector/=", a, b, lambda x, y: x != y),
-    "vector<": lambda a, b: compare("vector<", a, b, lambda x, y: x < y),
-    "vector<=": lambda a, b: compare("vector<=", a, b, lambda x, y: x <= y),
-    "vector>": lambda a, b: compare("vector>", a, b, lambda x, y: x > y),
-    "vector>=": lambda a, b: compare("vector>=", a, b, lambda x, y: x >= y),
+    "vector=": lambda a, b: compare("vector=", [a, b], operator.eq),
+    "vector/=": lambda a, b: compare("vector/=", [a, b], operator.ne),
+    "vector<": lambda a, b: compare("vector<", [a, b], operator.lt),
+    "vector<=": lambda a, b: compare("vector<=", [a, b], operator.le),
+    "vector>": lambda a, b: compare("vector>", [a, b], operator.gt),
+    "vector>=": lambda a, b: compare("vector>=", [a, b], operator.ge),
     "vector-and": vector_and,
     "vector-or": vector_or,
     "vector-not": lambda m: to_vector(~truth_of(m, "vector-not")),

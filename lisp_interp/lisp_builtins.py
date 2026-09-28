@@ -15,6 +15,7 @@ lisp_interpreter_reference.md."""
 import datetime
 import math
 import numbers
+import operator
 import os
 import random
 import string
@@ -25,8 +26,9 @@ import numpy as np
 from lisp_core import (
     Env, Keyword, LispAbort, LispDate, LispError, LispHashTable, LispString, LispStruct,
     LispVector, Macro, NIL, Pair, Procedure, Symbol,
-    _date_from_pydate, _lisp_scalar, _vector_widen_for,
-    apply_proc, check_numbers, check_vector_elements, expand_macro, gensym, get_verbose_level, is_true,
+    _brief, _date_from_pydate, _lisp_scalar, _vector_widen_for,
+    apply_proc, builtin_names, check_numbers, plural, check_vector_elements, expand_macro, gensym,
+    get_verbose_level, is_true,
     list_to_pairs, pairs_to_list, parse, pretty_print_string,
     reconstruct_macro_source, reconstruct_procedure_source, run_file, seval,
     set_verbose_level, throw_to, to_display_string, to_string,
@@ -50,8 +52,23 @@ from lisp_csv import parse_column_pairs
 # ---------------------------------------------------------------------------
 # Numbers
 # ---------------------------------------------------------------------------
+#
+# The arithmetic builtins work on vectors too: when an argument is a vector,
+# the work is done element by element with numpy (lisp_vector_math.elementwise
+# and compare), and a single number is used with every element. So
+# (* balance rate) multiplies every balance by the rate, and (< v 0) gives a
+# mask: 1 where the element is negative, 0 where it isn't.
+
+def any_vector(args):
+    for a in args:
+        if isinstance(a, LispVector):
+            return True
+    return False
+
 
 def add(*args):
+    if any_vector(args):
+        return lisp_vector_math.elementwise("+", args, operator.add)
     check_numbers(args, "+")
     total = 0
     for a in args:
@@ -60,9 +77,13 @@ def add(*args):
 
 
 def sub(*args):
-    check_numbers(args, "-")
     if not args:
         raise LispError("- needs at least one argument")
+    if any_vector(args):
+        if len(args) == 1:
+            args = (0,) + args          # (- v) is (- 0 v)
+        return lisp_vector_math.elementwise("-", args, operator.sub)
+    check_numbers(args, "-")
     if len(args) == 1:
         return -args[0]
     total = args[0]
@@ -72,6 +93,8 @@ def sub(*args):
 
 
 def mul(*args):
+    if any_vector(args):
+        return lisp_vector_math.elementwise("*", args, operator.mul)
     check_numbers(args, "*")
     total = 1
     for a in args:
@@ -80,9 +103,15 @@ def mul(*args):
 
 
 def div(*args):
-    check_numbers(args, "/")
+    """(/ a b ...) -- a divided by b, and so on. For vectors, dividing by
+    zero gives NaN or infinity rather than an error."""
     if not args:
         raise LispError("/ needs at least one argument")
+    if any_vector(args):
+        if len(args) == 1:
+            args = (1,) + args          # (/ v) is (/ 1 v)
+        return lisp_vector_math.elementwise("/", args, operator.truediv)
+    check_numbers(args, "/")
     if len(args) == 1:
         return 1 / args[0]
     total = args[0]
@@ -91,12 +120,145 @@ def div(*args):
     return total
 
 
+def quotient(a, b):
+    """(quotient a b) -- a divided by b, truncated toward zero: (quotient 7 2)
+    is 3, and (quotient -7 2) is -3."""
+    if any_vector((a, b)):
+        return lisp_vector_math.elementwise("quotient", (a, b), lisp_vector_math.truncated_quotient)
+    check_numbers((a, b), "quotient")
+    if isinstance(a, int) and isinstance(b, int):
+        q = abs(a) // abs(b)            # exact, however large the numbers are
+        return q if (a < 0) == (b < 0) else -q
+    return math.trunc(a / b)
+
+
+def remainder(a, b):
+    """(remainder a b) -- what's left over after (quotient a b):
+    a - b * (quotient a b). It has the sign of a: (remainder -7 2) is -1."""
+    if any_vector((a, b)):
+        return lisp_vector_math.elementwise("remainder", (a, b), np.fmod)
+    check_numbers((a, b), "remainder")
+    if isinstance(a, int) and isinstance(b, int):
+        return a - b * quotient(a, b)
+    return math.fmod(a, b)
+
+
+def mod(a, b):
+    """(mod a b) -- a modulo b, which has the sign of b: (mod -7 2) is 1,
+    and (mod 7 -2) is -1."""
+    if any_vector((a, b)):
+        return lisp_vector_math.elementwise("mod", (a, b), np.mod)
+    check_numbers((a, b), "mod")
+    return a % b
+
+
+def expt(a, b):
+    """(expt a b) -- a raised to the power b."""
+    if any_vector((a, b)):
+        return lisp_vector_math.elementwise("expt", (a, b), lisp_vector_math.power)
+    return a ** b
+
+
+def lisp_pow(a, b):
+    """(pow a b) -- a raised to the power b, always as a floating-point number."""
+    if any_vector((a, b)):
+        return lisp_vector_math.elementwise("pow", (a, b), lisp_vector_math.power)
+    return math.pow(a, b)
+
+
+def lisp_sqrt(x):
+    if isinstance(x, LispVector):
+        return lisp_vector_math.unary("sqrt", x, np.sqrt)
+    return math.sqrt(x)
+
+
+def lisp_exp(x):
+    if isinstance(x, LispVector):
+        return lisp_vector_math.unary("exp", x, np.exp)
+    return math.exp(x)
+
+
+def lisp_log(x, base=None):
+    """(log x [base]) -- the natural logarithm of x, or its logarithm to base."""
+    if base is None:
+        if isinstance(x, LispVector):
+            return lisp_vector_math.unary("log", x, np.log)
+        return math.log(x)
+    if any_vector((x, base)):
+        return lisp_vector_math.elementwise("log", (x, base), lambda v, b: np.log(v) / np.log(b))
+    return math.log(x, base)
+
+
+def lisp_abs(x):
+    if isinstance(x, LispVector):
+        return lisp_vector_math.unary("abs", x, np.abs)
+    return abs(x)
+
+
+def lisp_floor(x):
+    if isinstance(x, LispVector):
+        return lisp_vector_math.whole_number_results("floor", x, np.floor)
+    return math.floor(x)
+
+
+def lisp_ceiling(x):
+    if isinstance(x, LispVector):
+        return lisp_vector_math.whole_number_results("ceiling", x, np.ceil)
+    return math.ceil(x)
+
+
+def lisp_truncate(x):
+    if isinstance(x, LispVector):
+        return lisp_vector_math.whole_number_results("truncate", x, np.trunc)
+    return math.trunc(x)
+
+
+def lisp_round(x):
+    """(round x) -- the nearest whole number; a half rounds to the even one, so
+    (round 2.5) is 2 and (round 3.5) is 4."""
+    if isinstance(x, LispVector):
+        return lisp_vector_math.whole_number_results("round", x, np.round)
+    return round(x)
+
+
+def lisp_min(*args):
+    """(min x ...) -- the smallest. With vectors, the smallest at each
+    position: (min v 100) limits every element to at most 100. (For the
+    smallest element of one vector, use vector-min.)"""
+    if not args:
+        raise LispError("min: expected at least 1 argument, got 0")
+    if any_vector(args):
+        return lisp_vector_math.elementwise("min", args, np.minimum)
+    return min(args)
+
+
+def lisp_max(*args):
+    """(max x ...) -- the largest. With vectors, the largest at each
+    position: (max v 0) replaces every negative element with 0. (For the
+    largest element of one vector, use vector-max.)"""
+    if not args:
+        raise LispError("max: expected at least 1 argument, got 0")
+    if any_vector(args):
+        return lisp_vector_math.elementwise("max", args, np.maximum)
+    return max(args)
+
+
 def chain_compare(op, args):
     """(< a b c) is true if a < b and b < c -- the same for =, >, <=, >=."""
     for a, b in zip(args, args[1:]):
         if not op(a, b):
             return False
     return True
+
+
+def comparison(name, operation):
+    """The builtin for one comparison, such as <. With a vector it gives a
+    mask, compared element by element (see lisp_vector_math.compare)."""
+    def compare(*args):
+        if any_vector(args):
+            return lisp_vector_math.compare(name, args, operation)
+        return chain_compare(operation, args)
+    return compare
 
 
 # One shared pseudo-random number generator (Python's own `random`
@@ -123,27 +285,27 @@ NUMBER_BUILTINS = {
     "-": sub,
     "*": mul,
     "/": div,
-    "mod": lambda a, b: a % b,
-    "quotient": lambda a, b: int(a / b),
-    "remainder": lambda a, b: a % b,
-    "abs": abs,
-    "min": lambda *a: min(a),
-    "max": lambda *a: max(a),
-    "sqrt": math.sqrt,
-    "pow": math.pow,
-    "log": math.log,
-    "exp": math.exp,
+    "mod": mod,
+    "quotient": quotient,
+    "remainder": remainder,
+    "abs": lisp_abs,
+    "min": lisp_min,
+    "max": lisp_max,
+    "sqrt": lisp_sqrt,
+    "pow": lisp_pow,
+    "log": lisp_log,
+    "exp": lisp_exp,
     "erf": math.erf,
-    "expt": lambda a, b: a ** b,
-    "floor": lambda x: math.floor(x),
-    "ceiling": lambda x: math.ceil(x),
-    "truncate": lambda x: math.trunc(x),
-    "round": lambda x: round(x),
-    "=": lambda *a: chain_compare(lambda x, y: x == y, a),
-    "<": lambda *a: chain_compare(lambda x, y: x < y, a),
-    ">": lambda *a: chain_compare(lambda x, y: x > y, a),
-    "<=": lambda *a: chain_compare(lambda x, y: x <= y, a),
-    ">=": lambda *a: chain_compare(lambda x, y: x >= y, a),
+    "expt": expt,
+    "floor": lisp_floor,
+    "ceiling": lisp_ceiling,
+    "truncate": lisp_truncate,
+    "round": lisp_round,
+    "=": comparison("=", operator.eq),
+    "<": comparison("<", operator.lt),
+    ">": comparison(">", operator.gt),
+    "<=": comparison("<=", operator.le),
+    ">=": comparison(">=", operator.ge),
     "random-seed": random_seed_fn,
     "random-float": random_float_fn,
     "random-int": random_int_fn,
@@ -205,27 +367,78 @@ def set_cdr(p, x):
     return NIL
 
 
-def append2(a, b):
-    items = pairs_to_list(a)
-    result = b
-    for item in reversed(items):
-        result = Pair(item, result)
+def list_items(x, who):
+    """The elements of the list x, as a Python list. An error if x isn't a
+    list -- a vector, say -- rather than treating it as an empty list."""
+    items = []
+    p = x
+    while isinstance(p, Pair):
+        items.append(p.car)
+        p = p.cdr
+    if p is not NIL:
+        raise LispError("%s: expected a list, got %s" % (who, _brief(x)))
+    return items
+
+
+def sequence_items(x, who):
+    """The elements of x, a list or a vector, as a Python list."""
+    if isinstance(x, LispVector):
+        return [_lisp_scalar(item) for item in x.items]
+    return list_items(x, who)
+
+
+def lisp_length(x):
+    """(length x) -- how many elements the list or vector x has, or how many
+    characters the string x has."""
+    if isinstance(x, LispVector):
+        return len(x.items)
+    if isinstance(x, LispString):
+        return len(x)
+    return len(list_items(x, "length"))
+
+
+def lisp_reverse(x):
+    """(reverse x) -- a new list, vector, or string with x's elements (or
+    characters) in the opposite order."""
+    if isinstance(x, LispVector):
+        return LispVector(x.items[::-1])
+    if isinstance(x, LispString):
+        return LispString(x[::-1])
+    return list_to_pairs(list_items(x, "reverse")[::-1])
+
+
+def lisp_append(*sequences):
+    """(append a b ...) -- the lists joined into one new list. The last one
+    isn't copied, and can be any value, as in Common Lisp. Given only
+    vectors, a new vector; given only strings, a new string."""
+    if sequences and all(isinstance(s, LispVector) for s in sequences):
+        return vector_append(*sequences)
+    if sequences and all(isinstance(s, LispString) for s in sequences):
+        return LispString("".join(sequences))
+    if not sequences:
+        return NIL
+    result = sequences[-1]
+    for lst in reversed(sequences[:-1]):
+        for item in reversed(list_items(lst, "append")):
+            result = Pair(item, result)
     return result
 
 
-def lisp_append(*lists):
-    result = NIL
-    for lst in reversed(lists):
-        result = append2(lst, result)
-    return result
+def lisp_map(f, seq):
+    """(map f seq) -- (f x) for each element x of seq: a list for a list, a
+    vector for a vector."""
+    if isinstance(seq, LispVector):
+        return vector_map(f, seq)
+    return list_to_pairs([apply_proc(f, [x]) for x in list_items(seq, "map")])
 
 
-def lisp_map(f, lst):
-    return list_to_pairs([apply_proc(f, [x]) for x in pairs_to_list(lst)])
-
-
-def lisp_filter(f, lst):
-    return list_to_pairs([x for x in pairs_to_list(lst) if is_true(apply_proc(f, [x]))])
+def lisp_filter(f, seq):
+    """(filter f seq) -- the elements x of seq, a list or vector, for which
+    (f x) is true, in order, as the same kind of sequence."""
+    if isinstance(seq, LispVector):
+        keep = [is_true(apply_proc(f, [_lisp_scalar(x)])) for x in seq.items]
+        return LispVector(seq.items[np.array(keep, dtype=bool)])
+    return list_to_pairs([x for x in list_items(seq, "filter") if is_true(apply_proc(f, [x]))])
 
 
 def lisp_sort(seq, key=None):
@@ -253,10 +466,15 @@ def lisp_sort(seq, key=None):
         raise LispError("sort: elements (or their keys) can't be compared with <")
 
 
-def lisp_reduce(f, lst, *init):
-    items = pairs_to_list(lst)
+def lisp_reduce(f, seq, *init):
+    """(reduce f seq [initial]) -- combine the elements of seq, a list or a
+    vector, from left to right: (f (f (f initial x1) x2) x3) ... Without an
+    initial value, the first element is used."""
+    items = sequence_items(seq, "reduce")
     if init:
         acc = init[0]
+    elif not items:
+        raise LispError("reduce: nothing to combine -- the sequence is empty and no initial value was given")
     else:
         acc, items = items[0], items[1:]
     for x in items:
@@ -265,7 +483,7 @@ def lisp_reduce(f, lst, *init):
 
 
 def list_ref(lst, n):
-    items = pairs_to_list(lst)
+    items = list_items(lst, "list-ref")
     n = int(n)
     if n < 0 or n >= len(items):
         raise LispError("list-ref: index %d out of range (0..%d)" % (n, len(items) - 1))
@@ -273,7 +491,7 @@ def list_ref(lst, n):
 
 
 def list_tail(lst, n):
-    items = pairs_to_list(lst)
+    items = list_items(lst, "list-tail")
     n = int(n)
     if n < 0 or n > len(items):
         raise LispError("list-tail: index %d out of range (0..%d)" % (n, len(items)))
@@ -284,7 +502,7 @@ def lisp_assoc(key, alist):
     """(assoc key alist) -- the first (key . value) pair in alist whose key is
     equal to `key`, or #f if there's none. Returns #f rather than '()
     because '() counts as true in this Lisp; only #f is false."""
-    for entry in pairs_to_list(alist):
+    for entry in list_items(alist, "assoc"):
         if not isinstance(entry, Pair):
             raise LispError("assoc: alist element is not a pair: %r" % (entry,))
         if entry.car == key:
@@ -295,7 +513,7 @@ def lisp_assoc(key, alist):
 def lisp_member(x, lst):
     """(member x lst) -- the part of lst starting at the first element equal
     to x, or #f if there's none."""
-    items = pairs_to_list(lst)
+    items = list_items(lst, "member")
     for i, item in enumerate(items):
         if item == x:
             return list_to_pairs(items[i:])
@@ -310,8 +528,8 @@ LIST_BUILTINS = {
     "set-cdr!": set_cdr,
     "list": lambda *args: list_to_pairs(list(args)),
     "append": lisp_append,
-    "reverse": lambda p: list_to_pairs(list(reversed(pairs_to_list(p)))),
-    "length": lambda p: len(pairs_to_list(p)),
+    "reverse": lisp_reverse,
+    "length": lisp_length,
     "list-ref": list_ref,
     "list-tail": list_tail,
     "assoc": lisp_assoc,
@@ -336,7 +554,7 @@ def lisp_apply(f, *args):
     if not args:
         raise LispError("apply: expected at least 2 arguments (a procedure and a list)")
     *leading, last = args
-    return apply_proc(f, list(leading) + pairs_to_list(last))
+    return apply_proc(f, list(leading) + sequence_items(last, "apply"))
 
 
 def lisp_gensym(*base):
@@ -510,6 +728,20 @@ def string_split(s, sep=None):
     return list_to_pairs([LispString(p) for p in pieces])
 
 
+def string_to_number(s):
+    """(string->number s) -- the number written in the string s, such as
+    "42", "-3.5", or "1e6"."""
+    text = str(s).strip()
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        raise LispError("string->number: %s isn't a number" % (to_string(s),))
+
+
 def format_value(value, spec=""):
     """(format-value x [spec]) -- x as a string, laid out by spec, which is a
     Python format spec: e.g. ",.2f" (commas, 2 decimals), ">12" (right-
@@ -566,10 +798,10 @@ STRING_BUILTINS = {
     "string=?": lambda a, b: a == b,
     "string<?": lambda a, b: a < b,
     "string>?": lambda a, b: a > b,
-    "string->number": lambda s: (float(s) if ('.' in s or 'e' in s.lower()) else int(s)),
+    "string->number": string_to_number,
     "number->string": lambda n: LispString(to_display_string(n)),
     "string->list": lambda s: list_to_pairs(list(s)),
-    "list->string": lambda p: LispString("".join(pairs_to_list(p))),
+    "list->string": lambda p: LispString("".join(list_items(p, "list->string"))),
     "string-upcase": lambda s: LispString(s.upper()),
     "string-downcase": lambda s: LispString(s.lower()),
     "string->symbol": lambda s: Symbol(s),
@@ -589,6 +821,11 @@ STRING_BUILTINS = {
 # Vectors: making, reading, and changing them (the math is in lisp_vector_math.py)
 # ---------------------------------------------------------------------------
 
+def require_vector(v, name):
+    if not isinstance(v, LispVector):
+        raise LispError("%s: expected a vector, got %s" % (name, _brief(v)))
+
+
 def make_vector_fn(*args):
     check_vector_elements(args, "vector")
     return LispVector(list(args))
@@ -599,15 +836,24 @@ def make_vector(n, fill=0):
     return LispVector([fill] * n)
 
 
+def check_index(v, i, name):
+    """An error unless i is a position in the vector v: 0 to its length - 1."""
+    if isinstance(i, bool) or not isinstance(i, int):
+        raise LispError("%s: the index must be a whole number, not %s" % (name, _brief(i)))
+    if not 0 <= i < len(v.items):
+        raise LispError("%s: index %d is out of range -- the vector has %s"
+                        % (name, i, plural(len(v.items), "element")))
+
+
 def vector_ref(v, i):
-    if not isinstance(v, LispVector):
-        raise LispError("vector-ref: not a vector: %r" % (v,))
+    require_vector(v, "vector-ref")
+    check_index(v, i, "vector-ref")
     return _lisp_scalar(v.items[i])
 
 
 def vector_set(v, i, x):
-    if not isinstance(v, LispVector):
-        raise LispError("vector-set!: not a vector: %r" % (v,))
+    require_vector(v, "vector-set!")
+    check_index(v, i, "vector-set!")
     check_vector_elements([x], "vector-set!")
     _vector_widen_for(v, x)
     v.items[i] = x
@@ -622,18 +868,30 @@ def vector_fill(v, x):
 
 
 def vector_map(f, v):
-    return LispVector([apply_proc(f, [_lisp_scalar(v.items[j])]) for j in range(len(v.items))])
+    require_vector(v, "vector-map")
+    return LispVector([apply_proc(f, [_lisp_scalar(x)]) for x in v.items])
 
 
 def vector_append(*vs):
     items = []
     for v in vs:
+        require_vector(v, "vector-append")
         items.extend(v.items.tolist())
     return LispVector(items)
 
 
+def vector_length(v):
+    require_vector(v, "vector-length")
+    return len(v.items)
+
+
+def vector_to_list(v):
+    require_vector(v, "vector->list")
+    return list_to_pairs([_lisp_scalar(x) for x in v.items])
+
+
 def list_to_vector(p):
-    items = pairs_to_list(p)
+    items = list_items(p, "list->vector")
     check_vector_elements(items, "list->vector")
     return LispVector(items)
 
@@ -727,12 +985,12 @@ VECTOR_BUILTINS = {
     "make-vector": make_vector,
     "vector-ref": vector_ref,
     "vector-set!": vector_set,
-    "vector-length": lambda v: len(v.items),
+    "vector-length": vector_length,
     "vector-fill!": vector_fill,
     "vector-copy": lambda v: LispVector(v.items),
     "vector-map": vector_map,
     "vector-append": vector_append,
-    "vector->list": lambda v: list_to_pairs(v.items.tolist()),
+    "vector->list": vector_to_list,
     "list->vector": list_to_vector,
     "vector-iterate": vector_iterate,
     "vector-slice": vector_slice,
@@ -958,8 +1216,9 @@ def make_eval_builtins(env, out):
 
     def lisp_load(path):
         """(load "file.lsp") -- evaluate every form in a file, in the top-level
-        environment, as if you'd typed them."""
-        run_file(str(path), env)
+        environment, as if you'd typed them. See find_lisp_file for where it
+        looks for the file."""
+        run_file(find_lisp_file(path), env)
         return NIL
 
     return {
@@ -969,19 +1228,6 @@ def make_eval_builtins(env, out):
         "print-macroexpansion": lisp_print_macroexpansion,
         "load": lisp_load,
     }
-
-
-# The small convenience macros every environment starts with, so you can
-# write the NAME directly -- (pretty-print-function my-func) -- instead of
-# quoting it. They're ordinary defmacro macros; defined-macros leaves them
-# out, so it lists only the macros you wrote yourself. (debug-function and
-# undebug-function are older names for break and unbreak.)
-BOOTSTRAP_MACROS = {
-    "pretty-print-function": "(defmacro pretty-print-function (name) `(pretty-print-function-named ',name ,name))",
-    "pretty-print-macro": "(defmacro pretty-print-macro (name) `(pretty-print-macro-named ',name ,name))",
-    "debug-function": "(defmacro debug-function (name) `(break ',name))",
-    "undebug-function": "(defmacro undebug-function (name) `(unbreak ',name))",
-}
 
 
 def make_introspection_builtins(env, out):
@@ -1019,12 +1265,10 @@ def make_introspection_builtins(env, out):
         return list_to_pairs([name for name in env if isinstance(env[name], Procedure)])
 
     def defined_macros():
-        """(defined-macros) -- the names of the macros you've defined (not the
-        BOOTSTRAP_MACROS every environment starts with)."""
-        return list_to_pairs([
-            name for name in env
-            if isinstance(env[name], Macro) and name not in BOOTSTRAP_MACROS
-        ])
+        """(defined-macros) -- the names of the macros defined in the top-level
+        environment, in the order they were defined: the standard macros
+        (macros_init.lsp and loop.lsp) first, then any of yours."""
+        return list_to_pairs([name for name in env if isinstance(env[name], Macro)])
 
     def bound_variables():
         """(bound-variables) -- the names bound to plain values (numbers, strings,
@@ -1120,51 +1364,92 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
     env.update(make_introspection_builtins(env, out))
     env.update(lisp_debug.make_debug_builtins(env, out))
 
+    # Remember each builtin's Lisp name, for error messages (see
+    # lisp_core.builtin_error).
+    for name, value in env.items():
+        if callable(value):
+            builtin_names.setdefault(value, str(name))
+
     # A global variable: how display-columns formats numbers (see
     # format_column_value in make_display_columns_builtin).
     env[Symbol("*column-number-format*")] = LispString("{:,.0f}")
 
-    for source in BOOTSTRAP_MACROS.values():
-        for expr in parse(source):
-            seval(expr, env)
-
+    load_standard_macros(env)
     return env
 
 
 # ---------------------------------------------------------------------------
-# The startup init file
+# The standard macros, the init file, and where load looks for files
 # ---------------------------------------------------------------------------
 
-# The standard macros, which every new environment loads first: while, do,
-# case, ... (macros_init.lsp), and then loop (loop.lsp, which uses them).
-MACROS_INIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros_init.lsp")
-LOOP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "loop.lsp")
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# The standard macros, which make_global_env loads into every new
+# environment: let, dolist, while, case, ... (macros_init.lsp), and then loop
+# (loop.lsp, which uses them).
+MACROS_INIT_FILE = os.path.join(HERE, "macros_init.lsp")
+LOOP_FILE = os.path.join(HERE, "loop.lsp")
 STANDARD_MACRO_FILES = (MACROS_INIT_FILE, LOOP_FILE)
 
 # Your own definitions, which every new environment loads next. Set the
 # LISP_INIT_FILE environment variable to use a different file.
-DEFAULT_INIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "init.lsp")
+DEFAULT_INIT_FILE = os.path.join(HERE, "init.lsp")
+
+# Where load looks, after the current directory and LISP_PATH: the Lisp
+# libraries, then the examples, that come with the interpreter.
+LIBRARY_DIRECTORIES = (os.path.join(HERE, "lib"), os.path.join(HERE, "examples"))
+
+_standard_macro_forms = []      # the standard macro files, parsed (once: parsing is the slow part)
 
 
 def load_standard_macros(env):
-    """Load just the standard macros (macros_init.lsp and loop.lsp) into env."""
-    for path in STANDARD_MACRO_FILES:
-        run_file(path, env)
+    """Evaluate the standard macro files (macros_init.lsp and loop.lsp) in env."""
+    if not _standard_macro_forms:
+        for path in STANDARD_MACRO_FILES:
+            with open(path) as f:
+                _standard_macro_forms.extend(parse(f.read()))
+    for form in _standard_macro_forms:
+        seval(form, env)
 
 
 def load_init_file(env, path=None):
-    """Load the standard macros (macros_init.lsp and loop.lsp), then the init
-    file (path, or LISP_INIT_FILE, or init.lsp), into env. Called once for
-    each new environment, before anything else runs. A missing file is
-    silently skipped. An error in one (or an (abort)) is reported to stderr
-    but doesn't stop the interpreter starting, so you can still fix it."""
+    """Load the init file (path, or LISP_INIT_FILE, or init.lsp) into env.
+    Called once for each new environment, before anything else runs. A
+    missing file is silently skipped. An error in it (or an (abort)) is
+    reported to stderr but doesn't stop the interpreter starting, so you can
+    still fix it."""
     init_path = path or os.environ.get("LISP_INIT_FILE", DEFAULT_INIT_FILE)
-    for startup_path in STANDARD_MACRO_FILES + (init_path,):
-        if not startup_path or not os.path.exists(startup_path):
-            continue
-        try:
-            run_file(startup_path, env)
-        except LispError as e:
-            sys.stderr.write("warning: error loading init file %r: %s\n" % (startup_path, e))
-        except LispAbort:
-            sys.stderr.write("warning: init file %r was aborted\n" % (startup_path,))
+    if not init_path or not os.path.exists(init_path):
+        return
+    try:
+        run_file(init_path, env)
+    except LispError as e:
+        sys.stderr.write("warning: error loading init file %r: %s\n" % (init_path, e))
+    except LispAbort:
+        sys.stderr.write("warning: init file %r was aborted\n" % (init_path,))
+
+
+def load_path():
+    """The directories load searches after the current directory: those in
+    the LISP_PATH environment variable (separated by colons, as in PATH),
+    then LIBRARY_DIRECTORIES."""
+    from_environment = [os.path.expanduser(d) for d in os.environ.get("LISP_PATH", "").split(os.pathsep) if d]
+    return from_environment + list(LIBRARY_DIRECTORIES)
+
+
+def find_lisp_file(path):
+    """The file (load path) means: path itself, if it's absolute or is in the
+    current directory; otherwise the first directory in load_path() that has
+    it."""
+    path = os.path.expanduser(str(path))
+    if os.path.isabs(path):
+        candidates = [path]
+    else:
+        candidates = [path] + [os.path.join(d, path) for d in load_path()]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    if os.path.isabs(path):
+        raise LispError("load: there's no file %s" % (path,))
+    raise LispError("load: can't find %s in the current directory or in %s"
+                    % (path, ", ".join(load_path())))

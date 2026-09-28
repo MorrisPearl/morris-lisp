@@ -7,12 +7,12 @@ lisp_interp/Untitled*.ipynb
 
 
 .DS_Store
-lisp_interp/prepayment_incentive_curve.png
-lisp_interp/synthetic_mbs_pools.csv
-lisp_interp/mortgage_amortization_example.csv
-lisp_interp/sofr_floating_rate_example.csv
-lisp_interp/sofr_monte_carlo_example.csv
-lisp_interp/oas_monte_carlo_live_report.txt
+lisp_interp/**/prepayment_incentive_curve.png
+lisp_interp/**/synthetic_mbs_pools.csv
+lisp_interp/**/mortgage_amortization_example.csv
+lisp_interp/**/sofr_floating_rate_example.csv
+lisp_interp/**/sofr_monte_carlo_example.csv
+lisp_interp/**/oas_monte_carlo_live_report.txt
 *.lsp~
 */files.zip
 */.DS_Store

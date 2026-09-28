@@ -10,8 +10,10 @@ HOW TO RUN IT
 Put -v, -vv, -vvv, or --verbose=N before the file name to trace procedure
 calls as they happen (see (verbose n) in lisp_interpreter_reference.md).
 Every fresh environment first loads macros_init.lsp and loop.lsp (the
-standard macros, such as while, case, and loop), then init.lsp, if it exists
-(see load_init_file in lisp_builtins.py).
+standard macros, such as let, while, case, and loop), then init.lsp, if it
+exists (see make_global_env and load_init_file in lisp_builtins.py).
+(load "file.lsp") looks in the current directory, then the directories in
+LISP_PATH, then lib/ and examples/.
 
 HOW THE CODE IS ORGANIZED
     lisp_interpreter.py   this file: the command line, console REPL, and batch mode
@@ -39,18 +41,21 @@ HOW THE CODE IS ORGANIZED
 Each module that adds builtins lists them in a BUILTINS table at its end;
 lisp_builtins.make_global_env() adds those tables to every environment.
 lisp_core.py imports none of the other files, so it can be read on its own.
+    macros_init.lsp, loop.lsp  the standard macros, written in Lisp
+    lib/                  Lisp libraries to load: solver.lsp, template.lsp, ...
+    examples/             example programs, and the data they read
+    tools/                build_pool_dataset.py (Freddie Mac data -> CSV)
 
 WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - integers, floats, strings, symbols, keywords (:name), booleans, lists
   - vectors of numbers, strings, and/or dates, #(1 2 3), backed by numpy
     arrays so a vector of millions of numbers stays compact
   - dates: (date year month day)
-  - special forms: quote, quasiquote, if, define, set!, lambda, begin, let,
-    let*, cond, and, or, dolist, defmacro, defstruct, with-struct,
-    catch-error, unwind-protect, catch (with the throw function),
-    breakpoint, backtrace
-  - standard macros written in Lisp (macros_init.lsp): while, do, when,
-    unless, case, assert, with-sqlite
+  - special forms: quote, quasiquote, if, define, set!, lambda, begin,
+    cond, and, or, defmacro, defstruct, with-struct, catch-error,
+    unwind-protect, catch (with the throw function), breakpoint, backtrace
+  - standard macros written in Lisp (macros_init.lsp): let, let*, dolist,
+    while, do, when, unless, case, assert, with-sqlite
   - loop, the Common Lisp loop macro (loop.lsp): for x in / on / across,
     counting, collect / sum / count / maximize, when / unless, return, ...
   - macro expansion is remembered, so each macro call is expanded only once
@@ -62,6 +67,9 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - a debugger: (break f) stops when a procedure is called, a debug hook
     (set-debug-hook!) decides what to do at each stop, (break-on-error #t)
     stops where an error happens, and (abort) goes back to the top level
+  - arithmetic and comparisons on whole vectors: (* balance rate), (> v 0)
+  - length, map, filter, reduce, ... on lists, vectors, and strings
+  - error messages that name the procedure that went wrong
   - hash tables, strings, sorting, pseudo-random numbers
   - format, for numbers with commas and decimals in fixed-width fields
   - fast math and statistics on whole vectors, with NaN for missing values

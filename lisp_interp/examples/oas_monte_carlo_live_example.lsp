@@ -39,8 +39,8 @@
 ; oas_monte_carlo_live_report.txt (and prints the same report to the
 ; console) with every market data point and assumption this run used.
 ;
-; Run with:
-;   python3 lisp_interpreter.py oas_monte_carlo_live_example.lsp
+; Run it from the examples directory with:
+;   python3 ../lisp_interpreter.py oas_monte_carlo_live_example.lsp
 
 (load "oas_monte_carlo.lsp")
 

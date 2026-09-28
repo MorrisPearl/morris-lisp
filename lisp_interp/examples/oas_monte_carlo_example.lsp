@@ -19,8 +19,8 @@
 ; option prices, to keep this example runnable with no network access and
 ; no credentials file.
 ;
-; Run with:
-;   python3 lisp_interpreter.py oas_monte_carlo_example.lsp
+; Run it from the examples directory with:
+;   python3 ../lisp_interpreter.py oas_monte_carlo_example.lsp
 
 (load "oas_monte_carlo.lsp")
 

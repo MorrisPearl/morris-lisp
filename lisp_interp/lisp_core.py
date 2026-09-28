@@ -42,9 +42,10 @@ ordinary Python function call (see apply_proc()), so those paths are still
 bounded by Python's recursion limit. In practice this rarely matters.
 """
 
+import datetime
+import inspect
 import os
 import sys
-import datetime
 
 import numpy as np    # LispVector's backing store -- see its class docstring
 
@@ -97,7 +98,17 @@ class Pair:
         self.cdr = cdr
 
     def __eq__(self, other):
-        return isinstance(other, Pair) and self.car == other.car and self.cdr == other.cdr
+        """equal? for lists: the same elements, in the same order. Walks along
+        the list in a loop, so a very long list doesn't use up Python's stack."""
+        a, b = self, other
+        while isinstance(a, Pair) and isinstance(b, Pair):
+            if a is b:
+                return True
+            if not a.car == b.car:
+                return False
+            a, b = a.cdr, b.cdr
+        # One list ended (or has a dotted tail): equal only if the other did too.
+        return not isinstance(a, Pair) and not isinstance(b, Pair) and a == b
 
     def __repr__(self):
         return to_string(self)
@@ -329,8 +340,8 @@ class Procedure:
       keyword_specs   the &key parameters, as (name, default_expr) pairs
       body, env       the body expressions, and the environment it was defined in
       name            used only to label it in traces and stack traces
-      is_scope        True for the procedure let/let*/dolist turn into. It's a
-                      variable scope, not a real call, so traces leave it out."""
+      is_scope        True for the procedure a let turns into (a %scope-lambda). It's
+                      a variable scope, not a real call, so traces leave it out."""
 
     def __init__(self, params, body, env, rest_param=None, keyword_specs=None,
                  name=None, is_scope=False):
@@ -644,7 +655,7 @@ class Env(dict):
             n_fixed = len(params)
             if len(args) < n_fixed:
                 raise LispError(
-                    "expected at least %d argument(s), got %d" % (n_fixed, len(args)))
+                    "expected at least %s, got %d" % (plural(n_fixed, "argument"), len(args)))
             for p, a in zip(params, args[:n_fixed]):
                 self[p] = a
             tail = args[n_fixed:]
@@ -672,13 +683,13 @@ class Env(dict):
         elif rest_param is None:
             if len(params) != len(args):
                 raise LispError(
-                    "expected %d argument(s), got %d" % (len(params), len(args)))
+                    "expected %s, got %d" % (plural(len(params), "argument"), len(args)))
             for p, a in zip(params, args):
                 self[p] = a
         else:
             if len(args) < len(params):
                 raise LispError(
-                    "expected at least %d argument(s), got %d" % (len(params), len(args)))
+                    "expected at least %s, got %d" % (plural(len(params), "argument"), len(args)))
             for p, a in zip(params, args):
                 self[p] = a
             self[rest_param] = list_to_pairs(args[len(params):])
@@ -742,6 +753,7 @@ def raw_default(expr, env):
 VERBOSE_OFF, VERBOSE_CALLS, VERBOSE_ARGS, VERBOSE_MACROS = 0, 1, 2, 3
 _verbose_level = 0      # current verbosity; change ONLY via set_verbose_level()
 _call_depth = 0         # nesting depth of traced calls, for indentation
+_macros_expanding = 0   # how many macros are building their expansions right now
 
 TRACE_MAX_FRAMES = 40   # a longer stack trace keeps the outermost 10 and innermost 30
 _BRIEF_MAX_ITEMS = 6    # list/vector elements shown before "..."
@@ -854,8 +866,12 @@ def _trace_write(env, text):
 
 def _trace_enter(proc, args, is_tail):
     """Log the start of a call. A tail call takes the place of the call it
-    ends, so it's indented at that call's depth instead of one deeper."""
+    ends, so it's indented at that call's depth instead of one deeper. Calls a
+    macro makes while it builds its expansion aren't logged: they're the
+    macro's work, not the program's (level 3 shows the expansion instead)."""
     global _call_depth
+    if _macros_expanding:
+        return
     indent = "  " * (max(0, _call_depth - 1) if is_tail else _call_depth)
     _trace_write(proc.env, "%s%s %s" % (
         indent, ">>" if is_tail else ">",
@@ -867,6 +883,8 @@ def _trace_enter(proc, args, is_tail):
 def _trace_leave(proc, args, tails, value):
     """A call returned `value`: undo its indentation and, at level 2+, log it."""
     global _call_depth
+    if _macros_expanding:
+        return
     _call_depth = max(0, _call_depth - 1)
     if _verbose_level >= VERBOSE_ARGS:
         note = "  [after %d tail call%s]" % (tails, "" if tails == 1 else "s") if tails else ""
@@ -964,6 +982,114 @@ def format_error_report(exc):
 
 
 # ---------------------------------------------------------------------------
+# Errors: naming the procedure that went wrong
+# ---------------------------------------------------------------------------
+#
+# A builtin is a Python function. When it's given something it can't handle,
+# Python raises its own exception, whose message doesn't say which builtin it
+# was ("<lambda>() missing 1 required positional argument: 'b'"). The
+# evaluator turns such an exception into a LispError that names the builtin
+# and says what was wrong in Lisp terms ("cons: expected 2 arguments, got 1").
+# The same goes for a Lisp procedure called with arguments that don't fit its
+# parameters.
+
+builtin_names = {}      # a builtin's Python function -> its Lisp name (make_global_env fills this in)
+
+
+def define_builtin(env, name, function):
+    """Bind `name` to the Python function `function` in env, and remember the
+    name for error messages."""
+    env[Symbol(name)] = function
+    builtin_names[function] = name
+
+
+def builtin_name(function):
+    """The Lisp name of a builtin, for error messages."""
+    name = builtin_names.get(function)
+    if name is None:
+        name = getattr(function, "__name__", "a built-in function")
+    return str(name)
+
+
+def call_builtin(function, args):
+    """Call the builtin `function` with `args` (a Python list). A Python
+    exception it raises becomes a LispError naming the builtin; a LispError
+    passes through unchanged."""
+    try:
+        return function(*args)
+    except (LispError, RecursionError):
+        raise
+    except Exception as exc:
+        raise builtin_error(function, args, exc) from exc
+
+
+def builtin_error(function, args, exc):
+    """The LispError for the Python exception `exc`, which the builtin
+    `function` raised when called with `args`."""
+    name = builtin_name(function)
+    if isinstance(exc, TypeError):
+        expected = expected_argument_count(function, args)
+        if expected is not None:
+            return LispError("%s: expected %s, got %d" % (name, expected, len(args)))
+    if isinstance(exc, (TypeError, AttributeError)):
+        call = "(" + " ".join([name] + [_brief(a) for a in args]) + ")"
+        return LispError("%s: an argument is the wrong type of value, in %s" % (name, call))
+    return LispError("%s: %s" % (name, exc))
+
+
+def expected_argument_count(function, args):
+    """If `args` is the wrong number of arguments for the Python function
+    `function`, how many it takes: "2 arguments", "1 to 3 arguments", or
+    "at least 1 argument". None if the count is right (or can't be known)."""
+    try:
+        signature = inspect.signature(function)
+    except (TypeError, ValueError):
+        return None
+    try:
+        signature.bind(*args)
+        return None
+    except TypeError:
+        pass
+    required = optional = 0
+    any_number = False
+    for parameter in signature.parameters.values():
+        if parameter.kind == parameter.VAR_POSITIONAL:
+            any_number = True
+        elif parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD):
+            if parameter.default is parameter.empty:
+                required += 1
+            else:
+                optional += 1
+    if any_number:
+        return "at least %s" % plural(required, "argument")
+    if optional:
+        return "%d to %s" % (required, plural(required + optional, "argument"))
+    return plural(required, "argument")
+
+
+def plural(n, word):
+    """"1 argument", "2 arguments"."""
+    return "%d %s%s" % (n, word, "" if n == 1 else "s")
+
+
+def bind_arguments(proc, args, default_eval):
+    """The new scope for a call of `proc` (a Procedure or Macro): its
+    parameters bound to `args`. If they don't fit, a LispError that names
+    proc -- and the call is added to the error's trace, since it never got a
+    frame of its own. See Env.__init__ for default_eval."""
+    try:
+        return Env(proc.params, args, proc.env, rest_param=proc.rest_param,
+                   keyword_specs=proc.keyword_specs, default_eval=default_eval)
+    except LispError as exc:
+        if getattr(proc, "is_scope", False):
+            raise
+        error = LispError("%s: %s" % (_proc_name(proc), exc))
+        error.lisp_trace = getattr(exc, "lisp_trace", [])
+        _record_rejected_call(error, proc, args)
+        raise error from None
+
+
+# ---------------------------------------------------------------------------
 # Evaluator -- explicit-stack version
 # ---------------------------------------------------------------------------
 #
@@ -979,11 +1105,8 @@ def format_error_report(exc):
 #   ('IF', conseq, alt, env)        choose a branch once the test's value is in
 #   ('DEFINE', name, env)           finish a (define name expr)
 #   ('SET', name, env)              finish a (set! name expr)
-#   ('COND', clauses, env)          try the next cond clause
 #   ('COND_BRANCH', body, rest, env) act on a cond test's value
-#   ('AND', exprs, env)             evaluate the remaining `and` operands
 #   ('AND_CHECK', rest, env)        act on one `and` operand's value
-#   ('OR', exprs, env)              evaluate the remaining `or` operands
 #   ('OR_CHECK', rest, env)         act on one `or` operand's value
 #   ('WITH_STRUCT', body, env)      bind a struct's slots as variables, then run body
 #   ('CALL', proc, args, tails)     marks a user procedure's body, for traces; a
@@ -991,8 +1114,7 @@ def format_error_report(exc):
 #   ('MCALL', macro, exprs, 0)      the same for a macro's body; never replaced
 
 SPECIAL_FORMS = {
-    "quote", "if", "define", "set!", "lambda",
-    "begin", "let", "let*", "cond", "and", "or", "dolist",
+    "quote", "if", "define", "set!", "lambda", "begin", "cond", "and", "or",
     "defmacro", "quasiquote", "breakpoint", "defstruct", "catch-error",
     "unwind-protect", "catch", "with-struct", "%scope-lambda", "backtrace",
 }
@@ -1050,97 +1172,16 @@ def eval_or(exprs, env, control_stack, value_stack):
         control_stack.append(('EVAL', exprs[0], env))
 
 
-def desugar_let(args):
-    """(let ((x1 v1) (x2 v2)) body...)  =>  ((%scope-lambda (x1 x2) body...) v1 v2)
-    %scope-lambda makes the same Procedure `lambda` does, marked is_scope so
-    traces don't count a let as a call."""
-    bindings = pairs_to_list(args.car)
-    body = args.cdr  # already a Pair-list, reused as the lambda's body
-    names = [b.car for b in bindings]
-    value_exprs = [b.cdr.car for b in bindings]
-    lambda_expr = Pair(Symbol("%scope-lambda"), Pair(list_to_pairs(names), body))
-    return Pair(lambda_expr, list_to_pairs(value_exprs))
-
-
-def desugar_let_star(args):
-    """(let* ((x1 v1) (x2 v2) ...) body...)
-      =>  (let ((x1 v1)) (let* ((x2 v2) ...) body...)), ending with (let () body...)."""
-    bindings = pairs_to_list(args.car)
-    body = args.cdr
-    if not bindings:
-        lambda_expr = Pair(Symbol("%scope-lambda"), Pair(NIL, body))
-        return Pair(lambda_expr, NIL)
-    first, rest = bindings[0], bindings[1:]
-    if rest:
-        inner_letstar = Pair(Symbol("let*"), Pair(list_to_pairs(rest), body))
-        inner_body = Pair(inner_letstar, NIL)
-    else:
-        inner_body = body
-    return Pair(Symbol("let"), Pair(list_to_pairs([first]), inner_body))
-
-
 _gensym_counter = [0]
 
 
 def gensym(base="g"):
     """A new symbol that can't collide with any name in the program: an
     UninternedSymbol, named %base-N (N counts up, so the names are easy to
-    tell apart when printed). dolist uses it for its loop variables, and Lisp
-    code gets it as (gensym), for macros that need temporary names."""
+    tell apart when printed). Lisp code gets it as (gensym), for macros that
+    need temporary names."""
     _gensym_counter[0] += 1
     return UninternedSymbol("%%%s-%d" % (base, _gensym_counter[0]))
-
-
-def desugar_dolist(args):
-    """(dolist (var list-expr [result-expr]) body...) runs body once for each
-    element of the list, with var bound to that element, then returns
-    result-expr (or '()). It's rewritten into a local recursive loop:
-
-        (let ()
-          (define (%dolist-loop-N %dolist-remaining-N)
-            (if (null? %dolist-remaining-N)
-                (let ((var '())) result-expr)
-                (let ((var (car %dolist-remaining-N)))
-                  body...
-                  (%dolist-loop-N (cdr %dolist-remaining-N)))))
-          (%dolist-loop-N list-expr))
-
-    The recursive call is a tail call, so a long list doesn't grow the stack."""
-    spec = pairs_to_list(args.car)
-    if len(spec) not in (2, 3):
-        raise LispError(
-            "dolist: expected (dolist (var list-expr [result-expr]) body...)")
-    var = spec[0]
-    list_expr = spec[1]
-    result_expr = spec[2] if len(spec) == 3 else NIL
-    body = pairs_to_list(args.cdr)
-
-    loop_name = gensym("dolist-loop")
-    remaining = gensym("dolist-remaining")
-
-    def let1(name, value_expr, body_exprs):
-        """(let ((name value_expr)) body_exprs...)"""
-        binding = Pair(Pair(name, Pair(value_expr, NIL)), NIL)
-        return Pair(Symbol("let"), Pair(binding, list_to_pairs(body_exprs)))
-
-    car_remaining = Pair(Symbol("car"), Pair(remaining, NIL))
-    cdr_remaining = Pair(Symbol("cdr"), Pair(remaining, NIL))
-    recurse_call = Pair(loop_name, Pair(cdr_remaining, NIL))
-
-    loop_branch = let1(var, car_remaining, body + [recurse_call])
-    result_branch = let1(var, NIL, [result_expr])
-
-    if_expr = Pair(
-        Symbol("if"),
-        Pair(Pair(Symbol("null?"), Pair(remaining, NIL)),
-             Pair(result_branch, Pair(loop_branch, NIL))))
-
-    loop_def = Pair(
-        Symbol("define"),
-        Pair(Pair(loop_name, Pair(remaining, NIL)), Pair(if_expr, NIL)))
-
-    loop_call = Pair(loop_name, Pair(list_expr, NIL))
-    return Pair(Symbol("let"), Pair(NIL, Pair(loop_def, Pair(loop_call, NIL))))
 
 
 def eval_quasiquote(expr, env, depth=1):
@@ -1194,13 +1235,13 @@ def expand_macro(macro, arg_exprs):
     """Run a macro's body with the call's unevaluated argument expressions
     bound to its parameters, and return the expansion (the new code). The
     caller then evaluates the expansion in place of the macro call."""
+    global _macros_expanding
+    new_env = bind_arguments(macro, arg_exprs, raw_default)
+    _macros_expanding += 1
     try:
-        new_env = Env(macro.params, arg_exprs, macro.env, rest_param=macro.rest_param,
-                      keyword_specs=macro.keyword_specs, default_eval=raw_default)
-    except Exception as exc:
-        _record_rejected_call(exc, macro, arg_exprs)
-        raise
-    return eval_body(macro.body, new_env, call=(macro, arg_exprs))
+        return eval_body(macro.body, new_env, call=(macro, arg_exprs))
+    finally:
+        _macros_expanding -= 1
 
 
 # A macro call is expanded the first time it's evaluated, and the expansion is
@@ -1209,7 +1250,7 @@ def expand_macro(macro, arg_exprs):
 # loop takes milliseconds to expand; without this it would dominate the run
 # time. The cache is keyed on the call form itself (the same list of code,
 # not an equal one), holds the macro that expanded it, and forgets an entry if
-# that macro has been redefined.
+# that macro has been redefined. (verbose 3) logs an expansion when it's made.
 _expansion_cache = {}       # id(call form) -> (the form, the macro, the expansion)
 EXPANSION_CACHE_LIMIT = 20000       # code built and evaluated on the fly can't fill memory
 
@@ -1221,6 +1262,8 @@ def expand_macro_call(macro, form):
     if entry is not None and entry[0] is form and entry[1] is macro:
         return entry[2]
     expansion = expand_macro(macro, pairs_to_list(form.cdr))
+    if _verbose_level >= VERBOSE_MACROS:
+        _trace_macro_expansion(macro, form, expansion)
     if len(_expansion_cache) >= EXPANSION_CACHE_LIMIT:
         _expansion_cache.clear()
     _expansion_cache[id(form)] = (form, macro, expansion)      # holding form keeps its id from being reused
@@ -1284,7 +1327,8 @@ def eval_special_form(op, args, env, control_stack, value_stack):
 
     elif op == "lambda" or op == "%scope-lambda":
         # See parse_params() for the forms params can take. %scope-lambda is what
-        # let/let*/dolist turn into: the same Procedure, marked is_scope.
+        # the let macro (macros_init.lsp) turns into: the same Procedure, marked
+        # is_scope.
         fixed, rest, keyword_specs = parse_params(args.car)
         body = pairs_to_list(args.cdr)
         value_stack.append(Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs,
@@ -1292,15 +1336,6 @@ def eval_special_form(op, args, env, control_stack, value_stack):
 
     elif op == "begin":
         push_sequence(pairs_to_list(args), env, control_stack, value_stack)
-
-    elif op == "let":
-        control_stack.append(('EVAL', desugar_let(args), env))
-
-    elif op == "let*":
-        control_stack.append(('EVAL', desugar_let_star(args), env))
-
-    elif op == "dolist":
-        control_stack.append(('EVAL', desugar_dolist(args), env))
 
     elif op == "cond":
         eval_cond(pairs_to_list(args), env, control_stack, value_stack)
@@ -1393,11 +1428,11 @@ def eval_special_form(op, args, env, control_stack, value_stack):
             return setter
 
         for slot_name, _ in slots:
-            env[Symbol("%s-%s" % (type_name, slot_name))] = make_accessor(slot_name)
-            env[Symbol("%s-%s-set!" % (type_name, slot_name))] = make_setter(slot_name)
+            define_builtin(env, "%s-%s" % (type_name, slot_name), make_accessor(slot_name))
+            define_builtin(env, "%s-%s-set!" % (type_name, slot_name), make_setter(slot_name))
 
-        env[Symbol("%s?" % type_name)] = (
-            lambda s, t=struct_type: isinstance(s, LispStruct) and s.struct_type.is_a(t))
+        define_builtin(env, "%s?" % type_name,
+                       lambda s, t=struct_type: isinstance(s, LispStruct) and s.struct_type.is_a(t))
 
         def copier(s, t=struct_type):
             # A shallow copy, of the instance's own type -- so copying a child
@@ -1405,7 +1440,7 @@ def eval_special_form(op, args, env, control_stack, value_stack):
             if not (isinstance(s, LispStruct) and s.struct_type.is_a(t)):
                 raise LispError("copy-%s: not a %s: %r" % (type_name, type_name, s))
             return LispStruct(s.struct_type, dict(s.values))
-        env[Symbol("copy-%s" % type_name)] = copier
+        define_builtin(env, "copy-%s" % type_name, copier)
 
         value_stack.append(type_name)
 
@@ -1548,7 +1583,11 @@ def _run_eval_loop(control_stack, value_stack):
             else:
                 op, args = x.car, x.cdr
                 if isinstance(op, Symbol) and op in SPECIAL_FORMS:
-                    eval_special_form(op, args, cur_env, control_stack, value_stack)
+                    try:
+                        eval_special_form(op, args, cur_env, control_stack, value_stack)
+                    except (AttributeError, TypeError) as exc:
+                        # e.g. (define x), where the code expected more parts
+                        raise LispError("%s: badly formed: %s" % (op, _brief(x))) from exc
                     continue
                 # A macro gets its arguments unevaluated, so check for one before
                 # evaluating anything. Its expansion is pushed as an ordinary EVAL frame,
@@ -1556,8 +1595,6 @@ def _run_eval_loop(control_stack, value_stack):
                 macro = cur_env.lookup_or_none(op) if isinstance(op, Symbol) else None
                 if isinstance(macro, Macro):
                     expansion = expand_macro_call(macro, x)
-                    if _verbose_level >= VERBOSE_MACROS:
-                        _trace_macro_expansion(macro, x, expansion)
                     control_stack.append(('EVAL', expansion, cur_env))
                 else:
                     # A procedure call: push APPLY first (so it runs last), then the
@@ -1574,13 +1611,7 @@ def _run_eval_loop(control_stack, value_stack):
             collected.reverse()
             proc, arg_values = collected[0], collected[1:]
             if isinstance(proc, Procedure):
-                try:
-                    new_env = Env(proc.params, arg_values, proc.env, rest_param=proc.rest_param,
-                                  keyword_specs=proc.keyword_specs, default_eval=eval_default)
-                except Exception as exc:
-                    if not proc.is_scope:
-                        _record_rejected_call(exc, proc, arg_values)
-                    raise
+                new_env = bind_arguments(proc, arg_values, eval_default)
                 if not proc.is_scope:
                     # Leave a CALL frame under the body, naming this call for traces. If
                     # the top of the stack is already a CALL frame, nothing is waiting for
@@ -1597,9 +1628,17 @@ def _run_eval_loop(control_stack, value_stack):
                     check_breakpoint(proc, arg_values, new_env)     # see "Debugging", below
                 push_sequence(proc.body, new_env, control_stack, value_stack)
             elif callable(proc):
-                value_stack.append(proc(*arg_values))
+                # call_builtin(proc, arg_values), written out here because this
+                # is the evaluator's busiest line
+                try:
+                    value_stack.append(proc(*arg_values))
+                except (LispError, RecursionError):
+                    raise
+                except Exception as exc:
+                    raise builtin_error(proc, arg_values, exc) from exc
             else:
-                raise LispError("in tag APPLY: not a procedure: %r" % (proc,))
+                raise LispError("not a procedure: %s -- the first thing in a call must be a procedure"
+                                % (_brief(proc),))
 
         elif tag == 'CALL':
             # A procedure's body finished normally; its value is on the value stack.
@@ -1632,20 +1671,12 @@ def _run_eval_loop(control_stack, value_stack):
             set_env.find(name)[name] = value_stack.pop()
             value_stack.append(NIL)
 
-        elif tag == 'COND':
-            _, clauses, cond_env = frame
-            eval_cond(clauses, cond_env, control_stack, value_stack)
-
         elif tag == 'COND_BRANCH':
             _, body, rest, cond_env = frame
             if is_true(value_stack.pop()):
                 push_sequence(body, cond_env, control_stack, value_stack)
             else:
                 eval_cond(rest, cond_env, control_stack, value_stack)
-
-        elif tag == 'AND':
-            _, exprs, and_env = frame
-            eval_and(exprs, and_env, control_stack, value_stack)
 
         elif tag == 'AND_CHECK':
             _, rest, and_env = frame
@@ -1654,10 +1685,6 @@ def _run_eval_loop(control_stack, value_stack):
                 value_stack.append(False)
             else:
                 eval_and(rest, and_env, control_stack, value_stack)
-
-        elif tag == 'OR':
-            _, exprs, or_env = frame
-            eval_or(exprs, or_env, control_stack, value_stack)
 
         elif tag == 'OR_CHECK':
             _, rest, or_env = frame
@@ -1697,16 +1724,11 @@ def apply_proc(proc, args):
     list of already-evaluated arguments. Used by builtins that take a
     procedure argument (map, filter, sort, apply, ...)."""
     if isinstance(proc, Procedure):
-        try:
-            new_env = Env(proc.params, args, proc.env, rest_param=proc.rest_param,
-                          keyword_specs=proc.keyword_specs, default_eval=eval_default)
-        except Exception as exc:
-            _record_rejected_call(exc, proc, args)
-            raise
+        new_env = bind_arguments(proc, args, eval_default)
         return eval_body(proc.body, new_env, call=(proc, args))
     if callable(proc):
-        return proc(*args)
-    raise LispError("in apply_proc: not a procedure: %r" % (proc,))
+        return call_builtin(proc, args)
+    raise LispError("not a procedure: %s" % (_brief(proc),))
 
 
 # ---------------------------------------------------------------------------

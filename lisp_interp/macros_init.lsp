@@ -1,9 +1,12 @@
 ; macros_init.lsp
 ; ==============
 ; The standard macros, written in Lisp. Every new environment loads this
-; file first, before init.lsp (see load_init_file in lisp_builtins.py), so
-; these are always available.
+; file first, before anything else (see make_global_env in lisp_builtins.py),
+; so these are always available.
 ;
+;   (let ((name value)...) body...)
+;   (let* ((name value)...) body...)
+;   (dolist (var list [result]) body...)
 ;   (while test body...)
 ;   (do ((var init [step])...) (end-test result...) body...)
 ;   (assert test [message...])
@@ -11,6 +14,9 @@
 ;   (when test body...)
 ;   (unless test body...)
 ;   (case key-expr ((key...) body...)... [(else body...)])
+;   (pretty-print-function name), (pretty-print-macro name)
+;
+; let, let*, and dolist come first, because the other macros use them.
 ;
 ; while and do turn into a small local function that calls itself to run
 ; the next time around the loop. The call is a tail call, and the
@@ -105,6 +111,106 @@
 ; For more, see "Macros" in lisp_interpreter_reference.md, including why
 ; a macro should name its own variables with gensym ("What goes wrong
 ; without gensym").
+
+; (let ((name value)...) body...)
+; Evaluates each value, then evaluates the body forms in a new scope, with
+; each name bound to its value, and returns the last one's value. All the
+; values are evaluated before any name is bound, so a value can't use a name
+; from the same let (let* can).
+;
+;   (let ((x 2) (y 3))
+;     (* x y))                   ; => 6
+;
+; expands to a call of a procedure whose parameters are the names:
+;
+;   ((%scope-lambda (x y) (* x y)) 2 3)
+;
+; %scope-lambda is lambda, except that the procedure it makes is marked as a
+; scope rather than a function, so stack traces and (verbose) leave it out.
+(define (let--check-binding binding who)
+  "Signal an error unless binding has the form (name value). (Whether name
+can be a name is checked by %scope-lambda, as for any procedure.)"
+  (if (not (and (pair? binding)
+                (pair? (cdr binding))
+                (null? (cdr (cdr binding)))))
+      (error who "each binding must be (name value), not" binding)
+      '()))
+
+(define (let--check-bindings bindings who)
+  "Signal an error unless bindings is a list of (name value)."
+  (if (not (list? bindings))
+      (error who "expected a list of bindings, ((name value)...), not" bindings)
+      (map (lambda (binding) (let--check-binding binding who)) bindings)))
+
+(defmacro let (bindings . body)
+  (let--check-bindings bindings "let:")
+  `((%scope-lambda ,(map car bindings) ,@body)
+    ,@(map (lambda (binding) (car (cdr binding))) bindings)))
+
+; (let* ((name value)...) body...)
+; Like let, but binds the names one at a time, so each value can use the
+; names before it.
+;
+;   (let* ((x 2)
+;          (y (* x 10)))
+;     (+ x y))                   ; => 22
+;
+; expands to one let inside another:
+;
+;   (let ((x 2))
+;     (let* ((y (* x 10)))
+;       (+ x y)))
+(defmacro let* (bindings . body)
+  (let--check-bindings bindings "let*:")
+  (if (or (null? bindings) (null? (cdr bindings)))
+      `(let ,bindings ,@body)
+      `(let (,(car bindings))
+         (let* ,(cdr bindings) ,@body))))
+
+; (dolist (var list [result]) body...)
+; Evaluates the body forms once for each element of list (a list or a
+; vector), with var bound to that element, then returns the value of result
+; ('() if there's none; var is '() while it's evaluated).
+;
+;   (define total 0)
+;   (dolist (x '(1 2 3) total)
+;     (set! total (+ total x)))  ; => 6
+;
+; expands to a local function that calls itself for the rest of the list:
+;
+;   (let ((%dolist-items-3 '(1 2 3)))
+;     (define (%dolist-loop-1 %dolist-remaining-2)
+;       (if (null? %dolist-remaining-2)
+;           (let ((x '())) total)
+;           (let ((x (car %dolist-remaining-2)))
+;             (set! total (+ total x))
+;             (%dolist-loop-1 (cdr %dolist-remaining-2)))))
+;     (%dolist-loop-1 (cond ((list? %dolist-items-3) %dolist-items-3)
+;                           ((vector? %dolist-items-3) (vector->list %dolist-items-3))
+;                           (else (error "dolist: expected a list or a vector, not"
+;                                        %dolist-items-3)))))
+(defmacro dolist (spec . body)
+  (if (not (and (pair? spec)
+                (list? spec)
+                (or (= (length spec) 2) (= (length spec) 3))))
+      (error "dolist: expected (dolist (var list [result]) body...), not" spec)
+      '())
+  (let ((var (car spec))
+        (list-expr (car (cdr spec)))
+        (result-expr (if (= (length spec) 3) (car (cdr (cdr spec))) ''()))
+        (loop-name (gensym "dolist-loop"))
+        (remaining (gensym "dolist-remaining"))
+        (items (gensym "dolist-items")))
+    `(let ((,items ,list-expr))
+       (define (,loop-name ,remaining)
+         (if (null? ,remaining)
+             (let ((,var '())) ,result-expr)
+             (let ((,var (car ,remaining)))
+               ,@body
+               (,loop-name (cdr ,remaining)))))
+       (,loop-name (cond ((list? ,items) ,items)
+                         ((vector? ,items) (vector->list ,items))
+                         (else (error "dolist: expected a list or a vector, not" ,items)))))))
 
 ; (while test body...)
 ; Evaluates test; if it's true, evaluates the body forms and starts again.
@@ -319,3 +425,15 @@ the last clause, the only place an else clause is allowed."
   (let ((key-var (gensym "case-key")))
     `(let ((,key-var ,key-expr))
        (cond ,@(case--cond-clauses key-var clauses)))))
+
+; (pretty-print-function name), (pretty-print-macro name)
+; Print the definition of the procedure, or macro, called name, spread out
+; one element per line (see pretty-print in lisp_interpreter_reference.md).
+; They're macros so that you can write the name without a quote:
+;
+;   (pretty-print-function monthly-payment)
+(defmacro pretty-print-function (name)
+  `(pretty-print-function-named ',name ,name))
+
+(defmacro pretty-print-macro (name)
+  `(pretty-print-macro-named ',name ,name))

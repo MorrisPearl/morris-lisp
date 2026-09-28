@@ -112,15 +112,22 @@ functions" as a reference to search rather than read start to end.
   prints, to stderr, the chain of procedure calls that led to it followed by
   the message (`Lisp traceback (most recent call last): ...` /
   `Error: ...`) — the same report the REPL, the GUI log, and Jupyter show.
-  Set `LISP_PYTHON_TRACEBACK=1` to get Python's own traceback of the
-  interpreter's internals as well.
+  The message starts with the name of the procedure, builtin, or special
+  form that went wrong: `cons: expected 2 arguments, got 1`,
+  `sqrt: expected a nonnegative input, got -1.0`,
+  `define: badly formed: (define x)`. (A builtin is written in Python, and
+  when Python itself objects to what it was given, the interpreter turns
+  Python's message into one of these.) Set `LISP_PYTHON_TRACEBACK=1` to get
+  Python's own traceback of the interpreter's internals as well, including
+  the Python exception behind a builtin's error.
 
 Every fresh environment — batch mode, the console REPL, the GUI, and
 Jupyter alike — loads these Lisp files before doing anything else:
 
-1. `macros_init.lsp` and `loop.lsp`, the standard macros, such as `while`,
-   `do`, `case`, and `loop` (see "Standard macros", below). They're part of
-   the interpreter, so they're always loaded.
+1. `macros_init.lsp` and `loop.lsp`, the standard macros, such as `let`,
+   `dolist`, `while`, `case`, and `loop` (see "Standard macros", below).
+   They're part of the interpreter: `make_global_env()` loads them into
+   every new environment.
 2. `init.lsp` (next to `lisp_interpreter.py`; override with the
    `LISP_INIT_FILE` environment variable), if it exists. It's entirely
    optional — a missing init file is silently skipped. Put your own
@@ -152,6 +159,13 @@ Jupyter alike — loads these Lisp files before doing anything else:
   and an identical twin in `term_structure/sofr_market_data.py`)
   specifically handles being called from inside a Jupyter kernel's own
   already-running event loop, which a bare `asyncio.run()` call can't do.
+- **Where `load` finds a file** — `(load "name.lsp")` looks in the current
+  directory, then in each directory listed in the `LISP_PATH` environment
+  variable (separated by colons, as in `PATH`), then in the interpreter's
+  own `lib` and `examples` directories. So `(load "solver.lsp")` works from
+  a notebook in any directory, and so does a library that loads another.
+  To use your own directories, set `LISP_PATH` before starting Jupyter or
+  the interpreter, e.g. `export LISP_PATH=~/models:~/models/common`.
 
 ## Syntax
 
@@ -192,6 +206,13 @@ Special forms receive their argument *expressions* unevaluated — each one
 decides what, if anything, to evaluate and when — which is what
 distinguishes them from ordinary procedure calls (where every argument is
 evaluated before the call happens).
+
+`let`, `let*`, and `dolist` are described here too, because you use them
+like the special forms, but they're macros, written in Lisp in
+`macros_init.lsp` (see "Standard macros", below): `let` turns into a call
+of a `lambda`, and `let*` and `dolist` turn into `let`s. A special form that
+isn't written correctly, such as `(define x)`, is an error that says so:
+`define: badly formed: (define x)`.
 
 #### quote
 #### `(quote expr)`
@@ -285,18 +306,21 @@ Evaluates each expression in order, returning the value of the last one (or
 ```
 #### let
 #### `(let ((name val)...) body...)`
-Desugars to `((lambda (name...) body...) val...)`: every `val` is evaluated
-in the *outer* environment (none of them can see each other's bindings),
-then `body...` runs with all the names bound simultaneously.
+A macro that expands to `((lambda (name...) body...) val...)`: every `val`
+is evaluated in the *outer* environment (none of them can see each other's
+bindings), then `body...` runs with all the names bound simultaneously.
+(The expansion uses `%scope-lambda`, a `lambda` that stack traces leave
+out, since a `let` isn't a function call.) Each binding must be
+`(name val)`; anything else is an error.
 
 ```lisp
 (let ((a 1) (b 2)) (+ a b))    ; => 3
 ```
 
 #### `(let* ((name val)...) body...)`
-Like `let`, but desugars to nested single-binding `let`s, so each `val`
-expression can see every `let*` binding that came before it in the same
-form.
+Like `let`, but a macro that expands to nested single-binding `let`s, so
+each `val` expression can see every `let*` binding that came before it in
+the same form.
 
 ```lisp
 (let* ((a 1) (b (+ a 1))) (list a b))   ; => (1 2) -- b's val sees a
@@ -335,21 +359,22 @@ returns `#f`.
 ```
 #### dolist
 #### `(dolist (var list-expr [result-expr]) body...)`
-Common-Lisp-style list iteration. Evaluates `list-expr` exactly once, then
-for each element in turn binds `var` to it and runs `body...` for side
-effects (`display`, `set!`, `vector-set!`, etc. — like `map`, but for when
-you're looping for effect and don't want a collected result). Once the list
-is exhausted, `var` is rebound to `'()` and `result-expr` is evaluated and
-returned (or `'()` if no `result-expr` was given). Desugars entirely into
-`let`/`define`/`if`/`car`/`cdr`/`null?` as a self-recursive local helper
-(kept out of the surrounding scope), whose recursive step is in tail
-position — so it runs in constant control-stack space no matter how long
-the list is.
+Common-Lisp-style iteration over a list, or over a vector. Evaluates
+`list-expr` exactly once, then for each element in turn binds `var` to it
+and runs `body...` for side effects (`display`, `set!`, `vector-set!`, etc.
+— like `map`, but for when you're looping for effect and don't want a
+collected result). Once the elements are used up, `var` is rebound to `'()`
+and `result-expr` is evaluated and returned (or `'()` if no `result-expr`
+was given). A macro that expands into a self-recursive local function
+(named with `gensym`, so it can't clash with your names), whose recursive
+step is in tail position — so it runs in constant control-stack space no
+matter how long the list is.
 
 ```lisp
 (define total 0)
 (dolist (x (list 1 2 3 4 5)) (set! total (+ total x)))
 total                          ; => 15
+(dolist (x #(10 20) total) (set! total (+ total x)))   ; => 45
 ```
 
 For loops that aren't over a list, see `while` and `do` under "Standard
@@ -541,19 +566,17 @@ Evaluates `protected-expr`; if it raises an error, binds `var` to the
 error's message (a string) and evaluates `handler-body...` (implicit
 `begin`) instead, whose value becomes `catch-error`'s own. If
 `protected-expr` succeeds, its value is returned directly and
-`handler-body` never runs. Without this, any error — from `error`, or one
-of the handful of builtins that raise a plain Python exception instead of
-`LispError` (`sqrt` of a negative number, an out-of-range `vector-ref`,
-...) — propagates all the way to the top and ends the script; this is the
-only way Lisp code itself can catch one and keep going. Catches errors
-from *any* of those sources uniformly (not just `LispError`), but not
-things like running out of memory or the process being interrupted, which
-keep propagating exactly as if this weren't here. To evaluate more than
-one protected expression, wrap them in a `begin`.
+`handler-body` never runs. Without this, any error — from `error`, or from
+a builtin (`sqrt` of a negative number, an out-of-range `vector-ref`, ...)
+— propagates all the way to the top and ends the script; this is the only
+way Lisp code itself can catch one and keep going. Running out of memory,
+or the process being interrupted, isn't caught: those keep propagating
+exactly as if this weren't here. To evaluate more than one protected
+expression, wrap them in a `begin`.
 
 ```lisp
 (catch-error (/ 1 0) (e) (display "division failed: ") (display e))
-; prints: division failed: division by zero
+; prints: division failed: /: division by zero
 
 (define (safe-sqrt x)
   (catch-error (sqrt x) (e) -1))     ; -1 instead of crashing on a negative x
@@ -921,8 +944,8 @@ reason.) Things to know:
   again, with the new definition. Redefining a *function* that the macro's
   body calls doesn't: the calls already in your functions keep their old
   expansions, until you `define` the function that contains the call again.
-- `macroexpand` and `macroexpand-1` always expand afresh, and
-  `(verbose 3)` still logs the expansion each time a call is evaluated.
+- `macroexpand` and `macroexpand-1` always expand afresh. `(verbose 3)`
+  logs an expansion when it's made: the first time the call is evaluated.
 - Two calls that only look alike are separate. Code you build and run with
   `eval` is a new list each time, so it's expanded each time.
 
@@ -938,9 +961,11 @@ is produced, it's evaluated by the ordinary trampoline, tail calls and all
 
 ### Standard macros
 
-`while`, `do`, `loop`, `when`, `unless`, `case`, `assert`, and `with-sqlite`
+`let`, `let*`, `dolist`, `while`, `do`, `loop`, `when`, `unless`, `case`,
+`assert`, `with-sqlite`, `pretty-print-function`, and `pretty-print-macro`
 are macros written in Lisp, in `macros_init.lsp` and `loop.lsp`, which every
-new environment loads at startup (see "Running it", above). The top of
+new environment loads at startup (see "Running it", above). (`let`, `let*`,
+and `dolist` are described with the special forms, above.) The top of
 `macros_init.lsp` explains how macros are written with backquote (`` ` ``),
 `,`, and `,@`, using these macros as the examples, so it's a good place to
 start if you want to write your own. `loop.lsp` is a larger example: a
@@ -1356,6 +1381,34 @@ All arithmetic functions reject non-numeric arguments (including booleans,
 which Python treats as a subtype of `int` but this interpreter does not)
 with `LispError: not a number: ...`, except where noted.
 
+**Arithmetic on vectors.** `+`, `-`, `*`, `/`, `quotient`, `remainder`,
+`mod`, `expt`, `pow`, `min`, `max`, `abs`, `sqrt`, `log`, `exp`, `floor`,
+`ceiling`, `round`, `truncate`, and the comparisons `=`, `<`, `>`, `<=`,
+`>=` all work on vectors too: when an argument is a vector, the work is
+done element by element, with numpy, and a single number is used with
+every element. The vectors must all be the same length. A comparison gives
+a *mask*, a vector of 1 (true) and 0 (false), which `vector-select`,
+`vector-where`, and `table-filter` use to pick elements or rows (see
+"Vector math and statistics"). Dividing a vector by zero gives infinity or
+NaN rather than an error, and a missing value (NaN) stays missing.
+
+```lisp
+(define balance #(1000 2000 3000))
+(* balance 0.01)               ; => #(10.0 20.0 30.0)
+(- balance #(100 200 300))     ; => #(900 1800 2700)
+(max (- balance 1500) 0)       ; => #(0 500 1500)  -- never below 0
+(> balance 1500)               ; => #(0 1 1)
+(< 1500 balance 2500)          ; => #(0 1 0)  -- a mask for "between"
+(vector-select balance (> balance 1500))   ; => #(2000 3000)
+(sqrt #(4 9))                  ; => #(2.0 3.0)
+```
+
+This is far faster than a Lisp loop over `vector-ref`: pricing 1,000
+paths of 360 monthly cashflows takes a few hundredths of a second as
+vector arithmetic, and about ten seconds as a loop. The vector math
+builtins (`vector-add`, `vector<`, ...) do the same things under their
+own names.
+
 #### `(+ a b ...)`
 Sum of zero or more numbers; `(+)` is `0`.
 
@@ -1389,24 +1442,20 @@ argument) is `1/a`. Raises `LispError` if called with no arguments.
 (/ 4)                          ; => 0.25
 ```
 
-#### `(mod a b)`, `(remainder a b)`
-Both compute Python's `a % b` (floor-modulo — the result's sign follows the
-divisor `b`). Despite the names, this interpreter does not give
-`remainder` Scheme's usual distinct sign-follows-dividend behavior; the two
-are identical here.
+#### `(quotient a b)`, `(remainder a b)`, `(mod a b)`
+`quotient` divides and truncates toward zero, so `(quotient -7 2)` is `-3`,
+not `-4`. `remainder` is what's left over: `a - b * (quotient a b)`, which
+has the sign of `a`. `mod` is `a` modulo `b`, which has the sign of `b`.
+The two differ only when `a` and `b` have different signs. Whole numbers
+give exact results, however large they are. Dividing by zero is an error.
 
 ```lisp
+(quotient 7 2)                 ; => 3
+(quotient -7 2)                ; => -3   -- truncated toward zero
+(remainder -7 2)               ; => -1   -- the sign of a
+(mod -7 2)                     ; => 1    -- the sign of b
 (mod 7 3)                      ; => 1
-(mod -7 3)                     ; => 2   -- sign follows the divisor
-(remainder -7 3)               ; => 2   -- same as mod here, NOT -1
-```
-
-#### `(quotient a b)`
-Truncating (toward zero) integer division: `int(a / b)`. Differs from `//`
-for negative operands — e.g. `(quotient -7 2)` is `-3`, not `-4`.
-
-```lisp
-(quotient -7 2)                ; => -3
+(remainder 7.5 2)              ; => 1.5
 ```
 
 #### `(abs x)`
@@ -1417,19 +1466,24 @@ Absolute value.
 ```
 
 #### `(min a b ...)`, `(max a b ...)`
-Minimum / maximum of the given arguments (at least one required).
+Minimum / maximum of the given arguments (at least one required). With
+vectors, the smallest or largest *at each position*, so `(max v 0)`
+replaces every negative element of `v` with 0. For the smallest or largest
+element of one vector, use `vector-min` or `vector-max`.
 
 ```lisp
 (min 3 1 4 1 5)                ; => 1
 (max 3 1 4 1 5)                ; => 5
+(max #(-1 2 -3) 0)             ; => #(0 2 0)
 ```
 
 #### `(sqrt x)`
-Square root. Raises a plain Python `ValueError` (not `LispError`) for
-negative `x`.
+Square root. The square root of a negative number is an error (for a
+vector, it's NaN).
 
 ```lisp
 (sqrt 16)                      ; => 4.0
+(sqrt #(4 9))                  ; => #(2.0 3.0)
 ```
 
 #### `(expt a b)`
@@ -1472,7 +1526,9 @@ from: `N(x) = 0.5 * (1 + erf(x / sqrt(2)))`. See `implied_vol.lsp`.
 
 #### `(floor x)`, `(ceiling x)`, `(round x)`, `(truncate x)`
 Standard rounding. `round` uses banker's rounding (round-half-to-even) for
-exact ties, matching Python's built-in `round`.
+exact ties, matching Python's built-in `round`. For a vector, the results
+are whole numbers, stored as integers unless some elements are missing
+(NaN); `vector-round` rounds to a number of decimal places.
 
 ```lisp
 (floor 3.7)                    ; => 3
@@ -1545,11 +1601,16 @@ raises `LispError` if `lo > hi`.
 #### `(= a b ...)`, `(< a b ...)`, `(> a b ...)`, `(<= a b ...)`, `(>= a b ...)`
 Chained numeric comparisons — true only if the comparison holds between
 *every* consecutive pair of arguments, e.g. `(< 1 2 3)` checks both `1<2`
-and `2<3`. With 0 or 1 arguments, always `#t`.
+and `2<3`. With 0 or 1 arguments, always `#t`. With a vector, the
+comparison is made element by element and gives a mask, a vector of 1 and
+0 (see "Arithmetic on vectors", above). To ask whether two whole vectors
+are the same, use `equal?`.
 
 ```lisp
 (< 1 2 3)                      ; => #t
 (< 1 3 2)                      ; => #f -- 3<2 fails
+(= #(1 2 3) #(1 0 3))          ; => #(1 0 1)
+(equal? #(1 2 3) #(1 0 3))     ; => #f
 ```
 
 #### `(not x)`
@@ -1566,6 +1627,9 @@ plain `a == b` for `equal?`) — this interpreter does **not** give `eq?`
 Scheme's usual identity-only semantics. `(eq? '(1 2) (list 1 2))` is `#t`
 here, where in most Schemes it would be `#f`. For most purposes the two are
 interchangeable in this interpreter.
+
+`equal?` compares lists element by element, in a loop, so lists of any
+length can be compared.
 
 ```lisp
 (eq? '(1 2) (list 1 2))        ; => #t
@@ -1754,26 +1818,45 @@ Builds a proper list from its arguments (zero or more).
 (list 1 2 3)                   ; => (1 2 3)
 ```
 
+**Lists, vectors, and strings.** `length`, `reverse`, `append`, `map`,
+`filter`, `reduce`, `apply`, and `sort` also work on vectors, and
+`length`, `reverse`, and `append` on strings; each gives back the same kind
+of thing it was given. The functions that only make sense for a list —
+`car`, `list-ref`, `member`, `assoc`, and the rest — say so when given
+anything else, rather than treating it as an empty list:
+`(member 2 #(1 2))` is the error `member: expected a list, got #(1 2)`.
+
 #### `(append l1 l2 ... ln)`
 Concatenates any number of lists (all but the last are copied; the last is
-reused as-is for the tail). `(append)` returns `'()`.
+reused as-is for the tail, and can be any value, as in Common Lisp).
+`(append)` returns `'()`. Given only vectors, joins them into a new
+vector; given only strings, into a new string.
 
 ```lisp
 (append (list 1 2) (list 3 4)) ; => (1 2 3 4)
+(append #(1 2) #(3))           ; => #(1 2 3)
+(append "ab" "cd")             ; => "abcd"
 ```
 
 #### `(reverse l)`
-Returns a new list with `l`'s elements in reverse order.
+Returns a new list with `l`'s elements in reverse order — or, for a vector
+or a string, a new vector or string.
 
 ```lisp
 (reverse (list 1 2 3))         ; => (3 2 1)
+(reverse #(1 2 3))             ; => #(3 2 1)
+(reverse "abc")                ; => "cba"
 ```
 
 #### `(length l)`
-Number of elements in a proper list.
+Number of elements in a proper list or a vector, or the number of
+characters in a string. Anything else, including a dotted list such as
+`(1 2 . 3)`, is an error.
 
 ```lisp
 (length (list 1 2 3))          ; => 3
+(length #(1 2 3))              ; => 3
+(length "abcd")                ; => 4
 ```
 
 #### `(list-ref l n)`
@@ -1819,17 +1902,22 @@ The sublist of `l` starting at the first element `equal?` to `x`, or `#f`
 
 #### `(map f l)`
 Applies `f` to each element of `l` in order, returning a new list of the
-results.
+results. For a vector, returns a new vector (as `vector-map` does). For
+arithmetic on every element, `(* v 2)` is simpler and much faster than
+`(map (lambda (x) (* x 2)) v)`.
 
 ```lisp
 (map (lambda (x) (* x x)) (list 1 2 3))    ; => (1 4 9)
+(map (lambda (x) (* x x)) #(1 2 3))        ; => #(1 4 9)
 ```
 
 #### `(filter f l)`
-Returns a new list of just the elements of `l` for which `(f x)` is true.
+Returns a new list of just the elements of `l` for which `(f x)` is true —
+or, for a vector, a new vector.
 
 ```lisp
 (filter (lambda (x) (> x 2)) (list 1 2 3 4))   ; => (3 4)
+(filter (lambda (x) (> x 2)) #(1 2 3 4))       ; => #(3 4)
 ```
 
 #### `(sort seq [key])`
@@ -1853,21 +1941,23 @@ be compared, e.g. a number and a string.
 ```
 
 #### `(reduce f l [init])`
-Left fold. With `init` given, starts the accumulator there and folds `f`
-over every element of `l`; without it, uses `l`'s first element as the
-initial accumulator and folds over the rest (an empty `l` with no `init`
-has no first element to start from, and raises an error).
+Left fold, over a list or a vector. With `init` given, starts the
+accumulator there and folds `f` over every element of `l`; without it,
+uses `l`'s first element as the initial accumulator and folds over the rest
+(an empty `l` with no `init` has no first element to start from, and raises
+an error).
 
 ```lisp
 (reduce + (list 1 2 3 4))      ; => 10
 (reduce + (list 1 2 3 4) 100)  ; => 110
+(reduce max #(3 9 4))          ; => 9
 ```
 
 #### `(apply f arg1 arg2 ... args)`
 Calls `f` with `arg1`, `arg2`, ... as individual leading arguments,
 followed by the *elements* of the final argument `args` (a list).
 `(apply f lst)` — no leading arguments — is the common case: spreading a
-list into positional arguments, e.g. `(apply + (list 1 2 3))` is `6`, and
+list (or a vector) into positional arguments, e.g. `(apply + (list 1 2 3))` is `6`, and
 `(apply + 1 2 (list 3 4 5))` is `15`. Requires at least 2 arguments total
 (`f` and one list).
 
@@ -1986,9 +2076,9 @@ numeric comparisons).
 ```
 
 #### `(string->number s)`
-Parses `s` as an `int` if it contains neither `.` nor `e`/`E`, otherwise as
-a `float`. Raises a plain Python `ValueError` (not `LispError`) if `s`
-isn't a valid number.
+Parses `s` as a whole number if it is one, otherwise as a floating-point
+number (`"3.14"`, `"1e6"`). Spaces around it are ignored. An error if `s`
+isn't a number: `string->number: "abc" isn't a number`.
 
 ```lisp
 (string->number "3.14")        ; => 3.14
@@ -2198,9 +2288,10 @@ In `template-render-sql`, a spec is an error: there, `{{name}}` becomes a
 
 Vectors are fixed-size and mutable, holding numbers, strings, and/or dates
 (not lists or booleans) — an attempt to put anything else in one raises
-`LispError: not a number, string, or date: ...`. `vector-ref`/`vector-set!`
-do **not** bounds-check their index; an out-of-range index raises a plain
-Python `IndexError`, not a `LispError`.
+`LispError: not a number, string, or date: ...`. `vector-ref` and
+`vector-set!` check their index: it must be a whole number from 0 to the
+length minus 1, or it's an error such as
+`vector-ref: index 5 is out of range -- the vector has 3 elements`.
 
 This section covers making, reading, and changing vectors. Arithmetic,
 comparisons, statistics, and time-series functions on whole vectors are in
@@ -2418,6 +2509,12 @@ a lambda whenever there's one that does the job.
 the **same length** (a different length is an error), or a vector and a
 single number, which is used with every element. A date counts as its day
 number, so subtracting two vectors of dates gives the days between them.
+
+**The ordinary operators work on vectors too.** `(* balance 0.01)` is the
+same as `(vector-mul balance 0.01)`, and `(> balance 1500)` the same as
+`(vector> balance 1500)` — see "Arithmetic on vectors", under
+"Arithmetic". The `vector-` names below do the same thing, for two
+arguments.
 
 **Missing values** are NaN, "not a number", which you write as `nan`:
 a SQLite NULL in a numeric column, a blank in a CSV column of numbers, a
@@ -3531,7 +3628,7 @@ probability for `"logistic"`/`"spline-logistic"` models.
 (model-predict m2 50000)               ; one predictor -> bare number is fine too
 ```
 
-[`model_utils.lsp`](model_utils.lsp)'s `(model->function m)` wraps this into
+[`model_utils.lsp`](lib/model_utils.lsp)'s `(model->function m)` wraps this into
 an ordinary Lisp function, one argument per predictor, instead of a list:
 
 ```lisp
@@ -3620,16 +3717,16 @@ formula doesn't use. You don't have to write those zeros: `lp-read-file`
 fills them in from a file that uses variable names. You can also build a
 problem in Lisp; see `lp-solve`.
 
-`linear_programming_example.lsp` is a worked example. It reads a problem
+`examples/linear_programming_example.lsp` is a worked example. It reads a problem
 from `linear_programming_example.txt`: invest $100 million in four mortgage
 pools for the most yield, within limits on concentration, average
 duration, and credit risk. It solves the problem and prints the
 allocation. Then it changes the problem in Lisp to see how the income
 depends on the duration limit, and shows how an impossible limit is
-reported. Run it from `lisp_interp/`:
+reported. Run it from `lisp_interp/examples/`, where the problem file is:
 
 ```bash
-python3 lisp_interpreter.py linear_programming_example.lsp
+python3 ../lisp_interpreter.py linear_programming_example.lsp
 ```
 
 #### `(lp-read-file path)`
@@ -3932,8 +4029,8 @@ doesn't specify its own `decimals`. Non-numeric values (dates, etc.) are
 unaffected either way, always rendered plainly.
 
 Deliberately low-level — it doesn't know anything about `defstruct` or any
-particular notion of a "column". See `column_engine.lsp` (next to this
-file) for a small example library, built on `defstruct` and `&key`, that
+particular notion of a "column". See `lib/column_engine.lsp` for a small
+example library, built on `defstruct` and `&key`, that
 registers named `column` structs (each with its own `decimals` slot —
 e.g. `0` for a dollar amount, `4`-`6` for an interest rate/CPR/SMM
 column), calculates them row-by-row in dependency order, and calls
@@ -4004,8 +4101,8 @@ Raises `LispError` on a missing/invalid credentials file, a missing API
 key, a network/HTTP failure, or a FRED-side error (bad series ID, bad key,
 etc).
 
-**Example** (also runnable as [`fred_example.lsp`](fred_example.lsp) —
-`python3 lisp_interpreter.py fred_example.lsp`). Exercises all three
+**Example** (also runnable as [`fred_example.lsp`](examples/fred_example.lsp) —
+`python3 ../lisp_interpreter.py fred_example.lsp`, from `examples/`). Exercises all three
 argument forms:
 
 ```lisp
@@ -4158,7 +4255,7 @@ native parameter binding (not string-building), which is what makes this
 safe against SQL injection no matter what a value contains. Writing the
 placeholders and the query text that will fill them by hand is easy to get
 out of sync on a query with more than a couple of parameters; `template.lsp`
-(next to this file) is a small templating engine built to generate both
+(in `lib/`) is a small templating engine built to generate both
 together instead — write `{{name}}` right where a value belongs (e.g.
 `"...WHERE state = {{state}}"`), and `template-render-sql` produces the
 `"?"`-ified SQL text and the matching params list as one pair; `{{name}}` is
@@ -4576,7 +4673,7 @@ Needs `term_structure/term_structure_model.py` (next to this repo's
 (plot-xy sofr-months (list sofr-forward-rates))
 ```
 
-See `sofr_floating_rate_example.lsp` (next to this file) for feeding
+See `examples/sofr_floating_rate_example.lsp` for feeding
 `sofr-forward-rates` into `column_engine.lsp` to drive a floating-rate
 note's coupon, period by period. `prepayment_model.lsp` (a simple
 PSA-style CPR/SMM curve — see that file) is the mortgage-prepayment
@@ -4762,7 +4859,7 @@ Returns `(list years-vector short-rate-paths underlying-paths
 mortgage-paths)` — `underlying-paths` is the `tenor-years` rate before
 adding the spread; `mortgage-paths` is after.
 
-**Example**: `sofr_monte_carlo_example.lsp` (next to this file) runs the
+**Example**: `examples/sofr_monte_carlo_example.lsp` runs the
 full pipeline end to end — `sofr-calibration-data` →
 `sofr-bootstrap-curve` → `sofr-calibrate-model` →
 `sofr-simulate-mortgage-rate-paths` — then charts a few paths and writes
@@ -4775,7 +4872,7 @@ cashflows (looping over several paths, each with its own
 Monte Carlo distribution of cashflows — not built out there).
 
 That "loop over several paths" step is exactly what
-[`oas_monte_carlo.lsp`](oas_monte_carlo.lsp) does, deliberately WITHOUT
+[`oas_monte_carlo.lsp`](lib/oas_monte_carlo.lsp) does, deliberately WITHOUT
 `column_engine.lsp` (its per-row registry/topological-sort machinery is
 built for readability on a single calculated table, not for generating
 hundreds-to-thousands of per-path cashflow vectors fast). It adds:
@@ -4800,7 +4897,7 @@ hundreds-to-thousands of per-path cashflow vectors fast). It adds:
   ordinary bond) or a per-path list of cashflow vectors (a prepaying
   mortgage, whose cashflows are path-dependent).
 
-See [`oas_monte_carlo_example.lsp`](oas_monte_carlo_example.lsp) for the
+See [`oas_monte_carlo_example.lsp`](examples/oas_monte_carlo_example.lsp) for the
 full pipeline end to end — curve extension → (illustrated) historical-vol
 cross-check → `sofr-simulate-mortgage-rate-paths` →
 `mortgage-cashflows-per-path` → `oas-solve` — runnable with no network
@@ -4808,7 +4905,7 @@ access or credentials (its curve/volatility/market-price numbers are all
 illustrative, in the same spirit as `term_structure_model.py`'s own
 `__main__` demo).
 
-[`oas_monte_carlo_live_example.lsp`](oas_monte_carlo_live_example.lsp) is
+[`oas_monte_carlo_live_example.lsp`](examples/oas_monte_carlo_live_example.lsp) is
 the same pipeline against REAL data instead: the SOFR futures curve and
 calibration options from tastytrade (`sofr-calibration-data`), the
 Treasury par curve and the DFF/DGS10 historical-vol cross-check from
@@ -4821,8 +4918,8 @@ run used, split into separate sections so it's clear which is which.
 Needs a credentials file with both tastytrade fields and a
 `"fred_api_key"` entry (`creds` in `init.lsp`).
 
-**Example** (also runnable as [`tastytrade_example.lsp`](tastytrade_example.lsp) —
-`python3 lisp_interpreter.py tastytrade_example.lsp`). Exercises all
+**Example** (also runnable as [`tastytrade_example.lsp`](examples/tastytrade_example.lsp) —
+`python3 ../lisp_interpreter.py tastytrade_example.lsp`, from `examples/`). Exercises all
 seven `tastytrade-*` builtins:
 
 ```lisp
@@ -4934,8 +5031,14 @@ available afterward exactly as if you'd typed them yourself. Returns
 `'()`. This is the same mechanism the interpreter uses at startup to
 auto-load `macros_init.lsp`, `loop.lsp`, and `init.lsp`.
 
+Unless `path` is absolute, `load` looks for it in the current directory,
+then in each directory in the `LISP_PATH` environment variable (separated
+by colons, as in `PATH`), then in the interpreter's `lib` and `examples`
+directories, and loads the first one it finds. If there's none, the error
+says where it looked.
+
 ```lisp
-(load "column_engine.lsp")     ; defstruct column, register-column, ... now defined
+(load "column_engine.lsp")     ; from lib/: defstruct column, register-column, ... now defined
 ```
 
 #### `(redirect-output "path.txt" [append?])`
@@ -4982,8 +5085,8 @@ list operation and a metaprogramming tool.
 Returns a new symbol that can't collide with any other name in the
 program. The standard tool for avoiding accidental variable capture when
 hand-writing a macro — see "Macros", above, for what goes wrong without it
-(the old `while`) and how `while` uses it now. Used internally by
-`dolist`'s own desugaring for the same reason.
+(the old `while`) and how `while` uses it now. `dolist`, `do`, and `case`
+use it for the same reason.
 
 It prints as `%prefix-N`, where `N` counts up (`prefix` defaults to
 `"g"`), so different ones are easy to tell apart. But the name is only for
@@ -5031,11 +5134,10 @@ See "Standard macros", above.
 
 ### Introspection / debugging
 
-`pretty-print-function`, `pretty-print-macro`, `debug-function`, and
-`undebug-function` are macros (built with `defmacro`/quasiquote, the same
-as anything you could write yourself) specifically so you can write the
-bare name directly — `(pretty-print-function my-func)` — instead of
-quoting it.
+`pretty-print-function` and `pretty-print-macro` are macros (in
+`macros_init.lsp`, built with `defmacro` and backquote, the same as
+anything you could write yourself) so that you can write the bare name
+directly — `(pretty-print-function my-func)` — instead of quoting it.
 
 #### `(pretty-print x)`
 Verbose, deliberately unattractive printing of any value: every list
@@ -5152,12 +5254,11 @@ definitions, automatically.
 ```
 
 #### `(defined-macros)`
-The same idea, for user-defined macros — excludes this interpreter's own
-`pretty-print-function`/`pretty-print-macro`/`debug-function`/
-`undebug-function` convenience macros. It does include the standard
-macros (`while`, `do`, `case`, `loop`, and the others in "Standard macros";
-they're written in Lisp, in `macros_init.lsp` and `loop.lsp`), which come
-first, and then any macros from `init.lsp`, and yours.
+The same idea, for macros: every macro defined at the top level, in the
+order they were defined. The standard macros (`let`, `dolist`, `while`,
+`case`, `loop`, and the others in "Standard macros"; they're written in
+Lisp, in `macros_init.lsp` and `loop.lsp`) come first, then any macros
+from `init.lsp`, then yours.
 
 ```lisp
 (defmacro double-it (x) `(* 2 ,x))
@@ -5239,10 +5340,10 @@ ends them all.
 
 `debugging_example.lsp` is a worked example that uses a hook, so it needs no
 console: it logs calls, stops on a condition, and looks at the variables
-where an error happened. Run it from `lisp_interp/`:
+where an error happened. Run it from `lisp_interp/examples/`:
 
 ```bash
-python3 lisp_interpreter.py debugging_example.lsp
+python3 ../lisp_interpreter.py debugging_example.lsp
 ```
 
 #### `(break procedure-or-name [condition])`
@@ -5442,15 +5543,11 @@ recovers with `throw`, as `debugging_example.lsp` does:
 prints
 
 ```
-stopped by an error: division by zero
+stopped by an error: /: division by zero
 variables there: ((r . 0.0) (balance . 100000) (annual-percent . 0) (months . 360))
 ```
 
 and the `catch` returns `no-payment`.
-
-#### `(debug-function name)`, `(undebug-function name)`
-Older names for `(break name)` and `(unbreak name)`, as macros that take the
-bare name, like `pretty-print-function`.
 
 **Where the debug REPL works.** At a **terminal** (running a script, or
 interactively) it reads the real console with `input()`, as described above.
@@ -5562,16 +5659,17 @@ and the eventual return line says how many calls it absorbed:
 < (count-down 0) => done  [after 3 tail calls]
 ```
 
-At level 3, a macro call also logs the form and what it expanded to (each
-time the call is evaluated, though the macro itself runs only the first
-time; see "Macros"):
+At level 3, a macro call also logs the form and what it expanded to, when
+the macro expands it (the first time the call is evaluated; see "Macros"):
 `~ (unless #f (quote ran)) => (if #f (quote ()) (begin (quote ran)))`.
+Since `let`, `let*`, and `dolist` are macros, their expansions show up too.
 
 - Only **user-defined procedures** are traced — not built-ins like `+` or
   `car`, and not `let`/`let*`/`dolist` scopes (which are variable scopes,
   not calls; `dolist`'s hidden loop procedure does show up, as
   `%dolist-loop-N`). A callback run by a built-in (`map`, `filter`, ...) is
-  traced like any other call.
+  traced like any other call. Calls a macro makes while it builds its
+  expansion aren't traced: they're the macro's work, not your program's.
 - Values are **summarized**, never printed in full — a long list shows its
   first few elements and `...`, a big vector shows `#(7 7 7 ... n=1000000)` —
   so tracing a call on a large dataset stays fast and readable.
@@ -5662,7 +5760,20 @@ Lisp call stack (most recent call last):
 
 ## How the code is organized
 
-The interpreter is split into these Python files, all in `lisp_interp/`:
+The interpreter is split into these Python files, all in `lisp_interp/`,
+along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
+`init.lsp`. Three directories hold the rest:
+
+| Directory | What's in it |
+|---|---|
+| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `implied_vol.lsp`, `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
+| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read. Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
+| `tools/` | `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV, and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
+
+`load` finds files in `lib/` and `examples/` from anywhere (see "Where
+`load` finds a file", under "Running it").
+
+The Python files:
 
 | File | What's in it |
 |---|---|
@@ -5687,10 +5798,10 @@ The interpreter is split into these Python files, all in `lisp_interp/`:
 | `lisp_jupyter_debug.py` | The debug REPL in Jupyter, made with ipywidgets |
 | `test_lisp_interpreter.py` | The test suite: `python3 -m unittest test_lisp_interpreter` |
 
-Some Lisp files are loaded into every new environment at startup (by
-`load_init_file()` in `lisp_builtins.py`): `macros_init.lsp` and `loop.lsp`,
-the standard macros (see "Standard macros"), and then `init.lsp`, your own
-definitions.
+Some Lisp files are loaded into every new environment at startup:
+`macros_init.lsp` and `loop.lsp`, the standard macros (see "Standard
+macros"), by `make_global_env()`, and then `init.lsp`, your own
+definitions, by `load_init_file()`. Both are in `lisp_builtins.py`.
 
 Each file that adds builtins ends with a `BUILTINS` table — a Python dict
 from the Lisp name to the Python function that implements it — and
@@ -5700,7 +5811,7 @@ every new environment.
 ## Running the tests
 
 `test_lisp_interpreter.py`, in `lisp_interp/`, is the test suite. It has
-about 420 tests covering:
+about 700 tests covering:
 
 - the language itself: the reader, special forms, tail calls, macros,
   structs, and error reports;
@@ -5716,7 +5827,7 @@ about 420 tests covering:
 
 It needs nothing beyond what the interpreter itself needs (numpy). It
 never uses the network, your credentials, or any file outside a temporary
-directory, so it's safe to run at any time. The whole suite takes about 30
+directory, so it's safe to run at any time. The whole suite takes about 45
 seconds. Run it after changing the interpreter, a builtin, a `.lsp`
 library, or this manual.
 

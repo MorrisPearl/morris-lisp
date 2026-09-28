@@ -22,11 +22,11 @@ What I *can* give you, and have:
    its core SMM/CPR math against a small hand-built fixture file matching
    the real file format (see "How I tested this," below) — I could not
    test it against the actual dataset itself.
-3. **`synthetic_mbs_pools.csv`** — a clearly-synthetic (not real) dataset
+3. **`synthetic_mbs_pools.csv`** (in `../examples/`) — a clearly-synthetic (not real) dataset
    with realistic prepayment dynamics (seasoning ramp, refinance
    S-curve, burnout), so you can build and test your full modeling
    pipeline today.
-4. **`prepayment_demo.lsp`** — a working end-to-end example against that
+4. **`prepayment_demo.lsp`** (in `../examples/`) — a working end-to-end example against that
    synthetic data: load, suggest knot locations, fit a multi-predictor
    spline-logistic model, evaluate on held-out data, and chart it.
 

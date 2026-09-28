@@ -11,8 +11,8 @@
 ; optimal value that lp-solve reports is the most income. The amounts are in
 ; dollars; the solver handles numbers this size without scaling them down.
 ;
-; Run it from this directory:
-;   python3 lisp_interpreter.py linear_programming_example.lsp
+; Run it from the examples directory, where linear_programming_example.txt is:
+;   python3 ../lisp_interpreter.py linear_programming_example.lsp
 
 (define total-invested 100000000)
 

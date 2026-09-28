@@ -9,8 +9,8 @@
 ; same in a script, in Jupyter, and in the GUI. (The manual has a session
 ; showing the debug REPL itself.)
 ;
-; Run it from this directory:
-;   python3 lisp_interpreter.py debugging_example.lsp
+; Run it from the examples directory:
+;   python3 ../lisp_interpreter.py debugging_example.lsp
 
 ; The level monthly payment that pays off a loan. It has a bug: for a loan
 ; with no interest the formula divides by zero.

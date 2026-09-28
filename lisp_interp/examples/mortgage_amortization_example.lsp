@@ -12,9 +12,9 @@
 ; not just to loan age. Needs a tastytrade credentials file -- see
 ; tasty_api/README.md -- purely for that piece; comment out the SOFR
 ; section and pass psa_speed alone to cpr (as before) to run without one.
-; Run it with:
-;   python3 lisp_interpreter.py mortgage_amortization_example.lsp
-; or from the GUI/REPL:
+; Run it from the examples directory with:
+;   python3 ../lisp_interpreter.py mortgage_amortization_example.lsp
+; or from the GUI/REPL/a notebook (load finds it, wherever you are):
 ;   (load "mortgage_amortization_example.lsp")
 ;
 

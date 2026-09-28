@@ -53,6 +53,8 @@ import lisp_core     # noqa: E402
 import lisp_jupyter_debug  # noqa: E402
 
 INTERPRETER = os.path.join(HERE, "lisp_interpreter.py")
+LIB = os.path.join(HERE, "lib")                 # the Lisp libraries that come with the interpreter
+EXAMPLES = os.path.join(HERE, "examples")
 REFERENCE_DOC = os.path.join(HERE, "lisp_interpreter_reference.md")
 
 
@@ -319,9 +321,14 @@ class TestSpecialForms(LispTestCase):
 
     def test_special_forms_are_recognised_by_name(self):
         for name in ("quote", "quasiquote", "if", "define", "set!", "lambda", "begin",
-                     "let", "let*", "cond", "and", "or", "dolist", "defmacro",
+                     "cond", "and", "or", "defmacro",
                      "defstruct", "with-struct", "catch-error", "breakpoint"):
             self.assertIn(name, lisp_core.SPECIAL_FORMS)
+
+    def test_let_let_star_and_dolist_are_macros_from_macros_init(self):
+        for name in ("let", "let*", "dolist"):
+            self.assertNotIn(name, lisp_core.SPECIAL_FORMS)
+            self.assertIsInstance(self.env[lisp_core.Symbol(name)], lisp_core.Macro)
 
 
 # ---------------------------------------------------------------------------
@@ -396,8 +403,8 @@ class TestTailCallsAndRecursion(LispTestCase):
 class TestVariadicAndKeywordArgs(LispTestCase):
 
     def test_fixed_arity_is_enforced(self):
-        self.assertLispError("((lambda (a) a) 1 2)", "expected 1 argument(s), got 2")
-        self.assertLispError("((lambda (a b) a) 1)", "expected 2 argument(s), got 1")
+        self.assertLispError("((lambda (a) a) 1 2)", "<lambda>: expected 1 argument, got 2")
+        self.assertLispError("((lambda (a b) a) 1)", "<lambda>: expected 2 arguments, got 1")
 
     def test_dotted_rest_parameter(self):
         self.run_lisp("(define (f a . rest) (list a rest))")
@@ -509,14 +516,12 @@ class TestMacros(LispTestCase):
     def test_a_gensym_cannot_collide_with_a_name_the_program_uses(self):
         # Give a function the exact name the next while loop's gensym will
         # print as; the loop body's call must still reach that function.
-        lisp_builtins.load_standard_macros(self.env)
         next_name = "%%while-loop-%d" % (lisp_core._gensym_counter[0] + 1)
         self.run_lisp("(define calls 0) (define (%s) (set! calls (+ calls 1))) (define i 0)" % next_name)
         self.run_lisp("(while (< i 3) (set! i (+ i 1)) (%s))" % next_name)
         self.assertShows("calls", "3")
 
     def test_a_pasted_macro_expansion_still_works(self):
-        lisp_builtins.load_standard_macros(self.env)
         expansion = self.show("(macroexpand-1 '(while (< i 3) (set! i (+ i 1))))")
         self.run_lisp("(define i 0)")
         self.run_lisp(expansion)                 # the printed names read back as ordinary symbols
@@ -550,7 +555,6 @@ class TestMacroExpansionCache(LispTestCase):
 
     def setUp(self):
         super().setUp()
-        lisp_builtins.load_standard_macros(self.env)
         self.run_lisp("(define expansions 0)"
                       "(defmacro counted (x) (set! expansions (+ expansions 1)) x)")
 
@@ -597,11 +601,19 @@ class TestMacroExpansionCache(LispTestCase):
         self.run_lisp("(defmacro twice (x) `(* 2 ,x)) (define (f n) (if (= n 0) 0 (+ (twice 1) (f (- n 1)))))")
         self.assertShows("(f 50)", "100")
 
-    def test_verbose_level_3_still_logs_every_evaluation_of_a_cached_call(self):
-        self.run_lisp("(defmacro m1 (x) `(+ ,x 1)) (define (f) (m1 5)) (f)")       # expanded
+    def test_verbose_level_3_logs_an_expansion_when_it_is_made(self):
+        self.run_lisp("(defmacro m1 (x) `(+ ,x 1)) (define (f) (m1 5))")
         lisp_core.set_verbose_level(3)
         self.run_lisp("(f)")
-        self.assertIn("~ (m1 5) => (+ 5 1)", self.printed())                        # ...and logged again
+        self.assertEqual(self.printed().count("~ (m1 5) => (+ 5 1)"), 1)            # expanded, and logged
+        self.run_lisp("(f)")
+        self.assertEqual(self.printed().count("~ (m1 5) => (+ 5 1)"), 1)            # remembered: nothing to log
+
+    def test_calls_a_macro_makes_while_expanding_are_not_traced(self):
+        self.run_lisp("(define (helper x) x) (defmacro m2 (x) (helper x)) (define (f) (m2 5))")
+        lisp_core.set_verbose_level(2)
+        self.assertShows("(f)", "5")
+        self.assertEqual(self.printed(), "> (f)\n< (f) => 5\n")
 
     def test_the_cache_is_emptied_when_it_gets_too_big(self):
         with mock.patch.object(lisp_core, "EXPANSION_CACHE_LIMIT", 10):
@@ -921,6 +933,60 @@ class TestErrorsAndCatchError(LispTestCase):
             self.run_lisp("(car 1 2)")
 
 
+class TestErrorMessages(LispTestCase):
+    """An error names the procedure or special form that went wrong."""
+
+    def test_a_builtin_given_the_wrong_number_of_arguments(self):
+        self.assertLispError("(cons 1)", "cons: expected 2 arguments, got 1")
+        self.assertLispError("(car 1 2)", "car: expected 1 argument, got 2")
+        self.assertLispError("(substring)", "substring: expected 2 to 3 arguments, got 0")
+
+    def test_a_builtin_given_the_wrong_type_of_value(self):
+        self.assertLispError('(string-append "a" 1)',
+                             'string-append: an argument is the wrong type of value, in (string-append "a" 1)')
+
+    def test_a_python_exception_becomes_a_lisp_error_naming_the_builtin(self):
+        self.assertLispError("(sqrt -1)", "sqrt: ")
+        self.assertLispError("(/ 1 0)", "/: division by zero")
+
+    def test_a_builtin_called_by_map_is_named(self):
+        self.assertLispError("(map sqrt (list -1))", "sqrt: ")
+
+    def test_a_procedure_given_the_wrong_number_of_arguments(self):
+        self.run_lisp("(define (f a b) a)")
+        self.assertLispError("(f 1)", "f: expected 2 arguments, got 1")
+        self.assertLispError("(map f (list 1))", "f: expected 2 arguments, got 1")
+
+    def test_a_procedure_given_an_unknown_keyword(self):
+        self.run_lisp("(define (g &key a) a)")
+        self.assertLispError("(g :b 1)", "g: unknown keyword argument(s): :b")
+
+    def test_a_struct_accessor_is_named(self):
+        self.run_lisp("(defstruct point x y)")
+        self.assertLispError("(point-x)", "point-x: expected 1 argument, got 0")
+
+    def test_a_badly_formed_special_form(self):
+        self.assertLispError("(define x)", "define: badly formed: (define x)")
+        self.assertLispError("(if)", "if: badly formed: (if)")
+
+    def test_a_badly_formed_let(self):
+        self.assertLispError("(let ((x)) x)", "let: each binding must be (name value), not (x)")
+        self.assertLispError("(let loop ((i 0)) i)", "let: expected a list of bindings")
+        self.assertLispError("(let* ((x 1) y) x)", "let*: each binding must be (name value), not y")
+
+    def test_calling_something_that_is_not_a_procedure(self):
+        self.assertLispError("(5 1)", "not a procedure: 5")
+
+    def test_string_to_number(self):
+        self.assertShows('(string->number "42")', "42")
+        self.assertShows('(string->number " -3.5 ")', "-3.5")
+        self.assertShows('(string->number "1e3")', "1000.0")
+        self.assertLispError('(string->number "abc")', 'string->number: "abc" isn\'t a number')
+
+    def test_catch_error_sees_the_message(self):
+        self.assertShows('(catch-error (cons 1) (e) e)', '"cons: expected 2 arguments, got 1"')
+
+
 class TestUnwindProtect(LispTestCase):
     """(unwind-protect protected-expr cleanup-expr...): cleanup always runs."""
 
@@ -1046,17 +1112,30 @@ class TestNumbers(LispTestCase):
         self.assertShows("(/ 4)", "0.25")
         self.assertLispError("(/)")
 
-    def test_division_by_zero_is_a_python_zerodivisionerror(self):
-        self.assertRaisesFromLisp(ZeroDivisionError, "(/ 1 0)")
+    def test_division_by_zero_is_an_error_naming_the_builtin(self):
+        self.assertLispError("(/ 1 0)", "/: division by zero")
 
-    def test_mod_and_remainder_both_follow_the_divisor(self):
+    def test_mod_has_the_sign_of_the_divisor_and_remainder_of_the_dividend(self):
         self.assertShows("(mod 7 3)", "1")
         self.assertShows("(mod -7 3)", "2")
-        self.assertShows("(remainder -7 3)", "2")
+        self.assertShows("(mod 7 -3)", "-2")
+        self.assertShows("(remainder -7 3)", "-1")
+        self.assertShows("(remainder 7 -3)", "1")
+        self.assertShows("(remainder 7.5 2)", "1.5")
 
     def test_quotient_truncates_toward_zero(self):
         self.assertShows("(quotient 7 2)", "3")
         self.assertShows("(quotient -7 2)", "-3")
+        self.assertShows("(quotient 7.5 2)", "3")
+        self.assertShows("(+ (* 2 (quotient -7 2)) (remainder -7 2))", "-7")
+
+    def test_quotient_is_exact_for_big_whole_numbers(self):
+        self.assertShows("(quotient 1000000000000000001 1)", "1000000000000000001")
+        self.assertShows("(remainder 1000000000000000001 10)", "1")
+
+    def test_integer_division_by_zero_is_an_error(self):
+        self.assertLispError("(quotient 1 0)", "quotient: ")
+        self.assertLispError("(mod 1 0)", "mod: ")
 
     def test_abs_min_max(self):
         self.assertShows("(abs -5)", "5")
@@ -1065,7 +1144,7 @@ class TestNumbers(LispTestCase):
 
     def test_sqrt(self):
         self.assertShows("(sqrt 16)", "4.0")
-        self.assertRaisesFromLisp(ValueError, "(sqrt -1)")
+        self.assertLispError("(sqrt -1)", "sqrt: ")
 
     def test_expt_is_exact_for_integers_and_pow_is_always_float(self):
         self.assertShows("(expt 2 10)", "1024")
@@ -1101,6 +1180,73 @@ class TestNumbers(LispTestCase):
 
     def test_integers_stay_exact_and_large(self):
         self.assertShows("(* 99999999999 99999999999)", str(99999999999 ** 2))
+
+
+class TestArithmeticOnVectors(LispTestCase):
+    """+, -, *, /, the comparisons, and the math functions, given vectors:
+    element by element, with a single number used for every element."""
+
+    def test_the_four_operations(self):
+        self.assertShows("(+ #(1 2 3) 10)", "#(11 12 13)")
+        self.assertShows("(- #(10 20) #(1 2))", "#(9 18)")
+        self.assertShows("(* #(1 2) #(3 4) 2)", "#(6 16)")
+        self.assertShows("(/ #(1 2) 4)", "#(0.25 0.5)")
+        self.assertShows("(+ 1 2 #(10 20))", "#(13 23)")
+
+    def test_one_argument_negates_or_inverts(self):
+        self.assertShows("(- #(1 -2))", "#(-1 2)")
+        self.assertShows("(/ #(2 4))", "#(0.5 0.25)")
+
+    def test_dividing_a_vector_by_zero_gives_infinity_not_an_error(self):
+        self.assertShows("(/ #(1 0) 0)", "#(inf nan)")
+
+    def test_the_vectors_must_be_the_same_length(self):
+        self.assertLispError("(+ #(1 2) #(1 2 3))", "+: the vectors have different lengths: 2, 3")
+
+    def test_only_numbers_and_vectors(self):
+        self.assertLispError('(* #(1 2) "a")', '*: not a number or a vector: "a"')
+
+    def test_comparisons_give_masks(self):
+        self.assertShows("(< #(1 5 3) 4)", "#(1 0 1)")
+        self.assertShows("(= #(1 2 3) #(1 0 3))", "#(1 0 1)")
+        self.assertShows("(>= #(1 2 3) 2)", "#(0 1 1)")
+
+    def test_a_chained_comparison_tests_every_pair(self):
+        self.assertShows("(< 0 #(-1 0.5 2) 1)", "#(0 1 0)")
+
+    def test_a_mask_picks_rows(self):
+        self.assertShows("(vector-select #(10 20 30) (> #(1 2 3) 1))", "#(20 30)")
+
+    def test_math_functions(self):
+        self.assertShows("(sqrt #(4 9))", "#(2.0 3.0)")
+        self.assertShows("(abs #(-1 2))", "#(1 2)")
+        self.assertShows("(expt #(2 3) 2)", "#(4.0 9.0)")
+        self.assertShows("(log #(1 100) 10)", "#(0.0 2.0)")
+        self.assertShows("(exp #(0))", "#(1.0)")
+
+    def test_rounding_gives_whole_numbers(self):
+        self.assertShows("(floor #(1.5 -1.5))", "#(1 -2)")
+        self.assertShows("(ceiling #(1.5 -1.5))", "#(2 -1)")
+        self.assertShows("(truncate #(1.5 -1.5))", "#(1 -1)")
+        self.assertShows("(round #(2.5 3.5))", "#(2 4)")
+        self.assertShows("(floor #(1.5 nan))", "#(1.0 nan)")        # a missing value stays missing
+
+    def test_min_and_max_work_position_by_position(self):
+        self.assertShows("(max #(-1 2 -3) 0)", "#(0 2 0)")
+        self.assertShows("(min #(1 5) #(3 2))", "#(1 2)")
+
+    def test_integer_division(self):
+        self.assertShows("(quotient #(7 -7 8) 2)", "#(3 -3 4)")
+        self.assertShows("(remainder #(7 -7) 2)", "#(1 -1)")
+        self.assertShows("(mod #(7 -7) 2)", "#(1 1)")
+
+    def test_the_arguments_are_not_changed(self):
+        self.run_lisp("(define v (vector 1 2 3)) (define w (* v 2))")
+        self.assertShows("v", "#(1 2 3)")
+
+    def test_the_vector_names_still_work(self):
+        self.assertShows("(vector-add #(1 2) 1)", "#(2 3)")
+        self.assertShows("(vector< #(1 5) 3)", "#(1 0)")
 
 
 class TestRandom(LispTestCase):
@@ -1256,6 +1402,73 @@ class TestLists(LispTestCase):
         n = 5000
         self.run_lisp("(define (iota n acc) (if (= n 0) acc (iota (- n 1) (cons n acc))))")
         self.assertEqual(len(self.show("(iota %d '())" % n).split()), n)
+
+
+class TestSequenceFunctions(LispTestCase):
+    """The list functions that also work on vectors and strings -- and a clear
+    error, not a wrong answer, for anything else."""
+
+    def test_length(self):
+        self.assertShows("(length (list 1 2 3))", "3")
+        self.assertShows("(length #(1 2 3))", "3")
+        self.assertShows('(length "abcd")', "4")
+        self.assertLispError("(length 5)", "length: expected a list, got 5")
+        self.assertLispError("(length '(1 2 . 3))", "length: expected a list, got (1 2 . 3)")
+
+    def test_reverse(self):
+        self.assertShows("(reverse #(1 2 3))", "#(3 2 1)")
+        self.assertShows('(reverse "abc")', '"cba"')
+
+    def test_map_over_a_vector_gives_a_vector(self):
+        self.assertShows("(map (lambda (x) (* x 10)) #(1 2))", "#(10 20)")
+
+    def test_filter_over_a_vector_gives_a_vector(self):
+        self.assertShows("(filter (lambda (x) (> x 1)) #(1 2 3))", "#(2 3)")
+        self.assertShows("(filter (lambda (x) (> x 5)) #(1 2 3))", "#()")
+
+    def test_reduce_over_a_vector(self):
+        self.assertShows("(reduce + #(1 2 3))", "6")
+        self.assertShows("(reduce + #() 0)", "0")
+        self.assertLispError("(reduce + '())", "reduce: nothing to combine")
+
+    def test_append_vectors_or_strings(self):
+        self.assertShows("(append #(1) #(2 3))", "#(1 2 3)")
+        self.assertShows('(append "ab" "cd")', '"abcd"')
+        self.assertShows("(append (list 1) (list 2) 3)", "(1 2 . 3)")
+        self.assertLispError("(append #(1) (list 2))", "append: expected a list, got #(1)")
+
+    def test_apply_to_a_vector(self):
+        self.assertShows("(apply + #(1 2 3))", "6")
+
+    def test_list_only_functions_reject_a_vector(self):
+        self.assertLispError("(member 2 #(1 2))", "member: expected a list, got #(1 2)")
+        self.assertLispError("(list-ref #(1 2) 0)", "list-ref: expected a list")
+        self.assertLispError("(assoc 1 #(1 2))", "assoc: expected a list")
+
+    def test_vector_functions_reject_a_list(self):
+        self.assertLispError("(vector-length (list 1))", "vector-length: expected a vector, got (1)")
+        self.assertLispError("(vector->list (list 1))", "vector->list: expected a vector")
+
+    def test_dolist_over_a_vector(self):
+        self.assertShows("(let ((s 0)) (dolist (x #(1 2 3) s) (set! s (+ s x))))", "6")
+        self.assertLispError("(dolist (x 5) x)", "dolist: expected a list or a vector, not 5")
+
+
+class TestEqual(LispTestCase):
+
+    def test_long_lists(self):
+        self.run_lisp("(define a (loop for i from 1 to 20000 collect i))")
+        self.assertShows("(equal? a (loop for i from 1 to 20000 collect i))", "#t")
+        self.assertShows("(equal? a (cdr a))", "#f")
+
+    def test_lists_of_different_lengths_or_tails(self):
+        self.assertShows("(equal? (list 1 2) (list 1 2 3))", "#f")
+        self.assertShows("(equal? (list 1 2 3) (list 1 2))", "#f")
+        self.assertShows("(equal? '(1 . 2) '(1 . 2))", "#t")
+        self.assertShows("(equal? '(1 . 2) '(1 2))", "#f")
+
+    def test_nested_lists(self):
+        self.assertShows("(equal? '(1 (2 3) #(4)) (list 1 (list 2 3) #(4)))", "#t")
 
 
 # ---------------------------------------------------------------------------
@@ -1491,8 +1704,11 @@ class TestVectors(LispTestCase):
         self.assertLispError("(vector 1 #t)", "not a number, string, or date")
         self.assertLispError("(vector 1 (list 2))", "not a number, string, or date")
 
-    def test_out_of_range_index_raises_indexerror(self):
-        self.assertRaisesFromLisp(IndexError, "(vector-ref #(1 2 3) 10)")
+    def test_an_index_out_of_range_is_an_error(self):
+        self.assertLispError("(vector-ref #(1 2 3) 10)", "vector-ref: index 10 is out of range -- the vector has 3 elements")
+        self.assertLispError("(vector-ref #(1 2 3) -1)", "index -1 is out of range")
+        self.assertLispError("(vector-set! (vector 1 2) 2 0)", "vector-set!: index 2 is out of range")
+        self.assertLispError("(vector-ref #(1 2 3) 1.5)", "the index must be a whole number")
 
     def test_dtype_is_chosen_from_the_contents_and_widens_on_demand(self):
         V = lisp_core.LispVector
@@ -2448,12 +2664,57 @@ class TestMetaprogrammingAndIO(LispTestCase):
         self.assertLispError("(pretty-print-function car)", "not a user-defined function")
 
 
-class TestStandardMacros(LispTestCase):
-    """macros_init.lsp: while and do."""
+class TestLoadPath(LispTestCase):
+    """load looks in the current directory, then in the LISP_PATH
+    directories, then in the interpreter's lib and examples directories."""
 
     def setUp(self):
         super().setUp()
-        lisp_builtins.load_standard_macros(self.env)
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        with open(os.path.join(self.dir, "mine.lsp"), "w") as f:
+            f.write("(define from-mine 7)")
+
+    def test_a_file_in_a_lisp_path_directory(self):
+        other = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, other, ignore_errors=True)
+        with mock.patch.dict(os.environ, {"LISP_PATH": other + os.pathsep + self.dir}):
+            self.run_lisp('(load "mine.lsp")')
+        self.assertShows("from-mine", "7")
+
+    def test_the_first_directory_that_has_the_file_wins(self):
+        other = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, other, ignore_errors=True)
+        with open(os.path.join(other, "mine.lsp"), "w") as f:
+            f.write("(define from-mine 8)")
+        with mock.patch.dict(os.environ, {"LISP_PATH": other + os.pathsep + self.dir}):
+            self.run_lisp('(load "mine.lsp")')
+        self.assertShows("from-mine", "8")
+
+    def test_the_libraries_that_come_with_the_interpreter_are_found(self):
+        with mock.patch.dict(os.environ, {"LISP_PATH": ""}):
+            self.run_lisp('(load "solver.lsp")')
+        self.assertIn("ridders", self.show("(defined-functions)"))
+
+    def test_a_library_can_load_another_from_anywhere(self):
+        # implied_vol.lsp does (load "solver.lsp"); it must work from any directory.
+        with mock.patch.dict(os.environ, {"LISP_PATH": ""}):
+            cwd = os.getcwd()
+            os.chdir(self.dir)
+            try:
+                self.run_lisp('(load "implied_vol.lsp")')
+            finally:
+                os.chdir(cwd)
+        self.assertIn("implied-vol", self.show("(defined-functions)"))
+
+    def test_a_missing_file_says_where_it_looked(self):
+        with mock.patch.dict(os.environ, {"LISP_PATH": self.dir}):
+            self.assertLispError('(load "nowhere.lsp")', "load: can't find nowhere.lsp in the current directory or in " + self.dir)
+        self.assertLispError('(load "/definitely/not/here.lsp")', "load: there's no file /definitely/not/here.lsp")
+
+
+class TestStandardMacros(LispTestCase):
+    """macros_init.lsp: while and do."""
 
     def test_while_runs_several_body_forms_until_the_test_is_false(self):
         self.run_lisp('(define i 0) (define out "")')
@@ -2608,10 +2869,6 @@ class TestStandardMacros(LispTestCase):
 
 class TestLoop(LispTestCase):
     """loop.lsp: the Common Lisp loop macro."""
-
-    def setUp(self):
-        super().setUp()
-        lisp_builtins.load_standard_macros(self.env)
 
     def assertAll(self, cases):
         for source, expected in cases:
@@ -3123,7 +3380,7 @@ class TestTemplateLibrary(LispTestCase):
 
     def setUp(self):
         super().setUp()
-        self.run_lisp('(load "%s")' % os.path.join(HERE, "template.lsp"))
+        self.run_lisp('(load "%s")' % os.path.join(LIB, "template.lsp"))
 
     def test_variable_substitution(self):
         self.assertShows('(template-render "Hello, {{name}}! {{count}} new{{s}}." '
@@ -3217,7 +3474,7 @@ class TestColumnEngineLibrary(LispTestCase):
         self.tables = []
         self.out = []
         self.env = lisp_builtins.make_global_env(output=self.out.append, columns=self.tables.append)
-        self.run_lisp('(load "%s")' % os.path.join(HERE, "column_engine.lsp"))
+        self.run_lisp('(load "%s")' % os.path.join(LIB, "column_engine.lsp"))
 
     def test_columns_chain_and_lag_across_rows(self):
         self.run_lisp("""
@@ -3316,8 +3573,7 @@ class TestProcedureNames(LispTestCase):
         self.assertEqual(str(self.run_lisp("(defmacro m (x) x) m").name), "m")
 
     def test_let_scopes_are_flagged_and_real_lambdas_are_not(self):
-        exprs = list(lisp_core.parse("(let ((x 1)) x)"))
-        self.assertIn("%scope-lambda", lisp_core.to_string(lisp_core.desugar_let(exprs[0].cdr)))
+        self.assertShows("(macroexpand '(let ((x 1)) x))", "((%scope-lambda (x) x) 1)")
         self.assertFalse(self.run_lisp("(lambda (x) x)").is_scope)
 
     def test_naming_does_not_change_behavior(self):
@@ -3411,7 +3667,11 @@ class TestCallTracing(LispTestCase):
                          "> (<lambda> 21)\n< (<lambda> 21) => 42\n")
 
     def test_let_dolist_and_builtins_are_not_calls(self):
-        self.assertEqual(self.trace_of(3, "(let ((x 1)) (let* ((y 2)) (+ x y)))"), "")
+        # let and let* are macros: level 3 shows how they expand, but no calls.
+        text = self.trace_of(3, "(let ((x 1)) (let* ((y 2)) (+ x y)))")
+        self.assertTrue(text)
+        for line in text.splitlines():
+            self.assertTrue(line.lstrip().startswith("~ "), line)
         self.run_lisp("(define total 0)")
         lines = self.trace_of(1, "(dolist (x (list 1 2)) (set! total (+ total x)))").splitlines()
         # only dolist's own loop helper is a real procedure -- no <lambda> lines from its lets
@@ -3559,7 +3819,7 @@ class TestStackTraces(LispTestCase):
         self.assertEqual(lisp_core.format_error_report(self.error_of("(caller)")),
                          "Lisp traceback (most recent call last):\n"
                          "  (caller)\n  (needs-two 1)  [arguments rejected]\n"
-                         "Error: expected 2 argument(s), got 1\n")
+                         "Error: needs-two: expected 2 arguments, got 1\n")
 
     def test_an_unknown_keyword_names_the_constructor(self):
         self.run_lisp("(defstruct point x y)")
@@ -3578,7 +3838,9 @@ class TestStackTraces(LispTestCase):
     def test_plain_python_exceptions_from_builtins_get_a_trace_too(self):
         self.run_lisp("(define (f x) (/ 1 x))")
         e = self.error_of("(list (f 0))")
-        self.assertIsInstance(e, ZeroDivisionError)
+        self.assertIsInstance(e, lisp_core.LispError)
+        self.assertEqual(str(e), "/: division by zero")
+        self.assertIsInstance(e.__cause__, ZeroDivisionError)       # the original, for LISP_PYTHON_TRACEBACK
         self.assertIn("(f 0)", lisp_core.format_lisp_traceback(e))
 
     def test_a_caught_error_leaves_no_trace_behind_for_the_next_one(self):
@@ -3739,12 +4001,6 @@ class TestBreakpoints(LispTestCase):
         self.run_with_input("(f 1) (g 1)", [])              # no stops: there's no input to answer one
         self.run_lisp("(unbreak 'never-set)")              # removing what isn't there is fine
         self.assertLispError("(unbreak 'f 'g)", "at most one argument")
-
-    def test_debug_function_and_undebug_function_are_other_names_for_break_and_unbreak(self):
-        self.run_lisp("(define (f x) x) (debug-function f)")
-        self.assertShows("(breakpoints)", "((f))")
-        self.run_lisp("(undebug-function f)")
-        self.assertShows("(breakpoints)", "()")
 
     def test_a_name_that_is_not_defined_yet_gets_a_note_but_the_breakpoint_applies_later(self):
         self.assertShows("(break 'later)", "later")
@@ -3956,7 +4212,7 @@ class TestBreakOnError(LispTestCase):
     def test_a_python_error_from_a_builtin_stops_too(self):
         self.run_lisp("(define count 0) (set-debug-hook! (lambda (k n a) (set! count (+ count 1))))"
                       "(break-on-error #t)")
-        self.assertRaisesFromLisp(ZeroDivisionError, "(/ 1 0)")
+        self.assertLispError("(/ 1 0)", "/: division by zero")
         self.assertShows("count", "1")
 
     def test_the_debug_repl_for_an_error_can_be_left_with_continue_and_the_error_goes_on(self):
@@ -4728,11 +4984,17 @@ class TestCommandLineTracing(unittest.TestCase):
         r = self.run_script(source='(display "before")\n(error "x")')
         self.assertEqual(r.stdout, "before")
 
-    def test_a_python_level_exception_prints_the_lisp_chain_then_pythons_traceback(self):
+    def test_a_python_exception_in_a_builtin_is_reported_as_a_lisp_error(self):
         r = self.run_script(source="(define (f x) (/ 1 x))\n(list (f 0))\n")
-        self.assertNotEqual(r.returncode, 0)
-        self.assertTrue(r.stderr.startswith("Lisp traceback (most recent call last):\n  (f 0)\n"), r.stderr)
-        self.assertIn("ZeroDivisionError", r.stderr)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stderr, "Lisp traceback (most recent call last):\n  (f 0)\n"
+                                   "Error: /: division by zero\n")
+
+    def test_the_python_exception_behind_a_builtins_error_is_in_the_python_traceback(self):
+        r = self.run_script(source="(define (f x) (/ 1 x))\n(list (f 0))\n",
+                            env_extra={"LISP_PYTHON_TRACEBACK": "1"})
+        self.assertIn("ZeroDivisionError: division by zero", r.stderr)
+        self.assertIn("LispError: /: division by zero", r.stderr)
 
     def test_the_repl_shows_the_call_chain_for_an_error_and_keeps_going(self):
         r = run_cli("-", stdin="(define (f x) (car x))\n(list (f 5))\n(+ 20 22)\n(exit)\n")
@@ -4862,9 +5124,10 @@ print(w.output_view.toPlainText())
 
 class TestExampleScripts(unittest.TestCase):
     """Smoke tests: each offline example must run to completion. Every
-    script runs ONCE (in setUpClass), in a temporary copy of the .lsp,
-    .csv, and .txt files so anything it writes lands there, never in the
-    repository.
+    script runs ONCE (in setUpClass), in a temporary copy of the examples
+    directory's .lsp, .csv, and .txt files, so anything it writes lands
+    there, never in the repository. The libraries they load (lib/) are
+    found where they are, by load's search.
 
     The two slowest examples (about 15s and 60s) only run when the
     environment variable LISP_TEST_SLOW is set."""
@@ -4886,9 +5149,9 @@ class TestExampleScripts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp()
-        for name in os.listdir(HERE):
+        for name in os.listdir(EXAMPLES):
             if name.endswith((".lsp", ".csv", ".txt")):
-                shutil.copy(os.path.join(HERE, name), cls.tmp)
+                shutil.copy(os.path.join(EXAMPLES, name), cls.tmp)
         names = cls.FAST_EXAMPLES + (cls.SLOW_EXAMPLES if os.environ.get("LISP_TEST_SLOW") else [])
         cls.results = {name: run_cli(os.path.join(cls.tmp, name), cwd=cls.tmp) for name in names}
 
@@ -4920,7 +5183,7 @@ class TestExampleScripts(unittest.TestCase):
         self.assertIn("The breakpoints are ((level-payment (> balance 500000)))\n"
                       "   called: level-payment (800000 6.0 360)\n", out)
         self.assertNotIn("called: level-payment (200000 6.0 360)\n\n2.", out)
-        self.assertIn("   stopped by an error: division by zero\n", out)
+        self.assertIn("   stopped by an error: /: division by zero\n", out)
         self.assertIn("   variables there: ((r . 0.0) (balance . 100000) (annual-percent . 0) (months . 360))\n", out)
         self.assertIn("   result = no-payment\n", out)
 
@@ -5062,7 +5325,6 @@ class TestReferenceDocExamples(unittest.TestCase):
             if any(word in block for word in _RISKY_BLOCK_WORDS):
                 continue
             env = lisp_builtins.make_global_env(output=lambda s: None)
-            lisp_builtins.load_standard_macros(env)     # while, do, loop, ...
             lisp_core.debug_state.reset()       # breakpoints belong to the whole process, not one block
             if use_alarm:
                 signal.alarm(10)
