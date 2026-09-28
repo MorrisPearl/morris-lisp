@@ -28,6 +28,7 @@ HOW THE CODE IS ORGANIZED
     lisp_regression.py    linear-, logistic-, and spline-regression, model-report, ...
     lisp_simplex.py       lp-read-file, lp-solve: linear programming (uses simplex/)
     lisp_finance.py       day counts, npv, irr, yield, duration, convexity, payment
+    lisp_clock.py         current-time, time-add, sleep, sleep-until
     lisp_charts.py        plot-xy, plot-xy-regression, plot-xy-full, save-chart
     lisp_csv.py           load-csv, write-columns-csv
     lisp_sqlite.py        sqlite-open, sqlite-query, sqlite-write-table, ...
@@ -51,7 +52,8 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - integers, floats, strings, symbols, keywords (:name), booleans, lists
   - vectors of numbers, strings, and/or dates, #(1 2 3), backed by numpy
     arrays so a vector of millions of numbers stays compact
-  - dates: (date year month day)
+  - dates: (date year month day); the time now, and waiting until a
+    later time (current-time, sleep-until)
   - special forms: quote, quasiquote, if, define, set!, lambda, begin,
     cond, and, or, defmacro, defstruct, with-struct, catch-error,
     unwind-protect, catch (with the throw function), breakpoint, backtrace

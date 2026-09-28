@@ -35,6 +35,7 @@ from lisp_core import (
     set_verbose_level, throw_to, to_display_string, to_string,
 )
 import lisp_charts
+import lisp_clock
 import lisp_csv
 import lisp_debug
 import lisp_finance
@@ -1512,6 +1513,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None):
     env.update(lisp_sofr.BUILTINS)
     env.update(lisp_simplex.BUILTINS)
     env.update(lisp_finance.BUILTINS)
+    env.update(lisp_clock.BUILTINS)
 
     # Builtins that belong to this environment.
     env.update(make_output_builtins(out, markdown))

@@ -31,6 +31,7 @@ displayed (`printed`).
 """
 
 import contextlib
+import datetime
 import importlib.util
 import io
 import json
@@ -50,6 +51,7 @@ sys.path.insert(0, HERE)
 
 import lisp_builtins  # noqa: E402  (these need the sys.path line above)
 import lisp_core     # noqa: E402
+import lisp_clock  # noqa: E402
 import lisp_fred  # noqa: E402
 import lisp_jupyter_debug  # noqa: E402
 import lisp_tastytrade  # noqa: E402
@@ -2196,6 +2198,105 @@ class TestDateArithmetic(LispTestCase):
         self.assertShows("(date-end-of-month (date 2023 12 1))", "2023-12-31")
         self.assertShows("(date-day-of-week (date 2026 9 28))", "1")         # a Monday
         self.assertShows("(date-day-of-week (date 2026 9 27))", "7")         # a Sunday
+
+
+class TestClock(LispTestCase):
+    """lisp_clock.py: current-time, today, time-add, seconds-between,
+    time->string, next-time, sleep, and sleep-until -- mostly against a
+    pretend clock, so nothing really waits."""
+
+    def pretend_clock(self, start):
+        """Make lisp_clock see `start` (a datetime) as now, with time.sleep
+        moving the pretend clock forward instead of waiting. Returns the list
+        that each sleep's length is added to."""
+        clock = {"now": start}
+        sleeps = []
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            clock["now"] += datetime.timedelta(seconds=seconds)
+
+        for patcher in (mock.patch.object(lisp_clock, "now", lambda: clock["now"]),
+                        mock.patch.object(lisp_clock.time, "sleep", fake_sleep)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return sleeps
+
+    def test_current_time_and_today(self):
+        self.pretend_clock(datetime.datetime(2026, 9, 28, 14, 37, 5, 250000))
+        self.assertShows("(current-time)", "(2026 9 28 14 37 5)")
+        self.assertShows("(today)", "2026-09-28")
+
+    def test_the_real_current_time(self):
+        before = datetime.datetime.now().replace(microsecond=0)
+        shown = datetime.datetime(*lisp_core.pairs_to_list(self.run_lisp("(current-time)")))
+        self.assertTrue(before <= shown <= datetime.datetime.now())
+
+    def test_time_add_and_seconds_between(self):
+        self.assertShows("(time-add '(2026 12 31 23 59 30) 45)", "(2027 1 1 0 0 15)")
+        self.assertShows("(time-add '(2026 9 28 12 0 0) (* -60 60))", "(2026 9 28 11 0 0)")
+        self.assertShows("(time-add '(2026 9 28) (* 60 60 36))", "(2026 9 29 12 0 0)")      # hour and on left off
+        self.assertShows("(time-add (date 2026 9 28) 90)", "(2026 9 28 0 1 30)")            # a date is midnight
+        self.assertShows("(seconds-between '(2026 9 28 14 0 0) '(2026 9 28 15 30 0))", "5400")
+        self.assertShows("(seconds-between '(2026 9 28 15 30 0) '(2026 9 28 14 0 0))", "-5400")
+
+    def test_time_to_string(self):
+        self.assertShows("(time->string '(2026 9 28 14 37 5))", '"2026-09-28 14:37:05"')
+
+    def test_next_time(self):
+        self.pretend_clock(datetime.datetime(2026, 9, 28, 14, 37, 5))
+        self.assertShows("(next-time 15)", "(2026 9 28 15 0 0)")              # later today
+        self.assertShows("(next-time 9 30)", "(2026 9 29 9 30 0)")            # already past: tomorrow
+        self.assertShows("(next-time 14 37 5)", "(2026 9 29 14 37 5)")        # now counts as past
+        self.assertLispError("(next-time 24)", "next-time: 24:0:0 isn't a time of day")
+
+    def test_sleep(self):
+        sleeps = self.pretend_clock(datetime.datetime(2026, 9, 28, 14, 0, 0))
+        self.assertShows("(sleep 2.5)", "()")
+        self.assertEqual(sleeps, [2.5])
+        self.assertLispError("(sleep -1)", "sleep: can't wait -1 seconds")
+        self.assertLispError('(sleep "1")', "sleep: the number of seconds must be a number")
+
+    def test_sleep_until_looks_at_the_clock_at_least_once_a_minute(self):
+        sleeps = self.pretend_clock(datetime.datetime(2026, 9, 28, 14, 0, 0))
+        self.run_lisp("(sleep-until '(2026 9 28 14 2 30))")
+        self.assertEqual(sleeps, [60, 60, 30])
+        self.assertShows("(current-time)", "(2026 9 28 14 2 30)")
+
+    def test_sleep_until_a_time_already_past_returns_at_once(self):
+        sleeps = self.pretend_clock(datetime.datetime(2026, 9, 28, 14, 0, 0))
+        self.assertShows("(sleep-until '(2026 9 28 13 0 0))", "()")
+        self.assertEqual(sleeps, [])
+
+    def test_sleep_until_wakes_on_time_after_the_computer_was_asleep(self):
+        sleeps = self.pretend_clock(datetime.datetime(2026, 9, 28, 14, 0, 0))
+        real_fake_sleep = lisp_clock.time.sleep
+
+        def sleep_through_a_closed_lid(seconds):
+            real_fake_sleep(seconds + 600)          # the computer slept for 10 minutes in there
+        with mock.patch.object(lisp_clock.time, "sleep", sleep_through_a_closed_lid):
+            self.run_lisp("(sleep-until '(2026 9 28 14 5 0))")
+        # It asked for a minute, woke 11 minutes on, saw 14:05 was past, and stopped.
+        self.assertEqual(len(sleeps), 1)
+        self.assertShows("(current-time)", "(2026 9 28 14 11 0)")
+
+    def test_checking_every_hour_on_the_hour(self):
+        self.pretend_clock(datetime.datetime(2026, 9, 28, 14, 37, 5))
+        self.run_lisp("""
+          (define checked '())
+          (define (next-hour)
+            (let ((now (current-time)))
+              (time-add (list (first now) (second now) (third now) (fourth now) 0 0) (* 60 60))))
+          (loop repeat 3
+                do (set! checked (cons (time->string (current-time)) checked))
+                   (sleep-until (next-hour)))""")
+        self.assertShows("(reverse checked)",
+                         '("2026-09-28 14:37:05" "2026-09-28 15:00:00" "2026-09-28 16:00:00")')
+
+    def test_bad_times(self):
+        self.assertLispError("(time-add 5 1)", "time-add: a time is a list of whole numbers")
+        self.assertLispError("(time-add '(2026 2 30) 1)", "time-add: (2026 2 30) isn't a real time")
+        self.assertLispError("(sleep-until '(2026 9))", "sleep-until: a time is a list of whole numbers")
 
 
 class TestDayCounts(LispTestCase):
@@ -5688,7 +5789,7 @@ class TestExampleScripts(unittest.TestCase):
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
-    "fred-series", "tastytrade", "sofr-", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
+    "fred-series", "tastytrade", "sofr-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv",
     "input", "exit", "load-init", "http-get", "http-clear-cache",
 )

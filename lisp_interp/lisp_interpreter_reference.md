@@ -78,6 +78,7 @@ functions" as a reference to search rather than read start to end.
   - [Monthly time series](#monthly-time-series)
   - [Structs](#structs-1)
   - [Dates](#dates)
+  - [The clock](#the-clock)
   - [Day counts and cash flows](#day-counts-and-cash-flows)
   - [Regression models](#regression-models)
   - [Linear programming](#linear-programming)
@@ -3523,6 +3524,88 @@ vector of dates.
 (date-day-of-week (date 2026 9 28))    ; => 1
 ```
 
+### The clock
+
+(In `lisp_clock.py`.) What time it is, and waiting until a later time —
+for example, to check something every hour.
+
+A **time** is a list `(year month day hour minute second)`, in local
+time, as `current-time` returns it: `(2026 9 28 14 37 5)` is 2:37:05 pm on
+September 28, 2026. Wherever a time is expected, the hour, minute, and
+second may be left off (they're then 0), and a date means midnight at its
+start. Because a time is an ordinary list, `first`, `second`, `fourth`,
+and the rest take it apart: `(fourth (current-time))` is the hour.
+
+#### `(current-time)`, `(today)`
+The time now, as a list, and today's date.
+
+```lisp
+(current-time)                 ; => e.g. (2026 9 28 14 37 5)
+(today)                        ; => e.g. 2026-09-28
+```
+
+#### `(time-add time seconds)`, `(seconds-between time1 time2)`
+`time-add` is the time `seconds` after `time` (before, if it's negative);
+an hour is `(* 60 60)` seconds, and a day `(* 60 60 24)`.
+`seconds-between` is the number of seconds from `time1` to `time2`.
+
+```lisp
+(time-add '(2026 12 31 23 59 30) 45)                       ; => (2027 1 1 0 0 15)
+(time-add '(2026 9 28) (* 60 60 36))                       ; => (2026 9 29 12 0 0)
+(seconds-between '(2026 9 28 14 0 0) '(2026 9 28 15 30 0))  ; => 5400
+```
+
+#### `(time->string time)`
+The time as text, for a log or a report.
+
+```lisp
+(time->string '(2026 9 28 14 37 5))    ; => "2026-09-28 14:37:05"
+```
+
+#### `(next-time hour [minute second])`
+The next time the clock will read `hour:minute:second` (on a 24-hour
+clock): today, if that's still to come, otherwise tomorrow.
+
+```lisp
+(next-time 9 30)               ; => e.g. (2026 9 29 9 30 0), if it's already past 9:30 today
+```
+
+#### `(sleep seconds)`, `(sleep-until time)`
+`sleep` waits `seconds` (a fraction is fine); `sleep-until` waits until
+the clock reaches `time`, and returns at once if it already has. Both
+return `'()`. `sleep-until` looks at the clock at least once a minute while
+it waits, so it still wakes on time if the computer was asleep in between.
+
+In a **Jupyter notebook** the cell keeps running while it waits, and what
+it displays appears as it goes; Kernel → Interrupt stops it. At the
+**console**, Ctrl-C stops it. In the **GUI**, the window doesn't respond
+while it waits, so use the console or a notebook for this.
+
+**Checking something every hour.** A loop that does the check, then
+sleeps until the top of the next hour:
+
+```lisp
+; The next time the clock is on the hour.
+(define (next-hour)
+  (let ((now (current-time)))
+    (time-add (list (first now) (second now) (third now) (fourth now) 0 0)
+              (* 60 60))))
+
+(define (check-rates)
+  (let ((sofr (fred-series "SOFR" api-key)))
+    (display (format "{}  SOFR {:.2f}%\n"
+                     (time->string (current-time))
+                     (vector-ref (cdr sofr) (- (vector-length (cdr sofr)) 1))))))
+
+; Every hour, on the hour, for the next 8 hours:
+(loop repeat 8
+      do (check-rates)
+         (sleep-until (next-hour)))
+```
+
+For every day at 9:30 am, use `(sleep-until (next-time 9 30))` instead;
+for "an hour after this check finished", `(sleep (* 60 60))`.
+
 ### Day counts and cash flows
 
 (In `lisp_finance.py`.) How long a period is under a day count basis, and
@@ -6275,6 +6358,7 @@ The Python files:
 | `lisp_debug.py` | `break`, `unbreak`, `set-debug-hook!`, `abort`, `locals`, `break-on-error`, ...: the debugging functions (the machinery is in `lisp_core.py`) |
 | `lisp_regression.py` | `linear-regression`, `logistic-regression`, `spline-regression`, `model-report`, ... |
 | `lisp_simplex.py` | `lp-read-file`, `lp-solve`: linear programming (uses `simplex/`) |
+| `lisp_clock.py` | The clock: `current-time`, `today`, `time-add`, `sleep`, `sleep-until`, ... |
 | `lisp_finance.py` | Day counts (`day-count`, `year-fraction`) and cash-flow math: `npv`, `irr`, `xnpv`, `xirr`, `payment`, `present-value`, `yield`, `duration`, `convexity`, ... |
 | `lisp_charts.py` | `plot-xy`, `plot-xy-regression`, `plot-xy-full`, `save-chart` |
 | `lisp_csv.py` | `load-csv`, `write-columns-csv` |
@@ -6301,7 +6385,7 @@ every new environment.
 ## Running the tests
 
 `test_lisp_interpreter.py`, in `lisp_interp/`, is the test suite. It has
-about 770 tests covering:
+about 780 tests covering:
 
 - the language itself: the reader, special forms, tail calls, macros,
   structs, and error reports;
