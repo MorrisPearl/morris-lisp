@@ -13,6 +13,7 @@ To add builtins of your own, see "Adding your own builtins" in
 lisp_interpreter_reference.md."""
 
 import datetime
+import itertools
 import math
 import numbers
 import operator
@@ -27,7 +28,7 @@ from lisp_core import (
     Env, Keyword, LispAbort, LispDate, LispError, LispHashTable, LispString, LispStruct,
     LispVector, Macro, NIL, Pair, Procedure, Symbol,
     _brief, _date_from_pydate, _lisp_scalar, _vector_widen_for,
-    apply_proc, builtin_names, check_numbers, plural, check_vector_elements, expand_macro, gensym,
+    apply_proc, builtin_names, check_numbers, lisp_equal, plural, check_vector_elements, expand_macro, gensym,
     get_verbose_level, is_true,
     list_to_pairs, pairs_to_list, parse, pretty_print_string,
     reconstruct_macro_source, reconstruct_procedure_source, run_file, seval,
@@ -263,8 +264,14 @@ def chain_compare(op, args):
 
 def comparison(name, operation):
     """The builtin for one comparison, such as <. With a vector it gives a
-    mask, compared element by element (see lisp_vector_math.compare)."""
+    mask, compared element by element (see lisp_vector_math.compare). #t and
+    #f are an error: they aren't numbers, though Python would treat them as
+    1 and 0, making (= #f 0) true."""
     def compare(*args):
+        for a in args:
+            if isinstance(a, bool):
+                raise LispError("%s: %s isn't a number -- to test for #t or #f, use eq?"
+                                % (name, to_string(a)))
         if any_vector(args):
             return lisp_vector_math.compare(name, args, operation)
         return chain_compare(operation, args)
@@ -329,8 +336,8 @@ NUMBER_BUILTINS = {
 
 BOOLEAN_BUILTINS = {
     "not": lambda x: not is_true(x),
-    "eq?": lambda a, b: a is b or a == b,
-    "equal?": lambda a, b: a == b,
+    "eq?": lambda a, b: a is b or lisp_equal(a, b),
+    "equal?": lisp_equal,
     "number?": lambda x: isinstance(x, (int, float)) and not isinstance(x, bool),
     "integer?": lambda x: isinstance(x, int) and not isinstance(x, bool),
     "string?": lambda x: isinstance(x, LispString),
@@ -358,6 +365,47 @@ def cdr(p):
     if not isinstance(p, Pair):
         raise LispError("cdr: not a pair: %s" % (to_string(p),))
     return p.cdr
+
+
+def make_cxr(name, cxr_name=None):
+    """The function called name, which does what a c...r name such as cadr
+    says: car and cdr applied right to left, as the letters between c and r
+    say, so (cadr x) is (car (cdr x)), the second element of a list.
+    cxr_name is that c...r name, if name isn't one itself."""
+    steps = (cxr_name or name)[1:-1][::-1]      # "cadr" -> "da": first cdr, then car
+
+    def cxr(x):
+        value = x
+        for step in steps:
+            if not isinstance(value, Pair):
+                raise LispError("%s: %s doesn't have that part -- it would take the %s of %s"
+                                % (name, to_string(x), "car" if step == "a" else "cdr", to_string(value)))
+            value = value.car if step == "a" else value.cdr
+        return value
+    return cxr
+
+
+def cxr_names():
+    """caar, cadr, cdar, cddr, caaar, ..., cddddr: every name with two to
+    four a's and d's between c and r."""
+    names = []
+    for length in (2, 3, 4):
+        for letters in itertools.product("ad", repeat=length):
+            names.append("c" + "".join(letters) + "r")
+    return names
+
+
+CXR_BUILTINS = {name: make_cxr(name) for name in cxr_names()}
+
+# first, second, ...: the same as car, cadr, ..., with names that say which
+# element they are. rest is cdr.
+POSITION_BUILTINS = {
+    "first": make_cxr("first", "car"),
+    "second": make_cxr("second", "cadr"),
+    "third": make_cxr("third", "caddr"),
+    "fourth": make_cxr("fourth", "cadddr"),
+    "rest": make_cxr("rest", "cdr"),
+}
 
 
 def set_car(p, x):
@@ -546,7 +594,7 @@ def lisp_assoc(key, alist):
     for entry in list_items(alist, "assoc"):
         if not isinstance(entry, Pair):
             raise LispError("assoc: alist element is not a pair: %r" % (entry,))
-        if entry.car == key:
+        if lisp_equal(entry.car, key):
             return entry
     return False
 
@@ -556,7 +604,7 @@ def lisp_member(x, lst):
     to x, or #f if there's none."""
     items = list_items(lst, "member")
     for i, item in enumerate(items):
-        if item == x:
+        if lisp_equal(item, x):
             return list_to_pairs(items[i:])
     return False
 
@@ -694,8 +742,19 @@ def _require_hash_table(h, name):
         raise LispError("%s: not a hash table: %r" % (name, h))
 
 
+def check_key(h, key, name):
+    """An error unless h is a hash table and key isn't #t or #f. (Python
+    treats True and False as the numbers 1 and 0, so #t would find 1's
+    entry. The other keys a hash table can't have -- lists, vectors, structs
+    -- Python itself refuses.)"""
+    _require_hash_table(h, name)
+    if isinstance(key, bool):
+        raise LispError("%s: #t and #f can't be hash-table keys -- use a number, string, "
+                        "symbol, keyword, or date" % name)
+
+
 def hash_table_set(h, key, value):
-    _require_hash_table(h, "hash-table-set!")
+    check_key(h, key, "hash-table-set!")
     try:
         h.table[key] = value
     except TypeError:
@@ -705,7 +764,7 @@ def hash_table_set(h, key, value):
 
 
 def hash_table_ref(h, key, *default):
-    _require_hash_table(h, "hash-table-ref")
+    check_key(h, key, "hash-table-ref")
     try:
         if key in h.table:
             return h.table[key]
@@ -716,7 +775,7 @@ def hash_table_ref(h, key, *default):
 
 
 def hash_table_has(h, key):
-    _require_hash_table(h, "hash-table-has?")
+    check_key(h, key, "hash-table-has?")
     try:
         return key in h.table
     except TypeError:
@@ -725,7 +784,7 @@ def hash_table_has(h, key):
 
 
 def hash_table_remove(h, key):
-    _require_hash_table(h, "hash-table-remove!")
+    check_key(h, key, "hash-table-remove!")
     h.table.pop(key, None)
     return NIL
 
@@ -1433,6 +1492,8 @@ def make_global_env(output=None, plot=None, table=None, markdown=None):
     env.update(NUMBER_BUILTINS)
     env.update(BOOLEAN_BUILTINS)
     env.update(LIST_BUILTINS)
+    env.update(CXR_BUILTINS)
+    env.update(POSITION_BUILTINS)
     env.update(PROCEDURE_BUILTINS)
     env.update(STRUCT_BUILTINS)
     env.update(HASH_TABLE_BUILTINS)

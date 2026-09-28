@@ -104,17 +104,26 @@ class Pair:
         while isinstance(a, Pair) and isinstance(b, Pair):
             if a is b:
                 return True
-            if not a.car == b.car:
+            if not lisp_equal(a.car, b.car):
                 return False
             a, b = a.cdr, b.cdr
         # One list ended (or has a dotted tail): equal only if the other did too.
-        return not isinstance(a, Pair) and not isinstance(b, Pair) and a == b
+        return not isinstance(a, Pair) and not isinstance(b, Pair) and lisp_equal(a, b)
 
     def __repr__(self):
         return to_string(self)
 
 
 NIL = None  # represents the empty list '()
+
+
+def lisp_equal(a, b):
+    """Whether two Lisp values are equal (equal?). The same as Python's ==,
+    except that #t and #f are equal only to themselves: Python counts True
+    as the number 1 and False as 0, so True == 1, but (equal? #f 0) is #f."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    return a == b
 
 
 class LispVector:
@@ -318,7 +327,7 @@ class LispStruct:
     def __eq__(self, other):
         return (isinstance(other, LispStruct)
                 and self.struct_type is other.struct_type
-                and self.values == other.values)
+                and all(lisp_equal(value, other.values.get(slot)) for slot, value in self.values.items()))
 
     def __repr__(self):
         return to_string(self)

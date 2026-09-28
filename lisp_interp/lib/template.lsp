@@ -137,14 +137,8 @@ vector -- normalize either to a plain list for iteration."
   (if (vector? x) (vector->list x) x))
 
 (define (template--truthy? x)
-  "This Lisp's own truthiness rule (is_true in lisp_core.py):
-everything except #f is true, '() and 0 included. Deliberately routed
-through `if` itself (not (eq? x #f) or similar) -- eq?'s equality
-fallback (a is b or a == b) treats 0 as equal to #f, because Python's
-bool is a subclass of int (0 == False is True at the Python level);
-if's own native test doesn't have that problem, since it checks `is not
-False` rather than equality, so reusing it here sidesteps the trap
-instead of reintroducing it."
+  "This Lisp's own truthiness rule: everything except #f is true, '() and 0
+included."
   (if x #t #f))
 
 ; ---------------------------------------------------------------------

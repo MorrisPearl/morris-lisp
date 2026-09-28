@@ -1473,6 +1473,74 @@ class TestEqual(LispTestCase):
         self.assertShows("(equal? '(1 (2 3) #(4)) (list 1 (list 2 3) #(4)))", "#t")
 
 
+class TestBooleansAreNotNumbers(LispTestCase):
+    """Python counts True as 1 and False as 0; Lisp doesn't."""
+
+    def test_equal_and_eq(self):
+        self.assertShows("(equal? #f 0)", "#f")
+        self.assertShows("(equal? #t 1)", "#f")
+        self.assertShows("(eq? #f 0)", "#f")
+        self.assertShows("(equal? #f #f)", "#t")
+        self.assertShows("(eq? #t #t)", "#t")
+        self.assertShows("(equal? 1 1.0)", "#t")            # numbers still compare as numbers
+
+    def test_inside_lists_and_structs(self):
+        self.assertShows("(equal? '(1 #f) '(1 0))", "#f")
+        self.assertShows("(equal? '(1 #f) (list 1 #f))", "#t")
+        self.assertShows("(equal? '(a . #t) '(a . 1))", "#f")
+        self.run_lisp("(defstruct flag value)")
+        self.assertShows("(equal? (make-flag :value #f) (make-flag :value 0))", "#f")
+        self.assertShows("(equal? (make-flag :value #f) (make-flag :value #f))", "#t")
+
+    def test_member_assoc_and_case(self):
+        self.assertShows("(member 0 '(#f 1 0))", "(0)")
+        self.assertShows("(member #f '(0 #f))", "(#f)")
+        self.assertShows("(assoc 1 (list (cons #t 'a) (cons 1 'b)))", "(1 . b)")
+        self.assertShows("(case #f ((0) 'zero) (else 'other))", "other")
+
+    def test_comparisons_reject_booleans(self):
+        self.assertLispError("(= #f 0)", "=: #f isn't a number -- to test for #t or #f, use eq?")
+        self.assertLispError("(< #t 2)", "<: #t isn't a number")
+        self.assertLispError("(> #(1 2) #f)", ">: #f isn't a number")
+
+    def test_booleans_cannot_be_hash_table_keys(self):
+        self.run_lisp("(define h (make-hash-table)) (hash-table-set! h 1 'one)")
+        self.assertLispError("(hash-table-set! h #t 'yes)", "hash-table-set!: #t and #f can't be hash-table keys")
+        self.assertLispError("(hash-table-ref h #t)", "hash-table-ref: #t and #f can't be hash-table keys")
+        self.assertShows("(hash-table-ref h 1)", "one")
+
+
+class TestCxrAndPositions(LispTestCase):
+    """cadr, caar, ... and first, second, third, fourth, rest."""
+
+    def test_every_combination_up_to_four_letters_exists(self):
+        names = lisp_builtins.cxr_names()
+        self.assertEqual(len(names), 28)
+        self.assertIn("cddddr", names)
+        for name in names:
+            self.assertIn(lisp_core.Symbol(name), self.env)
+
+    def test_what_they_do(self):
+        self.assertShows("(cadr '(1 2 3))", "2")
+        self.assertShows("(caddr '(1 2 3))", "3")
+        self.assertShows("(caar '((1 2) 3))", "1")
+        self.assertShows("(cdar '((1 2) 3))", "(2)")
+        self.assertShows("(cddr '(1 2 3))", "(3)")
+        self.assertShows("(cadddr '(1 2 3 4))", "4")
+        self.assertShows("(caddar '((1 2 3)))", "3")
+        self.assertShows("(map cadr '((a 1) (b 2)))", "(1 2)")
+
+    def test_first_to_fourth_and_rest(self):
+        self.assertShows("(list (first '(a b c d)) (second '(a b c d)) (third '(a b c d)) (fourth '(a b c d)))",
+                         "(a b c d)")
+        self.assertShows("(rest '(a b c))", "(b c)")
+
+    def test_asking_for_a_part_that_isnt_there(self):
+        self.assertLispError("(cadr '(1))", "cadr: (1) doesn't have that part -- it would take the car of ()")
+        self.assertLispError("(third '(a b))", "third: (a b) doesn't have that part")
+        self.assertLispError("(first 5)", "first: 5 doesn't have that part -- it would take the car of 5")
+
+
 # ---------------------------------------------------------------------------
 # 10. Strings and symbols
 # ---------------------------------------------------------------------------

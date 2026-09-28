@@ -1700,7 +1700,8 @@ raises `LispError` if `lo > hi`.
 #### `(= a b ...)`, `(< a b ...)`, `(> a b ...)`, `(<= a b ...)`, `(>= a b ...)`
 Chained numeric comparisons — true only if the comparison holds between
 *every* consecutive pair of arguments, e.g. `(< 1 2 3)` checks both `1<2`
-and `2<3`. With 0 or 1 arguments, always `#t`. With a vector, the
+and `2<3`. With 0 or 1 arguments, always `#t`. `#t` or `#f` is an error —
+they aren't numbers; to test for one, use `eq?`. With a vector, the
 comparison is made element by element and gives a mask, a vector of 1 and
 0 (see "Arithmetic on vectors", above). To ask whether two whole vectors
 are the same, use `equal?`.
@@ -1721,18 +1722,23 @@ are the same, use `equal?`.
 ```
 
 #### `(eq? a b)`, `(equal? a b)`
-Both are implemented as value equality here (`a is b or a == b` for `eq?`;
-plain `a == b` for `equal?`) — this interpreter does **not** give `eq?`
+Both are value equality here — this interpreter does **not** give `eq?`
 Scheme's usual identity-only semantics. `(eq? '(1 2) (list 1 2))` is `#t`
 here, where in most Schemes it would be `#f`. For most purposes the two are
 interchangeable in this interpreter.
 
 `equal?` compares lists element by element, in a loop, so lists of any
-length can be compared.
+length can be compared, and structs slot by slot. Numbers are equal if
+they have the same value, so `(equal? 1 1.0)` is `#t`. `#t` and `#f` are
+equal only to themselves: Python, underneath, counts them as the numbers
+1 and 0, but here `(equal? #f 0)` is `#f`. `member`, `assoc`, and `case`
+compare the same way.
 
 ```lisp
 (eq? '(1 2) (list 1 2))        ; => #t
 (equal? "abc" "abc")           ; => #t
+(equal? #f 0)                  ; => #f
+(equal? '(1 #f) (list 1 #f))   ; => #t
 ```
 
 #### `(boolean? x)`
@@ -1871,6 +1877,31 @@ First element / rest of a pair. Raises `LispError: car/cdr: not a pair:
 (cdr (cons 1 2))               ; => 2
 (car (list 10 20 30))          ; => 10
 (cdr (list 10 20 30))          ; => (20 30)
+```
+
+#### `(cadr x)`, `(caar x)`, `(cddr x)`, ... `(cddddr x)`
+`car` and `cdr` combined, as in Common Lisp: the letters between `c` and
+`r` say which to take, read right to left, so `(cadr x)` is
+`(car (cdr x))` — the second element of a list — and `(caddr x)` is the
+third. Every combination of two to four `a`s and `d`s exists. Asking for a
+part that isn't there is an error that says so.
+
+```lisp
+(cadr '(1 2 3))                ; => 2
+(caddr '(1 2 3))               ; => 3
+(cddr '(1 2 3))                ; => (3)
+(caar '((a b) c))              ; => a
+(map cadr '((x 1) (y 2)))      ; => (1 2)
+```
+
+#### `(first l)`, `(second l)`, `(third l)`, `(fourth l)`, `(rest l)`
+The first to fourth elements of a list, and the list without its first
+element: the same as `car`, `cadr`, `caddr`, `cadddr`, and `cdr`, with
+names that say what they are.
+
+```lisp
+(second '(a b c))              ; => b
+(rest '(a b c))                ; => (b c)
 ```
 
 #### `(set-car! p x)`, `(set-cdr! p x)`
@@ -2089,8 +2120,8 @@ is a linear scan and this isn't. Keys may be any *immutable* value: a
 number, string, symbol, keyword, or date — not a list, vector, or struct
 (none of those can be a Python `dict` key either, for the same underlying
 reason: nothing stops them being mutated after insertion, which would
-silently corrupt the table). Using one anyway raises a clear `LispError`
-rather than a raw Python exception.
+silently corrupt the table), and not `#t` or `#f` (which Python would
+treat as the keys 1 and 0). Using one anyway is an error.
 
 #### `(make-hash-table)`
 Returns a new, empty hash table.
@@ -6270,7 +6301,7 @@ every new environment.
 ## Running the tests
 
 `test_lisp_interpreter.py`, in `lisp_interp/`, is the test suite. It has
-about 750 tests covering:
+about 770 tests covering:
 
 - the language itself: the reader, special forms, tail calls, macros,
   structs, and error reports;

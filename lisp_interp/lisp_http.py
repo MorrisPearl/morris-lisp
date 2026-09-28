@@ -76,6 +76,7 @@ def download(url, cache_hours, headers, name, shown_url=None):
             data = response.read()
     except urllib.error.HTTPError as e:
         detail = e.read(300).decode("utf-8", errors="replace").strip()
+        e.close()       # the error holds the connection open until it's closed
         raise LispError("%s: %s returned HTTP %d %s%s" % (name, shown_url, e.code, e.reason,
                                                           (" -- " + detail) if detail else ""))
     except (urllib.error.URLError, OSError, ValueError) as e:
