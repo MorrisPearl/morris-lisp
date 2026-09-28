@@ -1,15 +1,47 @@
 ( define api-key "/Users/morris/credentials.json" )
 ( define creds   "/Users/morris/credentials.json" )
 
+; (display_markdown_table headers (tastytrade-option-chain api-key "BRK/B"))
+
 ; some of the examples use api-key and some use creds
 ; (while and do are in macros_init.lsp, which loads before this file)
 
-(define (display_markdown_table headings data)
+(define (do_md_table_spec z)
+  (string-append
+   "{"
+      (cond
+       ( (null? (cdr z)) "")
+       ( #t (string-append ":" (car (cdr z))))
+       )
+    "}|"
+   )
+  )
+
+(define (format_fixup_row r formats)
+    (cond ((null? r)
+	  ())
+	  ((null? (car r))
+	   (cons (if (string-contains? (car formats) "f") 0.0 ())
+		 (format_fixup_row (cdr r) (cdr formats))))
+	  (#t
+	   (cons (car r) (format_fixup_row (cdr r) (cdr formats))))
+	  ))
+
+(define (format_md_table headings data)
     (let* ((output "")
 	   (aout (lambda (x) (set! output (string-append output (to-string x))))))
 
+      (define formats
+	  (string-append "|"
+			 (reduce string-append
+				 (map do_md_table_spec (map (lambda (x) (string-split x ":"))
+							    headings)) "" )
+			 "\n"))
+
+      (define column_headings (map car (map (lambda (x) (string-split x ":")) headings)))
+       
       (aout " | ")
-      (dolist (x headings)
+      (dolist (x column_headings)
 	(aout x)
 	(aout " | "))
 
@@ -20,12 +52,11 @@
 	(aout " ---: |"))
       (aout "\n")
 
+      (define formats_list (cdr (string-split formats "|")))
       (dolist (row data)
-	(aout  " | ")
-	(dolist (item row)
-	  (aout item)
-	  (aout " | "))
-	(aout "\n"))
+	(aout (apply format (cons formats (format_fixup_row row formats_list))))
+										 
+	)
       (display-markdown output)
       )
   )
