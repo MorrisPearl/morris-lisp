@@ -4,15 +4,17 @@ St. Louis (https://fred.stlouisfed.org) and returns it as a pair of
 vectors, (dates . values).
 
 Needs a free FRED API key -- see fred_series() for the three ways to
-supply one. Uses only the standard library (urllib), no extra packages.
+supply one. The download goes through lisp_http, so it can be cached.
 """
 
 import json
 import os
 import urllib.parse
-import urllib.request
 
-from lisp_core import LispDate, LispError, LispVector, Pair
+from lisp_core import LispDate, LispError, LispVector, NIL, Pair
+import lisp_http
+
+FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
 
 
 def _parse_fred_observations(observations):
@@ -53,7 +55,7 @@ def _fred_api_key_from_file(path):
     return str(key).strip()
 
 
-def fred_series(series_id, api_key=None, start_date=None, end_date=None):
+def fred_series(series_id, api_key=None, start_date=None, end_date=None, cache_hours=None):
     """Fetch one FRED data series and return (dates-vector . values-vector).
 
     `api_key` may be a literal FRED API key, or the path to a JSON
@@ -63,7 +65,10 @@ def fred_series(series_id, api_key=None, start_date=None, end_date=None):
     variable is set. A free API key can be requested at
     https://fred.stlouisfed.org/docs/api/api_key.html
     `start_date` / `end_date`, if given, are "YYYY-MM-DD" strings (or
-    LispDate values) limiting the observation range.
+    LispDate values) limiting the observation range; pass '() for either
+    to leave it open. `cache_hours`, if given, keeps the download on disk
+    for that many hours, as http-get-json does, so running the same
+    notebook again doesn't fetch it again.
     """
     if api_key is not None and os.path.exists(str(api_key)):
         api_key = _fred_api_key_from_file(api_key)
@@ -80,19 +85,20 @@ def fred_series(series_id, api_key=None, start_date=None, end_date=None):
         "api_key": str(api_key),
         "file_type": "json",
     }
-    if start_date is not None:
+    if start_date is not None and start_date is not NIL:
         params["observation_start"] = (
             start_date.date.isoformat() if isinstance(start_date, LispDate) else str(start_date))
-    if end_date is not None:
+    if end_date is not None and end_date is not NIL:
         params["observation_end"] = (
             end_date.date.isoformat() if isinstance(end_date, LispDate) else str(end_date))
 
-    url = "https://api.stlouisfed.org/fred/series/observations?" + urllib.parse.urlencode(params)
+    url = FRED_URL + "?" + urllib.parse.urlencode(params)
+    shown_url = url.replace(str(api_key), "...")        # so the API key never shows in an error
+    text = lisp_http.as_text(lisp_http.download(url, cache_hours, None, "fred-series", shown_url))
     try:
-        with urllib.request.urlopen(url, timeout=15) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except Exception as e:
-        raise LispError("fred-series: request failed: %s" % e)
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        raise LispError("fred-series: FRED didn't return valid JSON; it starts: %s" % text[:200])
 
     if "observations" not in data:
         raise LispError("fred-series: %s" % data.get("error_message", "unknown error from FRED"))

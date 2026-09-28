@@ -117,66 +117,6 @@
 ; compute anything more complex in Lisp first and bind the result).
 
 ; ---------------------------------------------------------------------
-; Low-level string utilities (no string-search/split builtin exists, so
-; these are written from scratch on top of substring/string-length/
-; string=?; naive O(length) scans, which is completely fine for parsing
-; a template -- normally a few dozen to a few hundred characters, not
-; huge data).
-; ---------------------------------------------------------------------
-
-(define (template--char s i)
-  (substring s i (+ i 1)))
-
-(define (template--index-of-from haystack needle start)
-  "Index of the first occurrence of `needle` in `haystack` at or after
-`start`, or -1 if there isn't one."
-  (define hn (string-length haystack))
-  (define nn (string-length needle))
-  (define (scan i)
-    (cond
-      ((> (+ i nn) hn) -1)
-      ((string=? (substring haystack i (+ i nn)) needle) i)
-      (else (scan (+ i 1)))))
-  (scan start))
-
-(define (template--is-space? c)
-  "Space, tab, newline, or carriage return (the last one matters for a
-template loaded from a Windows-authored CRLF text file)."
-  (or (string=? c " ") (string=? c "\t") (string=? c "\n") (string=? c "\r")))
-
-(define (template--trim s)
-  "Strip leading/trailing whitespace."
-  (define n (string-length s))
-  (define (find-start i)
-    (if (and (< i n) (template--is-space? (template--char s i))) (find-start (+ i 1)) i))
-  (define (find-end i)
-    (if (and (> i 0) (template--is-space? (template--char s (- i 1)))) (find-end (- i 1)) i))
-  (define start (find-start 0))
-  (define end (find-end n))
-  (if (>= start end) "" (substring s start end)))
-
-(define (template--split-whitespace s)
-  "Split s on runs of whitespace into a list of non-empty tokens."
-  (define n (string-length s))
-  (define (skip-spaces i)
-    (if (and (< i n) (template--is-space? (template--char s i))) (skip-spaces (+ i 1)) i))
-  (define (scan-token i)
-    (if (and (< i n) (not (template--is-space? (template--char s i)))) (scan-token (+ i 1)) i))
-  (define (loop i)
-    (define start (skip-spaces i))
-    (if (>= start n)
-        '()
-        (let ((end (scan-token start)))
-          (cons (substring s start end) (loop end)))))
-  (loop 0))
-
-(define (template--member? x lst)
-  (cond
-    ((null? lst) #f)
-    ((equal? (car lst) x) #t)
-    (else (template--member? x (cdr lst)))))
-
-; ---------------------------------------------------------------------
 ; Bindings: a plain list of (name value) pairs, the same two-element-list
 ; shape `let` itself uses -- so a lookup miss can be told apart from a
 ; deliberately-bound '() (used as the "found" sentinel below), and so
@@ -185,10 +125,8 @@ template loaded from a Windows-authored CRLF text file)."
 ; ---------------------------------------------------------------------
 
 (define (template--alist-get alist key default)
-  (cond
-    ((null? alist) default)
-    ((equal? (car (car alist)) key) (car (cdr (car alist))))
-    (else (template--alist-get (cdr alist) key default))))
+  (let ((entry (assoc key alist)))
+    (if entry (car (cdr entry)) default)))
 
 (define (template--alist-set alist key value)
   (cons (list key value) alist))
@@ -225,10 +163,6 @@ instead of reintroducing it."
 (define (template--reserved-tag? content)
   (or (string=? content "else") (string=? content "/each") (string=? content "/if")))
 
-(define (template--starts-with? s prefix)
-  (define pn (string-length prefix))
-  (and (>= (string-length s) pn) (string=? (substring s 0 pn) prefix)))
-
 (define (template--text-node s)
   "A one-element list holding a text node for s, or '() if s is empty --
 so an empty gap next to a tag doesn't produce a spurious empty node."
@@ -237,21 +171,21 @@ so an empty gap next to a tag doesn't produce a spurious empty node."
 (define (template--find-tag s pos)
   "The next {{...}} tag at or after pos: (list before-text trimmed-content
 tag-start after-tag-pos), or '() if there are no more tags."
-  (define open (template--index-of-from s "{{" pos))
-  (if (= open -1)
+  (define open (string-search s "{{" pos))
+  (if (not open)
       '()
-      (let ((close (template--index-of-from s "}}" (+ open 2))))
-        (if (= close -1)
+      (let ((close (string-search s "}}" (+ open 2))))
+        (if (not close)
             (error "template-parse: unterminated {{ opened at character" open "in" s)
             (list (substring s pos open)
-                  (template--trim (substring s (+ open 2) close))
+                  (string-trim (substring s (+ open 2) close))
                   open
                   (+ close 2))))))
 
 (define (template--parse-each-tag content)
   "content, e.g. \"#each item in list\" or \"#each item in list sep sepname\"
 -> (list itemvar-symbol listname-symbol sepvar-symbol-or-'())."
-  (define tokens (template--split-whitespace content))
+  (define tokens (string-split content))
   (define n (length tokens))
   (cond
     ((and (= n 4) (string=? (list-ref tokens 2) "in"))
@@ -262,7 +196,7 @@ tag-start after-tag-pos), or '() if there are no more tags."
     (else (error "template-parse: malformed {{#each ...}} tag:" content))))
 
 (define (template--parse-if-tag content)
-  (define tokens (template--split-whitespace content))
+  (define tokens (string-split content))
   (if (= (length tokens) 2)
       (string->symbol (list-ref tokens 1))
       (error "template-parse: malformed {{#if ...}} tag:" content)))
@@ -270,10 +204,10 @@ tag-start after-tag-pos), or '() if there are no more tags."
 (define (template--parse-var-tag content)
   "content, e.g. \"balance\" or \"balance:>12,.2f\" -> (list name-symbol spec),
 spec being everything after the first colon, or \"\" if there's no colon."
-  (define colon (template--index-of-from content ":" 0))
-  (define name-text (if (= colon -1) content (substring content 0 colon)))
-  (define spec (if (= colon -1) "" (substring content (+ colon 1))))
-  (define tokens (template--split-whitespace name-text))
+  (define colon (string-search content ":"))
+  (define name-text (if colon (substring content 0 colon) content))
+  (define spec (if colon (substring content (+ colon 1)) ""))
+  (define tokens (string-split name-text))
   (if (= (length tokens) 1)
       (list (string->symbol (car tokens)) spec)
       (error "template-parse: malformed {{...}} tag (expected one name, optionally followed by :spec):" content)))
@@ -296,13 +230,13 @@ being '() at end-of-string."
             (after-pos (list-ref found 3))
             (before-nodes (template--text-node before)))
        (cond
-         ((template--member? content end-tags)
+         ((member content end-tags)
           (list before-nodes after-pos content))
 
          ((template--reserved-tag? content)
           (error "template-parse: unexpected {{" content "}} -- nothing open to close it"))
 
-         ((template--starts-with? content "#each")
+         ((string-starts-with? content "#each")
           (let* ((each-spec (template--parse-each-tag content))
                  (itemvar (list-ref each-spec 0))
                  (listname (list-ref each-spec 1))
@@ -317,7 +251,7 @@ being '() at end-of-string."
                   (list-ref rest-result 1)
                   (list-ref rest-result 2))))
 
-         ((template--starts-with? content "#if")
+         ((string-starts-with? content "#if")
           (let* ((condname (template--parse-if-tag content))
                  (then-result (template--parse-nodes s after-pos (list "/if" "else")))
                  (then-nodes (list-ref then-result 0))

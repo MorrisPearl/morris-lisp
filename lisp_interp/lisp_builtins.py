@@ -36,6 +36,7 @@ from lisp_core import (
 import lisp_charts
 import lisp_csv
 import lisp_debug
+import lisp_finance
 import lisp_fred
 import lisp_http
 import lisp_regression
@@ -220,6 +221,16 @@ def lisp_round(x):
     return round(x)
 
 
+def signum(x):
+    """(signum x) -- -1, 0, or 1, as x is negative, zero, or positive (as a
+    floating-point number if x is one); for a vector, of each element."""
+    if isinstance(x, LispVector):
+        return lisp_vector_math.unary("signum", x, np.sign)
+    check_numbers([x], "signum")
+    sign = (x > 0) - (x < 0)
+    return float(sign) if isinstance(x, float) else sign
+
+
 def lisp_min(*args):
     """(min x ...) -- the smallest. With vectors, the smallest at each
     position: (min v 100) limits every element to at most 100. (For the
@@ -288,6 +299,7 @@ NUMBER_BUILTINS = {
     "quotient": quotient,
     "remainder": remainder,
     "abs": lisp_abs,
+    "signum": signum,
     "min": lisp_min,
     "max": lisp_max,
     "sqrt": lisp_sqrt,
@@ -423,12 +435,20 @@ def lisp_append(*sequences):
     return result
 
 
-def lisp_map(f, seq):
-    """(map f seq) -- (f x) for each element x of seq: a list for a list, a
-    vector for a vector."""
-    if isinstance(seq, LispVector):
-        return vector_map(f, seq)
-    return list_to_pairs([apply_proc(f, [x]) for x in list_items(seq, "map")])
+def lisp_map(f, *sequences):
+    """(map f seq ...) -- (f x) for each element x of seq: a list for a list,
+    a vector for a vector. Given several lists (or several vectors),
+    (f x y ...) for their elements in step, stopping at the end of the
+    shortest: (map + '(1 2) '(10 20)) is (11 22)."""
+    if not sequences:
+        raise LispError("map: expected at least 1 list or vector after the procedure")
+    if all(isinstance(s, LispVector) for s in sequences):
+        columns = [[_lisp_scalar(x) for x in v.items] for v in sequences]
+        return LispVector([apply_proc(f, list(args)) for args in zip(*columns)])
+    if any(isinstance(s, LispVector) for s in sequences):
+        raise LispError("map: give it all lists or all vectors, not a mixture")
+    lists = [list_items(s, "map") for s in sequences]
+    return list_to_pairs([apply_proc(f, list(args)) for args in zip(*lists)])
 
 
 def lisp_filter(f, seq):
@@ -489,6 +509,28 @@ def list_ref(lst, n):
     return items[n]
 
 
+def lisp_last(lst, n=1):
+    """(last lst [n]) -- the end of lst: its last n elements (1 unless
+    given), as a list, as in Common Lisp. So (last '(1 2 3)) is (3), and
+    (car (last lst)) is the last element."""
+    items = list_items(lst, "last")
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise LispError("last: n must be a whole number, 0 or more, not %s" % (_brief(n),))
+    tail = lst
+    for _ in range(max(0, len(items) - n)):
+        tail = tail.cdr
+    return tail
+
+
+def lisp_butlast(lst, n=1):
+    """(butlast lst [n]) -- a new list of all but the last n elements of lst
+    (1 unless given): (butlast '(1 2 3)) is (1 2)."""
+    items = list_items(lst, "butlast")
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise LispError("butlast: n must be a whole number, 0 or more, not %s" % (_brief(n),))
+    return list_to_pairs(items[:max(0, len(items) - n)])
+
+
 def list_tail(lst, n):
     items = list_items(lst, "list-tail")
     n = int(n)
@@ -531,6 +573,8 @@ LIST_BUILTINS = {
     "length": lisp_length,
     "list-ref": list_ref,
     "list-tail": list_tail,
+    "last": lisp_last,
+    "butlast": lisp_butlast,
     "assoc": lisp_assoc,
     "member": lisp_member,
     "null?": lambda p: p is NIL,
@@ -808,6 +852,8 @@ STRING_BUILTINS = {
     "string": lambda *chars: LispString("".join(chars)),
     "string-search": string_search,
     "string-contains?": lambda s, sub: str(sub) in str(s),
+    "string-starts-with?": lambda s, prefix: str(s).startswith(str(prefix)),
+    "string-ends-with?": lambda s, suffix: str(s).endswith(str(suffix)),
     "string-split": string_split,
     "string-replace": lambda s, old, new: LispString(str(s).replace(str(old), str(new))),
     "string-trim": lambda s: LispString(str(s).strip()),
@@ -1404,6 +1450,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None):
     env.update(lisp_tastytrade.BUILTINS)
     env.update(lisp_sofr.BUILTINS)
     env.update(lisp_simplex.BUILTINS)
+    env.update(lisp_finance.BUILTINS)
 
     # Builtins that belong to this environment.
     env.update(make_output_builtins(out, markdown))

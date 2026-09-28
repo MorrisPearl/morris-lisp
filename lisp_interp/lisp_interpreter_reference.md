@@ -78,6 +78,7 @@ functions" as a reference to search rather than read start to end.
   - [Monthly time series](#monthly-time-series)
   - [Structs](#structs-1)
   - [Dates](#dates)
+  - [Day counts and cash flows](#day-counts-and-cash-flows)
   - [Regression models](#regression-models)
   - [Linear programming](#linear-programming)
   - [Charting](#charting)
@@ -1553,6 +1554,16 @@ Absolute value.
 (abs -5)                       ; => 5
 ```
 
+#### `(signum x)`
+-1, 0, or 1, as `x` is negative, zero, or positive — a floating-point
+number if `x` is one. For a vector, of each element.
+
+```lisp
+(signum -2.5)                  ; => -1.0
+(signum 7)                     ; => 1
+(signum #(-3 0 2))             ; => #(-1 0 1)
+```
+
 #### `(min a b ...)`, `(max a b ...)`
 Minimum / maximum of the given arguments (at least one required). With
 vectors, the smallest or largest *at each position*, so `(max v 0)`
@@ -1965,6 +1976,18 @@ range.
 (list-tail (list 1 2 3 4 5) 2) ; => (3 4 5)
 ```
 
+#### `(last l [n])`, `(butlast l [n])`
+As in Common Lisp: `last` is the end of the list — its last `n` elements
+(1 unless given), as a list, so `(car (last l))` is the last element.
+`butlast` is a new list of all but the last `n` elements.
+
+```lisp
+(last (list 1 2 3))            ; => (3)
+(car (last (list 1 2 3)))      ; => 3
+(last (list 1 2 3) 2)          ; => (2 3)
+(butlast (list 1 2 3))         ; => (1 2)
+```
+
 #### `(assoc key alist)`
 Searches `alist` — a list of `(key . value)` **pairs**, built with `cons`,
 e.g. `(list (cons 'a 1) (cons 'b 2))` — for an entry whose key is `equal?`
@@ -1988,15 +2011,19 @@ The sublist of `l` starting at the first element `equal?` to `x`, or `#f`
 (member 99 (list 1 2 3))       ; => #f
 ```
 
-#### `(map f l)`
+#### `(map f l ...)`
 Applies `f` to each element of `l` in order, returning a new list of the
-results. For a vector, returns a new vector (as `vector-map` does). For
-arithmetic on every element, `(* v 2)` is simpler and much faster than
+results. For a vector, returns a new vector (as `vector-map` does). Given
+several lists (or several vectors), `f` gets one element from each, in
+step, and the result stops at the end of the shortest. For arithmetic on
+every element, `(* v 2)` is simpler and much faster than
 `(map (lambda (x) (* x 2)) v)`.
 
 ```lisp
 (map (lambda (x) (* x x)) (list 1 2 3))    ; => (1 4 9)
 (map (lambda (x) (* x x)) #(1 2 3))        ; => #(1 4 9)
+(map + (list 1 2 3) (list 10 20))          ; => (11 22)
+(map list (list 1 2) (list 'a 'b))         ; => ((1 a) (2 b))
 ```
 
 #### `(filter f l)`
@@ -2230,6 +2257,14 @@ match right at the very start (`0`) still tests true.
 
 ```lisp
 (string-contains? "hello world" "wor")  ; => #t
+```
+
+#### `(string-starts-with? s prefix)`, `(string-ends-with? s suffix)`
+`#t` if `s` begins with `prefix`, or ends with `suffix`.
+
+```lisp
+(string-starts-with? "SPY 251017C" "SPY")    ; => #t
+(string-ends-with? "report.csv" ".csv")      ; => #t
 ```
 
 #### `(string-split s [sep])`
@@ -3421,6 +3456,198 @@ A new date `n` days after `d` (negative `n` goes earlier).
 (date-add-days (date 2024 3 15) 10)    ; => 2024-03-25
 ```
 
+#### `(date-add-years d n)`
+The date `n` years after `d` (or before, if `n` is negative). February 29
+becomes February 28 in a year that isn't a leap year. `d` may be a vector
+of dates. For months, see `date-add-months`, under "Monthly time series".
+
+```lisp
+(date-add-years (date 2024 2 29) 1)    ; => 2025-02-28
+(date-add-years (date 2024 2 29) 4)    ; => 2028-02-29
+```
+
+#### `(days-between d1 d2)`
+The actual number of days from `d1` to `d2` (negative if `d2` is earlier).
+Either may be a vector of dates. For a day count basis such as 30/360, see
+`day-count`, under "Day counts and cash flows"; for whole months,
+`months-between`, under "Monthly time series".
+
+```lisp
+(days-between (date 2024 1 31) (date 2024 3 1))    ; => 30
+(days-between (date 2024 1 1) (vector (date 2024 2 1) (date 2025 1 1)))   ; => #(31 366)
+```
+
+#### `(date-end-of-month d)`
+The last day of `d`'s month. `d` may be a vector of dates.
+
+```lisp
+(date-end-of-month (date 2024 2 10))   ; => 2024-02-29
+```
+
+#### `(date-day-of-week d)`
+The day of the week: 1 for Monday through 7 for Sunday. `d` may be a
+vector of dates.
+
+```lisp
+(date-day-of-week (date 2026 9 28))    ; => 1
+```
+
+### Day counts and cash flows
+
+(In `lisp_finance.py`.) How long a period is under a day count basis, and
+the standard measures of a stream of cash flows: net present value,
+internal rate of return, yield, duration, and convexity, and the level
+payment on a loan. The math is done in double precision, however the cash
+flows are stored.
+
+**Day count bases.** A basis is written as a string or a symbol, in upper
+or lower case — `"30/360"`, `'act/360`, ...:
+
+| Basis | Days | Year | Used for |
+|---|---|---|---|
+| `30/360` | every month counts as 30 days: a 31st counts as the 30th, and so does the second date's 31st when the first date is the 30th or 31st | 360 | US corporate bonds, mortgages, agency MBS |
+| `30E/360` | the same, except that any 31st counts as the 30th | 360 | Eurobonds |
+| `ACT/360` | actual | 360 | money markets, SOFR |
+| `ACT/365` | actual | 365 | sterling; Excel's `XNPV` and `XIRR` |
+| `ACT/ACT` | actual | the actual length of each calendar year the period touches, 365 or 366 | ISDA swaps; Treasuries are close to it |
+
+**Cash flows** are a list or a vector of amounts, one per period, the
+periods equally spaced (`xnpv` and `xirr` take a date for each amount
+instead). `npv` and `irr` count the first amount as now; `present-value`,
+`yield`, `duration`, and `convexity` count the first as one period from
+now, as a bond's cash flows are. A **rate** is per period; a **yield** is
+per year, compounded `periods-per-year` times a year.
+
+#### `(day-count d1 d2 basis)`
+The number of days from `d1` to `d2` under `basis`. Either date may be a
+vector of dates.
+
+```lisp
+(day-count (date 2024 1 31) (date 2024 3 1) "30/360")    ; => 31
+(day-count (date 2024 1 31) (date 2024 3 1) "ACT/360")   ; => 30
+(day-count (date 2024 1 29) (date 2024 3 31) "30/360")   ; => 62
+(day-count (date 2024 1 29) (date 2024 3 31) "30E/360")  ; => 61
+```
+
+#### `(year-fraction d1 d2 basis)`
+The fraction of a year from `d1` to `d2` under `basis`: the fraction of a
+year's interest that accrues between them. Either date may be a vector of
+dates.
+
+```lisp
+(year-fraction (date 2024 1 15) (date 2024 7 15) "30/360")    ; => 0.5
+(year-fraction (date 2024 1 15) (date 2024 7 15) "ACT/360")   ; => 0.5055555555555555
+(year-fraction (date 2024 1 15) (date 2024 7 15) "ACT/365")   ; => 0.4986301369863014
+(year-fraction (date 2023 7 1) (date 2024 7 1) "ACT/ACT")     ; => 1.0013773486039375
+(* 1000000 0.05 (year-fraction (date 2024 1 15) (date 2024 7 15) 'act/360))   ; => 25277.777777777777
+```
+
+The last line is the interest on $1,000,000 at 5% for that half year,
+ACT/360.
+
+#### `(npv rate cashflows)`
+The net present value, at `rate` per period, of cash flows one period
+apart, the first of them now (so it isn't discounted). Excel's `NPV`
+counts the first cash flow as one period away instead.
+
+```lisp
+(npv 0.1 (list -100 60 60))    ; => 4.132231404958667
+```
+
+#### `(irr cashflows [low high])`
+The internal rate of return: the rate per period at which the `npv` of
+the cash flows is 0. It's found by bisection: first two rates between
+which the npv changes sign — trying -99%, every 1% from -95% to 100%, and
+a few higher rates, and taking the pair nearest 0 — then halving that
+interval until the rate is known to 12 decimal places. Cash flows that
+change sign more than once can have more than one IRR; give `low` and
+`high` to look for one between them. An error if there's none.
+
+The answers are exact to about 12 decimal places, which is why 10% prints
+as 0.10000000000029105.
+
+```lisp
+(irr (list -100 60 60))                    ; => 0.13066238629195137
+(irr (list -100 230 -132))                 ; => 0.10000000000029105
+(irr (list -100 230 -132) 0.15 0.5)        ; => 0.20000000000022736
+```
+
+#### `(xnpv rate dates cashflows [basis])`, `(xirr dates cashflows [basis])`
+`npv` and `irr` for cash flows on the given dates, which needn't be evenly
+spaced. `rate` is per year; each cash flow is discounted to the first date
+by its `year-fraction` from it, under `basis` — `ACT/365` unless given,
+as in Excel's `XNPV` and `XIRR`.
+
+```lisp
+(define dates (list (date 2008 1 1) (date 2008 3 1) (date 2008 10 30)
+                    (date 2009 2 15) (date 2009 4 1)))
+(define amounts (list -10000 2750 4250 3250 2750))
+(xnpv 0.09 dates amounts)      ; => 2086.647602031535
+(xirr dates amounts)           ; => 0.3733625335191027
+```
+
+#### `(payment rate periods principal)`
+The level payment each period that pays off `principal`, with interest
+at `rate` per period, in `periods` payments — for a mortgage, the monthly
+payment, with `rate` the annual rate divided by 12, and `periods` the
+number of months. At a rate of 0 it's `principal / periods`.
+
+```lisp
+(payment (/ 0.065 12) 360 300000)          ; => 1896.2040704788958
+(* 12 (irr (cons -300000 (loop repeat 360 collect (payment (/ 0.065 12) 360 300000)))))
+                                           ; => 0.06499999999883582
+```
+
+The second line checks the first: the loan's cash flows, as the lender
+sees them, have an IRR of 6.5% a year.
+
+#### `(bond-cashflows coupon-rate years periods-per-year [face])`
+A bond's cash flows from now to maturity, as a vector: a coupon of
+`face * coupon-rate / periods-per-year` each period, and the face value
+with the last coupon. `face` is 100 unless given, so prices come out per
+100 of face value. `years * periods-per-year` must be a whole number.
+
+```lisp
+(bond-cashflows 0.06 5 2)      ; => #(3.0 3.0 3.0 3.0 3.0 3.0 3.0 3.0 3.0 103.0)
+```
+
+#### `(present-value yield periods-per-year cashflows)`
+What cash flows one period apart, the first one period from now, are
+worth at an annual `yield`, compounded `periods-per-year` times a year:
+for a bond, its price.
+
+```lisp
+(define flows (bond-cashflows 0.06 5 2))
+(present-value 0.05 2 flows)   ; => 104.37603196548555
+```
+
+#### `(yield price periods-per-year cashflows)`
+The annual yield, compounded `periods-per-year` times a year, at which
+the cash flows' `present-value` is `price` — found as `irr` finds a rate.
+
+```lisp
+(define flows (bond-cashflows 0.06 5 2))
+(yield 104.376 2 flows)        ; => 0.050000071207177824
+```
+
+#### `(duration yield periods-per-year cashflows)`, `(modified-duration yield periods-per-year cashflows)`, `(convexity yield periods-per-year cashflows)`
+`duration` is the Macaulay duration, in years: the average time until the
+cash flows arrive, each weighted by its present value. `modified-duration`
+is that divided by `1 + yield / periods-per-year`: how much the price
+changes, as a fraction of itself, for a change of 1 (that is, 100%) in the
+yield — so a rise of 0.0001 (1bp) lowers the price by about
+`modified-duration / 10000` of itself. `convexity`, in years squared, is
+how much the duration itself changes with the yield. Together, a change
+`dy` in the yield changes the price by about
+`price * (- (* modified-duration dy)) + price * convexity * dy * dy / 2`.
+
+```lisp
+(define flows (bond-cashflows 0.06 5 2))
+(duration 0.05 2 flows)            ; => 4.4084075904925575
+(modified-duration 0.05 2 flows)   ; => 4.300885454139081
+(convexity 0.05 2 flows)           ; => 22.079043263522394
+```
+
 ### Regression models
 
 `linear-regression`/`logistic-regression` fit a flat model of the form `y =
@@ -4253,7 +4480,7 @@ lsp`'s `(write-csv "mortgage_amortization_example.csv" *columns*)` call.
 
 ### FRED (Federal Reserve Bank of St. Louis) data, and CSV loading
 
-#### `(fred-series series-id [api-key] [start-date] [end-date])`
+#### `(fred-series series-id [api-key] [start-date] [end-date] [cache-hours])`
 Fetches one FRED economic data series and returns `(dates-vector .
 values-vector)` — a dotted pair (built with `cons`, not a 2-element list;
 `(cdr result)` is the values vector directly, no extra `car` needed) —
@@ -4272,7 +4499,12 @@ length.
   requested at https://fred.stlouisfed.org/docs/api/api_key.html.
 - `start-date`/`end-date` (optional) restrict the observation range. Each
   may be a `date` value or a literal `"YYYY-MM-DD"` string — both forms
-  work interchangeably and can be mixed.
+  work interchangeably and can be mixed — or `'()` to leave that end open.
+- `cache-hours` (optional): keep the download on disk for that many hours,
+  so running the same notebook again reads the saved copy instead of
+  fetching the series again — the same cache as the `http-get-*`
+  functions (see "Downloading data from the web"). No caching unless
+  given. For example, `(fred-series "DGS10" api-key '() '() 12)`.
 
 Raises `LispError` on a missing/invalid credentials file, a missing API
 key, a network/HTTP failure, or a FRED-side error (bad series ID, bad key,
@@ -6012,11 +6244,12 @@ The Python files:
 | `lisp_debug.py` | `break`, `unbreak`, `set-debug-hook!`, `abort`, `locals`, `break-on-error`, ...: the debugging functions (the machinery is in `lisp_core.py`) |
 | `lisp_regression.py` | `linear-regression`, `logistic-regression`, `spline-regression`, `model-report`, ... |
 | `lisp_simplex.py` | `lp-read-file`, `lp-solve`: linear programming (uses `simplex/`) |
+| `lisp_finance.py` | Day counts (`day-count`, `year-fraction`) and cash-flow math: `npv`, `irr`, `xnpv`, `xirr`, `payment`, `present-value`, `yield`, `duration`, `convexity`, ... |
 | `lisp_charts.py` | `plot-xy`, `plot-xy-regression`, `plot-xy-full`, `save-chart` |
 | `lisp_csv.py` | `load-csv`, `write-columns-csv` |
 | `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, `sqlite-write-table`, ... |
 | `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
-| `lisp_fred.py` | `fred-series` (downloads from FRED) |
+| `lisp_fred.py` | `fred-series` (downloads from FRED, through `lisp_http.py`) |
 | `lisp_tastytrade.py` | `tastytrade-*` (downloads from tastytrade) |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
@@ -6037,7 +6270,7 @@ every new environment.
 ## Running the tests
 
 `test_lisp_interpreter.py`, in `lisp_interp/`, is the test suite. It has
-about 700 tests covering:
+about 750 tests covering:
 
 - the language itself: the reader, special forms, tail calls, macros,
   structs, and error reports;

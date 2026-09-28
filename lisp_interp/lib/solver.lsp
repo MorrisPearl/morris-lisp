@@ -19,12 +19,6 @@
 ;   (ridders (lambda (x) (- (* x x) 2)) 0 2)          ; => 1.41421356...
 ;   (ridders f 0 2 :tolerance 1e-12 :max_iter 200)
 
-; -1, 0, or 1 according to the sign of x.
-(define (ridders--sign x)
-  (cond ((> x 0) 1)
-        ((< x 0) -1)
-        (#t 0)))
-
 ; (ridders f a b [&key tolerance max_iter]) -> x with f(x) ~ 0.
 ;
 ; f: a function of one number returning a number.
@@ -41,7 +35,7 @@
          (fb (f b)))
     (cond ((= fa 0) a)
           ((= fb 0) b)
-          ((> (* (ridders--sign fa) (ridders--sign fb)) 0)
+          ((> (* (signum fa) (signum fb)) 0)
            (error "ridders: f(a) and f(b) have the same sign -- no root is bracketed by"
                   a b "f(a)=" fa "f(b)=" fb))
           (#t (ridders--iterate f a fa b fb tolerance max_iter 0)))))
@@ -65,10 +59,10 @@
                    (fn (f xn)))
               (cond ((= fn 0) xn)
                     ; the root lies between xm and xn
-                    ((< (* (ridders--sign fm) (ridders--sign fn)) 0)
+                    ((< (* (signum fm) (signum fn)) 0)
                      (ridders--next f xm fm xn fn xn tolerance max_iter iteration))
                     ; the root lies between a and xn
-                    ((< (* (ridders--sign fa) (ridders--sign fn)) 0)
+                    ((< (* (signum fa) (signum fn)) 0)
                      (ridders--next f a fa xn fn xn tolerance max_iter iteration))
                     ; the root lies between xn and b
                     (#t
@@ -131,7 +125,7 @@
 
 (define (nm--iterate f simplex tolerance x_tolerance max_iter iteration)
   (let* ((best (car simplex))
-         (worst (nm--last simplex))
+         (worst (car (last simplex)))
          (second_worst (list-ref simplex (- (length simplex) 2))))
     (cond ((and (<= (- (car worst) (car best)) tolerance)
                 (<= (nm--size simplex) x_tolerance))
@@ -140,7 +134,7 @@
            (error "nelder-mead: no convergence after" max_iter
                   "iterations; best value so far" (car best)))
           (#t
-           (let* ((others (nm--all-but-last simplex))
+           (let* ((others (butlast simplex))
                   (center (nm--centroid (map cdr others)))
                   (reflected (nm--try f (nm--point-along center (cdr worst) -1.0))))
              (nm--iterate
@@ -173,7 +167,7 @@
   (let ((best_point (cdr (car simplex))))
     (reduce max
             (map (lambda (vertex)
-                   (reduce max (nm--map2 (lambda (a b) (abs (- a b))) best_point (cdr vertex)) 0.0))
+                   (reduce max (map (lambda (a b) (abs (- a b))) best_point (cdr vertex)) 0.0))
                  (cdr simplex))
             0.0)))
 
@@ -185,7 +179,7 @@
 ; is `from`, 1 is `toward`, -1 is the mirror image of `toward` through
 ; `from`, and so on.
 (define (nm--point-along from toward fraction)
-  (nm--map2 (lambda (a b) (+ a (* fraction (- b a)))) from toward))
+  (map (lambda (a b) (+ a (* fraction (- b a)))) from toward))
 
 ; Move every vertex halfway toward the best one (keeping the best).
 (define (nm--shrink f simplex)
@@ -199,7 +193,7 @@
 (define (nm--centroid points)
   (let ((n (length points)))
     (map (lambda (total) (/ total n))
-         (reduce (lambda (sum p) (nm--map2 + sum p)) points))))
+         (reduce (lambda (sum p) (map + sum p)) points))))
 
 ; start, plus one point per coordinate nudged along that coordinate.
 (define (nm--initial-points start step)
@@ -226,25 +220,6 @@
 (define (nm--evaluate f points)
   (map (lambda (p) (nm--try f p)) points))
 
-; Sort vertices by value, lowest first (insertion sort -- simplexes are tiny).
+; Sort vertices by value, lowest first.
 (define (nm--sort vertices)
-  (if (null? vertices)
-      '()
-      (nm--insert (car vertices) (nm--sort (cdr vertices)))))
-
-(define (nm--insert vertex sorted)
-  (cond ((null? sorted) (list vertex))
-        ((<= (car vertex) (car (car sorted))) (cons vertex sorted))
-        (#t (cons (car sorted) (nm--insert vertex (cdr sorted))))))
-
-; Apply f to corresponding elements of two lists of the same length.
-(define (nm--map2 f a b)
-  (if (null? a)
-      '()
-      (cons (f (car a) (car b)) (nm--map2 f (cdr a) (cdr b)))))
-
-(define (nm--last lst)
-  (if (null? (cdr lst)) (car lst) (nm--last (cdr lst))))
-
-(define (nm--all-but-last lst)
-  (if (null? (cdr lst)) '() (cons (car lst) (nm--all-but-last (cdr lst)))))
+  (sort vertices car))

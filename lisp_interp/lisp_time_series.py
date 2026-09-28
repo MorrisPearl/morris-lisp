@@ -110,20 +110,61 @@ def date_add_months(d, n):
     return each(d, shift)
 
 
+def difference(a, b, name):
+    """b - a, where each is a whole number or a vector of them (NaN where a
+    value is missing)."""
+    if isinstance(a, LispVector) or isinstance(b, LispVector):
+        x = floats_of(a, name) if isinstance(a, LispVector) else a
+        y = floats_of(b, name) if isinstance(b, LispVector) else b
+        result = np.asarray(y) - np.asarray(x)
+        if np.isnan(result).any():
+            return to_vector(result)
+        return to_vector(result.astype(np.int64))
+    return b - a
+
+
 def months_between(d1, d2):
     """(months-between d1 d2) -- how many calendar months from d1 to d2
     (the days of the month are ignored): the month number of d2 minus that
     of d1. Either may be a vector."""
-    m1 = date_to_month_number(d1)
-    m2 = date_to_month_number(d2)
-    if isinstance(m1, LispVector) or isinstance(m2, LispVector):
-        a = floats_of(m1, "months-between") if isinstance(m1, LispVector) else m1
-        b = floats_of(m2, "months-between") if isinstance(m2, LispVector) else m2
-        difference = np.asarray(b) - np.asarray(a)
-        if np.isnan(difference).any():
-            return to_vector(difference)
-        return to_vector(difference.astype(np.int64))
-    return m2 - m1
+    return difference(date_to_month_number(d1), date_to_month_number(d2), "months-between")
+
+
+def check_date(x, name):
+    if not isinstance(x, LispDate):
+        raise LispError("%s: not a date: %r" % (name, x))
+    return x
+
+
+def days_between(d1, d2):
+    """(days-between d1 d2) -- the actual number of days from d1 to d2
+    (negative if d2 is earlier). Either may be a vector of dates. For a day
+    count basis such as 30/360, see day-count."""
+    days1 = each(d1, lambda x: check_date(x, "days-between").date.toordinal())
+    days2 = each(d2, lambda x: check_date(x, "days-between").date.toordinal())
+    return difference(days1, days2, "days-between")
+
+
+def date_add_years(d, n):
+    """(date-add-years d n) -- the date n years after d (or before, if n is
+    negative), for one date or each date in a vector. February 29 becomes
+    February 28 in a year that isn't a leap year."""
+    return each(d, lambda x: add_months(check_date(x, "date-add-years"), 12 * int(n)))
+
+
+def date_end_of_month(d):
+    """(date-end-of-month d) -- the last day of d's month, for one date or
+    each date in a vector."""
+    def last_day(x):
+        year, month = check_date(x, "date-end-of-month").date.year, x.date.month
+        return LispDate(year, month, calendar.monthrange(year, month)[1])
+    return each(d, last_day)
+
+
+def date_day_of_week(d):
+    """(date-day-of-week d) -- the day of the week, 1 for Monday to 7 for
+    Sunday, of one date or each date in a vector."""
+    return each(d, lambda x: check_date(x, "date-day-of-week").date.isoweekday())
 
 
 def as_month_number(x, name):
@@ -146,6 +187,10 @@ MONTH_BUILTINS = {
     "month-number->yyyymm": month_number_to_yyyymm,
     "date-add-months": date_add_months,
     "months-between": months_between,
+    "date-add-years": date_add_years,
+    "days-between": days_between,
+    "date-end-of-month": date_end_of_month,
+    "date-day-of-week": date_day_of_week,
     "month-range": month_range,
 }
 

@@ -53,11 +53,13 @@ def headers_argument(headers, name):
     return result
 
 
-def download(url, cache_hours, headers, name):
+def download(url, cache_hours, headers, name, shown_url=None):
     """The bytes at `url`: from the cache if a copy younger than cache_hours
     is saved there, otherwise from the network (saving a copy if
-    cache_hours is more than 0)."""
+    cache_hours is more than 0). An error message shows shown_url in place
+    of url, if it's given -- for a URL with an API key in it."""
     url = str(url)
+    shown_url = shown_url or url
     request_headers = {"User-Agent": USER_AGENT}
     request_headers.update(headers_argument(headers, name))
     hours = float(cache_hours) if cache_hours is not None and cache_hours is not NIL else 0.0
@@ -74,10 +76,10 @@ def download(url, cache_hours, headers, name):
             data = response.read()
     except urllib.error.HTTPError as e:
         detail = e.read(300).decode("utf-8", errors="replace").strip()
-        raise LispError("%s: %s returned HTTP %d %s%s" % (name, url, e.code, e.reason,
+        raise LispError("%s: %s returned HTTP %d %s%s" % (name, shown_url, e.code, e.reason,
                                                           (" -- " + detail) if detail else ""))
     except (urllib.error.URLError, OSError, ValueError) as e:
-        raise LispError("%s: couldn't download %s: %s" % (name, url, e))
+        raise LispError("%s: couldn't download %s: %s" % (name, shown_url, e))
 
     if hours > 0:
         os.makedirs(cache_directory(), exist_ok=True)

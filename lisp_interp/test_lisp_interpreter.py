@@ -50,6 +50,7 @@ sys.path.insert(0, HERE)
 
 import lisp_builtins  # noqa: E402  (these need the sys.path line above)
 import lisp_core     # noqa: E402
+import lisp_fred  # noqa: E402
 import lisp_jupyter_debug  # noqa: E402
 import lisp_tastytrade  # noqa: E402
 
@@ -2108,6 +2109,190 @@ class TestOptionChainTable(LispTestCase):
         self.assertIn("2025-10-31             3       19.7%          6,690", out)
 
 
+class TestDateArithmetic(LispTestCase):
+    """days-between, date-add-years, date-end-of-month, date-day-of-week."""
+
+    def test_days_between(self):
+        self.assertShows("(days-between (date 2024 1 31) (date 2024 3 1))", "30")
+        self.assertShows("(days-between (date 2024 3 1) (date 2024 1 31))", "-30")
+        self.assertShows("(days-between (date 2024 3 1) (vector (date 2024 1 31) (date 2025 3 1)))", "#(-30 365)")
+        self.assertLispError("(days-between 5 (date 2024 1 1))", "days-between: not a date: 5")
+
+    def test_date_add_years(self):
+        self.assertShows("(date-add-years (date 2024 2 29) 1)", "2025-02-28")
+        self.assertShows("(date-add-years (date 2024 2 29) 4)", "2028-02-29")
+        self.assertShows("(date-add-years (vector (date 2020 5 5)) -4)", "#(2016-05-05)")
+
+    def test_end_of_month_and_day_of_week(self):
+        self.assertShows("(date-end-of-month (date 2024 2 10))", "2024-02-29")
+        self.assertShows("(date-end-of-month (date 2023 12 1))", "2023-12-31")
+        self.assertShows("(date-day-of-week (date 2026 9 28))", "1")         # a Monday
+        self.assertShows("(date-day-of-week (date 2026 9 27))", "7")         # a Sunday
+
+
+class TestDayCounts(LispTestCase):
+    """day-count and year-fraction under each basis (lisp_finance.py)."""
+
+    def test_30_360(self):
+        self.assertShows('(day-count (date 2024 1 31) (date 2024 3 1) "30/360")', "31")
+        self.assertShows('(day-count (date 2024 1 31) (date 2024 3 31) "30/360")', "60")
+        self.assertShows('(day-count (date 2024 1 29) (date 2024 3 31) "30/360")', "62")     # the 31st stays
+        self.assertShows('(day-count (date 2024 1 29) (date 2024 3 31) "30E/360")', "61")    # ...but not in 30E
+        self.assertShows('(year-fraction (date 2024 1 15) (date 2024 7 15) "30/360")', "0.5")
+
+    def test_actual_bases(self):
+        self.assertShows('(day-count (date 2024 1 1) (date 2024 7 1) "ACT/360")', "182")
+        self.assertShows("(year-fraction (date 2024 1 1) (date 2024 7 1) 'act/360)", "0.5055555555555555")
+        self.assertShows('(year-fraction (date 2024 1 1) (date 2025 1 1) "ACT/365")', "1.0027397260273974")
+        self.assertShows('(year-fraction (date 2024 1 1) (date 2025 1 1) "ACT/ACT")', "1.0")
+        self.assertAlmostEqual(self.run_lisp('(year-fraction (date 2023 7 1) (date 2024 7 1) "ACT/ACT")'),
+                               184 / 365 + 182 / 366)
+
+    def test_vectors_of_dates(self):
+        self.assertShows('(day-count (date 2024 1 1) (vector (date 2024 2 1) (date 2024 3 1)) "30/360")', "#(30 60)")
+
+    def test_an_unknown_basis(self):
+        self.assertLispError('(year-fraction (date 2024 1 1) (date 2024 7 1) "bus/252")',
+                             "year-fraction: unknown day count basis \"bus/252\" -- use one of 30/360, 30E/360, "
+                             "ACT/360, ACT/365, ACT/ACT")
+
+
+class TestCashFlowMath(LispTestCase):
+    """npv, irr, xnpv, xirr, payment, present-value, yield, duration,
+    modified-duration, convexity, and bond-cashflows (lisp_finance.py)."""
+
+    def value(self, src):
+        return self.run_lisp(src)
+
+    def test_npv_counts_the_first_cash_flow_as_now(self):
+        self.assertAlmostEqual(self.value("(npv 0.1 (list -100 60 60))"), -100 + 60 / 1.1 + 60 / 1.21)
+        self.assertAlmostEqual(self.value("(npv 0.1 #(-100 60 60))"), -100 + 60 / 1.1 + 60 / 1.21)
+
+    def test_irr(self):
+        rate = self.value("(irr (list -100 60 60))")
+        self.assertAlmostEqual(rate, 0.1306623862918975, places=10)
+        self.assertAlmostEqual(self.value("(npv %r (list -100 60 60))" % rate), 0, places=8)
+
+    def test_irr_of_a_long_monthly_series(self):
+        # a 30-year loan of 300,000 at 6.5%: the monthly irr of its cash flows is 6.5% / 12
+        rate = self.value("(irr (cons -300000 (loop repeat 360 collect (payment (/ 0.065 12) 360 300000))))")
+        self.assertAlmostEqual(rate, 0.065 / 12, places=10)
+
+    def test_irr_with_no_answer(self):
+        self.assertLispError("(irr (list 100 60))", "irr: no rate from -99% to 1000% a period gives a value of 0")
+
+    def test_irr_between_given_rates(self):
+        # -100, 230, -132 has two irrs, 10% and 20%; without low and high, the one nearer 0
+        self.assertAlmostEqual(self.value("(irr (list -100 230 -132))"), 0.1, places=10)
+        self.assertAlmostEqual(self.value("(irr (list -100 230 -132) 0.15 0.5)"), 0.2, places=10)
+
+    def test_xnpv_and_xirr_match_excel(self):
+        self.run_lisp("""(define dates (list (date 2008 1 1) (date 2008 3 1) (date 2008 10 30)
+                                                (date 2009 2 15) (date 2009 4 1)))
+                         (define flows (list -10000 2750 4250 3250 2750))""")
+        self.assertAlmostEqual(self.value("(xnpv 0.09 dates flows)"), 2086.6476020315, places=6)
+        self.assertAlmostEqual(self.value("(xirr dates flows)"), 0.373362535, places=8)
+        self.assertLispError("(xirr (list (date 2008 1 1)) flows)", "xirr: there are 1 dates but 5 cash flows")
+
+    def test_payment(self):
+        self.assertAlmostEqual(self.value("(payment (/ 0.065 12) 360 300000)"), 1896.2040704789, places=8)
+        self.assertShows("(payment 0 12 1200)", "100.0")
+        self.assertLispError("(payment 0.01 0 1000)", "the number of periods must be more than 0")
+
+    def test_a_bond(self):
+        self.run_lisp("(define flows (bond-cashflows 0.06 5 2))")
+        self.assertShows("flows", "#(3.0 3.0 3.0 3.0 3.0 3.0 3.0 3.0 3.0 103.0)")
+        price = self.value("(present-value 0.05 2 flows)")
+        self.assertAlmostEqual(price, 104.3760319655, places=8)
+        self.assertAlmostEqual(self.value("(yield %r 2 flows)" % price), 0.05, places=10)
+        self.assertAlmostEqual(self.value("(present-value 0.06 2 flows)"), 100, places=10)   # par, at the coupon
+
+    def test_duration_and_convexity(self):
+        self.run_lisp("(define flows (bond-cashflows 0.06 5 2))")
+        # the same measures, straight from their definitions
+        v = [1.025 ** -t for t in range(1, 11)]
+        c = [3.0] * 9 + [103.0]
+        price = sum(ci * vi for ci, vi in zip(c, v))
+        macaulay = sum(t / 2 * ci * vi for t, ci, vi in zip(range(1, 11), c, v)) / price
+        convexity = sum(t * (t + 1) * ci * vi for t, ci, vi in zip(range(1, 11), c, v)) / (price * 1.025 ** 2 * 4)
+        self.assertAlmostEqual(self.value("(duration 0.05 2 flows)"), macaulay, places=10)
+        self.assertAlmostEqual(self.value("(modified-duration 0.05 2 flows)"), macaulay / 1.025, places=10)
+        self.assertAlmostEqual(self.value("(convexity 0.05 2 flows)"), convexity, places=10)
+
+    def test_duration_predicts_a_small_price_change(self):
+        self.run_lisp("(define flows (bond-cashflows 0.06 5 2))")
+        p0 = self.value("(present-value 0.05 2 flows)")
+        p1 = self.value("(present-value 0.0501 2 flows)")
+        d = self.value("(modified-duration 0.05 2 flows)")
+        cx = self.value("(convexity 0.05 2 flows)")
+        self.assertAlmostEqual((p1 - p0) / p0, -d * 0.0001 + cx * 0.0001 ** 2 / 2, places=9)
+
+    def test_bad_cash_flows(self):
+        self.assertLispError("(npv 0.1 '())", "npv: there are no cash flows")
+        self.assertLispError("(npv 0.1 (list 1 \"a\"))", 'npv: every cash flow must be a number, not "a"')
+        self.assertLispError("(npv 0.1 (vector 1 nan))", "every cash flow must be a number, not nan")
+        self.assertLispError("(bond-cashflows 0.05 1.3 2)", "whole number of periods")
+
+
+class TestMoreListAndStringFunctions(LispTestCase):
+    """last, butlast, map over several lists, signum, and the string tests."""
+
+    def test_last_and_butlast(self):
+        self.assertShows("(last '(1 2 3))", "(3)")
+        self.assertShows("(car (last '(1 2 3)))", "3")
+        self.assertShows("(last '(1 2 3) 2)", "(2 3)")
+        self.assertShows("(last '())", "()")
+        self.assertShows("(butlast '(1 2 3))", "(1 2)")
+        self.assertShows("(butlast '(1 2 3) 2)", "(1)")
+        self.assertShows("(butlast '(1 2 3) 5)", "()")
+        self.assertLispError("(last #(1 2))", "last: expected a list")
+
+    def test_map_over_several_lists_or_vectors(self):
+        self.assertShows("(map + '(1 2 3) '(10 20))", "(11 22)")
+        self.assertShows("(map list '(1 2) '(a b) '(x y))", "((1 a x) (2 b y))")
+        self.assertShows("(map * #(1 2) #(3 4))", "#(3 8)")
+        self.assertLispError("(map + '(1 2) #(1 2))", "map: give it all lists or all vectors")
+
+    def test_signum(self):
+        self.assertShows("(signum -2.5)", "-1.0")
+        self.assertShows("(signum 0)", "0")
+        self.assertShows("(signum 7)", "1")
+        self.assertShows("(signum #(-3 0 2))", "#(-1 0 1)")
+
+    def test_string_starts_and_ends_with(self):
+        self.assertShows('(string-starts-with? "#each x" "#each")', "#t")
+        self.assertShows('(string-starts-with? "x #each" "#each")', "#f")
+        self.assertShows('(string-ends-with? "report.csv" ".csv")', "#t")
+
+
+class TestSolverLibrary(LispTestCase):
+    """lib/solver.lsp: Ridders' method and Nelder-Mead; and implied_vol.lsp,
+    which uses Ridders."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('(load "%s")' % os.path.join(LIB, "solver.lsp"))
+
+    def test_ridders_finds_a_root(self):
+        self.assertAlmostEqual(self.run_lisp("(ridders (lambda (x) (- (* x x) 2)) 0 2)"), 2 ** 0.5, places=10)
+        self.assertLispError("(ridders (lambda (x) (+ (* x x) 1)) 0 2)", "no root is bracketed")
+
+    def test_nelder_mead_finds_the_minimum_of_the_rosenbrock_function(self):
+        self.run_lisp("""(define (rosenbrock p)
+                           (let ((x (car p)) (y (car (cdr p))))
+                             (+ (expt (- 1 x) 2) (* 100 (expt (- y (* x x)) 2)))))""")
+        point, value = lisp_core.pairs_to_list(self.run_lisp("(nelder-mead rosenbrock (list -1.2 1.0))"))
+        x, y = lisp_core.pairs_to_list(point)
+        self.assertAlmostEqual(x, 1.0, places=6)
+        self.assertAlmostEqual(y, 1.0, places=6)
+        self.assertLess(value, 1e-12)
+
+    def test_implied_volatility_round_trip(self):
+        self.run_lisp('(load "%s")' % os.path.join(LIB, "implied_vol.lsp"))
+        self.run_lisp('(define price (bsm-price "call" 100 105 0.5 0.04 0.25))')
+        self.assertAlmostEqual(self.run_lisp('(implied-vol price "call" 100 105 0.5 0.04)'), 0.25, places=8)
+
+
 class TestTimeSeries(LispTestCase):
     """lisp_time_series.py: month numbers and monthly series."""
 
@@ -2215,6 +2400,15 @@ class TestHttp(LispTestCase):
                     body, kind = b'{"rates": [{"date": "2024-01-02", "rate": 5.3}], "ok": true, "none": null}', "json"
                 elif self.path.startswith("/data.csv"):
                     body, kind = b"date,rate\n01/02/2024,5.3\n01/03/2024,5.31\n", "csv"
+                elif self.path.startswith("/fred?") and "series_id=NOPE" in self.path:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b'{"error_code":400,"error_message":"Bad Request.  The series does not exist."}')
+                    return
+                elif self.path.startswith("/fred?"):
+                    body, kind = (b'{"observations": [{"date": "2024-01-01", "value": "5.33"},'
+                                  b' {"date": "2024-02-01", "value": "."},'
+                                  b' {"date": "2024-03-01", "value": "5.31"}]}'), "json"
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -2279,6 +2473,25 @@ class TestHttp(LispTestCase):
 # ---------------------------------------------------------------------------
 # 13. Dates
 # ---------------------------------------------------------------------------
+
+
+    def test_fred_series_downloads_through_the_shared_code(self):
+        with mock.patch.object(lisp_fred, "FRED_URL", self.base + "/fred"):
+            self.assertShows('(fred-series "SOFR" "KEY123")', "(#(2024-01-01 2024-03-01) . #(5.33 5.31))")
+
+    def test_fred_series_can_be_cached(self):
+        with mock.patch.object(lisp_fred, "FRED_URL", self.base + "/fred"):
+            before = len(self.handler.hits)
+            self.run_lisp('(fred-series "SOFR" "KEY123" \'() \'() 1)')
+            self.run_lisp('(fred-series "SOFR" "KEY123" \'() \'() 1)')
+        self.assertEqual(len(self.handler.hits) - before, 1)
+
+    def test_a_fred_error_says_what_fred_said_without_the_api_key(self):
+        with mock.patch.object(lisp_fred, "FRED_URL", self.base + "/fred"):
+            with self.assertRaises(lisp_core.LispError) as cm:
+                self.run_lisp('(fred-series "NOPE" "KEY123")')
+        self.assertIn("The series does not exist", str(cm.exception))
+        self.assertNotIn("KEY123", str(cm.exception))
 
 class TestDates(LispTestCase):
 
