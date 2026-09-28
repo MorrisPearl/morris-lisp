@@ -1,7 +1,7 @@
 """Output callbacks for running the interpreter in a Jupyter notebook, used
 by lisp_kernel.py (the "morris_lisp" kernel -- see install_lisp_kernel.py):
-charts are drawn inline with matplotlib, display-columns shows a pandas
-DataFrame, and display-markdown renders Markdown. get_env() holds the
+charts are drawn inline with matplotlib, display-table shows a table (as
+Markdown), and display-markdown renders Markdown. get_env() holds the
 one environment a kernel uses for its whole life.
 
 The tastytrade-* and sofr-calibration-data builtins work here too: a
@@ -14,7 +14,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lisp_builtins import load_init_file, make_global_env, print_columns_table
+from lisp_builtins import load_init_file, make_global_env, markdown_table, print_table
 from lisp_charts import chart_summary_text, draw_chart_on_axes
 
 try:
@@ -26,12 +26,6 @@ try:
     _MATPLOTLIB_AVAILABLE = True
 except ImportError:
     _MATPLOTLIB_AVAILABLE = False
-
-try:
-    import pandas as pd
-    _PANDAS_AVAILABLE = True
-except ImportError:
-    _PANDAS_AVAILABLE = False
 
 try:
     from IPython.display import display as _ipy_display
@@ -69,20 +63,14 @@ def _notebook_plot(spec):
     _ipy_display(_ipy_image(data=buf.getvalue()))
 
 
-def _print_columns_table(name_value_pairs):
-    """The no-pandas/no-IPython fallback: the console's plain text table."""
-    print_columns_table(name_value_pairs, lambda text: print(text, end=""))
-
-
-def _notebook_columns(name_value_pairs):
-    """display-columns -- show a pandas DataFrame (an HTML table) if pandas and
-    IPython are installed, otherwise the console's text table. The values are
-    already formatted as text; use write-columns-csv for the raw numbers."""
-    if _PANDAS_AVAILABLE and _IPYTHON_AVAILABLE:
-        df = pd.DataFrame({name: values for name, values in name_value_pairs})
-        _ipy_display(df)
-        return
-    _print_columns_table(name_value_pairs)
+def _notebook_table(columns):
+    """display-table -- shown as a Markdown table (numbers right-aligned),
+    or, without IPython, as the console's plain text table."""
+    if _IPYTHON_AVAILABLE:
+        from IPython.display import Markdown
+        _ipy_display(Markdown(markdown_table(columns)))
+    else:
+        print_table(columns, lambda text: print(text, end=""))
 
 
 def _notebook_markdown(text):
@@ -105,6 +93,6 @@ def get_env():
     global _env
     if _env is None:
         _env = make_global_env(output=_notebook_output, plot=_notebook_plot,
-                               columns=_notebook_columns, markdown=_notebook_markdown)
+                               table=_notebook_table, markdown=_notebook_markdown)
         load_init_file(_env)
     return _env

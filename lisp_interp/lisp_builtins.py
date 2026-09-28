@@ -46,7 +46,6 @@ import lisp_tables
 import lisp_tastytrade
 import lisp_time_series
 import lisp_vector_math
-from lisp_csv import parse_column_pairs
 
 
 # ---------------------------------------------------------------------------
@@ -1146,38 +1145,105 @@ def make_output_builtins(out, markdown):
     }
 
 
-def make_display_columns_builtin(env, columns):
-    """display-columns, which formats each value using the environment's
-    current *column-number-format* and hands the table to `columns` (the
-    GUI's Columns tab, a notebook table, or the console)."""
+DISPLAY_TABLE_MAX_ROWS = 1000   # a longer table shows this many rows, and a note saying so
 
-    def format_column_value(v, decimals=None):
-        """One table cell as text: a number with `decimals` decimal places if
-        given, otherwise formatted by *column-number-format* (a Python format
-        string, "{:,.0f}" by default -- set! it to change every later table).
-        Anything else is shown as display would show it."""
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
-            return to_display_string(v)
-        if decimals is not None:
-            fmt = "{:,.%df}" % int(decimals)
-        else:
-            fmt = str(env.get(Symbol("*column-number-format*"), "{}"))
-        try:
-            return fmt.format(v)
-        except (ValueError, TypeError):
-            return to_display_string(v)
 
-    def display_columns(name_value_pairs):
-        """(display-columns pairs) -- show columns side by side: pairs is a list
-        of (name . vector), or (name vector decimals). Where the table appears
-        depends on the environment: the GUI's Columns tab, a notebook table, or
-        a text table on the console."""
-        data = [(name, [format_column_value(v, decimals) for v in items])
-                for name, items, decimals in parse_column_pairs(name_value_pairs)]
-        columns(data)
+def make_display_table_builtin(out, show_table):
+    """display-table, which formats a table's values as text and hands them
+    to show_table (the GUI's Table tab, a notebook, or the console). What it
+    hands over is a list of (column name, the cells' text, alignment)
+    tuples; the alignment is "right" for a column of numbers, else "left"."""
+
+    def display_table(data, formats=NIL):
+        """(display-table table [formats]) -- show a table, or a list of rows
+        (see table-rows), with each column's numbers laid out by a format
+        spec, e.g. '(("balance" ",.2f") ("rate" ".3%"))."""
+        columns = lisp_tables.table_columns(lisp_tables.table_or_rows(data, "display-table"), "display-table")
+        specs = format_specs(formats)
+        n_rows = lisp_tables.row_count(columns)
+        shown = min(n_rows, DISPLAY_TABLE_MAX_ROWS)
+        cells = [(name, [cell_text(value, specs.get(name), name) for value in lisp_tables.column_values(v)[:shown]],
+                  column_alignment(v))
+                 for name, v in columns]
+        if not columns:
+            out.write("(an empty table)\n")
+            return NIL
+        show_table(cells)
+        if shown < n_rows:
+            out.write("(the first %s of %s rows -- see table-slice for the others)\n"
+                      % (format(shown, ","), format(n_rows, ",")))
         return NIL
 
-    return {"display-columns": display_columns}
+    return {"display-table": display_table}
+
+
+def format_specs(formats):
+    """display-table's formats -- a list of (name spec), or (name . spec) --
+    as a dict from column name to spec. A format for a column the table
+    doesn't have is simply not used, so one list of formats can serve every
+    view of the same data."""
+    specs = {}
+    for entry in list_items(formats, "display-table"):
+        if not isinstance(entry, Pair):
+            raise LispError('display-table: each format must be (name spec), such as ("balance" ",.2f"), not %s'
+                            % (_brief(entry),))
+        spec = entry.cdr.car if isinstance(entry.cdr, Pair) else entry.cdr
+        specs[str(entry.car)] = str(spec)
+    return specs
+
+
+def cell_text(value, spec, column_name):
+    """One table cell as text: blank if the value is missing (NaN, or '() in
+    a column of strings or dates); laid out by spec if there is one (as
+    format-value does it); otherwise as display shows it."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    if spec is None:
+        return str(to_display_string(value))
+    try:
+        return str(format_value(value, spec))
+    except LispError as e:
+        raise LispError("display-table: column %s: %s" % (column_name, e))
+
+
+def column_alignment(v):
+    """"right" for a column of numbers (so they line up on their last
+    digit), "left" for anything else."""
+    values = [x for x in lisp_tables.column_values(v) if x is not None]
+    if all(lisp_vector_math.is_number(x) for x in values):
+        return "right"
+    return "left"
+
+
+def print_table(columns, write):
+    """The console's display-table: a plain text table, each column as wide
+    as its widest cell, numbers right-justified and text left-justified."""
+    widths = [max([len(name)] + [len(cell) for cell in cells]) for name, cells, _ in columns]
+    n_rows = max((len(cells) for _, cells, _ in columns), default=0)
+
+    def line(texts):
+        parts = [text.rjust(width) if align == "right" else text.ljust(width)
+                 for text, width, (_, _, align) in zip(texts, widths, columns)]
+        return "  ".join(parts).rstrip()
+
+    lines = [line([name for name, _, _ in columns]), line(["-" * width for width in widths])]
+    for i in range(n_rows):
+        lines.append(line([cells[i] for _, cells, _ in columns]))
+    write("\n".join(lines) + "\n")
+
+
+def markdown_table(columns):
+    """display-table's table as Markdown text, which is how a notebook shows
+    it: numbers right-aligned, text left-aligned."""
+    def line(texts):
+        return "| " + " | ".join(text.replace("|", "\\|") for text in texts) + " |"
+
+    n_rows = max((len(cells) for _, cells, _ in columns), default=0)
+    lines = [line([name for name, _, _ in columns]),
+             "|" + "|".join("---:" if align == "right" else ":---" for _, _, align in columns) + "|"]
+    for i in range(n_rows):
+        lines.append(line([cells[i] for _, cells, _ in columns]))
+    return "\n".join(lines)
 
 
 def make_eval_builtins(env, out):
@@ -1292,32 +1358,15 @@ def make_introspection_builtins(env, out):
 # The global environment
 # ---------------------------------------------------------------------------
 
-def print_columns_table(name_value_pairs, write):
-    """The console's version of display-columns: a plain text table, each
-    column right-justified to its widest cell (header included) so numbers
-    line up on their ones place. The values are already formatted strings."""
-    widths = [max([len(name)] + [len(str(v)) for v in values])
-              for name, values in name_value_pairs]
-    n_rows = max((len(values) for _, values in name_value_pairs), default=0)
-
-    def row(cells):
-        return "  ".join(str(c).rjust(w) for c, w in zip(cells, widths))
-
-    lines = [row([name for name, _ in name_value_pairs])]
-    for i in range(n_rows):
-        lines.append(row(values[i] if i < len(values) else "" for _, values in name_value_pairs))
-    write("\n".join(lines) + "\n")
-
-
-def make_global_env(output=None, plot=None, columns=None, markdown=None):
+def make_global_env(output=None, plot=None, table=None, markdown=None):
     """Build a fresh global environment holding every built-in procedure.
 
     The four optional arguments say where this environment's output goes,
     so the same interpreter can run in the console, the GUI, or Jupyter:
       output    receives the text written by display/newline/print
       plot      receives each chart spec from plot-xy... (see lisp_charts)
-      columns   receives each table from display-columns, as a list of
-                (name, formatted-values) tuples
+      table     receives each table from display-table, as a list of
+                (name, cell texts, alignment) tuples
       markdown  receives each string from display-markdown
     Any left out get the plain console behavior: print the text, print a
     one-line chart summary, print a text table, print the raw Markdown.
@@ -1328,8 +1377,8 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
 
     if plot is None:
         plot = lambda spec: out.write(lisp_charts.chart_summary_text(spec))
-    if columns is None:
-        columns = lambda name_value_pairs: print_columns_table(name_value_pairs, out.write)
+    if table is None:
+        table = lambda columns: print_table(columns, out.write)
 
     env = Env()
     env.trace_emit = out.write      # verbose-mode trace lines go where display output does
@@ -1358,7 +1407,7 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
 
     # Builtins that belong to this environment.
     env.update(make_output_builtins(out, markdown))
-    env.update(make_display_columns_builtin(env, columns))
+    env.update(make_display_table_builtin(out, table))
     env.update(lisp_charts.make_chart_builtins(plot))
     env.update(make_eval_builtins(env, out))
     env.update(make_introspection_builtins(env, out))
@@ -1369,10 +1418,6 @@ def make_global_env(output=None, plot=None, columns=None, markdown=None):
     for name, value in env.items():
         if callable(value):
             builtin_names.setdefault(value, str(name))
-
-    # A global variable: how display-columns formats numbers (see
-    # format_column_value in make_display_columns_builtin).
-    env[Symbol("*column-number-format*")] = LispString("{:,.0f}")
 
     load_standard_macros(env)
     return env

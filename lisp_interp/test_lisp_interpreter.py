@@ -51,6 +51,7 @@ sys.path.insert(0, HERE)
 import lisp_builtins  # noqa: E402  (these need the sys.path line above)
 import lisp_core     # noqa: E402
 import lisp_jupyter_debug  # noqa: E402
+import lisp_tastytrade  # noqa: E402
 
 INTERPRETER = os.path.join(HERE, "lisp_interpreter.py")
 LIB = os.path.join(HERE, "lib")                 # the Lisp libraries that come with the interpreter
@@ -1854,13 +1855,13 @@ class TestTables(LispTestCase):
         self.assertShows("(table-column-names loans)", '("id" "month" "state" "balance" "rate")')
         self.assertShows('(table-column loans "balance")', "#(100 90 200 195 50)")
         self.assertShows("(table-row-count loans)", "5")
-        self.assertShows('(cdr (assoc "state" (table-row loans 2)))', '"NY"')
+        self.assertShows('(row-ref (table-row loans 2) "state")', '"NY"')
         self.assertShows('(table-column (table-head loans 2) "id")', '#("a" "a")')
         self.assertShows('(table-column (table-slice loans 3) "id")', '#("b" "c")')
         self.assertShows("(table? loans)", "#t")
         self.assertShows("(table? (list 1))", "#f")
         self.assertLispError('(table-column loans "nope")', "no column named")
-        self.assertLispError("(table-row loans 99)", "out of range")
+        self.assertLispError("(table-row loans 99)", "table-row: there's no row 99 -- the table has 5 rows")
         self.assertLispError('(make-table "a" #(1 2) "b" #(1))', "different lengths")
 
     def test_choosing_and_changing_columns(self):
@@ -1930,6 +1931,181 @@ class TestTables(LispTestCase):
         self.assertShows('(table-column d "column")', '#("month" "balance" "rate")')
         self.assertShows('(table-column d "count")', "#(5 5 4)")
         self.assertShows('(table-column d "max")', "#(2.0 200.0 7.25)")
+
+
+class TestTableRows(LispTestCase):
+    """A table seen a row at a time: table-rows, table-row, row-ref, and
+    table-from-rows."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("""(define t (make-table "id" (vector "a" "b" "c")
+                                             "balance" #(100 90 200)
+                                             "rate" (vector 6.0 nan 7.5)))""")
+
+    def test_table_rows_gives_one_row_per_table_row(self):
+        self.assertShows("(length (table-rows t))", "3")
+        self.assertShows("(car (table-rows t))", '#S(row :id "a" :balance 100 :rate 6.0)')
+
+    def test_a_row_is_a_struct(self):
+        self.assertShows("(struct? (table-row t 0))", "#t")
+        self.assertShows("(struct-ref (table-row t 0) 'balance)", "100")
+
+    def test_row_ref_takes_a_string_or_a_symbol(self):
+        self.assertShows('(row-ref (table-row t 1) "id")', '"b"')
+        self.assertShows("(row-ref (table-row t 1) 'balance)", "90")
+        self.assertShows('(row-ref (table-row t 1) "rate")', "nan")         # a missing value
+        self.assertLispError('(row-ref (table-row t 1) "nope")',
+                             "row-ref: the row has no column nope -- its columns are id, balance, rate")
+        self.assertLispError('(row-ref 5 "id")', "row-ref: not a row: 5")
+
+    def test_with_struct_makes_each_column_a_variable(self):
+        self.assertShows("(with-struct (table-row t 2) (list id (* balance 2)))", '("c" 400)')
+
+    def test_filtering_rows_with_a_predicate(self):
+        self.run_lisp("(define big (filter (lambda (r) (with-struct r (> balance 95))) (table-rows t)))")
+        self.assertShows("(map (lambda (r) (row-ref r 'id)) big)", '("a" "c")')
+
+    def test_table_row_checks_the_row_number(self):
+        self.assertLispError("(table-row t 3)", "table-row: there's no row 3 -- the table has 3 rows")
+        self.assertLispError("(table-row t 1.5)", "there's no row 1.5")
+
+    def test_rows_back_into_a_table(self):
+        self.assertShows("(table-from-rows (table-rows t))",
+                         '(("id" . #("a" "b" "c")) ("balance" . #(100 90 200)) ("rate" . #(6.0 nan 7.5)))')
+        self.assertShows("(table-from-rows (table-rows t) '(\"balance\" \"id\"))",
+                         '(("balance" . #(100 90 200)) ("id" . #("a" "b" "c")))')
+
+    def test_a_table_from_lists(self):
+        self.assertShows("""(table-from-rows (list (list "x" 1 "2024-01-31") (list "y" '() "2024-02-29"))
+                                             (list "name" "n" "day"))""",
+                         '(("name" . #("x" "y")) ("n" . #(1.0 nan)) ("day" . #(2024-01-31 2024-02-29)))')
+
+    def test_table_from_rows_errors(self):
+        self.assertLispError("(table-from-rows (list (list 1 2)))", "give the column names")
+        self.assertLispError("(table-from-rows (list (list 1 2)) (list \"a\"))",
+                             "the row (1 2) has 2 values, but there are 1 column names")
+        self.assertLispError("(table-from-rows (list (list #t)) (list \"a\"))",
+                             "a table holds numbers, strings, and dates, not #t (in column a)")
+        self.assertLispError("(table-from-rows (list 5) (list \"a\"))", "a row must be a row")
+
+    def test_no_rows(self):
+        self.assertShows("(table-from-rows '() (list \"a\"))", '(("a" . #()))')
+        self.assertShows("(table-rows (table-filter t (> (table-column t \"balance\") 1000)))", "()")
+
+
+class TestDisplayTable(LispTestCase):
+    """display-table: a table, or a list of rows, with each column's numbers
+    laid out by a format spec."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("""(define t (make-table "symbol" (vector "SPY C" "SPY|P")
+                                             "strike" #(450 455)
+                                             "iv" (vector 0.2345 nan)
+                                             "volume" #(12345 67)))""")
+
+    def test_the_console_table(self):
+        self.run_lisp("(display-table t '((\"strike\" \",.2f\") (\"iv\" \".1%\") (\"volume\" \",\")))")
+        self.assertEqual(self.printed(),
+                         "symbol  strike     iv  volume\n"
+                         "------  ------  -----  ------\n"
+                         "SPY C   450.00  23.4%  12,345\n"
+                         "SPY|P   455.00             67\n")
+
+    def test_without_formats_numbers_are_shown_as_display_shows_them(self):
+        self.run_lisp("(display-table t)")
+        self.assertIn("SPY C      450  0.2345   12345", self.printed())
+
+    def test_a_format_may_be_written_as_a_dotted_pair(self):
+        self.run_lisp("(display-table t '((\"strike\" . \",.1f\")))")
+        self.assertIn("450.0", self.printed())
+
+    def test_a_format_for_a_column_the_table_lacks_is_not_used(self):
+        self.run_lisp("(display-table (table-select t \"symbol\") '((\"strike\" \",.2f\")))")
+        self.assertEqual(self.printed(), "symbol\n------\nSPY C\nSPY|P\n")
+
+    def test_a_list_of_rows(self):
+        self.run_lisp("(display-table (table-rows t) '((\"strike\" \",.2f\")))")
+        self.assertIn("SPY C   450.00", self.printed())
+
+    def test_an_empty_table(self):
+        self.run_lisp("(display-table '())")
+        self.assertEqual(self.printed(), "(an empty table)\n")
+
+    def test_errors(self):
+        self.assertLispError("(display-table 5)", "display-table: not a table")
+        self.assertLispError("(display-table t '(5))", "each format must be (name spec)")
+        self.assertLispError("(display-table t '((\"symbol\" \".2f\")))", "display-table: column symbol: format:")
+
+    def test_a_long_table_shows_its_first_rows_and_says_so(self):
+        with mock.patch.object(lisp_builtins, "DISPLAY_TABLE_MAX_ROWS", 1):
+            self.run_lisp("(display-table t)")
+        self.assertTrue(self.printed().endswith("(the first 1 of 2 rows -- see table-slice for the others)\n"),
+                        self.printed())
+
+    def test_what_the_table_callback_receives(self):
+        shown = []
+        env = lisp_builtins.make_global_env(output=self.out.append, table=shown.append)
+        self.run_lisp("(display-table (make-table \"id\" (vector \"a\") \"n\" #(1.5)) '((\"n\" \".2f\")))",
+                      env=env)
+        self.assertEqual(shown, [[("id", ["a"], "left"), ("n", ["1.50"], "right")]])
+
+    def test_the_markdown_a_notebook_shows(self):
+        columns = [("id", ["a", "b|c"], "left"), ("n", ["1.50", ""], "right")]
+        self.assertEqual(lisp_builtins.markdown_table(columns),
+                         "| id | n |\n|:---|---:|\n| a | 1.50 |\n| b\\|c |  |")
+
+
+class TestOptionChainTable(LispTestCase):
+    """tastytrade-option-chain's rows become a table (no network needed to
+    test that part), and examples/option_chain_example.lsp runs on one."""
+
+    @staticmethod
+    def rows():
+        def row(symbol, kind, strike, expiration, days, price, iv, volume, oi):
+            S = lisp_core.LispString
+            return [S(symbol), S(kind), strike, S(expiration), days, None, S("SPY"), price, iv, volume, oi]
+        return [
+            row("SPY C660 OCT", "Call", 660.0, "2025-10-17", 19, 9.10, 0.18, 1200, 5000),
+            row("SPY C660 NOV", "Call", 660.0, "2025-10-31", 33, 12.40, 0.19, 800, 2500),
+            row("SPY C670 NOV", "Call", 670.0, "2025-10-31", 33, 7.25, 0.17, 400, 90),
+            row("SPY C670 DEC", "Call", 670.0, "2025-11-21", 54, 10.05, None, 150, 300),
+            row("SPY P650 NOV", "Put", 650.0, "2025-10-31", 33, 6.80, 0.23, 950, 4100),
+            row("SPY P640 DEC", "Put", 640.0, "2025-11-21", 54, 0.95, 0.26, 70, 800),
+            row("SPY P650 DEC", "Put", 650.0, "2025-11-21", 54, 9.30, 0.22, 300, None),
+        ]
+
+    def test_the_rows_become_a_table_with_named_columns(self):
+        self.env[lisp_core.Symbol("chain")] = lisp_tastytrade.option_chain_table(self.rows())
+        self.assertShows("(table-column-names chain)",
+                         '("symbol" "type" "strike" "expiration-date" "days-to-expiration" "delivery-month" '
+                         '"underlying" "last-price" "implied-volatility" "volume" "open-interest")')
+        self.assertShows("(table-row-count chain)", "7")
+        self.assertShows('(table-column chain "expiration-date")',
+                         "#(2025-10-17 2025-10-31 2025-10-31 2025-11-21 2025-10-31 2025-11-21 2025-11-21)")
+        self.assertShows('(vector-ref (table-column chain "implied-volatility") 3)', "nan")
+
+    def test_an_empty_chain_is_a_table_with_no_rows(self):
+        self.env[lisp_core.Symbol("chain")] = lisp_tastytrade.option_chain_table([])
+        self.assertShows("(table-row-count chain)", "0")
+
+    def test_the_option_chain_example_runs(self):
+        chain = lisp_tastytrade.option_chain_table(self.rows())
+        self.env[lisp_core.Symbol("tastytrade-option-chain")] = lambda *args: chain
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("no-credentials-needed.json")
+        lisp_core.run_file(os.path.join(EXAMPLES, "option_chain_example.lsp"), self.env)
+        out = self.printed()
+        self.assertIn("SPY: 7 options", out)
+        # part 2: the calls with 20-60 days and open interest of at least 100, cheapest per day first
+        part2 = out.split("cheapest per day first:\n")[1].split("\n\n")[0]
+        self.assertEqual([line.split("  ")[0] for line in part2.splitlines()[2:]],
+                         ["SPY C670 DEC", "SPY C660 NOV"])
+        # part 3: the puts over 20% volatility and $1
+        self.assertIn("Puts with implied volatility over 20% and a price over $1: 2", out)
+        self.assertIn("  SPY P650 NOV expires 2025-10-31: 6.80 at 23.0% volatility", out)
+        # part 4: by expiration
+        self.assertIn("2025-10-31             3       19.7%          6,690", out)
 
 
 class TestTimeSeries(LispTestCase):
@@ -3473,7 +3649,7 @@ class TestColumnEngineLibrary(LispTestCase):
         lisp_core.set_verbose_level(0)
         self.tables = []
         self.out = []
-        self.env = lisp_builtins.make_global_env(output=self.out.append, columns=self.tables.append)
+        self.env = lisp_builtins.make_global_env(output=self.out.append, table=self.tables.append)
         self.run_lisp('(load "%s")' % os.path.join(LIB, "column_engine.lsp"))
 
     def test_columns_chain_and_lag_across_rows(self):
@@ -3487,14 +3663,14 @@ class TestColumnEngineLibrary(LispTestCase):
         self.assertShows("(column-series double-col)", "#(0 2 4 6 8)")
         self.assertShows("(column-series running-col)", "#(0 2 6 12 20)")
 
-    def test_display_columns_receives_only_the_visible_columns(self):
+    def test_display_table_receives_only_the_visible_columns(self):
         self.run_lisp("""
           (defcolumn a-col :name "a" :initial_value 1 :value_calculation (+ a 1))
           (defcolumn hidden-col :name "hidden" :initial_value 0 :visible #f
                      :value_calculation (+ hidden 1))
           (calculate-all *columns* 3)""")
         self.assertEqual(len(self.tables), 1)
-        self.assertEqual([row[0] for row in self.tables[0]], ["a"])
+        self.assertEqual(self.tables[0], [("a", ["1", "2", "3"], "right")])     # decimals 0, with commas
 
     def test_lag_default_before_the_first_row(self):
         self.run_lisp("""
@@ -5070,6 +5246,10 @@ w.input_edit.setPlainText("(sq 3)")
 w._on_run()
 print("=====")
 print(w.output_view.toPlainText())
+w.input_edit.setPlainText('(display-table (make-table "id" (vector "a" "b") "n" #(1.5 2)) (list (list "n" ".2f")))')
+w._on_run()
+print("=====")
+print(w.table_model.names, w.table_model.columns, w.table_model.aligns, w.tabs.tabText(w.tabs.currentIndex()))
 """ % HERE
 
     def test_the_gui_log_shows_the_traceback_and_the_verbose_trace(self):
@@ -5080,10 +5260,11 @@ print(w.output_view.toPlainText())
         if "NO-QT" in r.stdout:
             self.skipTest("PyQt6/matplotlib not installed")
         self.assertEqual(r.returncode, 0, r.stderr[-800:])
-        failing, traced = r.stdout.split("=====")
+        failing, traced, table = r.stdout.split("=====")
         self.assertIn("Lisp traceback (most recent call last):\n  (outer 5)\n  (inner 5)\nError: car: not a pair: 5",
                       failing)
         self.assertIn("> (sq 3)\n< (sq 3) => 9\n=> 9", traced)
+        self.assertEqual(table.strip(), "['id', 'n'] [['a', 'b'], ['1.50', '2.00']] ['left', 'right'] Table")
 
     ABORT_PROGRAM = r"""
 import sys
@@ -5227,8 +5408,8 @@ class TestExampleScripts(unittest.TestCase):
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
     "fred-series", "tastytrade", "sofr-", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
-    "plot-xy", "save-chart", "load-csv", "write-columns-csv", "display-columns",
-    "debug-function", "input", "exit", "load-init", "http-get", "http-clear-cache",
+    "plot-xy", "save-chart", "load-csv", "write-columns-csv",
+    "input", "exit", "load-init", "http-get", "http-clear-cache",
 )
 # examples whose documented value is illustrative rather than exact
 _ILLUSTRATIVE_PREFIXES = ("e.g.", "one of", "some", "a ", "an ", "somewhere", "error", "raises",

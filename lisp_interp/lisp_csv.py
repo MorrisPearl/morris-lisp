@@ -92,8 +92,8 @@ def load_csv_fn(filename, has_header=True):
 
 
 def parse_column_pairs(name_value_pairs):
-    """Read the column list display-columns and write-columns-csv take: each
-    element is (name . vector), or (name vector decimals) to give that
+    """Read the column list write-columns-csv takes: each element is
+    (name . vector), as in a table, or (name vector decimals) to give that
     column a number of decimal places. Returns (name, items,
     decimals-or-None) tuples."""
     out = []
@@ -112,8 +112,8 @@ def parse_column_pairs(name_value_pairs):
 
 
 def write_columns_csv_fn(filename, name_value_pairs):
-    """(write-columns-csv filename table) -- write a table (or the column
-    list display-columns takes) to a CSV file: a header row of names, then
+    """(write-columns-csv filename table) -- write a table (or a list of
+    (name vector decimals)) to a CSV file: a header row of names, then
     one row per index. Numbers are written as plain numbers, rounded to the
     column's decimals if it has any; missing values are left blank. A
     shorter column is padded with empty cells."""

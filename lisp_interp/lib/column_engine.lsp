@@ -43,7 +43,7 @@
   after                 ; () (a root column), a single column, or a list
                          ; of columns that must be calculated first
   (series ())           ; filled in by calculate-all: an N-element vector
-  (visible #t)          ; #f = calculated but not shown by display-columns
+  (visible #t)          ; #f = calculated but not shown by display-table
                          ; or written out by write-csv
   (decimals 0))         ; decimal places to display/write this column
                          ; with -- e.g. 0 for a dollar amount, 4-6 for an
@@ -216,16 +216,23 @@
 ;             sees the current-row value instead of pass 1's carry-
 ;             forward, while an EARLIER one (or one reached via `lag`)
 ;             still only ever saw the previous row's.
-; Shared by calculate-all's own display step and write-csv, below: turns
-; a list of column structs into the (name vector decimals) shape
-; display-columns/write-columns-csv expect, keeping only the visible
-; ones (visible #f columns -- pure bookkeeping, e.g. wala/sched_principal
-; in mortgage_amortization_example.lsp -- are left out of both).
+; Used by write-csv, below: turns a list of column structs into the
+; (name vector decimals) shape write-columns-csv expects, keeping only the
+; visible ones (visible #f columns -- pure bookkeeping, e.g.
+; wala/sched_principal in mortgage_amortization_example.lsp -- are left
+; out).
 (define (columns->display-pairs cols)
   (map (lambda (c) (list (column-name c) (column-series c) (column-decimals c)))
        (filter column-visible cols)))
 
-; Finally displays every visible column via display-columns.
+; (display-column-table cols) -- shows the visible columns in `cols` with
+; display-table, each number with commas and its column's `decimals`.
+(define (display-column-table cols)
+  (let ((shown (filter column-visible cols)))
+    (display-table (map (lambda (c) (cons (column-name c) (column-series c))) shown)
+                   (map (lambda (c) (list (column-name c) (format ",.{}f" (column-decimals c)))) shown))))
+
+; Finally displays every visible column with display-column-table.
 (define (calculate-all columns n)
   (define ordered (topo-sort columns))
   (dolist (c ordered)
@@ -249,7 +256,7 @@
         '()))
   (compute-row 1)
   (set! current-column '())
-  (display-columns (columns->display-pairs ordered))
+  (display-column-table ordered)
   ordered)
 
 ; (write-csv filename cols) -- writes every VISIBLE column in `cols`

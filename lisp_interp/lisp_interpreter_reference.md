@@ -16,45 +16,54 @@ batch-mode use of the interpreter.
 This document aims to cover **every builtin and special form** the
 interpreter provides: what its arguments mean, what it returns, and any
 non-obvious behavior or error conditions. For a quicker orientation, read
-"Running it", "Syntax", and "Special forms" first, then treat "Built-in
+"Running it", "Syntax", and "Special forms and standard macros" first, then treat "Built-in
 functions" as a reference to search rather than read start to end.
 
 ## Contents
 
 - [Running it](#running-it)
 - [Syntax](#syntax)
-  - [Special forms (e.g. quote, if, lambda, let, cond and/or define, throw/catch)](#special-forms)
-    - [quote](#quote)
-	- [quasiquote](#quasiquote)
-	- [if](#if)
-	- [define](#define)
-	- [set!](#set!)
-	- [lambda](#lambda)
-	- [begin](#begin)	
-	- [let](#let)	
-	- [cond](#cond)	
-	- [and](#and)
-	- [or](#or)
-	- [dolist](#dolist)
-	- [defmacro](#defmacro)
-	- [defstruct](#defstruct)
-	- [with-struct](#with-struct)
-	- [breakpoint](#breakpoint)
-	- [backtrace](#backtrace)
-	- [catch-error](#catch-error)
-	- [unwind-protect](#unwind-protect)
-	- [catch throw](#catch-throw)
+- [Special forms and standard macros](#special-forms-and-standard-macros)
+  - [Defining variables and procedures](#defining-variables-and-procedures)
+    - [define](#define)
+    - [set!](#set)
+    - [lambda](#lambda)
+    - [begin](#begin)
   - [Variadic parameters](#variadic-parameters)
   - [Keyword arguments](#keyword-arguments)
+  - [Local variables](#local-variables)
+    - [let](#let)
+    - [let*](#let-1)
+  - [Choosing](#choosing)
+    - [if](#if)
+    - [cond](#cond)
+    - [case](#case)
+    - [when, unless](#when-unless)
+    - [and](#and)
+    - [or](#or)
+  - [Looping](#looping)
+    - [dolist](#dolist)
+    - [while](#while)
+    - [do](#do)
+    - [loop](#loop)
+  - [Structs](#structs)
+    - [defstruct](#defstruct)
+    - [with-struct](#with-struct)
+  - [Errors and cleanup](#errors-and-cleanup)
+    - [catch-error](#catch-error)
+    - [unwind-protect](#unwind-protect)
+    - [catch throw](#catch-throw)
+    - [assert](#assert)
+    - [with-sqlite](#with-sqlite)
+  - [Quoting](#quoting)
+    - [quote](#quote)
+    - [quasiquote](#quasiquote)
   - [Macros](#macros)
-  - [Standard macros](#standard-macros)
-  	- [while](#while)
-	- [do](#do)
-	- [loop](#loop)
-	- [when](#when)
-	- [case](#case)
-	- [assert](#assert)
-	- [with-sqlite](#with-sqlite)
+    - [defmacro](#defmacro)
+  - [Debugging](#debugging)
+    - [breakpoint](#breakpoint)
+    - [backtrace](#backtrace)
+    - [pretty-print-function, pretty-print-macro](#pretty-print-function-pretty-print-macro)
 - [Built-in functions](#built-in-functions)
   - [Arithmetic](#arithmetic)
   - [Random numbers](#random-numbers)
@@ -67,12 +76,12 @@ functions" as a reference to search rather than read start to end.
   - [Vector math and statistics](#vector-math-and-statistics)
   - [Tables](#tables)
   - [Monthly time series](#monthly-time-series)
-  - [Structs](#structs)
+  - [Structs](#structs-1)
   - [Dates](#dates)
   - [Regression models](#regression-models)
   - [Linear programming](#linear-programming)
   - [Charting](#charting)
-  - [Columns](#columns)
+  - [Displaying tables](#displaying-tables)
   - [FRED (Federal Reserve Bank of St. Louis) data, and CSV loading](#fred-federal-reserve-bank-of-st-louis-data-and-csv-loading)
   - [Downloading data from the web](#downloading-data-from-the-web)
   - [SQLite](#sqlite)
@@ -80,7 +89,7 @@ functions" as a reference to search rather than read start to end.
   - [Input / output](#input--output)
   - [Metaprogramming](#metaprogramming)
   - [Introspection / debugging](#introspection--debugging)
-  - [Debugging](#debugging)
+  - [Debugging](#debugging-1)
   - [Verbose mode and stack traces](#verbose-mode-and-stack-traces)
 - [A short example](#a-short-example)
 - [How the code is organized](#how-the-code-is-organized)
@@ -91,9 +100,9 @@ functions" as a reference to search rather than read start to end.
 ## Running it
 
 - **No arguments** — `python3 lisp_interpreter.py` opens the PyQt6 GUI (an
-  input box, an output log, a "Columns" table, and a chart tab). The
-  Columns table is populated only by an explicit `(display-columns ...)`
-  call (see "Columns", below) — there's no automatic scan of top-level
+  input box, an output log, a "Table" tab, and a chart tab). The
+  Table tab is filled only by an explicit `(display-table ...)` call (see
+  "Displaying tables", below) — there's no automatic scan of top-level
   variables. If PyQt6 or matplotlib isn't installed, it falls back to a
   plain console REPL instead.
 - **A filename argument** — `python3 lisp_interpreter.py script.lsp` runs
@@ -125,7 +134,8 @@ Every fresh environment — batch mode, the console REPL, the GUI, and
 Jupyter alike — loads these Lisp files before doing anything else:
 
 1. `macros_init.lsp` and `loop.lsp`, the standard macros, such as `let`,
-   `dolist`, `while`, `case`, and `loop` (see "Standard macros", below).
+   `dolist`, `while`, `case`, and `loop` (see "Special forms and standard
+   macros", below).
    They're part of the interpreter: `make_global_env()` loads them into
    every new environment.
 2. `init.lsp` (next to `lisp_interpreter.py`; override with the
@@ -139,9 +149,8 @@ Jupyter alike — loads these Lisp files before doing anything else:
   pick "morris_lisp" from Jupyter's kernel picker / New menu, same as any
   other kernel; every cell is then plain Lisp source directly, no magic
   prefix needed. Charts render inline (a real `matplotlib`-rendered image,
-  not a GUI chart tab or a `save-chart` file) and `(display-columns ...)`
-  renders as a pandas `DataFrame` (a real HTML table) instead of the
-  console's plain text table. One environment persists for the kernel's
+  not a GUI chart tab or a `save-chart` file) and `(display-table ...)`
+  renders as a real table instead of the console's plain text table. One environment persists for the kernel's
   whole lifetime, the same as typing into the console REPL — restarting
   the kernel (Jupyter's own "Restart" button) starts a fresh one. Built as
   an `IPythonKernel` subclass specifically so `IPython.display.display()`
@@ -200,60 +209,48 @@ silently does nothing:
 
 Comments run from `;` to end of line.
 
-### Special forms
+## Special forms and standard macros
 
-Special forms receive their argument *expressions* unevaluated — each one
-decides what, if anything, to evaluate and when — which is what
-distinguishes them from ordinary procedure calls (where every argument is
-evaluated before the call happens).
+These are the forms that aren't ordinary procedure calls: `define`, `if`,
+`let`, loops, error handling, and so on. Some are **special forms**, built
+into the evaluator (`lisp_core.py`); the rest are **standard macros**,
+written in Lisp in `macros_init.lsp` and `loop.lsp`, which every new
+environment loads at startup (see "Running it", above). You use both the
+same way, so they're described together here, grouped by what they're for.
+For the curious, the macros are `let`, `let*`, `dolist`, `while`, `do`,
+`loop`, `when`, `unless`, `case`, `assert`, `with-sqlite`,
+`pretty-print-function`, and `pretty-print-macro`; everything else here is
+a special form.
 
-`let`, `let*`, and `dolist` are described here too, because you use them
-like the special forms, but they're macros, written in Lisp in
-`macros_init.lsp` (see "Standard macros", below): `let` turns into a call
-of a `lambda`, and `let*` and `dolist` turn into `let`s. A special form that
-isn't written correctly, such as `(define x)`, is an error that says so:
-`define: badly formed: (define x)`.
+What they have in common: a form receives its argument *expressions*
+unevaluated, and decides what to evaluate and when — which is what
+distinguishes it from an ordinary procedure call, where every argument is
+evaluated before the call happens. A special form works on the expressions
+directly; a macro rewrites them into other code (`let` into a call of a
+`lambda`, `while` into a local function that calls itself), which is then
+evaluated in its place. To see what a macro call becomes, use
+`macroexpand-1`, e.g. `(macroexpand-1 '(while (< i 3) (set! i (+ i 1))))`.
+The top of `macros_init.lsp` explains how its macros are written, as a
+tutorial for writing your own (see also "Macros", below); `loop.lsp` is a
+larger example, a macro that reads a small language of its own.
 
-#### quote
-#### `(quote expr)`
-Returns `expr` completely unevaluated, as literal data. `'expr` is reader
-sugar for this.
+A form that isn't written correctly, such as `(define x)`, is an error that
+says so: `define: badly formed: (define x)`.
 
-```lisp
-(quote (a b c))                ; => (a b c)
-'(a b c)                       ; => (a b c) -- the common way to write it
-```
+**Tail calls.** A procedure call that's the last thing a body does — in
+tail position, including through `if`, `cond`, `when`, `unless`, `case`,
+`let`, `let*`, `begin`, `and`, `or`, and the loops — doesn't grow the
+stack, so a loop written as a function that calls itself can run any
+number of times. (`catch-error`, `catch`, and `unwind-protect` are the
+exception: see "How deep they can nest", under "Errors and cleanup".)
 
-#### quasiquote
-#### `` (quasiquote template) ``
-Like `quote`, but `(unquote expr)` (written `,expr`) inside the template is
-replaced by the *value* of evaluating `expr`, and `(unquote-splicing expr)`
-(written `,@expr`) as a list element splices in the *elements* of evaluating
-`expr` (which must itself evaluate to a list) rather than the list itself.
-`` `template `` is reader sugar for `(quasiquote template)`. Nested
-quasiquotes shield their own `,`/`,@` from an outer one (each nesting level
-increments a depth counter; an unquote only actually evaluates once depth is
-back down to the matching level). Works inside vector literals too, splicing
-each element. See "Macros", below, for why this matters.
+### Defining variables and procedures
 
-```lisp
-(let ((x 3))
-  `(x is ,x and doubled is ,(* x 2)))
-; => (x is 3 and doubled is 6)
+`define` gives a name a value, or defines a procedure; `set!` changes a
+variable's value; `lambda` makes a procedure without a name; `begin` runs
+several expressions where one is expected. What a parameter list can say
+is in "Variadic parameters" and "Keyword arguments", next.
 
-(let ((rest (list 2 3)))
-  `(1 ,@rest 4))               ; => (1 2 3 4) -- splices the LIST's elements in
-```
-#### if
-#### `(if test conseq [alt])`
-Evaluates `test`; if it is not `#f` (everything else — including `0` and
-`'()` — counts as true), evaluates and returns `conseq`; otherwise
-evaluates and returns `alt`, or `'()` if `alt` was omitted.
-
-```lisp
-(if (> 3 2) 'yes 'no)          ; => yes
-(if (> 2 3) 'yes)              ; => ()  -- no alt given, test was false
-```
 #### define
 #### `(define name expr)` / `(define (name params...) body...)`
 First form: evaluates `expr` and binds it to `name` in the current
@@ -271,6 +268,7 @@ below. Returns `name`.
 (define (square n) (* n n))    ; => square
 (square 5)                     ; => 25
 ```
+
 #### set!
 #### `(set! name expr)`
 Evaluates `expr` and rebinds the *existing* binding of `name`, found by
@@ -284,6 +282,7 @@ already exists.
 (set! x 20)
 x                               ; => 20
 ```
+
 #### lambda
 #### `(lambda params body...)`
 Creates and returns an anonymous procedure, closing over the environment
@@ -296,6 +295,7 @@ every argument).
 (define add1 (lambda (n) (+ n 1)))
 (add1 41)                      ; => 42
 ```
+
 #### begin
 #### `(begin expr...)`
 Evaluates each expression in order, returning the value of the last one (or
@@ -304,365 +304,6 @@ Evaluates each expression in order, returning the value of the last one (or
 ```lisp
 (begin (display "a") (display "b") 42)   ; prints ab, => 42
 ```
-#### let
-#### `(let ((name val)...) body...)`
-A macro that expands to `((lambda (name...) body...) val...)`: every `val`
-is evaluated in the *outer* environment (none of them can see each other's
-bindings), then `body...` runs with all the names bound simultaneously.
-(The expansion uses `%scope-lambda`, a `lambda` that stack traces leave
-out, since a `let` isn't a function call.) Each binding must be
-`(name val)`; anything else is an error.
-
-```lisp
-(let ((a 1) (b 2)) (+ a b))    ; => 3
-```
-
-#### `(let* ((name val)...) body...)`
-Like `let`, but a macro that expands to nested single-binding `let`s, so
-each `val` expression can see every `let*` binding that came before it in
-the same form.
-
-```lisp
-(let* ((a 1) (b (+ a 1))) (list a b))   ; => (1 2) -- b's val sees a
-```
-#### cond
-#### `(cond (test body...)... [(else body...)])`
-Tries each clause's `test` in turn; for the first one that's true,
-evaluates its `body...` and returns the value of the last expression. The
-literal symbol `else` (not evaluated) always matches, if present. Returns
-`'()` if no clause matches and there's no `else`.
-
-```lisp
-(cond ((= 1 2) 'no)
-      ((= 1 1) 'yes)
-      (else 'fallback))        ; => yes
-```
-#### and
-#### `(and expr...)`
-Evaluates each expression in order, stopping and returning `#f` as soon as
-one is false; if every expression is true, returns the value of the last
-one. `(and)` (zero arguments) returns `#t`.
-
-```lisp
-(and 1 2 3)                    ; => 3  -- every expr true, returns the last
-(and 1 #f 3)                   ; => #f -- stops at the first false one
-```
-#### or
-#### `(or expr...)`
-Evaluates each expression in order, stopping and returning the value of the
-first one that's true; if none are, returns `#f`. `(or)` (zero arguments)
-returns `#f`.
-
-```lisp
-(or #f #f 3)                   ; => 3  -- first true value
-(or #f #f)                     ; => #f -- none were true
-```
-#### dolist
-#### `(dolist (var list-expr [result-expr]) body...)`
-Common-Lisp-style iteration over a list, or over a vector. Evaluates
-`list-expr` exactly once, then for each element in turn binds `var` to it
-and runs `body...` for side effects (`display`, `set!`, `vector-set!`, etc.
-— like `map`, but for when you're looping for effect and don't want a
-collected result). Once the elements are used up, `var` is rebound to `'()`
-and `result-expr` is evaluated and returned (or `'()` if no `result-expr`
-was given). A macro that expands into a self-recursive local function
-(named with `gensym`, so it can't clash with your names), whose recursive
-step is in tail position — so it runs in constant control-stack space no
-matter how long the list is.
-
-```lisp
-(define total 0)
-(dolist (x (list 1 2 3 4 5)) (set! total (+ total x)))
-total                          ; => 15
-(dolist (x #(10 20) total) (set! total (+ total x)))   ; => 45
-```
-
-For loops that aren't over a list, see `while` and `do` under "Standard
-macros", below.
-
-#### defmacro
-#### `(defmacro name (params...) body...)`
-Defines `name` as a macro — see "Macros", below, for the full explanation.
-`params` supports the same fixed/dotted/bare-symbol shapes `lambda` does,
-plus `&key` — see "Keyword arguments", below. Returns `name`.
-
-```lisp
-(defmacro my-unless (test then) `(if (not ,test) ,then '()))
-(my-unless (> 1 2) 'shown)     ; => shown -- see "Macros" for why this needs
-                                ;    to be a macro, not a plain function
-```
-#### defstruct
-#### `(defstruct name slot...)`, `(defstruct (name (:include parent [slot-override...])) slot...)`
-Common-Lisp-style record type. Each `slot` is either a bare symbol (default
-value `'()`) or `(slot-name default-expr)` — e.g. `(visible #t)`. Defines,
-and binds into the current environment:
-
-- `make-<name>` — a keyword-argument constructor (`:slot-name value ...`,
-  any order, each optional — an ordinary application of "Keyword
-  arguments", below, not a separate mechanism). A slot's `default-expr` is
-  evaluated once per call, in an environment where earlier slots are
-  already bound (so later defaults can refer to them), if that slot's
-  keyword wasn't supplied.
-- `<name>-<slot>` — an accessor, for each slot.
-- `<name>-<slot>-set!` — a setter, for each slot (slots are mutable).
-- `<name>?` — a predicate.
-- `copy-<name>` — a shallow copy: a new, independent struct with the same
-  slot values (the values themselves aren't copied). Accepts an instance
-  of `name` or any type that `:include`s it, and copies using the
-  instance's own actual type, so `(copy-point a-point-3d-instance)`
-  correctly returns another `point-3d`, not a plain `point` missing its
-  `z`.
-
-**Naming gotcha:** `<name>-<slot>` is a fixed, predictable name — don't
-`define` your own function under that exact name (e.g. as a slot's
-`default-expr`, meaning to override it) expecting it to be preserved:
-`defstruct` binds its own accessor under that name *after* recording the
-slot's (still-unevaluated) default, so by the time the default actually
-gets evaluated (when the constructor runs), the accessor has already taken
-that name over. Give override-implementation functions a distinct name
-instead (see the worked example under "Structs", below, for the pattern
-this comes up in).
-
-```lisp
-(defstruct point x y (label "origin"))
-(define p (make-point :x 1 :y 2))
-(point-x p)                    ; => 1
-(point-label p)                ; => "origin"  (default, wasn't supplied)
-(point-x-set! p 99)
-(point-x p)                    ; => 99
-(point? p)                     ; => #t
-```
-
-A struct prints as `#S(name :slot1 val1 :slot2 val2 ...)`, in declared slot
-order. `struct?`, `struct-ref`, `struct-set!`, and `struct-type-name` (see
-"Structs" under Built-in functions) work generically on any struct
-instance by slot-name symbol, without needing the type-specific accessor
-names — useful when writing code that works across struct types.
-
-**Inheritance** — `(defstruct (name (:include parent)) slot...)` gives
-`name` every one of `parent`'s slots (in `parent`'s own order) plus its own
-new `slot`s appended after, exactly CL's `:include`. `parent` must already
-be defined (with `defstruct`, earlier). Every accessor/setter/predicate
-`parent` itself defined — `parent-<slot>`, `parent-<slot>-set!`, `parent?`
-— also accepts an instance of `name` (or of anything that includes `name`,
-transitively): a subtype instance can stand in anywhere an instance of its
-supertype is expected, the same way a *value* can, so `parent-x` and
-`name-x` read the identical slot on a `name` instance. `name?` is only true
-for `name` (and its own descendants) — not for a plain `parent` instance,
-which lacks `name`'s own new slots entirely.
-
-```lisp
-(defstruct point x y)
-(defstruct (point-3d (:include point)) z)
-(define p (make-point :x 1 :y 2))
-(define c (make-point-3d :x 10 :y 20 :z 30))
-
-(point-3d-x c)                 ; => 10
-(point-x c)                    ; => 10   -- parent's own accessor works on a child instance
-(point? c)                     ; => #t   -- c is-a point too
-(point-3d? p)                  ; => #f   -- p is not a point-3d
-```
-
-An inherited slot's default can be overridden — its position in the slot
-order doesn't change, only the default value a bare `(make-name)` call
-gives it — either inside the `:include` clause itself, CL's own syntax
-(`(:include parent (slot new-default))`), or, equivalently and more simply,
-by just redeclaring that slot name in `name`'s own slot list:
-
-```lisp
-(defstruct animal (name "unknown") (legs 4))
-(defstruct (bird (:include animal (legs 2))) can-fly)   ; CL's :include syntax
-(defstruct (spider (:include animal)) (legs 8) has-web) ; equivalent: redeclare it below
-```
-
-Multi-level inheritance (a struct `:include`ing one that itself `:include`s
-another) works the same way, transitively — a grandparent's accessors work
-on a grandchild instance, and `grandparent?`/`parent?`/`child?` are all
-true for it.
-
-#### with-struct
-#### `(with-struct struct-expr body...)`
-Evaluates `struct-expr` (once) — an instance of **any** `defstruct` type — and
-binds **every one of its slot names** to that slot's value, exactly as `let`
-would: in a fresh child scope, after which `body...` runs (implicit `begin`)
-and its last value is returned. It saves writing `(point-x p)`, `(point-y p)`,
-… for every slot a body uses, and it works the same way on every struct type,
-because the names it binds come from the instance itself. For an instance of
-a type that `:include`s another, the inherited slots are bound too.
-
-```lisp
-(defstruct point x y (label "origin"))
-(define p (make-point :x 3 :y 4))
-
-(with-struct p (sqrt (+ (* x x) (* y y))))   ; => 5.0
-(with-struct p label)                        ; => "origin" -- every slot is bound,
-                                              ;    including ones left at their default
-
-(defstruct (point-3d (:include point)) z)
-(with-struct (make-point-3d :x 1 :y 2 :z 3)
-  (list x y z))                              ; => (1 2 3) -- inherited slots too
-```
-
-Because it's `let`, not a live alias:
-
-- **The variables are copies of the slot values at entry.** `set!` on one
-  changes only that local variable; to change the struct itself, use its
-  setter (`point-x-set!`) or `struct-set!`. Likewise, a setter called inside
-  the body doesn't update the already-bound variable.
-- **Slot names shadow** same-named outer variables (and functions) inside
-  the body, and only there — outside the form, nothing changes. Every other
-  variable in scope stays visible. A slot named like a function you also
-  call in the body (say, a slot called `list`) hides that function for the
-  body, so it's worth knowing the struct's slot names at the call site.
-- **`define` inside the body is local** to the `with-struct` scope.
-- Closures created in the body (`lambda`) capture the bound slot variables.
-- Forms nest; an inner struct's slots shadow an outer one's of the same name.
-- The body is in **tail position**, like `let`'s: the last body expression
-  is evaluated with no frame left behind, so a self-recursive loop written
-  through `with-struct` runs in constant control-stack space.
-
-Raises `LispError` if `struct-expr` isn't a struct instance, or if it's
-missing entirely.
-
-**Why a special form and not a `defmacro`?** Which names to bind depends on the
-struct's *runtime value* (its type's slot list). A macro transformer only
-receives the call site's unevaluated source — the symbol `p`, not the struct
-`p` holds — and runs in its own defining environment rather than the caller's,
-so it can't look inside a struct that lives in a local variable. It's the same
-reason `breakpoint`, below, has to be a special form: it needs the caller's
-real environment. See `with_struct_example.lsp` for a worked example.
-
-#### breakpoint
-
-#### `(breakpoint [message])`
-Opens a nested, blocking debug REPL right where it appears, evaluating
-whatever you type directly in the **real lexical environment active at that
-point** — e.g. if you put `(breakpoint)` inside a function body, that
-function's own parameters are variables in the debug REPL, inspectable and
-(via `set!`) modifiable exactly as they exist in the paused call. Type
-`(continue)` (or `(exit)`, or press Ctrl-D) to resume normal execution.
-`breakpoint` has to be a special form rather than a function or macro
-specifically to get access to the caller's actual environment object — a
-function only ever receives already-evaluated *values*, and a macro's
-transformer body runs in its *own* defining environment, not the caller's.
-The optional `message` argument is itself evaluated in that same caller's
-environment and printed before the REPL opens — a plain string (`(breakpoint
-"entering f...")`) works, but so does any expression whose *value* is worth
-seeing right away (`(breakpoint (list "x=" x))`), without needing a separate
-`(display ...)` call right before the breakpoint. If a debug hook is
-registered, the hook is called instead of the REPL opening, with the kind
-`breakpoint` and the message. See "Debugging", below, for the hook, for
-`(break f)` (which stops at every call of a procedure without editing it),
-for `(abort)`, and for the GUI limitation (the REPL is console-only).
-
-#### `(backtrace)`
-Prints the chain of procedure calls in progress right now, without needing
-an error — see "Verbose mode and stack traces", under "Introspection /
-debugging", below. Returns `'()`.
-
-#### catch-error
-#### `(catch-error protected-expr (var) handler-body...)`
-Evaluates `protected-expr`; if it raises an error, binds `var` to the
-error's message (a string) and evaluates `handler-body...` (implicit
-`begin`) instead, whose value becomes `catch-error`'s own. If
-`protected-expr` succeeds, its value is returned directly and
-`handler-body` never runs. Without this, any error — from `error`, or from
-a builtin (`sqrt` of a negative number, an out-of-range `vector-ref`, ...)
-— propagates all the way to the top and ends the script; this is the only
-way Lisp code itself can catch one and keep going. Running out of memory,
-or the process being interrupted, isn't caught: those keep propagating
-exactly as if this weren't here. To evaluate more than one protected
-expression, wrap them in a `begin`.
-
-```lisp
-(catch-error (/ 1 0) (e) (display "division failed: ") (display e))
-; prints: division failed: /: division by zero
-
-(define (safe-sqrt x)
-  (catch-error (sqrt x) (e) -1))     ; -1 instead of crashing on a negative x
-(safe-sqrt -4)                       ; => -1
-(safe-sqrt 16)                       ; => 4.0
-```
-#### unwind-protect
-#### `(unwind-protect protected-expr cleanup-expr...)`
-Evaluates `protected-expr` and returns its value, but always runs the
-`cleanup-expr`s afterwards, however `protected-expr` finishes: normally,
-with an error, or by a `throw` (see `catch`, below). An error still
-carries on after the cleanup runs; `unwind-protect` doesn't catch it, it
-only makes sure the cleanup happens. Use it to release something that
-must not be left behind, such as an open database connection or a
-redirected output file. (`with-sqlite`, under "Standard macros", below, is
-built on it.) To protect more than one expression, wrap them in a `begin`.
-
-```lisp
-(define log '())
-(unwind-protect (+ 1 2)
-  (set! log (cons 'cleaned-up log)))     ; => 3
-log                                      ; => (cleaned-up)
-
-(catch-error
-  (unwind-protect (car 5)                ; an error...
-    (set! log (cons 'again log)))        ; ...but this still runs
-  (e) e)                                 ; => "car: not a pair: 5"
-log                                      ; => (again cleaned-up)
-```
-
-Nested `unwind-protect`s run their cleanups innermost first. If a cleanup
-expression itself has an error, that error is the one reported.
-
-#### catch throw
-#### `(catch tag body...)` and `(throw tag [value])`
-A way to jump out of the middle of something, such as a loop or a deep
-chain of function calls, with a value. `catch` evaluates `tag`, then the
-`body` forms, and normally returns the last one's value. But if
-`(throw tag value)` runs while the body is running, whether in the body
-itself or in any function it calls, everything in between stops at once,
-and `catch` returns `value` (`'()` if there's no value). `throw` is an
-ordinary function. `catch` and `throw` work as they do in Common Lisp.
-
-```lisp
-; The first negative number in a list, or '() if there isn't one --
-; stopping as soon as it's found.
-(define (first-negative lst)
-  (catch 'found
-    (dolist (x lst)
-      (if (< x 0) (throw 'found x)))
-    '()))
-(first-negative (list 3 1 -4 1 -5))   ; => -4
-(first-negative (list 3 1))           ; => ()
-
-; Leaving a loop that would otherwise run forever.
-(define i 0)
-(catch 'stop
-  (while #t
-    (set! i (+ i 1))
-    (if (= i 10) (throw 'stop i))))   ; => 10
-```
-
-- **Tags.** The tag is usually a quoted symbol, like `'found`. A throw goes
-  to the innermost running `catch` whose tag matches: the same symbol,
-  string, or number (`0` doesn't match `#f`, and `'x` doesn't match `:x`).
-- **No catch.** A `throw` with no matching `catch` running is an error.
-- **Cleanup still runs.** `unwind-protect` cleanups between the `throw`
-  and the `catch` run on the way out.
-- **Not an error.** A throw is not an error, so `catch-error` doesn't
-  intercept it; and `catch` doesn't intercept errors (use `catch-error`
-  for those).
-
-```lisp
-(catch 'a (catch 'b (throw 'a 1)) 2)                       ; => 1  (the outer catch gets it)
-(catch 'x (catch-error (throw 'x 'ok) (e) 'not-this))      ; => ok
-(throw 'nowhere 1)          ; an error: nothing catches nowhere
-```
-
-**How deep they can nest.** Like `catch-error`, `catch` and
-`unwind-protect` run their body in a nested evaluation, which uses some of
-Python's own stack while it's running. So they can be nested inside each
-other only a few hundred deep: a function that calls itself *through* a
-`catch`, starting a new `catch` on every call, stops with "maximum
-recursion depth exceeded" after about 250 levels (about 330 for
-`unwind-protect` and `catch-error`). A loop *inside* one `catch`, like the
-examples above, can run any number of times.
 
 ### Variadic parameters
 
@@ -723,260 +364,192 @@ other macro parameter is bound (see "Macros", below).
 out of this feature — struct construction is just an ordinary `&key`
 procedure, not a separate mechanism.
 
-### Macros
+### Local variables
 
-`(defmacro name (params...) body...)` defines a macro. The difference from
-a procedure: when you call `name`, its arguments are NOT evaluated first —
-`params` are bound to the call site's raw, unevaluated source expressions
-(as data: symbols, pairs, literals), `body...` runs to compute a new
-expression from them (the "expansion"), and THAT expression is evaluated,
-in your calling environment, in place of the original call. This lets a
-macro see and rearrange the code it was called with, which a function
-never can (a function's arguments are already values by the time it runs).
+`let` and `let*` give names to values for the length of a body — the
+names exist only inside it.
 
-`` `template `` (quasiquote) is the natural way to build an expansion:
-it's like `'template` (quote), except `,expr` inside it splices in the
-*value* of `expr`, and `,@expr` splices in the *elements* of `expr` (which
-must evaluate to a list) rather than the list itself. Quasiquote nests
-correctly, and works outside of macros too — anywhere you want "mostly
-literal data with a few computed pieces."
+#### let
+#### `(let ((name val)...) body...)`
+A macro that expands to `((lambda (name...) body...) val...)`: every `val`
+is evaluated in the *outer* environment (none of them can see each other's
+bindings), then `body...` runs with all the names bound simultaneously.
+(The expansion uses `%scope-lambda`, a `lambda` that stack traces leave
+out, since a `let` isn't a function call.) Each binding must be
+`(name val)`; anything else is an error.
 
 ```lisp
-; my-unless: the mirror image of `if` with no else-branch. Can't be
-; written as a plain function -- a function would evaluate `then`
-; regardless of whether `test` was true. (The standard `unless`, in
-; macros_init.lsp, is the same idea with any number of body forms.)
-(defmacro my-unless (test then)
-  `(if (not ,test) ,then '()))
-(my-unless (> 1 2) 'shown)     ; => shown
-
-; swap!: mutates two variables in place. No function could do this either
-; -- a function only ever sees the VALUES of its arguments, never the
-; variables (names) themselves, so it has nothing to set!.
-(defmacro swap! (a b)
-  `(let ((tmp ,a))
-     (set! ,a ,b)
-     (set! ,b tmp)))
-(define p 1) (define q 2)
-(swap! p q)
-(list p q)                     ; => (2 1)
+(let ((a 1) (b 2)) (+ a b))    ; => 3
 ```
 
-`defmacro` supports variadic parameters too (see above), so a macro that
-takes a variable-length body can collect it with a dotted or bare-symbol
-parameter instead of requiring the caller to wrap multiple statements in a
-single `(begin ...)`:
+#### let*
+#### `(let* ((name val)...) body...)`
+Like `let`, but a macro that expands to nested single-binding `let`s, so
+each `val` expression can see every `let*` binding that came before it in
+the same form.
 
 ```lisp
-(defmacro my-or (. exprs)
-  (if (null? exprs)
-      #f
-      `(let ((t ,(car exprs)))
-         (if t t (my-or ,@(cdr exprs))))))
-(my-or #f #f 3 4)              ; => 3
+(let* ((a 1) (b (+ a 1))) (list a b))   ; => (1 2) -- b's val sees a
 ```
 
-`gensym` (see Metaprogramming, below) is the standard tool for avoiding
-accidental variable capture in a macro like this by hand — e.g. the `t`
-above would shadow a caller's own variable named `t`; a hand-written macro
-meant for wider use would bind `(gensym)`'s result instead of a fixed name.
+### Choosing
 
-**What goes wrong without `gensym` — the old `while`.** `while` used to be
-defined in `init.lsp` like this, with its loop function always named
-`%loop`:
+`if` chooses between two expressions; `cond` between any number, by
+test; `case` by matching a value against constants; `when` and `unless`
+run a body only if a test is true or false. `and` and `or` stop as soon as
+the answer is known.
+
+#### if
+#### `(if test conseq [alt])`
+Evaluates `test`; if it is not `#f` (everything else — including `0` and
+`'()` — counts as true), evaluates and returns `conseq`; otherwise
+evaluates and returns `alt`, or `'()` if `alt` was omitted.
 
 ```lisp
-(defmacro old-while (test body)
-  `(let ()
-     (define (%loop)
-       (if ,test
-           (begin ,body (%loop))
-           '()))
-     (%loop)))
+(if (> 3 2) 'yes 'no)          ; => yes
+(if (> 2 3) 'yes)              ; => ()  -- no alt given, test was false
 ```
 
-It works — unless the caller's own code uses the name `%loop`. Suppose
-you have a function that happens to have that name, and call it in the
-loop's body:
+#### cond
+#### `(cond (test body...)... [(else body...)])`
+Tries each clause's `test` in turn; for the first one that's true,
+evaluates its `body...` and returns the value of the last expression. The
+literal symbol `else` (not evaluated) always matches, if present. Returns
+`'()` if no clause matches and there's no `else`.
 
 ```lisp
+(cond ((= 1 2) 'no)
+      ((= 1 1) 'yes)
+      (else 'fallback))        ; => yes
+```
+
+#### case
+#### `(case key-expr clause...)`
+Picks one of several branches by matching a value against lists of
+constants. It evaluates `key-expr` once, then finds the first clause whose
+keys include that value, and evaluates that clause's body forms, returning
+the last one's value. Each clause is one of:
+
+| Clause | Matches |
+|---|---|
+| `((key1 key2 ...) body...)` | any of the keys |
+| `(key body...)` | that one key |
+| `(else body...)` | anything, if no clause before it matched; it must be the last clause (`otherwise` works the same, as in Common Lisp) |
+
+The keys are symbols, numbers, or strings, **written without a quote**
+(they aren't evaluated), and they're compared with `equal?`. If nothing
+matches and there's no `else`, `case` returns `'()`.
+
+```lisp
+(define (region state)
+  (case state
+    (("CA" "OR" "WA") 'west)
+    (("NY" "NJ" "CT") 'northeast)
+    (else 'other)))
+(region "OR")                  ; => west
+(region "TX")                  ; => other
+
+(define (months-in term)
+  (case term
+    ((annual yearly) 12)
+    (quarterly 3)
+    (monthly 1)))
+(months-in 'quarterly)         ; => 3
+(months-in 'weekly)            ; => ()
+```
+
+`case` is short for a `cond` that tests each clause with `member`; the
+example above becomes (with a `gensym` name, so `state` is evaluated only
+once):
+
+```
+(let ((%case-key-1 state))
+  (cond ((member %case-key-1 '("CA" "OR" "WA")) 'west)
+        ((member %case-key-1 '("NY" "NJ" "CT")) 'northeast)
+        (else 'other)))
+```
+
+To choose by a test rather than by matching constants (for example, a
+range of values), use `cond`.
+
+#### when, unless
+#### `(when test body...)`, `(unless test body...)`
+`when` evaluates the `body` forms if `test` is true; `unless` evaluates
+them if `test` is false. Either returns the last body form's value, or
+`'()` if the body didn't run. Use them in place of an `if` that has no
+else branch, especially when there's more than one thing to do, since
+they need no `begin`:
+
+```lisp
+(define balance 1000)
 (define payments 0)
-(define (%loop) (set! payments (+ payments 1)))   ; your function
+(when (> balance 0)
+  (set! balance (- balance 250))
+  (set! payments (+ payments 1)))
+(list balance payments)        ; => (750 1)
 
-(define month 0)
-(old-while (< month 3)
-  (begin
-    (set! month (+ month 1))
-    (%loop)))                  ; meant to call your function
-payments                       ; => 0, not 3
+(unless (> balance 0) 'paid-off)   ; => ()
+(when (> balance 0) 'still-owing)  ; => still-owing
 ```
 
-`macroexpand-1` shows why:
+Remember that only `#f` is false: `0` and `'()` count as true, so
+`(when 0 'yes)` is `yes`.
+
+#### and
+#### `(and expr...)`
+Evaluates each expression in order, stopping and returning `#f` as soon as
+one is false; if every expression is true, returns the value of the last
+one. `(and)` (zero arguments) returns `#t`.
 
 ```lisp
-(let ()
-  (define (%loop)
-    (if (< month 3)
-        (begin (begin (set! month (+ month 1))
-                      (%loop))          ; your call...
-               (%loop))                 ; ...and the macro's own call
-        '()))
-  (%loop))
+(and 1 2 3)                    ; => 3  -- every expr true, returns the last
+(and 1 #f 3)                   ; => #f -- stops at the first false one
 ```
 
-Your body is pasted inside the macro's `let`, where `%loop` means the
-macro's loop function. So your `(%loop)` calls that instead of your
-function. It restarts the loop from inside its own body, `month` still
-climbs to 3 and the loop ends, and your function never runs. There's no
-error, just a wrong answer. A name starting with `%` is unlikely in code
-you write yourself, which is why the old version usually worked, but
-nothing stopped it from happening.
-
-The `while` in `macros_init.lsp` asks `gensym` for the name instead, each
-time the macro is expanded:
+#### or
+#### `(or expr...)`
+Evaluates each expression in order, stopping and returning the value of the
+first one that's true; if none are, returns `#f`. `(or)` (zero arguments)
+returns `#f`.
 
 ```lisp
-(defmacro while (test . body)
-  (let ((loop-name (gensym "while-loop")))
-    `(let ()
-       (define (,loop-name)
-         (if ,test
-             (begin ,@body (,loop-name))
-             '()))
-       (,loop-name))))
+(or #f #f 3)                   ; => 3  -- first true value
+(or #f #f)                     ; => #f -- none were true
 ```
 
-Each `while` now gets a symbol printed as something like
-`%while-loop-12`. It can't be confused with anything the caller wrote,
-even a function the caller named `%while-loop-12` (see `gensym`, below),
-so the example above gives `3`. (It also takes any
-number of body forms, via `. body` and `,@body`, so the `begin` isn't
-needed.)
+### Looping
 
-**Another example — a `while` variant that leaks its own loop
-counter.** A fixed name can also capture one of the caller's *variables*.
-A natural variation — a `while` that also exposes a running iteration
-count to its body — shows this failure concretely:
+`dolist` runs a body for each element of a list or vector; `while` runs a
+body while a test is true; `do` steps variables until a test is true; and
+`loop` is Common Lisp's loop, which can count, step through lists, collect,
+sum, and more, in one form. `while`, `do`, and `dolist` each turn into a
+small local function that calls itself to go around again; that call is a
+tail call, so a loop can run any number of times without growing the
+stack, and the function's name comes from `gensym`, so it can't clash with
+a name in your code.
+
+#### dolist
+#### `(dolist (var list-expr [result-expr]) body...)`
+Common-Lisp-style iteration over a list, or over a vector. Evaluates
+`list-expr` exactly once, then for each element in turn binds `var` to it
+and runs `body...` for side effects (`display`, `set!`, `vector-set!`, etc.
+— like `map`, but for when you're looping for effect and don't want a
+collected result). Once the elements are used up, `var` is rebound to `'()`
+and `result-expr` is evaluated and returned (or `'()` if no `result-expr`
+was given). A macro that expands into a self-recursive local function
+(named with `gensym`, so it can't clash with your names), whose recursive
+step is in tail position — so it runs in constant control-stack space no
+matter how long the list is.
 
 ```lisp
-; count-while: like while, but the body can read `i` for "how many times
-; has this loop run so far". Looks reasonable... until `i` collides with
-; a variable the CALLER already had a different use for.
-(defmacro count-while (test body)
-  `(let ((i 0))
-     (define (%loop)
-       (if ,test
-           (begin ,body (set! i (+ i 1)) (%loop))
-           i))
-     (%loop)))
+(define total 0)
+(dolist (x (list 1 2 3 4 5)) (set! total (+ total x)))
+total                          ; => 15
+(dolist (x #(10 20) total) (set! total (+ total x)))   ; => 45
 ```
 
-Nest two of these to walk a 3x3 grid, using a variable also called `i` (an
-extremely ordinary name to reach for) to total up how many inner-loop steps
-ran across the whole grid:
-
-```lisp
-(define i 0)                   ; MY total inner-loop step count, unrelated
-(define row 0)                 ; to count-while's own internal `i`
-(count-while (< row 3)
-  (begin
-    (define col 0)
-    (count-while (< col 3)
-      (begin
-        (set! i (+ i 1))       ; "increment my total" -- or so it looks
-        (set! col (+ col 1))))
-    (set! row (+ row 1))))
-(display i)                    ; => 0, NOT 9 -- silently wrong, no error
-```
-
-Every `,body` gets spliced directly into the macro's own `(let ((i 0)) ...)`
-template, so *every* `i` written inside a `count-while` body — at any
-nesting depth — resolves to that call's own freshly bound `i`, not the
-caller's outer variable of the same name. The outer `i` defined at the top
-is never touched; `count-while`'s `set!` calls are all silently redirected
-to internal counters that get thrown away the moment each `let` scope exits.
-Nothing raises an error — the bug is a wrong answer, not a crash, which is
-exactly what makes hand-written macro hygiene bugs painful to track down.
-
-The fix: generate a fresh, guaranteed-unique symbol for the counter each
-time the macro is *expanded* (not once at `defmacro` time — each call site
-needs its own), and splice that symbol in everywhere the fixed name `i`
-used to appear:
-
-```lisp
-(defmacro count-while (test body)
-  (let ((cnt (gensym "count")))
-    `(let ((,cnt 0))
-       (define (%loop)
-         (if ,test
-             (begin ,body (set! ,cnt (+ ,cnt 1)) (%loop))
-             ,cnt))
-       (%loop))))
-```
-
-The outer `(let ((cnt (gensym "count"))) ...)` is the macro's OWN body —
-ordinary Lisp code that runs once per expansion, computing a new symbol
-like `%count-7`, unrelated to (and unable to collide with) anything a user
-could type. Substituted via `,cnt`, that generated symbol — not the literal
-name `i` — is what ends up bound by the template's `let`. Re-running the
-exact same nested example above with this version now correctly prints `9`
-— the caller's own `i` was never shadowed, because nothing inside either
-`count-while` expansion is named `i` anymore. `(macroexpand-1 ...)` (see
-Metaprogramming, below) is a good way to see this difference directly —
-expanding a `count-while` call with each version shows the fixed `i` versus
-a generated `%count-N` in exactly the position that matters.
-
-**A macro call is expanded once.** The first time a call such as
-`(when (> x 0) ...)` is evaluated, the macro runs and produces the code, and
-that code is remembered for that call. Every later evaluation of the same
-call — the next time the function it's in is called, or the next time round a
-loop — uses the remembered code, without running the macro again. A big macro
-such as `loop` takes milliseconds to expand, so without this, a `loop` in a
-function called 10,000 times would spend most of its time expanding. (The
-`case` macro used to cost about nine times a hand-written `cond` for the same
-reason.) Things to know:
-
-- The macro sees only its arguments, and the expansion is the same each time,
-  as it is in Common Lisp. A macro that also reads a global variable while
-  it expands, or counts how often it's expanded, is expanded once, with
-  whatever it found the first time.
-- Redefining the macro with `defmacro` makes every existing call expand
-  again, with the new definition. Redefining a *function* that the macro's
-  body calls doesn't: the calls already in your functions keep their old
-  expansions, until you `define` the function that contains the call again.
-- `macroexpand` and `macroexpand-1` always expand afresh. `(verbose 3)`
-  logs an expansion when it's made: the first time the call is evaluated.
-- Two calls that only look alike are separate. Code you build and run with
-  `eval` is a new list each time, so it's expanded each time.
-
-A macro's own body, while it's still computing an expansion, is evaluated
-by an ordinary (recursive) Python function call, not the fully
-tail-call-optimized evaluator loop — so a transformer that itself did deep
-non-tail recursion while *building* its expansion would be bounded by
-Python's own recursion limit. This essentially never matters in practice
-(a transformer builds a piece of code; it doesn't loop over runtime data),
-and it does NOT affect the code a macro expands *to* — once the expansion
-is produced, it's evaluated by the ordinary trampoline, tail calls and all
-(see the tail-call note at the end of "Special forms", above).
-
-### Standard macros
-
-`let`, `let*`, `dolist`, `while`, `do`, `loop`, `when`, `unless`, `case`,
-`assert`, `with-sqlite`, `pretty-print-function`, and `pretty-print-macro`
-are macros written in Lisp, in `macros_init.lsp` and `loop.lsp`, which every
-new environment loads at startup (see "Running it", above). (`let`, `let*`,
-and `dolist` are described with the special forms, above.) The top of
-`macros_init.lsp` explains how macros are written with backquote (`` ` ``),
-`,`, and `,@`, using these macros as the examples, so it's a good place to
-start if you want to write your own. `loop.lsp` is a larger example: a
-macro that reads a small language of its own.
-
-`while` and `do` each turn into a small local function that calls itself
-to go around the loop again. That call is a tail call, so a loop can run
-any number of times without growing the stack. The function's name comes
-from `gensym`, so it can't clash with a name in your code. To see what a
-loop becomes, use `macroexpand-1`, e.g.
-`(macroexpand-1 '(while (< i 3) (set! i (+ i 1))))`.
+For loops that aren't over a list, see `while` and `do` under "Standard
+macros", below.
 
 #### while
 #### `(while test body...)`
@@ -993,6 +566,7 @@ example, how many months until a balance falling 10% a month is below
   (set! months (+ months 1)))
 months                         ; => 7
 ```
+
 #### do
 #### `(do ((var init [step])...) (end-test result...) body...)`
 Common Lisp's `do` loop: a loop that steps one or more variables. It binds
@@ -1248,77 +822,264 @@ variable `it`, `by` with `in` and `on`, `being the elements of`, type
 declarations, `loop-finish`, and multiple values. Clause words are not
 case-sensitive in Common Lisp but are here, so write them in lower case.
 
-#### when
-#### `(when test body...)`, `(unless test body...)`
-`when` evaluates the `body` forms if `test` is true; `unless` evaluates
-them if `test` is false. Either returns the last body form's value, or
-`'()` if the body didn't run. Use them in place of an `if` that has no
-else branch, especially when there's more than one thing to do, since
-they need no `begin`:
+### Structs
+
+`defstruct` defines a record type with named slots (and its constructor,
+accessors, and predicate); `with-struct` makes a struct's slots into
+variables for the length of a body. The rows of a table (see
+`table-rows`, under "Tables") are structs too.
+
+#### defstruct
+#### `(defstruct name slot...)`, `(defstruct (name (:include parent [slot-override...])) slot...)`
+Common-Lisp-style record type. Each `slot` is either a bare symbol (default
+value `'()`) or `(slot-name default-expr)` — e.g. `(visible #t)`. Defines,
+and binds into the current environment:
+
+- `make-<name>` — a keyword-argument constructor (`:slot-name value ...`,
+  any order, each optional — an ordinary application of "Keyword
+  arguments", below, not a separate mechanism). A slot's `default-expr` is
+  evaluated once per call, in an environment where earlier slots are
+  already bound (so later defaults can refer to them), if that slot's
+  keyword wasn't supplied.
+- `<name>-<slot>` — an accessor, for each slot.
+- `<name>-<slot>-set!` — a setter, for each slot (slots are mutable).
+- `<name>?` — a predicate.
+- `copy-<name>` — a shallow copy: a new, independent struct with the same
+  slot values (the values themselves aren't copied). Accepts an instance
+  of `name` or any type that `:include`s it, and copies using the
+  instance's own actual type, so `(copy-point a-point-3d-instance)`
+  correctly returns another `point-3d`, not a plain `point` missing its
+  `z`.
+
+**Naming gotcha:** `<name>-<slot>` is a fixed, predictable name — don't
+`define` your own function under that exact name (e.g. as a slot's
+`default-expr`, meaning to override it) expecting it to be preserved:
+`defstruct` binds its own accessor under that name *after* recording the
+slot's (still-unevaluated) default, so by the time the default actually
+gets evaluated (when the constructor runs), the accessor has already taken
+that name over. Give override-implementation functions a distinct name
+instead (see the worked example under "Structs", below, for the pattern
+this comes up in).
 
 ```lisp
-(define balance 1000)
-(define payments 0)
-(when (> balance 0)
-  (set! balance (- balance 250))
-  (set! payments (+ payments 1)))
-(list balance payments)        ; => (750 1)
-
-(unless (> balance 0) 'paid-off)   ; => ()
-(when (> balance 0) 'still-owing)  ; => still-owing
+(defstruct point x y (label "origin"))
+(define p (make-point :x 1 :y 2))
+(point-x p)                    ; => 1
+(point-label p)                ; => "origin"  (default, wasn't supplied)
+(point-x-set! p 99)
+(point-x p)                    ; => 99
+(point? p)                     ; => #t
 ```
 
-Remember that only `#f` is false: `0` and `'()` count as true, so
-`(when 0 'yes)` is `yes`.
+A struct prints as `#S(name :slot1 val1 :slot2 val2 ...)`, in declared slot
+order. `struct?`, `struct-ref`, `struct-set!`, and `struct-type-name` (see
+"Structs" under Built-in functions) work generically on any struct
+instance by slot-name symbol, without needing the type-specific accessor
+names — useful when writing code that works across struct types.
 
-#### case
-#### `(case key-expr clause...)`
-Picks one of several branches by matching a value against lists of
-constants. It evaluates `key-expr` once, then finds the first clause whose
-keys include that value, and evaluates that clause's body forms, returning
-the last one's value. Each clause is one of:
-
-| Clause | Matches |
-|---|---|
-| `((key1 key2 ...) body...)` | any of the keys |
-| `(key body...)` | that one key |
-| `(else body...)` | anything, if no clause before it matched; it must be the last clause (`otherwise` works the same, as in Common Lisp) |
-
-The keys are symbols, numbers, or strings, **written without a quote**
-(they aren't evaluated), and they're compared with `equal?`. If nothing
-matches and there's no `else`, `case` returns `'()`.
+**Inheritance** — `(defstruct (name (:include parent)) slot...)` gives
+`name` every one of `parent`'s slots (in `parent`'s own order) plus its own
+new `slot`s appended after, exactly CL's `:include`. `parent` must already
+be defined (with `defstruct`, earlier). Every accessor/setter/predicate
+`parent` itself defined — `parent-<slot>`, `parent-<slot>-set!`, `parent?`
+— also accepts an instance of `name` (or of anything that includes `name`,
+transitively): a subtype instance can stand in anywhere an instance of its
+supertype is expected, the same way a *value* can, so `parent-x` and
+`name-x` read the identical slot on a `name` instance. `name?` is only true
+for `name` (and its own descendants) — not for a plain `parent` instance,
+which lacks `name`'s own new slots entirely.
 
 ```lisp
-(define (region state)
-  (case state
-    (("CA" "OR" "WA") 'west)
-    (("NY" "NJ" "CT") 'northeast)
-    (else 'other)))
-(region "OR")                  ; => west
-(region "TX")                  ; => other
+(defstruct point x y)
+(defstruct (point-3d (:include point)) z)
+(define p (make-point :x 1 :y 2))
+(define c (make-point-3d :x 10 :y 20 :z 30))
 
-(define (months-in term)
-  (case term
-    ((annual yearly) 12)
-    (quarterly 3)
-    (monthly 1)))
-(months-in 'quarterly)         ; => 3
-(months-in 'weekly)            ; => ()
+(point-3d-x c)                 ; => 10
+(point-x c)                    ; => 10   -- parent's own accessor works on a child instance
+(point? c)                     ; => #t   -- c is-a point too
+(point-3d? p)                  ; => #f   -- p is not a point-3d
 ```
 
-`case` is short for a `cond` that tests each clause with `member`; the
-example above becomes (with a `gensym` name, so `state` is evaluated only
-once):
+An inherited slot's default can be overridden — its position in the slot
+order doesn't change, only the default value a bare `(make-name)` call
+gives it — either inside the `:include` clause itself, CL's own syntax
+(`(:include parent (slot new-default))`), or, equivalently and more simply,
+by just redeclaring that slot name in `name`'s own slot list:
 
-```
-(let ((%case-key-1 state))
-  (cond ((member %case-key-1 '("CA" "OR" "WA")) 'west)
-        ((member %case-key-1 '("NY" "NJ" "CT")) 'northeast)
-        (else 'other)))
+```lisp
+(defstruct animal (name "unknown") (legs 4))
+(defstruct (bird (:include animal (legs 2))) can-fly)   ; CL's :include syntax
+(defstruct (spider (:include animal)) (legs 8) has-web) ; equivalent: redeclare it below
 ```
 
-To choose by a test rather than by matching constants (for example, a
-range of values), use `cond`.
+Multi-level inheritance (a struct `:include`ing one that itself `:include`s
+another) works the same way, transitively — a grandparent's accessors work
+on a grandchild instance, and `grandparent?`/`parent?`/`child?` are all
+true for it.
+
+#### with-struct
+#### `(with-struct struct-expr body...)`
+Evaluates `struct-expr` (once) — an instance of **any** `defstruct` type — and
+binds **every one of its slot names** to that slot's value, exactly as `let`
+would: in a fresh child scope, after which `body...` runs (implicit `begin`)
+and its last value is returned. It saves writing `(point-x p)`, `(point-y p)`,
+… for every slot a body uses, and it works the same way on every struct type,
+because the names it binds come from the instance itself. For an instance of
+a type that `:include`s another, the inherited slots are bound too.
+
+```lisp
+(defstruct point x y (label "origin"))
+(define p (make-point :x 3 :y 4))
+
+(with-struct p (sqrt (+ (* x x) (* y y))))   ; => 5.0
+(with-struct p label)                        ; => "origin" -- every slot is bound,
+                                              ;    including ones left at their default
+
+(defstruct (point-3d (:include point)) z)
+(with-struct (make-point-3d :x 1 :y 2 :z 3)
+  (list x y z))                              ; => (1 2 3) -- inherited slots too
+```
+
+Because it's `let`, not a live alias:
+
+- **The variables are copies of the slot values at entry.** `set!` on one
+  changes only that local variable; to change the struct itself, use its
+  setter (`point-x-set!`) or `struct-set!`. Likewise, a setter called inside
+  the body doesn't update the already-bound variable.
+- **Slot names shadow** same-named outer variables (and functions) inside
+  the body, and only there — outside the form, nothing changes. Every other
+  variable in scope stays visible. A slot named like a function you also
+  call in the body (say, a slot called `list`) hides that function for the
+  body, so it's worth knowing the struct's slot names at the call site.
+- **`define` inside the body is local** to the `with-struct` scope.
+- Closures created in the body (`lambda`) capture the bound slot variables.
+- Forms nest; an inner struct's slots shadow an outer one's of the same name.
+- The body is in **tail position**, like `let`'s: the last body expression
+  is evaluated with no frame left behind, so a self-recursive loop written
+  through `with-struct` runs in constant control-stack space.
+
+Raises `LispError` if `struct-expr` isn't a struct instance, or if it's
+missing entirely.
+
+**Why a special form and not a `defmacro`?** Which names to bind depends on the
+struct's *runtime value* (its type's slot list). A macro transformer only
+receives the call site's unevaluated source — the symbol `p`, not the struct
+`p` holds — and runs in its own defining environment rather than the caller's,
+so it can't look inside a struct that lives in a local variable. It's the same
+reason `breakpoint`, below, has to be a special form: it needs the caller's
+real environment. See `with_struct_example.lsp` for a worked example.
+
+### Errors and cleanup
+
+`catch-error` catches an error and carries on; `unwind-protect` makes sure
+cleanup code runs however a body finishes; `catch` and `throw` jump out of
+a computation early; `assert` stops with an error if something that must be
+true isn't; `with-sqlite` opens a database and always closes it.
+
+#### catch-error
+#### `(catch-error protected-expr (var) handler-body...)`
+Evaluates `protected-expr`; if it raises an error, binds `var` to the
+error's message (a string) and evaluates `handler-body...` (implicit
+`begin`) instead, whose value becomes `catch-error`'s own. If
+`protected-expr` succeeds, its value is returned directly and
+`handler-body` never runs. Without this, any error — from `error`, or from
+a builtin (`sqrt` of a negative number, an out-of-range `vector-ref`, ...)
+— propagates all the way to the top and ends the script; this is the only
+way Lisp code itself can catch one and keep going. Running out of memory,
+or the process being interrupted, isn't caught: those keep propagating
+exactly as if this weren't here. To evaluate more than one protected
+expression, wrap them in a `begin`.
+
+```lisp
+(catch-error (/ 1 0) (e) (display "division failed: ") (display e))
+; prints: division failed: /: division by zero
+
+(define (safe-sqrt x)
+  (catch-error (sqrt x) (e) -1))     ; -1 instead of crashing on a negative x
+(safe-sqrt -4)                       ; => -1
+(safe-sqrt 16)                       ; => 4.0
+```
+
+#### unwind-protect
+#### `(unwind-protect protected-expr cleanup-expr...)`
+Evaluates `protected-expr` and returns its value, but always runs the
+`cleanup-expr`s afterwards, however `protected-expr` finishes: normally,
+with an error, or by a `throw` (see `catch`, below). An error still
+carries on after the cleanup runs; `unwind-protect` doesn't catch it, it
+only makes sure the cleanup happens. Use it to release something that
+must not be left behind, such as an open database connection or a
+redirected output file. (`with-sqlite`, below, is built on it.) To protect more than one expression, wrap them in a `begin`.
+
+```lisp
+(define log '())
+(unwind-protect (+ 1 2)
+  (set! log (cons 'cleaned-up log)))     ; => 3
+log                                      ; => (cleaned-up)
+
+(catch-error
+  (unwind-protect (car 5)                ; an error...
+    (set! log (cons 'again log)))        ; ...but this still runs
+  (e) e)                                 ; => "car: not a pair: 5"
+log                                      ; => (again cleaned-up)
+```
+
+Nested `unwind-protect`s run their cleanups innermost first. If a cleanup
+expression itself has an error, that error is the one reported.
+
+#### catch throw
+#### `(catch tag body...)` and `(throw tag [value])`
+A way to jump out of the middle of something, such as a loop or a deep
+chain of function calls, with a value. `catch` evaluates `tag`, then the
+`body` forms, and normally returns the last one's value. But if
+`(throw tag value)` runs while the body is running, whether in the body
+itself or in any function it calls, everything in between stops at once,
+and `catch` returns `value` (`'()` if there's no value). `throw` is an
+ordinary function. `catch` and `throw` work as they do in Common Lisp.
+
+```lisp
+; The first negative number in a list, or '() if there isn't one --
+; stopping as soon as it's found.
+(define (first-negative lst)
+  (catch 'found
+    (dolist (x lst)
+      (if (< x 0) (throw 'found x)))
+    '()))
+(first-negative (list 3 1 -4 1 -5))   ; => -4
+(first-negative (list 3 1))           ; => ()
+
+; Leaving a loop that would otherwise run forever.
+(define i 0)
+(catch 'stop
+  (while #t
+    (set! i (+ i 1))
+    (if (= i 10) (throw 'stop i))))   ; => 10
+```
+
+- **Tags.** The tag is usually a quoted symbol, like `'found`. A throw goes
+  to the innermost running `catch` whose tag matches: the same symbol,
+  string, or number (`0` doesn't match `#f`, and `'x` doesn't match `:x`).
+- **No catch.** A `throw` with no matching `catch` running is an error.
+- **Cleanup still runs.** `unwind-protect` cleanups between the `throw`
+  and the `catch` run on the way out.
+- **Not an error.** A throw is not an error, so `catch-error` doesn't
+  intercept it; and `catch` doesn't intercept errors (use `catch-error`
+  for those).
+
+```lisp
+(catch 'a (catch 'b (throw 'a 1)) 2)                       ; => 1  (the outer catch gets it)
+(catch 'x (catch-error (throw 'x 'ok) (e) 'not-this))      ; => ok
+(throw 'nowhere 1)          ; an error: nothing catches nowhere
+```
+
+**How deep they can nest.** Like `catch-error`, `catch` and
+`unwind-protect` run their body in a nested evaluation, which uses some of
+Python's own stack while it's running. So they can be nested inside each
+other only a few hundred deep: a function that calls itself *through* a
+`catch`, starting a new `catch` on every call, stops with "maximum
+recursion depth exceeded" after about 250 levels (about 330 for
+`unwind-protect` and `catch-error`). A loop *inside* one `catch`, like the
+examples above, can run any number of times.
 
 #### assert
 #### `(assert test [message...])`
@@ -1370,6 +1131,333 @@ Changes are saved as each statement runs (connections use SQLite's
 autocommit mode), so there's nothing to commit before the connection
 closes. Once the body is done, `var` is gone and the connection is
 closed, so return what you need from the database as the body's value.
+
+### Quoting
+
+`quote` gives an expression as data, unevaluated; `quasiquote` does the
+same with holes to fill in — the usual way to build code in a macro.
+
+#### quote
+#### `(quote expr)`
+Returns `expr` completely unevaluated, as literal data. `'expr` is reader
+sugar for this.
+
+```lisp
+(quote (a b c))                ; => (a b c)
+'(a b c)                       ; => (a b c) -- the common way to write it
+```
+
+#### quasiquote
+#### `` (quasiquote template) ``
+Like `quote`, but `(unquote expr)` (written `,expr`) inside the template is
+replaced by the *value* of evaluating `expr`, and `(unquote-splicing expr)`
+(written `,@expr`) as a list element splices in the *elements* of evaluating
+`expr` (which must itself evaluate to a list) rather than the list itself.
+`` `template `` is reader sugar for `(quasiquote template)`. Nested
+quasiquotes shield their own `,`/`,@` from an outer one (each nesting level
+increments a depth counter; an unquote only actually evaluates once depth is
+back down to the matching level). Works inside vector literals too, splicing
+each element. See "Macros", below, for why this matters.
+
+```lisp
+(let ((x 3))
+  `(x is ,x and doubled is ,(* x 2)))
+; => (x is 3 and doubled is 6)
+
+(let ((rest (list 2 3)))
+  `(1 ,@rest 4))               ; => (1 2 3 4) -- splices the LIST's elements in
+```
+
+### Macros
+
+`defmacro` defines a macro: a procedure that is given the code it was
+called with and returns new code to run in its place.
+
+#### defmacro
+#### `(defmacro name (params...) body...)`
+Defines `name` as a macro — see "Macros", below, for the full explanation.
+`params` supports the same fixed/dotted/bare-symbol shapes `lambda` does,
+plus `&key` — see "Keyword arguments", below. Returns `name`.
+
+```lisp
+(defmacro my-unless (test then) `(if (not ,test) ,then '()))
+(my-unless (> 1 2) 'shown)     ; => shown -- see "Macros" for why this needs
+                                ;    to be a macro, not a plain function
+```
+
+`(defmacro name (params...) body...)` defines a macro. The difference from
+a procedure: when you call `name`, its arguments are NOT evaluated first —
+`params` are bound to the call site's raw, unevaluated source expressions
+(as data: symbols, pairs, literals), `body...` runs to compute a new
+expression from them (the "expansion"), and THAT expression is evaluated,
+in your calling environment, in place of the original call. This lets a
+macro see and rearrange the code it was called with, which a function
+never can (a function's arguments are already values by the time it runs).
+
+`` `template `` (quasiquote) is the natural way to build an expansion:
+it's like `'template` (quote), except `,expr` inside it splices in the
+*value* of `expr`, and `,@expr` splices in the *elements* of `expr` (which
+must evaluate to a list) rather than the list itself. Quasiquote nests
+correctly, and works outside of macros too — anywhere you want "mostly
+literal data with a few computed pieces."
+
+```lisp
+; my-unless: the mirror image of `if` with no else-branch. Can't be
+; written as a plain function -- a function would evaluate `then`
+; regardless of whether `test` was true. (The standard `unless`, in
+; macros_init.lsp, is the same idea with any number of body forms.)
+(defmacro my-unless (test then)
+  `(if (not ,test) ,then '()))
+(my-unless (> 1 2) 'shown)     ; => shown
+
+; swap!: mutates two variables in place. No function could do this either
+; -- a function only ever sees the VALUES of its arguments, never the
+; variables (names) themselves, so it has nothing to set!.
+(defmacro swap! (a b)
+  `(let ((tmp ,a))
+     (set! ,a ,b)
+     (set! ,b tmp)))
+(define p 1) (define q 2)
+(swap! p q)
+(list p q)                     ; => (2 1)
+```
+
+`defmacro` supports variadic parameters too (see above), so a macro that
+takes a variable-length body can collect it with a dotted or bare-symbol
+parameter instead of requiring the caller to wrap multiple statements in a
+single `(begin ...)`:
+
+```lisp
+(defmacro my-or (. exprs)
+  (if (null? exprs)
+      #f
+      `(let ((t ,(car exprs)))
+         (if t t (my-or ,@(cdr exprs))))))
+(my-or #f #f 3 4)              ; => 3
+```
+
+`gensym` (see Metaprogramming, below) is the standard tool for avoiding
+accidental variable capture in a macro like this by hand — e.g. the `t`
+above would shadow a caller's own variable named `t`; a hand-written macro
+meant for wider use would bind `(gensym)`'s result instead of a fixed name.
+
+**What goes wrong without `gensym` — the old `while`.** `while` used to be
+defined in `init.lsp` like this, with its loop function always named
+`%loop`:
+
+```lisp
+(defmacro old-while (test body)
+  `(let ()
+     (define (%loop)
+       (if ,test
+           (begin ,body (%loop))
+           '()))
+     (%loop)))
+```
+
+It works — unless the caller's own code uses the name `%loop`. Suppose
+you have a function that happens to have that name, and call it in the
+loop's body:
+
+```lisp
+(define payments 0)
+(define (%loop) (set! payments (+ payments 1)))   ; your function
+
+(define month 0)
+(old-while (< month 3)
+  (begin
+    (set! month (+ month 1))
+    (%loop)))                  ; meant to call your function
+payments                       ; => 0, not 3
+```
+
+`macroexpand-1` shows why:
+
+```lisp
+(let ()
+  (define (%loop)
+    (if (< month 3)
+        (begin (begin (set! month (+ month 1))
+                      (%loop))          ; your call...
+               (%loop))                 ; ...and the macro's own call
+        '()))
+  (%loop))
+```
+
+Your body is pasted inside the macro's `let`, where `%loop` means the
+macro's loop function. So your `(%loop)` calls that instead of your
+function. It restarts the loop from inside its own body, `month` still
+climbs to 3 and the loop ends, and your function never runs. There's no
+error, just a wrong answer. A name starting with `%` is unlikely in code
+you write yourself, which is why the old version usually worked, but
+nothing stopped it from happening.
+
+The `while` in `macros_init.lsp` asks `gensym` for the name instead, each
+time the macro is expanded:
+
+```lisp
+(defmacro while (test . body)
+  (let ((loop-name (gensym "while-loop")))
+    `(let ()
+       (define (,loop-name)
+         (if ,test
+             (begin ,@body (,loop-name))
+             '()))
+       (,loop-name))))
+```
+
+Each `while` now gets a symbol printed as something like
+`%while-loop-12`. It can't be confused with anything the caller wrote,
+even a function the caller named `%while-loop-12` (see `gensym`, below),
+so the example above gives `3`. (It also takes any
+number of body forms, via `. body` and `,@body`, so the `begin` isn't
+needed.)
+
+**Another example — a `while` variant that leaks its own loop
+counter.** A fixed name can also capture one of the caller's *variables*.
+A natural variation — a `while` that also exposes a running iteration
+count to its body — shows this failure concretely:
+
+```lisp
+; count-while: like while, but the body can read `i` for "how many times
+; has this loop run so far". Looks reasonable... until `i` collides with
+; a variable the CALLER already had a different use for.
+(defmacro count-while (test body)
+  `(let ((i 0))
+     (define (%loop)
+       (if ,test
+           (begin ,body (set! i (+ i 1)) (%loop))
+           i))
+     (%loop)))
+```
+
+Nest two of these to walk a 3x3 grid, using a variable also called `i` (an
+extremely ordinary name to reach for) to total up how many inner-loop steps
+ran across the whole grid:
+
+```lisp
+(define i 0)                   ; MY total inner-loop step count, unrelated
+(define row 0)                 ; to count-while's own internal `i`
+(count-while (< row 3)
+  (begin
+    (define col 0)
+    (count-while (< col 3)
+      (begin
+        (set! i (+ i 1))       ; "increment my total" -- or so it looks
+        (set! col (+ col 1))))
+    (set! row (+ row 1))))
+(display i)                    ; => 0, NOT 9 -- silently wrong, no error
+```
+
+Every `,body` gets spliced directly into the macro's own `(let ((i 0)) ...)`
+template, so *every* `i` written inside a `count-while` body — at any
+nesting depth — resolves to that call's own freshly bound `i`, not the
+caller's outer variable of the same name. The outer `i` defined at the top
+is never touched; `count-while`'s `set!` calls are all silently redirected
+to internal counters that get thrown away the moment each `let` scope exits.
+Nothing raises an error — the bug is a wrong answer, not a crash, which is
+exactly what makes hand-written macro hygiene bugs painful to track down.
+
+The fix: generate a fresh, guaranteed-unique symbol for the counter each
+time the macro is *expanded* (not once at `defmacro` time — each call site
+needs its own), and splice that symbol in everywhere the fixed name `i`
+used to appear:
+
+```lisp
+(defmacro count-while (test body)
+  (let ((cnt (gensym "count")))
+    `(let ((,cnt 0))
+       (define (%loop)
+         (if ,test
+             (begin ,body (set! ,cnt (+ ,cnt 1)) (%loop))
+             ,cnt))
+       (%loop))))
+```
+
+The outer `(let ((cnt (gensym "count"))) ...)` is the macro's OWN body —
+ordinary Lisp code that runs once per expansion, computing a new symbol
+like `%count-7`, unrelated to (and unable to collide with) anything a user
+could type. Substituted via `,cnt`, that generated symbol — not the literal
+name `i` — is what ends up bound by the template's `let`. Re-running the
+exact same nested example above with this version now correctly prints `9`
+— the caller's own `i` was never shadowed, because nothing inside either
+`count-while` expansion is named `i` anymore. `(macroexpand-1 ...)` (see
+Metaprogramming, below) is a good way to see this difference directly —
+expanding a `count-while` call with each version shows the fixed `i` versus
+a generated `%count-N` in exactly the position that matters.
+
+**A macro call is expanded once.** The first time a call such as
+`(when (> x 0) ...)` is evaluated, the macro runs and produces the code, and
+that code is remembered for that call. Every later evaluation of the same
+call — the next time the function it's in is called, or the next time round a
+loop — uses the remembered code, without running the macro again. A big macro
+such as `loop` takes milliseconds to expand, so without this, a `loop` in a
+function called 10,000 times would spend most of its time expanding. (The
+`case` macro used to cost about nine times a hand-written `cond` for the same
+reason.) Things to know:
+
+- The macro sees only its arguments, and the expansion is the same each time,
+  as it is in Common Lisp. A macro that also reads a global variable while
+  it expands, or counts how often it's expanded, is expanded once, with
+  whatever it found the first time.
+- Redefining the macro with `defmacro` makes every existing call expand
+  again, with the new definition. Redefining a *function* that the macro's
+  body calls doesn't: the calls already in your functions keep their old
+  expansions, until you `define` the function that contains the call again.
+- `macroexpand` and `macroexpand-1` always expand afresh. `(verbose 3)`
+  logs an expansion when it's made: the first time the call is evaluated.
+- Two calls that only look alike are separate. Code you build and run with
+  `eval` is a new list each time, so it's expanded each time.
+
+A macro's own body, while it's still computing an expansion, is evaluated
+by an ordinary (recursive) Python function call, not the fully
+tail-call-optimized evaluator loop — so a transformer that itself did deep
+non-tail recursion while *building* its expansion would be bounded by
+Python's own recursion limit. This essentially never matters in practice
+(a transformer builds a piece of code; it doesn't loop over runtime data),
+and it does NOT affect the code a macro expands *to* — once the expansion
+is produced, it's evaluated by the ordinary trampoline, tail calls and all
+(see "Tail calls", at the start of "Special forms and standard macros").
+
+### Debugging
+
+`breakpoint` stops the program where it appears and opens the debug REPL;
+`backtrace` shows the calls in progress. The debugging functions (`break`,
+`set-debug-hook!`, `locals`, ...) are in "Debugging", under "Built-in
+functions".
+
+#### breakpoint
+#### `(breakpoint [message])`
+Opens a nested, blocking debug REPL right where it appears, evaluating
+whatever you type directly in the **real lexical environment active at that
+point** — e.g. if you put `(breakpoint)` inside a function body, that
+function's own parameters are variables in the debug REPL, inspectable and
+(via `set!`) modifiable exactly as they exist in the paused call. Type
+`(continue)` (or `(exit)`, or press Ctrl-D) to resume normal execution.
+`breakpoint` has to be a special form rather than a function or macro
+specifically to get access to the caller's actual environment object — a
+function only ever receives already-evaluated *values*, and a macro's
+transformer body runs in its *own* defining environment, not the caller's.
+The optional `message` argument is itself evaluated in that same caller's
+environment and printed before the REPL opens — a plain string (`(breakpoint
+"entering f...")`) works, but so does any expression whose *value* is worth
+seeing right away (`(breakpoint (list "x=" x))`), without needing a separate
+`(display ...)` call right before the breakpoint. If a debug hook is
+registered, the hook is called instead of the REPL opening, with the kind
+`breakpoint` and the message. See "Debugging", below, for the hook, for
+`(break f)` (which stops at every call of a procedure without editing it),
+for `(abort)`, and for the GUI limitation (the REPL is console-only).
+
+#### backtrace
+#### `(backtrace)`
+Prints the chain of procedure calls in progress right now, without needing
+an error — see "Verbose mode and stack traces", under "Introspection /
+debugging", below. Returns `'()`.
+
+#### pretty-print-function, pretty-print-macro
+#### `(pretty-print-function name)`, `(pretty-print-macro name)`
+Print the definition of the procedure or macro called `name`, one element
+per line. See "Introspection / debugging", under "Built-in functions".
 
 ---
 
@@ -2183,8 +2271,9 @@ in a template string with the next argument:
 
 **Format specs.** The text after the colon in `{:spec}` is a **format
 spec**: how to lay out that value. It's the spec language of Python's
-`format()`, and the same one `*column-number-format*` uses (see
-"Columns"). A spec is made of these parts, each optional, in this order:
+`format()`, and the same one `display-table`'s formats use (see
+"Displaying tables"). A spec is made of these parts, each optional, in
+this order:
 
 | Part | Meaning | Spec | Value | Result |
 |---|---|---|---|---|
@@ -2778,8 +2867,8 @@ The distinct values of `v`, sorted.
 
 (In `lisp_tables.py`.) A **table** is a list of `(name . vector)` columns,
 all the same length — exactly what `sqlite-query`, `load-csv`,
-`http-get-csv`, and `series-table` return, and what `display-columns` and
-`write-columns-csv` accept. There's no separate table type, so a table is
+`http-get-csv`, `series-table`, and `tastytrade-option-chain` return, and
+what `display-table` and `write-columns-csv` accept. There's no separate table type, so a table is
 ordinary Lisp data: `(car t)` is its first column, and `(cdr (car t))`
 that column's vector.
 
@@ -2789,9 +2878,10 @@ They work on whole columns with numpy, so tables of millions of rows are
 practical. Column names are strings; where a function takes several, pass
 a list — `(list "state" "month")` — or just one name by itself.
 
-To look at a table, use `(display-columns t)` — a text table in the
-console, the Columns tab in the GUI, and a formatted table in Jupyter —
-together with `table-head` for a big one.
+To look at a table, use `(display-table t)` — a text table in the
+console, the Table tab in the GUI, and a rendered table in Jupyter — with
+a format for each column's numbers, if you like (see "Displaying
+tables"). To work with it a row at a time, see "Rows", below.
 
 Most examples in this section use this small table of loans:
 
@@ -2831,13 +2921,93 @@ columns, if there's none by that name), and the number of rows.
 (table-row-count t)               ; => 2
 ```
 
-#### `(table-row t i)`
-Row `i` (counting from 0) as an association list of `(name . value)`
-pairs, so `(cdr (assoc "balance" row))` is that row's balance.
+**Rows.** A table is stored as columns, which suits formulas that work on
+whole columns: `(* (table-column t "balance") 0.01)`. Some data is better
+seen one row at a time — each option in an option chain is a thing of its
+own. `table-rows` gives the rows of a table, each as a **row**: a struct
+(see "Structs") whose slots are the table's columns. `row-ref` reads one
+value from a row, `with-struct` makes each column a variable, `filter`
+keeps the rows you want, and `display-table` shows a list of rows as a
+table. `table-from-rows` makes a table from rows again. So you can use
+whichever view suits the question:
+
+```lisp
+(define options
+  (make-table "symbol" (vector "SPY C660" "SPY C670" "SPY P650" "SPY P640")
+              "type"   (vector "Call" "Call" "Put" "Put")
+              "strike" #(660 670 650 640)
+              "iv"     #(0.18 0.17 0.23 0.26)
+              "price"  #(12.40 7.25 6.80 0.95)))
+
+; Whole columns at once: the options with implied volatility over 20%.
+(table-column (table-filter options (> (table-column options "iv") 0.2)) "symbol")
+                                   ; => #("SPY P650" "SPY P640")
+
+; One row at a time: the same question, asked of each option.
+(define (volatile? option)
+  (with-struct option (> iv 0.2)))
+(map (lambda (option) (row-ref option "symbol"))
+     (filter volatile? (table-rows options)))     ; => ("SPY P650" "SPY P640")
+
+(display-table (filter volatile? (table-rows options))
+               '(("strike" ",.2f") ("iv" ".1%") ("price" ",.2f")))
+```
+
+The last line prints
+
+```
+symbol    type  strike     iv  price
+--------  ----  ------  -----  -----
+SPY P650  Put   650.00  23.0%   6.80
+SPY P640  Put   640.00  26.0%   0.95
+```
+
+A row has one variable for each column, so in `with-struct` a column name
+hides a procedure of the same name for the length of its body (a column
+called `list` would hide `list`). `row-ref` works with any column name,
+including one with a space in it.
+
+#### `(table-rows t)`
+The table's rows, in order, as a list of rows (see "Rows", above). A row
+prints as `#S(row :name value ...)`.
 
 ```lisp
 (define t (make-table "id" (vector "a" "b") "balance" #(100 90)))
-(table-row t 1)                   ; => (("id" . "b") ("balance" . 90))
+(table-rows t)                    ; => (#S(row :id "a" :balance 100) #S(row :id "b" :balance 90))
+```
+
+#### `(table-row t i)`
+Row `i` (counting from 0), as a row.
+
+```lisp
+(define t (make-table "id" (vector "a" "b") "balance" #(100 90)))
+(table-row t 1)                   ; => #S(row :id "b" :balance 90)
+(with-struct (table-row t 1) (list id balance))   ; => ("b" 90)
+```
+
+#### `(row-ref row name)`
+The value in the row's column called `name`, a string or a symbol. An
+error if the row has no such column (the message lists the columns it
+has).
+
+```lisp
+(define t (make-table "id" (vector "a" "b") "balance" #(100 90)))
+(row-ref (table-row t 0) "balance")   ; => 100
+```
+
+#### `(table-from-rows rows [names])`
+A table made from a list of rows. Each row is a row from `table-rows` or
+`table-row` (or any struct), whose slots become the columns; given
+`names`, just those columns, in that order. Or each row is a list of
+values, one per column, and `names` gives the columns' names. Each column
+is read the way `load-csv` reads one: a column of numbers holds NaN where a
+row has `'()`, and a column of `YYYY-MM-DD` strings becomes dates.
+
+```lisp
+(define t (make-table "id" (vector "a" "b") "balance" #(100 90)))
+(table-from-rows (reverse (table-rows t)))    ; => (("id" . #("b" "a")) ("balance" . #(90 100)))
+(table-from-rows (list (list "x" 1) (list "y" '())) (list "name" "n"))
+                                              ; => (("name" . #("x" "y")) ("n" . #(1.0 nan)))
 ```
 
 #### `(table-head t [n])`, `(table-slice t start [end])`
@@ -3104,7 +3274,7 @@ FRED API key):
 
 ### Structs
 
-See `(defstruct name slot...)` under "Special forms", above, for the
+See `defstruct`, under "Structs" in "Special forms and standard macros", above, for the
 type-specific `make-<name>`/`<name>-<slot>`/`<name>-<slot>-set!`/`<name>?`/
 `copy-<name>` names it generates. `struct?`, `struct-ref`, `struct-set!`,
 and `struct-type-name` work generically on any struct instance, by
@@ -3112,9 +3282,9 @@ slot-name symbol, without needing to know its specific type; `call-method`
 (below) is a different kind of generic tool, for the "lambda in a slot"
 dispatch pattern struct inheritance enables — see its own entry. To use
 *all* of an instance's slots inside a body as plain variables, see
-`(with-struct struct-expr body...)` under "Special forms", above — it's a
-special form (it needs the struct's runtime slot list to know which names to
-bind), so it's documented there rather than here.
+`with-struct`, under "Structs" in "Special forms and standard macros", above
+— it's a special form (it needs the struct's runtime slot list to know which
+names to bind), so it's documented there rather than here.
 
 #### `(struct? x)`
 `#t` for an instance of any `defstruct`-defined type.
@@ -3529,7 +3699,7 @@ The coefficient table from `model-report`, as a table (see "Tables") with
 the columns `term`, `coefficient`, `std_error`, `t_value` (`z_value` for a
 logistic model), and `p_value`. The first row is the intercept. Its
 numbers are kept at full precision, so it's the way to use them in further
-calculations — or `display-columns` it to see them.
+calculations — or `display-table` it to see them.
 
 ```lisp
 (define m (linear-regression (vector 1 2 3 4 5) (vector 10 20 29 41 51)))
@@ -3996,51 +4166,56 @@ file-write failure. Returns `'()`.
 (save-chart "chart.pdf" 10.0 7.5 300)   ; larger, higher-DPI PDF
 ```
 
-### Columns
+### Displaying tables
 
-#### `(display-columns pairs)`
-`pairs` is a Lisp list where each element is either a `(name . vector)`
-cons, or a 3-element `(name vector decimals)` list to pick a per-column
-decimal-places count (rather than the global format, below) — each
-becomes one displayed column, headed by `name`, in the order given. In
-the GUI, this is the *only* way the "Columns" tab is populated — there's
-no automatic scan of top-level variables (the tab uses a fixed-width font
-with right-aligned cells, so a column of numbers lines up on its ones
-place). In console/batch mode, prints a simple right-justified text table
-instead; in Jupyter, a formatted table. Returns `'()`. A table (see
-"Tables") is exactly this kind of list, so `(display-columns t)` shows
-any table — use `(display-columns (table-head t 20))` for a big one.
+#### `(display-table table [formats])`
+Shows a table, with a heading for each column, numbers right-aligned and
+text left-aligned, and nothing in a cell whose value is missing (NaN, or
+`'()`). `table` is a table (see "Tables") or a list of rows (see
+`table-rows`). Where it appears depends on where you are: in a **Jupyter
+notebook**, a rendered table; in the **GUI**, the Table tab; at the
+**console** or in a script, a text table. Returns `'()`.
+
+`formats` says how to lay out each column's values: a list of
+`(column-name spec)`, where `spec` is written the way `format` and
+`format-value` write one (see "Formatting numbers and text"): `",.2f"` for
+commas and two decimals, `".1%"` for a percentage, `","` for a whole number
+with commas. A column with no format shows its values as `display` would. A
+format for a column the table doesn't have isn't used, so one list of
+formats can serve every view of the same data.
 
 ```lisp
-(define prices (vector 10 20 30))
-(define squares (vector-map (lambda (x) (* x x)) prices))
-(display-columns (list (cons "prices" prices) (cons "squares" squares)))
-
-(define rate (vector 0.0435 0.041 0.038))
-(display-columns (list (list "rate" rate 4) (cons "prices" prices)))  ; mixed forms are fine
+(define loans (make-table "id" (vector "a" "b" "c")
+                          "balance" #(125000 98000.5 250000)
+                          "rate" #(0.0625 0.0575 0.07)))
+(display-table loans '(("balance" ",.2f") ("rate" ".3%")))
 ```
 
-A `(name . vector)` entry's numeric values are rendered through
-`*column-number-format*`, a Lisp-settable global holding a Python
-`str.format()` spec — defaults to `"{:,.0f}"` (comma-grouped integers,
-e.g. `12,346`). `(set! *column-number-format* "{:,.2f}")` switches to two
-decimal places for every subsequent `(name . vector)`-style entry that
-doesn't specify its own `decimals`. Non-numeric values (dates, etc.) are
-unaffected either way, always rendered plainly.
+prints, at the console,
 
-Deliberately low-level — it doesn't know anything about `defstruct` or any
-particular notion of a "column". See `lib/column_engine.lsp` for a small
-example library, built on `defstruct` and `&key`, that
-registers named `column` structs (each with its own `decimals` slot —
-e.g. `0` for a dollar amount, `4`-`6` for an interest rate/CPR/SMM
-column), calculates them row-by-row in dependency order, and calls
-`display-columns` for you — demonstrated end-to-end in
-`mortgage_amortization_example.lsp`. Inside a column's formula,
-`(lag NAME n [default])` is column `NAME`'s value `n` rows back; for a row
-before the first one (or past the last, with a negative `n`), it's
-`default` — or an error saying so, if no default was given. For example,
-`(lag balance 1 original_balance)` reads the previous row's balance, and
-the original balance on the first row.
+```
+id     balance    rate
+--  ----------  ------
+a   125,000.00  6.250%
+b    98,000.50  5.750%
+c   250,000.00  7.000%
+```
+
+To show some of the columns, or in another order, use `table-select`; to
+show some of the rows, `table-filter`, `table-head`, or `table-slice`. A
+table longer than 1,000 rows shows its first 1,000 and a note saying so.
+`display-table` has no knowledge of `defstruct` columns or any other
+structure; `lib/column_engine.lsp` is a small example library, built on
+`defstruct` and `&key`, that registers named `column` structs (each with
+its own `decimals` slot — e.g. `0` for a dollar amount, `4`-`6` for an
+interest rate/CPR/SMM column), calculates them row-by-row in dependency
+order, and shows them with `display-table` for you — demonstrated
+end-to-end in `mortgage_amortization_example.lsp`. Inside a column's
+formula, `(lag NAME n [default])` is column `NAME`'s value `n` rows back;
+for a row before the first one (or past the last, with a negative `n`),
+it's `default` — or an error saying so, if no default was given. For
+example, `(lag balance 1 original_balance)` reads the previous row's
+balance, and the original balance on the first row.
 
 #### `(display-markdown string)`
 Shows `string` as Markdown. In a Jupyter notebook (the `morris_lisp`
@@ -4058,8 +4233,10 @@ written as ordinary output, which is still readable. Returns `'()`.
 ```
 
 #### `(write-columns-csv filename pairs)`
-Same `pairs` shape as `display-columns` (see above) — writes a CSV file
-instead: header row = names, one data row per index, numbers rounded to
+Writes a table to a CSV file. `pairs` is a table — a list of
+`(name . vector)` — or a list in which some entries are
+`(name vector decimals)`, to round that column to `decimals` places:
+header row = names, one data row per index, numbers rounded to
 `decimals` when given (plain numeric CSV cells — `12346`, not `"12,346"`
 — since this is for a spreadsheet or another program, not for on-screen
 reading; a `decimals` of `0` writes a plain integer, not `12346.0`). A
@@ -4071,7 +4248,7 @@ structs directly — see that function and `mortgage_amortization_example.
 lsp`'s `(write-csv "mortgage_amortization_example.csv" *columns*)` call.
 
 ```lisp
-(write-columns-csv "out.csv" (list (list "rate" rate 4) (cons "prices" prices)))
+(write-columns-csv "out.csv" (list (list "rate" #(0.0435 0.041) 4) (cons "prices" #(10 20))))
 ```
 
 ### FRED (Federal Reserve Bank of St. Louis) data, and CSV loading
@@ -4167,7 +4344,7 @@ than there are columns is an error; a row with fewer is padded with blanks.
 (define d2 (load-csv "no_header.csv" #f))   ; no header row -> Column1, Column2, ...
 ```
 
-To write a table to a CSV file, see `write-columns-csv` under "Columns".
+To write a table to a CSV file, see `write-columns-csv` under "Displaying tables".
 
 ### Downloading data from the web
 
@@ -4302,7 +4479,7 @@ otherwise the values come back as they are, with `NULL` as `'()`. Raises
 ```lisp
 (define conn (sqlite-open "donors.db"))
 (define cols (sqlite-query conn "SELECT name, amount FROM donors ORDER BY amount DESC"))
-(display-columns cols)                     ; straight into the Columns tab / console table
+(display-table cols)                       ; shown as a table
 (write-columns-csv "donors.csv" cols)      ; or straight out to a CSV file
 (sqlite-close conn)
 ```
@@ -4528,14 +4705,30 @@ re-fetch needed.
 
 #### `(tastytrade-option-chain credentials-path symbol [n-months max-strikes-per-expiration include-iv? greeks-timeout])`
 Fetches an option chain — for a CME futures product **or for any equity
-symbol**. Returns a Lisp list of rows, each an 11-element list:
-```
-(symbol type strike expiration-date days-to-expiration delivery-month
- underlying last-price implied-volatility volume open-interest)
-```
-`type` is `"Call"` or `"Put"`; `strike` is the exercise price;
-`days-to-expiration` is an integer; any value tastytrade didn't report
-(e.g. no recent implied-volatility snapshot) comes back as `'()`.
+symbol**. Returns a **table** (see "Tables"), one row per option, with
+these columns:
+
+| Column | What it holds |
+|---|---|
+| `symbol` | the option's symbol |
+| `type` | `"Call"` or `"Put"` |
+| `strike` | the exercise price |
+| `expiration-date` | the expiration, a date |
+| `days-to-expiration` | a whole number of days |
+| `delivery-month` | for a futures option, the contract's delivery month (a date); for an equity option, missing |
+| `underlying` | the futures contract, e.g. `"CLZ6"`, or the equity's symbol |
+| `last-price` | the option's last price |
+| `implied-volatility` | e.g. `0.23` for 23%; missing without `include-iv?` |
+| `volume`, `open-interest` | contracts |
+
+A value tastytrade didn't report (e.g. no recent implied-volatility
+snapshot) is missing: `nan` in a column of numbers, `'()` otherwise. A
+comparison with a missing value is false, so an option with no open
+interest never passes a test on open interest. Being a table, the chain
+can be filtered, sorted, and summarized with the table functions a whole
+column at a time, or looked at one option at a time with `table-rows` (see
+"Rows", under "Tables"). `(table-row-count chain)` is the number of
+options; `(length chain)` is the number of columns.
 
 `symbol` is classified into one of three cases:
 
@@ -4577,6 +4770,41 @@ The remaining parameters mean the same thing for both cases:
 (define chain2 (tastytrade-option-chain creds "CL" 2 5 #f))     ; futures, short code (same as above)
 (define aapl (tastytrade-option-chain creds "AAPL" 2 10 #f))    ; equity
 ```
+
+**Filtering and showing a chain.** Fetch it, pick the options that meet
+your criteria, and show them. The formats say how to lay out each column
+(see "Displaying tables"):
+
+```lisp
+(define spy (tastytrade-option-chain creds "SPY" 2 10))
+(define chain-formats
+  '(("strike" ",.2f") ("last-price" ",.2f") ("implied-volatility" ".1%")
+    ("volume" ",.0f") ("open-interest" ",.0f")))
+(display-table spy chain-formats)                ; the whole chain
+
+; Calls expiring in 20 to 60 days with at least 100 contracts open,
+; tested a whole column at a time:
+(define (column name) (table-column spy name))
+(define liquid-calls
+  (table-filter spy (vector-and (= (column "type") "Call")
+                                (<= 20 (column "days-to-expiration") 60)
+                                (>= (column "open-interest") 100))))
+(display-table (table-sort liquid-calls "strike") chain-formats)
+
+; Puts over 20% volatility and $1, tested one option at a time:
+(define (expensive-put? option)
+  (with-struct option
+    (and (string=? type "Put") (> implied-volatility 0.20) (> last-price 1.0))))
+(display-table (filter expensive-put? (table-rows spy)) chain-formats)
+
+; One row per expiration: how many options, and their average volatility.
+(display-table (table-group-by spy "expiration-date"
+                               '(("options" count) ("average-iv" mean "implied-volatility")))
+               '(("average-iv" ".1%")))
+```
+
+`examples/option_chain_example.lsp` does all of this and a little more
+(a column computed from two others, and one line of text per option).
 
 #### `(tastytrade-curve-fit curve-rows [rich-cheap-threshold-pct poly-degree])`
 Pure function — no networking. Per-contract rich/cheap analysis: fits
@@ -4863,7 +5091,7 @@ adding the spread; `mortgage-paths` is after.
 full pipeline end to end — `sofr-calibration-data` →
 `sofr-bootstrap-curve` → `sofr-calibrate-model` →
 `sofr-simulate-mortgage-rate-paths` — then charts a few paths and writes
-all of them to CSV via `write-columns-csv` (see "Columns", above). Its
+all of them to CSV via `write-columns-csv` (see "Displaying tables", above). Its
 header comment sketches feeding one simulated path into
 `mortgage_amortization_example.lsp` in place of the deterministic
 SOFR-forward-curve-derived rate, for a single Monte Carlo scenario's
@@ -4926,11 +5154,8 @@ seven `tastytrade-*` builtins:
 (define creds "tastytrade_credentials.json")   ; edit to your credentials file's path
 
 (define (print-each lst)
-  (if (null? lst)
-      #t
-      (begin
-        (display "  ") (display (car lst)) (newline)
-        (print-each (cdr lst)))))
+  (dolist (item lst)
+    (display "  ") (display item) (newline)))
 
 ; --- 1. which product codes are supported ---
 (display "Supported products:") (newline)
@@ -4945,21 +5170,22 @@ seven `tastytrade-*` builtins:
 
 ; --- 4. option chain, fast path (include-iv? = #f) ---
 (define chain (tastytrade-option-chain creds "CL" 2 5 #f))
-(display "CL option chain, no IV (") (display (length chain)) (display " contracts):") (newline)
-(print-each chain)
+(display "CL option chain, no IV (") (display (table-row-count chain)) (display " contracts):") (newline)
+(define chain-formats '(("strike" ",.2f") ("last-price" ",.2f") ("implied-volatility" ".1%")))
+(display-table chain chain-formats)
 
 ; --- 5. option chain with implied volatility, kept small so the Greeks
 ;        stream finishes quickly ---
 (define chain-iv (tastytrade-option-chain creds "CL" 1 3 #t 20.0))
-(display "CL option chain, with IV (") (display (length chain-iv)) (display " contracts):") (newline)
-(print-each chain-iv)
+(display "CL option chain, with IV (") (display (table-row-count chain-iv)) (display " contracts):") (newline)
+(display-table chain-iv chain-formats)
 
 ; --- 6. option chain on an equity: any symbol that isn't a futures root
 ;        ("/..." or a known short code) is fetched as an equity chain
 ;        automatically -- no separate function, no translation ---
 (define aapl-chain (tastytrade-option-chain creds "AAPL" 2 5 #f))
-(display "AAPL option chain, no IV (") (display (length aapl-chain)) (display " contracts):") (newline)
-(print-each aapl-chain)
+(display "AAPL option chain, no IV (") (display (table-row-count aapl-chain)) (display " contracts):") (newline)
+(display-table aapl-chain chain-formats)
 
 ; --- 7. rich/cheap curve-fit analysis -- fetch the curve rows once,
 ;        analyze for free (no networking in tastytrade-curve-fit) ---
@@ -5121,16 +5347,16 @@ library like `column_engine.lsp` reporting a circular dependency.
 ```
 
 #### `(catch-error protected-expr (var) handler-body...)`
-See "Special forms", above — documented once there (it's a special form,
+See "Errors and cleanup", above — documented once there (it's a special form,
 not a function: `protected-expr` must NOT be evaluated eagerly, since the
 whole point is to catch what happens when it's evaluated).
 
 #### `(throw tag [value])`, `(catch tag body...)`, `(unwind-protect protected-expr cleanup-expr...)`
-See "Special forms", above. `throw` jumps out to the matching `catch`;
+See "Errors and cleanup", above. `throw` jumps out to the matching `catch`;
 `unwind-protect` makes sure cleanup code runs.
 
 #### `(assert test [message...])`
-See "Standard macros", above.
+See "Errors and cleanup", above.
 
 ### Introspection / debugging
 
@@ -5256,7 +5482,7 @@ definitions, automatically.
 #### `(defined-macros)`
 The same idea, for macros: every macro defined at the top level, in the
 order they were defined. The standard macros (`let`, `dolist`, `while`,
-`case`, `loop`, and the others in "Standard macros"; they're written in
+`case`, `loop`, and the others in "Special forms and standard macros"; they're written in
 Lisp, in `macros_init.lsp` and `loop.lsp`) come first, then any macros
 from `init.lsp`, then yours.
 
@@ -5277,7 +5503,7 @@ data: numbers, strings, lists, vectors, dates, and so on.
 ```
 
 #### `(breakpoint [message])`
-A special form: see "Special forms", above. It stops the program right where
+A special form: see "Debugging", under "Special forms and standard macros", above. It stops the program right where
 it's written; see "Debugging", below, for what a stop does.
 
 ### Debugging

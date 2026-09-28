@@ -58,7 +58,7 @@ class LispKernel(IPythonKernel):
     banner = (
         "morris_lisp -- a CL-flavored Lisp for structured-finance modeling.\n"
         "Every cell is plain Lisp source. Charts render inline; "
-        "(display-columns ...) renders as a pandas table.\n"
+        "(display-table ...) renders as a table.\n"
         "See lisp_interpreter_reference.md for the full language/builtin reference."
     )
 

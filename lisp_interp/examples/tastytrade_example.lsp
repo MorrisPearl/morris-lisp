@@ -11,15 +11,10 @@
 ; Exercises all seven tastytrade-* builtins.
 ; ---------------------------------------------------------------------
 
-; A small helper to print a Lisp list, one item per line -- this Lisp
-; has no built-in loop construct, so iteration is just ordinary
-; recursion.
+; A small helper to print a Lisp list, one item per line.
 (define (print-each lst)
-  (if (null? lst)
-      #t
-      (begin
-        (display "  ") (display (car lst)) (newline)
-        (print-each (cdr lst)))))
+  (dolist (item lst)
+    (display "  ") (display item) (newline)))
 
 ; --- 1. tastytrade-products: which product codes are supported ---
 (display "Supported products:") (newline)
@@ -55,17 +50,26 @@
 ;        money per expiration -- skipping the Greeks stream, so this
 ;        returns quickly ---
 (define chain (tastytrade-option-chain creds "CL" 2 5 #f))
-(display "CL option chain, no IV (") (display (length chain)) (display " contracts):") (newline)
-(display "  (symbol type strike expiration days-to-expiration delivery-month underlying price iv volume oi)") (newline)
-(print-each chain)
+(display "CL option chain, no IV (") (display (table-row-count chain)) (display " contracts):") (newline)
+(define chain-formats '(("strike" ",.2f") ("last-price" ",.2f") ("implied-volatility" ".1%")
+                        ("volume" ",.0f") ("open-interest" ",.0f")))
+(display-table chain chain-formats)
+(newline)
+
+; The chain is a table, so whole columns can be used at once -- here, the
+; calls only -- or it can be looked at one option at a time, as rows:
+(define calls (table-filter chain (= (table-column chain "type") "Call")))
+(dolist (option (table-rows calls))
+  (with-struct option
+    (display (format "  {} strike {:,.2f}, {} days\n" symbol strike days-to-expiration))))
 (newline)
 
 ; --- 5. tastytrade-option-chain, with implied volatility (include-iv? =
 ;        #t, the default): kept to a small chain (1 month, 3 strikes) so
 ;        the Greeks stream finishes quickly ---
 (define chain-iv (tastytrade-option-chain creds "CL" 1 3 #t 20.0))
-(display "CL option chain, with IV (") (display (length chain-iv)) (display " contracts):") (newline)
-(print-each chain-iv)
+(display "CL option chain, with IV (") (display (table-row-count chain-iv)) (display " contracts):") (newline)
+(display-table chain-iv chain-formats)
 (newline)
 
 ; --- 6. tastytrade-option-chain on an equity: any symbol that isn't a
@@ -77,8 +81,8 @@
 ;        is just the equity symbol itself; n-months limits results to
 ;        expirations within that many months from today. ---
 (define aapl-chain (tastytrade-option-chain creds "AAPL" 2 5 #f))
-(display "AAPL option chain, no IV (") (display (length aapl-chain)) (display " contracts):") (newline)
-(print-each aapl-chain)
+(display "AAPL option chain, no IV (") (display (table-row-count aapl-chain)) (display " contracts):") (newline)
+(display-table aapl-chain chain-formats)
 (newline)
 
 ; --- 7. tastytrade-curve-fit: per-contract rich/cheap vs. a fitted

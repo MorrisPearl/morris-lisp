@@ -1,5 +1,5 @@
 """The PyQt6 GUI for the Lisp interpreter: an input box, an output log, a
-"Columns" tab (filled by display-columns), and a "Chart" tab (drawn by the
+"Table" tab (filled by display-table), and a "Chart" tab (drawn by the
 plot-xy... builtins, with a "Save Chart..." button).
 
 Opened by running lisp_interpreter.py with no arguments. Needs PyQt6 and
@@ -46,21 +46,23 @@ if PYQT_AVAILABLE:
             draw_chart_on_axes(self.figure, self.ax, spec)
             self.draw()
 
-    class VectorTableModel(QAbstractTableModel):
-        """Displays a set of named number vectors as columns: one column
-        per vector, headed by its variable name, one row per index."""
+    class TableModel(QAbstractTableModel):
+        """Shows the table display-table was given: one column per table
+        column, headed by its name, one row per row."""
 
         def __init__(self):
             super().__init__()
             self.names = []    # column headers, in display order
-            self.columns = []  # parallel list of plain Python number lists
+            self.columns = []  # each column's cells, already formatted as text
+            self.aligns = []   # each column's alignment: "right" or "left"
 
-        def set_vectors(self, name_value_pairs):
-            """Replace the full set of displayed vectors.
-            name_value_pairs: list of (name, list-of-numbers) tuples."""
+        def set_table(self, columns):
+            """Show a new table: a list of (name, cell texts, alignment)
+            tuples, as display-table makes it."""
             self.beginResetModel()
-            self.names = [name for name, _ in name_value_pairs]
-            self.columns = [values for _, values in name_value_pairs]
+            self.names = [name for name, _, _ in columns]
+            self.columns = [cells for _, cells, _ in columns]
+            self.aligns = [align for _, _, align in columns]
             self.endResetModel()
 
         def rowCount(self, parent=QModelIndex()):
@@ -71,14 +73,15 @@ if PYQT_AVAILABLE:
 
         def data(self, index, role=Qt.ItemDataRole.DisplayRole):
             if role == Qt.ItemDataRole.TextAlignmentRole:
-                return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                if self.aligns[index.column()] == "right":
+                    return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             if role != Qt.ItemDataRole.DisplayRole:
                 return None
             col = self.columns[index.column()]
             row = index.row()
             if row < len(col):
-                # The values are already formatted strings (see display-columns).
-                return str(col[row])
+                return col[row]
             return ""
 
         def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
@@ -167,8 +170,8 @@ if PYQT_AVAILABLE:
         "  (defstruct point x y (label \"\"))\n"
         "  (define p (make-point :x 1 :y 2))\n"
         "  (display (list (point-x p) (point-y p) (point? p)))\n"
-        "  (display-columns (list (cons \"prices\" prices) (cons \"squares\" squares)))\n"
-        "display-columns populates the Columns tab; plot-xy... calls draw\n"
+        "  (display-table (make-table \"price\" prices \"square\" squares))\n"
+        "display-table fills the Table tab; plot-xy... calls draw\n"
         "into the Chart tab.\n"
         "Press Ctrl+Enter, or click Run, to evaluate.\n\n"
     )
@@ -180,7 +183,7 @@ if PYQT_AVAILABLE:
             self.resize(1150, 620)
 
             self.env = make_global_env(
-                output=self._write_output, plot=self._on_plot, columns=self._on_columns)
+                output=self._write_output, plot=self._on_plot, table=self._on_table)
             load_init_file(self.env)
 
             central = QWidget()
@@ -210,12 +213,12 @@ if PYQT_AVAILABLE:
             self.tabs = QTabWidget()
             splitter.addWidget(self.tabs)
 
-            self.table_model = VectorTableModel()
+            self.table_model = TableModel()
             self.table_view = QTableView()
             self.table_view.setModel(self.table_model)
             # A fixed-width font, so right-aligned numbers line up by digit.
             self.table_view.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
-            self.tabs.addTab(self.table_view, "Columns")
+            self.tabs.addTab(self.table_view, "Table")
 
             chart_tab = QWidget()
             chart_layout = QVBoxLayout(chart_tab)
@@ -245,10 +248,10 @@ if PYQT_AVAILABLE:
             self.chart_canvas.plot(spec)
             self.tabs.setCurrentIndex(1)
 
-        def _on_columns(self, name_value_pairs):
-            """Called directly by the Lisp `display-columns` builtin --
-            the ONLY way the Columns tab is populated."""
-            self.table_model.set_vectors(name_value_pairs)
+        def _on_table(self, columns):
+            """Called by the Lisp `display-table` builtin -- the only way the
+            Table tab is filled."""
+            self.table_model.set_table(columns)
             self.tabs.setCurrentIndex(0)
 
         def _on_save_chart(self):

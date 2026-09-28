@@ -2,7 +2,7 @@
 sqlite-query, sqlite-execute, and sqlite-fetch-row.
 
 sqlite-query returns its result column by column, as a list of
-(name . vector) pairs -- the shape display-columns and the regression
+(name . vector) pairs -- a table, which display-table and the regression
 builtins accept directly. Values for "?" placeholders are passed through
 SQLite's own parameter binding (the `params` argument), never pasted into
 the SQL text, so they can't cause SQL injection; template.lsp builds on
@@ -13,6 +13,7 @@ import sqlite3
 import numpy as np
 
 from lisp_core import LispDate, LispError, LispString, LispVector, NIL, Pair, list_to_pairs, pairs_to_list
+from lisp_tables import column_vector
 
 
 class LispSQLiteConnection:
@@ -52,34 +53,6 @@ def _sqlite_value_to_lisp(v):
     if isinstance(v, str):
         return LispString(v)
     return v
-
-
-def _parse_iso_date(text):
-    """text as a LispDate if it's exactly YYYY-MM-DD, otherwise None."""
-    if len(text) != 10 or text[4] != "-" or text[7] != "-":
-        return None
-    try:
-        return LispDate(int(text[:4]), int(text[5:7]), int(text[8:]))
-    except ValueError:
-        return None
-
-
-def column_vector(values):
-    """An un-hinted result column (a list of Lisp values) as a vector,
-    read the way load-csv reads a CSV column: if every value that isn't
-    NULL is a number, a numeric vector with NaN for NULL; if every one is
-    YYYY-MM-DD text, a vector of dates (SQLite has no date type, so
-    sqlite-write-table stores dates that way); otherwise the values as they
-    are, with NULL as '()."""
-    present = [v for v in values if v is not None]
-    if present and len(present) < len(values) and \
-            all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in present):
-        return LispVector([float("nan") if v is None else v for v in values])
-    if present and all(isinstance(v, str) for v in present):
-        dates = [_parse_iso_date(v) for v in present]
-        if all(d is not None for d in dates):
-            return LispVector([None if v is None else _parse_iso_date(v) for v in values])
-    return LispVector(values)
 
 
 def sqlite_open_fn(path):
@@ -212,9 +185,9 @@ def _sqlite_query_preallocated(cursor, names, hints, cap):
 def sqlite_query_fn(conn, sql, dtypes=None, max_rows=None, params=None):
     """(sqlite-query conn sql [dtypes max-rows params]) -- run a query and
     return the whole result column by column: a list of (name . vector)
-    pairs, one per column, in order. That's the shape display-columns and
-    the regression builtins take, e.g.
-        (display-columns (sqlite-query conn "SELECT year, total FROM t"))
+    pairs, one per column, in order: a table, which display-table and the
+    regression builtins take, e.g.
+        (display-table (sqlite-query conn "SELECT year, total FROM t"))
     A NULL becomes '(). For a result too big to hold at once, use
     sqlite-execute and sqlite-fetch-row instead.
 

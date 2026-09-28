@@ -2,23 +2,27 @@
 summarize rows of data.
 
 A TABLE is a list of (name . vector) columns, all the same length -- the
-shape sqlite-query and load-csv return, and display-columns and
-write-columns-csv accept. There's no separate table type: a table is
-ordinary Lisp data, so (car table) is its first column and
-(table-column table "balance") is the vector named "balance".
+shape sqlite-query, load-csv, and tastytrade-option-chain return, and
+display-table and write-columns-csv accept. There's no separate table
+type: a table is ordinary Lisp data, so (car table) is its first column
+and (table-column table "balance") is the vector named "balance".
+table-rows gives the same data a row at a time (see "Rows", below).
 
 Every function returns a new table and leaves its argument unchanged.
-Rows are picked out with MASKS -- vectors of 1 and 0 made by the vector
-comparisons in lisp_vector_math.py, e.g.
-    (table-filter loans (vector> (table-column loans "balance") 100000))
+Rows are picked out with MASKS -- vectors of 1 and 0 made by comparing
+vectors, e.g.
+    (table-filter loans (> (table-column loans "balance") 100000))
 All the work is done with numpy on whole columns, so tables of millions
 of rows are practical.
 """
 
 import numpy as np
 
-from lisp_core import LispError, LispString, LispVector, NIL, Pair, _lisp_scalar, is_true, list_to_pairs, pairs_to_list
-from lisp_vector_math import factorize, floats_of, to_vector, truth_of
+from lisp_core import (
+    LispDate, LispError, LispString, LispStruct, LispStructType, LispVector, NIL, Pair, Symbol,
+    _brief, _lisp_scalar, is_true, list_to_pairs, pairs_to_list,
+)
+from lisp_vector_math import factorize, floats_of, is_number, to_vector, truth_of
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +32,9 @@ from lisp_vector_math import factorize, floats_of, to_vector, truth_of
 def table_columns(table, name):
     """A table as a Python list of (column_name, LispVector) pairs, after
     checking it is one: a list of (name . vector), all the same length."""
+    if not (table is NIL or isinstance(table, Pair)):
+        raise LispError("%s: not a table -- a table is a list of (name . vector) columns, not %s"
+                        % (name, _brief(table)))
     columns = []
     for entry in pairs_to_list(table):
         if not (isinstance(entry, Pair) and isinstance(entry.cdr, LispVector)):
@@ -126,17 +133,6 @@ def is_table(x):
         return False
 
 
-def table_row(table, i):
-    """(table-row table i) -- row i (counting from 0) as an association
-    list of (name . value) pairs, so (cdr (assoc "balance" row)) is that
-    row's balance."""
-    columns = table_columns(table, "table-row")
-    i = int(i)
-    if not 0 <= i < row_count(columns):
-        raise LispError("table-row: row %d out of range (the table has %d rows)" % (i, row_count(columns)))
-    return list_to_pairs([Pair(LispString(n), _lisp_scalar(v.items[i])) for n, v in columns])
-
-
 def table_head(table, n=10):
     """(table-head table [n]) -- the first n rows (default 10)."""
     columns = table_columns(table, "table-head")
@@ -157,10 +153,159 @@ LOOKING_BUILTINS = {
     "table-column-names": lambda t: list_to_pairs([LispString(n) for n, _ in table_columns(t, "table-column-names")]),
     "table-column": lambda t, column: find_column(table_columns(t, "table-column"), str(column), "table-column"),
     "table-row-count": lambda t: row_count(table_columns(t, "table-row-count")),
-    "table-row": table_row,
     "table-head": table_head,
     "table-slice": table_slice,
 }
+
+
+# ---------------------------------------------------------------------------
+# Rows: a table seen one row at a time
+# ---------------------------------------------------------------------------
+#
+# A table is stored as columns, which suits formulas over whole columns,
+# such as (* balance rate). Some data is better seen a row at a time: each
+# option in an option chain is a thing of its own. table-rows gives each row
+# as a ROW, a struct whose slots are the table's columns, so
+# (row-ref option "strike") reads one value, and (with-struct option ...)
+# makes each column a variable. table-from-rows turns rows back into a
+# table.
+
+def row_type(column_names):
+    """The struct type of a table's rows: one slot for each column, named
+    after it. Rows print as #S(row :strike 450.0 ...)."""
+    return LispStructType(Symbol("row"), [(Symbol(n), None) for n in column_names])
+
+
+def column_values(v):
+    """A column's values, as a Python list of Lisp values."""
+    return [_lisp_scalar(x) for x in v.items]
+
+
+def table_rows(table):
+    """(table-rows table) -- the table's rows, in order, as a list of rows."""
+    columns = table_columns(table, "table-rows")
+    kind = row_type([n for n, _ in columns])
+    slots = [Symbol(n) for n, _ in columns]
+    values_by_column = [column_values(v) for _, v in columns]
+    return list_to_pairs([LispStruct(kind, dict(zip(slots, values)))
+                          for values in zip(*values_by_column)])
+
+
+def table_row(table, i):
+    """(table-row table i) -- row i (counting from 0), as a row."""
+    columns = table_columns(table, "table-row")
+    if isinstance(i, bool) or not isinstance(i, int) or not 0 <= i < row_count(columns):
+        raise LispError("table-row: there's no row %s -- the table has %d rows"
+                        % (_brief(i), row_count(columns)))
+    kind = row_type([n for n, _ in columns])
+    return LispStruct(kind, {Symbol(n): _lisp_scalar(v.items[i]) for n, v in columns})
+
+
+def struct_value(row, column_name, who):
+    """The value in `row`'s column (slot) called column_name."""
+    if not isinstance(row, LispStruct):
+        raise LispError("%s: not a row: %s" % (who, _brief(row)))
+    slot = Symbol(column_name)
+    if slot not in row.values:
+        raise LispError("%s: the row has no column %s -- its columns are %s"
+                        % (who, column_name, ", ".join(str(s) for s, _ in row.struct_type.slots)))
+    return row.values[slot]
+
+
+def row_ref(row, column_name):
+    """(row-ref row name) -- the value in the row's column called name (a
+    string or a symbol)."""
+    return struct_value(row, str(column_name), "row-ref")
+
+
+def check_table_value(value, column_name, who):
+    """A table holds numbers, strings, and dates, and '() for a missing value."""
+    if value is None or is_number(value) or isinstance(value, (LispString, LispDate)):
+        return
+    raise LispError("%s: a table holds numbers, strings, and dates, not %s (in column %s)"
+                    % (who, _brief(value), column_name))
+
+
+def table_from_rows(rows, names=NIL):
+    """(table-from-rows rows [names]) -- a table made from a list of rows.
+    Each row is a row from table-rows or table-row (or any struct), whose
+    slots become the columns -- or a list of values, one per column, with
+    the column names given as `names`. Given names, rows that are structs
+    keep just those columns, in that order. A column of numbers with '() in
+    it holds NaN there, as a column read from a CSV file would."""
+    who = "table-from-rows"
+    row_list = pairs_to_list(rows)
+    column_names = None if names is NIL else [str(n) for n in pairs_to_list(names)]
+    if not row_list:
+        return make_table_value([(n, LispVector([])) for n in column_names or []])
+    if isinstance(row_list[0], LispStruct):
+        if column_names is None:
+            column_names = [str(slot) for slot, _ in row_list[0].struct_type.slots]
+        values_by_column = [[struct_value(row, n, who) for row in row_list] for n in column_names]
+    else:
+        if column_names is None:
+            raise LispError("%s: these rows are lists, so give the column names: "
+                            "(table-from-rows rows names)" % who)
+        values_by_column = [[] for _ in column_names]
+        for row in row_list:
+            if not (row is NIL or isinstance(row, Pair)):
+                raise LispError("%s: a row must be a row (a struct) or a list, not %s" % (who, _brief(row)))
+            values = pairs_to_list(row)
+            if len(values) != len(column_names):
+                raise LispError("%s: the row %s has %d values, but there are %d column names"
+                                % (who, _brief(row), len(values), len(column_names)))
+            for column, value in zip(values_by_column, values):
+                column.append(value)
+    for n, values in zip(column_names, values_by_column):
+        for value in values:
+            check_table_value(value, n, who)
+    return make_table_value([(n, column_vector(values)) for n, values in zip(column_names, values_by_column)])
+
+
+def table_or_rows(data, who):
+    """data as a table: a table as it is, or a list of rows (structs) made
+    into one with table-from-rows."""
+    if isinstance(data, Pair) and isinstance(data.car, LispStruct):
+        return table_from_rows(data)
+    table_columns(data, who)        # an error, if it isn't a table either
+    return data
+
+
+ROW_VIEW_BUILTINS = {
+    "table-rows": table_rows,
+    "table-row": table_row,
+    "row-ref": row_ref,
+    "table-from-rows": table_from_rows,
+}
+
+
+def parse_iso_date(text):
+    """text as a LispDate if it's exactly YYYY-MM-DD, otherwise None."""
+    if len(text) != 10 or text[4] != "-" or text[7] != "-":
+        return None
+    try:
+        return LispDate(int(text[:4]), int(text[5:7]), int(text[8:]))
+    except ValueError:
+        return None
+
+
+def column_vector(values):
+    """A column's values (a Python list of Lisp values, with None -- '() --
+    for a missing one) as a vector, read the way load-csv reads a CSV
+    column: if every value that isn't missing is a number, a numeric vector
+    with NaN for the missing ones; if every one is YYYY-MM-DD text, a vector
+    of dates (SQLite has no date type, so sqlite-write-table stores dates
+    that way); otherwise the values as they are, with '() for the missing
+    ones. Used for query results, table-from-rows, and the option chain."""
+    present = [v for v in values if v is not None]
+    if present and len(present) < len(values) and \
+            all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in present):
+        return LispVector([float("nan") if v is None else v for v in values])
+    if present and all(isinstance(v, str) for v in present):
+        dates = [parse_iso_date(v) for v in present]
+        if all(d is not None for d in dates):
+            return LispVector([None if v is None else parse_iso_date(v) for v in values])
+    return LispVector(values)
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +645,7 @@ SUMMARY_BUILTINS = {
 
 BUILTINS = {}
 BUILTINS.update(LOOKING_BUILTINS)
+BUILTINS.update(ROW_VIEW_BUILTINS)
 BUILTINS.update(COLUMN_BUILTINS)
 BUILTINS.update(ROW_BUILTINS)
 BUILTINS.update(SUMMARY_BUILTINS)

@@ -39,10 +39,10 @@
 (define sofr-months (car sofr-curve))
 (define sofr-forward-rates (cdr sofr-curve))   ; (vector-ref sofr-forward-rates (- month 1))
 
-(set! *column-number-format* "{:,.4f}")
 (display "SOFR forward curve, first 12 months:") (newline)
-(display-columns (list (cons "month" (vector-slice sofr-months 0 12))
-                        (cons "sofr_1m" (vector-slice sofr-forward-rates 0 12))))
+(display-table (make-table "month" (vector-slice sofr-months 0 12)
+                           "sofr_1m" (vector-slice sofr-forward-rates 0 12))
+               '(("sofr_1m" ".4f")))
 (newline)
 
 ; --- 2. a floating-rate note: coupon = SOFR(this period) + a fixed margin.
@@ -86,9 +86,8 @@
   :initial_value 0
   :value_calculation (* (lag balance 1) (/ coupon_rate 12.0)))
 
-; No need to fiddle with *column-number-format* for this one -- balance/
-; interest use the `decimals` slot's default (0, a dollar amount), and
-; sofr_1m/coupon_rate each specify their own (4, above).
+; balance/interest use the `decimals` slot's default (0, a dollar
+; amount), and sofr_1m/coupon_rate each specify their own (4, above).
 (calculate-all *columns* (+ note_term 1))
 (write-csv "sofr_floating_rate_example.csv" *columns*)
 (display "Wrote sofr_floating_rate_example.csv") (newline)

@@ -73,7 +73,8 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - hash tables, strings, sorting, pseudo-random numbers
   - format, for numbers with commas and decimals in fixed-width fields
   - fast math and statistics on whole vectors, with NaN for missing values
-  - tables: filter, sort, group-by, join, and summarize columns of data
+  - tables: filter, sort, group-by, join, and summarize columns of data,
+    or look at them a row at a time (table-rows); display-table shows one
   - monthly time series, with months as plain integers
   - linear, logistic, and spline regression with any number of predictors,
     with standard errors, p-values, AUC, and lift tables

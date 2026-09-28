@@ -26,6 +26,7 @@ from lisp_core import (
     LispDate, LispError, LispString, LispVector, NIL, Pair,
     is_true, list_to_pairs, pairs_to_list,
 )
+from lisp_tables import column_vector, make_table_value
 
 
 try:
@@ -656,9 +657,10 @@ def tastytrade_option_chain_fn(credentials_path, symbol, n_months=12,
                                 greeks_timeout=25.0):
     """(tastytrade-option-chain credentials-path symbol
          [n-months max-strikes-per-expiration include-iv? greeks-timeout])
-    -> a list of rows (symbol type strike expiration-date days-to-expiration
-    delivery-month underlying last-price implied-volatility volume
-    open-interest). `type` is "Call" or "Put".
+    -> a table (see lisp_tables.py), one row per option, with the columns
+    in OPTION_CHAIN_COLUMNS: symbol, type ("Call" or "Put"), strike,
+    expiration-date, days-to-expiration, delivery-month, underlying,
+    last-price, implied-volatility, volume, and open-interest.
 
     `symbol` is a futures root such as "/CL", a short code from
     (tastytrade-products) such as "CL", or anything else, e.g. "AAPL", for an
@@ -669,11 +671,29 @@ def tastytrade_option_chain_fn(credentials_path, symbol, n_months=12,
 
     Implied volatility comes from a live stream, which is slow: pass #f for
     include-iv? to skip it, and greeks-timeout caps the wait in seconds.
-    Values tastytrade doesn't report come back as '()."""
+    Values tastytrade doesn't report are missing: NaN in a column of
+    numbers, '() otherwise."""
     rows = _run_async(_tasty_option_chain_async(
         credentials_path, symbol, int(n_months), int(max_strikes_per_expiration),
         is_true(include_iv), float(greeks_timeout)))
-    return list_to_pairs([list_to_pairs(row) for row in rows])
+    return option_chain_table(rows)
+
+
+# The columns of the table tastytrade-option-chain returns, in the order
+# _tasty_option_row gives them.
+OPTION_CHAIN_COLUMNS = [
+    "symbol", "type", "strike", "expiration-date", "days-to-expiration", "delivery-month",
+    "underlying", "last-price", "implied-volatility", "volume", "open-interest",
+]
+
+
+def option_chain_table(rows):
+    """The option chain's rows (as _tasty_option_row makes them) as a table,
+    one column per field. A value tastytrade didn't report is '() in the
+    row, which is NaN in a column of numbers."""
+    values_by_column = [[row[j] for row in rows] for j in range(len(OPTION_CHAIN_COLUMNS))]
+    return make_table_value([(name, column_vector(values))
+                             for name, values in zip(OPTION_CHAIN_COLUMNS, values_by_column)])
 
 
 def tastytrade_products_fn():
