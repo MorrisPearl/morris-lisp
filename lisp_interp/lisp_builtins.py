@@ -41,6 +41,7 @@ import lisp_debug
 import lisp_finance
 import lisp_fred
 import lisp_http
+import lisp_regex
 import lisp_regression
 import lisp_simplex
 import lisp_sofr
@@ -832,6 +833,25 @@ def string_split(s, sep=None):
     return list_to_pairs([LispString(p) for p in pieces])
 
 
+def string_join(strings, separator=" "):
+    """(string-join strings [separator]) -- the strings in a list or vector
+    joined into one, with separator (a space, unless given) between them.
+    Anything that isn't a string is joined as display shows it, so a list
+    of symbols makes a sentence."""
+    return LispString(str(separator).join(str(to_display_string(x))
+                                          for x in sequence_items(strings, "string-join")))
+
+
+def read_line(prompt=""):
+    """(read-line [prompt]) -- a line typed by the user, as a string (without
+    the newline), after showing prompt; #f at the end of the input (Ctrl-D
+    at a terminal). In a Jupyter notebook, the notebook asks for the line."""
+    try:
+        return LispString(input(str(to_display_string(prompt))))
+    except EOFError:
+        return False
+
+
 def string_to_number(s):
     """(string->number s) -- the number written in the string s, such as
     "42", "-3.5", or "1e6"."""
@@ -918,6 +938,8 @@ STRING_BUILTINS = {
     "string-split": string_split,
     "string-replace": lambda s, old, new: LispString(str(s).replace(str(old), str(new))),
     "string-trim": lambda s: LispString(str(s).strip()),
+    "string-join": string_join,
+    "read-line": read_line,
     "format": lisp_format,
     "format-value": format_value,
 }
@@ -1500,6 +1522,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None):
     env.update(STRUCT_BUILTINS)
     env.update(HASH_TABLE_BUILTINS)
     env.update(STRING_BUILTINS)
+    env.update(lisp_regex.BUILTINS)
     env.update(VECTOR_BUILTINS)
     env.update(DATE_BUILTINS)
     env.update(lisp_vector_math.BUILTINS)

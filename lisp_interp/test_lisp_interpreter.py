@@ -1598,6 +1598,62 @@ class TestStrings(LispTestCase):
     def test_string_escapes_survive_a_round_trip(self):
         self.assertShows(r'(string-length "a\nb")', "3")
 
+    def test_string_join(self):
+        self.assertShows('(string-join (list "a" "b" "c") ", ")', '"a, b, c"')
+        self.assertShows("(string-join '(i am 42))", '"i am 42"')     # symbols and numbers as display shows them
+        self.assertShows('(string-join (vector 1 2) "+")', '"1+2"')
+        self.assertShows("(string-join '())", '""')
+
+    def test_read_line_returns_the_typed_line_after_the_prompt(self):
+        with mock.patch("builtins.input", return_value="hello there") as fake_input:
+            self.assertShows('(read-line "You: ")', '"hello there"')
+        fake_input.assert_called_once_with("You: ")
+
+    def test_read_line_returns_false_at_the_end_of_the_input(self):
+        with mock.patch("builtins.input", side_effect=EOFError):
+            self.assertShows("(read-line)", "#f")
+
+
+class TestRegularExpressions(LispTestCase):
+    """lisp_regex.py: regex-search, regex-match, regex-find-all,
+    regex-replace, regex-split, and regex-quote."""
+
+    def test_search_gives_the_match_and_its_groups(self):
+        self.assertShows('(regex-search "(\\d+)-(\\d+)" "pages 12-34 and 56-78")', '("12-34" "12" "34")')
+        self.assertShows('(regex-search "x(y)?z" "xz")', '("xz" ())')
+        self.assertShows('(regex-search "\\d+" "no digits")', "#f")
+
+    def test_match_must_match_the_whole_string(self):
+        self.assertShows('(regex-match "\\d{4}-\\d{2}-\\d{2}" "2026-09-29")', '("2026-09-29")')
+        self.assertShows('(regex-match "\\d+" "12a")', "#f")
+
+    def test_find_all(self):
+        self.assertShows('(regex-find-all "\\d+" "a1 b22 c333")', '("1" "22" "333")')
+        self.assertShows('(regex-find-all "(\\w)\\d" "a1 b2")', '("a" "b")')
+        self.assertShows('(regex-find-all "(\\w)(\\d)" "a1 b2")', '(("a" "1") ("b" "2"))')
+
+    def test_replace(self):
+        self.assertShows('(regex-replace "\\s+" "too   many    spaces" " ")', '"too many spaces"')
+        self.assertShows('(regex-replace "(\\w+)@(\\w+)" "joe@example" "\\2 at \\1")', '"example at joe"')
+        self.assertShows('(regex-replace "a" "banana" "o" 2)', '"bonona"')
+        self.assertShows('(regex-replace "\\d+" "a1 b22" (lambda (m) (* 2 (string->number (car m)))))', '"a2 b44"')
+
+    def test_split_and_quote(self):
+        self.assertShows('(regex-split "[,;]\\s*" "a, b;c")', '("a" "b" "c")')
+        self.assertShows('(regex-quote "3.5+x")', '"3\\\\.5\\\\+x"')
+        self.assertShows('(regex-search (regex-quote "3.5+x") "y = 3.5+x")', '("3.5+x")')
+
+    def test_flags_go_in_the_pattern(self):
+        self.assertShows('(regex-search "(?i)hello" "Say HELLO")', '("HELLO")')
+
+    def test_a_bad_pattern(self):
+        self.assertLispError('(regex-search "(" "x")', 'regex-search: "(" isn\'t a valid regular expression')
+
+    def test_a_backslash_before_an_ordinary_character_is_kept(self):
+        self.assertEqual(self.run_lisp('"\\d"'), "\\d")          # so "\d+" is the pattern \d+
+        self.assertEqual(self.run_lisp('"\\\\d"'), "\\d")      # and "\\d" too
+        self.assertEqual(self.run_lisp('"a\\tb"'), "a\tb")       # \t is still a tab
+
 
 class TestFormat(LispTestCase):
     """format and format-value: Python format specs applied to Lisp values."""
@@ -5377,6 +5433,54 @@ class ScriptedFrontend:
         return self.wait_for(lambda: text in self.transcript(), timeout)
 
 
+def start_test_kernel(tmp, name):
+    """A ScriptedFrontend for a new kernel running lisp_kernel.py with no init
+    file. Its kernel spec is written in the directory tmp, which is removed
+    (and the test class skipped) if the kernel can't be started."""
+    for module in ("ipykernel", "ipywidgets", "jupyter_client"):
+        if importlib.util.find_spec(module) is None:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise unittest.SkipTest("%s is needed" % module)
+    spec_dir = os.path.join(tmp, "kernels", name)
+    os.makedirs(spec_dir)
+    with open(os.path.join(spec_dir, "kernel.json"), "w") as f:
+        json.dump({"argv": [sys.executable, os.path.join(HERE, "lisp_kernel.py"), "-f", "{connection_file}"],
+                   "display_name": name, "language": "scheme",
+                   "env": {"LISP_INIT_FILE": os.path.join(tmp, "no-such-init.lsp")}}, f)
+    try:
+        with mock.patch.dict(os.environ, {"JUPYTER_PATH": tmp}):
+            return ScriptedFrontend(name)
+    except Exception as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise unittest.SkipTest("couldn't start a kernel: %s" % e)
+
+
+class TestKernelReadLine(unittest.TestCase):
+    """read-line in a real Jupyter kernel: the kernel asks the notebook for the
+    line (an input_request), as input() does in a Python notebook."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.frontend = start_test_kernel(cls.tmp, "lisp-read-line-test")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.frontend.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_read_line_asks_the_notebook_for_the_line(self):
+        fe = self.frontend
+        cell = fe.start('(string-append "Hello, " (read-line "Name? "))')
+        request = fe.kc.get_stdin_msg(timeout=20)
+        self.assertEqual(request["msg_type"], "input_request")
+        self.assertEqual(request["content"]["prompt"], "Name? ")
+        fe.kc.input("Kim")
+        self.assertTrue(fe.wait_for(lambda: cell.done))
+        self.assertEqual(cell.errors, [])
+        self.assertEqual(cell.results, ['"Hello, Kim"'])
+
+
 class TestJupyterDebugger(unittest.TestCase):
     """The debug REPL in a real Jupyter kernel, with a scripted frontend: a stop
     in the middle of a cell shows widgets, the widgets work while the cell is
@@ -5384,22 +5488,8 @@ class TestJupyterDebugger(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        for name in ("ipykernel", "ipywidgets", "jupyter_client"):
-            if importlib.util.find_spec(name) is None:
-                raise unittest.SkipTest("%s is needed" % name)
         cls.tmp = tempfile.mkdtemp()
-        spec_dir = os.path.join(cls.tmp, "kernels", "lisp-debug-test")
-        os.makedirs(spec_dir)
-        with open(os.path.join(spec_dir, "kernel.json"), "w") as f:
-            json.dump({"argv": [sys.executable, os.path.join(HERE, "lisp_kernel.py"), "-f", "{connection_file}"],
-                       "display_name": "lisp-debug-test", "language": "scheme",
-                       "env": {"LISP_INIT_FILE": os.path.join(cls.tmp, "no-such-init.lsp")}}, f)
-        try:
-            with mock.patch.dict(os.environ, {"JUPYTER_PATH": cls.tmp}):
-                cls.frontend = ScriptedFrontend("lisp-debug-test")
-        except Exception as e:
-            shutil.rmtree(cls.tmp, ignore_errors=True)
-            raise unittest.SkipTest("couldn't start a kernel: %s" % e)
+        cls.frontend = start_test_kernel(cls.tmp, "lisp-debug-test")
 
     @classmethod
     def tearDownClass(cls):
@@ -5860,10 +5950,15 @@ class TestExampleScripts(unittest.TestCase):
         "linear_programming_example.lsp",
         "debugging_example.lsp",
         "stratify_example.lsp",
+        "eliza_example.lsp",
+        "symbolic_algebra_example.lsp",
+        "nlp_parsing_example.lsp",
+        "unification_grammar_example.lsp",
     ]
     SLOW_EXAMPLES = [
         "dolist_vectors_map_example.lsp",
         "oas_monte_carlo_example.lsp",
+        "othello_example.lsp",
     ]
 
     @classmethod
@@ -5934,6 +6029,53 @@ class TestExampleScripts(unittest.TestCase):
                          "  (middle 5)  [+1 tail call]\n  (inner 5)\n"
                          "Error: car: not a pair: 5\n")
 
+    def test_the_eliza_example_answers_from_its_rules(self):
+        out = self.results["eliza_example.lsp"].stdout
+        self.assertIn("ELIZA: Why do you say your boyfriend made you come here?\n", out)
+        self.assertIn("ELIZA: How long have you been depressed much of the time?\n", out)
+        self.assertIn("ELIZA: Does it please you to believe I am not very helpful?\n", out)
+
+    def test_eliza_talks_with_whoever_types_until_bye(self):
+        """(eliza) reads lines with read-line: here, from standard input."""
+        with open(os.path.join(self.tmp, "eliza_example.lsp")) as f:
+            source = f.read()
+        path = os.path.join(self.tmp, "eliza_interactive.lsp")
+        with open(path, "w") as f:
+            f.write(source + "\n(random-seed 1)\n(eliza)\n")
+        r = run_cli(path, stdin="I need a long vacation\nbye\n", cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("a long vacation", r.stdout.split("ELIZA: Hello.")[-1])
+        self.assertTrue(r.stdout.endswith("ELIZA: Goodbye.\n"))
+
+    def test_the_symbolic_algebra_example_simplifies(self):
+        out = self.results["symbolic_algebra_example.lsp"].stdout
+        self.assertIn("((x + 1) * (x - 1))\n    = x^2 - 1\n", out)
+        self.assertIn("    = 20*x^9 + 240*x^7 + 504*x^5 + 240*x^3 + 20*x\n", out)
+        self.assertIn("(d (3 * x ^ 2 + 2 * x + 1) / d x)\n    = 6*x + 2\n", out)
+        self.assertIn("(1 + x + y + z) ^ 6 has 84 terms.", out)
+
+    def test_the_nlp_parsing_example_finds_every_reading(self):
+        out = self.results["nlp_parsing_example.lsp"].stdout
+        self.assertIn("((the man) ((saw (the woman)) (with (the telescope))))\n"
+                      "((the man) (saw ((the woman) (with (the telescope)))))\n", out)
+        self.assertIn("  42 readings: the man saw the woman in the park with the telescope on the hill by the table", out)
+        self.assertIn("(S (NP (D the) (N glorp)) (VP (V blicked) (NP (D a) (N dog))))", out)
+        self.assertIn("  two plus three times four: (20 14)\n", out)
+
+    def test_the_unification_grammar_example_parses_and_generates(self):
+        out = self.results["unification_grammar_example.lsp"].stdout
+        self.assertIn("  ways to append two lists to make (1 2 3): ((() (1 2 3)) ((1) (2 3)) ((1 2) (3)) ((1 2 3) ()))", out)
+        self.assertIn("  The cats chase a dog.\n      ((the ?x (cat ?x) (some ?y (dog ?y) (chase ?x ?y))))\n", out)
+        self.assertIn("  The dogs sleeps.  ()\n", out)
+        self.assertIn("  Every dog barks.\n      (every dog barks)\n      (all dogs bark)\n", out)
+
+    def test_the_othello_example_plays_its_games(self):
+        if "othello_example.lsp" not in self.results:
+            self.skipTest("othello_example.lsp is slow: set LISP_TEST_SLOW to run it")
+        out = self.results["othello_example.lsp"].stdout
+        self.assertIn("From the opening, looking 3 moves ahead: minimax 1, alpha-beta 1\n", out)
+        self.assertIn(" moves; ", out)
+
     def test_the_with_struct_example_produces_its_documented_output(self):
         out = self.results["with_struct_example.lsp"].stdout
         self.assertIn("30yr 6% $300k payment: 179865 cents/month", out)
@@ -5954,7 +6096,7 @@ _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
     "fred-series", "tastytrade", "sofr-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv",
-    "input", "exit", "load-init", "http-get", "http-clear-cache",
+    "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
 )
 # examples whose documented value is illustrative rather than exact
 _ILLUSTRATIVE_PREFIXES = ("e.g.", "one of", "some", "a ", "an ", "somewhere", "error", "raises",

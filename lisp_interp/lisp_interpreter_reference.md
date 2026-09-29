@@ -71,6 +71,7 @@ functions" as a reference to search rather than read start to end.
   - [Pairs and lists](#pairs-and-lists)
   - [Hash tables](#hash-tables)
   - [Strings](#strings)
+  - [Regular expressions](#regular-expressions)
   - [Formatting numbers and text](#formatting-numbers-and-text)
   - [Vectors](#vectors)
   - [Vector math and statistics](#vector-math-and-statistics)
@@ -95,6 +96,7 @@ functions" as a reference to search rather than read start to end.
   - [Debugging](#debugging-1)
   - [Verbose mode and stack traces](#verbose-mode-and-stack-traces)
 - [A short example](#a-short-example)
+- [Examples after Norvig's *Paradigms of AI Programming*](#examples-after-norvigs-paradigms-of-ai-programming)
 - [How the code is organized](#how-the-code-is-organized)
 - [Running the tests](#running-the-tests)
 - [Adding your own builtins](#adding-your-own-builtins)
@@ -185,7 +187,7 @@ Jupyter alike — loads these Lisp files before doing anything else:
 |---|---|---|
 | Integer | `42`, `-7` | Python `int` |
 | Float | `3.14`, `-0.5`, `nan`, `inf` | Python `float`. `nan` ("not a number", the missing-value marker) and `inf` (infinity) are numbers too, so they can't be used as names (see below) |
-| String | `"hello"` | Double-quoted; `\n`, `\t`, `\r`, `\"`, `\\` escapes. The REPL prints a string the same way, in quotes and with `\"` and `\\` for a quote mark or backslash inside it, so what it prints can be typed back in (see `display`) |
+| String | `"hello"` | Double-quoted; `\n`, `\t`, `\r`, `\"`, `\\` escapes. A backslash before any other character is kept, as in Python, so a regular expression can be written as it is: `"\d+"`. The REPL prints a string the same way, in quotes and with `\"` and `\\` for a quote mark or backslash inside it, so what it prints can be typed back in (see `display`) |
 | Boolean | `#t`, `#f` | Everything except `#f` counts as true |
 | Symbol | `foo`, `list->vector` | Identifiers: anything that isn't read as a number or one of the types above |
 | quote | `'(a b c)` , `'(1 2 3)` , `'f`| Something that is not to be evaluated, but is treated as data |
@@ -2324,6 +2326,87 @@ free-form text.
 
 ```lisp
 (string-trim "  hi  ")         ; => "hi"
+```
+
+#### `(string-join items [separator])`
+The strings in a list or vector joined into one, with `separator` (a
+space, unless given) between them. An item that isn't a string is joined
+as `display` shows it, so a list of symbols makes a sentence.
+
+```lisp
+(string-join (list "a" "b" "c") ", ")   ; => "a, b, c"
+(string-join '(i am 42))                ; => "i am 42"
+```
+
+### Regular expressions
+
+(In `lisp_regex.py`.) Searching, matching, replacing, and splitting text
+with regular expressions — a thin layer over Python's `re` module, so the
+patterns are Python's (see https://docs.python.org/3/library/re.html). A
+backslash in a pattern can be written as it is: `"\d+"` is the pattern
+`\d+` (one or more digits). Flags go at the start of the pattern: `(?i)`
+to ignore case, `(?m)` for `^` and `$` to match at every line.
+
+A **match** is a list: the text that matched, then the text of each group
+(each part of the pattern in parentheses), or `'()` for a group that took
+no part in the match. No match is `#f`, so a search can be the test of an
+`if`.
+
+#### `(regex-search pattern s)`
+The first match of `pattern` anywhere in `s`.
+
+```lisp
+(regex-search "(\d+)-(\d+)" "pages 12-34 and 56-78")   ; => ("12-34" "12" "34")
+(regex-search "x(y)?z" "xz")                            ; => ("xz" ())
+(regex-search "\d+" "no digits")                        ; => #f
+(regex-search "(?i)hello" "Say HELLO")                  ; => ("HELLO")
+```
+
+#### `(regex-match pattern s)`
+A match of `pattern` against the whole of `s`, or `#f` — to check that a
+string has a form, such as a date.
+
+```lisp
+(regex-match "\d{4}-\d{2}-\d{2}" "2026-09-29")          ; => ("2026-09-29")
+(regex-match "\d+" "12a")                               ; => #f
+```
+
+#### `(regex-find-all pattern s)`
+Every match, as a list: the matched texts if the pattern has no groups;
+the text of the group, if it has one; or a list of the groups' texts for
+each match, if it has several.
+
+```lisp
+(regex-find-all "\d+" "a1 b22 c333")                    ; => ("1" "22" "333")
+(regex-find-all "(\w)(\d)" "a1 b2")                     ; => (("a" "1") ("b" "2"))
+```
+
+#### `(regex-replace pattern s replacement [count])`
+`s` with each match of `pattern` replaced — only the first `count`, if
+given. The replacement is a string, in which `\1` stands for what the first
+group matched (and so on); or a procedure, which is given the match (a
+list, as `regex-search` returns) and returns what to put in its place.
+
+```lisp
+(regex-replace "\s+" "too   many    spaces" " ")         ; => "too many spaces"
+(regex-replace "(\w+)@(\w+)" "joe@example" "\2 at \1")  ; => "example at joe"
+(regex-replace "\d+" "a1 b22" (lambda (m) (* 2 (string->number (car m)))))   ; => "a2 b44"
+```
+
+#### `(regex-split pattern s)`
+The pieces of `s` between the matches of `pattern`.
+
+```lisp
+(regex-split "[,;]\s*" "a, b;c")                         ; => ("a" "b" "c")
+```
+
+#### `(regex-quote s)`
+`s` with every character that has a special meaning in a pattern
+backslashed, so a pattern made from it matches `s` exactly — for text
+that comes from data.
+
+```lisp
+(regex-search (regex-quote "3.5+x") "y = 3.5+x")         ; => ("3.5+x")
 ```
 
 ### Formatting numbers and text
@@ -5759,6 +5842,19 @@ one line
 another
 ```
 
+#### `(read-line [prompt])`
+Shows `prompt` (if given), waits for the user to type a line, and returns
+it as a string, without the newline. At the end of the input (Ctrl-D at a
+terminal, or the end of a file piped in) it returns `#f`. It works at the
+console REPL, in batch mode (reading standard input), and in a Jupyter
+notebook, where the notebook shows a box to type the line in -- but not in
+the PyQt window.
+
+```lisp
+(define name (read-line "Your name? "))
+(display (format "Hello, {}.\n" name))
+```
+
 #### `(load "path.lsp")`
 Reads and evaluates every top-level form in the file at `path`, in the
 **same** (calling) global environment, so its `define`s/`defmacro`s become
@@ -6491,6 +6587,28 @@ Lisp call stack (most recent call last):
 (save-chart "demand.png")
 ```
 
+## Examples after Norvig's *Paradigms of AI Programming*
+
+Five programs in `examples/` follow chapters of Peter Norvig's
+*Paradigms of Artificial Intelligence Programming* (1992), the classic
+book of AI programs in Common Lisp. They're written afresh for this
+interpreter -- with its own rules, grammars, and weights -- and show how
+its lists, pattern matching, regular expressions, and vector math handle
+that kind of work. (Norvig's own code is at
+https://github.com/norvig/paip-lisp, under the MIT license.) Run one from
+`examples/`, e.g. `python3 ../lisp_interpreter.py eliza_example.lsp`.
+
+| File | Chapter | What it does |
+|---|---|---|
+| `eliza_example.lsp` | 5 | ELIZA, which holds a conversation by matching what you type against patterns such as `((?* ?x) i want (?* ?y))` and answering from templates, with your words swapped around ("my" becomes "your"). Runs a scripted conversation; to talk to it yourself, `(load "eliza_example.lsp")` and then `(eliza)`. |
+| `symbolic_algebra_example.lsp` | 15 | Polynomials in a canonical form: `(canon '((x + 1) * (x - 1)))` is `"x^2 - 1"`, and `(canon '(d (3 * x ^ 2 + 2 * x + 1) / d x))` is `"6*x + 2"`. |
+| `othello_example.lsp` | 18 | Othello, with players that move at random, count pieces, weigh squares, and search ahead with minimax and alpha-beta pruning. The board is a vector, so a position is scored with vector math. To play, `(load "othello_example.lsp")` and then `(othello human (alpha-beta-searcher 2 weighted-squares) #t)`. |
+| `nlp_parsing_example.lsp` | 19 | A parser that finds every parse of a sentence, so it shows where the sentence is ambiguous ("the man saw the woman with the telescope" has two readings); remembering parses to make it fast; guessing at unknown words; and a grammar whose parses have meanings ("two plus three times four" is 20 or 14). |
+| `unification_grammar_example.lsp` | 20, 21 | A small Prolog (unification and a prover), and a grammar written in it whose features make the subject and verb agree and whose parses are formulas of logic: "every dog chases a cat" is `(every ?x (dog ?x) (some ?y (cat ?y) (chase ?x ?y)))`. Run backwards, it turns a meaning into the sentences that say it. |
+
+ELIZA and Othello read what you type with `read-line`, so they work at the
+console REPL and in a Jupyter notebook.
+
 ---
 
 ## How the code is organized
@@ -6502,7 +6620,7 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 | Directory | What's in it |
 |---|---|
 | `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `implied_vol.lsp`, `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
-| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read. Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
+| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming* (see the section above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `tools/` | `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV, and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 
 `load` finds files in `lib/` and `examples/` from anywhere (see "Where
@@ -6516,6 +6634,7 @@ The Python files:
 | `lisp_core.py` | The language itself: data types, the reader, environments, the evaluator and special forms, call tracing, and the printer. It imports none of the other files. |
 | `lisp_builtins.py` | The general built-in procedures (numbers, lists, strings, making and reading vectors, dates, hash tables, output, ...) and `make_global_env()`, which builds a new environment containing every builtin |
 | `lisp_vector_math.py` | Arithmetic, comparisons, statistics, and time-series functions on whole vectors (`vector-mul`, `vector>`, `vector-mean`, `vector-lag`, ...) |
+| `lisp_regex.py` | Regular expressions: `regex-search`, `regex-replace`, ... |
 | `lisp_tables.py` | Tables: `table-filter`, `table-sort`, `table-group-by`, `table-join`, ... |
 | `lisp_stratify.py` | Stratification tables: `stratify`, `stratify-all` |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |

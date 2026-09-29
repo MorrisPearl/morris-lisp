@@ -21,7 +21,10 @@ Differences from a Python kernel:
   - (abort) ends the cell with an "Aborted" error.
   - The history variables _, __, ___, and _N (the result of cell N) are
     set in the Lisp environment by hand (see _record_history), since
-    IPython only sets them for Python code."""
+    IPython only sets them for Python code.
+
+As in a Python kernel, (read-line) -- Python's input() -- asks the notebook
+for a line, which it shows a box to type in; do_execute arranges that."""
 from __future__ import annotations
 
 import os
@@ -89,6 +92,9 @@ class LispKernel(IPythonKernel):
                     allow_stdin=False, *, cell_meta=None, cell_id=None):
         env = lisp_jupyter.get_env()
         result = NIL
+        # While the cell runs, Python's input() -- which read-line uses -- asks
+        # the notebook for a line, as it does in a Python notebook.
+        self._forward_input(allow_stdin)
         try:
             for expr in parse(code):
                 result = seval(expr, env)
@@ -98,6 +104,8 @@ class LispKernel(IPythonKernel):
             return self._error_reply("LispError", str(e), format_lisp_traceback(e))
         except Exception as e:
             return self._error_reply(type(e).__name__, str(e), format_lisp_traceback(e))
+        finally:
+            self._restore_input()
 
         if not silent and result is not NIL:
             self._record_history(env, result)

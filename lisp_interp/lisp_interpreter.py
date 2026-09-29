@@ -23,6 +23,7 @@ HOW THE CODE IS ORGANIZED
                           which puts every builtin into a new environment
     lisp_debug.py         break, unbreak, set-debug-hook!, abort, locals, ...
     lisp_vector_math.py   arithmetic, comparisons, statistics, lags on whole vectors
+    lisp_regex.py         regex-search, regex-replace, ...: regular expressions
     lisp_tables.py        tables: filter, sort, group, join, describe
     lisp_stratify.py      stratify, stratify-all: stratification tables
     lisp_time_series.py   month numbers and monthly time series
@@ -74,7 +75,7 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - arithmetic and comparisons on whole vectors: (* balance rate), (> v 0)
   - length, map, filter, reduce, ... on lists, vectors, and strings
   - error messages that name the procedure that went wrong
-  - hash tables, strings, sorting, pseudo-random numbers
+  - hash tables, strings, regular expressions, sorting, pseudo-random numbers
   - format, for numbers with commas and decimals in fixed-width fields
   - fast math and statistics on whole vectors, with NaN for missing values
   - tables: filter, sort, group-by, join, and summarize columns of data,

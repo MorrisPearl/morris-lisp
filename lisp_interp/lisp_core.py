@@ -468,8 +468,11 @@ def tokenize(text):
             buf = []
             while j < n and text[j] != '"':
                 if text[j] == '\\' and j + 1 < n:
+                    # \n, \t, \r, \", and \\ are escapes. A backslash before any
+                    # other character is kept, as Python does, so that a
+                    # regular expression such as "\d+" can be written as is.
                     escapes = {'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\'}
-                    buf.append(escapes.get(text[j + 1], text[j + 1]))
+                    buf.append(escapes.get(text[j + 1], '\\' + text[j + 1]))
                     j += 2
                 else:
                     buf.append(text[j])
