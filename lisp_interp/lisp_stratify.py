@@ -33,7 +33,9 @@ from lisp_core import (
     Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, Symbol,
     _brief, _lisp_scalar, is_true, list_to_pairs, pairs_to_list, to_display_string,
 )
-from lisp_tables import aggregate, find_column, make_table_value, row_count, table_columns
+from lisp_tables import (
+    WEIGHTED_FUNCTIONS, aggregate, find_column, make_table_value, row_count, summary_function, table_columns,
+)
 from lisp_vector_math import factorize, floats_of, is_number, missing_mask, to_vector
 
 
@@ -191,26 +193,23 @@ def bucket_rows(columns, spec, weights):
 # The summaries
 # ---------------------------------------------------------------------------
 
-SUMMARY_FUNCTIONS = ("sum", "mean", "weighted-mean", "min", "max", "median", "stdev", "first", "last")
-
-
 def summary_specs(columns, summaries, weight_vector):
     """The summaries, (column function [heading]), as (heading, function,
-    column vector) tuples. The heading is "column (function)" unless given."""
+    percent, column vector) tuples -- see lisp_tables.summary_function for
+    function and percent. The heading is "column (function)" unless given."""
     specs = []
     for spec in pairs_to_list(summaries):
         parts = pairs_to_list(spec) if isinstance(spec, Pair) else []
         if len(parts) not in (2, 3):
             raise LispError("stratify: each summary is (column function [heading]), such as "
                             "(\"rate\" weighted-mean \"WAC\") -- not %s" % (_brief(spec),))
-        column_name, function = str(parts[0]), str(parts[1])
-        if function not in SUMMARY_FUNCTIONS:
-            raise LispError("stratify: %s isn't a summary -- use one of %s"
-                            % (function, ", ".join(SUMMARY_FUNCTIONS)))
-        if function == "weighted-mean" and weight_vector is None:
-            raise LispError("stratify: a weighted-mean needs a weight -- give :weight \"column\"")
-        heading = str(parts[2]) if len(parts) == 3 else "%s (%s)" % (column_name, function)
-        specs.append((heading, function, find_column(columns, column_name, "stratify")))
+        column_name = str(parts[0])
+        function, percent = summary_function(parts[1], "stratify")
+        if function in WEIGHTED_FUNCTIONS and weight_vector is None:
+            raise LispError("stratify: a %s needs a weight -- give :weight \"column\"" % function)
+        function_text = function if percent is None else "%s %g" % (function, percent)
+        heading = str(parts[2]) if len(parts) == 3 else "%s (%s)" % (column_name, function_text)
+        specs.append((heading, function, percent, find_column(columns, column_name, "stratify")))
     return specs
 
 
@@ -304,12 +303,12 @@ def stratify_table(columns, by, specs, weight_name, weight_vector, with_total):
     else:
         result.append(("percent", [c / n for c in counts] + ([1.0] if with_total else [])))
 
-    for heading, function, column in specs:
+    for heading, function, percent, column in specs:
         values = [_lisp_scalar(x) for x in
-                  aggregate(function, column, weight_vector, order, starts, counts, full_precision).items]
+                  aggregate(function, column, weight_vector, order, starts, counts, full_precision, percent).items]
         if with_total:
             values += [_lisp_scalar(x) for x in
-                       aggregate(function, column, weight_vector, *everything, full_precision).items]
+                       aggregate(function, column, weight_vector, *everything, full_precision, percent).items]
         result.append((heading, values))
 
     headings = [heading for heading, _ in result]
@@ -340,9 +339,10 @@ def stratify(table, by, summaries=NIL, *options):
     buckets. The columns are the bucket(s); count; with :weight, the total
     weight ("total balance", for :weight "balance") and its share of the
     table's ("percent"; without :weight, the share of the rows); then one
-    per summary, (column function [heading]), where
-    function is sum, mean, weighted-mean (by the :weight column), min, max,
-    median, stdev, first, or last."""
+    per summary, (column function [heading]), where function is one of
+    lisp_tables.SUMMARY_FUNCTIONS -- such as weighted-mean (by the :weight
+    column), mode, or representative (for a column like state, which can't
+    be averaged) -- or (percentile p) or (weighted-percentile p)."""
     columns, specs, weight_name, weight_vector, with_total = stratify_options(table, summaries, options, "stratify")
     return stratify_table(columns, by, specs, weight_name, weight_vector, with_total)
 

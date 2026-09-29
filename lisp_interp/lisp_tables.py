@@ -20,9 +20,9 @@ import numpy as np
 
 from lisp_core import (
     LispDate, LispError, LispString, LispStruct, LispStructType, LispVector, NIL, Pair, Symbol,
-    _brief, _lisp_scalar, is_true, list_to_pairs, pairs_to_list,
+    _brief, _lisp_scalar, is_true, list_to_pairs, pairs_to_list, to_string,
 )
-from lisp_vector_math import factorize, floats_of, is_number, to_vector, truth_of
+from lisp_vector_math import factorize, floats_of, is_number, missing_mask, to_vector, truth_of
 
 
 # ---------------------------------------------------------------------------
@@ -451,13 +451,118 @@ def group_sums(values, starts):
     return np.add.reduceat(np.where(np.isnan(values), 0.0, values), starts)
 
 
-def aggregate(function, column, weights, order, starts, counts, as_vector=to_vector):
-    """One aggregated column: `function` applied to each group's values.
+# The functions table-group-by and stratify can summarize a group with.
+# Those in WEIGHTED_FUNCTIONS need a weight column. percentile and
+# weighted-percentile are written with the percentile: (percentile 90).
+SUMMARY_FUNCTIONS = ("count", "sum", "mean", "weighted-mean", "median", "weighted-median",
+                     "percentile", "weighted-percentile", "min", "max", "stdev",
+                     "mode", "weighted-mode", "representative", "first", "last")
+WEIGHTED_FUNCTIONS = ("weighted-mean", "weighted-median", "weighted-percentile", "weighted-mode")
+
+
+def summary_function(spec, who):
+    """A summary function as it's written -- a symbol such as weighted-mean,
+    or (percentile p) or (weighted-percentile p) -- as (name, percent), percent
+    being None except for a percentile."""
+    if isinstance(spec, Pair):
+        parts = pairs_to_list(spec)
+        if len(parts) == 2 and str(parts[0]) in ("percentile", "weighted-percentile") \
+                and is_number(parts[1]) and 0 <= parts[1] <= 100:
+            return str(parts[0]), float(parts[1])
+        raise LispError("%s: a percentile is written (percentile p) or (weighted-percentile p), with p "
+                        "from 0 to 100 -- not %s" % (who, _brief(spec)))
+    name = symbol_argument(spec)
+    if name in ("percentile", "weighted-percentile"):
+        raise LispError("%s: say which percentile, e.g. (%s 90)" % (who, name))
+    if name not in SUMMARY_FUNCTIONS:
+        raise LispError("%s: %s isn't a summary -- use one of %s, (percentile p), or "
+                        "(weighted-percentile p)" % (who, name, ", ".join(
+                            f for f in SUMMARY_FUNCTIONS if f not in ("percentile", "weighted-percentile"))))
+    return name, None
+
+
+def representative_values(column, order, starts, counts):
+    """Each group's first value (in the table's order) that isn't missing: a
+    value that stands for the group, for a column such as a state, where
+    there's no sensible way to add or average."""
+    arranged = column.items[order]
+    missing = missing_mask(column)[order]
+    results = []
+    for s, c in zip(starts, counts):
+        present = np.nonzero(~missing[s:s + c])[0]
+        results.append(_lisp_scalar(arranged[s + present[0]]) if len(present) else None)
+    return LispVector(fill_missing(results, column))
+
+
+def mode_values(column, weights, order, starts, counts):
+    """Each group's most common value -- or, given weights, the value with the
+    most weight. A tie goes to the smallest value."""
+    codes, distinct = factorize(column.items)
+    arranged_codes = codes[order]
+    missing = missing_mask(column)[order]
+    arranged_weights = None if weights is None else np.nan_to_num(floats_of(weights, "mode")[order])
+    results = []
+    for s, c in zip(starts, counts):
+        keep = ~missing[s:s + c]
+        group_codes = arranged_codes[s:s + c][keep]
+        if not len(group_codes):
+            results.append(None)
+            continue
+        tally = np.bincount(group_codes, minlength=len(distinct),
+                            weights=None if arranged_weights is None else arranged_weights[s:s + c][keep])
+        results.append(_lisp_scalar(distinct[int(np.argmax(tally))]))
+    return LispVector(fill_missing(results, column))
+
+
+def fill_missing(results, column):
+    """results, with None -- a group with no values -- as the column's own
+    kind of missing value: NaN in a column of numbers, '() otherwise."""
+    if column.items.dtype == object:
+        return results
+    return [float("nan") if r is None else r for r in results]
+
+
+def group_percentiles(values, weights, starts, counts, percent):
+    """Each group's percent-th percentile of `values` (arranged group by group;
+    NaN is skipped). Without weights, interpolated between values, as numpy's
+    percentile does (the 50th is the median). With weights, the smallest value
+    at which the running total of weight, from the smallest value up, reaches
+    percent% of the group's total weight."""
+    results = []
+    for s, c in zip(starts, counts):
+        group = values[s:s + c]
+        keep = ~np.isnan(group)
+        if weights is not None:
+            keep &= ~np.isnan(weights[s:s + c])
+        group = group[keep]
+        if not len(group):
+            results.append(np.nan)
+            continue
+        if weights is None:
+            results.append(np.percentile(group, percent))
+            continue
+        by_value = np.argsort(group, kind="stable")
+        running_total = np.cumsum(weights[s:s + c][keep][by_value])
+        if running_total[-1] <= 0:
+            results.append(np.percentile(group, percent))
+            continue
+        position = np.searchsorted(running_total, running_total[-1] * percent / 100, side="left")
+        results.append(group[by_value][min(position, len(group) - 1)])
+    return np.array(results, dtype=np.float64)
+
+
+def aggregate(function, column, weights, order, starts, counts, as_vector=to_vector, percent=None):
+    """One aggregated column: `function` (see SUMMARY_FUNCTIONS) applied to
+    each group's values; `percent` says which percentile, for a percentile.
     as_vector makes the numpy result a vector: to_vector, which stores
     numbers the way every vector does (see LispVector), unless the caller
     wants otherwise -- stratify keeps its few totals in full precision."""
     if function == "count":
         return as_vector(counts)
+    if function == "representative":
+        return representative_values(column, order, starts, counts)
+    if function in ("mode", "weighted-mode"):
+        return mode_values(column, weights if function == "weighted-mode" else None, order, starts, counts)
     if function in ("first", "last"):
         arranged = column.items[order]
         return LispVector(arranged[starts if function == "first" else starts + counts - 1])
@@ -487,6 +592,9 @@ def aggregate(function, column, weights, order, starts, counts, as_vector=to_vec
             return as_vector(np.fmin.reduceat(values, starts))
         if function == "max":
             return as_vector(np.fmax.reduceat(values, starts))
+        if function in ("percentile", "weighted-percentile", "weighted-median"):
+            w = None if function == "percentile" else floats_of(weights, "table-group-by")[order]
+            return as_vector(group_percentiles(values, w, starts, counts, 50 if percent is None else percent))
         if function in ("median", "stdev"):
             results = []
             for s, c in zip(starts, counts):
@@ -497,8 +605,7 @@ def aggregate(function, column, weights, order, starts, counts, as_vector=to_vec
                 else:
                     results.append(group.std(ddof=1) if len(group) > 1 else np.nan)
             return as_vector(np.array(results, dtype=np.float64))
-    raise LispError("table-group-by: unknown function %s (use count, sum, mean, weighted-mean, "
-                    "min, max, median, stdev, first, or last)" % function)
+    raise LispError("table-group-by: unknown function %s" % function)
 
 
 def table_group_by(table, keys, aggregations):
@@ -508,9 +615,9 @@ def table_group_by(table, keys, aggregations):
         (new-name function column)       e.g. ("total" sum "balance")
         (new-name weighted-mean column weight-column)
         (new-name count)
-    where function is count (rows in the group), sum, mean, weighted-mean,
-    min, max, median, stdev, first, or last (in the table's row order).
-    Missing values are skipped."""
+    where function is one of SUMMARY_FUNCTIONS (count is the rows in the
+    group), or (percentile p) or (weighted-percentile p); the weighted ones
+    need a weight column. Missing values are skipped."""
     columns = table_columns(table, "table-group-by")
     key_names = names_argument(keys, "table-group-by")
     key_vectors = [find_column(columns, n, "table-group-by") for n in key_names]
@@ -520,23 +627,23 @@ def table_group_by(table, keys, aggregations):
         if len(parts) < 2:
             raise LispError("table-group-by: each aggregation is (new-name function [column [weights]]), "
                             "got %r" % (spec,))
-        function = symbol_argument(parts[1])
+        function, percent = summary_function(parts[1], "table-group-by")
         column = find_column(columns, str(parts[2]), "table-group-by") if len(parts) > 2 else None
         weights = find_column(columns, str(parts[3]), "table-group-by") if len(parts) > 3 else None
         if column is None and function != "count":
             raise LispError("table-group-by: %s needs a column: (%s %s column)" % (function, parts[0], function))
-        if function == "weighted-mean" and weights is None:
-            raise LispError("table-group-by: weighted-mean needs a weight column: "
-                            "(%s weighted-mean column weight-column)" % (parts[0],))
-        specs.append((str(parts[0]), function, column, weights))
+        if function in WEIGHTED_FUNCTIONS and weights is None:
+            raise LispError("table-group-by: %s needs a weight column: "
+                            "(%s %s column weight-column)" % (function, parts[0], to_string(parts[1])))
+        specs.append((str(parts[0]), function, percent, column, weights))
 
     if row_count(columns) == 0:
         return make_table_value([(n, LispVector([])) for n in key_names] +
                                 [(s[0], LispVector([])) for s in specs])
     order, starts, counts, key_values = group_rows(key_vectors)
     result = [(n, LispVector(values)) for n, values in zip(key_names, key_values)]
-    for new_name, function, column, weights in specs:
-        result.append((new_name, aggregate(function, column, weights, order, starts, counts)))
+    for new_name, function, percent, column, weights in specs:
+        result.append((new_name, aggregate(function, column, weights, order, starts, counts, percent=percent)))
     return make_table_value(result)
 
 

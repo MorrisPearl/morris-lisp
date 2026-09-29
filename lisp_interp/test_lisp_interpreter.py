@@ -1979,7 +1979,18 @@ class TestTables(LispTestCase):
         self.assertShows('(table-column g "med")', "#(90.0 197.5)")
         self.assertShows('(table-column (table-group-by loans (list "state" "month") (list (list "n" (quote count)))) "n")',
                          "#(2 1 1 1)")
-        self.assertLispError("(table-group-by loans \"state\" (list (list \"x\" 'bogus \"rate\")))", "unknown function")
+        self.assertLispError("(table-group-by loans \"state\" (list (list \"x\" 'bogus \"rate\")))",
+                             "table-group-by: bogus isn't a summary")
+        self.assertLispError("(table-group-by loans \"state\" (list (list \"x\" 'weighted-mode \"rate\")))",
+                             "table-group-by: weighted-mode needs a weight column")
+
+    def test_group_by_the_other_statistics(self):
+        self.assertShows("(table-group-by loans \"state\" (list (list \"id\" 'representative \"id\")"
+                         " (list \"most\" 'weighted-mode \"id\" \"balance\")"
+                         " (list \"wm\" 'weighted-median \"balance\" \"balance\")"
+                         " (list \"p90\" '(percentile 90) \"balance\")))",
+                         '(("state" . #("CA" "NY")) ("id" . #("a" "b")) ("most" . #("a" "b"))'
+                         ' ("wm" . #(90.0 200.0)) ("p90" . #(98.0 199.5)))')
         self.assertLispError("(table-group-by loans \"state\" (list (list \"x\" 'weighted-mean \"rate\")))", "weight column")
 
     def test_join(self):
@@ -2560,6 +2571,35 @@ class TestStratify(LispTestCase):
     def test_stratifying_by_the_weight_column(self):
         self.assertEqual(self.column('("balance" (100000 200000))', "balance"),
                          '#("under 100000" "100000 to 200000" "200000 and over" "total")')
+
+    def test_representative_and_mode_for_columns_that_cannot_be_averaged(self):
+        by = '("rate" (5.0))'
+        summaries = "'((\"state\" representative) (\"state\" mode \"most loans\") (\"state\" weighted-mode \"most balance\"))"
+        table = "(stratify loans '%s %s :weight \"balance\")" % (by, summaries)
+        self.assertShows('(table-column %s "state (representative)")' % table, '#("CA" "CA" "WA" "CA")')
+        self.assertShows('(table-column %s "most loans")' % table, '#("CA" "CA" "WA" "CA")')
+        self.assertShows('(table-column %s "most balance")' % table, '#("CA" "FL" "WA" "CA")')
+
+    def test_medians_and_percentiles(self):
+        self.run_lisp("(define t (make-table \"x\" #(1 1 1 2) \"fico\" #(700 720 730 640)"
+                      " \"w\" #(100 250 210 50)))")
+        table = ("(stratify t '(\"x\" each) '((\"fico\" median) (\"fico\" weighted-median)"
+                 " (\"fico\" (percentile 10)) (\"fico\" (weighted-percentile 90))) :weight \"w\")")
+        self.assertShows('(table-column-names %s)' % table,
+                         '("x" "count" "total w" "percent" "fico (median)" "fico (weighted-median)"'
+                         ' "fico (percentile 10)" "fico (weighted-percentile 90)")')
+        self.assertShows('(table-column %s "fico (median)")' % table, "#(720.0 640.0 710.0)")
+        self.assertShows('(table-column %s "fico (weighted-median)")' % table, "#(720.0 640.0 720.0)")
+        self.assertShows('(table-column %s "fico (percentile 10)")' % table, "#(704.0 640.0 658.0)")
+        self.assertShows('(table-column %s "fico (weighted-percentile 90)")' % table, "#(730.0 640.0 730.0)")
+
+    def test_bad_percentiles(self):
+        self.assertLispError("(stratify loans '(\"rate\" each) '((\"age\" (percentile 120))))",
+                             "a percentile is written (percentile p) or (weighted-percentile p)")
+        self.assertLispError("(stratify loans '(\"rate\" each) '((\"age\" percentile)))",
+                             "say which percentile, e.g. (percentile 90)")
+        self.assertLispError("(stratify loans '(\"rate\" each) '((\"age\" weighted-median)))",
+                             "a weighted-median needs a weight")
 
     def test_stratify_all(self):
         tables = self.run_lisp("(stratify-all loans '((\"state\" (top 2)) (\"age\" (equal-count 3))) "

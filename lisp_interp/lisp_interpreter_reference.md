@@ -3166,10 +3166,16 @@ is a list:
 | `(new-name 'weighted-mean column weight-column)` | `sum(column × weight) / sum(weight)` — e.g. a balance-weighted coupon |
 | `(new-name 'min column)`, `(new-name 'max column)` | the smallest and largest value (these work on strings and dates too) |
 | `(new-name 'median column)`, `(new-name 'stdev column)` | the median, and the sample standard deviation |
+| `(new-name 'weighted-median column weight-column)` | the middle value by weight: the smallest value at which the running total of weight, from the smallest value up, reaches half the group's weight |
+| `(new-name '(percentile p) column)` | the `p`th percentile (`p` from 0 to 100), interpolated between values, as a spreadsheet's does — the 50th is the median |
+| `(new-name '(weighted-percentile p) column weight-column)` | the smallest value at which the running total of weight reaches `p`% of the group's weight |
+| `(new-name 'mode column)`, `(new-name 'weighted-mode column weight-column)` | the most common value, or the value with the most weight (a tie goes to the smallest value); works on strings and dates too |
+| `(new-name 'representative column)` | the group's first value (in the table's order) that isn't missing — a value that stands for the group, for a column such as a state, which can't be added or averaged |
 | `(new-name 'first column)`, `(new-name 'last column)` | the value in the group's first or last row, in the table's order |
 
 Missing values are skipped. The function name can also be a string, e.g.
-`"sum"`.
+`"sum"`. `stratify` uses the same functions (see "Stratification
+tables").
 
 ```lisp
 (define loans (make-table "state"   (vector "CA" "CA" "NY" "NY" "CA")
@@ -3278,10 +3284,29 @@ bucket by several columns at once, with a row for each combination of
 buckets that has rows in it.
 
 **`summaries`** is a list of `(column function [heading])`, one per
-summary column: `function` is `sum`, `mean`, `weighted-mean` (weighted by
-the `:weight` column), `min`, `max`, `median`, `stdev`, `first`, or
-`last`, as in `table-group-by`, and missing values are skipped. The
-heading is `column (function)` unless you give one.
+summary column. `function` is any of `table-group-by`'s (see the table
+there): `sum`, `mean`, `weighted-mean`, `median`, `weighted-median`,
+`(percentile p)`, `(weighted-percentile p)`, `min`, `max`, `stdev`, `mode`,
+`weighted-mode`, `representative`, `first`, or `last`. The weighted ones
+are weighted by the `:weight` column. `representative` is for a column
+like a state, which can't be averaged: a value from the bucket that stands
+for it. Missing values are skipped. The heading is `column (function)`
+unless you give one, e.g. `("fico" (percentile 10) "FICO 10th")`.
+
+```lisp
+(define pool (make-table "rate"  #(3.25 4.5 3.99 5.75 7.0)
+                         "fico"  #(700 720 730 750 710)
+                         "state" (vector "CA" "NY" "CA" "TX" "FL")
+                         "balance" #(100 250 210 300 400)))
+(define by-rate
+  (stratify pool '("rate" (5.0))
+            '(("state" representative "a state") ("state" weighted-mode "biggest state")
+              ("fico" weighted-median "FICO") ("fico" (percentile 10) "FICO 10th"))
+            :weight "balance"))
+(table-column by-rate "biggest state")   ; => #("CA" "FL" "FL")
+(table-column by-rate "FICO")            ; => #(720.0 710.0 720.0)
+(table-column by-rate "FICO 10th")       ; => #(704.0 714.0 704.0)
+```
 
 The table's columns are: the bucket, named after the column; `count`;
 with `:weight`, the total weight — `total balance`, for
