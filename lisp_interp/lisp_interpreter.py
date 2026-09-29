@@ -24,6 +24,7 @@ HOW THE CODE IS ORGANIZED
     lisp_debug.py         break, unbreak, set-debug-hook!, abort, locals, ...
     lisp_vector_math.py   arithmetic, comparisons, statistics, lags on whole vectors
     lisp_tables.py        tables: filter, sort, group, join, describe
+    lisp_stratify.py      stratify, stratify-all: stratification tables
     lisp_time_series.py   month numbers and monthly time series
     lisp_regression.py    linear-, logistic-, and spline-regression, model-report, ...
     lisp_simplex.py       lp-read-file, lp-solve: linear programming (uses simplex/)
@@ -78,6 +79,8 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - fast math and statistics on whole vectors, with NaN for missing values
   - tables: filter, sort, group-by, join, and summarize columns of data,
     or look at them a row at a time (table-rows); display-table shows one
+  - stratification tables: a big table cut into buckets by ranges of a
+    column, with weighted averages of the others (stratify, stratify-all)
   - monthly time series, with months as plain integers
   - linear, logistic, and spline regression with any number of predictors,
     with standard errors, p-values, AUC, and lift tables

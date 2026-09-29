@@ -75,6 +75,7 @@ functions" as a reference to search rather than read start to end.
   - [Vectors](#vectors)
   - [Vector math and statistics](#vector-math-and-statistics)
   - [Tables](#tables)
+  - [Stratification tables](#stratification-tables)
   - [Monthly time series](#monthly-time-series)
   - [Structs](#structs-1)
   - [Dates](#dates)
@@ -3213,6 +3214,143 @@ of strings or dates are left out. A quick first look at new data:
 ```lisp
 (table-describe (make-table "id" (vector "a" "b" "c") "balance" #(100 200 300)))   ; => (("column" . #("balance")) ("count" . #(3)) ("mean" . #(200.0)) ("stdev" . #(100.0)) ("min" . #(100.0)) ("p25" . #(150.0)) ("median" . #(200.0)) ("p75" . #(250.0)) ("max" . #(300.0)))
 ```
+
+### Stratification tables
+
+(In `lisp_stratify.py`.) A **stratification** of a big table — loans,
+say — is a small table with a row for each **bucket** of one column:
+coupons under 4.0, 4.0 to 5.0, 5.0 to 6.0, ...; ten buckets of loan age
+with the same number of loans in each; one row per state. Each row shows
+how many loans are in the bucket, their total balance and its share of
+the whole, and a summary of each other column — usually its
+balance-weighted average. A last row, `total`, shows the same for the
+whole table. It's like `table-group-by`, except that a group can be a
+range of values, not just one value. `stratify` makes one such table, and
+`stratify-all` makes a whole set of them from the same big table, each
+bucketed a different way.
+
+```lisp
+(define loans
+  (make-table "rate"    #(3.25 4.5 5.125 5.75 6.25 6.5 7.0 7.25 3.99 6.0)
+              "balance" #(100000 250000 175000 300000 125000 90000 400000 60000 210000 50000)
+              "age"     #(12 24 36 6 48 60 3 72 18 30)
+              "state"   (vector "CA" "NY" "CA" "TX" "CA" "NY" "FL" "TX" "CA" "WA")))
+(define summaries '(("rate" weighted-mean "WAC") ("age" weighted-mean "WALA")))
+(define formats '(("total balance" ",.0f") ("percent" ".1%") ("WAC" ".3f") ("WALA" ".1f")))
+
+(display-table (stratify loans '("rate" (4.0 5.0 6.0 7.0)) summaries :weight "balance")
+               formats)
+```
+
+prints
+
+```
+rate          count  total balance  percent    WAC  WALA
+------------  -----  -------------  -------  -----  ----
+under 4.0         2        310,000    17.6%  3.751  16.1
+4.0 to 5.0        1        250,000    14.2%  4.500  24.0
+5.0 to 6.0        2        475,000    27.0%  5.520  17.1
+6.0 to 7.0        3        265,000    15.1%  6.288  48.7
+7.0 and over      2        460,000    26.1%  7.033  12.0
+total            10      1,760,000   100.0%  5.574  21.3
+```
+
+#### `(stratify table by summaries [:weight column] [:total #f])`
+One stratification table. **`by`** is `(column how)`: which column to
+bucket, and how —
+
+| `how` | The buckets |
+|---|---|
+| `(4.0 5.0 6.0 7.0)` | breakpoints: `under 4.0`, `4.0 to 5.0` (4.0 or more, but under 5.0), ..., `7.0 and over`. Dates work as breakpoints too, for a column of dates. |
+| `(equal-count n)` | `n` buckets with the same number of rows in each |
+| `(equal-weight n)` | `n` buckets with the same total weight in each (needs `:weight`) |
+| `(top n)` | the `n` values with the most weight (or the most rows, without `:weight`), biggest first, then all the rest as `other` |
+| `each` | one bucket per distinct value, in order |
+| `year` | one bucket per calendar year, for a column of dates |
+
+With `equal-count` and `equal-weight`, the cuts fall between values, so
+rows with the same value are always in the same bucket — which can leave
+fewer buckets than asked for, when many rows share a value — and each
+bucket is labelled with its smallest and largest value. A row whose value
+is missing (`nan`, or `'()`) goes in a last bucket, `missing`. A bucket
+with no rows isn't shown. `by` can also be a list of `(column how)`, to
+bucket by several columns at once, with a row for each combination of
+buckets that has rows in it.
+
+**`summaries`** is a list of `(column function [heading])`, one per
+summary column: `function` is `sum`, `mean`, `weighted-mean` (weighted by
+the `:weight` column), `min`, `max`, `median`, `stdev`, `first`, or
+`last`, as in `table-group-by`, and missing values are skipped. The
+heading is `column (function)` unless you give one.
+
+The table's columns are: the bucket, named after the column; `count`;
+with `:weight`, the total weight — `total balance`, for
+`:weight "balance"` — and its share of the whole, `percent` (without
+`:weight`, `percent` is the share of the rows); then the summaries. The
+last row is the `total`, unless `:total` is `#f`. The numbers in a
+stratification table are kept in full (double) precision, unlike a big
+vector's, so a total balance is exact to the cent.
+
+```lisp
+(define pool (make-table "rate" #(3.25 4.5 6.25 7.0 nan) "balance" #(100 200 300 400 50)))
+(define by-rate (stratify pool '("rate" (4.0 6.0)) '(("rate" weighted-mean "WAC")) :weight "balance"))
+(table-column-names by-rate)       ; => ("rate" "count" "total balance" "percent" "WAC")
+(table-column by-rate "rate")      ; => #("under 4.0" "4.0 to 6.0" "6.0 and over" "missing" "total")
+(table-column by-rate "count")     ; => #(1 1 2 1 5)
+(table-column by-rate "total balance")   ; => #(100.0 200.0 700.0 50.0 1050.0)
+(table-column (stratify pool '("rate" (equal-count 2)) '()) "rate")
+                                   ; => #("3.25 to 4.5" "6.25 to 7.0" "missing" "total")
+```
+
+Two columns at once — each state's loans, split at a 5.0 coupon:
+
+```lisp
+(display-table (stratify loans '(("state" (top 2)) ("rate" (5.0))) summaries
+                         :weight "balance" :total #f)
+               formats)
+```
+
+prints
+
+```
+state  rate          count  total balance  percent    WAC  WALA
+-----  ------------  -----  -------------  -------  -----  ----
+CA     under 5.0         2        310,000    17.6%  3.751  16.1
+CA     5.0 and over      2        300,000    17.0%  5.594  41.0
+FL     5.0 and over      1        400,000    22.7%  7.000   3.0
+other  under 5.0         1        250,000    14.2%  4.500  24.0
+other  5.0 and over      4        500,000    28.4%  6.090  26.0
+```
+
+#### `(stratify-all table bys summaries [:weight column] [:total #f])`
+A list of stratification tables, one for each `by` in the list `bys`, all
+with the same summaries — the usual way to make a whole report at once,
+then show each table:
+
+```lisp
+(define loans
+  (make-table "rate"    #(3.25 4.5 5.125 5.75 6.25 6.5 7.0 7.25 3.99 6.0)
+              "balance" #(100000 250000 175000 300000 125000 90000 400000 60000 210000 50000)
+              "age"     #(12 24 36 6 48 60 3 72 18 30)
+              "state"   (vector "CA" "NY" "CA" "TX" "CA" "NY" "FL" "TX" "CA" "WA")))
+(define tables
+  (stratify-all loans
+    '(("rate" (4.0 5.0 6.0 7.0))
+      ("age" (equal-count 3))
+      ("balance" (100000 200000 300000))
+      ("state" (top 3)))
+    '(("rate" weighted-mean "WAC") ("age" weighted-mean "WALA"))
+    :weight "balance"))
+(dolist (table tables)
+  (display-table table '(("total balance" ",.0f") ("percent" ".1%") ("WAC" ".3f") ("WALA" ".1f")))
+  (newline))
+(map (lambda (t) (car (table-column-names t))) tables)   ; => ("rate" "age" "balance" "state")
+```
+
+`examples/stratify_example.lsp` makes a report of eight tables from a
+pool of 5,000 made-up loans, and shows how to load real loan data from
+SQLite instead. The tables are ordinary tables, so `write-columns-csv`
+writes one to a CSV file, and `table-filter` and the rest work on them.
 
 ### Monthly time series
 
@@ -6354,6 +6492,7 @@ The Python files:
 | `lisp_builtins.py` | The general built-in procedures (numbers, lists, strings, making and reading vectors, dates, hash tables, output, ...) and `make_global_env()`, which builds a new environment containing every builtin |
 | `lisp_vector_math.py` | Arithmetic, comparisons, statistics, and time-series functions on whole vectors (`vector-mul`, `vector>`, `vector-mean`, `vector-lag`, ...) |
 | `lisp_tables.py` | Tables: `table-filter`, `table-sort`, `table-group-by`, `table-join`, ... |
+| `lisp_stratify.py` | Stratification tables: `stratify`, `stratify-all` |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
 | `lisp_debug.py` | `break`, `unbreak`, `set-debug-hook!`, `abort`, `locals`, `break-on-error`, ...: the debugging functions (the machinery is in `lisp_core.py`) |
 | `lisp_regression.py` | `linear-regression`, `logistic-regression`, `spline-regression`, `model-report`, ... |
@@ -6385,7 +6524,7 @@ every new environment.
 ## Running the tests
 
 `test_lisp_interpreter.py`, in `lisp_interp/`, is the test suite. It has
-about 780 tests covering:
+about 800 tests covering:
 
 - the language itself: the reader, special forms, tail calls, macros,
   structs, and error reports;

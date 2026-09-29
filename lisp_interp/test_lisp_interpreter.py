@@ -2462,6 +2462,122 @@ class TestSolverLibrary(LispTestCase):
         self.assertAlmostEqual(self.run_lisp('(implied-vol price "call" 100 105 0.5 0.04)'), 0.25, places=8)
 
 
+class TestStratify(LispTestCase):
+    """lisp_stratify.py: stratify and stratify-all."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("""
+          (define loans
+            (make-table "rate"    #(3.25 4.5 5.125 5.75 6.25 6.5 7.0 7.25 3.99 nan)
+                        "balance" #(100000 250000 175000 300000 125000 90000 400000 60000 210000 50000)
+                        "age"     #(12 24 36 6 48 60 3 72 18 30)
+                        "ltv"     #(80 75 90 60 95 70 85 65 78 88)
+                        "state"   (vector "CA" "NY" "CA" "TX" "CA" "NY" "FL" "TX" "CA" "WA")
+                        "first"   (vector (date 2019 3 1) (date 2020 5 1) (date 2021 1 1) (date 2019 7 1)
+                                          (date 2022 2 1) (date 2018 9 1) (date 2023 4 1) (date 2020 8 1)
+                                          (date 2021 6 1) (date 2022 11 1))))
+          (define summaries '(("rate" weighted-mean "WAC") ("age" weighted-mean "WALA")))""")
+
+    def strat(self, by, extra=':weight "balance"'):
+        return "(stratify loans '%s summaries %s)" % (by, extra)
+
+    def column(self, by, name, extra=':weight "balance"'):
+        return self.show('(table-column %s "%s")' % (self.strat(by, extra), name))
+
+    def test_breakpoints(self):
+        by = '("rate" (4.0 5.0 6.0 7.0))'
+        self.assertEqual(self.column(by, "rate"),
+                         '#("under 4.0" "4.0 to 5.0" "5.0 to 6.0" "6.0 to 7.0" "7.0 and over" "missing" "total")')
+        self.assertEqual(self.column(by, "count"), "#(2 1 2 2 2 1 10)")
+        self.assertEqual(self.column(by, "total balance"),
+                         "#(310000.0 250000.0 475000.0 215000.0 460000.0 50000.0 1760000.0)")
+        self.assertEqual(self.show("(table-column-names %s)" % self.strat(by)),
+                         '("rate" "count" "total balance" "percent" "WAC" "WALA")')
+        wac = self.run_lisp('(vector-ref (table-column %s "WAC") 0)' % self.strat(by))
+        self.assertAlmostEqual(wac, (3.25 * 100000 + 3.99 * 210000) / 310000, places=5)
+        percent = self.run_lisp('(vector-ref (table-column %s "percent") 0)' % self.strat(by))
+        self.assertAlmostEqual(percent, 310000 / 1760000)
+
+    def test_a_row_is_in_the_bucket_its_value_starts(self):
+        self.run_lisp("(define t (make-table \"x\" #(4.0 5.0) \"w\" #(1 1)))")
+        self.assertShows("(table-column (stratify t '(\"x\" (4.0 5.0)) '() :total #f) \"x\")",
+                         '#("4.0 to 5.0" "5.0 and over")')
+
+    def test_equal_count(self):
+        by = '("age" (equal-count 3))'
+        self.assertEqual(self.column(by, "age"), '#("3 to 12" "18 to 36" "48 to 72" "total")')
+        self.assertEqual(self.column(by, "count"), "#(3 4 3 10)")
+
+    def test_equal_weight(self):
+        by = '("ltv" (equal-weight 3))'
+        self.assertEqual(self.column(by, "ltv"), '#("60 to 70" "75 to 80" "85 to 95" "total")')
+        self.assertEqual(self.column(by, "total balance"), "#(450000.0 560000.0 750000.0 1760000.0)")
+
+    def test_equal_buckets_keep_equal_values_together(self):
+        self.run_lisp("(define t (make-table \"x\" #(1 2 2 2 2 2 3 4) \"w\" #(1 1 1 1 1 1 1 1)))")
+        self.assertShows("(table-column (stratify t '(\"x\" (equal-count 4)) '()) \"x\")",
+                         '#("1 to 1" "2 to 2" "3 to 4" "total")')
+
+    def test_top_and_each(self):
+        self.assertEqual(self.column('("state" (top 2))', "state"), '#("CA" "FL" "other" "total")')
+        self.assertShows("(table-column (stratify loans '(\"state\" (top 2)) '()) \"state\")",
+                         '#("CA" "NY" "other" "total")')                     # by rows, without a weight
+        self.assertEqual(self.column('("state" each)', "state"), '#("CA" "FL" "NY" "TX" "WA" "total")')
+        self.assertEqual(self.column('("rate" (top 2))', "rate"), '#(7.0 5.75 "other" "missing" "total")')
+
+    def test_year_and_date_breakpoints(self):
+        self.assertEqual(self.column('("first" year)', "first"),
+                         '#(2018 2019 2020 2021 2022 2023 "total")')
+        self.assertShows("(table-column (stratify loans (list \"first\" (list (date 2020 1 1) (date 2022 1 1)))"
+                         " summaries :weight \"balance\") \"first\")",
+                         '#("under 2020-01-01" "2020-01-01 to 2022-01-01" "2022-01-01 and over" "total")')
+        self.assertLispError(self.strat('("rate" year)'), "stratify: bucketing rate by year needs a column of dates")
+
+    def test_several_columns_at_once(self):
+        by = '(("state" (top 2)) ("rate" (5.0)))'
+        self.assertEqual(self.column(by, "state"), '#("CA" "CA" "FL" "other" "other" "other" "total")')
+        self.assertEqual(self.column(by, "rate"),
+                         '#("under 5.0" "5.0 and over" "5.0 and over" "under 5.0" "5.0 and over" "missing" "")')
+        self.assertEqual(self.column(by, "count"), "#(2 2 1 1 3 1 10)")
+
+    def test_without_a_weight(self):
+        self.assertEqual(self.show("(table-column-names (stratify loans '(\"state\" each) '((\"age\" mean))))"),
+                         '("state" "count" "percent" "age (mean)")')
+        self.assertLispError("(stratify loans '(\"state\" each) summaries)", "a weighted-mean needs a weight")
+        self.assertLispError("(stratify loans '(\"ltv\" (equal-weight 3)) '())", "equal-weight buckets need a weight")
+
+    def test_no_total_row(self):
+        self.assertEqual(self.column('("state" (top 2))', "count", ':weight "balance" :total #f'), "#(4 1 5)")
+
+    def test_totals_are_kept_in_full_precision(self):
+        self.run_lisp("(define t (make-table \"x\" #(1 2) \"w\" (vector 16777216.0 1.0)))")
+        self.assertShows("(table-column (stratify t '(\"x\" each) '((\"w\" sum)) :weight \"w\") \"total w\")",
+                         "#(16777216.0 1.0 16777217.0)")      # 32-bit storage would round the total to ...216
+        self.assertShows("(table-column (stratify t '(\"x\" each) '((\"w\" sum)) :weight \"w\") \"w (sum)\")",
+                         "#(16777216.0 1.0 16777217.0)")
+
+    def test_stratifying_by_the_weight_column(self):
+        self.assertEqual(self.column('("balance" (100000 200000))', "balance"),
+                         '#("under 100000" "100000 to 200000" "200000 and over" "total")')
+
+    def test_stratify_all(self):
+        tables = self.run_lisp("(stratify-all loans '((\"state\" (top 2)) (\"age\" (equal-count 3))) "
+                               "summaries :weight \"balance\")")
+        names = [lisp_core.to_string(lisp_core.pairs_to_list(t)[0].car) for t in lisp_core.pairs_to_list(tables)]
+        self.assertEqual(names, ['"state"', '"age"'])
+
+    def test_errors(self):
+        self.assertLispError(self.strat('("rate" (between 1 2))'), "stratify: can't bucket rate by (between 1 2)")
+        self.assertLispError(self.strat('("nope" each)'), "no column named")
+        self.assertLispError(self.strat('("rate")'), "each way of bucketing is (column how)")
+        self.assertLispError("(stratify loans '(\"rate\" each) '((\"age\" average)))",
+                             "stratify: average isn't a summary")
+        self.assertLispError("(stratify loans '(\"rate\" each) '((\"age\" mean \"count\")))",
+                             "two columns would both be called count")
+        self.assertLispError("(stratify loans '(\"rate\" each) '() :weigth \"balance\")", ":weigth isn't an option")
+
+
 class TestTimeSeries(LispTestCase):
     """lisp_time_series.py: month numbers and monthly series."""
 
@@ -5703,6 +5819,7 @@ class TestExampleScripts(unittest.TestCase):
         "prepayment_demo.lsp",
         "linear_programming_example.lsp",
         "debugging_example.lsp",
+        "stratify_example.lsp",
     ]
     SLOW_EXAMPLES = [
         "dolist_vectors_map_example.lsp",
@@ -5726,6 +5843,12 @@ class TestExampleScripts(unittest.TestCase):
         for name, r in self.results.items():
             with self.subTest(example=name):
                 self.assertEqual(r.returncode, 0, "%s failed:\n%s" % (name, r.stderr[-1500:]))
+
+    def test_the_stratify_example_makes_its_tables(self):
+        out = self.results["stratify_example.lsp"].stdout
+        self.assertEqual(out.count("\ntotal "), 8)                 # eight tables, each with a total row
+        self.assertIn("under 3.0 ", out)
+        self.assertIn("5000  2,103,258,327   100.0%", out)
 
     def test_the_macros_example_produces_its_documented_output(self):
         out = self.results["macros_example.lsp"].stdout

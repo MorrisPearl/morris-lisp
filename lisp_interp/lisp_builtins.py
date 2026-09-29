@@ -45,6 +45,7 @@ import lisp_regression
 import lisp_simplex
 import lisp_sofr
 import lisp_sqlite
+import lisp_stratify
 import lisp_tables
 import lisp_tastytrade
 import lisp_time_series
@@ -1503,6 +1504,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None):
     env.update(DATE_BUILTINS)
     env.update(lisp_vector_math.BUILTINS)
     env.update(lisp_tables.BUILTINS)
+    env.update(lisp_stratify.BUILTINS)
     env.update(lisp_time_series.BUILTINS)
     env.update(lisp_csv.BUILTINS)
     env.update(lisp_regression.BUILTINS)

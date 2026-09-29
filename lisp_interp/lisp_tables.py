@@ -451,10 +451,13 @@ def group_sums(values, starts):
     return np.add.reduceat(np.where(np.isnan(values), 0.0, values), starts)
 
 
-def aggregate(function, column, weights, order, starts, counts):
-    """One aggregated column: `function` applied to each group's values."""
+def aggregate(function, column, weights, order, starts, counts, as_vector=to_vector):
+    """One aggregated column: `function` applied to each group's values.
+    as_vector makes the numpy result a vector: to_vector, which stores
+    numbers the way every vector does (see LispVector), unless the caller
+    wants otherwise -- stratify keeps its few totals in full precision."""
     if function == "count":
-        return to_vector(counts)
+        return as_vector(counts)
     if function in ("first", "last"):
         arranged = column.items[order]
         return LispVector(arranged[starts if function == "first" else starts + counts - 1])
@@ -466,24 +469,24 @@ def aggregate(function, column, weights, order, starts, counts):
     if np.issubdtype(column.items.dtype, np.integer) and function in ("sum", "min", "max"):
         integers = column.items.astype(np.int64)[order]          # no missing values to skip
         reduce = {"sum": np.add, "min": np.minimum, "max": np.maximum}[function]
-        return to_vector(reduce.reduceat(integers, starts))
+        return as_vector(reduce.reduceat(integers, starts))
     values = floats_of(column, "table-group-by")[order]
     present = (~np.isnan(values)).astype(np.float64)
     with np.errstate(divide="ignore", invalid="ignore"):
         if function == "sum":
-            return to_vector(group_sums(values, starts))
+            return as_vector(group_sums(values, starts))
         if function == "mean":
-            return to_vector(group_sums(values, starts) / np.add.reduceat(present, starts))
+            return as_vector(group_sums(values, starts) / np.add.reduceat(present, starts))
         if function == "weighted-mean":
             w = floats_of(weights, "table-group-by")[order]
             both = ~np.isnan(values) & ~np.isnan(w)
             numerator = np.add.reduceat(np.where(both, values * w, 0.0), starts)
             denominator = np.add.reduceat(np.where(both, w, 0.0), starts)
-            return to_vector(numerator / denominator)
+            return as_vector(numerator / denominator)
         if function == "min":
-            return to_vector(np.fmin.reduceat(values, starts))
+            return as_vector(np.fmin.reduceat(values, starts))
         if function == "max":
-            return to_vector(np.fmax.reduceat(values, starts))
+            return as_vector(np.fmax.reduceat(values, starts))
         if function in ("median", "stdev"):
             results = []
             for s, c in zip(starts, counts):
@@ -493,7 +496,7 @@ def aggregate(function, column, weights, order, starts, counts):
                     results.append(np.median(group) if len(group) else np.nan)
                 else:
                     results.append(group.std(ddof=1) if len(group) > 1 else np.nan)
-            return to_vector(np.array(results, dtype=np.float64))
+            return as_vector(np.array(results, dtype=np.float64))
     raise LispError("table-group-by: unknown function %s (use count, sum, mean, weighted-mean, "
                     "min, max, median, stdev, first, or last)" % function)
 
