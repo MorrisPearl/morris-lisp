@@ -3064,6 +3064,104 @@ class TestRegression(LispTestCase):
         self.assertShows("(vector-drop #(1 2 3 4 5) 3)", "#(4 5)")
 
 
+class TestLadRegression(LispTestCase):
+    """lad-regression: least absolute deviation, which a few outliers
+    barely move."""
+
+    def test_an_outlier_pulls_least_squares_but_not_lad(self):
+        # y = 2x + 1, except at x = 10
+        self.run_lisp("(define x #(1 2 3 4 5 6 7 8 9 10))"
+                      "(define y #(3 5 7 9 11 13 15 17 19 100))"
+                      "(define m (lad-regression x y))")
+        self.assertAlmostEqual(self.run_lisp("(model-slope m)"), 2.0)
+        self.assertAlmostEqual(self.run_lisp("(model-intercept m)"), 1.0)
+        self.assertGreater(self.run_lisp("(model-slope (linear-regression x y))"), 5)
+        self.assertShows("(model-kind m)", '"lad"')
+        self.assertShows("(model-residuals m x y)", "#(0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 79.0)")
+
+    def test_the_fit_is_the_least_absolute_deviation_one(self):
+        """Some best fit goes through p of the points, so the best of all the
+        fits through p points is the answer: compare with that, for many
+        small data sets, with ties, repeated x values, and weights."""
+        import itertools
+        import numpy as np
+        import lisp_regression
+        rng = np.random.default_rng(1)
+        for trial in range(150):
+            n, k = int(rng.integers(4, 15)), int(rng.integers(1, 3))
+            columns = rng.normal(size=(k, n)) * 10
+            if trial % 4 == 0:
+                columns = np.round(columns / 5)                 # repeated x values
+            X = np.column_stack([np.ones(n), columns.T])
+            if np.linalg.matrix_rank(X) < k + 1 or np.any(columns.std(axis=1) == 0):
+                continue
+            y = X @ rng.normal(size=k + 1) + rng.standard_t(2, size=n)
+            if trial % 3 == 0:
+                y = np.round(y)                                 # ties
+            w = rng.uniform(0.5, 3, n) if trial % 2 else np.ones(n)
+            model = lisp_regression.fit_lad(columns.tolist(), y.tolist(), w.tolist())
+            best = min(float((w * abs(y - X @ np.linalg.solve(X[list(rows)], y[list(rows)]))).sum())
+                       for rows in itertools.combinations(range(n), k + 1)
+                       if abs(np.linalg.det(X[list(rows)])) > 1e-9)
+            with self.subTest(trial=trial):
+                self.assertTrue(model.stats["converged"])
+                self.assertAlmostEqual(model.stats["sum_abs_deviations"] / best, 1.0, places=9)
+
+    def test_weights_count_rows_as_copies(self):
+        self.run_lisp("(define x #(1 2 3 4 5 6))"
+                      "(define y #(2 3 7 8 13 12))"
+                      "(define weighted (lad-regression x y #(1 3 1 1 2 1)))"
+                      "(define copied (lad-regression #(1 2 2 2 3 4 5 5 6) #(2 3 3 3 7 8 13 13 12)))")
+        self.assertAlmostEqual(self.run_lisp("(model-slope weighted)"), self.run_lisp("(model-slope copied)"))
+        self.assertAlmostEqual(self.run_lisp("(model-intercept weighted)"),
+                               self.run_lisp("(model-intercept copied)"))
+        # a weight of 0 leaves a row out
+        self.run_lisp("(define m (lad-regression #(1 2 3 4 5) #(3 5 7 9 500) #(1 1 1 1 0)))")
+        self.assertAlmostEqual(self.run_lisp("(model-slope m)"), 2.0)
+
+    def test_several_predictors(self):
+        # y = 1 + 2a - 3b, but for one outlier
+        self.run_lisp("(define a #(1 2 3 4 5 6 7 8))"
+                      "(define b #(2 1 4 3 6 5 8 9))"
+                      "(define y (+ 1 (* 2 a) (* -3 b)))"
+                      "(vector-set! y 3 50)"
+                      "(define m (lad-regression (list a b) y))")
+        self.assertAlmostEqual(self.run_lisp("(model-intercept m)"), 1.0)
+        c = self.run_lisp("(model-coefficients m)").items.tolist()
+        self.assertAlmostEqual(c[0], 2.0)
+        self.assertAlmostEqual(c[1], -3.0)
+        self.assertAlmostEqual(self.run_lisp("(model-predict m (list 10 10))"), -9.0)
+
+    def test_the_report_and_standard_errors_ignore_how_far_out_the_outlier_is(self):
+        def report(outlier):
+            return self.show('(model-report (lad-regression (list (cons "month" #(1 2 3 4 5 6 7 8 9 10))) '
+                             '(cons "cpr" #(3 5.5 6.5 9 11 13.5 14.5 17 19 %s))))' % outlier)
+        near, far = report(60), report(600)
+        self.assertIn("Least absolute deviation model:  cpr = ", near)
+        self.assertIn("month", near)
+        self.assertIn("sum |residuals|", near)
+        self.assertIn("iterations       = ", near)
+        std_error_lines = [line for line in near.splitlines() if line.startswith(("  intercept", "  month"))]
+        self.assertEqual(std_error_lines,
+                         [line for line in far.splitlines() if line.startswith(("  intercept", "  month"))])
+
+    def test_standard_errors_are_undefined_for_an_exact_fit(self):
+        self.run_lisp("(define m (lad-regression #(1 2 3) #(3 5 7)))")
+        self.assertShows('(table-column (model-coefficient-table m) "std_error")', "#(nan nan)")
+        self.assertAlmostEqual(self.run_lisp("(model-slope m)"), 2.0)
+
+    def test_errors(self):
+        self.assertLispError("(lad-regression #(1) #(1))", "too few to fit 2 coefficients")
+        self.assertLispError("(lad-regression #(1 2 3) #(1 2))", "must be the same length")
+        self.assertLispError("(lad-regression #(2 2 2) #(1 2 3))", "no variation")
+        self.assertLispError("(lad-regression #(1 2 3) #(1 2 3) #(1 -1 1))", "must not be negative")
+
+    def test_model_residuals_works_for_every_kind_of_model(self):
+        self.run_lisp("(define m (linear-regression #(1 2 3) #(1 3 2)))")
+        self.assertShows("(model-residuals m #(1 2 3) #(1 3 2))", "#(-0.5 1.0 -0.5)")
+        self.assertLispError("(model-residuals m (list #(1 2) #(3 4)) #(1 2))", "model has 1 predictor(s), but 2 given")
+
+
 class TestLinearProgramming(LispTestCase):
     """lp-read-file and lp-solve (lisp_simplex.py, using simplex/simplex_solver.py)."""
 

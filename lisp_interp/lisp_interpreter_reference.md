@@ -4023,9 +4023,10 @@ how much the duration itself changes with the yield. Together, a change
 
 ### Regression models
 
-`linear-regression`/`logistic-regression` fit a flat model of the form `y =
-intercept + sum(coefficients[i] * x[i])` (linear) or `p =
-sigmoid(intercept + sum(coefficients[i] * x[i]))` (logistic), where
+`linear-regression`/`lad-regression`/`logistic-regression` fit a flat model
+of the form `y = intercept + sum(coefficients[i] * x[i])` (linear, by least
+squares or by least absolute deviation) or `p = sigmoid(intercept +
+sum(coefficients[i] * x[i]))` (logistic), where
 `coefficients` always has one entry per predictor, even when there's only
 one. `spline-regression` fits a *spline* model: internally it expands each
 predictor into an extra set of features (piecewise-linear "hinge"
@@ -4034,10 +4035,10 @@ ordinary/logistic regression on that expanded basis — so a spline model's
 coefficients apply to the expanded basis, not the original predictors, and
 `model-coefficients`/`model-intercept`/`model-slope` refuse to operate on
 one (use `model-report`/`model-predict` instead, which work on every model
-kind). `model-kind` reports which flavor you have: `"linear"`,
+kind). `model-kind` reports which flavor you have: `"linear"`, `"lad"`,
 `"logistic"`, `"spline"`, or `"spline-logistic"`.
 
-All of `linear-regression`, `logistic-regression`, `spline-regression`,
+All of `linear-regression`, `lad-regression`, `logistic-regression`, `spline-regression`,
 `model-predict`, and `model-evaluate` accept **either a single vector of X
 values (one predictor) or a Lisp list of several vectors** — `(list x1 x2
 ...)` — for multiple predictors. Every predictor vector and the Y vector
@@ -4046,8 +4047,9 @@ fitting (for numerical stability) and converted back to the original scale
 afterward, so this is transparent to you; date values anywhere a number is
 expected are silently converted to their ordinal day count.
 
-**Weighted fitting.** `linear-regression`, `logistic-regression`, and
-`spline-regression` all take an optional trailing `weights` vector: one
+**Weighted fitting.** `linear-regression`, `lad-regression`,
+`logistic-regression`, and `spline-regression` all take an optional
+trailing `weights` vector: one
 non-negative number per observation, the same length as `y`. Omit it (or
 pass `'()`) to weight every observation equally, exactly the original
 behavior. Fitting still minimizes a sum of squared errors (or maximizes a
@@ -4122,6 +4124,82 @@ the bottleneck.
 (define m (linear-regression prices demand))
 (display (model-report m))
 ```
+
+#### `(lad-regression x y [weights])`
+A **least absolute deviation** fit of `y = intercept +
+sum(coefficients[i] * x[i])`: the one that makes the sum of the absolute
+residuals, `sum(weight[i] * |y[i] - prediction[i]|)`, smallest, rather than
+the sum of their squares. It's a robust regression: a few outliers barely
+move it. A point far from the others pulls a least-squares fit toward it
+in proportion to the *square* of its distance, but a LAD fit only in
+proportion to the distance itself. (With no predictors, LAD would give the
+median of `y`, as least squares gives the mean.) It suits small data sets
+where one or two points are wild -- a bad print, a data error, a month
+with a one-off event -- and you'd rather they not decide the answer.
+`x`, `y`, and `weights` are as for `linear-regression`; the model's kind is
+`"lad"`, and `model-predict`, `model-report`, `model-evaluate`, and the rest
+work on it as on any other.
+
+```lisp
+(define x #(1 2 3 4 5 6 7 8 9 10))
+(define y #(3 5 7 9 11 13 15 17 19 100))       ; y = 2x + 1, but for the last one
+(model-slope (linear-regression x y))           ; => 6.30909090909091
+(model-slope (lad-regression x y))              ; => 2.0
+(model-intercept (lad-regression x y))          ; => 1.0
+(model-residuals (lad-regression x y) x y)      ; => #(0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 79.0)
+```
+
+`model-residuals` (below) shows which points the fit set aside: those with
+the largest residuals.
+
+**How it's found.** There's no formula for a LAD fit, as there is for
+least squares, but one fact makes it easy to find: some best fit goes
+exactly through `p` of the points, `p` being the number of coefficients
+counting the intercept -- for a line, through two of them. So the fit
+starts through the `p` points closest to the least-squares fit, and then,
+over and over, holds the fit at `p - 1` of the points it goes through and
+swings it -- for a line, rotates it about one point. How far to swing it
+is a weighted median, which lands the fit on another of the points. When
+no swing lowers the sum of absolute residuals, no fit does. This is
+Wesolowsky's method (1981): each step is exact, the answer is the exact
+LAD fit, and it usually takes only a few steps -- a hundred thousand
+points take well under a second. (Another common method, iteratively
+reweighted least squares, only approaches the answer, often over hundreds
+of steps.)
+
+**Standard errors** in `model-report` come from the usual large-sample
+formula for LAD, which depends on how closely the errors crowd around 0.
+That's estimated from the median absolute residual, so that the outliers
+don't inflate it: moving an outlier further out doesn't change the
+standard errors at all. In simulations with as few as 6 points, and with
+normal, heavy-tailed, or contaminated errors, the 95% intervals they give
+held the true coefficient 94% to 97% of the time. With `p` points or fewer,
+the fit is exact and the standard errors are `nan`.
+
+For measures of fit, `model-report` gives the sum of the absolute
+residuals; a pseudo-R-squared, 1 − that sum / the sum of `|y − the median
+of y|` (Koenker and Machado's R1, which, like R-squared, is 0 for a fit no
+better than a constant and 1 for a perfect one); the number of steps; and
+`n`.
+
+```lisp
+(define month #(1 2 3 4 5 6 7 8 9 10 11 12))
+(define cpr #(4.5 5 6.5 6 7.5 8.5 8 9.5 30 10.5 11 12.5))   ; month 9 had a one-off payoff
+(display (model-report (lad-regression month cpr)))
+```
+prints:
+```
+Least absolute deviation model:  y = 3.78571 + 0.714286*x1
+  term        coefficient     std error    t value    p value
+  intercept       3.78571       0.57181      6.621   5.92e-05
+  x1             0.714286     0.0776937      9.194   3.42e-06
+  sum |residuals|  = 23.7857
+  pseudo R-squared = 0.46549  (1 - sum |residuals| / the same about the median of y)
+  iterations       = 2 (converged)
+  n                = 12
+```
+Least squares, pulled up by month 9, gives a slope of 1.03 with a standard
+error of 0.50.
 
 #### `(logistic-regression x y [weights])`
 Maximum-likelihood fit of `p = sigmoid(intercept + sum(coefficients[i] *
@@ -4266,7 +4344,8 @@ by balance in dollars doesn't make the model look vastly more certain
 than its row count justifies — the weights say how much each row counts
 relative to the others, not how many copies of it there are.
 
-Measures of fit: for a linear model, R-squared and `n`. For a logistic
+Measures of fit: for a linear model, R-squared and `n`. For a LAD model,
+see `lad-regression`. For a logistic
 model, the log-likelihood, McFadden's pseudo-R-squared, the **AUC** (area
 under the ROC curve: the chance that a randomly chosen row with y = 1 gets
 a higher prediction than a randomly chosen row with y = 0; 0.5 is no
@@ -4340,7 +4419,7 @@ Evaluates a fitted model's prediction quality against data — typically
 held-out data it wasn't fit on — and returns a string report. `x`/`y`
 follow the same shape rules as the fitting functions; the number of
 predictor vectors in `x` must match the model's own predictor count. For a
-non-probabilistic model (`"linear"`/`"spline"`): reports R-squared, RMSE,
+non-probabilistic model (`"linear"`/`"lad"`/`"spline"`): reports R-squared, RMSE,
 and MAE against this new data. For a probabilistic model
 (`"logistic"`/`"spline-logistic"`): reports log-likelihood, McFadden's
 pseudo-R-squared (against an intercept-only model fit fresh on this new
@@ -4356,10 +4435,21 @@ uniformly across every model kind, including spline models.
 (display (model-evaluate m (vector-drop x n-train) (vector-drop y n-train)))
 ```
 
+#### `(model-residuals m x y)`
+The residuals, `y` minus the model's prediction, for each row of `x` and
+`y`, as a vector. `x` and `y` are as for `model-evaluate`. Works on any
+model. After a `lad-regression`, the rows with the largest residuals are
+the outliers the fit set aside.
+
+```lisp
+(define m (linear-regression #(1 2 3) #(1 3 2)))
+(model-residuals m #(1 2 3) #(1 3 2))          ; => #(-0.5 1.0 -0.5)
+```
+
 #### `(model-coefficients m)`
 Returns a vector of the model's fitted coefficients, one per predictor, in
 the order the predictors were given when fitting. Only valid for
-`"linear"`/`"logistic"` models — raises an error on a spline model (use
+`"linear"`/`"lad"`/`"logistic"` models — raises an error on a spline model (use
 `model-report` instead).
 
 ```lisp
@@ -4367,16 +4457,16 @@ the order the predictors were given when fitting. Only valid for
 ```
 
 #### `(model-intercept m)`
-The model's fitted intercept (a plain number). Same linear/logistic-only
-restriction as `model-coefficients`.
+The model's fitted intercept (a plain number). Like `model-coefficients`,
+not for a spline model.
 
 ```lisp
 (model-intercept m)            ; => -0.7
 ```
 
 #### `(model-kind m)`
-Returns `"linear"`, `"logistic"`, `"spline"`, or `"spline-logistic"`. Works
-on any model.
+Returns `"linear"`, `"lad"`, `"logistic"`, `"spline"`, or
+`"spline-logistic"`. Works on any model.
 
 ```lisp
 (model-kind m)                 ; => "linear"
@@ -4410,8 +4500,8 @@ an ordinary Lisp function, one argument per predictor, instead of a list:
 #### `(model-slope m)`
 Shorthand for "the (only) coefficient" — `(vector-ref (model-coefficients
 m) 0)` — but raises a clear error if the model has more than one predictor
-(use `model-coefficients` instead). Same linear/logistic-only restriction
-as `model-coefficients`.
+(use `model-coefficients` instead). Like `model-coefficients`, not for a
+spline model.
 
 ```lisp
 (model-slope m)                ; => 10.3
@@ -6707,7 +6797,7 @@ The Python files:
 | `lisp_stratify.py` | Stratification tables: `stratify`, `stratify-all` |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
 | `lisp_debug.py` | `break`, `unbreak`, `set-debug-hook!`, `abort`, `locals`, `break-on-error`, ...: the debugging functions (the machinery is in `lisp_core.py`) |
-| `lisp_regression.py` | `linear-regression`, `logistic-regression`, `spline-regression`, `model-report`, ... |
+| `lisp_regression.py` | `linear-regression`, `lad-regression`, `logistic-regression`, `spline-regression`, `model-report`, ... |
 | `lisp_simplex.py` | `lp-read-file`, `lp-solve`: linear programming (uses `simplex/`) |
 | `lisp_clock.py` | The clock: `current-time`, `today`, `time-add`, `sleep`, `sleep-until`, ... |
 | `lisp_finance.py` | Day counts (`day-count`, `year-fraction`) and cash-flow math: `npv`, `irr`, `xnpv`, `xirr`, `payment`, `present-value`, `yield`, `duration`, `convexity`, ... |
