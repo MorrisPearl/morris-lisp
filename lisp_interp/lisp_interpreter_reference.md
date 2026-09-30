@@ -97,6 +97,7 @@ functions" as a reference to search rather than read start to end.
   - [Verbose mode and stack traces](#verbose-mode-and-stack-traces)
 - [A short example](#a-short-example)
 - [Examples after Norvig's *Paradigms of AI Programming*](#examples-after-norvigs-paradigms-of-ai-programming)
+- [A chess program](#a-chess-program)
 - [How the code is organized](#how-the-code-is-organized)
 - [Running the tests](#running-the-tests)
 - [Adding your own builtins](#adding-your-own-builtins)
@@ -1549,6 +1550,18 @@ give exact results, however large they are. Dividing by zero is an error.
 (mod -7 2)                     ; => 1    -- the sign of b
 (mod 7 3)                      ; => 1
 (remainder 7.5 2)              ; => 1.5
+```
+
+#### `(even? n)`, `(odd? n)`, `(zero? x)`, `(positive? x)`, `(negative? x)`
+Tests of a number. `even?` and `odd?` need a whole number (`4` or
+`4.0`); a negative one is even or odd as its absolute value is.
+
+```lisp
+(even? 4)                      ; => #t
+(odd? -3)                      ; => #t
+(zero? 0.0)                    ; => #t
+(positive? -2)                 ; => #f
+(negative? -2)                 ; => #t
 ```
 
 #### `(abs x)`
@@ -4819,6 +4832,19 @@ written as ordinary output, which is still readable. Returns `'()`.
                  "| b | 2 |\n"))
 ```
 
+#### `(display-html html [text])`
+Shows `html`, a string of HTML, in a Jupyter notebook (the `morris_lisp`
+kernel), where it can be anything a web page can show: colors, pictures,
+a layout of its own. Anywhere else (console, GUI, `redirect-output`),
+`text` is written instead -- the same thing without HTML -- or, if there's
+no `text`, the HTML itself. Returns `'()`. `chess.lsp` draws its board
+this way: in a notebook, as a table of light and dark squares with large
+pieces; at the console, as lines of text.
+
+```lisp
+(display-html "<span style=\"color:red; font-size:20px\">Stop</span>" "Stop")
+```
+
 #### `(write-columns-csv filename pairs)`
 Writes a table to a CSV file. `pairs` is a table — a list of
 `(name . vector)` — or a list in which some entries are
@@ -6609,6 +6635,48 @@ https://github.com/norvig/paip-lisp, under the MIT license.) Run one from
 ELIZA and Othello read what you type with `read-line`, so they work at the
 console REPL and in a Jupyter notebook.
 
+## A chess program
+
+`examples/chess.lsp` plays chess, and is meant to be read: every part of
+it is short and explained.
+
+- **The board** is a vector of 120 numbers: the 64 squares with a border
+  around them, so a move off the board lands on a border square. A white
+  piece is a positive number and a black one negative.
+- **The rules** are all there: castling, en passant, promotion, check,
+  checkmate, and stalemate. (Not draws by repetition, by the fifty-move
+  rule, or by too little material.) `candidate-moves` finds the moves each
+  piece can make, and a move is legal if, once it's made, the mover's king
+  isn't attacked. `count-positions` checks them against the numbers every
+  chess program must get.
+- **Algebraic notation**: you type moves as `e4`, `Nf3`, `exd5`, `O-O`,
+  `e8=Q`, or as their squares, `e2e4`. Rather than parse what's typed, the
+  program writes each legal move in notation and looks for the one that
+  matches.
+- **Looking ahead**: minimax with alpha-beta pruning, `depth` moves ahead;
+  then, so that the evaluation doesn't judge a position in the middle of
+  an exchange, a search of the captures until the position is quiet. The
+  evaluation counts material and adds a little for pieces on good squares,
+  worked out with vector arithmetic.
+- **The board is drawn** with the chess pieces Unicode has (♔ ♕ ♖ ♗ ♘ ♙,
+  ♚ ♛ ♜ ♝ ♞ ♟): in a Jupyter notebook as an HTML table of light and dark
+  squares (with `display-html`), and elsewhere as text.
+
+To play it, at the console or in a notebook:
+
+```lisp
+(load "chess.lsp")
+(play-chess)                     ; you're white; the computer looks 2 moves ahead
+(play-chess :human black :depth 3)
+```
+
+At depth 2 the computer takes a few seconds a move; at depth 3, which
+plays better, ten to thirty seconds. Type `moves` for a list of the legal
+moves, and `quit` to stop. `fen->position` makes a position from
+Forsyth-Edwards Notation, to start somewhere else with `:position`.
+`examples/chess_example.lsp` shows the program checking its rules and
+finding a checkmate, a knight fork, and a sacrifice that mates in two.
+
 ---
 
 ## How the code is organized
@@ -6620,7 +6688,7 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 | Directory | What's in it |
 |---|---|
 | `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `implied_vol.lsp`, `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
-| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming* (see the section above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
+| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, and a chess program, `chess.lsp` (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `tools/` | `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV, and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 
 `load` finds files in `lib/` and `examples/` from anywhere (see "Where

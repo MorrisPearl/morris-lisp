@@ -156,6 +156,19 @@ def mod(a, b):
     return a % b
 
 
+def parity(n, who):
+    """n modulo 2 -- 0 or 1 -- for a whole number n (4, or 4.0)."""
+    check_numbers((n,), who)
+    if isinstance(n, float) and not n.is_integer():
+        raise LispError("%s: expected a whole number, got %r" % (who, n))
+    return n % 2
+
+
+def check_number(x, who):
+    check_numbers((x,), who)
+    return x
+
+
 def expt(a, b):
     """(expt a b) -- a raised to the power b."""
     if any_vector((a, b)):
@@ -310,6 +323,11 @@ NUMBER_BUILTINS = {
     "remainder": remainder,
     "abs": lisp_abs,
     "signum": signum,
+    "even?": lambda n: parity(n, "even?") == 0,
+    "odd?": lambda n: parity(n, "odd?") == 1,
+    "zero?": lambda x: check_number(x, "zero?") == 0,
+    "positive?": lambda x: check_number(x, "positive?") > 0,
+    "negative?": lambda x: check_number(x, "negative?") < 0,
     "min": lisp_min,
     "max": lisp_max,
     "sqrt": lisp_sqrt,
@@ -1223,10 +1241,11 @@ class OutputChannel:
 # returns them as a {lisp-name: function} table, the same shape as the
 # tables above.
 
-def make_output_builtins(out, markdown):
-    """display, newline, print, redirect-output, reset-output, and
-    display-markdown. `markdown` is the callback that renders Markdown
-    (the Jupyter kernel supplies one), or None."""
+def make_output_builtins(out, markdown, html):
+    """display, newline, print, redirect-output, reset-output,
+    display-markdown, and display-html. `markdown` and `html` are the
+    callbacks that render Markdown and HTML (the Jupyter kernel supplies
+    them), or None."""
 
     def lisp_display(x):
         out.write(to_display_string(x))
@@ -1264,6 +1283,19 @@ def make_output_builtins(out, markdown):
             out.write(str(text) + "\n")
         return NIL
 
+    def display_html(html_text, text=None):
+        """(display-html html [text]) -- html rendered in a Jupyter notebook;
+        elsewhere (console, GUI, redirected output), text is written instead:
+        the same thing without HTML. Without text, the HTML itself is written."""
+        for name, value in (("html", html_text), ("text", text)):
+            if value is not None and not isinstance(value, LispString):
+                raise LispError("display-html: expected a string for %s, got %r" % (name, value))
+        if html is not None and not out.is_redirected():
+            html(str(html_text))
+        else:
+            out.write(str(html_text if text is None else text) + "\n")
+        return NIL
+
     return {
         "display": lisp_display,
         "newline": lisp_newline,
@@ -1271,6 +1303,7 @@ def make_output_builtins(out, markdown):
         "redirect-output": redirect_output,
         "reset-output": reset_output,
         "display-markdown": display_markdown,
+        "display-html": display_html,
     }
 
 
@@ -1487,18 +1520,20 @@ def make_introspection_builtins(env, out):
 # The global environment
 # ---------------------------------------------------------------------------
 
-def make_global_env(output=None, plot=None, table=None, markdown=None):
+def make_global_env(output=None, plot=None, table=None, markdown=None, html=None):
     """Build a fresh global environment holding every built-in procedure.
 
-    The four optional arguments say where this environment's output goes,
+    The five optional arguments say where this environment's output goes,
     so the same interpreter can run in the console, the GUI, or Jupyter:
       output    receives the text written by display/newline/print
       plot      receives each chart spec from plot-xy... (see lisp_charts)
       table     receives each table from display-table, as a list of
                 (name, cell texts, alignment) tuples
       markdown  receives each string from display-markdown
+      html      receives the HTML from each display-html
     Any left out get the plain console behavior: print the text, print a
-    one-line chart summary, print a text table, print the raw Markdown.
+    one-line chart summary, print a text table, print the raw Markdown,
+    print display-html's plain text.
     """
     if output is None:
         output = lambda text: print(text, end="")
@@ -1541,7 +1576,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None):
     env.update(lisp_clock.BUILTINS)
 
     # Builtins that belong to this environment.
-    env.update(make_output_builtins(out, markdown))
+    env.update(make_output_builtins(out, markdown, html))
     env.update(make_display_table_builtin(out, table))
     env.update(lisp_charts.make_chart_builtins(plot))
     env.update(make_eval_builtins(env, out))

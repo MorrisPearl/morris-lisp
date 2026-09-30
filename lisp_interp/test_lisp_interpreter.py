@@ -1110,6 +1110,13 @@ class TestNumbers(LispTestCase):
         self.assertShows("(- 5)", "-5")
         self.assertLispError("(-)")
 
+    def test_even_odd_zero_positive_negative(self):
+        self.assertShows("(list (even? 4) (even? 3) (odd? -3) (odd? 0) (even? 4.0))", "(#t #f #t #f #t)")
+        self.assertShows("(list (zero? 0) (zero? 0.0) (zero? 1))", "(#t #t #f)")
+        self.assertShows("(list (positive? 2) (positive? 0) (negative? -0.5) (negative? 0))", "(#t #f #t #f)")
+        self.assertLispError("(even? 4.5)", "even?: expected a whole number, got 4.5")
+        self.assertLispError('(zero? "0")', "zero?: not a number")
+
     def test_division_is_true_division(self):
         self.assertShows("(/ 20 2 5)", "2.0")
         self.assertShows("(/ 7 2)", "3.5")
@@ -2130,6 +2137,40 @@ class TestTableRows(LispTestCase):
     def test_no_rows(self):
         self.assertShows("(table-from-rows '() (list \"a\"))", '(("a" . #()))')
         self.assertShows("(table-rows (table-filter t (> (table-column t \"balance\") 1000)))", "()")
+
+
+class TestDisplayHtml(LispTestCase):
+    """display-html: HTML in a notebook, the plain text anywhere else."""
+
+    def test_the_console_gets_the_plain_text(self):
+        self.run_lisp('(display-html "<b>bold</b>" "bold")')
+        self.assertEqual(self.printed(), "bold\n")
+
+    def test_without_plain_text_the_console_gets_the_html(self):
+        self.run_lisp('(display-html "<b>bold</b>")')
+        self.assertEqual(self.printed(), "<b>bold</b>\n")
+
+    def test_a_notebook_gets_the_html(self):
+        shown = []
+        env = lisp_builtins.make_global_env(output=self.out.append, html=shown.append)
+        self.run_lisp('(display-html "<b>bold</b>" "bold")', env)
+        self.assertEqual(shown, ["<b>bold</b>"])
+        self.assertEqual(self.printed(), "")
+
+    def test_the_notebook_callback_shows_it_as_html(self):
+        try:
+            import lisp_jupyter
+            from IPython.display import HTML
+        except ImportError:
+            self.skipTest("IPython is not installed")
+        with mock.patch.object(lisp_jupyter, "_ipy_display") as fake_display:
+            lisp_jupyter._notebook_html("<b>bold</b>")
+        shown = fake_display.call_args[0][0]
+        self.assertIsInstance(shown, HTML)
+        self.assertEqual(shown.data, "<b>bold</b>")
+
+    def test_it_needs_strings(self):
+        self.assertLispError("(display-html 5)", "display-html: expected a string for html, got 5")
 
 
 class TestDisplayTable(LispTestCase):
@@ -5927,6 +5968,97 @@ print(w.output_view.toPlainText())
         self.assertIn("=> 3", next_run)
 
 
+class TestChessProgram(unittest.TestCase):
+    """examples/chess.lsp: its move generator gets the known perft counts, it
+    reads and writes algebraic notation, and its search finds a mate."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.out = []
+        cls.env = lisp_builtins.make_global_env(output=cls.out.append)
+        cls.run_lisp('(load "chess.lsp")')
+
+    @classmethod
+    def run_lisp(cls, src):
+        result = lisp_core.NIL
+        for expr in lisp_core.parse(src):
+            result = lisp_core.seval(expr, cls.env)
+        return result
+
+    def show(self, src):
+        return lisp_core.to_string(self.run_lisp(src))
+
+    def test_the_number_of_move_sequences_is_right(self):
+        """perft: the counts every chess program must get, from positions with
+        castling, en passant, promotions, and pins."""
+        for fen, depth, expected in [
+                ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -", 2, 400),
+                ("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", 1, 48),
+                ("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -", 2, 191),
+                ("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq -", 2, 264),
+                ("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ -", 1, 44)]:
+            with self.subTest(fen=fen):
+                self.assertEqual(self.show('(count-positions (fen->position "%s") %d)' % (fen, depth)),
+                                 str(expected))
+
+    def test_moves_are_written_in_algebraic_notation(self):
+        def notation(fen):
+            return self.show('(let ((p (fen->position "%s"))) '
+                             '(sort (map (lambda (m) (move->text p m)) (legal-moves p))))' % fen)
+        # two knights and two rooks that can reach the same square
+        self.assertEqual(notation("4k3/8/8/8/R7/8/8/RN2KN2 w - -"),
+                         '("Kd1" "Kd2" "Ke2" "Kf2" "Na3" "Nbd2" "Nc3" "Ne3" "Nfd2" "Ng3" "Nh2" "R1a2" '
+                         '"R1a3" "R4a2" "R4a3" "Ra5" "Ra6" "Ra7" "Ra8+" "Rb4" "Rc4" "Rd4" "Re4+" "Rf4" '
+                         '"Rg4" "Rh4")')
+        # promotion, with and without a capture
+        self.assertEqual(notation("3r4/4P3/8/8/8/8/k7/4K3 w - -"),
+                         '("Ke2" "Kf1" "Kf2" "e8=B" "e8=N" "e8=Q" "e8=R" "exd8=B" "exd8=N" "exd8=Q" "exd8=R")')
+
+    def test_typed_moves_are_found(self):
+        self.run_lisp("""(define e (play-moves (initial-position) '("e4" "Nf6" "e5" "d5")))""")
+        self.assertEqual(self.show('(move->text e (find-move e "exd6"))'), '"exd6"')     # en passant
+        self.assertEqual(self.show('(find-move e "e5xd6")'), "(65 74)")
+        self.assertEqual(self.show('(find-move e "exd6 e.p.")'), "#f")
+        self.assertEqual(self.show('(find-move e "nc3")'), "#f")                    # N is a knight; n isn't
+        self.run_lisp('(define c (fen->position "r3k2r/8/8/8/8/8/8/R3K2R w KQkq -"))')
+        self.assertEqual(self.show('(move->text c (find-move c "0-0-0"))'), '"O-O-O"')
+        self.assertEqual(self.show('(move->text c (find-move c "O-O"))'), '"O-O"')
+        self.run_lisp('(define p (fen->position "8/4P3/8/8/8/8/k7/4K3 w - -"))')
+        self.assertEqual(self.show('(move->text p (find-move p "e7e8q"))'), '"e8=Q"')
+        self.assertEqual(self.show('(move->text p (find-move p "e8N"))'), '"e8=N"')
+
+    def test_castling_rights_and_the_en_passant_square_follow_the_moves(self):
+        self.run_lisp("""(define p (play-moves (initial-position) '("e4" "e5" "Ke2" "d5" "Nf3" "d4" "c4")))""")
+        self.assertEqual(self.show("(position-castling p)"), "(black-kingside black-queenside)")
+        self.assertEqual(self.show("(square-name (position-en-passant p))"), '"c3"')
+        self.assertEqual(self.show('(move->text p (find-move p "dxc3"))'), '"dxc3"')
+
+    def test_the_search_finds_mate_in_one_and_mate_in_two(self):
+        self.run_lisp("""(define scholars (play-moves (initial-position) '("e4" "e5" "Bc4" "Nc6" "Qh5" "Nf6")))""")
+        self.assertEqual(self.show("(move->text scholars (first (choose-move scholars 2)))"), '"Qxf7#"')
+        self.run_lisp('(define back-rank (fen->position "2r3k1/5ppp/8/8/8/8/3R1PPP/3R2K1 w - -"))')
+        self.assertEqual(self.show("(move->text back-rank (first (choose-move back-rank 3)))"), '"Rd8+"')
+
+    def test_the_game_is_over_at_checkmate_and_stalemate(self):
+        self.run_lisp("""(define mated (play-moves (initial-position) '("f3" "e5" "g4" "Qh4")))""")
+        self.assertEqual(self.show("(game-over-message mated)"), '"Checkmate: Black wins."')
+        self.run_lisp('(define stalemate (fen->position "7k/5Q2/6K1/8/8/8/8/8 b - -"))')
+        self.assertEqual(self.show("(game-over-message stalemate)"), '"Stalemate: a draw."')
+        self.assertEqual(self.show("(game-over-message (initial-position))"), "#f")
+
+    def test_a_game_against_the_computer(self):
+        """play-chess reads moves with read-line: here a bad move, a good one,
+        and quit."""
+        typed = iter(["Ke3", "f3", "quit"])
+        with mock.patch("builtins.input", lambda prompt="": next(typed)):
+            self.run_lisp("(play-chess)")
+        out = "".join(self.out)
+        self.assertIn('"Ke3" isn\'t a legal move here.', out)
+        self.assertIn("Black plays ", out)
+        self.assertIn("The game: 1.f3 ", out)
+        self.assertIn("  1  ♖ ♘ ♗ ♕ ♔ ♗ ♘ ♖", out)
+
+
 # ---------------------------------------------------------------------------
 # 19. The example scripts (offline ones only) still run
 # ---------------------------------------------------------------------------
@@ -5959,6 +6091,7 @@ class TestExampleScripts(unittest.TestCase):
         "dolist_vectors_map_example.lsp",
         "oas_monte_carlo_example.lsp",
         "othello_example.lsp",
+        "chess_example.lsp",
     ]
 
     @classmethod
@@ -6075,6 +6208,16 @@ class TestExampleScripts(unittest.TestCase):
         out = self.results["othello_example.lsp"].stdout
         self.assertIn("From the opening, looking 3 moves ahead: minimax 1, alpha-beta 1\n", out)
         self.assertIn(" moves; ", out)
+
+    def test_the_chess_example_checks_its_rules_and_finds_the_tactics(self):
+        if "chess_example.lsp" not in self.results:
+            self.skipTest("chess_example.lsp is slow: set LISP_TEST_SLOW to run it")
+        out = self.results["chess_example.lsp"].stdout
+        self.assertIn("  (20 400 8902)\n", out)
+        self.assertIn("  (48 2039)\n", out)
+        self.assertIn("White plays Qxf7#", out)
+        self.assertIn("White plays Nxc7+", out)
+        self.assertIn("White plays Rd8+   (it sees a checkmate;", out)
 
     def test_the_with_struct_example_produces_its_documented_output(self):
         out = self.results["with_struct_example.lsp"].stdout
