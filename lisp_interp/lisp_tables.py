@@ -19,7 +19,7 @@ of rows are practical.
 import numpy as np
 
 from lisp_core import (
-    LispDate, LispError, LispString, LispStruct, LispStructType, LispVector, NIL, Pair, Symbol,
+    LispDate, LispError, LispHashTable, LispString, LispStruct, LispStructType, LispVector, NIL, Pair, Symbol,
     _brief, _lisp_scalar, is_true, list_to_pairs, pairs_to_list, to_string,
 )
 from lisp_vector_math import factorize, floats_of, is_number, missing_mask, to_vector, truth_of
@@ -229,16 +229,20 @@ def check_table_value(value, column_name, who):
 def table_from_rows(rows, names=NIL):
     """(table-from-rows rows [names]) -- a table made from a list of rows.
     Each row is a row from table-rows or table-row (or any struct), whose
-    slots become the columns -- or a list of values, one per column, with
-    the column names given as `names`. Given names, rows that are structs
-    keep just those columns, in that order. A column of numbers with '() in
-    it holds NaN there, as a column read from a CSV file would."""
+    slots become the columns; or a hash table, such as a JSON object
+    becomes, whose keys become the columns; or a list of values, one per
+    column, with the column names given as `names`. Given names, rows that
+    are structs or hash tables keep just those columns, in that order. A
+    column of numbers with '() in it holds NaN there, as a column read from
+    a CSV file would."""
     who = "table-from-rows"
     row_list = pairs_to_list(rows)
     column_names = None if names is NIL else [str(n) for n in pairs_to_list(names)]
     if not row_list:
         return make_table_value([(n, LispVector([])) for n in column_names or []])
-    if isinstance(row_list[0], LispStruct):
+    if isinstance(row_list[0], LispHashTable):
+        column_names, values_by_column = hash_table_columns(row_list, column_names, who)
+    elif isinstance(row_list[0], LispStruct):
         if column_names is None:
             column_names = [str(slot) for slot, _ in row_list[0].struct_type.slots]
         values_by_column = [[struct_value(row, n, who) for row in row_list] for n in column_names]
@@ -260,6 +264,37 @@ def table_from_rows(rows, names=NIL):
         for value in values:
             check_table_value(value, n, who)
     return make_table_value([(n, column_vector(values)) for n, values in zip(column_names, values_by_column)])
+
+
+def hash_table_columns(rows, column_names, who):
+    """The columns of a table made from rows that are hash tables -- JSON
+    objects, say: (column_names, values_by_column). Without column_names,
+    every key becomes a column, in the order the keys first appear; a row
+    without a key has '() there. A key whose values include a hash table or
+    a list (an object or array inside the JSON object) is left out, since a
+    table can't hold those, and true and false become 1 and 0."""
+    row_dicts = []
+    for row in rows:
+        if not isinstance(row, LispHashTable):
+            raise LispError("%s: the first row is a hash table, so every row must be; not %s"
+                            % (who, _brief(row)))
+        row_dicts.append({str(key): value for key, value in row.table.items()})
+    if column_names is None:
+        column_names = []
+        nested = set()
+        for row in row_dicts:
+            for key, value in row.items():
+                if key not in column_names:
+                    column_names.append(key)
+                if isinstance(value, (LispHashTable, Pair)):
+                    nested.add(key)
+        column_names = [n for n in column_names if n not in nested]
+
+    def table_value(value):
+        if value is True or value is False:
+            return int(value)
+        return value
+    return column_names, [[table_value(row.get(n)) for row in row_dicts] for n in column_names]
 
 
 def table_or_rows(data, who):

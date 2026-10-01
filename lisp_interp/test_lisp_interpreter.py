@@ -2126,6 +2126,24 @@ class TestTableRows(LispTestCase):
                                              (list "name" "n" "day"))""",
                          '(("name" . #("x" "y")) ("n" . #(1.0 nan)) ("day" . #(2024-01-31 2024-02-29)))')
 
+    def test_hash_tables_such_as_json_objects_become_rows(self):
+        self.run_lisp("""
+          (define a (make-hash-table))
+          (hash-table-set! a "symbol" "SPY")
+          (hash-table-set! a "bid" 765.5)
+          (hash-table-set! a "is-etf" #t)
+          (hash-table-set! a "tags" (list 1 2))           ; a list: left out
+          (define b (make-hash-table))
+          (hash-table-set! b "symbol" "BRK/B")
+          (hash-table-set! b "is-etf" #f)
+          (hash-table-set! b "listed" "1996-05-09")""")
+        self.assertShows("(table-from-rows (list a b))",
+                         '(("symbol" . #("SPY" "BRK/B")) ("bid" . #(765.5 nan)) ("is-etf" . #(1 0)) '
+                         '("listed" . #(() 1996-05-09)))')
+        self.assertShows('(table-from-rows (list a b) (list "bid" "symbol"))',
+                         '(("bid" . #(765.5 nan)) ("symbol" . #("SPY" "BRK/B")))')
+        self.assertLispError("(table-from-rows (list a 5))", "every row must be")
+
     def test_table_from_rows_errors(self):
         self.assertLispError("(table-from-rows (list (list 1 2)))", "give the column names")
         self.assertLispError("(table-from-rows (list (list 1 2)) (list \"a\"))",
@@ -2244,7 +2262,9 @@ class TestOptionChainTable(LispTestCase):
     def rows():
         def row(symbol, kind, strike, expiration, days, price, iv, volume, oi):
             S = lisp_core.LispString
-            return [S(symbol), S(kind), strike, S(expiration), days, None, S("SPY"), price, iv, volume, oi]
+            bid, ask = round(price - 0.05, 2), round(price + 0.05, 2)
+            return [S(symbol), S(kind), strike, S(expiration), days, None, S("SPY"), 655.0,
+                    bid, ask, price, price, iv, None, volume, oi]
         return [
             row("SPY C660 OCT", "Call", 660.0, "2025-10-17", 19, 9.10, 0.18, 1200, 5000),
             row("SPY C660 NOV", "Call", 660.0, "2025-10-31", 33, 12.40, 0.19, 800, 2500),
@@ -2259,7 +2279,8 @@ class TestOptionChainTable(LispTestCase):
         self.env[lisp_core.Symbol("chain")] = lisp_tastytrade.option_chain_table(self.rows())
         self.assertShows("(table-column-names chain)",
                          '("symbol" "type" "strike" "expiration-date" "days-to-expiration" "delivery-month" '
-                         '"underlying" "last-price" "implied-volatility" "volume" "open-interest")')
+                         '"underlying" "underlying-price" "bid" "ask" "mid" "last-price" "implied-volatility" '
+                         '"delta" "volume" "open-interest")')
         self.assertShows("(table-row-count chain)", "7")
         self.assertShows('(table-column chain "expiration-date")',
                          "#(2025-10-17 2025-10-31 2025-10-31 2025-11-21 2025-10-31 2025-11-21 2025-11-21)")
@@ -2282,9 +2303,200 @@ class TestOptionChainTable(LispTestCase):
                          ["SPY C670 DEC", "SPY C660 NOV"])
         # part 3: the puts over 20% volatility and $1
         self.assertIn("Puts with implied volatility over 20% and a price over $1: 2", out)
-        self.assertIn("  SPY P650 NOV expires 2025-10-31: 6.80 at 23.0% volatility", out)
+        self.assertIn("  SPY P650 NOV expires 2025-10-31: 6.75 bid, 6.85 ask, at 23.0% volatility", out)
         # part 4: by expiration
         self.assertIn("2025-10-31             3       19.7%          6,690", out)
+
+
+class FakeTastytrade:
+    """A stand-in for tastytrade's API, for testing lisp_tastytrade without
+    the network: a session whose requests are answered from `answers`, a
+    function (path, params) -> (HTTP status, JSON body). It keeps every
+    request it's asked, as (path, params)."""
+
+    class Response:
+        def __init__(self, status, body):
+            self.status_code = status
+            self.body = body
+
+        def json(self):
+            if isinstance(self.body, str):
+                raise ValueError("not JSON")
+            return self.body
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.requests = []
+        fake = self
+
+        class Client:
+            async def get(self, path, params=None):
+                fake.requests.append((path, dict(params or {})))
+                return FakeTastytrade.Response(*fake.answers(path, dict(params or {})))
+
+        class Session:
+            _client = Client()
+
+            async def refresh(self):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def serialize(self):
+                return "{}"
+        self.session = Session()
+
+    def __enter__(self):
+        self.credentials = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        self.credentials.write('{"client_secret": "x", "refresh_token": "y"}')
+        self.credentials.close()
+        self.patch = mock.patch.object(lisp_tastytrade, "_tasty_session", lambda path: self.session)
+        self.patch.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.patch.stop()
+        os.unlink(self.credentials.name)
+
+
+class TestTastytrade(LispTestCase):
+    """lisp_tastytrade, with tastytrade's API played by FakeTastytrade."""
+
+    def run_with_api(self, src, answers):
+        with FakeTastytrade(answers) as api:
+            self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(api.credentials.name)
+            result = self.run_lisp(src)
+        self.api = api
+        return result
+
+    def test_get_returns_the_data_with_decimal_text_made_numbers(self):
+        def answers(path, params):
+            return 200, {"data": {"symbol": "SPY", "bid": "765.53", "cusip": "78462F103", "id": "27854",
+                                  "is-etf": True, "open-interest": 10095, "dividend": None,
+                                  "items": [{"strike-price": "375.0"}]}}
+        data = self.run_with_api('(tastytrade-get creds "/instruments/equities/SPY")', answers)
+        self.env[lisp_core.Symbol("data")] = data
+        self.assertShows('(hash-table-ref data "bid")', "765.53")
+        self.assertShows('(hash-table-ref data "cusip")', '"78462F103"')       # text without a decimal point stays text
+        self.assertShows('(hash-table-ref data "id")', '"27854"')
+        self.assertShows('(hash-table-ref data "is-etf")', "#t")
+        self.assertShows('(hash-table-ref data "open-interest")', "10095")
+        self.assertShows('(hash-table-ref data "dividend")', "()")
+        self.assertShows('(hash-table-ref (car (hash-table-ref data "items")) "strike-price")', "375.0")
+
+    def test_the_path_and_parameters(self):
+        answers = lambda path, params: (200, {"data": {}})
+        self.run_with_api('(tastytrade-get creds (list "option-chains" "BRK/B"))', answers)
+        self.assertEqual(self.api.requests, [("/option-chains/BRK%2FB", {})])
+        self.run_with_api("""(tastytrade-get creds "market-data/by-type"
+                               (list (cons "equity" (list "SPY" "QQQ")) (cons "index" "SPX")
+                                     (cons "from" (date 2026 1 2)) (cons "all" #t)))""", answers)
+        self.assertEqual(self.api.requests, [("/market-data/by-type", {"equity": ["SPY", "QQQ"], "index": "SPX",
+                                                                       "from": "2026-01-02", "all": "true"})])
+
+    def test_an_answer_in_pages_is_put_together(self):
+        def answers(path, params):
+            page = int(params.get("page-offset", 0))
+            return 200, {"data": {"items": [{"n": page * 2}, {"n": page * 2 + 1}]},
+                         "pagination": {"page-offset": page, "total-pages": 3}}
+        data = self.run_with_api('(tastytrade-get creds "/transactions")', answers)
+        self.env[lisp_core.Symbol("data")] = data
+        self.assertShows('(map (lambda (item) (hash-table-ref item "n")) (hash-table-ref data "items"))',
+                         "(0 1 2 3 4 5)")
+        self.assertEqual(len(self.api.requests), 3)
+        data = self.run_with_api('(tastytrade-get creds "/transactions" (list (cons "page-offset" 1)))', answers)
+        self.env[lisp_core.Symbol("data")] = data
+        self.assertShows('(map (lambda (item) (hash-table-ref item "n")) (hash-table-ref data "items"))', "(2 3)")
+
+    def test_errors_say_what_tastytrade_said(self):
+        refused = lambda path, params: (403, {"error": {"message": "Token has insufficient scopes for this request"}})
+        with self.assertRaises(lisp_core.LispError) as caught:
+            self.run_with_api('(tastytrade-get creds "/instruments/equity-options")', refused)
+        self.assertEqual(str(caught.exception),
+                         "tastytrade-get: HTTP 403: Token has insufficient scopes for this request "
+                         "(asking for /instruments/equity-options)")
+        missing = lambda path, params: (404, "<html>404 Not Found</html>")
+        with self.assertRaises(lisp_core.LispError) as caught:
+            self.run_with_api('(tastytrade-get creds "/no-such-thing")', missing)
+        self.assertIn("HTTP 404: there's no such request -- check the path", str(caught.exception))
+
+    def test_get_table(self):
+        items = lambda path, params: (200, {"data": {"items": [{"symbol": "SPY", "iv-rank": "0.35"},
+                                                               {"symbol": "QQQ", "iv-rank": "0.47"}]}})
+        self.env[lisp_core.Symbol("t")] = self.run_with_api('(tastytrade-get-table creds "/market-metrics")', items)
+        self.assertShows("t", '(("symbol" . #("SPY" "QQQ")) ("iv-rank" . #(0.35 0.47)))')
+        one = lambda path, params: (200, {"data": {"symbol": "SPY", "is-etf": True}})
+        self.env[lisp_core.Symbol("t")] = self.run_with_api('(tastytrade-get-table creds "/instruments/equities/SPY")', one)
+        self.assertShows("t", '(("symbol" . #("SPY")) ("is-etf" . #(1)))')
+
+    def test_the_kind_of_instrument_a_symbol_names(self):
+        kinds = {symbol: lisp_tastytrade._instrument_type(symbol) for symbol in
+                 ["SPY", "BRK/B", "SPX", "SPY   261218C00700000", "/CLZ6", "./CLX6 LO1X6 261117P60", "BTC/USD"]}
+        self.assertEqual(kinds, {"SPY": "equity", "BRK/B": "equity", "SPX": "equity",
+                                 "SPY   261218C00700000": "equity-option", "/CLZ6": "future",
+                                 "./CLX6 LO1X6 261117P60": "future-option", "BTC/USD": "cryptocurrency"})
+
+    def test_quotes(self):
+        def answers(path, params):
+            return 200, {"data": {"items": [
+                {"symbol": "SPY", "instrument-type": "Equity", "bid": "765.53", "ask": "765.54", "mid": "765.535"},
+                {"symbol": "SPY   261218C00700000", "instrument-type": "Equity Option", "bid": "73.4",
+                 "ask": "76.98", "volatility": "0.2616", "delta": "0.787", "open-interest": 10095}]}}
+        self.env[lisp_core.Symbol("q")] = self.run_with_api(
+            '(tastytrade-quotes creds (list "SPY   261218C00700000" "NOSUCH" "SPY"))', answers)
+        self.assertEqual(self.api.requests, [("/market-data/by-type", {
+            "equity-option": ["SPY   261218C00700000"], "equity": ["NOSUCH", "SPY"]})])
+        self.assertShows('(table-column q "symbol")', '#("SPY   261218C00700000" "NOSUCH" "SPY")')
+        self.assertShows('(table-column q "bid")', "#(73.4 nan 765.53)")
+        self.assertShows('(table-column q "implied-volatility")', "#(0.2616 nan nan)")
+        self.assertShows('(table-column q "open-interest")', "#(10095.0 nan nan)")
+        self.assertShows("(car (table-column-names q))", '"symbol"')
+
+    def test_quotes_ask_for_100_symbols_at_a_time(self):
+        answers = lambda path, params: (200, {"data": {"items": []}})
+        self.run_with_api('(tastytrade-quotes creds (loop for i from 0 below 250 collect (format "S{}" i)))', answers)
+        self.assertEqual([len(params["equity"]) for _path, params in self.api.requests], [100, 100, 50])
+
+    def test_option_chain(self):
+        def option(strike, kind, expiration):
+            occ = "SPY   %s%s%08d" % (expiration[2:].replace("-", ""), kind, strike * 1000)
+            return {"symbol": occ, "option-type": kind,
+                    "strike-price": "%s.0" % strike, "expiration-date": expiration,
+                    "days-to-expiration": 30, "underlying-symbol": "SPY"}
+        chain = [option(strike, kind, expiration) for strike in (90, 95, 100, 105, 110)
+                 for kind in ("P", "C") for expiration in ("2099-01-16", "2099-02-20", "2199-01-16")]
+
+        def answers(path, params):
+            if path == "/option-chains/SPY":
+                return 200, {"data": {"items": chain}}
+            if params.get("equity") == ["SPY"]:
+                return 200, {"data": {"items": [{"symbol": "SPY", "bid": "101.0", "ask": "102.0", "mid": "101.5"}]}}
+            return 200, {"data": {"items": [{"symbol": s, "bid": "1.0", "ask": "1.2", "mid": "1.1",
+                                             "volatility": "0.2", "delta": "0.5"}
+                                            for s in params["equity-option"]]}}
+        with mock.patch.object(lisp_tastytrade.datetime, "date", wraps=datetime.date) as fake_date:
+            fake_date.today.return_value = datetime.date(2098, 12, 1)
+            self.env[lisp_core.Symbol("chain")] = self.run_with_api('(tastytrade-option-chain creds "SPY" 3 2)', answers)
+        # the 2 strikes nearest 101.5 (100 and 105), calls and puts, for the two
+        # expirations within 3 months, in order
+        self.assertShows('(table-column chain "symbol")',
+                         '#("SPY   990116C00100000" "SPY   990116P00100000" "SPY   990116C00105000" '
+                         '"SPY   990116P00105000" "SPY   990220C00100000" "SPY   990220P00100000" '
+                         '"SPY   990220C00105000" "SPY   990220P00105000")')
+        self.assertShows('(table-column chain "type")', '#("Call" "Put" "Call" "Put" "Call" "Put" "Call" "Put")')
+        self.assertShows('(vector-ref (table-column chain "underlying-price") 0)', "101.5")
+        self.assertShows('(vector-ref (table-column chain "ask") 0)', "1.2")
+        self.assertShows('(vector-ref (table-column chain "implied-volatility") 0)', "0.2")
+
+    def test_test_connection_names_the_accounts(self):
+        answers = lambda path, params: (200, {"data": {"items": [{"account": {"account-number": "5WT0001"}},
+                                                                 {"account": {"account-number": "5WT0002"}}]}})
+        self.assertEqual(self.run_with_api("(tastytrade-test-connection creds)", answers),
+                         "Connected successfully. Account(s): 5WT0001, 5WT0002.")
 
 
 class TestDateArithmetic(LispTestCase):

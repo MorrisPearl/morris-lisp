@@ -3162,10 +3162,15 @@ has).
 #### `(table-from-rows rows [names])`
 A table made from a list of rows. Each row is a row from `table-rows` or
 `table-row` (or any struct), whose slots become the columns; given
-`names`, just those columns, in that order. Or each row is a list of
-values, one per column, and `names` gives the columns' names. Each column
-is read the way `load-csv` reads one: a column of numbers holds NaN where a
-row has `'()`, and a column of `YYYY-MM-DD` strings becomes dates.
+`names`, just those columns, in that order. Or each row is a hash table —
+such as a JSON object becomes, from `http-get-json` or `tastytrade-get` —
+whose keys become the columns, in the order they first appear (a row
+without a key is missing it); a key whose values include a hash table or
+a list is left out, since a table can't hold those, and `#t`/`#f` become
+1 and 0. Or each row is a list of values, one per column, and `names`
+gives the columns' names. Each column is read the way `load-csv` reads
+one: a column of numbers holds NaN where a row has `'()`, and a column of
+`YYYY-MM-DD` strings becomes dates.
 
 ```lisp
 (define t (make-table "id" (vector "a" "b") "balance" #(100 90)))
@@ -5313,15 +5318,15 @@ equality / booleans").
 
 ### tastytrade (real broker data)
 
-Requires the `tastytrade` package (`pip install tastytrade`) and a
-tastytrade account. This is the full data-and-analysis functionality of
-the `tasty_api/` desktop app, ported here as plain synchronous builtins
-(each one just wraps an internal `asyncio.run(...)` call, the same way
-`fred-series` wraps a plain `urllib` call) — no PyQt6 dependency, and
-nothing here needs a GUI running.
+Requires the `tastytrade` package (`pip install tastytrade`, version 12 or
+later) and a tastytrade account. One general function, `tastytrade-get`,
+makes any of the requests for information that tastytrade's API offers;
+the others are special cases of it, for what's most often wanted: quotes,
+option chains, and futures curves. **Every request only reads** — nothing
+here places, changes, or cancels an order.
 
-Four of the seven functions do real network I/O and take
-`credentials-path` first — a local JSON file:
+The functions that use the network take `credentials-path` first: a local
+JSON file,
 ```json
 {"client_secret": "...", "refresh_token": "...", "is_test": false}
 ```
@@ -5330,153 +5335,161 @@ Four of the seven functions do real network I/O and take
 hold both APIs' credentials. See `tasty_api/README.md` for the one-time
 OAuth setup (create an OAuth application on tastytrade, save the client
 secret, then use "Create Grant" to generate a refresh token — refresh
-tokens don't expire; the SDK auto-renews the short-lived session token
-behind the scenes). The other three take no `credentials-path` and do no
-networking: `tastytrade-products` just returns a hardcoded list of known
-product codes, and `tastytrade-curve-fit`/`tastytrade-leg-carry` are pure
-analysis functions that operate on data already fetched by
+tokens don't expire).
+
+A request takes about a fifth of a second. The first one also logs in,
+which takes about a second more; the login is good for 15 minutes, and
+it's kept and reused by the calls after it, for each credentials file,
+until it runs out (when the next call logs in again by itself). They all
+work in a Jupyter notebook too.
+
+`tastytrade-products`, `tastytrade-curve-fit`, and `tastytrade-leg-carry`
+use no network: the first lists the futures product codes, and the other
+two analyze a futures curve already fetched with
 `tastytrade-futures-curve-rows`, so you can fetch a curve once and re-run
-either analysis as many times as you like with different rate/threshold
-assumptions at no extra cost.
+either analysis as often as you like.
 
-`product` (for `tastytrade-futures-curve` and `tastytrade-futures-curve-rows`)
-must be one of the recognized futures short codes — call
-`(tastytrade-products)` for the current full list (around 60 codes as of
-this writing, spanning equity-index, rates, FX, energy, metals, grains,
-crypto, and livestock futures, e.g. `"ES"`, `"CL"`, `"GC"`, `"6E"`,
-`"ZC"`, `"BTC"`). An unrecognized product raises `LispError:
-tastytrade-futures-curve: unknown product '...' (supported: ...)`,
-naming the full current list. `tastytrade-option-chain`'s `symbol`
-argument is more flexible than this — see its own entry below.
+#### `(tastytrade-get credentials-path path [parameters])`
+The answer to any of tastytrade's requests for information, as Lisp data.
+The requests are listed at https://developer.tastytrade.com/open-api-spec/ .
+`path` is the request's path, such as `"/market-metrics"`, or a list of
+its parts, such as `(list "option-chains" "BRK/B")`: each part is encoded,
+so a `/` or a space in a symbol can't be taken for part of the path.
+`parameters` is a list of `(name . value)` pairs, or a hash table. A value
+that's a list is sent once for each of its items — `(cons "symbol[]"
+(list "AAPL" "MSFT"))` asks about both — a date is sent as `YYYY-MM-DD`,
+and `#t`/`#f` as `true`/`false`.
 
-#### `(tastytrade-test-connection credentials-path)`
-Authenticates and checks for accounts. Returns a status string naming the
-account number(s) found (or noting that authentication succeeded but no
-accounts were found). Raises on any connection/auth failure — run this
-first to confirm your credentials work before spending time on real data
-fetches.
+The result is the `data` part of tastytrade's JSON answer, as
+`http-get-json` returns JSON: an object becomes a hash table with string
+keys (read it with `hash-table-ref`), an array a list, `true`/`false`
+`#t`/`#f`, and `null` `'()`. tastytrade sends decimal numbers as text with
+a decimal point — `"765.53"`, `"10.0"` — and those become numbers; text
+without a decimal point, such as an ID or a CUSIP, stays text. An answer
+that comes in pages (a long list of transactions, say) is put together
+from all of them, unless `parameters` asks for one page with
+`"page-offset"`. A request tastytrade refuses is an error that says what
+tastytrade said.
 
-```lisp
-(display (tastytrade-test-connection "tastytrade_credentials.json"))
-```
+Some requests worth knowing:
 
-#### `(tastytrade-products)`
-Takes no arguments. Returns the list of supported futures short-code
-strings (around 60 of them) recognized by `tastytrade-futures-curve` and
-`tastytrade-futures-curve-rows`, and (as short-code shorthand, for
-backward compatibility) by `tastytrade-option-chain`. Call this to see
-the exact current list rather than relying on this document to enumerate
-every one.
+| Path | What it gives |
+|---|---|
+| `/market-data/by-type` | Quotes, with the symbols in parameters named `equity`, `equity-option`, `future`, `future-option`, `index`, and `cryptocurrency`, up to 100 in all. `tastytrade-quotes` uses this. |
+| `/market-metrics` | For the symbols in parameter `symbols` (`"SPY,QQQ"`): implied volatility, its rank and percentile, liquidity, beta, and earnings and dividend dates |
+| `/option-chains/SYMBOL` | Every option on an equity or index; `/option-chains/SYMBOL/nested` groups them by expiration and strike |
+| `/futures-option-chains/ROOT` | Every option on a futures product, such as `CL` |
+| `/instruments/equities/SYMBOL`, `/instruments/equity-options/SYMBOL`, `/instruments/futures/SYMBOL` | What tastytrade knows about one instrument |
+| `/customers/me/accounts` | Your accounts |
+| `/accounts/NUMBER/positions`, `/accounts/NUMBER/balances` | An account's positions and balances |
+| `/accounts/NUMBER/transactions` | An account's transactions (parameters `start-date`, `end-date`, ...) |
+| `/accounts/NUMBER/orders/live` | Today's orders |
 
-```lisp
-(tastytrade-products)          ; => ("ES" "MES" "NQ" "MNQ" "YM" "MYM" ... "SR3" ...)
-```
-
-#### `(tastytrade-futures-curve credentials-path product [n-months])`
-Fetches the product's futures term structure. `n-months` (default `18`) is
-how many upcoming calendar months to check for a listed contract — months
-that don't exist for this product (e.g. non-quarterly months on ES/NQ/ZN)
-are silently skipped, not an error. Returns `(cons delivery-dates-vector
-last-prices-vector)`, one entry per contract month that actually returned
-a price, sorted by delivery date — ready to feed straight into `plot-xy`,
-`linear-regression`, `spline-regression`, etc.
-
-```lisp
-(define curve (tastytrade-futures-curve "tastytrade_credentials.json" "CL" 12))
-(plot-xy (car curve) (list (cdr curve)))
-```
-
-See also `tastytrade-futures-curve-rows`, immediately below, which covers
-the exact same contract months but returns richer rows (including each
-contract's futures symbol and days-to-delivery) — that's what
-`tastytrade-curve-fit` and `tastytrade-leg-carry` need as input.
-
-#### `(tastytrade-futures-curve-rows credentials-path product [n-months])`
-Fetches the same futures term structure as `tastytrade-futures-curve`
-(same `product`/`n-months` semantics, same coverage), but returns a Lisp
-list of rows instead of a dates/prices pair — each row a 4-element list:
-```
-(delivery-month futures-symbol days-to-delivery last-price)
-```
-`futures-symbol` has the leading `"/"` stripped (e.g. `"CLZ6"`, not
-`"/CLZ6"`); `days-to-delivery` is an integer (negative if the contract's
-first-of-month delivery date has already passed but it's still trading).
-Sorted by delivery date. This is the raw input `tastytrade-curve-fit` and
-`tastytrade-leg-carry` expect — fetch once with this, then call either
-analysis function (repeatedly, with different assumptions) with no
-re-fetch needed.
+A request your login isn't allowed to make — the OAuth grant decides
+which — is refused with `Token has insufficient scopes for this request`.
+(Asking about several options at once, as `/instruments/equity-options`
+with `symbol[]`, can be refused that way while asking about one at a
+time, with the symbol in the path, is allowed.)
 
 ```lisp
-(define rows (tastytrade-futures-curve-rows "tastytrade_credentials.json" "CL" 8))
-(define fit (tastytrade-curve-fit rows 0.75))
+(define creds "tastytrade_credentials.json")
+(define spy (tastytrade-get creds (list "instruments" "equities" "SPY")))
+(hash-table-ref spy "description")       ; "State Street SPDR S&P 500 ETF Trust"
+(define metrics (tastytrade-get creds "/market-metrics" '(("symbols" . "SPY,QQQ"))))
+(map (lambda (m) (hash-table-ref m "implied-volatility-index-rank"))
+     (hash-table-ref metrics "items"))  ; (0.3496 0.4733), say
 ```
 
-#### `(tastytrade-option-chain credentials-path symbol [n-months max-strikes-per-expiration include-iv? greeks-timeout])`
+#### `(tastytrade-get-table credentials-path path [parameters])`
+The same request as `tastytrade-get`, with what it returns as a table
+(see "Tables"): a row for each of the answer's `items`, or one row if the
+answer is a single object. Each key becomes a column, as `table-from-rows`
+makes a table from hash tables: a value that is itself an object or a
+list is left out, and `true`/`false` become 1 and 0.
+
+```lisp
+(display-table (table-select (tastytrade-get-table creds "/market-metrics" '(("symbols" . "SPY,QQQ")))
+                             '("symbol" "implied-volatility-index" "implied-volatility-index-rank"))
+               '(("implied-volatility-index" ".1%") ("implied-volatility-index-rank" ".1%")))
+```
+
+#### `(tastytrade-quotes credentials-path symbols)`
+The current bid, ask, and more, for one symbol or a list of them, as a
+table with a row for each, in the order given. The symbols can be any
+mix of:
+
+| Symbol | Kind |
+|---|---|
+| `"SPY"`, `"BRK/B"`, `"SPX"` | a stock, ETF, or index |
+| `"SPY   261218C00700000"` | an equity option, in OCC's form: the root padded with spaces to six characters, the expiration as YYMMDD, `C` or `P`, and the strike times 1000 in eight digits — as `tastytrade-option-chain`'s `symbol` column has it |
+| `"/CLZ6"` | a futures contract |
+| `"./CLX6 LO1X6 261117P60"` | a futures option, as `tastytrade-option-chain` has it |
+| `"BTC/USD"` | a cryptocurrency |
+
+The columns: `symbol`, `instrument-type`, `bid`, `ask`, `mid`, `mark`,
+`last`, `bid-size`, `ask-size`, `volume`, `open-interest`,
+`implied-volatility`, `delta`, `gamma`, `theta`, `vega`, `prev-close`, and
+`updated-at` (when tastytrade last updated it, as text). The implied
+volatility and Greeks are there for options only; a value tastytrade
+doesn't give, or a symbol it doesn't know, is missing (`nan`, or `'()`).
+It asks for 100 symbols at a time, so any number can be given.
+
+```lisp
+(define q (tastytrade-quotes creds (list "SPY" "SPY   261218C00700000" "/CLZ6")))
+(display-table (table-select q '("symbol" "bid" "ask" "mid" "implied-volatility")))
+(vector-ref (table-column q "ask") 1)   ; the option's ask
+```
+
+#### `(tastytrade-option-chain credentials-path symbol [n-months max-strikes-per-expiration])`
 Fetches an option chain — for a CME futures product **or for any equity
-symbol**. Returns a **table** (see "Tables"), one row per option, with
-these columns:
+symbol** — with each option's current bid and ask. Returns a **table**
+(see "Tables"), one row per option, sorted by expiration and then strike,
+with these columns:
 
 | Column | What it holds |
 |---|---|
-| `symbol` | the option's symbol |
+| `symbol` | the option's symbol, which `tastytrade-quotes` takes too |
 | `type` | `"Call"` or `"Put"` |
 | `strike` | the exercise price |
 | `expiration-date` | the expiration, a date |
 | `days-to-expiration` | a whole number of days |
 | `delivery-month` | for a futures option, the contract's delivery month (a date); for an equity option, missing |
 | `underlying` | the futures contract, e.g. `"CLZ6"`, or the equity's symbol |
-| `last-price` | the option's last price |
-| `implied-volatility` | e.g. `0.23` for 23%; missing without `include-iv?` |
+| `underlying-price` | the underlying's price now: the middle of its bid and ask |
+| `bid`, `ask`, `mid` | the option's bid, ask, and the middle of the two |
+| `last-price` | the option's last trade |
+| `implied-volatility` | e.g. `0.23` for 23% |
+| `delta` | the option's delta |
 | `volume`, `open-interest` | contracts |
 
-A value tastytrade didn't report (e.g. no recent implied-volatility
-snapshot) is missing: `nan` in a column of numbers, `'()` otherwise. A
-comparison with a missing value is false, so an option with no open
-interest never passes a test on open interest. Being a table, the chain
-can be filtered, sorted, and summarized with the table functions a whole
-column at a time, or looked at one option at a time with `table-rows` (see
-"Rows", under "Tables"). `(table-row-count chain)` is the number of
-options; `(length chain)` is the number of columns.
+A value tastytrade didn't report is missing: `nan` in a column of
+numbers, `'()` otherwise. A comparison with a missing value is false, so
+an option with no open interest never passes a test on open interest.
+Being a table, the chain can be filtered, sorted, and summarized with the
+table functions a whole column at a time, or looked at one option at a
+time with `table-rows` (see "Rows", under "Tables"). `(table-row-count
+chain)` is the number of options; `(length chain)` is the number of
+columns.
 
 `symbol` is classified into one of three cases:
 
 | Form | Treated as | Notes |
 |---|---|---|
-| Starts with `"/"`, e.g. `"/CL"` | Futures, using the root exactly as given | tastytrade's own convention — works for **any** futures root, not just ones in `tastytrade-products`; no short-code translation needed or done |
-| A known short code, e.g. `"CL"` | Futures, translated to `"/CL"` | Kept for backward compatibility with the older, futures-only version of this function |
-| Anything else, e.g. `"AAPL"`, `"SPY"` | Equity | No translation of any kind — the symbol is used exactly as given (upper-cased) |
+| Starts with `"/"`, e.g. `"/CL"` | Futures, using the root exactly as given | tastytrade's own convention — works for **any** futures root, not just ones in `tastytrade-products` |
+| A known short code, e.g. `"CL"` | Futures, translated to `"/CL"` | |
+| Anything else, e.g. `"AAPL"`, `"BRK/B"` | Equity | used exactly as given (upper-cased) |
 
-For a **futures** chain: `delivery-month` is the contract's delivery
-month (a `date` value, first-of-month) and `underlying` is the futures
-symbol with its leading `"/"` stripped (e.g. `"CLZ6"`); `n-months` is how
-many upcoming *delivery months* to include (same meaning as in
-`tastytrade-futures-curve`).
-
-For an **equity** chain: `delivery-month` is always `'()` (there's no
-separate delivery month the way there is for a futures option) and
-`underlying` is just the equity symbol itself; `n-months` instead limits
-results to expirations within that many months from today — the closest
-equivalent for a single underlying with no separate contract months.
-
-The remaining parameters mean the same thing for both cases:
-
-- `max-strikes-per-expiration` (default `15`) — each expiration is
-  trimmed to the strikes nearest the underlying's current price (the
-  futures price, or the equity's last/close price).
-- `include-iv?` (default `#t`) — implied volatility only comes from
-  tastytrade's live per-contract Greeks stream (no snapshot IV field in
-  the REST market-data endpoint), which is the slow part of this call.
-  Pass `#f` to skip it entirely — every row's `implied-volatility` comes
-  back `'()`, but the call returns much faster.
-- `greeks-timeout` (default `25.0` seconds) — how long to wait for the
-  Greeks stream before giving up on stragglers; a timeout there isn't an
-  error, those rows just get `'()` for IV.
+For a **futures** chain, `n-months` (default `12`) is how many upcoming
+*delivery months* to include (as in `tastytrade-futures-curve`); for an
+**equity** chain, how many months ahead to look for expirations. Each
+expiration keeps only the `max-strikes-per-expiration` (default `15`)
+strikes nearest the underlying's price, calls and puts both.
 
 ```lisp
 (define creds "tastytrade_credentials.json")
-(define chain (tastytrade-option-chain creds "/CL" 2 5 #f))     ; futures, explicit root
-(define chain2 (tastytrade-option-chain creds "CL" 2 5 #f))     ; futures, short code (same as above)
-(define aapl (tastytrade-option-chain creds "AAPL" 2 10 #f))    ; equity
+(define chain (tastytrade-option-chain creds "/CL" 2 5))     ; futures, explicit root
+(define chain2 (tastytrade-option-chain creds "CL" 2 5))     ; futures, short code (same as above)
+(define aapl (tastytrade-option-chain creds "AAPL" 2 10))    ; equity
 ```
 
 **Filtering and showing a chain.** Fetch it, pick the options that meet
@@ -5486,8 +5499,8 @@ your criteria, and show them. The formats say how to lay out each column
 ```lisp
 (define spy (tastytrade-option-chain creds "SPY" 2 10))
 (define chain-formats
-  '(("strike" ",.2f") ("last-price" ",.2f") ("implied-volatility" ".1%")
-    ("volume" ",.0f") ("open-interest" ",.0f")))
+  '(("strike" ",.2f") ("bid" ",.2f") ("ask" ",.2f") ("mid" ",.2f")
+    ("implied-volatility" ".1%") ("volume" ",.0f") ("open-interest" ",.0f")))
 (display-table spy chain-formats)                ; the whole chain
 
 ; Calls expiring in 20 to 60 days with at least 100 contracts open,
@@ -5502,7 +5515,7 @@ your criteria, and show them. The formats say how to lay out each column
 ; Puts over 20% volatility and $1, tested one option at a time:
 (define (expensive-put? option)
   (with-struct option
-    (and (string=? type "Put") (> implied-volatility 0.20) (> last-price 1.0))))
+    (and (string=? type "Put") (> implied-volatility 0.20) (> mid 1.0))))
 (display-table (filter expensive-put? (table-rows spy)) chain-formats)
 
 ; One row per expiration: how many options, and their average volatility.
@@ -5513,6 +5526,59 @@ your criteria, and show them. The formats say how to lay out each column
 
 `examples/option_chain_example.lsp` does all of this and a little more
 (a column computed from two others, and one line of text per option).
+
+#### `(tastytrade-futures-curve credentials-path product [n-months])`
+Fetches the product's futures term structure. `product` is one of the
+futures short codes — `(tastytrade-products)` lists them, e.g. `"ES"`,
+`"CL"`, `"GC"`, `"6E"`, `"ZC"`, `"BTC"`; an unknown one is an error that
+names them all. `n-months` (default `18`) is how many upcoming calendar
+months to check for a listed contract — months that don't exist for this
+product (e.g. non-quarterly months on ES/NQ/ZN) are skipped, not an error.
+Returns `(cons delivery-dates-vector prices-vector)`, one entry per
+contract month that has a price — its settlement price if it has one,
+else its last trade — sorted by delivery date, ready for `plot-xy`,
+`linear-regression`, `spline-regression`, and so on. For the contracts'
+bids and asks, give their symbols (`"/CLZ6"`) to `tastytrade-quotes`.
+
+```lisp
+(define curve (tastytrade-futures-curve "tastytrade_credentials.json" "CL" 12))
+(plot-xy (car curve) (list (cdr curve)))
+```
+
+#### `(tastytrade-futures-curve-rows credentials-path product [n-months])`
+The same futures term structure as `tastytrade-futures-curve`, as a list
+of rows, each a 4-element list:
+```
+(delivery-month futures-symbol days-to-delivery price)
+```
+`futures-symbol` has the leading `"/"` stripped (e.g. `"CLZ6"`);
+`days-to-delivery` is an integer (negative if the contract's
+first-of-month delivery date has passed but it's still trading). This is
+the input `tastytrade-curve-fit` and `tastytrade-leg-carry` take — fetch
+once with this, then call either one as often as you like.
+
+```lisp
+(define rows (tastytrade-futures-curve-rows "tastytrade_credentials.json" "CL" 8))
+(define fit (tastytrade-curve-fit rows 0.75))
+```
+
+#### `(tastytrade-test-connection credentials-path)`
+Logs in and lists your accounts. Returns a status string naming the
+account number(s) found (or noting that logging in worked but there are
+no accounts). Raises an error if logging in fails — run this first to
+check that your credentials work.
+
+```lisp
+(display (tastytrade-test-connection "tastytrade_credentials.json"))
+```
+
+#### `(tastytrade-products)`
+The futures short codes (around 60) that `tastytrade-futures-curve`,
+`tastytrade-futures-curve-rows`, and `tastytrade-option-chain` accept.
+
+```lisp
+(tastytrade-products)          ; => ("ES" "MES" "NQ" "MNQ" "YM" "MYM" ... "SR3" ...)
+```
 
 #### `(tastytrade-curve-fit curve-rows [rich-cheap-threshold-pct poly-degree])`
 Pure function — no networking. Per-contract rich/cheap analysis: fits
@@ -5856,56 +5922,41 @@ Needs a credentials file with both tastytrade fields and a
 
 **Example** (also runnable as [`tastytrade_example.lsp`](examples/tastytrade_example.lsp) —
 `python3 ../lisp_interpreter.py tastytrade_example.lsp`, from `examples/`). Exercises all
-seven `tastytrade-*` builtins:
+ten `tastytrade-*` builtins; abridged here:
 
 ```lisp
 (define creds "tastytrade_credentials.json")   ; edit to your credentials file's path
 
-(define (print-each lst)
-  (dolist (item lst)
-    (display "  ") (display item) (newline)))
+; confirm the credentials work
+(display (tastytrade-test-connection creds)) (newline)
 
-; --- 1. which product codes are supported ---
-(display "Supported products:") (newline)
-(print-each (tastytrade-products))
-
-; --- 2. confirm the credentials work before spending time on real fetches ---
-(display "Connection test: ") (display (tastytrade-test-connection creds)) (newline)
-
-; --- 3. WTI Crude Oil (CL) futures term structure, next 6 contract months ---
+; WTI Crude Oil (CL) futures term structure, next 6 contract months
 (define curve (tastytrade-futures-curve creds "CL" 6))
-(display "CL futures curve (") (display (vector-length (car curve))) (display " months):") (newline)
 
-; --- 4. option chain, fast path (include-iv? = #f) ---
-(define chain (tastytrade-option-chain creds "CL" 2 5 #f))
-(display "CL option chain, no IV (") (display (table-row-count chain)) (display " contracts):") (newline)
-(define chain-formats '(("strike" ",.2f") ("last-price" ",.2f") ("implied-volatility" ".1%")))
-(display-table chain chain-formats)
+; CL options on the next 2 delivery months, 5 strikes nearest the money
+(define chain (tastytrade-option-chain creds "CL" 2 5))
+(display-table chain '(("strike" ",.2f") ("bid" ",.2f") ("ask" ",.2f")
+                       ("implied-volatility" ".1%") ("delta" ".3f")))
 
-; --- 5. option chain with implied volatility, kept small so the Greeks
-;        stream finishes quickly ---
-(define chain-iv (tastytrade-option-chain creds "CL" 1 3 #t 20.0))
-(display "CL option chain, with IV (") (display (table-row-count chain-iv)) (display " contracts):") (newline)
-(display-table chain-iv chain-formats)
+; bids and asks for a stock, an index, an equity option, a future, and the
+; first CL option in the chain
+(define quotes (tastytrade-quotes creds (list "SPY" "SPX" "SPY   261218C00700000" "/CLZ6"
+                                              (vector-ref (table-column chain "symbol") 0))))
+(display-table (table-select quotes '("symbol" "bid" "ask" "mid" "last")))
 
-; --- 6. option chain on an equity: any symbol that isn't a futures root
-;        ("/..." or a known short code) is fetched as an equity chain
-;        automatically -- no separate function, no translation ---
-(define aapl-chain (tastytrade-option-chain creds "AAPL" 2 5 #f))
-(display "AAPL option chain, no IV (") (display (table-row-count aapl-chain)) (display " contracts):") (newline)
-(display-table aapl-chain chain-formats)
+; an equity option chain
+(define aapl-chain (tastytrade-option-chain creds "AAPL" 2 5))
 
-; --- 7. rich/cheap curve-fit analysis -- fetch the curve rows once,
-;        analyze for free (no networking in tastytrade-curve-fit) ---
+; rich/cheap analysis and implied carry: fetch the curve rows once, then
+; analyze with no further network use
 (define curve-rows (tastytrade-futures-curve-rows creds "CL" 8))
 (define fit (tastytrade-curve-fit curve-rows 0.75))
-(display "CL curve-fit rich/cheap:") (newline)
-(print-each fit)
-
-; --- 8. implied calendar-spread carry, reusing curve-rows from step 7 ---
 (define legs (tastytrade-leg-carry curve-rows 4.25 3.0 1.0))
-(display "CL implied carry by leg:") (newline)
-(print-each legs)
+
+; anything else the API offers: market metrics as a table, and one
+; instrument's description
+(display-table (tastytrade-get-table creds "/market-metrics" '(("symbols" . "SPY,QQQ"))))
+(hash-table-ref (tastytrade-get creds (list "instruments" "equities" "BRK/B")) "description")
 ```
 
 ### Input / output
@@ -6806,7 +6857,7 @@ The Python files:
 | `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, `sqlite-write-table`, ... |
 | `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
 | `lisp_fred.py` | `fred-series` (downloads from FRED, through `lisp_http.py`) |
-| `lisp_tastytrade.py` | `tastytrade-*` (downloads from tastytrade) |
+| `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |

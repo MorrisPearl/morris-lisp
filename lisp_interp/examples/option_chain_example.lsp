@@ -5,7 +5,8 @@
 ;
 ; tastytrade-option-chain returns a TABLE: one column per field (symbol,
 ; type, strike, expiration-date, days-to-expiration, delivery-month,
-; underlying, last-price, implied-volatility, volume, open-interest). So the
+; underlying, underlying-price, bid, ask, mid, last-price,
+; implied-volatility, delta, volume, open-interest). So the
 ; chain can be filtered a whole column at a time (part 2), or looked at one
 ; option at a time, as rows (part 3). A value tastytrade didn't report is
 ; missing -- NaN in a column of numbers -- and a comparison with a missing
@@ -20,17 +21,17 @@
 
 ; --- 1. Fetch the chain, and show it ---------------------------------------
 ; SPY options expiring in the next 2 months, the 10 strikes nearest the
-; money at each expiration, with implied volatility.
+; money at each expiration, with their current bids and asks.
 (define chain (tastytrade-option-chain creds "SPY" 2 10))
 
 ; How to lay out each column's numbers: the same specs format uses.
 (define chain-formats
-  '(("strike" ",.2f") ("last-price" ",.2f") ("implied-volatility" ".1%")
-    ("volume" ",.0f") ("open-interest" ",.0f")))
+  '(("strike" ",.2f") ("bid" ",.2f") ("ask" ",.2f") ("mid" ",.2f") ("last-price" ",.2f")
+    ("implied-volatility" ".1%") ("volume" ",.0f") ("open-interest" ",.0f")))
 
 (display (format "SPY: {} options\n" (table-row-count chain)))
 (display-table (table-select chain '("symbol" "type" "strike" "expiration-date"
-                                     "last-price" "implied-volatility" "open-interest"))
+                                     "bid" "ask" "implied-volatility" "open-interest"))
                chain-formats)
 (newline)
 
@@ -47,16 +48,16 @@
                             (>= (column "open-interest") 100))))
 
 ; A new column, computed from two others: what each day of the option's life
-; costs, and the table sorted by it.
+; costs, at the middle of the bid and ask, and the table sorted by it.
 (define liquid-calls-per-day
   (table-add-column liquid-calls "price-per-day"
-                    (/ (table-column liquid-calls "last-price")
+                    (/ (table-column liquid-calls "mid")
                        (table-column liquid-calls "days-to-expiration"))))
 
 (display "Calls, 20 to 60 days, open interest of at least 100, cheapest per day first:\n")
 (display-table (table-sort (table-select liquid-calls-per-day
                                          '("symbol" "strike" "days-to-expiration"
-                                           "last-price" "price-per-day" "open-interest"))
+                                           "mid" "price-per-day" "open-interest"))
                            "price-per-day")
                (cons '("price-per-day" ".4f") chain-formats))
 (newline)
@@ -69,7 +70,7 @@
   (with-struct option
     (and (string=? type "Put")
          (> implied-volatility 0.20)
-         (> last-price 1.0))))
+         (> mid 1.0))))
 
 (define expensive-puts (filter expensive-put? (table-rows chain)))
 (display (format "Puts with implied volatility over 20% and a price over $1: {}\n"
@@ -80,8 +81,8 @@
 ; One line per option, written out with format:
 (dolist (option expensive-puts)
   (with-struct option
-    (display (format "  {} expires {}: {:.2f} at {:.1%} volatility\n"
-                     symbol expiration-date last-price implied-volatility))))
+    (display (format "  {} expires {}: {:.2f} bid, {:.2f} ask, at {:.1%} volatility\n"
+                     symbol expiration-date bid ask implied-volatility))))
 (newline)
 
 ; --- 4. Summarize by expiration ---------------------------------------------

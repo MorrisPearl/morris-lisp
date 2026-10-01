@@ -1,14 +1,13 @@
 ; ---------------------------------------------------------------------
-; tastytrade example: retrieve and print real broker data (futures curve,
-; futures/equity option chains, and rich/cheap curve analysis) via the
-; tastytrade-* functions -- the full functionality of the tasty_api/
-; desktop app, as plain builtins. Needs the `tastytrade` package
-; (pip install tastytrade), a tastytrade account, and a local
-; credentials JSON file -- see tasty_api/README.md for the one-time
-; OAuth setup. The same credentials file works for tasty_api and this
-; interpreter.
+; tastytrade example: retrieve and print real broker data (quotes, a
+; futures curve, futures/equity option chains, market metrics, and
+; rich/cheap curve analysis) via the tastytrade-* functions. Needs the
+; `tastytrade` package (pip install tastytrade), a tastytrade account, and
+; a local credentials JSON file -- see tasty_api/README.md for the
+; one-time OAuth setup. The same credentials file works for tasty_api and
+; this interpreter. creds is set to its path in init.lsp.
 ;
-; Exercises all seven tastytrade-* builtins.
+; Exercises all ten tastytrade-* builtins.
 ; ---------------------------------------------------------------------
 
 ; A small helper to print a Lisp list, one item per line.
@@ -45,14 +44,14 @@
 (print-curve curve-dates curve-prices 0 (vector-length curve-dates))
 (newline)
 
-; --- 4. tastytrade-option-chain, fast path (include-iv? = #f): CL
-;        options over the next 2 delivery months, 5 strikes nearest the
-;        money per expiration -- skipping the Greeks stream, so this
-;        returns quickly ---
-(define chain (tastytrade-option-chain creds "CL" 2 5 #f))
-(display "CL option chain, no IV (") (display (table-row-count chain)) (display " contracts):") (newline)
-(define chain-formats '(("strike" ",.2f") ("last-price" ",.2f") ("implied-volatility" ".1%")
-                        ("volume" ",.0f") ("open-interest" ",.0f")))
+; --- 4. tastytrade-option-chain: CL options over the next 2 delivery
+;        months, 5 strikes nearest the money per expiration, with bids,
+;        asks, implied volatility, and delta ---
+(define chain (tastytrade-option-chain creds "CL" 2 5))
+(display "CL option chain (") (display (table-row-count chain)) (display " contracts):") (newline)
+(define chain-formats '(("strike" ",.2f") ("underlying-price" ",.2f") ("bid" ",.2f") ("ask" ",.2f")
+                        ("mid" ",.3f") ("last-price" ",.2f") ("implied-volatility" ".1%")
+                        ("delta" ".3f") ("volume" ",.0f") ("open-interest" ",.0f")))
 (display-table chain chain-formats)
 (newline)
 
@@ -64,12 +63,17 @@
     (display (format "  {} strike {:,.2f}, {} days\n" symbol strike days-to-expiration))))
 (newline)
 
-; --- 5. tastytrade-option-chain, with implied volatility (include-iv? =
-;        #t, the default): kept to a small chain (1 month, 3 strikes) so
-;        the Greeks stream finishes quickly ---
-(define chain-iv (tastytrade-option-chain creds "CL" 1 3 #t 20.0))
-(display "CL option chain, with IV (") (display (table-row-count chain-iv)) (display " contracts):") (newline)
-(display-table chain-iv chain-formats)
+; --- 5. tastytrade-quotes: the current bid and ask (and more) for any
+;        symbols at all -- a stock, an index, an equity option (in OCC's
+;        form: the root padded to six characters, YYMMDD, C or P, and the
+;        strike times 1000), a future, and the first CL option in the
+;        chain above ---
+(define quotes (tastytrade-quotes creds (list "SPY" "SPX" "SPY   261218C00700000" "/CLZ6"
+                                              (vector-ref (table-column chain "symbol") 0))))
+(display "Quotes:") (newline)
+(display-table (table-select quotes '("symbol" "instrument-type" "bid" "ask" "mid" "last"
+                                      "implied-volatility" "delta"))
+               '(("implied-volatility" ".1%") ("delta" ".3f")))
 (newline)
 
 ; --- 6. tastytrade-option-chain on an equity: any symbol that isn't a
@@ -80,8 +84,8 @@
 ;        month the way there is for a futures option) and underlying
 ;        is just the equity symbol itself; n-months limits results to
 ;        expirations within that many months from today. ---
-(define aapl-chain (tastytrade-option-chain creds "AAPL" 2 5 #f))
-(display "AAPL option chain, no IV (") (display (table-row-count aapl-chain)) (display " contracts):") (newline)
+(define aapl-chain (tastytrade-option-chain creds "AAPL" 2 5))
+(display "AAPL option chain (") (display (table-row-count aapl-chain)) (display " contracts):") (newline)
 (display-table aapl-chain chain-formats)
 (newline)
 
@@ -111,3 +115,18 @@
 (display "  (near-month far-month near-price far-price days-between carry-rate-pct net-storage-pct convenience-yield-pct signal)") (newline)
 (print-each legs)
 (newline)
+
+; --- 9. tastytrade-get and tastytrade-get-table: anything else the API
+;        offers -- the list is at
+;        https://developer.tastytrade.com/open-api-spec/ . Here, market
+;        metrics (implied volatility rank, liquidity) for two ETFs, as a
+;        table; and one instrument's description, as Lisp data (a hash
+;        table). A symbol with a / in it goes in a list of path parts,
+;        which are encoded for it. ---
+(define metrics (tastytrade-get-table creds "/market-metrics" '(("symbols" . "SPY,QQQ"))))
+(display "Market metrics:") (newline)
+(display-table (table-select metrics '("symbol" "implied-volatility-index" "implied-volatility-index-rank"
+                                       "liquidity-rating"))
+               '(("implied-volatility-index" ".1%") ("implied-volatility-index-rank" ".1%")))
+(define brk (tastytrade-get creds (list "instruments" "equities" "BRK/B")))
+(display (format "BRK/B is {}\n" (hash-table-ref brk "description")))
