@@ -792,6 +792,7 @@ def _option_row(option, kind, data, underlying_price, today):
         _lisp_value(data.get("last")),
         _lisp_value(data.get("volatility")),
         _lisp_value(data.get("delta")),
+        _lisp_value(data.get("vega")),
         _lisp_value(data.get("volume")),
         _lisp_value(data.get("open-interest")),
     ]
@@ -803,7 +804,7 @@ def tastytrade_option_chain_fn(credentials_path, symbol, n_months=12, max_strike
     per option, with the columns in OPTION_CHAIN_COLUMNS: symbol, type
     ("Call" or "Put"), strike, expiration-date, days-to-expiration,
     delivery-month, underlying, underlying-price, bid, ask, mid, last-price,
-    implied-volatility, delta, volume, and open-interest.
+    implied-volatility, delta, vega, volume, and open-interest.
 
     `symbol` is a futures root such as "/CL", a short code from
     (tastytrade-products) such as "CL", or anything else, e.g. "AAPL", for an
@@ -823,7 +824,7 @@ def tastytrade_option_chain_fn(credentials_path, symbol, n_months=12, max_strike
 OPTION_CHAIN_COLUMNS = [
     "symbol", "type", "strike", "expiration-date", "days-to-expiration", "delivery-month",
     "underlying", "underlying-price", "bid", "ask", "mid", "last-price", "implied-volatility",
-    "delta", "volume", "open-interest",
+    "delta", "vega", "volume", "open-interest",
 ]
 
 

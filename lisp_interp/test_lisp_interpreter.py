@@ -35,6 +35,7 @@ import datetime
 import importlib.util
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -55,6 +56,7 @@ import lisp_clock  # noqa: E402
 import lisp_fred  # noqa: E402
 import lisp_jupyter_debug  # noqa: E402
 import lisp_tastytrade  # noqa: E402
+import lisp_tables  # noqa: E402
 
 INTERPRETER = os.path.join(HERE, "lisp_interpreter.py")
 LIB = os.path.join(HERE, "lib")                 # the Lisp libraries that come with the interpreter
@@ -2264,7 +2266,7 @@ class TestOptionChainTable(LispTestCase):
             S = lisp_core.LispString
             bid, ask = round(price - 0.05, 2), round(price + 0.05, 2)
             return [S(symbol), S(kind), strike, S(expiration), days, None, S("SPY"), 655.0,
-                    bid, ask, price, price, iv, None, volume, oi]
+                    bid, ask, price, price, iv, None, None, volume, oi]
         return [
             row("SPY C660 OCT", "Call", 660.0, "2025-10-17", 19, 9.10, 0.18, 1200, 5000),
             row("SPY C660 NOV", "Call", 660.0, "2025-10-31", 33, 12.40, 0.19, 800, 2500),
@@ -2280,7 +2282,7 @@ class TestOptionChainTable(LispTestCase):
         self.assertShows("(table-column-names chain)",
                          '("symbol" "type" "strike" "expiration-date" "days-to-expiration" "delivery-month" '
                          '"underlying" "underlying-price" "bid" "ask" "mid" "last-price" "implied-volatility" '
-                         '"delta" "volume" "open-interest")')
+                         '"delta" "vega" "volume" "open-interest")')
         self.assertShows("(table-row-count chain)", "7")
         self.assertShows('(table-column chain "expiration-date")',
                          "#(2025-10-17 2025-10-31 2025-10-31 2025-11-21 2025-10-31 2025-11-21 2025-11-21)")
@@ -3372,6 +3374,137 @@ class TestLadRegression(LispTestCase):
         self.run_lisp("(define m (linear-regression #(1 2 3) #(1 3 2)))")
         self.assertShows("(model-residuals m #(1 2 3) #(1 3 2))", "#(-0.5 1.0 -0.5)")
         self.assertLispError("(model-residuals m (list #(1 2) #(3 4)) #(1 2))", "model has 1 predictor(s), but 2 given")
+
+
+class TestVolSmile(LispTestCase):
+    """lib/vol_smile.lsp, on a made-up option chain whose implied volatilities
+    follow a known smile, Y = a + b K + c K^2 for each expiration, with one
+    option priced 2 volatility points too high."""
+
+    RATE = 0.045
+    SPOT = 100.0
+    SMILES = {30: (0.0033, -0.02, 0.10), 60: (0.0066, -0.03, 0.12), 90: (0.0099, -0.035, 0.11)}
+
+    @staticmethod
+    def black(call, forward, strike, T, discount, vol):
+        """Black's formula, written independently of vol_smile.lsp's."""
+        N = lambda x: 0.5 * (1 + math.erf(x / math.sqrt(2)))
+        d1 = math.log(forward / strike) / (vol * math.sqrt(T)) + vol * math.sqrt(T) / 2
+        d2 = d1 - vol * math.sqrt(T)
+        if call:
+            return discount * (forward * N(d1) - strike * N(d2))
+        return discount * (strike * N(-d2) - forward * N(-d1))
+
+    def chain(self, smiles=None):
+        """The made-up chain, as a table with the columns vol_smile.lsp uses."""
+        columns = {name: [] for name in ("symbol", "type", "strike", "expiration-date", "days-to-expiration",
+                                         "underlying-price", "bid", "ask", "mid", "volume", "open-interest")}
+        for days, smile in (smiles or self.SMILES).items():
+            T = days / 365
+            discount = math.exp(-self.RATE * T)
+            forward = self.SPOT / discount
+            expiration = datetime.date(2099, 1, 1) + datetime.timedelta(days=days)
+            for strike in range(85, 120, 5):
+                for kind in ("Call", "Put"):
+                    K = math.log(strike / forward)
+                    vol = math.sqrt(smile(T, K) / T) if callable(smile) else \
+                        math.sqrt((smile[0] + smile[1] * K + smile[2] * K * K) / T)
+                    symbol = "XYZ %dd %s%d" % (days, kind[0], strike)
+                    if symbol == "XYZ 30d C110":
+                        vol += 0.02                          # the option out of line
+                    mid = self.black(kind == "Call", forward, strike, T, discount, vol)
+                    for name, value in (("symbol", lisp_core.LispString(symbol)),
+                                        ("type", lisp_core.LispString(kind)), ("strike", float(strike)),
+                                        ("expiration-date", lisp_core.LispDate(expiration.year, expiration.month,
+                                                                               expiration.day)),
+                                        ("days-to-expiration", days), ("underlying-price", self.SPOT),
+                                        ("bid", mid - 0.002), ("ask", mid + 0.002), ("mid", mid),
+                                        ("volume", 0 if symbol == "XYZ 60d C115" else 10),
+                                        ("open-interest", 100)):
+                        columns[name].append(value)
+        return lisp_tables.make_table_value([(name, lisp_core.LispVector(values))
+                                              for name, values in columns.items()])
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('(load "vol_smile.lsp")')
+
+    def test_black_price_and_implied_volatility(self):
+        self.assertAlmostEqual(self.run_lisp("(vector-ref (black-price #(1) #(100) #(100) #(1) #(1) #(0.2)) 0)"),
+                               7.965567, places=4)
+        self.assertAlmostEqual(self.run_lisp("(vector-ref (black-price #(0) #(100) #(90) #(0.5) #(0.98) #(0.3)) 0)"),
+                               self.black(False, 100, 90, 0.5, 0.98, 0.3), places=4)
+        vols = self.run_lisp("(black-implied-vol #(1 0) (black-price #(1 0) #(100 100) #(110 95) #(0.25 0.25) "
+                             "#(0.99 0.99) #(0.25 0.4)) #(100 100) #(110 95) #(0.25 0.25) #(0.99 0.99))")
+        self.assertAlmostEqual(float(vols.items[0]), 0.25, places=5)
+        self.assertAlmostEqual(float(vols.items[1]), 0.4, places=5)
+        # a price below what the option is worth at expiration fits no volatility
+        self.assertShows("(black-implied-vol #(1) #(5) #(110) #(100) #(0.5) #(1))", "#(nan)")
+
+    def test_each_expirations_smile_is_found_and_the_option_out_of_line_is_rich(self):
+        self.env[lisp_core.Symbol("chain")] = self.chain()
+        self.run_lisp("(define fit (fit-vol-smiles chain :rate 0.045))"
+                      "(define options (vol-smile-fit-options fit))"
+                      "(define expirations (vol-smile-fit-expirations fit))")
+        def column(table, name):
+            return self.run_lisp('(table-column %s "%s")' % (table, name)).items.tolist()
+        for i, (days, (a, b, c)) in enumerate(sorted(self.SMILES.items())):
+            with self.subTest(days=days):
+                self.assertAlmostEqual(column("expirations", "intercept")[i], a, places=5)
+                self.assertAlmostEqual(column("expirations", "K")[i], b, places=4)
+                self.assertAlmostEqual(column("expirations", "K^2")[i], c, places=3)
+                self.assertAlmostEqual(column("expirations", "atm-vol")[i], math.sqrt(a / (days / 365)), places=4)
+                self.assertAlmostEqual(column("expirations", "parity-forward")[i] / column("expirations", "forward")[i],
+                                       1.0, places=5)
+        signals = dict(zip(column("options", "symbol"), column("options", "signal")))
+        self.assertEqual({symbol: signal for symbol, signal in signals.items() if signal}, {"XYZ 30d C110": "rich"})
+        self.run_lisp('(define out (table-filter options (= (table-column options "symbol") "XYZ 30d C110")))')
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column out "iv-residual") 0)'), 0.02, places=3)
+        T, discount = 30 / 365, math.exp(-self.RATE * 30 / 365)
+        a, b, c = self.SMILES[30]
+        K = math.log(110 / (100 / discount))
+        true_price = self.black(True, 100 / discount, 110, T, discount, math.sqrt((a + b * K + c * K * K) / T))
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column out "model-price") 0)'), true_price, places=3)
+        # only liquid, out-of-the-money options: no 60-day 115 call (no volume), and
+        # no calls below the forward or puts above it
+        self.assertShows('(vector-length (vector-select (table-column options "symbol") '
+                         '(= (table-column options "symbol") "XYZ 60d C115")))', "0")
+        self.assertShows('(vector-sum (vector-and (= (table-column options "type") "Put") '
+                         '(> (table-column options "K") 0)))', "0")
+
+    def test_all_the_expirations_at_once(self):
+        """With five terms and three expirations, one fit to them all."""
+        def smile(T, K):
+            return 0.001 + 0.03 * T + 0.002 * math.sqrt(T) - 0.01 * K - 0.04 * K * math.sqrt(T) + 0.1 * K * K
+        self.env[lisp_core.Symbol("chain")] = self.chain({30: smile, 60: smile, 90: smile})
+        self.run_lisp("(define fit (fit-vol-smiles chain :rate 0.045 :by-expiration #f))")
+        self.assertEqual(len(lisp_core.pairs_to_list(self.run_lisp("(vol-smile-fit-models fit)"))), 3)
+        coefficients = self.run_lisp("(model-coefficients (cdr (car (vol-smile-fit-models fit))))").items.tolist()
+        for found, expected in zip(coefficients, [0.03, 0.002, -0.01, -0.04, 0.1]):
+            self.assertAlmostEqual(found, expected, places=3)
+        self.assertShows("(table-column-names (vol-smile-fit-expirations fit))",
+                         '("expiration-date" "days" "forward" "parity-forward" "options" "atm-vol" "intercept" '
+                         '"T" "sqrt(T)" "K" "K*sqrt(T)" "K^2")')
+
+    def test_the_example_runs(self):
+        """examples/vol_smile_example.lsp, with the made-up chain in place of
+        tastytrade's."""
+        chain = self.chain()
+        self.env[lisp_core.Symbol("tastytrade-option-chain")] = lambda *args: chain
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("no-credentials-needed.json")
+        lisp_core.run_file(os.path.join(EXAMPLES, "vol_smile_example.lsp"), self.env)
+        out = self.printed()
+        rich = out.split("ask below it (cheap):\n")[1].split("\n\n")[0]
+        self.assertEqual([line.split("  ")[0] for line in rich.splitlines()[2:]], ["XYZ 30d C110"])
+        self.assertIn("Least absolute deviation model:  Y = ", out)
+        self.assertIn("[chart] Implied volatility, ", out)
+
+    def test_too_few_options_and_unknown_terms(self):
+        self.env[lisp_core.Symbol("chain")] = self.chain()
+        self.run_lisp("(define fit (fit-vol-smiles chain :rate 0.045 :max-vol-spread 0.0001))")
+        self.assertShows('(table-column (vol-smile-fit-expirations fit) "intercept")', "#(nan nan nan)")
+        self.assertShows("(table-row-count (vol-smile-fit-options fit))", "0")
+        self.assertLispError('(fit-vol-smiles chain :terms (list "K^3"))', "there's no term K^3")
 
 
 class TestLinearProgramming(LispTestCase):

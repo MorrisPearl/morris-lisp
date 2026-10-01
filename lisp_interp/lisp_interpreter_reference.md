@@ -90,6 +90,7 @@ functions" as a reference to search rather than read start to end.
   - [Downloading data from the web](#downloading-data-from-the-web)
   - [SQLite](#sqlite)
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
+  - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
   - [Input / output](#input--output)
   - [Metaprogramming](#metaprogramming)
   - [Introspection / debugging](#introspection--debugging)
@@ -1634,7 +1635,8 @@ e raised to the power `x`, via `math.exp`; always a float.
 
 #### `(erf x)`
 The error function, via `math.erf` — what a standard normal CDF is built
-from: `N(x) = 0.5 * (1 + erf(x / sqrt(2)))`. See `implied_vol.lsp`.
+from: `N(x) = 0.5 * (1 + erf(x / sqrt(2)))`. See `implied_vol.lsp`. For a
+vector, of each element.
 
 ```lisp
 (erf 0)                        ; => 0.0
@@ -5460,6 +5462,7 @@ with these columns:
 | `last-price` | the option's last trade |
 | `implied-volatility` | e.g. `0.23` for 23% |
 | `delta` | the option's delta |
+| `vega` | how much its price changes for a 1-point change in volatility (from 0.20 to 0.21) |
 | `volume`, `open-interest` | contracts |
 
 A value tastytrade didn't report is missing: `nan` in a column of
@@ -5958,6 +5961,87 @@ ten `tastytrade-*` builtins; abridged here:
 (display-table (tastytrade-get-table creds "/market-metrics" '(("symbols" . "SPY,QQQ"))))
 (hash-table-ref (tastytrade-get creds (list "instruments" "equities" "BRK/B")) "description")
 ```
+
+### Implied volatility smiles: finding options out of line
+
+`lib/vol_smile.lsp` fits a model of implied volatility to an option chain
+from `tastytrade-option-chain`, to see which options are out of line with
+the rest — which might be trading opportunities. For each option:
+
+| | |
+|---|---|
+| `T` | the time to expiration in years: days / 365 |
+| `F` | the forward price: the underlying's price, less the present value of any dividends before expiration, divided by the discount factor e^(−rT), for a fixed interest rate r |
+| `K` | log(strike / F): how far the strike is from the forward |
+| `Y` | T × implied volatility²: the total implied variance to expiration |
+
+The implied volatilities are worked out from each option's bid, ask, and
+mid with Black's formula on that same forward, rather than taken from
+tastytrade, whose come from its own forward — far enough off, for BRK/B,
+to put each call's implied volatility several points above the put's at
+the same strike. Computing them here also gives the spread in volatility
+terms (the volatility at the ask less that at the bid), the measure of
+liquidity that matters for a model of volatility: a 1-cent spread on a
+2-cent option is wide, and a 50-cent spread on a deep in-the-money
+option can be wider still.
+
+Only liquid options are fit: some volume today, some open interest, a bid,
+and a spread no wider than `max-vol-spread` in volatility; and, unless
+`:out-of-the-money-only` is `#f`, only out-of-the-money ones (calls above
+the forward, puts below), since an in-the-money put's price includes
+early exercise, which Black's formula leaves out. Then `Y` is fit by
+least absolute deviation (`lad-regression`, so the options out of line
+don't pull the fit toward themselves) to some of `T`, `sqrt(T)`, `K`,
+`K*sqrt(T)`, and `K^2`. Within one expiration, `T` and `sqrt(T)` are the
+same for every option, and `K*sqrt(T)` is `K` times a number, so each
+expiration's fit is a parabola, `Y = a + b K + c K^2`; fit to all the
+expirations at once (at least three), all five terms can be used.
+
+#### `(fit-vol-smiles chain [:rate r :dividends list :max-vol-spread w :out-of-the-money-only flag :by-expiration flag :terms names])`
+Fits the model. `:rate` (default `0.04`) is the interest rate; set it to
+the current rate for the options' horizon. `:dividends` is a list of
+`(ex-dividend-date amount)`, `'()` by default. `:max-vol-spread` (default
+`0.02`, 2 volatility points) is the widest spread an option can have and
+be used. `:by-expiration` `#t` (the default) fits each expiration
+separately, with the terms `("K" "K^2")` unless `:terms` gives others;
+`#f` fits them all at once, with all five terms unless `:terms` gives
+others. An expiration with fewer than twice as many options as the fit
+has coefficients isn't fit. Returns a `vol-smile-fit` struct, whose
+fields are:
+
+- **`(vol-smile-fit-expirations fit)`**: a table with one row per expiration: `expiration-date`, `days`, `forward`, `parity-forward` (the forward that put-call parity implies, at the strike nearest the money — if it's far from `forward`, the rate is off, and calls will tend to look rich and puts cheap, or the other way around), `options` (how many were fit), `atm-vol` (the fit's volatility at the forward, K = 0), `intercept`, and a column for each term's coefficient.
+- **`(vol-smile-fit-options fit)`**: a table of the options that were fit, with the chain's columns and `T`, `discount`, `forward`, `K`, `iv-bid`, `iv-mid`, `iv-ask`, `Y`, and what the model says about each: `fitted-iv`; `iv-residual`, `iv-mid` less `fitted-iv`; `model-price`, the option's price at `fitted-iv`; `signal`, `"rich"` if the bid is above `model-price` (it could be sold for more than the model says it's worth), `"cheap"` if the ask is below it, `""` otherwise; and `edge`, how far, in dollars per share: the bid less `model-price`, or `model-price` less the ask.
+- **`(vol-smile-fit-models fit)`**: a list of `(expiration-date . model)`, for `model-report` and the other model functions.
+
+#### `(show-vol-smiles fit [:count n])`
+Shows the expirations table, the `n` (default 10) options furthest from
+the fit, and every option marked rich or cheap, largest `edge` first.
+
+#### `(plot-vol-smile fit expiration-date)`
+Charts one expiration's implied volatilities against strike: at the bid,
+at the ask, and the fit's.
+
+`black-price` and `black-implied-vol`, which the model uses, are there to
+use as well. Each argument can be a vector, one element per option, so a
+whole chain is priced at once; `call?` is a vector of 1 for each call and
+0 for each put:
+
+- **`(black-price call? forward strike T discount vol)`**: Black's formula.
+- **`(black-implied-vol call? price forward strike T discount)`**: the volatility at which Black's formula gives `price`, found by bisection; `nan` where none does.
+
+```lisp
+(load "vol_smile.lsp")
+(define chain (tastytrade-option-chain creds "BRK/B" 4 25))
+(define fit (fit-vol-smiles chain :rate 0.045))
+(show-vol-smiles fit)
+(plot-vol-smile fit (date 2026 11 20))
+
+; one surface for all the expirations, with all five terms
+(define surface (fit-vol-smiles chain :rate 0.045 :by-expiration #f))
+(display (model-report (cdr (car (vol-smile-fit-models surface)))))
+```
+
+`examples/vol_smile_example.lsp` does all of this.
 
 ### Input / output
 
@@ -6828,7 +6912,7 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 
 | Directory | What's in it |
 |---|---|
-| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `implied_vol.lsp`, `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
+| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `implied_vol.lsp`, `vol_smile.lsp` (fitting implied volatility smiles), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
 | `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, and a chess program, `chess.lsp` (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `tools/` | `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV, and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 

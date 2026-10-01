@@ -6,7 +6,7 @@
 ; tastytrade-option-chain returns a TABLE: one column per field (symbol,
 ; type, strike, expiration-date, days-to-expiration, delivery-month,
 ; underlying, underlying-price, bid, ask, mid, last-price,
-; implied-volatility, delta, volume, open-interest). So the
+; implied-volatility, delta, vega, volume, open-interest). So the
 ; chain can be filtered a whole column at a time (part 2), or looked at one
 ; option at a time, as rows (part 3). A value tastytrade didn't report is
 ; missing -- NaN in a column of numbers -- and a comparison with a missing

@@ -206,6 +206,13 @@ def lisp_log(x, base=None):
     return math.log(x, base)
 
 
+def lisp_erf(x):
+    """(erf x) -- the error function; for a vector, of each element."""
+    if isinstance(x, LispVector):
+        return lisp_vector_math.unary("erf", x, np.vectorize(math.erf, otypes=[float]))
+    return math.erf(x)
+
+
 def lisp_abs(x):
     if isinstance(x, LispVector):
         return lisp_vector_math.unary("abs", x, np.abs)
@@ -334,7 +341,7 @@ NUMBER_BUILTINS = {
     "pow": lisp_pow,
     "log": lisp_log,
     "exp": lisp_exp,
-    "erf": math.erf,
+    "erf": lisp_erf,
     "expt": expt,
     "floor": lisp_floor,
     "ceiling": lisp_ceiling,
