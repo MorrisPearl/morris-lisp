@@ -91,6 +91,8 @@ functions" as a reference to search rather than read start to end.
   - [Downloading data from the web](#downloading-data-from-the-web)
   - [SEC financial statements](#sec-financial-statements)
   - [FDIC bank data](#fdic-bank-data)
+  - [Census data](#census-data)
+  - [BLS data](#bls-data)
   - [SQLite](#sqlite)
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
@@ -5480,6 +5482,245 @@ given. (Needs the `yaml` package, to read the FDIC's lists.)
 reports, follows Silicon Valley Bank's uninsured deposits and securities
 up to its failure, and lists the largest failures since 2023.
 
+### Census data
+
+(In `lisp_census.py`.) The Census Bureau's API
+(https://www.census.gov/data/developers.html) has some 1,800 datasets. The
+richest is the American Community Survey (ACS): population, age, race,
+income, poverty, education, jobs, commuting, housing, rents, home values,
+and much more, for every state, county, city, census tract, and zip code.
+There are also the 2020 census, population estimates, County Business
+Patterns, and monthly economic indicators. These functions put them in
+tables.
+
+Each function takes the credentials file's path first. Its
+`"us_census_api_key"` entry, if it has one, goes with each request, and the
+key never appears in an error message. Data is kept for 12 hours. The lists
+of variables, places, and datasets are kept for 30 days.
+
+**Places.** A place is given the way the Census writes it:
+
+- `"state:*"` is every state.
+- `"county:*"` with `:within "state:36"` is every county in New York.
+- `"county:061"` with `:within "state:36"` is one county.
+- `"tract:*"` with `:within "state:36 county:061"` is every census tract in Manhattan.
+- Others include `"us:1"`, `"place:*"` (cities and towns), `"metropolitan statistical area/micropolitan statistical area:*"`, and `"zip code tabulation area:10027"`.
+
+`census-geographies` lists the levels a dataset has. The codes are FIPS
+codes, and they come back as text, in a column per level: `"36"`,
+`"061"`, `"001"`. The leading zeros matter. A state's code followed by a
+county's (`"36061"`) is what `bls-local-area` takes.
+
+**Values.** The Census sends every value as text. Numbers become numbers.
+The Census's special negative codes for "no estimate" (such as
+-666666666) become NaN. Codes with leading zeros stay text.
+
+**Years.** A dataset is named without its year, such as `"acs/acs5"`, and
+`:year` picks the year. Without `:year`, the latest year of the last few
+that has data is used. The latest 5-year ACS is 2024, the five years
+2020–2024. A full path such as `"2019/acs/acs5"` works too. Time series
+(`"timeseries/..."`) have no year; a `"time"` predicate picks their dates.
+
+Some datasets worth knowing:
+
+| Dataset | What it is |
+|---|---|
+| `acs/acs5` | ACS 5-year estimates: about 28,000 variables, for every place down to census tracts and block groups |
+| `acs/acs1` | ACS 1-year estimates: more current, for places of 65,000 people or more |
+| `acs/acs5/profile` | ACS data profiles: ready-made percents (`DP02` social, `DP03` economic, `DP04` housing, `DP05` demographic) |
+| `acs/acs5/subject` | ACS subject tables (`S...`) |
+| `dec/dhc` | The 2020 census: demographic and housing characteristics (`:year 2020`) |
+| `pep/charv` | Population estimates by age, sex, race, and Hispanic origin |
+| `cbp` | County Business Patterns: establishments, employment, and payroll by industry (NAICS) |
+| `timeseries/poverty/saipe` | Income and poverty estimates for states and counties, each year |
+| `timeseries/eits/resconst` | New residential construction: permits, starts, completions |
+| `timeseries/eits/marts` | Advance monthly retail sales |
+| `timeseries/eits/m3` | Manufacturers' shipments, inventories, and orders |
+| `timeseries/eits/hv` | Housing vacancies and homeownership |
+| `timeseries/intltrade/exports/hs`, `.../imports/hs` | Monthly trade, by product |
+
+#### `(census-get creds dataset variables geography [:within w :year y :predicates p])`
+The variables of a dataset, for each place that `geography` names, as a
+table. There is a column per variable, and then a column per level of
+place.
+
+- `variables` is a name or a list of names, such as `"NAME"`,
+  `"B19013_001E"`, or `"group(B19013)"` for a whole table.
+- `:within` narrows the places. It is a string such as `"state:36"`, or a
+  list of such strings.
+- `:predicates` is a list of `(name . value)` pairs for anything else the
+  dataset takes, such as a time series' `"time"`, or `"NAICS2017"` for
+  County Business Patterns.
+
+```lisp
+(census-get creds "acs/acs5" '("NAME" "B19013_001E") "county:*" :within "state:36")
+(census-get creds "acs/acs1" '("NAME" "B19013_001E") "state:*" :year 2019)
+(census-get creds "timeseries/eits/resconst" '("cell_value" "time_slot_id") "us:*"
+            :predicates '(("time" . "from 2025") ("category_code" . "APERMITS")
+                          ("data_type_code" . "TOTAL") ("seasonally_adj" . "yes")))
+```
+
+#### `(census-profile creds geography [:within w :year y])`
+A standard profile of each place, from the 5-year ACS. It is a table of
+`name`, the place's codes, and these columns. The rates and shares are
+percents of the group given, rounded to two decimals.
+
+| Column | What it is |
+|---|---|
+| `population`, `median-age`, `households` | |
+| `median-household-income`, `per-capita-income` | dollars |
+| `poverty-rate` | of those whose poverty status is known |
+| `labor-force-participation` | of those 16 and over |
+| `unemployment-rate` | of the civilian labor force |
+| `bachelors-degree-or-higher` | of those 25 and over |
+| `median-home-value`, `median-gross-rent` | dollars |
+| `homeownership-rate` | of occupied homes |
+| `vacancy-rate` | of all homes |
+| `white-non-hispanic`, `black`, `asian`, `hispanic` | of the population |
+
+```lisp
+(census-profile creds "state:*")
+(census-profile creds "county:*" :within "state:*")       ; every county in the country
+```
+
+#### `(census-variables creds dataset [search] [:year y])`
+A dataset's variables, as a table of `name`, `label`, `concept` (the table
+the variable belongs to), `group`, and `type`. With `search`, only the
+variables whose name, label, or concept contains it. The 5-year ACS's
+list is 10 MB, so it takes a few seconds the first time; after that it is
+kept.
+
+```lisp
+(census-variables creds "acs/acs5" "median gross rent as a percentage")
+```
+
+#### `(census-geographies creds dataset [:year y])`
+The kinds of place a dataset has data for, as a table:
+
+- `level` is the level, such as `"county"`.
+- `within` lists the levels that a request for it must give with `:within`.
+- `within-may-be-*` lists which of those may be `*`.
+
+For example, `county` is within `state`, which may be `*`. A tract needs one
+state, but its county may be `*`.
+
+```lisp
+(census-geographies creds "acs/acs5")
+```
+
+#### `(census-datasets creds [search])`
+Every dataset, as a table of `title`, `dataset` (the name to give
+`census-get`), `year` (empty for a time series), and `description`. With
+`search`, only those whose title or name contains it.
+
+```lisp
+(census-datasets creds "business patterns")
+```
+
+### BLS data
+
+(In `lisp_bls.py`.) The Bureau of Labor Statistics' API
+(https://www.bls.gov/developers/) has the government's numbers on prices,
+jobs, and pay:
+
+- consumer, producer, import, and export prices;
+- employment and unemployment for the country, each state, county, and metro area;
+- payrolls, hours, and earnings by industry;
+- job openings, hires, and quits;
+- the employment cost index;
+- productivity.
+
+Each of these is a *series* with an ID, such as `CUSR0000SA0` for the CPI. The
+BLS's Data Finder (https://data.bls.gov/dataQuery/) finds series IDs, and
+https://www.bls.gov/help/hlpforma.htm explains how they are made.
+
+Each function takes the credentials file's path first. Its
+`"bureau_of_labor_statistics_api_key"` entry goes with each request, and the
+key never appears in an error message. With a key, the BLS allows 500
+requests a day, of up to 50 series and 20 years each. These functions split
+bigger requests into as many as it takes. Data is kept for 12 hours.
+
+**Dates.** Each value is dated the first day of its period:
+
+| Period | Dated |
+|---|---|
+| monthly | the first of the month |
+| quarterly | the first day of the quarter: April 1 for the second |
+| semiannual | January 1 and July 1 |
+| annual | January 1 |
+
+Values the BLS doesn't have, written `-`, are NaN. October 2025 is one of
+these: it wasn't collected because of the government shutdown.
+
+#### `(bls-series creds series [:start-year y :end-year y :annual flag])`
+One series, or a list or vector of them, as a table. Each series is an ID
+or a short name from `bls-names`. The table has a `date` column and a
+column per series, headed by the name given, oldest first. Where a series
+has no value for a date, the value is NaN, so monthly and quarterly series
+line up by date. It covers the last 10 years, unless `:start-year` or
+`:end-year` says otherwise.
+
+`:annual #t` gives each year's average instead. Not every series has
+averages: seasonally adjusted ones usually don't, so use `"cpi-nsa"` for
+the CPI's annual average.
+
+```lisp
+(bls-series creds '("cpi" "core-cpi" "unemployment-rate") :start-year 2020)
+(bls-series creds "cpi-nsa" :start-year 1980 :annual #t)
+(bls-series creds '("SMS36000000000000001" "SMS06000000000000001"))   ; payrolls in NY and CA
+```
+
+#### `(bls-names)`
+The short names, as a table of `name`, `series-id`, and `description`:
+
+| Name | Series |
+|---|---|
+| `cpi`, `core-cpi`, `cpi-nsa`, `cpi-food`, `cpi-rent` | Consumer prices (CPI-U). All seasonally adjusted except `cpi-nsa`. |
+| `unemployment-rate`, `labor-force-participation`, `employment-population-ratio` | The household survey, in percent |
+| `nonfarm-payrolls`, `average-hourly-earnings`, `average-weekly-hours` | The payroll survey |
+| `job-openings`, `hires`, `quits` | JOLTS, in thousands |
+| `ppi-final-demand` | Producer prices |
+| `employment-cost-index`, `productivity` | Quarterly |
+| `import-prices`, `export-prices` | Import and export prices |
+
+Other IDs follow patterns:
+
+- **CPI:** `CU`, then `S` or `U` (seasonally adjusted or not), `R`, an area (`0000` for the US), and an item (`SA0` for all items, `SA0L1E` for core).
+- **National payrolls:** `CES`, an 8-digit industry (`00000000` for total nonfarm, `05000000` for total private), and a data type (`01` employees, `02` weekly hours, `03` hourly earnings).
+- **State payrolls:** `SMS`, the state's FIPS code, `00000`, and the same industry and data type.
+- **Local unemployment:** see `bls-local-area`.
+
+#### `(bls-series-info creds series)`
+What each series is, as a table of `name`, `series-id`, `title`, `survey`,
+and `seasonality`. Some surveys, such as job openings, have no titles. For
+a short name, its description from `bls-names` is used in place of a
+missing title.
+
+```lisp
+(bls-series-info creds '("cpi" "LNS14000000"))
+```
+
+#### `(bls-local-area creds fips [:start-year y :end-year y])`
+A state's or a county's labor force, employment, unemployment, and
+unemployment rate (in percent), each month, as a table.
+
+- `fips` is the state's 2-digit code (`"36"`) or the county's 5-digit code (`"36061"`). These are the codes `census-get` gives.
+- States' numbers are seasonally adjusted; counties' aren't. The BLS doesn't adjust them.
+- The series behind it are `LA`, then `S` or `U`, a 15-character area code, and a measure: `03` is the rate, `04` unemployed, `05` employed, `06` labor force.
+
+```lisp
+(bls-local-area creds "36")                      ; New York State
+(bls-local-area creds "36061" :start-year 2020)  ; New York County (Manhattan)
+```
+
+`examples/census_bls_example.lsp` does these things:
+
+- profiles the states;
+- relates income to education across all US counties;
+- finds and gets a Census variable;
+- works out inflation and real wage growth from the BLS;
+- shows Manhattan's unemployment.
+
 ### SQLite
 
 (In `lisp_sqlite.py`.) Builtins for reading and writing a local SQLite
@@ -7348,6 +7589,8 @@ The Python files:
 | `lisp_fred.py` | `fred-series` (downloads from FRED, through `lisp_http.py`) |
 | `lisp_sec.py` | `sec-income-statement`, `sec-balance-sheet`, `sec-financials`, ...: financial statements from the SEC's XBRL data |
 | `lisp_fdic.py` | `fdic-balance-sheet`, `fdic-ratios`, `fdic-financials`, `fdic-get`, ...: banks' Call Report data from the FDIC |
+| `lisp_census.py` | `census-get`, `census-profile`, `census-variables`, ...: demographic and economic data from the Census Bureau |
+| `lisp_bls.py` | `bls-series`, `bls-local-area`, `bls-names`, ...: prices, jobs, and pay from the Bureau of Labor Statistics |
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |

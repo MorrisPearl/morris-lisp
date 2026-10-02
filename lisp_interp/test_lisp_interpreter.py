@@ -2773,6 +2773,251 @@ class TestFdic(LispTestCase):
         self.assertNotIn("secret-key-123", str(caught.exception))
 
 
+class TestCensus(LispTestCase):
+    """lisp_census, with the Census's API played by a fake -- no network.
+    The fake has ACS data for 2024 and earlier, for two counties in New
+    York; a variable it isn't told about is "10" everywhere."""
+
+    COUNTIES = {
+        "001": {"NAME": "Albany County, New York", "B01003_001E": "5000", "B19013_001E": "85333",
+                "B17001_002E": "150", "B17001_001E": "1000",
+                "B15003_022E": "100", "B15003_023E": "50", "B15003_024E": "20", "B15003_025E": "30",
+                "B15003_001E": "800", "B01002_001E": "40.5"},
+        "061": {"NAME": "New York County, New York", "B01003_001E": "1600000", "B19013_001E": "-666666666",
+                "B17001_002E": "0", "B17001_001E": "0", "B01002_001E": "38.9"},
+    }
+
+    def setUp(self):
+        super().setUp()
+        import lisp_census
+        self.lisp_census = lisp_census
+        self.credentials = os.path.join(tempfile.mkdtemp(), "credentials.json")
+        with open(self.credentials, "w") as f:
+            json.dump({"us_census_api_key": "census-key-456"}, f)
+        self.addCleanup(shutil.rmtree, os.path.dirname(self.credentials), True)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(self.credentials)
+        self.requests = []
+        self.real_census_download = lisp_census.census_download
+
+        def fake_download(credentials_path, url, params, cache_hours, who):
+            self.requests.append((url, dict(params)))
+            if url.endswith("/geography.json"):
+                if int(url.split("/data/")[1].split("/")[0]) > 2024:
+                    raise lisp_core.LispError("%s: %s returned HTTP 404" % (who, url))
+                return {"fips": [{"name": "state"}, {"name": "county", "requires": ["state"], "wildcard": ["state"]}]}
+            if url.endswith("/variables.json"):
+                return {"variables": {
+                    "for": {"label": "Census API FIPS 'for' clause"},
+                    "B19013_001E": {"label": "Estimate!!Median household income", "concept": "Median Household Income",
+                                    "group": "B19013", "predicateType": "int"},
+                    "B01003_001E": {"label": "Estimate!!Total", "concept": "Total Population",
+                                    "group": "B01003", "predicateType": "int"}}}
+            if url == lisp_census.CATALOG_URL:
+                return {"dataset": [
+                    {"title": "ACS 5-Year", "c_vintage": 2024, "description": "The ACS.",
+                     "distribution": [{"accessURL": "http://api.census.gov/data/2024/acs/acs5"}]},
+                    {"title": "ACS 5-Year", "c_vintage": 2023, "description": "The ACS.",
+                     "distribution": [{"accessURL": "http://api.census.gov/data/2023/acs/acs5"}]},
+                    {"title": "Housing starts", "description": "Construction.",
+                     "distribution": [{"accessURL": "http://api.census.gov/data/timeseries/eits/resconst"}]}]}
+            wanted = params["for"].split(":")[1]
+            variables = params["get"].split(",")
+            rows = [variables + ["state", "county"]]
+            for code, values in self.COUNTIES.items():
+                if wanted in ("*", code):
+                    rows.append([values.get(v, "10") for v in variables] + ["36", code])
+            return rows if len(rows) > 1 else []
+        for patcher in (mock.patch.object(lisp_census, "census_download", fake_download),
+                        mock.patch.dict(lisp_census._latest_years, clear=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def column(self, src, name):
+        return self.run_lisp('(table-column %s "%s")' % (src, name)).items.tolist()
+
+    def test_numbers_are_numbers_and_codes_keep_their_zeros(self):
+        self.run_lisp('(define t (census-get creds "acs/acs5" (list "NAME" "B19013_001E") "county:*"'
+                      ' :within "state:36"))')
+        self.assertShows("(table-column-names t)", '("NAME" "B19013_001E" "state" "county")')
+        self.assertShows('(table-column t "county")', '#("001" "061")')
+        self.assertShows('(table-column t "state")', '#("36" "36")')
+        income = self.column("t", "B19013_001E")
+        self.assertEqual(income[0], 85333)
+        self.assertTrue(math.isnan(income[1]))         # -666666666: the Census has no number for it
+        url, params = self.requests[-1]
+        self.assertTrue(url.endswith("/data/2024/acs/acs5"))     # the latest year there's data for
+        self.assertEqual((params["for"], params["in"]), ("county:*", "state:36"))
+
+    def test_a_year_or_a_full_path(self):
+        self.run_lisp('(census-get creds "acs/acs5" "NAME" "county:001" :within "state:36" :year 2019)')
+        self.assertTrue(self.requests[-1][0].endswith("/data/2019/acs/acs5"))
+        self.run_lisp('(census-get creds "2020/acs/acs5" "NAME" "county:001" :within "state:36")')
+        self.assertTrue(self.requests[-1][0].endswith("/data/2020/acs/acs5"))
+        self.assertLispError('(census-get creds "acs/acs5" "NAME" "county:999" :within "state:36" :year 2019)',
+                             "the Census found nothing for that")
+
+    def test_profile(self):
+        self.run_lisp('(define p (census-profile creds "county:*" :within "state:36"))')
+        self.assertShows('(table-column p "name")', '#("Albany County, New York" "New York County, New York")')
+        self.assertShows('(table-column p "county")', '#("001" "061")')
+        self.assertEqual(self.column("p", "population"), [5000, 1600000])
+        poverty = self.column("p", "poverty-rate")
+        self.assertAlmostEqual(poverty[0], 15.0, places=5)     # 150 of 1,000
+        self.assertTrue(math.isnan(poverty[1]))                # 0 of 0
+        self.assertAlmostEqual(self.column("p", "bachelors-degree-or-higher")[0], 25.0, places=5)  # 200 of 800
+        self.assertAlmostEqual(self.column("p", "median-age")[0], 40.5, places=5)
+        self.assertTrue(math.isnan(self.column("p", "median-household-income")[1]))
+
+    def test_variables_places_and_datasets(self):
+        self.run_lisp('(define v (census-variables creds "acs/acs5" "household income"))')
+        self.assertShows('(table-column v "name")', '#("B19013_001E")')
+        self.assertShows('(table-column v "label")', '#("Estimate - Median household income")')
+        self.run_lisp('(define v (census-variables creds "acs/acs5" :year 2022))')
+        self.assertShows('(table-column v "name")', '#("B01003_001E" "B19013_001E")')     # not "for"
+        self.assertTrue(self.requests[-1][0].endswith("/data/2022/acs/acs5/variables.json"))
+        self.run_lisp('(define g (census-geographies creds "acs/acs5"))')
+        self.assertShows('(table-column g "within")', '#("" "state")')
+        self.run_lisp('(define d (census-datasets creds))')
+        self.assertShows('(table-column d "dataset")', '#("acs/acs5" "acs/acs5" "timeseries/eits/resconst")')
+        self.assertShows('(table-column (census-datasets creds "housing") "title")', '#("Housing starts")')
+
+    def test_places_named_by_within(self):
+        self.assertEqual(self.lisp_census.place_names(["tract:*", "state:36 county:061"]), {"tract", "state", "county"})
+        self.assertEqual(self.lisp_census.place_names(["zip code tabulation area:10027"]),
+                         {"zip code tabulation area"})
+
+    def test_the_api_key_is_sent_but_never_shown(self):
+        seen = []
+
+        def fake_download(url, cache_hours, headers, who, shown_url=None):
+            seen.append((url, shown_url))
+            raise lisp_core.LispError("%s: %s returned HTTP 400" % (who, shown_url))
+        with mock.patch.object(lisp_http, "download", fake_download):
+            with self.assertRaises(lisp_core.LispError) as caught:
+                self.real_census_download(self.credentials, self.lisp_census.API_URL + "2024/acs/acs5",
+                                          {"get": "NAME", "for": "state:*"}, 1, "census-get")
+        self.assertIn("key=census-key-456", seen[0][0])
+        self.assertNotIn("census-key-456", seen[0][1])
+        self.assertNotIn("census-key-456", str(caught.exception))
+
+
+class TestBls(LispTestCase):
+    """lisp_bls, with the BLS's API played by a fake -- no network. Its CPI
+    is monthly, 100 + (year - 2020) + month / 100, with March 2021
+    missing ("-"); productivity is quarterly; both have annual averages."""
+
+    def setUp(self):
+        super().setUp()
+        import lisp_bls
+        self.lisp_bls = lisp_bls
+        self.credentials = os.path.join(tempfile.mkdtemp(), "credentials.json")
+        with open(self.credentials, "w") as f:
+            json.dump({"bureau_of_labor_statistics_api_key": "bls-key-789"}, f)
+        self.addCleanup(shutil.rmtree, os.path.dirname(self.credentials), True)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(self.credentials)
+        self.requests = []
+        self.real_bls_request = lisp_bls.bls_request
+
+        def fake_request(credentials_path, series_ids, start_year, end_year, who, catalog=False, annual=False):
+            self.requests.append((list(series_ids), start_year, end_year))
+            answer = []
+            for series_id in series_ids:
+                data = []
+                for year in range(start_year, end_year + 1):
+                    if series_id == "PRS85006092":
+                        periods = ["Q01", "Q02", "Q03", "Q04"] + (["Q05"] if annual else [])
+                    else:
+                        periods = ["M%02d" % m for m in range(1, 13)] + (["M13"] if annual else [])
+                    for period in periods:
+                        value = "%.2f" % (100 + (year - 2020) + int(period[1:]) / 100)
+                        if (year, period) == (2021, "M03"):
+                            value = "-"
+                        data.append({"year": str(year), "period": period, "value": value})
+                catalog_data = {"series_title": "Title of " + series_id} if catalog and series_id[:3] != "JTS" else None
+                answer.append({"seriesID": series_id, "data": data, "catalog": catalog_data})
+            return answer
+        patcher = mock.patch.object(lisp_bls, "bls_request", fake_request)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def column(self, src, name):
+        return self.run_lisp('(table-column %s "%s")' % (src, name)).items.tolist()
+
+    def test_months_and_quarters_line_up_by_date(self):
+        self.run_lisp('(define t (bls-series creds (list "cpi" "productivity" "lns14000000")'
+                      ' :start-year 2021 :end-year 2021))')
+        self.assertShows("(table-column-names t)", '("date" "cpi" "productivity" "LNS14000000")')
+        self.assertShows('(vector-ref (table-column t "date") 0)', "2021-01-01")
+        self.assertShows("(table-row-count t)", "12")
+        cpi = self.column("t", "cpi")
+        self.assertAlmostEqual(cpi[0], 101.01, places=4)
+        self.assertTrue(math.isnan(cpi[2]))                          # March: "-"
+        productivity = self.column("t", "productivity")
+        self.assertAlmostEqual(productivity[3], 101.02, places=4)    # April 1: the second quarter
+        self.assertTrue(math.isnan(productivity[1]))                 # nothing for February
+        self.assertEqual(self.requests, [(["CUSR0000SA0", "LNS14000000", "PRS85006092"], 2021, 2021)])
+
+    def test_annual_averages(self):
+        self.run_lisp('(define t (bls-series creds (list "cpi" "productivity") :start-year 2020'
+                      ' :end-year 2021 :annual #t))')
+        self.assertShows('(table-column t "date")', "#(2020-01-01 2021-01-01)")
+        self.assertAlmostEqual(self.column("t", "cpi")[1], 101.13, places=4)          # M13
+        self.assertAlmostEqual(self.column("t", "productivity")[0], 100.05, places=4)  # Q05
+
+    def test_requests_of_at_most_50_series_and_20_years(self):
+        ids = ["CUUR0000SA0%02d" % i for i in range(60)]
+        self.env[lisp_core.Symbol("ids")] = lisp_core.list_to_pairs([lisp_core.LispString(i) for i in ids])
+        self.run_lisp('(define t (bls-series creds ids :start-year 1990 :end-year 2025))')
+        self.assertEqual([(len(s), a, b) for s, a, b in self.requests],
+                         [(50, 1990, 2009), (50, 2010, 2025), (10, 1990, 2009), (10, 2010, 2025)])
+        self.assertShows("(table-row-count t)", str(36 * 12))
+        self.assertEqual(self.lisp_bls.year_range({}, "t")[1] - self.lisp_bls.year_range({}, "t")[0], 9)
+
+    def test_local_area(self):
+        self.run_lisp('(define t (bls-local-area creds "36" :start-year 2021 :end-year 2021))')
+        self.assertShows("(table-column-names t)",
+                         '("date" "labor-force" "employed" "unemployed" "unemployment-rate")')
+        self.assertEqual(self.requests[-1][0], ["LASST360000000000003", "LASST360000000000004",
+                                                "LASST360000000000005", "LASST360000000000006"])
+        self.run_lisp('(bls-local-area creds "36061" :start-year 2021 :end-year 2021)')
+        self.assertIn("LAUCN360610000000003", self.requests[-1][0])      # counties: not seasonally adjusted
+        self.run_lisp('(bls-local-area creds 6 :start-year 2021 :end-year 2021)')
+        self.assertIn("LASST060000000000003", self.requests[-1][0])
+        self.assertLispError('(bls-local-area creds "NY")', "isn't a state's FIPS code")
+
+    def test_names_and_info(self):
+        self.assertShows('(vector-ref (table-column (bls-names) "name") 0)', '"cpi"')
+        self.run_lisp('(define i (bls-series-info creds (list "cpi" "job-openings")))')
+        self.assertShows('(table-column i "series-id")', '#("CUSR0000SA0" "JTS000000000000000JOL")')
+        titles = self.column("i", "title")
+        self.assertEqual(titles[0], "Title of CUSR0000SA0")
+        self.assertTrue(titles[1].startswith("Job openings"))      # the BLS gives no title: bls-names's description
+        self.assertLispError('(bls-series creds "not a series!")', "isn't a series ID or one of the short names")
+
+    def test_the_api_key_is_sent_but_never_shown(self):
+        sent = []
+
+        def fake_download(url, cache_hours, headers, who, shown_url=None, body=None):
+            sent.append(body)
+            return json.dumps({"status": "REQUEST_NOT_PROCESSED",
+                               "message": ["The key bls-key-789 has reached its daily limit."]}).encode()
+        with mock.patch.object(lisp_http, "download", fake_download):
+            with self.assertRaises(lisp_core.LispError) as caught:
+                self.real_bls_request(self.credentials, ["CUSR0000SA0"], 2020, 2021, "bls-series")
+        self.assertEqual(json.loads(sent[0])["registrationkey"], "bls-key-789")
+        self.assertNotIn("bls-key-789", str(caught.exception))
+        self.assertIn("daily limit", str(caught.exception))
+
+    def test_a_series_the_bls_does_not_have(self):
+        def fake_download(url, cache_hours, headers, who, shown_url=None, body=None):
+            return json.dumps({"status": "REQUEST_SUCCEEDED", "message": ["Invalid Series for Series XYZ1"],
+                               "Results": {"series": [{"seriesID": "XYZ1", "data": []}]}}).encode()
+        with mock.patch.object(lisp_http, "download", fake_download):
+            with self.assertRaises(lisp_core.LispError) as caught:
+                self.real_bls_request(self.credentials, ["XYZ1"], 2020, 2021, "bls-series")
+        self.assertIn("the BLS has no such series: XYZ1", str(caught.exception))
+
+
 class TestTastytrade(LispTestCase):
     """lisp_tastytrade, with tastytrade's API played by FakeTastytrade."""
 
@@ -7167,7 +7412,7 @@ class TestExampleScripts(unittest.TestCase):
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
-    "fred-series", "tastytrade", "sofr-", "(sec-", "(fdic-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
+    "fred-series", "tastytrade", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv",
     "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
 )

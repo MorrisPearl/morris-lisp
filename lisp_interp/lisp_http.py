@@ -53,25 +53,28 @@ def headers_argument(headers, name):
     return result
 
 
-def download(url, cache_hours, headers, name, shown_url=None):
+def download(url, cache_hours, headers, name, shown_url=None, body=None):
     """The bytes at `url`: from the cache if a copy younger than cache_hours
     is saved there, otherwise from the network (saving a copy if
     cache_hours is more than 0). An error message shows shown_url in place
-    of url, if it's given -- for a URL with an API key in it."""
+    of url, if it's given -- for a URL with an API key in it. Given a body
+    (bytes), the request is a POST that sends it; the cache tells requests
+    with different bodies apart."""
     url = str(url)
     shown_url = shown_url or url
     request_headers = {"User-Agent": USER_AGENT}
     request_headers.update(headers_argument(headers, name))
     hours = float(cache_hours) if cache_hours is not None and cache_hours is not NIL else 0.0
 
-    key = hashlib.sha256((url + "\n" + json.dumps(request_headers, sort_keys=True)).encode()).hexdigest()
+    key = hashlib.sha256((url + "\n" + json.dumps(request_headers, sort_keys=True) + "\n" +
+                          (body or b"").decode("utf-8", errors="replace")).encode()).hexdigest()
     cached_file = os.path.join(cache_directory(), key)
     if hours > 0 and os.path.exists(cached_file) and time.time() - os.path.getmtime(cached_file) < hours * 3600:
         with open(cached_file, "rb") as f:
             return f.read()
 
     try:
-        request = urllib.request.Request(url, headers=request_headers)
+        request = urllib.request.Request(url, data=body, headers=request_headers)
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             data = response.read()
     except urllib.error.HTTPError as e:
