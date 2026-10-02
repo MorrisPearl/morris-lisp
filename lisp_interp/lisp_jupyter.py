@@ -54,7 +54,7 @@ def _notebook_plot(spec):
     if not (_MATPLOTLIB_AVAILABLE and _IPYTHON_AVAILABLE):
         _print_chart_summary(spec)
         return
-    fig = Figure(figsize=(6, 4))
+    fig = Figure(figsize=(spec.get("width") or 6, spec.get("height") or 4))     # plot-chart's :width, :height
     FigureCanvasAgg(fig)
     ax = fig.add_subplot(111)
     draw_chart_on_axes(fig, ax, spec)

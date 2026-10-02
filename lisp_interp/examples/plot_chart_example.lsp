@@ -50,3 +50,29 @@
 (plot-chart (list (list "data" x y :symbol #t)
                   (list "fitted line" x-ends (vector-map (lambda (v) (model-predict model v)) x-ends)))
             :x-label "x" :y-label "y" :title "Points and a fitted line")
+
+; --- 5. Two scales -----------------------------------------------------------------
+; Revenue in dollars and the margin as a fraction: the margin goes on the
+; secondary axis (on the right), with its own scale. Each axis can have its
+; own limits and about how many ticks it shows, at round numbers.
+(define years #(2019 2020 2021 2022 2023 2024))
+(plot-chart (list (list "revenue" years #(120000 135000 128000 150000 162000 171000) :bars #t)
+                  (list "margin" years #(0.12 0.14 0.11 0.15 0.16 0.18) :symbol #t :line #t :secondary #t))
+            :title "Revenue and margin" :y-label "dollars" :secondary-label "margin"
+            :y-min 100000 :y-ticks 4 :secondary-ticks '(0.10 0.15 0.20) :legend "upper left")
+
+; --- 6. On its side, for many bars --------------------------------------------------
+; :horizontal #t: the X values down the side (the first at the top), the bars
+; across. A chart of many categories is made tall enough for every label.
+(define cities #("Phoenix" "Dallas" "Houston" "Atlanta" "Denver" "Seattle" "Boston" "Miami"
+                 "Chicago" "Portland" "Austin" "Tampa" "Nashville" "Charlotte" "Detroit" "Raleigh"))
+(define growth #(2.6 2.4 2.2 2.0 1.9 1.7 1.5 1.4 1.2 1.1 3.1 2.8 2.7 2.5 0.3 2.9))
+(plot-chart (list (list "population growth" cities growth :bars #t))
+            :horizontal #t :title "Population growth, percent" :legend #f)
+
+; --- 7. A log scale -------------------------------------------------------------------
+; Something that grows 7% a year is a straight line on a log scale.
+(define year-numbers (list->vector (iota 40 1985)))
+(define value (vector-map (lambda (year) (* 100 (expt 1.07 (- year 1985)))) year-numbers))
+(plot-chart (list (list "7% a year" year-numbers value))
+            :y-log #t :title "Steady growth, on a log scale" :y-label "value")

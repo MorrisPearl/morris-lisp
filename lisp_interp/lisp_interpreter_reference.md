@@ -4998,7 +4998,7 @@ combination of symbols, a line, and bars. `series` is a list, with one
 entry for each series:
 
 ```text
-(list name x y [:symbol s :line l :bars b :color c :line-width w :symbol-size z])
+(list name x y [:symbol s :line l :bars b :color c :line-width w :symbol-size z :secondary flag])
 ```
 
 - `name` is what the legend calls the series.
@@ -5027,26 +5027,60 @@ none of `:symbol`, `:line`, and `:bars`, a series is a line.
 |---|---|
 | `:symbol` | a name: `"circle"`, `"square"`, `"triangle"`, `"diamond"`, `"down-triangle"`, `"plus"`, `"x"`, `"star"`, `"dot"`. `#t` means the next one in that order (the first series gets a circle, the second a square, ...). `#f` (the default) means none. |
 | `:line` | `#t` (solid), `"solid"`, `"dashed"`, `"dotted"`, `"dash-dot"`, or `#f` (none) |
-| `:bars` | `#t` for vertical bars from 0 to each Y. A series with bars can have only one Y for each X. |
+| `:bars` | `#t` for bars from 0 to each Y: up and down, or across on a horizontal chart. A series with bars can have only one Y for each X. |
 | `:color` | any matplotlib color: `"red"`, `"navy"`, `"#1f77b4"`, ... The default is the next color in matplotlib's cycle. The series' symbols, line, and bars are all this color. |
 | `:line-width`, `:symbol-size` | this series' own, in place of the chart's |
+| `:secondary` | `#t` puts the series on the secondary axis, which has its own scale. That axis is on the right, or at the top of a horizontal chart. Use it for a series whose values are on a very different scale from the others, such as a rate beside amounts in dollars. The legend adds "(right)" or "(top)" to the series' name. |
 
 **Options for the whole chart**, after the series:
 
 | Option | Default | What it does |
 |---|---|---|
-| `:title`, `:x-label`, `:y-label` | none | The chart's title and axis labels |
+| `:title` | none | The chart's title |
+| `:x-label`, `:y-label`, `:secondary-label` | none | Labels for the axis of X values, the axis of Y values, and the secondary axis. On a horizontal chart, they label the same values, which are then on the other sides. |
 | `:legend` | `#t` | `#t` shows the series' names wherever they fit best. A place puts them there: `"upper left"`, `"upper right"`, `"lower left"`, `"lower right"`, `"upper center"`, `"lower center"`, `"center left"`, `"center right"`, `"center"`, `"right"`, or `"best"`. `#f` shows no legend. |
 | `:bars` | `"grouped"` | How the bars of different series at the same X are arranged: side by side (`"grouped"`, in the order of the series), or on top of one another (`"stacked"`). A stack builds up from 0 with the positive values and down from 0 with the negative ones. |
 | `:bar-width` | `0.8` | The share of the room between neighboring X values that the bars at one X take, together |
 | `:line-width` | `1.5` | Lines' width, in points |
 | `:symbol-size` | `6` | Symbols' size, in points |
 | `:grid` | `#t` | Faint grid lines |
+| `:horizontal` | `#f` | `#t` turns the chart on its side. The X values go down the side, the first at the top, and the Y values go across. Bars go across, which leaves room for many bars and long category names. |
+| `:width`, `:height` | 6 by 4 in a notebook, 8 by 6 saved | The chart's size, in inches. A horizontal chart of categories is made tall enough for every label: 1.5 inches plus a quarter inch for each category, unless `:height` says otherwise. `save-chart` uses this size unless it's given one. |
 
-The room for the bars at one X is the smallest gap between neighboring X
-values that have bars. Quarterly bars are as wide as a quarter allows,
-even with monthly points on the same chart. When there are bars, a line
-is drawn at 0. Returns `'()`.
+**The axes of Y values.** These options set up the primary axis. The
+same options starting `:secondary-` instead of `:y-` set up the secondary
+axis.
+
+| Option | Default | What it does |
+|---|---|---|
+| `:y-min`, `:y-max` | fit the data | Where the axis starts and ends. Give either one, or both. |
+| `:y-log` | `#f` | `#t` gives the axis a log scale, on which equal ratios are equal distances. A series on that axis must have only values above 0. |
+| `:y-ticks` | chosen to fit | A number: about that many ticks, at round numbers (multiples of 1, 2, 2.5, or 5 times a power of 10). A list: ticks at just those values. |
+
+Ticks are labeled with plain numbers, with commas: `1,500` and `0.25`,
+never `1.5e3`. On a log scale, the ticks are at round numbers too. The
+first sequence that gives no more ticks than wanted (8, unless
+`:y-ticks` says) is used:
+
+1. 1, 2, 3, 5, 10, 20, 30, 50, ...
+2. 1, 2, 5, 10, ...
+3. 1, 3, 10, 30, ...
+4. powers of 10, or every second or third power of 10, and so on.
+
+When the range is too narrow for three of these (such as 130 to 335),
+the ticks are ordinary round numbers: 150, 200, 250, 300.
+
+**Bars and lines.** The room for the bars at one X is the smallest gap
+between neighboring X values that have bars. Quarterly bars are as wide
+as a quarter allows, even with monthly points on the same chart.
+
+- Grouped bars sit side by side, even when some are on the secondary axis.
+- Stacked bars stack separately on each axis.
+- A line is drawn at 0 on an axis with bars, unless the axis has a log scale.
+- When the secondary axis has bars, the primary axis is drawn in front, so
+  its lines aren't hidden behind them.
+
+Returns `'()`.
 
 ```lisp
 ; A monthly line over grouped quarterly bars, from one BLS table
@@ -5062,13 +5096,30 @@ is drawn at 0. Returns `'()`.
                   (list "other income" states #(15 12 20) :bars #t)
                   (list "total" states #(75 62 90) :line "dashed" :symbol "diamond" :color "black"))
             :bars "stacked" :legend "upper left")
+
+; Two scales: payrolls in thousands, the unemployment rate in percent
+(define jobs (bls-series creds '("nonfarm-payrolls" "unemployment-rate") :start-year 2019))
+(plot-chart (list (list "payrolls" (table-column jobs "date") (table-column jobs "nonfarm-payrolls"))
+                  (list "unemployment rate" (table-column jobs "date") (table-column jobs "unemployment-rate")
+                        :secondary #t))
+            :y-label "thousands" :secondary-label "percent" :secondary-min 0)
+
+; Fifty states, across, richest at the top; a log scale for prices since 1950
+(define states (table-sort (census-profile creds "state:*") "median-household-income" #t))
+(plot-chart (list (list "median income" (table-column states "name")
+                        (table-column states "median-household-income") :bars #t))
+            :horizontal #t :y-ticks 5 :legend #f)
+(define cpi (bls-series creds "cpi-nsa" :start-year 1950 :annual #t))
+(plot-chart (list (list "CPI" (table-column cpi "date") (table-column cpi "cpi-nsa"))) :y-log #t)
 ```
 
 #### `(save-chart filename [width height dpi])`
 Renders the most recently plotted chart to a standalone image file. Format
 is inferred from `filename`'s extension (`.png`, `.pdf`, `.svg`, and
-anything else matplotlib recognizes). `width`/`height` default to `8.0`/
-`6.0` (inches), `dpi` defaults to `150.0`. Works with or without the GUI
+anything else matplotlib recognizes). `width`/`height` default to the
+chart's own size (`plot-chart`'s `:width` and `:height`) or else `8.0`/
+`6.0` (inches); give `'()` for either to keep its default while giving
+`dpi`, which defaults to `150.0`. Works with or without the GUI
 running — needs only matplotlib, not PyQt6. Raises `LispError` if nothing
 has been plotted yet this session, if matplotlib isn't installed, or on any
 file-write failure. Returns `'()`.

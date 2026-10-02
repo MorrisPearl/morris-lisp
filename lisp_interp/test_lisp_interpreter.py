@@ -2274,11 +2274,16 @@ class TestPlotChart(LispTestCase):
         if not lisp_charts.MATPLOTLIB_AVAILABLE:
             self.skipTest("matplotlib isn't installed")
         self.run_lisp(src)
-        fig = lisp_charts.Figure()
-        lisp_charts.FigureCanvasAgg(fig)
-        ax = fig.add_subplot(111)
-        lisp_charts.draw_chart_on_axes(fig, ax, self.specs[-1])
+        self.fig = lisp_charts.Figure()
+        lisp_charts.FigureCanvasAgg(self.fig)
+        ax = self.fig.add_subplot(111)
+        lisp_charts.draw_chart_on_axes(self.fig, ax, self.specs[-1])
         return ax
+
+    def legend_texts(self):
+        legends = [a.get_legend() for a in self.fig.axes if a.get_legend()]
+        self.assertEqual(len(legends), 1)
+        return [t.get_text() for t in legends[0].get_texts()]
 
     def test_series_and_how_each_is_drawn(self):
         self.run_lisp('(plot-chart (list (list "a" (vector (date 2024 1 1) (date 2024 2 1) (date 2024 3 1))'
@@ -2345,15 +2350,114 @@ class TestPlotChart(LispTestCase):
         line = ax.get_lines()[0]
         self.assertEqual(list(line.get_xdata())[3], april)
 
+    def test_a_secondary_axis_has_its_own_scale(self):
+        ax = self.drawn('(plot-chart (list (list "big" #(1 2 3) #(1000 2000 3000) :bars #t)'
+                        '                  (list "small" #(1 2 3) #(0.1 0.2 0.3) :secondary #t))'
+                        '            :y-label "dollars" :secondary-label "percent")')
+        self.assertEqual(len(self.fig.axes), 2)
+        right = self.fig.axes[1]
+        for found, expected in zip(right.get_lines()[0].get_ydata(), [0.1, 0.2, 0.3]):
+            self.assertAlmostEqual(found, expected, places=6)      # (vectors hold 32-bit numbers)
+        self.assertEqual(len(ax.get_lines()), 1)                  # just the line at 0 for the bars
+        self.assertEqual((ax.get_ylabel(), right.get_ylabel()), ("dollars", "percent"))
+        self.assertEqual(self.legend_texts(), ["big", "small (right)"])       # one legend, in order
+
+    def test_bars_on_both_axes(self):
+        ax = self.drawn('(plot-chart (list (list "a" #(1 2) #(10 20) :bars #t)'
+                        '                  (list "b" #(1 2) #(1 2) :bars #t :secondary #t)'
+                        '                  (list "c" #(1 2) #(5 5) :line #t)))')
+        right = self.fig.axes[1]
+        # grouped: side by side, though on two scales
+        self.assertEqual([round(p.get_x(), 6) for p in ax.patches], [0.6, 1.6])
+        self.assertEqual([round(p.get_x(), 6) for p in right.patches], [1.0, 2.0])
+        self.assertGreater(ax.get_zorder(), right.get_zorder())   # so the secondary bars don't hide c's line
+        ax = self.drawn('(plot-chart (list (list "a" #(1) #(10) :bars #t) (list "b" #(1) #(1) :bars #t :secondary #t)'
+                        '                  (list "c" #(1) #(5) :bars #t)) :bars "stacked")')
+        self.assertEqual([p.get_y() for p in ax.patches], [0, 10])               # a, then c on top of it
+        self.assertEqual([p.get_y() for p in self.fig.axes[1].patches], [0])     # b: its own stack
+
+    def test_horizontal_charts(self):
+        ax = self.drawn('(plot-chart (list (list "a" #("p" "q" "r") #(1 2 3) :bars #t)'
+                        '                  (list "b" #("p" "q") #(30 40) :symbol #t :secondary #t))'
+                        '            :horizontal #t :x-label "place" :y-label "amount")')
+        bars = [(p.get_y() + p.get_height() / 2, round(p.get_height(), 6), p.get_width()) for p in ax.patches]
+        self.assertEqual(bars, [(0, 0.8, 1), (1, 0.8, 2), (2, 0.8, 3)])     # going across
+        self.assertEqual([t.get_text() for t in ax.get_yticklabels()], ["p", "q", "r"])
+        self.assertTrue(ax.yaxis_inverted())                                 # p at the top
+        self.assertEqual((ax.get_ylabel(), ax.get_xlabel()), ("place", "amount"))
+        top = self.fig.axes[1]
+        self.assertEqual(list(top.get_lines()[0].get_xdata()), [30, 40])     # the Y values across the top
+        self.assertEqual(self.legend_texts(), ["a", "b (top)"])
+
+    def test_limits_ticks_and_log_scales(self):
+        ax = self.drawn('(plot-chart (list (list "a" #(1 2 3) #(1000 2000 3000) :bars #t)'
+                        '                  (list "b" #(1 2 3) #(2 40 900) :secondary #t))'
+                        '            :y-min 0 :y-max 4000 :y-ticks (list 0 1500 3000) :secondary-log #t)')
+        self.assertEqual(ax.get_ylim(), (0, 4000))
+        self.assertEqual(list(ax.get_yticks()), [0, 1500, 3000])
+        self.assertEqual([t.get_text() for t in ax.get_yticklabels()], ["0", "1,500", "3,000"])
+        right = self.fig.axes[1]
+        self.assertEqual(right.get_yscale(), "log")
+        low, high = right.get_ylim()
+        self.assertEqual(list(right.get_yticks()), lisp_charts.log_ticks(low, high, 8))
+        ax = self.drawn('(plot-chart (list (list "a" #(1 2) #(5 7) :bars #t)) :y-log #t :horizontal #t :y-max 100)')
+        self.assertEqual((ax.get_xscale(), ax.get_xlim()[1]), ("log", 100))    # across, when horizontal
+        self.assertEqual(ax.get_lines(), [])                                    # no line at 0 on a log scale
+        ax = self.drawn('(plot-chart (list (list "a" #(1 2 3) #(0 50 100))) :y-ticks 3)')
+        low, high = ax.get_ylim()
+        self.assertEqual([t for t in ax.get_yticks() if low <= t <= high], [0, 50, 100])   # about 3, round
+
+    def test_axis_mistakes(self):
+        self.assertLispError('(plot-chart (list (list "a" #(1 2) #(1 -2))) :y-log #t)',
+                             "series a has values of 0 or less, which a log scale can't show")
+        self.assertLispError('(plot-chart (list (list "a" #(1) #(1) :secondary #t)) :secondary-log #t :secondary-min 0)',
+                             "a log scale's :secondary-min must be more than 0")
+        self.assertLispError('(plot-chart (list (list "a" #(1) #(1))) :y-min 5 :y-max 1)', ":y-min must be less than :y-max")
+        self.assertLispError('(plot-chart (list (list "a" #(1) #(1))) :y-ticks 1)', ":y-ticks is about how many ticks")
+        self.run_lisp('(plot-chart (list (list "a" #(1 2) #(1 -2))) :secondary-log #t)')   # nothing's on that axis
+
+    def test_round_numbers_for_ticks(self):
+        self.assertEqual([lisp_charts.tick_text(v) for v in (1500, 0.25, -5.5e-17, 0.30000000000000004, -1250.5)],
+                         ["1,500", "0.25", "0", "0.3", "-1,250.5"])
+        if not lisp_charts.MATPLOTLIB_AVAILABLE:
+            self.skipTest("matplotlib isn't installed")
+        self.assertEqual(lisp_charts.log_ticks(23, 340, 8), [30, 50, 100, 200, 300])        # 1, 2, 3, 5
+        self.assertEqual(lisp_charts.log_ticks(0.5, 2000, 8), [1, 3, 10, 30, 100, 300, 1000])
+        self.assertEqual(lisp_charts.log_ticks(1, 1e12, 5), [1, 1e3, 1e6, 1e9, 1e12])     # every third power
+        self.assertEqual(lisp_charts.log_ticks(130, 335, 8), [150, 200, 250, 300])         # within a decade
+
+    def test_chart_size(self):
+        self.run_lisp('(plot-chart (list (list "a" #(1 2) #(3 4))) :width 9 :height 2.5)')
+        self.assertEqual((self.specs[-1]["width"], self.specs[-1]["height"]), (9.0, 2.5))
+        self.env[lisp_core.Symbol("names")] = lisp_core.LispVector([lisp_core.LispString("s%d" % i)
+                                                                    for i in range(40)])
+        self.run_lisp('(plot-chart (list (list "a" names (vector-map (lambda (n) 1) names) :bars #t)) :horizontal #t)')
+        self.assertEqual(self.specs[-1]["height"], 1.5 + 0.25 * 40)          # tall enough for 40 labels
+        self.assertLispError('(plot-chart (list (list "a" #(1) #(1))) :width 0)', ":width is the chart's width")
+
+    def test_a_new_chart_in_the_same_figure_starts_fresh(self):
+        """The GUI draws each chart on the same axes."""
+        ax = self.drawn('(plot-chart (list (list "a" #(1 2) #(3 4) :bars #t :secondary #t)) :horizontal #t)')
+        self.run_lisp('(plot-chart (list (list "a" #(1 2) #(3 4))))')
+        lisp_charts.draw_chart_on_axes(self.fig, ax, self.specs[-1])
+        self.assertEqual(self.fig.axes, [ax])
+        self.assertFalse(ax.yaxis_inverted())
+        self.assertEqual(ax.get_zorder(), 0)
+
     def test_the_console_summary_and_saving(self):
         self.env = lisp_builtins.make_global_env(output=self.out.append)
-        self.run_lisp('(plot-chart (list (list "a" #(1 2) #(3 4) :bars #t :symbol #t)) :title "Two")')
-        self.assertEqual(self.printed(), "[chart] Two\n  a: 2 points (symbols, bars)\n")
+        self.run_lisp('(plot-chart (list (list "a" #(1 2) #(3 4) :bars #t :symbol #t)'
+                      '                  (list "b" #(1 2) #(3 4) :secondary #t)) :title "Two" :width 4 :height 2)')
+        self.assertEqual(self.printed(), "[chart] Two\n  a: 2 points (symbols, bars)\n"
+                                         "  b: 2 points (line, on the secondary axis)\n")
         if lisp_charts.MATPLOTLIB_AVAILABLE:
-            path = os.path.join(tempfile.mkdtemp(), "chart.png")
-            self.addCleanup(shutil.rmtree, os.path.dirname(path), True)
-            self.run_lisp('(save-chart "%s" 4 3 50)' % path)
-            self.assertGreater(os.path.getsize(path), 1000)
+            import matplotlib.image
+            folder = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, folder, True)
+            self.run_lisp('(save-chart "%s" 4 3 50)' % os.path.join(folder, "given.png"))
+            self.assertEqual(matplotlib.image.imread(os.path.join(folder, "given.png")).shape[:2], (150, 200))
+            self.run_lisp('(save-chart "%s" \'() \'() 50)' % os.path.join(folder, "own.png"))   # the chart's size
+            self.assertEqual(matplotlib.image.imread(os.path.join(folder, "own.png")).shape[:2], (100, 200))
 
 
 class TestDisplayHtml(LispTestCase):
