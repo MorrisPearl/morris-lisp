@@ -4943,12 +4943,14 @@ Two things to know about the answers:
 
 ### Charting
 
-`plot-xy`/`plot-xy-regression`/`plot-xy-full` all build a chart and hand it
-to either the GUI's chart tab (if running) or a plain text summary printed
-to the console (if not) — either way, only the **most recently plotted**
-chart is remembered, which is what `save-chart` re-renders to a file. All
-charts have exactly one X vector; if it contains dates, the axis is
-formatted as dates automatically. Each Y series gets its own cycling
+`plot-xy`/`plot-xy-regression`/`plot-xy-full`/`plot-chart` all build a
+chart and hand it to the GUI's chart tab (if running), a Jupyter cell
+(drawn inline), or a plain text summary printed to the console — either
+way, only the **most recently plotted** chart is remembered, which is what
+`save-chart` re-renders to a file. The `plot-xy` functions have exactly one
+X vector; if it contains dates, the axis is formatted as dates
+automatically. `plot-chart` gives each series its own X values, and can
+draw bars. Each Y series gets its own cycling
 marker shape (circle, square, triangle, diamond, ...). Charts only ever
 plot against a single X vector, even though the regression functions
 themselves support multiple predictors — for a multi-predictor model, use
@@ -4988,6 +4990,78 @@ plotted series). `reg-kind` defaults to `"linear"` (same validation as
 ```lisp
 (plot-xy-full prices (list doubled squares) (list "Doubled" "Squares")
               #t "Prices vs Derived" "Squares" "linear")
+```
+
+#### `(plot-chart series [options])`
+Several series on one chart, each with its own X values, drawn with any
+combination of symbols, a line, and bars. `series` is a list, with one
+entry for each series:
+
+```text
+(list name x y [:symbol s :line l :bars b :color c :line-width w :symbol-size z])
+```
+
+- `name` is what the legend calls the series.
+- `x` and `y` are vectors (or lists) of the same length.
+- A point whose X or Y is missing (`'()` or NaN) is left out. A line goes
+  from the point before it to the point after it, so a quarterly column in
+  a monthly table (NaN in the other months) still draws as a line.
+
+**How the X values line up.** All the series share one X axis, so their
+X values must be of one kind:
+
+- **Dates** are placed on a calendar. Monthly, quarterly, and annual series
+  line up by date: a quarter dated April 1 sits under the April point of a
+  monthly series.
+- **Numbers** are placed on a number line, as in a scatter plot.
+- **Text** values are categories, such as state names. They are placed
+  evenly, in the order they first appear, across all the series. If there
+  are more than 6, their labels are slanted.
+
+A series' line connects its points from left to right.
+
+**How each series is drawn.** Any combination of these options. With
+none of `:symbol`, `:line`, and `:bars`, a series is a line.
+
+| Option | Values |
+|---|---|
+| `:symbol` | a name: `"circle"`, `"square"`, `"triangle"`, `"diamond"`, `"down-triangle"`, `"plus"`, `"x"`, `"star"`, `"dot"`. `#t` means the next one in that order (the first series gets a circle, the second a square, ...). `#f` (the default) means none. |
+| `:line` | `#t` (solid), `"solid"`, `"dashed"`, `"dotted"`, `"dash-dot"`, or `#f` (none) |
+| `:bars` | `#t` for vertical bars from 0 to each Y. A series with bars can have only one Y for each X. |
+| `:color` | any matplotlib color: `"red"`, `"navy"`, `"#1f77b4"`, ... The default is the next color in matplotlib's cycle. The series' symbols, line, and bars are all this color. |
+| `:line-width`, `:symbol-size` | this series' own, in place of the chart's |
+
+**Options for the whole chart**, after the series:
+
+| Option | Default | What it does |
+|---|---|---|
+| `:title`, `:x-label`, `:y-label` | none | The chart's title and axis labels |
+| `:legend` | `#t` | `#t` shows the series' names wherever they fit best. A place puts them there: `"upper left"`, `"upper right"`, `"lower left"`, `"lower right"`, `"upper center"`, `"lower center"`, `"center left"`, `"center right"`, `"center"`, `"right"`, or `"best"`. `#f` shows no legend. |
+| `:bars` | `"grouped"` | How the bars of different series at the same X are arranged: side by side (`"grouped"`, in the order of the series), or on top of one another (`"stacked"`). A stack builds up from 0 with the positive values and down from 0 with the negative ones. |
+| `:bar-width` | `0.8` | The share of the room between neighboring X values that the bars at one X take, together |
+| `:line-width` | `1.5` | Lines' width, in points |
+| `:symbol-size` | `6` | Symbols' size, in points |
+| `:grid` | `#t` | Faint grid lines |
+
+The room for the bars at one X is the smallest gap between neighboring X
+values that have bars. Quarterly bars are as wide as a quarter allows,
+even with monthly points on the same chart. When there are bars, a line
+is drawn at 0. Returns `'()`.
+
+```lisp
+; A monthly line over grouped quarterly bars, from one BLS table
+(define t (bls-series creds '("unemployment-rate" "productivity" "employment-cost-index")))
+(define dates (table-column t "date"))
+(plot-chart (list (list "unemployment rate" dates (table-column t "unemployment-rate") :symbol "dot")
+                  (list "productivity growth" dates (table-column t "productivity") :bars #t))
+            :title "Jobs and productivity" :y-label "percent")
+
+; Stacked bars by category, with their total as a dashed line
+(define states #("New York" "Texas" "California"))
+(plot-chart (list (list "wages" states #(60 50 70) :bars #t)
+                  (list "other income" states #(15 12 20) :bars #t)
+                  (list "total" states #(75 62 90) :line "dashed" :symbol "diamond" :color "black"))
+            :bars "stacked" :legend "upper left")
 ```
 
 #### `(save-chart filename [width height dpi])`

@@ -52,6 +52,7 @@ sys.path.insert(0, HERE)
 
 import lisp_builtins  # noqa: E402  (these need the sys.path line above)
 import lisp_core     # noqa: E402
+import lisp_charts  # noqa: E402
 import lisp_clock  # noqa: E402
 import lisp_fred  # noqa: E402
 import lisp_http  # noqa: E402
@@ -2257,6 +2258,102 @@ class TestTableRows(LispTestCase):
     def test_no_rows(self):
         self.assertShows("(table-from-rows '() (list \"a\"))", '(("a" . #()))')
         self.assertShows("(table-rows (table-filter t (> (table-column t \"balance\") 1000)))", "()")
+
+
+class TestPlotChart(LispTestCase):
+    """plot-chart: several (X, Y) series on one X axis, each with symbols,
+    a line, or bars."""
+
+    def setUp(self):
+        super().setUp()
+        self.specs = []
+        self.env = lisp_builtins.make_global_env(output=self.out.append, plot=self.specs.append)
+
+    def drawn(self, src):
+        """The axes plot-chart's chart is drawn on (with matplotlib, off screen)."""
+        if not lisp_charts.MATPLOTLIB_AVAILABLE:
+            self.skipTest("matplotlib isn't installed")
+        self.run_lisp(src)
+        fig = lisp_charts.Figure()
+        lisp_charts.FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
+        lisp_charts.draw_chart_on_axes(fig, ax, self.specs[-1])
+        return ax
+
+    def test_series_and_how_each_is_drawn(self):
+        self.run_lisp('(plot-chart (list (list "a" (vector (date 2024 1 1) (date 2024 2 1) (date 2024 3 1))'
+                      '                        (vector 1 nan 3))'
+                      '                  (list "b" (list (date 2024 1 1)) (list 5) :bars #t :symbol #t'
+                      '                        :line "dashed" :color "red" :line-width 3))'
+                      '            :title "T" :symbol-size 9)')
+        spec = self.specs[-1]
+        self.assertEqual((spec["kind"], spec["title"], spec["x_kind"]), ("plot-chart", "T", "date"))
+        a, b = spec["series"]
+        self.assertEqual(a["x"], [datetime.date(2024, 1, 1), datetime.date(2024, 3, 1)])   # the NaN is left out
+        self.assertEqual(a["y"], [1.0, 3.0])
+        self.assertEqual((a["line"], a["symbol"], a["bars"]), ("solid", None, False))      # a line, unless told
+        self.assertEqual((a["line_width"], a["symbol_size"]), (1.5, 9.0))
+        self.assertEqual((b["line"], b["symbol"], b["bars"], b["color"]), ("dashed", "square", True, "red"))
+        self.assertEqual(b["line_width"], 3.0)          # #t: the second series gets the second symbol
+        self.assertEqual(spec["legend"], "best")
+
+    def test_text_is_categories_in_the_order_they_first_appear(self):
+        self.run_lisp('(plot-chart (list (list "a" #("NY" "TX") #(1 2) :bars #t)'
+                      '                  (list "b" #("CA" "TX") #(3 4) :symbol "star")) :legend #f)')
+        self.assertEqual(self.specs[-1]["categories"], ["NY", "TX", "CA"])
+        self.assertIsNone(self.specs[-1]["legend"])
+
+    def test_mistakes(self):
+        self.assertLispError('(plot-chart (list (list "a" #(1 2) #(1 2)) (list "b" #("x") #(1))))',
+                             "the X values must be all dates, all numbers, or all text")
+        self.assertLispError('(plot-chart (list (list "a" (list 1 "x") #(1 2))))',
+                             "series a's X values are a mix of text and number")
+        self.assertLispError('(plot-chart (list (list "a" #(1 2) #(1 2 3))))', "has 2 X values but 3 Y values")
+        self.assertLispError('(plot-chart (list (list "a" #(1 1) #(1 2) :bars #t)))',
+                             "can have only one Y value for each X")
+        self.assertLispError('(plot-chart (list (list "a" #(1) #(1) :symbol "hexagon")))', "there's no symbol")
+        self.assertLispError('(plot-chart (list (list "a" #(1) #(1) :line "wavy")))', "there's no line style")
+        self.assertLispError('(plot-chart (list (list "a" #(1) #(1) :size 3)))', ":size isn't an option")
+        self.assertLispError('(plot-chart (list (list "a" #(1) #(1))) :bars "piled")', ':bars must be "grouped"')
+        self.assertLispError('(plot-chart (list (list "a" #(1))))', "each series is a list (name x y [options])")
+        self.assertLispError("(plot-chart '())", "there are no series to plot")
+
+    def test_grouped_bars_sit_side_by_side(self):
+        ax = self.drawn('(plot-chart (list (list "a" #("p" "q") #(1 2) :bars #t)'
+                        '                  (list "b" #("p" "q") #(3 4) :bars #t)))')
+        bars = [(round(p.get_x(), 6), round(p.get_width(), 6), p.get_height()) for p in ax.patches]
+        # 0.8 of the room between categories, shared by the two series
+        self.assertEqual(bars, [(-0.4, 0.4, 1), (0.6, 0.4, 2), (0.0, 0.4, 3), (1.0, 0.4, 4)])
+
+    def test_stacked_bars_build_up_from_zero_and_down_from_it(self):
+        ax = self.drawn('(plot-chart (list (list "a" #(1 2) #(1 -2) :bars #t)'
+                        '                  (list "b" #(1 2) #(3 -1) :bars #t)'
+                        '                  (list "c" #(1 2) #(-5 4) :bars #t)) :bars "stacked")')
+        bottoms = [(p.get_x() + p.get_width() / 2, p.get_y(), p.get_height()) for p in ax.patches]
+        self.assertEqual([(round(x, 6), y, h) for x, y, h in bottoms],
+                         [(1, 0, 1), (2, 0, -2),          # a
+                          (1, 1, 3), (2, -2, -1),         # b, on top of a (below it, if negative)
+                          (1, 0, -5), (2, 0, 4)])         # c: the first below 0 at 1, the first above at 2
+
+    def test_monthly_and_quarterly_dates_share_the_axis(self):
+        ax = self.drawn('(plot-chart (list (list "m" (vector (date 2024 1 1) (date 2024 2 1) (date 2024 3 1)'
+                        '                                    (date 2024 4 1)) #(1 2 3 4) :symbol "dot")'
+                        '                  (list "q" (vector (date 2024 1 1) (date 2024 4 1)) #(5 6) :bars #t)))')
+        january, april = [p.get_x() + p.get_width() / 2 for p in ax.patches]
+        self.assertAlmostEqual(april - january, 91)                  # days: on a calendar
+        self.assertAlmostEqual(ax.patches[0].get_width(), 0.8 * 91)  # the quarterly bars' room, not the months'
+        line = ax.get_lines()[0]
+        self.assertEqual(list(line.get_xdata())[3], april)
+
+    def test_the_console_summary_and_saving(self):
+        self.env = lisp_builtins.make_global_env(output=self.out.append)
+        self.run_lisp('(plot-chart (list (list "a" #(1 2) #(3 4) :bars #t :symbol #t)) :title "Two")')
+        self.assertEqual(self.printed(), "[chart] Two\n  a: 2 points (symbols, bars)\n")
+        if lisp_charts.MATPLOTLIB_AVAILABLE:
+            path = os.path.join(tempfile.mkdtemp(), "chart.png")
+            self.addCleanup(shutil.rmtree, os.path.dirname(path), True)
+            self.run_lisp('(save-chart "%s" 4 3 50)' % path)
+            self.assertGreater(os.path.getsize(path), 1000)
 
 
 class TestDisplayHtml(LispTestCase):
