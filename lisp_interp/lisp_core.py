@@ -120,9 +120,13 @@ NIL = None  # represents the empty list '()
 def lisp_equal(a, b):
     """Whether two Lisp values are equal (equal?). The same as Python's ==,
     except that #t and #f are equal only to themselves: Python counts True
-    as the number 1 and False as 0, so True == 1, but (equal? #f 0) is #f."""
+    as the number 1 and False as 0, so True == 1, but (equal? #f 0) is #f.
+    And a symbol is equal only to a symbol: symbols and strings are both
+    Python strs, but (equal? 'a "a") is #f."""
     if isinstance(a, bool) or isinstance(b, bool):
         return a is b
+    if isinstance(a, Symbol) != isinstance(b, Symbol):
+        return False
     return a == b
 
 

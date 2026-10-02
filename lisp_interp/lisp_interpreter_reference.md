@@ -27,6 +27,7 @@ functions" as a reference to search rather than read start to end.
   - [Defining variables and procedures](#defining-variables-and-procedures)
     - [define](#define)
     - [set!](#set)
+    - [push, pop, incf, decf](#push-pop-incf-decf)
     - [lambda](#lambda)
     - [begin](#begin)
   - [Variadic parameters](#variadic-parameters)
@@ -289,6 +290,26 @@ already exists.
 (define x 10)
 (set! x 20)
 x                               ; => 20
+```
+
+#### push, pop, incf, decf
+#### `(push item variable)`, `(pop variable)`, `(incf variable [n])`, `(decf variable [n])`
+Standard macros for changing a variable, as in Common Lisp — but only a
+variable, since there's no `setf` here. `push` puts `item` on the front
+of the list in `variable`, and returns the new list; `pop` takes the first
+element off, and returns it. `incf` adds `n` (1 unless given) to the
+number in `variable`, `decf` takes it away, and each returns the new
+value.
+
+```lisp
+(define stack '())
+(push 1 stack)                  ; => (1)
+(push 2 stack)                  ; => (2 1)
+(pop stack)                     ; => 2
+stack                           ; => (1)
+(define n 10)
+(incf n)                        ; => 11
+(decf n 5)                      ; => 6
 ```
 
 #### lambda
@@ -1566,6 +1587,14 @@ Tests of a number. `even?` and `odd?` need a whole number (`4` or
 (negative? -2)                 ; => #t
 ```
 
+#### `(gcd a b ...)`, `(lcm a b ...)`
+The greatest common divisor and least common multiple of whole numbers.
+
+```lisp
+(gcd 12 18)                    ; => 6
+(lcm 4 6)                      ; => 12
+```
+
 #### `(abs x)`
 Absolute value.
 
@@ -1751,13 +1780,16 @@ interchangeable in this interpreter.
 length can be compared, and structs slot by slot. Numbers are equal if
 they have the same value, so `(equal? 1 1.0)` is `#t`. `#t` and `#f` are
 equal only to themselves: Python, underneath, counts them as the numbers
-1 and 0, but here `(equal? #f 0)` is `#f`. `member`, `assoc`, and `case`
-compare the same way.
+1 and 0, but here `(equal? #f 0)` is `#f`. And a string is never equal to
+a symbol, even one with the same name. `member`, `assoc`, `case`, and the
+sequence functions (`remove`, `count`, `position`, ...) compare the same
+way.
 
 ```lisp
 (eq? '(1 2) (list 1 2))        ; => #t
 (equal? "abc" "abc")           ; => #t
 (equal? #f 0)                  ; => #f
+(equal? "a" 'a)                ; => #f
 (equal? '(1 #f) (list 1 #f))   ; => #t
 ```
 
@@ -2019,7 +2051,7 @@ range (0..M)` if `n` is out of bounds.
 
 #### `(list-tail l n)`
 The sublist of `l` starting at position `n` (0-based) — i.e. `l` with its
-first `n` elements dropped. `(list-tail l 0)` is `l` itself;
+first `n` elements dropped: `l`'s own pairs, not a copy. `(list-tail l 0)` is `l` itself;
 `(list-tail l (length l))` is `'()`. Raises `LispError` if `n` is out of
 range.
 
@@ -2120,6 +2152,93 @@ an error).
 (reduce max #(3 9 4))          ; => 9
 ```
 
+The functions below are Common Lisp's. Each takes a list or a vector
+(`seq`), and those that return a sequence return the same kind. Elements
+are compared with `equal?`.
+
+#### `(remove item seq)`, `(remove-if f seq)`
+`seq` without the elements equal to `item`; and without the elements `x`
+for which `(f x)` is true — the opposite of `filter`.
+
+```lisp
+(remove 2 (list 1 2 3 2))       ; => (1 3)
+(remove-if odd? #(1 2 3 4))     ; => #(2 4)
+```
+
+#### `(count item seq)`, `(count-if f seq)`
+How many elements are equal to `item`; how many make `(f x)` true.
+
+```lisp
+(count "CA" (list "CA" "NY" "CA"))   ; => 2
+(count-if even? #(1 2 4))            ; => 2
+```
+
+#### `(find-if f seq)`, `(position item seq)`, `(position-if f seq)`
+The first element `x` for which `(f x)` is true; the index (from 0) of the
+first element equal to `item`; the index of the first for which `(f x)` is
+true. Each is `#f` if there's none.
+
+```lisp
+(find-if even? (list 1 4 6))         ; => 4
+(position 'c (list 'a 'b 'c))        ; => 2
+(position-if string? (list 1 "a"))   ; => 1
+(position 9 (list 1 2))              ; => #f
+```
+
+#### `(some f seq ...)`, `(every f seq ...)`
+Whether `(f x)` is true for some element: the first true value it returns,
+or `#f`. Whether it's true for every element: `#t` or `#f` (`#t` for no
+elements). Given several sequences, `f` takes an element of each, in step,
+as with `map`.
+
+```lisp
+(some (lambda (x) (and (> x 2) (* x 10))) (list 1 3 5))   ; => 30
+(every odd? (list 1 3 5))                                 ; => #t
+(some = (list 1 2) (list 3 2))                            ; => #t
+```
+
+#### `(remove-duplicates seq)`
+`seq` with each element once, where it first appears.
+
+```lisp
+(remove-duplicates (list "CA" "NY" "CA" "TX"))   ; => ("CA" "NY" "TX")
+```
+
+#### `(union a b)`, `(intersection a b)`, `(set-difference a b)`
+The elements in `a` or `b`; in both; in `a` but not `b`. Each element is
+there once, in the order it first appears (in `a`, then `b`).
+
+```lisp
+(union (list 1 2) (list 2 3))              ; => (1 2 3)
+(intersection (list 1 2 3) (list 3 2 5))   ; => (2 3)
+(set-difference (list 1 2 3) (list 2))     ; => (1 3)
+```
+
+#### `(append-map f seq ...)`
+The lists `(f x)` returns, for each element `x`, appended into one.
+
+```lisp
+(append-map (lambda (x) (list x x)) (list 1 2))   ; => (1 1 2 2)
+```
+
+#### `(for-each f seq ...)`
+Calls `(f x)` for each element, for what it does; returns `'()`. (`dolist`
+does the same with the body written in place.)
+
+```lisp
+(for-each print (list "a" "b"))   ; prints a, then b
+```
+
+#### `(iota count [start step])`
+A list of `count` numbers, from `start` (0 unless given) by `step` (1
+unless given).
+
+```lisp
+(iota 4)                        ; => (0 1 2 3)
+(iota 3 1)                      ; => (1 2 3)
+(iota 3 0 5)                    ; => (0 5 10)
+```
+
 #### `(apply f arg1 arg2 ... args)`
 Calls `f` with `arg1`, `arg2`, ... as individual leading arguments,
 followed by the *elements* of the final argument `args` (a list).
@@ -2205,6 +2324,23 @@ Calls `(f key value)` once for every entry in `h`, for side effects
 ```lisp
 (define total 0)
 (hash-table-for-each (lambda (k v) (set! total (+ total v))) h)
+```
+
+#### `(hash-table-copy h)`
+A new hash table with `h`'s keys and values; changing one doesn't change
+the other. (The values themselves aren't copied.)
+
+#### `(hash-table-update! h key f [default])`
+Sets `key`'s value to `(f value)`, where `value` is its value now — or
+`default` if it has none (an error, without a default). Returns the new
+value. The way to count things:
+
+```lisp
+(define counts (make-hash-table))
+(dolist (state (list "CA" "NY" "CA"))
+  (hash-table-update! counts state (lambda (n) (+ n 1)) 0))
+(hash-table-ref counts "CA")                                   ; => 2
+(hash-table-update! counts "NY" (lambda (n) (* n 10)))         ; => 10
 ```
 
 ### Strings

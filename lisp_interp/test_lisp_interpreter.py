@@ -1099,6 +1099,95 @@ class TestPrintingStrings(LispTestCase):
 # 8. Arithmetic, comparison, equality
 # ---------------------------------------------------------------------------
 
+class TestCommonLispListFunctions(LispTestCase):
+    """remove, count, some, every, find-if, position, remove-duplicates, the
+    set functions, append-map, for-each, iota; hash-table-copy and
+    hash-table-update!; gcd and lcm; and the push, pop, incf, decf macros."""
+
+    def test_remove_and_count(self):
+        self.assertShows("(remove 2 '(1 2 3 2))", "(1 3)")
+        self.assertShows("(remove 2 #(1 2 3))", "#(1 3)")                       # a vector for a vector
+        self.assertShows("(remove-if odd? '(1 2 3 4))", "(2 4)")
+        self.assertShows("(remove \"a\" (list \"a\" 'a))", "(a)")             # a string isn't a symbol
+        self.assertShows("(count 2 '(1 2 2.0))", "2")                          # 2 and 2.0 are equal?
+        self.assertShows("(count-if even? #(1 2 4))", "2")
+        self.assertLispError("(remove 1 5)", "remove: expected a list, got 5")
+
+    def test_some_every_find_position(self):
+        self.assertShows("(some (lambda (x) (and (> x 2) (* x 10))) '(1 3 5))", "30")
+        self.assertShows("(some odd? '(2 4))", "#f")
+        self.assertShows("(some = '(1 2) '(3 2))", "#t")                       # in step, as map
+        self.assertShows("(every odd? '(1 3))", "#t")
+        self.assertShows("(every odd? '(1 2))", "#f")
+        self.assertShows("(every odd? '())", "#t")
+        self.assertShows("(find-if even? '(1 4 6))", "4")
+        self.assertShows("(find-if even? '(1 3))", "#f")
+        self.assertShows("(position 'c '(a b c))", "2")
+        self.assertShows("(position 9 #(1 2))", "#f")
+        self.assertShows("(position-if string? (list 1 \"a\"))", "1")
+        self.assertLispError("(some odd?)", "some: expected at least 1 list or vector after the procedure")
+
+    def test_remove_duplicates_and_sets(self):
+        self.assertShows("(remove-duplicates (list 1 2 1.0 #t 1 \"a\" 'a \"a\" '(1) '(1)))",
+                         '(1 2 #t "a" a (1))')                                 # #t isn't 1; "a" isn't a
+        self.assertShows("(remove-duplicates #(3 1 3 2))", "#(3 1 2)")         # in order, unlike vector-unique
+        self.assertShows("(union '(1 2 2) '(2 3))", "(1 2 3)")
+        self.assertShows("(intersection '(1 2 3 2) '(3 2 5))", "(2 3)")
+        self.assertShows("(set-difference '(1 2 3) '(2))", "(1 3)")
+        self.assertShows("(intersection '((1) (2)) '((2)))", "((2))")          # lists, compared with equal?
+
+    def test_append_map_for_each_iota(self):
+        self.assertShows("(append-map (lambda (x) (list x x)) '(1 2))", "(1 1 2 2)")
+        self.assertShows("(append-map list '(1 2) '(a b))", "(1 a 2 b)")
+        self.assertShows("(append-map list '())", "()")
+        self.run_lisp("(for-each (lambda (x y) (display (+ x y))) '(1 2) '(10 20))")
+        self.assertEqual(self.printed(), "1122")
+        self.assertShows("(iota 4)", "(0 1 2 3)")
+        self.assertShows("(iota 3 1)", "(1 2 3)")
+        self.assertShows("(iota 3 0 5)", "(0 5 10)")
+        self.assertShows("(iota 0)", "()")
+        self.assertLispError("(iota -1)", "iota: count must be a whole number, 0 or more")
+
+    def test_list_tail_is_the_lists_own(self):
+        self.assertShows("(let ((l (list 1 2 3))) (eq? (list-tail l 1) (cdr l)))", "#t")
+
+    def test_hash_table_copy_and_update(self):
+        self.run_lisp("(define h (make-hash-table)) (hash-table-set! h \"a\" 1) (define c (hash-table-copy h))"
+                      "(hash-table-set! c \"a\" 2)")
+        self.assertShows('(list (hash-table-ref h "a") (hash-table-ref c "a"))', "(1 2)")
+        self.assertShows('(hash-table-update! h "a" (lambda (n) (+ n 10)))', "11")
+        self.assertShows('(hash-table-update! h "b" (lambda (n) (+ n 1)) 0)', "1")
+        self.assertShows('(hash-table-ref h "b")', "1")
+        self.assertLispError('(hash-table-update! h "z" (lambda (n) n))',
+                             'hash-table-update!: "z" isn\'t in the table, and there\'s no default')
+
+    def test_gcd_and_lcm(self):
+        self.assertShows("(gcd 12 18)", "6")
+        self.assertShows("(gcd 12 18 8)", "2")
+        self.assertShows("(lcm 4 6)", "12")
+        self.assertShows("(gcd 12.0 18)", "6")
+        self.assertShows("(list (gcd) (lcm))", "(0 1)")
+        self.assertLispError("(gcd 1.5 3)", "gcd: expected whole numbers, got 1.5")
+
+    def test_push_pop_incf_decf(self):
+        self.run_lisp("(define stack '())")
+        self.assertShows("(push 1 stack)", "(1)")
+        self.assertShows("(push 2 stack)", "(2 1)")
+        self.assertShows("(pop stack)", "2")
+        self.assertShows("stack", "(1)")
+        self.run_lisp("(define n 10)")
+        self.assertShows("(incf n)", "11")
+        self.assertShows("(incf n 4)", "15")
+        self.assertShows("(decf n)", "14")
+        self.assertShows("(decf n 10)", "4")
+        # in a function, on a local variable
+        self.assertShows("(let ((total 0)) (dolist (x '(1 2 3)) (incf total x)) total)", "6")
+        # pop's own temporary can't clash with the program's names
+        self.assertShows("(let ((first-item '(a b))) (pop first-item))", "a")
+        self.assertLispError("(push 1 (car stack))", "push: expected a variable to push onto, not (car stack)")
+        self.assertLispError("(incf 5)", "incf: expected a variable, not 5")
+
+
 class TestNumbers(LispTestCase):
 
     def test_addition_and_multiplication_identities(self):
@@ -1312,6 +1401,14 @@ class TestComparisonAndPredicates(LispTestCase):
         self.assertShows('(equal? "abc" "abc")', "#t")
         self.assertShows("(equal? '(1 (2 3)) (list 1 (list 2 3)))", "#t")
         self.assertShows("(equal? 1 2)", "#f")
+
+    def test_a_string_is_never_equal_to_a_symbol(self):
+        """Both are Python strs underneath, but not the same Lisp value."""
+        self.assertShows("(equal? \"a\" 'a)", "#f")
+        self.assertShows("(eq? 'a \"a\")", "#f")
+        self.assertShows("(equal? '(a) (list \"a\"))", "#f")
+        self.assertShows("(member 'a (list \"a\" 'a))", "(a)")
+        self.assertShows("(case \"x\" ((x) 'symbol) ((\"x\") 'string))", "string")
 
     def test_type_predicates(self):
         cases = {

@@ -314,7 +314,7 @@ options as the fit has coefficients isn't fit."
 line, and every option whose bid is above the model's price or whose ask
 is below it."
   (let* ((options (vol-smile-fit-options fit))
-         (columns '("symbol" "expiration-date" "strike" "bid" "ask" "iv-bid" "iv-mid" "iv-ask"
+         (columns '("symbol" "type" "expiration-date" "strike" "bid" "ask" "iv-bid" "iv-mid" "iv-ask"
                     "fitted-iv" "iv-residual" "model-price" "signal" "edge"))
          (out-of-line (table-add-column options "distance" (abs (table-column options "iv-residual")))))
     (display (string-append "The fit for each expiration (atm-vol is its volatility at the forward; "

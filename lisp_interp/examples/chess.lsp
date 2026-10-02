@@ -228,11 +228,11 @@ whether or not it leaves that side's own king in check."
         (side (position-side position))
         (moves '()))
     (define (add! from to)
-      (set! moves (cons (list from to) moves)))
+      (push (list from to) moves))
     (define (add-pawn-move! from to)
       (if (or (= (rank-of to) 7) (= (rank-of to) 0))
           (dolist (piece (list queen knight rook bishop))
-            (set! moves (cons (list from to piece) moves)))
+            (push (list from to piece) moves))
           (add! from to)))
     (define (steps! from directions)            ; a knight or a king: one step
       (dolist (direction directions)
@@ -298,11 +298,6 @@ square in turn.)"
   "The square of side's king."
   (vector-ref (vector-select square-numbers (= board (* side king))) 0))
 
-(define (any? test items)
-  "Whether test is true of any of the items."
-  (and (pair? items)
-       (or (test (car items)) (any? test (cdr items)))))
-
 (define (attacked? board square by)
   "Whether one of side by's pieces attacks square."
   (define (piece-at offset)
@@ -315,13 +310,13 @@ square in turn.)"
   (let ((behind (* -10 by)))            ; by's pawns attack from one rank behind
     (or (= (piece-at (- behind 1)) (* by pawn))
         (= (piece-at (+ behind 1)) (* by pawn))
-        (any? (lambda (jump) (= (piece-at jump) (* by knight))) knight-jumps)
-        (any? (lambda (step) (= (piece-at step) (* by king))) all-directions)
-        (any? (lambda (direction)
+        (some (lambda (jump) (= (piece-at jump) (* by knight))) knight-jumps)
+        (some (lambda (step) (= (piece-at step) (* by king))) all-directions)
+        (some (lambda (direction)
                 (let ((piece (first-piece-toward direction)))
                   (or (= piece (* by bishop)) (= piece (* by queen)))))
               diagonals)
-        (any? (lambda (direction)
+        (some (lambda (direction)
                 (let ((piece (first-piece-toward direction)))
                   (or (= piece (* by rook)) (= piece (* by queen)))))
               straights))))
@@ -724,9 +719,9 @@ first-side is the side that made the first of them."
         (number 1)
         (side first-side))
     (dolist (move moves)
-      (cond ((= side white) (set! words (cons (format "{}.{}" number move) words)))
-            ((null? words) (set! words (cons (format "{}...{}" number move) words)))
-            (else (set! words (cons move words))))
+      (cond ((= side white) (push (format "{}.{}" number move) words))
+            ((null? words) (push (format "{}...{}" number move) words))
+            (else (push move words)))
       (when (= side black)
         (set! number (+ number 1)))
       (set! side (- side)))

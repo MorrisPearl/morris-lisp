@@ -169,6 +169,25 @@ def check_number(x, who):
     return x
 
 
+def whole_numbers(numbers, who):
+    """numbers, which must be whole (4, or 4.0), as Python ints."""
+    check_numbers(numbers, who)
+    for n in numbers:
+        if isinstance(n, float) and not n.is_integer():
+            raise LispError("%s: expected whole numbers, got %r" % (who, n))
+    return [int(n) for n in numbers]
+
+
+def lisp_gcd(*numbers):
+    """(gcd a b ...) -- the greatest common divisor of whole numbers; 0 for none."""
+    return math.gcd(*whole_numbers(numbers, "gcd"))
+
+
+def lisp_lcm(*numbers):
+    """(lcm a b ...) -- the least common multiple of whole numbers; 1 for none."""
+    return math.lcm(*whole_numbers(numbers, "lcm"))
+
+
 def expt(a, b):
     """(expt a b) -- a raised to the power b."""
     if any_vector((a, b)):
@@ -330,6 +349,8 @@ NUMBER_BUILTINS = {
     "remainder": remainder,
     "abs": lisp_abs,
     "signum": signum,
+    "gcd": lisp_gcd,
+    "lcm": lisp_lcm,
     "even?": lambda n: parity(n, "even?") == 0,
     "odd?": lambda n: parity(n, "odd?") == 1,
     "zero?": lambda x: check_number(x, "zero?") == 0,
@@ -608,11 +629,16 @@ def lisp_butlast(lst, n=1):
 
 
 def list_tail(lst, n):
+    """(list-tail lst n) -- lst without its first n elements: lst's own
+    pairs from the nth on, not a copy."""
     items = list_items(lst, "list-tail")
     n = int(n)
     if n < 0 or n > len(items):
         raise LispError("list-tail: index %d out of range (0..%d)" % (n, len(items)))
-    return list_to_pairs(items[n:])
+    tail = lst
+    for _ in range(n):
+        tail = tail.cdr
+    return tail
 
 
 def lisp_assoc(key, alist):
@@ -640,6 +666,170 @@ def lisp_member(x, lst):
     return False
 
 
+# More sequence functions, as Common Lisp has them. Each takes a list or a
+# vector, and those that return a sequence return the same kind.
+
+def same_kind(seq, items):
+    """items, a Python list, as the same kind of sequence as seq: a vector
+    for a vector, otherwise a list."""
+    return LispVector(items) if isinstance(seq, LispVector) else list_to_pairs(items)
+
+
+def lisp_remove(item, seq):
+    """(remove item seq) -- seq without the elements equal? to item."""
+    return same_kind(seq, [x for x in sequence_items(seq, "remove") if not lisp_equal(x, item)])
+
+
+def lisp_remove_if(f, seq):
+    """(remove-if f seq) -- seq without the elements x for which (f x) is
+    true: the opposite of filter."""
+    return same_kind(seq, [x for x in sequence_items(seq, "remove-if") if not is_true(apply_proc(f, [x]))])
+
+
+def lisp_count(item, seq):
+    """(count item seq) -- how many elements of seq are equal? to item."""
+    return sum(1 for x in sequence_items(seq, "count") if lisp_equal(x, item))
+
+
+def lisp_count_if(f, seq):
+    """(count-if f seq) -- how many elements x of seq make (f x) true."""
+    return sum(1 for x in sequence_items(seq, "count-if") if is_true(apply_proc(f, [x])))
+
+
+def elements_in_step(sequences, who):
+    """The elements of one or more sequences, in step, as map takes them: a
+    list of argument lists, stopping at the end of the shortest."""
+    if not sequences:
+        raise LispError("%s: expected at least 1 list or vector after the procedure" % who)
+    return [list(args) for args in zip(*[sequence_items(s, who) for s in sequences])]
+
+
+def lisp_some(f, *sequences):
+    """(some f seq ...) -- the first true value of (f x ...) for the elements
+    of seq (taken in step, given several), or #f if there's none."""
+    for args in elements_in_step(sequences, "some"):
+        value = apply_proc(f, args)
+        if is_true(value):
+            return value
+    return False
+
+
+def lisp_every(f, *sequences):
+    """(every f seq ...) -- #t if (f x ...) is true for every element of seq
+    (taken in step, given several), else #f. #t for no elements at all."""
+    return all(is_true(apply_proc(f, args)) for args in elements_in_step(sequences, "every"))
+
+
+def lisp_find_if(f, seq):
+    """(find-if f seq) -- the first element x of seq for which (f x) is
+    true, or #f if there's none."""
+    for x in sequence_items(seq, "find-if"):
+        if is_true(apply_proc(f, [x])):
+            return x
+    return False
+
+
+def lisp_position(item, seq):
+    """(position item seq) -- the index of the first element of seq equal?
+    to item, counting from 0, or #f if there's none."""
+    for i, x in enumerate(sequence_items(seq, "position")):
+        if lisp_equal(x, item):
+            return i
+    return False
+
+
+def lisp_position_if(f, seq):
+    """(position-if f seq) -- the index of the first element x of seq for
+    which (f x) is true, or #f if there's none."""
+    for i, x in enumerate(sequence_items(seq, "position-if")):
+        if is_true(apply_proc(f, [x])):
+            return i
+    return False
+
+
+def distinct_key(x):
+    """What tells x apart from other elements, as equal? does, for a set:
+    its kind and its value. (Python alone would call #t equal to 1, and a
+    string equal to the symbol with the same name.)"""
+    if isinstance(x, bool):
+        return ("boolean", x)
+    if isinstance(x, (int, float)):
+        return ("number", x)              # 1 and 1.0 are equal?, and so is their key
+    return (type(x).__name__, x)
+
+
+def distinct(items):
+    """items with each element once (as equal? sees them), in the order
+    they first appear. Numbers, strings, symbols, and dates are checked
+    with a set, so long sequences of them are quick; lists one by one."""
+    seen, seen_unhashable, result = set(), [], []
+    for x in items:
+        try:
+            key = distinct_key(x)
+            if key in seen:
+                continue
+            seen.add(key)
+        except TypeError:
+            if any(lisp_equal(x, y) for y in seen_unhashable):
+                continue
+            seen_unhashable.append(x)
+        result.append(x)
+    return result
+
+
+def lisp_remove_duplicates(seq):
+    """(remove-duplicates seq) -- seq with each element once, where it first
+    appears."""
+    return same_kind(seq, distinct(sequence_items(seq, "remove-duplicates")))
+
+
+def lisp_union(a, b):
+    """(union a b) -- every element of a or b, once each, in the order they
+    first appear (a's first)."""
+    return same_kind(a, distinct(sequence_items(a, "union") + sequence_items(b, "union")))
+
+
+def lisp_intersection(a, b):
+    """(intersection a b) -- the elements of a that are also in b, once each,
+    in a's order."""
+    in_b = sequence_items(b, "intersection")
+    return same_kind(a, distinct([x for x in sequence_items(a, "intersection")
+                                  if any(lisp_equal(x, y) for y in in_b)]))
+
+
+def lisp_set_difference(a, b):
+    """(set-difference a b) -- the elements of a that aren't in b, once each,
+    in a's order."""
+    in_b = sequence_items(b, "set-difference")
+    return same_kind(a, distinct([x for x in sequence_items(a, "set-difference")
+                                  if not any(lisp_equal(x, y) for y in in_b)]))
+
+
+def lisp_append_map(f, *sequences):
+    """(append-map f seq ...) -- the lists (f x ...) returns for the elements
+    of seq, appended into one: (append-map (lambda (x) (list x x)) '(1 2)) is
+    (1 1 2 2)."""
+    results = [apply_proc(f, args) for args in elements_in_step(sequences, "append-map")]
+    return lisp_append(*results) if results else NIL
+
+
+def lisp_for_each(f, *sequences):
+    """(for-each f seq ...) -- call (f x ...) for each element of seq (in step,
+    given several), for what it does; returns '()."""
+    for args in elements_in_step(sequences, "for-each"):
+        apply_proc(f, args)
+    return NIL
+
+
+def lisp_iota(count, start=0, step=1):
+    """(iota count [start step]) -- a list of count numbers: start (0 unless
+    given), start + step, start + 2 step, ...: (iota 4) is (0 1 2 3)."""
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise LispError("iota: count must be a whole number, 0 or more, not %s" % (_brief(count),))
+    check_numbers((start, step), "iota")
+    return list_to_pairs([start + i * step for i in range(count)])
+
+
 LIST_BUILTINS = {
     "cons": lambda a, b: Pair(a, b),
     "car": car,
@@ -663,6 +853,22 @@ LIST_BUILTINS = {
     "filter": lisp_filter,
     "sort": lisp_sort,
     "reduce": lisp_reduce,
+    "remove": lisp_remove,
+    "remove-if": lisp_remove_if,
+    "count": lisp_count,
+    "count-if": lisp_count_if,
+    "some": lisp_some,
+    "every": lisp_every,
+    "find-if": lisp_find_if,
+    "position": lisp_position,
+    "position-if": lisp_position_if,
+    "remove-duplicates": lisp_remove_duplicates,
+    "union": lisp_union,
+    "intersection": lisp_intersection,
+    "set-difference": lisp_set_difference,
+    "append-map": lisp_append_map,
+    "for-each": lisp_for_each,
+    "iota": lisp_iota,
 }
 
 
@@ -827,6 +1033,32 @@ def hash_table_for_each(f, h):
     return NIL
 
 
+def hash_table_copy(h):
+    """(hash-table-copy h) -- a new hash table with h's keys and values (the
+    values themselves aren't copied)."""
+    _require_hash_table(h, "hash-table-copy")
+    copy = LispHashTable()
+    copy.table.update(h.table)
+    return copy
+
+
+def hash_table_update(h, key, f, *default):
+    """(hash-table-update! h key f [default]) -- set key's value to (f value),
+    where value is key's value now -- or default, if key has none (an error
+    if there's no default either). Returns the new value:
+    (hash-table-update! counts word (lambda (n) (+ n 1)) 0) counts a word."""
+    check_key(h, key, "hash-table-update!")
+    if hash_table_has(h, key):
+        value = h.table[key]
+    elif default:
+        value = default[0]
+    else:
+        raise LispError("hash-table-update!: %s isn't in the table, and there's no default" % (_brief(key),))
+    new_value = apply_proc(f, [value])
+    h.table[key] = new_value
+    return new_value
+
+
 HASH_TABLE_BUILTINS = {
     "make-hash-table": lambda: LispHashTable(),
     "hash-table?": lambda x: isinstance(x, LispHashTable),
@@ -839,6 +1071,8 @@ HASH_TABLE_BUILTINS = {
     "hash-table-values": lambda h: list_to_pairs(list(h.table.values())),
     "hash-table->alist": lambda h: list_to_pairs([Pair(k, v) for k, v in h.table.items()]),
     "hash-table-for-each": hash_table_for_each,
+    "hash-table-copy": hash_table_copy,
+    "hash-table-update!": hash_table_update,
 }
 
 

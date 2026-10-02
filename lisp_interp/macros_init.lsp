@@ -13,6 +13,7 @@
 ;   (with-sqlite (var path) body...)
 ;   (when test body...)
 ;   (unless test body...)
+;   (push item variable), (pop variable), (incf variable [n]), (decf variable [n])
 ;   (case key-expr ((key...) body...)... [(else body...)])
 ;   (pretty-print-function name), (pretty-print-macro name)
 ;
@@ -366,6 +367,44 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
 ;     (error "not a connection:" conn))
 (defmacro unless (test . body)
   `(if ,test '() (begin ,@body)))
+
+; (push item variable), (pop variable)
+; push puts item on the front of the list in variable, and returns the new
+; list; pop takes the first item off, and returns it -- as in Common Lisp,
+; but only for a variable (there's no setf here).
+;
+;   (define stack '())
+;   (push 1 stack)       ; stack is (1)
+;   (push 2 stack)       ; stack is (2 1)
+;   (pop stack)          ; => 2, and stack is (1)
+(defmacro push (item variable)
+  (unless (symbol? variable)
+    (error "push: expected a variable to push onto, not" variable))
+  `(begin (set! ,variable (cons ,item ,variable)) ,variable))
+
+(defmacro pop (variable)
+  (unless (symbol? variable)
+    (error "pop: expected a variable to pop from, not" variable))
+  (let ((first-item (gensym)))
+    `(let ((,first-item (car ,variable)))
+       (set! ,variable (cdr ,variable))
+       ,first-item)))
+
+; (incf variable [n]), (decf variable [n])
+; Add n (1 unless given) to the number in variable, or take it away, and
+; return the new value -- as in Common Lisp, but only for a variable.
+;
+;   (incf count)         ; (set! count (+ count 1))
+;   (decf balance 100)   ; (set! balance (- balance 100))
+(defmacro incf (variable . n)
+  (unless (symbol? variable)
+    (error "incf: expected a variable, not" variable))
+  `(begin (set! ,variable (+ ,variable ,(if (null? n) 1 (car n)))) ,variable))
+
+(defmacro decf (variable . n)
+  (unless (symbol? variable)
+    (error "decf: expected a variable, not" variable))
+  `(begin (set! ,variable (- ,variable ,(if (null? n) 1 (car n)))) ,variable))
 
 ; (case key-expr clause...)
 ; Evaluates key-expr once, finds the first clause whose keys include its

@@ -49,14 +49,6 @@
   (filter (lambda (rule) (and (pair? (rule-rhs rule)) (eq? (car (rule-rhs rule)) category)))
           *grammar*))
 
-(define (append-map f items)
-  "(f item) for each item -- each a list -- appended together. (A loop,
-rather than map, so that a long sentence can't use up Python's stack.)"
-  (let ((result '()))
-    (dolist (item items)
-      (set! result (append result (f item))))
-    result))
-
 ; ---------------------------------------------------------------------------
 ; 2. The parser
 ; ---------------------------------------------------------------------------

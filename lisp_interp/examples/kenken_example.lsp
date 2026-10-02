@@ -104,15 +104,10 @@ one digit for each cell, in the order of cells."
           (else
            (let ((cell (car remaining)))
              (loop for digit from 1 to size
-                   unless (any? (lambda (pair) (and (= (cdr pair) digit) (same-line? (car pair) cell)))
+                   unless (some (lambda (pair) (and (= (cdr pair) digit) (same-line? (car pair) cell)))
                                 chosen)
                    append (fill (cons (cons cell digit) chosen) (cdr remaining)))))))
   (fill '() cells))
-
-(define (any? test items)
-  "Whether test is true of any of the items."
-  (and (pair? items)
-       (or (test (car items)) (any? test (cdr items)))))
 
 (define (check-puzzle size descriptions)
   "Complain about a puzzle that isn't well formed: each cell must be in
@@ -198,14 +193,9 @@ combinations, which make-kenken adds."
       (hash-table-set! combinations (cage-number cage) (cage-combinations cage)))
     (make-possibilities :digits digits :combinations combinations)))
 
-(define (copy-hash-table table)
-  (let ((copy (make-hash-table)))
-    (hash-table-for-each (lambda (key value) (hash-table-set! copy key value)) table)
-    copy))
-
 (define (copy-of possibilities)
-  (make-possibilities :digits (copy-hash-table (possibilities-digits possibilities))
-                      :combinations (copy-hash-table (possibilities-combinations possibilities))))
+  (make-possibilities :digits (hash-table-copy (possibilities-digits possibilities))
+                      :combinations (hash-table-copy (possibilities-combinations possibilities))))
 
 (define (digits-of possibilities cell)
   (hash-table-ref (possibilities-digits possibilities) cell))
@@ -263,7 +253,7 @@ others, and a digit with only one cell it can go in goes there."
                        (member (car digits) (digits-of possibilities other)))
               (limit-digits! possibilities other
                              (filter (lambda (d) (not (= d (car digits)))) (digits-of possibilities other)))
-              (set! changed (cons other changed)))))))
+              (push other changed))))))
     (dolist (cell line)
       (dolist (digit (digits-of possibilities cell))
         (hash-table-set! places digit (cons cell (hash-table-ref places digit '())))))
@@ -273,7 +263,7 @@ others, and a digit with only one cell it can go in goes there."
                  (throw 'impossible #f))
                (when (and (null? (cdr cells))
                           (limit-digits! possibilities (car cells) (list digit)))
-                 (set! changed (cons (car cells) changed)))))
+                 (push (car cells) changed))))
     changed))
 
 (define (rule-out! possibilities puzzle to-do)
@@ -295,7 +285,7 @@ they're on it already)."
           (dolist (affected (hash-table-ref (puzzle-groups-of puzzle) cell))
             (unless (hash-table-has? waiting (group-number affected))
               (hash-table-set! waiting (group-number affected) #t)
-              (set! to-do (cons affected to-do)))))))))
+              (push affected to-do))))))))
 
 ; ---------------------------------------------------------------------------
 ; 4. Solving
@@ -333,10 +323,10 @@ solution."
                    #t))
         (let ((cell (least-settled-cell possibilities size)))
           (if (not cell)
-              (set! found (cons (grid-of possibilities size) found))
+              (push (grid-of possibilities size) found)
               (dolist (digit (digits-of possibilities cell))
                 (let ((guess (copy-of possibilities)))
-                  (set! *guesses* (+ *guesses* 1))
+                  (incf *guesses*)
                   (hash-table-set! (possibilities-digits guess) cell (list digit))
                   ; Only the guessed cell's cage, row, and column need looking at, at first.
                   (search guess (hash-table-ref (puzzle-groups-of puzzle) cell))))))))
@@ -394,7 +384,7 @@ there's more than one -- or #f if there's none."
 
 (define (kenken-text size digit-at label-at border?)
   (let ((lines '()))
-    (define (add! line) (set! lines (cons line lines)))
+    (define (add! line) (push line lines))
     (define (border-line row)               ; the line above this row
       (string-append
         (apply string-append
