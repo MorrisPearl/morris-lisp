@@ -54,6 +54,7 @@ import lisp_builtins  # noqa: E402  (these need the sys.path line above)
 import lisp_core     # noqa: E402
 import lisp_clock  # noqa: E402
 import lisp_fred  # noqa: E402
+import lisp_http  # noqa: E402
 import lisp_jupyter_debug  # noqa: E402
 import lisp_tastytrade  # noqa: E402
 import lisp_tables  # noqa: E402
@@ -2354,6 +2355,17 @@ class TestDisplayTable(LispTestCase):
         self.assertEqual(lisp_builtins.markdown_table(columns),
                          "| id | n |\n|:---|---:|\n| a | 1.50 |\n| b\\|c |  |")
 
+    def test_markdown_characters_in_a_table_are_shown_as_they_are(self):
+        """In a notebook, a pair of $ makes a formula -- "revenue ($bn)" and
+        "free cash flow ($bn)" in one row turned the text between them into
+        one and broke the table -- and * and _ make emphasis. Each is
+        backslashed, which Markdown shows as the character itself."""
+        columns = [("revenue ($bn)", ["K*sqrt(T)_x"], "left"), ("free cash flow ($bn)", ["<1> `a` ~b~"], "left")]
+        self.assertEqual(lisp_builtins.markdown_table(columns).splitlines()[0],
+                         "| revenue (\\$bn) | free cash flow (\\$bn) |")
+        self.assertEqual(lisp_builtins.markdown_table(columns).splitlines()[2],
+                         "| K\\*sqrt(T)\\_x | \\<1\\> \\`a\\` \\~b\\~ |")
+
 
 class TestOptionChainTable(LispTestCase):
     """tastytrade-option-chain's rows become a table (no network needed to
@@ -2462,6 +2474,169 @@ class FakeTastytrade:
     def __exit__(self, *exc):
         self.patch.stop()
         os.unlink(self.credentials.name)
+
+
+class TestSecFinancials(LispTestCase):
+    """lisp_sec, on a made-up company's facts -- no network. XYZ Corp's fiscal
+    year is the calendar year. It reported revenue as Revenues for 2022 and
+    as RevenueFromContractWithCustomerExcludingAssessedTax for 2023; restated
+    2022's net income in its 2023 10-K; and gave its operating cash flow
+    and capital spending, as most companies do, only for the year to date."""
+
+    @staticmethod
+    def fact(start, end, value, form, filed, fy, fp, accn):
+        if value >= 1000:
+            value = int(value)                  # the SEC gives whole dollars as integers
+        f = {"end": end, "val": value, "form": form, "filed": filed, "fy": fy, "fp": fp, "accn": accn}
+        if start:
+            f["start"] = start
+        return f
+
+    def company_facts(self):
+        F = self.fact
+        k22 = ("10-K", "2023-02-15", 2022, "FY", "k22")
+        k23 = ("10-K", "2024-02-15", 2023, "FY", "k23")
+        q1, q2, q3 = (("10-Q", "2023-05-01", 2023, "Q1", "q1"), ("10-Q", "2023-08-01", 2023, "Q2", "q2"),
+                      ("10-Q", "2023-11-01", 2023, "Q3", "q3"))
+        usd = lambda *facts: {"label": "", "units": {"USD": list(facts)}}
+        per_share = lambda *facts: {"label": "", "units": {"USD/shares": list(facts)}}
+        return {"cik": 1234, "entityName": "XYZ Corp", "facts": {"us-gaap": {
+            "Revenues": usd(F("2022-01-01", "2022-12-31", 100e6, *k22)),
+            "RevenueFromContractWithCustomerExcludingAssessedTax": usd(
+                F("2023-01-01", "2023-03-31", 25e6, *q1), F("2023-04-01", "2023-06-30", 30e6, *q2),
+                F("2023-07-01", "2023-09-30", 32e6, *q3), F("2023-01-01", "2023-09-30", 87e6, *q3),
+                F("2023-01-01", "2023-12-31", 120e6, *k23)),
+            "CostOfRevenue": usd(F("2023-01-01", "2023-12-31", 70e6, *k23)),
+            "NetIncomeLoss": usd(F("2022-01-01", "2022-12-31", 10e6, *k22),
+                                 F("2022-01-01", "2022-12-31", 11e6, *k23),        # restated
+                                 F("2023-01-01", "2023-12-31", 15e6, *k23)),
+            "EarningsPerShareDiluted": per_share(
+                F("2023-01-01", "2023-03-31", 0.5, *q1), F("2023-04-01", "2023-06-30", 0.6, *q2),
+                F("2023-07-01", "2023-09-30", 0.7, *q3), F("2023-01-01", "2023-12-31", 2.4, *k23)),
+            "NetCashProvidedByUsedInOperatingActivities": usd(
+                F("2023-01-01", "2023-03-31", 10e6, *q1), F("2023-01-01", "2023-06-30", 22e6, *q2),
+                F("2023-01-01", "2023-09-30", 35e6, *q3), F("2023-01-01", "2023-12-31", 50e6, *k23)),
+            "PaymentsToAcquirePropertyPlantAndEquipment": usd(
+                F("2023-01-01", "2023-03-31", 2e6, *q1), F("2023-01-01", "2023-06-30", 5e6, *q2),
+                F("2023-01-01", "2023-09-30", 9e6, *q3), F("2023-01-01", "2023-12-31", 12e6, *k23)),
+            "Assets": usd(F(None, "2022-12-31", 500e6, *k22), F(None, "2023-03-31", 510e6, *q1),
+                          F(None, "2023-06-30", 520e6, *q2), F(None, "2023-09-30", 540e6, *q3),
+                          F(None, "2023-12-31", 560e6, *k23)),
+            "LiabilitiesAndStockholdersEquity": usd(F(None, "2023-12-31", 560e6, *k23)),
+            "StockholdersEquity": usd(F(None, "2023-12-31", 200e6, *k23)),
+        }}}
+
+    TICKERS = {"0": {"cik_str": 1234, "ticker": "XYZ", "title": "XYZ Corp"},
+               "1": {"cik_str": 1067983, "ticker": "BRK-B", "title": "BERKSHIRE HATHAWAY INC"}}
+
+    def setUp(self):
+        super().setUp()
+        import lisp_sec
+        self.lisp_sec = lisp_sec
+        lisp_sec._parsed_facts.clear()
+        self.addCleanup(lisp_sec._parsed_facts.clear)
+        self.credentials = os.path.join(tempfile.mkdtemp(), "credentials.json")
+        with open(self.credentials, "w") as f:
+            json.dump({"sec_user_agent": "Test Person test@example.com"}, f)
+        self.addCleanup(shutil.rmtree, os.path.dirname(self.credentials), True)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(self.credentials)
+        facts = self.company_facts()
+        self.downloads = []
+        self.real_sec_download = lisp_sec.sec_download
+
+        def fake_download(url, credentials_path, who):
+            self.downloads.append(url)
+            if url == lisp_sec.TICKERS_URL:
+                return self.TICKERS
+            if url == lisp_sec.COMPANY_FACTS_URL % 1234:
+                return facts
+            raise lisp_core.LispError("%s: %s returned HTTP 404 Not Found" % (who, url))
+        patcher = mock.patch.object(lisp_sec, "sec_download", fake_download)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def column(self, src, name):
+        return self.run_lisp('(table-column %s "%s")' % (src, name)).items.tolist()
+
+    def test_annual_income_statement(self):
+        self.run_lisp('(define t (sec-income-statement creds "XYZ" :in-millions #f))')
+        self.assertShows("(table-column-names t)", '("item" "2023-12-31" "2022-12-31" "unit" "source")')
+        items = self.column("t", "item")
+        row = lambda label: {name: self.column("t", name)[items.index(label)] for name in ("2023-12-31", "2022-12-31")}
+        self.assertEqual(row("Revenue"), {"2023-12-31": 120e6, "2022-12-31": 100e6})      # a concept for each year
+        self.assertEqual(row("Net income"), {"2023-12-31": 15e6, "2022-12-31": 11e6})     # the restated 2022
+        self.assertEqual(row("Gross profit")["2023-12-31"], 50e6)                       # worked out
+        self.assertIn("revenue - cost-of-revenue", self.column("t", "source")[items.index("Gross profit")])
+        self.assertNotIn("Interest expense", items)                                     # a line with no values
+        # in millions, unless :in-millions is #f -- but never a per-share amount
+        self.run_lisp('(define m (sec-income-statement creds "XYZ"))')
+        self.assertEqual(self.column("m", "2023-12-31")[:2], [120.0, 70.0])
+
+    def test_quarters_from_year_to_date_figures(self):
+        self.run_lisp('(define f (sec-financials creds "XYZ" :period "quarterly" :count 4))')
+        self.assertShows('(table-column f "fiscal-period")', '#("Q1" "Q2" "Q3" "Q4")')
+        self.assertEqual(self.column("f", "revenue"), [25e6, 30e6, 32e6, 33e6])        # Q4: 120 less 87
+        self.assertEqual(self.column("f", "operating-cash-flow"), [10e6, 12e6, 13e6, 15e6])
+        self.assertEqual(self.column("f", "free-cash-flow"), [8e6, 9e6, 9e6, 12e6])
+        eps = self.column("f", "eps-diluted")
+        for found, expected in zip(eps[:3], [0.5, 0.6, 0.7]):
+            self.assertAlmostEqual(found, expected, places=6)
+        self.assertTrue(math.isnan(eps[3]))       # no fourth-quarter EPS: an average isn't a difference
+
+    def test_balance_sheet_and_worked_out_liabilities(self):
+        self.run_lisp('(define b (sec-balance-sheet creds "XYZ" :in-millions #f))')
+        items = self.column("b", "item")
+        self.assertEqual(self.column("b", "2023-12-31")[items.index("Total liabilities")], 360e6)
+        self.assertEqual(self.column("b", "2022-12-31")[items.index("Total assets")], 500e6)
+        self.run_lisp('(define q (sec-balance-sheet creds "XYZ" :period "quarterly"))')
+        self.assertShows("(table-column-names q)",
+                         '("item" "2023-12-31" "2023-09-30" "2023-06-30" "2023-03-31" "unit" "source")')
+
+    def test_sec_financials_has_a_row_per_period(self):
+        self.run_lisp('(define f (sec-financials creds "XYZ"))')
+        self.assertShows('(table-column f "period-end")', "#(2022-12-31 2023-12-31)")
+        self.assertShows('(table-column f "fiscal-year")', "#(2022 2023)")
+        # period-end, fiscal-year, fiscal-period, and a column for each line item
+        self.assertShows('(length (table-column-names f))', str(3 + len(self.lisp_sec.LINE_ITEMS)))
+
+    def test_facts_concepts_and_company(self):
+        self.run_lisp('(define facts (sec-facts creds "XYZ" "NetIncomeLoss"))')
+        self.assertShows('(table-column facts "value")', "#(10000000 11000000 15000000)")
+        self.assertShows('(table-column facts "filed")', "#(2023-02-15 2024-02-15 2024-02-15)")
+        self.assertShows('(table-row-count (sec-concepts creds "XYZ"))', "10")
+        self.assertShows('(hash-table-ref (sec-company creds 1234) "name")', '"XYZ Corp"')
+        self.assertLispError('(sec-facts creds "XYZ" "Goodwill")', "the company has never reported Goodwill")
+
+    def test_tickers(self):
+        self.assertEqual(self.lisp_sec.company_cik(self.credentials, lisp_core.LispString("brk.b"), "t"), 1067983)
+        self.assertEqual(self.lisp_sec.company_cik(self.credentials, lisp_core.LispString("0000001234"), "t"), 1234)
+        self.assertLispError('(sec-income-statement creds "NOPE")', "the SEC has no company with the ticker NOPE")
+        self.assertLispError('(sec-income-statement creds 999)', "the SEC has no XBRL financial data for CIK 999")
+
+    def test_options_and_quarters_for_a_company_with_only_annual_reports(self):
+        self.assertLispError('(sec-income-statement creds "XYZ" :period "monthly")', ':period is "annual" or "quarterly"')
+        self.assertLispError('(sec-income-statement creds "XYZ" :periods 3)', ":periods isn't an option")
+        facts = self.company_facts()
+        for entry in facts["facts"]["us-gaap"].values():
+            entry["units"] = {u: [f for f in fs if f["form"] == "10-K"] for u, fs in entry["units"].items()}
+        self.lisp_sec._parsed_facts[1234] = (time.time(), facts)
+        self.assertLispError('(sec-income-statement creds "XYZ" :period "quarterly")',
+                             "the SEC has no quarterly reports (10-Qs) for this company")
+
+    def test_the_contact_goes_in_the_user_agent(self):
+        sent = []
+
+        def fake_http_download(url, cache_hours, headers, who, shown_url=None):
+            sent.append(dict((str(p.car), str(p.cdr)) for p in lisp_core.pairs_to_list(headers)))
+            return json.dumps(self.TICKERS).encode()
+        with mock.patch.object(lisp_http, "download", fake_http_download):
+            self.assertEqual(self.real_sec_download(self.lisp_sec.TICKERS_URL, self.credentials, "t"), self.TICKERS)
+        self.assertEqual(sent, [{"User-Agent": "Test Person test@example.com"}])
+        with open(self.credentials, "w") as f:
+            json.dump({"fred_api_key": "x"}, f)
+        with self.assertRaises(lisp_core.LispError) as caught:
+            self.lisp_sec.user_agent(self.credentials, "sec-facts")
+        self.assertIn('the credentials file has no "sec_user_agent" entry', str(caught.exception))
 
 
 class TestTastytrade(LispTestCase):
@@ -6858,7 +7033,7 @@ class TestExampleScripts(unittest.TestCase):
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
-    "fred-series", "tastytrade", "sofr-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
+    "fred-series", "tastytrade", "sofr-", "(sec-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv",
     "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
 )

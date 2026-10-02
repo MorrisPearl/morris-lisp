@@ -43,6 +43,7 @@ import lisp_fred
 import lisp_http
 import lisp_regex
 import lisp_regression
+import lisp_sec
 import lisp_simplex
 import lisp_sofr
 import lisp_sqlite
@@ -1638,11 +1639,19 @@ def print_table(columns, write):
     write("\n".join(lines) + "\n")
 
 
+def markdown_text(text):
+    """text, to show as it is in a Markdown table: each character Markdown
+    gives a meaning to -- a | ends a cell, a pair of $ makes a formula in a
+    notebook, * and _ make emphasis, ... -- backslashed, which Markdown
+    shows as the character itself."""
+    return "".join("\\" + c if c in "\\`*_$|~<>" else c for c in text)
+
+
 def markdown_table(columns):
     """display-table's table as Markdown text, which is how a notebook shows
     it: numbers right-aligned, text left-aligned."""
     def line(texts):
-        return "| " + " | ".join(text.replace("|", "\\|") for text in texts) + " |"
+        return "| " + " | ".join(markdown_text(text) for text in texts) + " |"
 
     n_rows = max((len(cells) for _, cells, _ in columns), default=0)
     lines = [line([name for name, _, _ in columns]),
@@ -1812,6 +1821,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_regression.BUILTINS)
     env.update(lisp_sqlite.BUILTINS)
     env.update(lisp_fred.BUILTINS)
+    env.update(lisp_sec.BUILTINS)
     env.update(lisp_http.BUILTINS)
     env.update(lisp_tastytrade.BUILTINS)
     env.update(lisp_sofr.BUILTINS)

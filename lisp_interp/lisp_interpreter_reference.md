@@ -89,6 +89,7 @@ functions" as a reference to search rather than read start to end.
   - [Displaying tables](#displaying-tables)
   - [FRED (Federal Reserve Bank of St. Louis) data, and CSV loading](#fred-federal-reserve-bank-of-st-louis-data-and-csv-loading)
   - [Downloading data from the web](#downloading-data-from-the-web)
+  - [SEC financial statements](#sec-financial-statements)
   - [SQLite](#sqlite)
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
@@ -5009,7 +5010,9 @@ text left-aligned, and nothing in a cell whose value is missing (NaN, or
 `'()`). `table` is a table (see "Tables") or a list of rows (see
 `table-rows`). Where it appears depends on where you are: in a **Jupyter
 notebook**, a rendered table; in the **GUI**, the Table tab; at the
-**console** or in a script, a text table. Returns `'()`.
+**console** or in a script, a text table. Returns `'()`. Headings and text
+appear just as they are, `$`, `*`, `_`, and `|` included (a notebook's
+Markdown would otherwise read them as a formula, emphasis, or a new cell).
 
 `formats` says how to lay out each column's values: a list of
 `(column-name spec)`, where `spec` is written the way `format` and
@@ -5057,7 +5060,10 @@ Shows `string` as Markdown. In a Jupyter notebook (the `morris_lisp`
 kernel) it renders as real Markdown — tables, headings, bold — so a cell
 can build a Markdown table with `string-append` and display it neatly.
 Anywhere else (console, GUI, `redirect-output`) the raw Markdown text is
-written as ordinary output, which is still readable. Returns `'()`.
+written as ordinary output, which is still readable. Returns `'()`. In a
+notebook, text between two `$` signs is a formula; write `\$` for a
+dollar sign. (`display-table` does that, and the like for `*`, `_`, and
+Markdown's other special characters, for you.)
 
 ```lisp
 (display-markdown
@@ -5263,6 +5269,114 @@ so spaces and symbols in them are safe.
 
 #### `(http-clear-cache)`
 Deletes every saved download, and returns how many there were.
+
+### SEC financial statements
+
+(In `lisp_sec.py`.) The income statement, balance sheet, and cash flow
+statement of any company that files with the SEC, in a standard form.
+Every 10-K and 10-Q is filed with its numbers tagged in XBRL — XML in
+which each number is a *fact*: a concept from a standard list (the
+US-GAAP taxonomy: `NetIncomeLoss`, `Assets`, ...), a value, a unit, and
+the period it covers. The SEC collects every fact a company has filed
+into one file, its *company facts*; these functions download that and
+arrange the facts as statements. That works for any company that files
+XBRL: all US public companies since about 2011 (the largest since 2009),
+and foreign companies that file annual reports (20-F, 40-F).
+
+**Credentials.** The SEC asks every program that downloads from it to say
+who's asking, with a name and an email address. Put them in your
+credentials file (the one `tastytrade-*` and `fred-series` use) as
+`"sec_user_agent"`:
+```json
+{"sec_user_agent": "Jane Smith jane@example.com", ...}
+```
+Each function takes the credentials file's path first, and a company: its
+ticker (`"AAPL"`, `"BRK.B"`) or its CIK number (`320193`). A company's
+facts are downloaded once and kept for 12 hours (in the cache
+`http-clear-cache` empties), so asking for several statements is quick.
+
+**Normalized.** Companies don't all tag a number the same way: revenue is
+`Revenues` for some and `RevenueFromContractWithCustomerExcludingAssessedTax`
+for others — and Apple switched from one to the other in 2018. So each line
+of the statements has a list of concepts to try, in order, for each
+period (`LINE_ITEMS` in `lisp_sec.py`; the `source` column of a statement
+says which were used). Gross profit, total liabilities, and free cash flow
+are worked out from other lines (revenue less cost of revenue, and so on)
+when a company doesn't report them. A company that reports under IFRS
+rather than US GAAP (many foreign companies) is covered too, in its own
+currency (the `unit` column: `EUR`, `JPY`, ...). A line a company doesn't
+report — interest expense, at many — is missing, and a statement leaves
+out lines that have no values at all.
+
+**Periods.** A fiscal year is the period an annual report covers, however
+the company's year falls (Apple's ends in late September). A quarter's
+income and cash flows come from its 10-Q; when the 10-Q gives only the
+year to date (as most cash flow statements do), the quarter is the year to
+date at its end less the year to date at the end of the quarter before,
+and the fourth quarter, which has no 10-Q, is the year less the first three
+quarters. Per-share amounts and share counts are averages, not sums, so a
+fourth quarter has them only if the company reported them for the quarter
+by itself. A company outside the US files only annual reports with the
+SEC, so it has no quarters. When a number was reported more than once —
+last year's figure appears again in this year's 10-K — the most recently
+filed one is used, so restatements are picked up.
+
+#### `(sec-income-statement creds company [:period p :count n :in-millions flag])`, `(sec-balance-sheet ...)`, `(sec-cash-flow-statement ...)`
+A statement laid out as the company would show it: a table with a row per
+line item (`item`), a column per period, named by the date it ends (newest
+first), then `unit` and `source`. `:period` is `"annual"` (the default) or
+`"quarterly"`; `:count` is how many periods (5 years or 8 quarters, unless
+given). Amounts are in millions unless `:in-millions` is `#f`; per-share
+amounts never are.
+
+| Statement | Lines |
+|---|---|
+| income | revenue, cost of revenue, gross profit, research and development, selling, general and administrative, operating expenses, operating income, interest expense, income before taxes, income tax, net income, earnings per share (basic and diluted), average shares (basic and diluted) |
+| balance sheet | cash and equivalents, short-term investments, receivables, inventory, total current assets, property, plant and equipment, goodwill, intangible assets, total assets, accounts payable, current debt, total current liabilities, long-term debt, total liabilities, stockholders' equity, equity with minority interests, total liabilities and equity, shares outstanding |
+| cash flow | cash from operations, depreciation and amortization, stock-based compensation, capital expenditures, free cash flow (cash from operations less capital expenditures), cash from investing, cash from financing, dividends paid, shares repurchased |
+
+Payments (capital expenditures, dividends, buybacks) are positive numbers,
+as companies report them.
+
+```lisp
+(display-table (sec-income-statement creds "AAPL"))
+(display-table (sec-balance-sheet creds "MSFT" :period "quarterly" :count 4))
+```
+
+#### `(sec-financials creds company [:period p :count n])`
+Every line of all three statements, arranged for working with: a row per
+period (oldest first) and a column per line, named by its key (`revenue`,
+`net-income`, `total-assets`, `free-cash-flow`, ... — the lines above,
+lower case, joined by hyphens), after `period-end`, `fiscal-year`, and
+`fiscal-period` (`FY`, or `Q1` to `Q4`). Amounts are in dollars (or the
+company's currency) and shares, as reported.
+
+```lisp
+(define f (sec-financials creds "KO"))
+(define net-margin (/ (table-column f "net-income") (table-column f "revenue")))
+(define return-on-equity (/ (table-column f "net-income") (table-column f "stockholders-equity")))
+```
+
+#### `(sec-facts creds company concept)`
+Every value the company has reported for one concept — `"NetIncomeLoss"`
+(US GAAP), or with its taxonomy, `"ifrs-full:Revenue"` — in every filing:
+a table with the columns `start` (missing for a balance, which is at a
+moment), `end`, `value`, `unit`, `fiscal-year` and `fiscal-period` (of the
+filing), `form` (`10-K`, `10-Q`, ...), `filed`, `frame` (the calendar
+period the SEC assigns it, as `CY2024Q3`), and `accession` (the filing's
+number). For anything the statements don't include.
+
+#### `(sec-concepts creds company)`
+Every concept the company has reported: a table with its `taxonomy`,
+`concept`, `label`, `unit`, how many `facts`, and the end of the `first`
+and `last` period. To see what's there to ask `sec-facts` for.
+
+#### `(sec-company creds company)`
+A hash table with the company's `"name"` and `"cik"`.
+
+`examples/sec_example.lsp` shows the three statements for Apple, quarters
+for Microsoft, margins and returns for three companies, and every annual
+EPS figure Coca-Cola has filed.
 
 ### SQLite
 
@@ -7130,6 +7244,7 @@ The Python files:
 | `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, `sqlite-write-table`, ... |
 | `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
 | `lisp_fred.py` | `fred-series` (downloads from FRED, through `lisp_http.py`) |
+| `lisp_sec.py` | `sec-income-statement`, `sec-balance-sheet`, `sec-financials`, ...: financial statements from the SEC's XBRL data |
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
