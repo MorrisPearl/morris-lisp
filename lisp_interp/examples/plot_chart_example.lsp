@@ -76,3 +76,37 @@
 (define value (vector-map (lambda (year) (* 100 (expt 1.07 (- year 1985)))) year-numbers))
 (plot-chart (list (list "7% a year" year-numbers value))
             :y-log #t :title "Steady growth, on a log scale" :y-label "value")
+
+; --- 8. Marking a chart: shading, reference lines, a note ----------------------------
+(define quarters-2019 (list->vector (map (lambda (i) (date (+ 2019 (quotient i 4)) (+ 1 (* 3 (remainder i 4))) 1))
+                                         (iota 20))))
+(define jobless #(3.8 3.6 3.6 3.6 3.8 13.0 8.8 6.8 6.2 5.9 5.1 4.2 3.8 3.6 3.6 3.6 3.5 3.6 3.7 3.8))
+(plot-chart (list (list "unemployment" quarters-2019 (/ jobless 100) :fill #t :line #t))
+            :title "Shading, a reference line, and a note" :legend #f :y-format "{:.0%}"
+            :shade (list (list (date 2020 2 1) (date 2020 4 30) "recession"))
+            :y-lines (list (list 0.04 "4%"))
+            :notes (list (list (date 2020 4 1) 0.13 "the pandemic")))
+
+; --- 9. A band, and values printed on the chart -------------------------------------------
+(define fitted #(2.0 3.1 4.0 5.2 5.9 7.1))
+(plot-chart (list (list "range" #(1 2 3 4 5 6) (- fitted 0.8) :fill (+ fitted 0.8) :color "gray")
+                  (list "estimate" #(1 2 3 4 5 6) fitted :symbol #t :line #t :labels #t))
+            :title "A fitted line with a band" :legend "upper left")
+(plot-chart (list (list "product" #("Q1" "Q2" "Q3" "Q4") #(120000 135000 128000 150000) :bars #t :labels #t)
+                  (list "service" #("Q1" "Q2" "Q3" "Q4") #(40000 52000 61000 70000) :bars #t :labels #t))
+            :bars "stacked" :y-format "${:,.0f}" :title "Revenue, labeled" :legend "upper left")
+
+; --- 10. A histogram ---------------------------------------------------------------------
+; Made-up daily returns: the sum of a few random numbers is roughly bell-shaped.
+(define (made-up-return i) (* 0.01 (- (+ (random-float) (random-float) (random-float) (random-float)) 2)))
+(define returns (list->vector (map made-up-return (iota 1000))))
+(plot-histogram returns :bins 25 :x-format "{:.1%}" :title "1,000 made-up daily returns"
+                :x-lines (list (list 0 "0")))
+
+; --- 11. Panels sharing an X axis -----------------------------------------------------------
+(define days (list->vector (iota 60)))
+(define price (vector-map (lambda (d) (+ 100 (* 0.3 d) (* 3 (random-float)))) days))
+(define volume (vector-map (lambda (d) (+ 1000 (* 500 (random-float)))) days))
+(plot-panels (list (list (list (list "price" days price :line #t)) :y-label "dollars" :title "Price")
+                   (list (list (list "volume" days volume :bars #t :color "gray")) :y-label "shares"))
+             :heights (list 3 1) :legend #f :x-label "trading day" :title "A price over its volume")

@@ -93,6 +93,7 @@ functions" as a reference to search rather than read start to end.
   - [FDIC bank data](#fdic-bank-data)
   - [Census data](#census-data)
   - [BLS data](#bls-data)
+  - [BEA data](#bea-data)
   - [SQLite](#sqlite)
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
@@ -4943,14 +4944,16 @@ Two things to know about the answers:
 
 ### Charting
 
-`plot-xy`/`plot-xy-regression`/`plot-xy-full`/`plot-chart` all build a
-chart and hand it to the GUI's chart tab (if running), a Jupyter cell
-(drawn inline), or a plain text summary printed to the console — either
-way, only the **most recently plotted** chart is remembered, which is what
-`save-chart` re-renders to a file. The `plot-xy` functions have exactly one
-X vector; if it contains dates, the axis is formatted as dates
-automatically. `plot-chart` gives each series its own X values, and can
-draw bars. Each Y series gets its own cycling
+`plot-xy`/`plot-xy-regression`/`plot-xy-full`/`plot-chart`/
+`plot-histogram`/`plot-panels` all build a chart and hand it to the GUI's
+chart tab (if running), a Jupyter cell (drawn inline), or a plain text
+summary printed to the console — either way, only the **most recently
+plotted** chart is remembered, which is what `save-chart` re-renders to a
+file. The `plot-xy` functions have exactly one X vector; if it contains
+dates, the axis is formatted as dates automatically. `plot-chart` gives
+each series its own X values, and can draw bars, areas, reference lines,
+shading, and a secondary axis; `plot-histogram` and `plot-panels` are built
+on it. Each Y series gets its own cycling
 marker shape (circle, square, triangle, diamond, ...). Charts only ever
 plot against a single X vector, even though the regression functions
 themselves support multiple predictors — for a multi-predictor model, use
@@ -4994,11 +4997,11 @@ plotted series). `reg-kind` defaults to `"linear"` (same validation as
 
 #### `(plot-chart series [options])`
 Several series on one chart, each with its own X values, drawn with any
-combination of symbols, a line, and bars. `series` is a list, with one
-entry for each series:
+combination of symbols, a line, bars, and a filled area. `series` is a
+list, with one entry for each series:
 
 ```text
-(list name x y [:symbol s :line l :bars b :color c :line-width w :symbol-size z :secondary flag])
+(list name x y [series options])
 ```
 
 - `name` is what the legend calls the series.
@@ -5020,19 +5023,21 @@ X values must be of one kind:
 
 A series' line connects its points from left to right.
 
-**How each series is drawn.** Any combination of these options. With
-none of `:symbol`, `:line`, and `:bars`, a series is a line.
+**Series options.** Any combination of these. With none of `:symbol`,
+`:line`, `:bars`, and `:fill`, a series is a line.
 
 | Option | Values |
 |---|---|
 | `:symbol` | a name: `"circle"`, `"square"`, `"triangle"`, `"diamond"`, `"down-triangle"`, `"plus"`, `"x"`, `"star"`, `"dot"`. `#t` means the next one in that order (the first series gets a circle, the second a square, ...). `#f` (the default) means none. |
 | `:line` | `#t` (solid), `"solid"`, `"dashed"`, `"dotted"`, `"dash-dot"`, or `#f` (none) |
 | `:bars` | `#t` for bars from 0 to each Y: up and down, or across on a horizontal chart. A series with bars can have only one Y for each X. |
-| `:color` | any matplotlib color: `"red"`, `"navy"`, `"#1f77b4"`, ... The default is the next color in matplotlib's cycle. The series' symbols, line, and bars are all this color. |
+| `:fill` | `#t` fills the area between the series and 0 (an area chart). A vector or list of values, one for each X, fills the band between the series and those values: a high–low range, or a confidence band around a fitted line. A point is left out where one of these values is missing. The fill is see-through, so what's behind it shows. |
+| `:labels` | `#t` prints each value on the chart: at the end of each bar (in the middle, for stacked bars), or above each point. They're written in the axis's `:y-format`, if it has one. Otherwise, numbers from 100 up are whole numbers with commas, and smaller ones have three significant digits. A format (see `:y-format`) writes them that way. |
+| `:color` | any matplotlib color: `"red"`, `"navy"`, `"#1f77b4"`, ... The default is the next color in matplotlib's cycle. The series' symbols, line, bars, and fill are all this color. |
 | `:line-width`, `:symbol-size` | this series' own, in place of the chart's |
 | `:secondary` | `#t` puts the series on the secondary axis, which has its own scale. That axis is on the right, or at the top of a horizontal chart. Use it for a series whose values are on a very different scale from the others, such as a rate beside amounts in dollars. The legend adds "(right)" or "(top)" to the series' name. |
 
-**Options for the whole chart**, after the series:
+**Chart options**, after the series:
 
 | Option | Default | What it does |
 |---|---|---|
@@ -5047,6 +5052,13 @@ none of `:symbol`, `:line`, and `:bars`, a series is a line.
 | `:horizontal` | `#f` | `#t` turns the chart on its side. The X values go down the side, the first at the top, and the Y values go across. Bars go across, which leaves room for many bars and long category names. |
 | `:width`, `:height` | 6 by 4 in a notebook, 8 by 6 saved | The chart's size, in inches. A horizontal chart of categories is made tall enough for every label: 1.5 inches plus a quarter inch for each category, unless `:height` says otherwise. `save-chart` uses this size unless it's given one. |
 
+**The axis of X values.**
+
+| Option | What it does |
+|---|---|
+| `:x-min`, `:x-max` | Where the axis starts and ends: dates or numbers, like the X values. Give either one, or both. To show just part of a long series, such as the last five years, give `:x-min`. |
+| `:x-format` | For X values that are numbers: how their ticks are written, as with `:y-format`. Without it, they're written as matplotlib writes them (so years stay 2024, not 2,024). |
+
 **The axes of Y values.** These options set up the primary axis. The
 same options starting `:secondary-` instead of `:y-` set up the secondary
 axis.
@@ -5056,11 +5068,12 @@ axis.
 | `:y-min`, `:y-max` | fit the data | Where the axis starts and ends. Give either one, or both. |
 | `:y-log` | `#f` | `#t` gives the axis a log scale, on which equal ratios are equal distances. A series on that axis must have only values above 0. |
 | `:y-ticks` | chosen to fit | A number: about that many ticks, at round numbers (multiples of 1, 2, 2.5, or 5 times a power of 10). A list: ticks at just those values. |
+| `:y-format` | plain numbers | How the ticks are written: a template like `format`'s, with `{}` where the number goes, such as `"${:,.0f}"` for `$150,000`, `"{:.0%}"` for `5%`, or `"{:,.0f}k"`. Or just a spec, as `display-table` takes, such as `",.0f"` or `".1%"`. A spec for whole numbers (`",d"`) rounds the values. |
 
-Ticks are labeled with plain numbers, with commas: `1,500` and `0.25`,
-never `1.5e3`. On a log scale, the ticks are at round numbers too. The
-first sequence that gives no more ticks than wanted (8, unless
-`:y-ticks` says) is used:
+Without `:y-format`, ticks are labeled with plain numbers, with commas:
+`1,500` and `0.25`, never `1.5e3`. On a log scale, the ticks are at
+round numbers too. The first sequence that gives no more ticks than
+wanted (8, unless `:y-ticks` says) is used:
 
 1. 1, 2, 3, 5, 10, 20, 30, 50, ...
 2. 1, 2, 5, 10, ...
@@ -5069,6 +5082,22 @@ first sequence that gives no more ticks than wanted (8, unless
 
 When the range is too narrow for three of these (such as 130 to 335),
 the ticks are ordinary round numbers: 150, 200, 250, 300.
+
+**Reference lines, shading, and notes.** These options mark the chart. A
+label is optional; it's written in small print beside the line, or at the
+top of the shading. A color is optional too: lines are dark gray and
+dashed, and shading is light gray.
+
+| Option | What it does |
+|---|---|
+| `:x-lines` | Lines across the chart at X values: an event, such as a policy change. A list of entries, each an X value or a list (x [label [color]]). |
+| `:y-lines`, `:secondary-lines` | Lines across the chart at Y values: a target, a threshold, or an average. A list of entries, each a number or a list (y [label [color]]). |
+| `:shade` | Shaded spans of X: recessions, or a forecast period. A list of entries, each a list (from to [label [color]]). For categories, the shading covers every category from `from` to `to`, inclusive. |
+| `:notes` | Text with an arrow pointing at a point. A list of entries, each a list (x y text), with y on the primary axis. The text goes toward the middle of the chart from its point, so it stays inside. |
+
+Every entry list here holds a list, even if there's only one entry:
+`:y-lines (list (list 2 "target"))`. Written `:y-lines (list 2 "target")`,
+it would be two lines, at 2 and at `"target"` (which isn't a number).
 
 **Bars and lines.** The room for the bars at one X is the smallest gap
 between neighboring X values that have bars. Quarterly bars are as wide
@@ -5090,12 +5119,12 @@ Returns `'()`.
                   (list "productivity growth" dates (table-column t "productivity") :bars #t))
             :title "Jobs and productivity" :y-label "percent")
 
-; Stacked bars by category, with their total as a dashed line
+; Stacked bars by category, labeled in dollars, with their total as a dashed line
 (define states #("New York" "Texas" "California"))
-(plot-chart (list (list "wages" states #(60 50 70) :bars #t)
-                  (list "other income" states #(15 12 20) :bars #t)
-                  (list "total" states #(75 62 90) :line "dashed" :symbol "diamond" :color "black"))
-            :bars "stacked" :legend "upper left")
+(plot-chart (list (list "wages" states #(60000 50000 70000) :bars #t :labels #t)
+                  (list "other income" states #(15000 12000 20000) :bars #t :labels #t)
+                  (list "total" states #(75000 62000 90000) :line "dashed" :symbol "diamond" :color "black"))
+            :bars "stacked" :legend "upper left" :y-format "${:,.0f}")
 
 ; Two scales: payrolls in thousands, the unemployment rate in percent
 (define jobs (bls-series creds '("nonfarm-payrolls" "unemployment-rate") :start-year 2019))
@@ -5104,13 +5133,89 @@ Returns `'()`.
                         :secondary #t))
             :y-label "thousands" :secondary-label "percent" :secondary-min 0)
 
+; An area chart with a recession shaded, a line at 4%, and a note
+(plot-chart (list (list "unemployment" (table-column jobs "date") (/ (table-column jobs "unemployment-rate") 100)
+                        :fill #t :line #t))
+            :shade (list (list (date 2020 2 1) (date 2020 4 30) "recession"))
+            :y-lines (list (list 0.04 "4%")) :y-format "{:.0%}"
+            :notes (list (list (date 2020 4 1) 0.148 "14.8% in April 2020")) :legend #f)
+
+; A fitted line with a band around it
+(define x #(1 2 3 4 5 6))
+(define fit #(2.0 3.1 4.0 5.2 5.9 7.1))
+(plot-chart (list (list "range" x (- fit 0.8) :fill (+ fit 0.8) :color "gray")
+                  (list "fit" x fit :line #t :symbol #t)))
+
 ; Fifty states, across, richest at the top; a log scale for prices since 1950
 (define states (table-sort (census-profile creds "state:*") "median-household-income" #t))
 (plot-chart (list (list "median income" (table-column states "name")
                         (table-column states "median-household-income") :bars #t))
-            :horizontal #t :y-ticks 5 :legend #f)
+            :horizontal #t :y-ticks 5 :y-format "${:,.0f}" :legend #f)
 (define cpi (bls-series creds "cpi-nsa" :start-year 1950 :annual #t))
 (plot-chart (list (list "CPI" (table-column cpi "date") (table-column cpi "cpi-nsa"))) :y-log #t)
+```
+
+#### `(plot-histogram data [options])`
+How many values fall in each range ("bin") of values, drawn as a bar for
+each bin. `data` is a vector or list of numbers, for one histogram. Or it
+is a list of groups to compare, each a list (name values [series
+options]); their bars share the bins, side by side, or stacked with
+`:bars "stacked"`. Missing values are left out.
+
+| Option | Default | What it does |
+|---|---|---|
+| `:bins` | chosen by numpy | How many bins, of equal width, from the smallest value to the largest. Or a list of the bins' edges: `(list 0 10 20 50)` is 0 to 10, 10 to 20, and 20 to 50. (Bars of unequal bins are as wide as the narrowest bin.) |
+| `:percent` | `#f` | `#t` gives each bin's share of the group's values, in percent, in place of its count |
+| `:x-min`, `:x-max` | the values' range | The range the bins cover. Values outside it aren't counted, though they still count toward `:percent`'s total. |
+
+It takes every `plot-chart` chart option too, such as `:title`,
+`:x-label`, `:x-format`, `:y-log`, `:horizontal`, and `:x-lines`. The
+bars touch (`:bar-width` is 1), the legend is shown only when there are
+groups, and the Y axis is labeled `count` or `percent`. Returns `'()`.
+
+```lisp
+(define counties (census-profile creds "county:*" :within "state:*"))
+(plot-histogram (table-column counties "median-household-income") :bins 30
+                :x-format "${:,.0f}" :x-lines (list (list 80000 "US median")))
+(plot-histogram (list (list "2023" returns-2023) (list "2024" returns-2024))
+                :bins (list -0.1 -0.05 0 0.05 0.1) :percent #t)
+```
+
+#### `(plot-panels panels [options])`
+Several charts, one above another, sharing one X axis: a price over its
+volume, or several economic series over the same years. `panels` is a
+list with one entry for each panel, from the top. Each entry is a list
+(series [options]), just as `plot-chart` takes them. A panel can have
+anything a `plot-chart` can (its own `:title`, `:y-label`, `:y-log`,
+`:secondary` series, `:y-lines`, `:notes`, ...), except what belongs to
+the shared X axis or the whole figure. A panel's option given to
+`plot-panels` is every panel's, unless a panel says otherwise:
+`:legend #f` there means no panel has a legend. These are `plot-panels`'
+own options:
+
+| Option | Default | What it does |
+|---|---|---|
+| `:title` | none | The figure's title, above every panel |
+| `:x-label` | none | The X axis's label, under the bottom panel |
+| `:x-min`, `:x-max`, `:x-format` | | As for `plot-chart`, for every panel |
+| `:x-lines`, `:shade` | none | As for `plot-chart`, drawn on every panel (a panel can add its own) |
+| `:heights` | equal | The panels' heights, relative to one another: `(list 2 1)` makes the top panel twice as tall as the bottom one |
+| `:width`, `:height` | 2.5 inches a panel, plus 1 | The figure's size, in inches |
+
+The panels' X values must all be the same kind; for categories, every
+panel has every panel's categories, in the same places. The X axis's
+labels are shown once, under the bottom panel. Returns `'()`.
+
+```lisp
+(define t (bls-series creds '("cpi-nsa" "unemployment-rate" "nonfarm-payrolls") :start-year 2005))
+(define dates (table-column t "date"))
+(plot-panels (list (list (list (list "CPI" dates (table-column t "cpi-nsa"))) :y-log #t :title "Prices")
+                   (list (list (list "unemployment" dates (table-column t "unemployment-rate") :fill #t))
+                         :y-label "percent")
+                   (list (list (list "payrolls" dates (table-column t "nonfarm-payrolls"))) :y-label "thousands"))
+             :heights (list 2 1 1) :legend #f
+             :shade (list (list (date 2007 12 1) (date 2009 6 30) "recession")
+                          (list (date 2020 2 1) (date 2020 4 30))))
 ```
 
 #### `(save-chart filename [width height dpi])`
@@ -5845,6 +5950,179 @@ unemployment rate (in percent), each month, as a table.
 - finds and gets a Census variable;
 - works out inflation and real wage growth from the BLS;
 - shows Manhattan's unemployment.
+
+### BEA data
+
+(In `lisp_bea.py`.) The Bureau of Economic Analysis's API
+(https://apps.bea.gov/api/) has these accounts:
+
+- **The national accounts (NIPA tables):** GDP and its parts, personal
+  income and spending, saving, the PCE price index, and corporate profits.
+  Each table comes quarterly, monthly, or yearly.
+- **The regional accounts:** GDP, personal income, population, and price
+  levels for every state, county, and metro area.
+- International trade and investment, GDP by industry, and more.
+
+Each function takes the credentials file's path first. Its `"bea_api_key"`
+entry goes with each request. The key never appears in an error message:
+the BEA's own answers repeat it, so they're cleaned of it first. Data is
+kept for 12 hours, and the lists of datasets, parameters, and their values
+for 30 days.
+
+**Units.** Amounts in the NIPA tables are given in billions of dollars,
+as the BEA's tables show them. The BEA sends them in millions, and these
+functions divide by 1,000. Most are at seasonally adjusted annual rates.
+Other values come as the BEA sends them:
+
+- price indexes are index numbers (2017 = 100);
+- rates and percent changes are percents (`2.5` is 2.5%);
+- population is in thousands.
+
+A regional table's values are in its `unit` column, such as `"Dollars"`
+or `"Thousands of dollars"`. A value the BEA marks as not available, such
+as `(NA)` or `(D)`, is NaN.
+
+**Dates.** A value is dated the first day of its period: a quarter's first
+day (2026Q2 is April 1), a month's first day, or January 1 for a year.
+
+#### `(bea-series creds names [:start-year y :end-year y :frequency f])`
+Headline series by short name, as a table. `names` is one short name or a
+list of them. The table has a `date` column and a column for each series,
+headed by its name, oldest first. Monthly and quarterly series line up by
+date, with NaN where a series has no value. It covers the last 10 years,
+unless `:start-year` or `:end-year` says otherwise.
+
+Each series comes at its usual frequency. `:frequency` asks for another:
+`"A"` (annual), `"Q"`, or `"M"`. GDP isn't published monthly. A series
+published monthly comes from one table, and quarterly or yearly from
+another; `bea-series` picks the right one.
+
+| Name | Usual frequency | What it is |
+|---|---|---|
+| `gdp`, `real-gdp` | quarterly | GDP in billions of dollars, and in billions of chained (2017) dollars |
+| `real-gdp-growth` | quarterly | Real GDP, percent change from the quarter before, at an annual rate |
+| `gdp-price-index` | quarterly | 2017 = 100 |
+| `pce` | monthly | Personal consumption expenditures, billions of dollars |
+| `pce-price-index`, `core-pce-price-index` | monthly | The PCE price index, and the index excluding food and energy (the Fed's measure of inflation), 2017 = 100 |
+| `personal-income`, `disposable-income`, `real-disposable-income` | monthly | Billions of dollars (real: of chained 2017 dollars) |
+| `personal-saving-rate` | monthly | Personal saving, percent of disposable personal income |
+| `corporate-profits` | quarterly | With inventory valuation and capital consumption adjustments, billions of dollars |
+
+```lisp
+(bea-series creds '("real-gdp-growth" "core-pce-price-index" "personal-saving-rate") :start-year 2020)
+(bea-series creds '("gdp" "personal-saving-rate") :frequency "A")
+```
+
+#### `(bea-names)`
+The short names, as a table of `name`, `frequency` (its usual one),
+`published` (the frequencies it comes at), `table` and `line` (where it
+is, at its usual frequency), and `description`.
+
+#### `(bea-nipa creds table [:frequency f :start-year y :end-year y :lines l])`
+Any NIPA table, by its name, as a table. For example, `"T10101"` is the
+percent change in real GDP, and `"T20600"` is personal income and its
+disposition, monthly. The table has a `date` column and a column for each
+of its lines. Each column is headed by its line's description. When two
+lines have the same description, such as exports' and imports' `Goods`,
+the line number is added: `Goods (line 17)`.
+
+- `:lines` picks lines: a line number, or a list of them.
+- `:frequency` is `"Q"`, `"M"`, or `"A"`. Without it, the table comes
+  quarterly if it has quarterly data, or else monthly, or else annually.
+- It covers the last 10 years, unless `:start-year` or `:end-year` says
+  otherwise.
+
+`bea-parameter-values` finds a table:
+`(bea-parameter-values creds "NIPA" "TableName" "personal income")`.
+
+```lisp
+(bea-nipa creds "T10102" :lines '(1 2 7 15 22))     ; contributions to GDP growth, by its parts
+(bea-nipa creds "T20600" :lines 35 :start-year 1990)  ; the saving rate, monthly
+```
+
+#### `(bea-nipa-lines creds table [:frequency f])`
+A NIPA table's lines, as a table:
+
+- `line`, `description`, and `series-code` (the BEA's code for the line);
+- `unit`, as the BEA gives it, such as `"Level"` or `"Percent change, annual rate"`;
+- `scale`: `"billions"` for amounts in billions (sent in millions),
+  `"thousands"`, or nothing.
+
+It lists the lines with data in the last two years.
+
+#### `(bea-regional creds table line geography [:start-year y :end-year y])`
+One statistic of a regional table, for each place. For example, table
+`"SAINC1"`, line 3 is per capita personal income by state. The result is
+a table with a row for each place:
+
+- `fips`: the BEA's 5-character code for the place. A state's code is its
+  FIPS code followed by `000` (New York is `36000`). A county's is its
+  5-digit FIPS code.
+- `name`.
+- A column for each year, or each quarter (`"2025Q1"`) for a quarterly table, oldest first.
+- `unit`.
+
+It covers the last 5 years with data, unless `:start-year` or `:end-year`
+says otherwise.
+
+`geography` is one of these, or a list of codes:
+
+- `"STATE"` for every state. This also gives the US (`00000`) and the
+  BEA's eight regions (`91000` to `98000`).
+- `"COUNTY"` for every county.
+- `"MSA"` for every metro area.
+- A state's abbreviation, such as `"NY"`, for its counties.
+- A code: a state's 2-digit FIPS code (`"36"`, as `census-get` gives it),
+  or a 5-digit code for a county or a metro area.
+
+Some regional tables:
+
+| Table | What it is |
+|---|---|
+| `SAINC1`, `CAINC1` | Personal income, population, and per capita personal income, by state and by county |
+| `SQINC1` | Personal income by state, quarterly |
+| `SAGDP1`, `SQGDP1`, `CAGDP2` | GDP by state (annual and quarterly) and by county |
+| `SARPP` | Regional price parities by state: price levels relative to the US |
+
+`(bea-parameter-values creds "Regional" "TableName")` lists them all.
+
+```lisp
+(bea-regional creds "SAINC1" 3 "STATE")                        ; per capita income, every state
+(bea-regional creds "CAINC1" 3 "NY" :start-year 2015)          ; every county in New York
+(bea-regional creds "SQGDP1" 1 '("36" "06" "48"))               ; real GDP, quarterly, three states
+```
+
+#### `(bea-regional-lines creds table)`
+The statistics (lines) a regional table has, as a table of `line` and
+`description`.
+
+#### `(bea-get creds dataset [parameters])`
+Any of the BEA's datasets, as the API gives it, as a table with a column
+for each field. `parameters` is a list of `(name . value)` pairs, as the
+API takes them. `DataValue` is a number, but not scaled: use `UNIT_MULT`,
+the power of 10 it's in.
+
+```lisp
+(bea-get creds "GDPbyIndustry" '(("TableID" . "1") ("Frequency" . "A") ("Year" . "2024") ("Industry" . "ALL")))
+```
+
+#### `(bea-datasets creds)`, `(bea-parameters creds dataset)`, `(bea-parameter-values creds dataset parameter [search])`
+What there is to ask for:
+
+- `bea-datasets`: the datasets, as a table of `name` and `description`.
+- `bea-parameters`: the parameters a dataset takes, as a table of `name`,
+  `description`, `required`, `multiple` (whether it takes a list of
+  values, separated by commas), and `all` (the value that means all of
+  them).
+- `bea-parameter-values`: the values a parameter can have, as a table of
+  `value` and `description`. With `search`, only those that contain it.
+
+`examples/bea_example.lsp` shows these things:
+
+- the latest headline numbers;
+- a stacked bar chart of what made GDP grow;
+- core PCE inflation and the saving rate, in panels;
+- the 15 states with the highest per capita income.
 
 ### SQLite
 
@@ -7708,6 +7986,7 @@ The Python files:
 | `lisp_clock.py` | The clock: `current-time`, `today`, `time-add`, `sleep`, `sleep-until`, ... |
 | `lisp_finance.py` | Day counts (`day-count`, `year-fraction`) and cash-flow math: `npv`, `irr`, `xnpv`, `xirr`, `payment`, `present-value`, `yield`, `duration`, `convexity`, ... |
 | `lisp_charts.py` | `plot-xy`, `plot-xy-regression`, `plot-xy-full`, `save-chart` |
+| `lisp_plot_chart.py` | `plot-chart`, `plot-histogram`, `plot-panels`: charts of several series, with bars, areas, a secondary axis, reference lines, and panels |
 | `lisp_csv.py` | `load-csv`, `write-columns-csv` |
 | `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, `sqlite-write-table`, ... |
 | `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
@@ -7716,6 +7995,7 @@ The Python files:
 | `lisp_fdic.py` | `fdic-balance-sheet`, `fdic-ratios`, `fdic-financials`, `fdic-get`, ...: banks' Call Report data from the FDIC |
 | `lisp_census.py` | `census-get`, `census-profile`, `census-variables`, ...: demographic and economic data from the Census Bureau |
 | `lisp_bls.py` | `bls-series`, `bls-local-area`, `bls-names`, ...: prices, jobs, and pay from the Bureau of Labor Statistics |
+| `lisp_bea.py` | `bea-series`, `bea-nipa`, `bea-regional`, `bea-get`, ...: the national and regional accounts from the Bureau of Economic Analysis |
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |

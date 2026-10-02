@@ -54,6 +54,7 @@ import lisp_builtins  # noqa: E402  (these need the sys.path line above)
 import lisp_core     # noqa: E402
 import lisp_charts  # noqa: E402
 import lisp_clock  # noqa: E402
+import lisp_plot_chart  # noqa: E402
 import lisp_fred  # noqa: E402
 import lisp_http  # noqa: E402
 import lisp_jupyter_debug  # noqa: E402
@@ -2399,7 +2400,7 @@ class TestPlotChart(LispTestCase):
         right = self.fig.axes[1]
         self.assertEqual(right.get_yscale(), "log")
         low, high = right.get_ylim()
-        self.assertEqual(list(right.get_yticks()), lisp_charts.log_ticks(low, high, 8))
+        self.assertEqual(list(right.get_yticks()), lisp_plot_chart.log_ticks(low, high, 8))
         ax = self.drawn('(plot-chart (list (list "a" #(1 2) #(5 7) :bars #t)) :y-log #t :horizontal #t :y-max 100)')
         self.assertEqual((ax.get_xscale(), ax.get_xlim()[1]), ("log", 100))    # across, when horizontal
         self.assertEqual(ax.get_lines(), [])                                    # no line at 0 on a log scale
@@ -2417,14 +2418,112 @@ class TestPlotChart(LispTestCase):
         self.run_lisp('(plot-chart (list (list "a" #(1 2) #(1 -2))) :secondary-log #t)')   # nothing's on that axis
 
     def test_round_numbers_for_ticks(self):
-        self.assertEqual([lisp_charts.tick_text(v) for v in (1500, 0.25, -5.5e-17, 0.30000000000000004, -1250.5)],
+        self.assertEqual([lisp_plot_chart.tick_text(v) for v in (1500, 0.25, -5.5e-17, 0.30000000000000004, -1250.5)],
                          ["1,500", "0.25", "0", "0.3", "-1,250.5"])
         if not lisp_charts.MATPLOTLIB_AVAILABLE:
             self.skipTest("matplotlib isn't installed")
-        self.assertEqual(lisp_charts.log_ticks(23, 340, 8), [30, 50, 100, 200, 300])        # 1, 2, 3, 5
-        self.assertEqual(lisp_charts.log_ticks(0.5, 2000, 8), [1, 3, 10, 30, 100, 300, 1000])
-        self.assertEqual(lisp_charts.log_ticks(1, 1e12, 5), [1, 1e3, 1e6, 1e9, 1e12])     # every third power
-        self.assertEqual(lisp_charts.log_ticks(130, 335, 8), [150, 200, 250, 300])         # within a decade
+        self.assertEqual(lisp_plot_chart.log_ticks(23, 340, 8), [30, 50, 100, 200, 300])        # 1, 2, 3, 5
+        self.assertEqual(lisp_plot_chart.log_ticks(0.5, 2000, 8), [1, 3, 10, 30, 100, 300, 1000])
+        self.assertEqual(lisp_plot_chart.log_ticks(1, 1e12, 5), [1, 1e3, 1e6, 1e9, 1e12])     # every third power
+        self.assertEqual(lisp_plot_chart.log_ticks(130, 335, 8), [150, 200, 250, 300])         # within a decade
+
+    def test_reference_lines_shading_and_notes(self):
+        ax = self.drawn('(plot-chart (list (list "a" #("p" "q" "r") #(1 5 3) :bars #t))'
+                        '            :y-lines (list 2 (list 4 "target" "red")) :x-lines (list "q")'
+                        '            :shade (list (list "q" "r" "late")) :notes (list (list "q" 5 "the most")))')
+        lines = [(list(line.get_xdata()), list(line.get_ydata())) for line in ax.get_lines()]
+        self.assertIn(([0, 1], [2, 2]), lines)                     # across, at Y = 2 (x in axes fractions)
+        self.assertIn(([0, 1], [4, 4]), lines)
+        self.assertIn(([1, 1], [0, 1]), lines)                     # up and down, at "q"
+        texts = [t.get_text() for t in ax.texts]
+        self.assertEqual(texts, ["late", "target", "the most"])
+        span = [p for p in ax.patches if p.get_x() == 0.5]           # "q" and "r", whole: 0.5 to 2.5
+        self.assertEqual(span[0].get_width(), 2)
+
+    def test_formats_and_x_limits(self):
+        ax = self.drawn('(plot-chart (list (list "a" #(0 1000 2000) #(0.05 0.1 0.15)))'
+                        '            :y-format "{:.0%}" :y-ticks (list 0.05 0.1) :x-format "${:,.0f}" :x-max 3000)')
+        self.assertEqual([t.get_text() for t in ax.get_yticklabels()], ["5%", "10%"])
+        self.assertEqual(ax.xaxis.get_major_formatter()(1500, 0), "$1,500")
+        self.assertEqual(ax.get_xlim()[1], 3000)
+        ax = self.drawn('(plot-chart (list (list "a" (vector (date 2024 1 1) (date 2024 6 1)) #(1 2)))'
+                        '            :x-min (date 2023 1 1) :y-format ",d")')
+        self.assertEqual(ax.get_xlim()[0], lisp_plot_chart.x_positions(self.specs[-1], [datetime.date(2023, 1, 1)])[0])
+        self.assertEqual(ax.yaxis.get_major_formatter()(1234.6, 0), "1,235")       # a whole number, rounded
+        self.assertLispError('(plot-chart (list (list "a" #(1) #(1))) :y-format "{:q}")', "isn't a format for numbers")
+        self.assertLispError('(plot-chart (list (list "a" #("p") #(1))) :x-min 1)', ":x-min is for X values that are dates")
+        self.assertLispError('(plot-chart (list (list "a" #(1 2) #(1 2))) :x-lines (list (date 2024 1 1)))',
+                             ":x-lines must be a number, like the chart's X values")
+        self.assertLispError('(plot-chart (list (list "a" #("p") #(1))) :x-lines (list "z"))', "the chart has no category")
+        self.assertLispError('(plot-chart (list (list "a" #(1) #(1))) :shade (list 1 2))', "each :shade entry is a list")
+
+    def test_areas_and_bands(self):
+        ax = self.drawn('(plot-chart (list (list "area" #(1 2 3) #(1 3 2) :fill #t)'
+                        '                  (list "band" #(1 2 3) #(4 5 6) :fill (list 5 nan 8) :line #t)))')
+        area, band = ax.collections
+        self.assertEqual(sorted({tuple(v) for v in area.get_paths()[0].vertices}),
+                         [(1, 0), (1, 1), (2, 0), (2, 3), (3, 0), (3, 2)])           # down to 0
+        self.assertEqual(sorted({tuple(v) for v in band.get_paths()[0].vertices}),
+                         [(1, 4), (1, 5), (3, 6), (3, 8)])                           # X = 2 is left out
+        self.assertEqual(len(self.specs[-1]["series"][1]["x"]), 2)
+        self.assertEqual(self.legend_texts(), ["area", "band"])
+        self.assertLispError('(plot-chart (list (list "a" #(1 2) #(1 2) :fill #(1))))', "a's :fill has 1 values, for 2")
+
+    def test_values_printed_on_bars_and_points(self):
+        ax = self.drawn('(plot-chart (list (list "a" #("p" "q") #(1500 25.5) :bars #t :labels #t)'
+                        '                  (list "b" #("p" "q") #(0.25 0.5) :labels "{:.0%}" :secondary #t)))')
+        self.assertEqual([t.get_text() for t in ax.texts], ["1,500", "25.5"])
+        self.assertEqual([t.get_text() for t in self.fig.axes[1].texts], ["25%", "50%"])
+
+    def test_histograms(self):
+        self.run_lisp('(plot-histogram #(1 2 2 3 3 3 nan 9) :bins (list 0 2 4 10))')
+        spec = self.specs[-1]
+        self.assertEqual(spec["series"][0]["x"], [1.0, 3.0, 7.0])                    # the bins' middles
+        self.assertEqual(spec["series"][0]["y"], [1.0, 5.0, 1.0])                    # 2 counts in [2, 4)
+        self.assertEqual((spec["bar_width"], spec["legend"], spec["y_axis"]["lines"]), (1.0, None, []))
+        self.run_lisp('(plot-histogram (list (list "a" #(1 1 2 2)) (list "b" #(2 2 2 2) :color "red"))'
+                      '                :bins 2 :percent #t :title "T")')
+        spec = self.specs[-1]
+        self.assertEqual([s["y"] for s in spec["series"]], [[50.0, 50.0], [0.0, 100.0]])
+        self.assertEqual((spec["series"][1]["color"], spec["title"], spec["legend"]), ("red", "T", "best"))
+        self.assertEqual(spec["y_label"], "percent")
+        self.assertLispError("(plot-histogram #())", "there are no values to count")
+        self.assertLispError('(plot-histogram #(1 2) :bins 0)', ":bins is how many bins there are")
+
+    def test_panels_share_the_x_axis(self):
+        ax = self.drawn('(plot-panels (list (list (list (list "a" #(1 2 3) #(1 2 3))) :title "top" :y-log #t)'
+                        '                   (list (list (list "b" #(2 3 4) #(5 6 7) :bars #t)'
+                        '                               (list "c" #(2 3 4) #(1 1 1) :secondary #t))))'
+                        '             :title "Both" :heights (list 3 1) :x-label "x" :shade (list (list 2 3)))')
+        spec = self.specs[-1]
+        self.assertEqual((spec["height"], spec["heights"]), (6.0, [3.0, 1.0]))
+        top, bottom, right = self.fig.axes
+        self.assertIs(ax, top)
+        self.assertEqual((top.get_title(), top.get_yscale(), bottom.get_xlabel(), top.get_xlabel()),
+                         ("top", "log", "x", ""))
+        self.assertEqual(top.get_xlim(), bottom.get_xlim())                         # one X axis
+        self.assertEqual(self.fig.get_suptitle(), "Both")
+        self.assertEqual([len([p for p in a.patches if p.get_x() == 2]) for a in (top, bottom)], [1, 1])  # shaded
+        self.assertFalse(any(t.get_visible() and t.get_text() for t in top.get_xticklabels()))
+        self.run_lisp('(plot-chart (list (list "a" #(1 2) #(3 4))))')                # the GUI's next chart
+        lisp_charts.draw_chart_on_axes(self.fig, ax, self.specs[-1])
+        self.assertEqual((self.fig.axes, self.fig.get_suptitle()), ([ax], ""))
+        self.assertEqual(ax.get_subplotspec().get_geometry(), (1, 1, 0, 0))
+
+    def test_panel_mistakes_and_summary(self):
+        self.assertLispError('(plot-panels (list (list (list (list "a" #(1) #(1))) :x-min 0)))', ":x-min isn't an option")
+        self.assertLispError('(plot-panels (list (list (list (list "a" #(1) #(1))))) :heights (list 1 2))',
+                             ":heights is a list of the panels' heights")
+        self.assertLispError('(plot-panels (list (list (list (list "a" #(1) #(1))))'
+                             '                   (list (list (list "b" #("p") #(1))))))', "share one X axis")
+        self.run_lisp('(plot-panels (list (list (list (list "a" #(1) #(1))))'
+                      '                   (list (list (list "b" #(1) #(1))) :legend "upper left")) :legend #f)')
+        self.assertEqual([panel["legend"] for panel in self.specs[-1]["panels"]], [None, "upper left"])
+        self.env = lisp_builtins.make_global_env(output=self.out.append)
+        self.run_lisp('(plot-panels (list (list (list (list "a" #(1) #(1))) :title "A")'
+                      '                   (list (list (list "b" #(1) #(2) :fill #t)))) :title "Two")')
+        self.assertEqual(self.printed(), "[chart] Two\n  panel 1: A\n    a: 1 points (line)\n"
+                                         "  panel 2:\n    b: 1 points (filled)\n")
 
     def test_chart_size(self):
         self.run_lisp('(plot-chart (list (list "a" #(1 2) #(3 4))) :width 9 :height 2.5)')
@@ -3217,6 +3316,139 @@ class TestBls(LispTestCase):
             with self.assertRaises(lisp_core.LispError) as caught:
                 self.real_bls_request(self.credentials, ["XYZ1"], 2020, 2021, "bls-series")
         self.assertIn("the BLS has no such series: XYZ1", str(caught.exception))
+
+
+class TestBea(LispTestCase):
+    """lisp_bea, with the BEA's API played by a fake -- no network. Its NIPA
+    tables: T10101 (quarterly and annual), whose lines 3 and 17 are both
+    "Goods"; T10105 (in millions); T20600 (monthly only) and T20100
+    (quarterly and annual), with the saving rate on line 35. A value is
+    year + its period's number / 100 (2025Q2 is 2025.02)."""
+
+    TABLES = {   # table -> (frequencies, [(line, description, UNIT_MULT)])
+        "T10101": ("QA", [(1, "Gross domestic product", "0"), (3, "Goods", "0"), (17, "Goods", "0")]),
+        "T10105": ("QA", [(1, "Gross domestic product", "6")]),
+        "T20600": ("M", [(1, "Personal income", "6"), (35, "Personal saving rate", "0")]),
+        "T20100": ("QA", [(1, "Personal income", "6"), (35, "Personal saving rate", "0")]),
+    }
+
+    def setUp(self):
+        super().setUp()
+        import lisp_bea
+        self.lisp_bea = lisp_bea
+        self.credentials = os.path.join(tempfile.mkdtemp(), "credentials.json")
+        with open(self.credentials, "w") as f:
+            json.dump({"bea_api_key": "bea-key-321"}, f)
+        self.addCleanup(shutil.rmtree, os.path.dirname(self.credentials), True)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(self.credentials)
+        self.requests = []
+        self.real_bea_request = lisp_bea.bea_request
+        patcher = mock.patch.object(lisp_bea, "bea_request", self.fake_request)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_request(self, credentials_path, params, cache_hours, who):
+        self.requests.append(dict(params))
+        method = params["method"]
+        if method == "GetData" and params["DataSetName"] == "NIPA":
+            frequencies, lines = self.TABLES.get(params["TableName"], ("", []))
+            if params["Frequency"] not in frequencies:
+                raise lisp_core.LispError("%s: the BEA says: Data for this table and frequency are not "
+                                          "currently available." % who)
+            periods = {"A": [""], "Q": ["Q1", "Q2", "Q3", "Q4"], "M": ["M%02d" % m for m in range(1, 13)]}
+            data = []
+            for year in params["Year"].split(","):
+                for number, period in enumerate(periods[params["Frequency"]], 1):
+                    for line, description, multiplier in lines:
+                        value = "{:,.2f}".format(int(year) + number / 100) if (year, period) != ("2024", "Q3") else "(NA)"
+                        data.append({"LineNumber": str(line), "LineDescription": description, "SeriesCode": "S%d" % line,
+                                     "TimePeriod": year + period, "CL_UNIT": "Level", "UNIT_MULT": multiplier,
+                                     "DataValue": value})
+            return {"Data": data}
+        if method == "GetData" and params["DataSetName"] == "Regional":
+            places = [("36000", "New York"), ("02000", "Alaska *")]
+            years = ["2023", "2024"] if params["Year"] == "LAST5" else params["Year"].split(",")
+            return {"Data": [{"GeoFips": fips, "GeoName": name, "TimePeriod": year, "CL_UNIT": "Dollars",
+                              "DataValue": "{:,}".format(int(year) * 10 + i)}
+                             for i, (fips, name) in enumerate(places) for year in years]}
+        if method == "GetParameterValuesFiltered":
+            return {"ParamValue": [{"Key": "1", "Desc": "[SAINC1] Personal income"},
+                                   {"Key": "3", "Desc": "[SAINC1] Per capita personal income"}]}
+        if method == "GetParameterValues":
+            return {"ParamValue": [{"TableName": "T10101", "Description": "Table 1.1.1. Real GDP"},
+                                   {"TableName": "T20600", "Description": "Table 2.6. Personal Income, Monthly"}]}
+        if method == "GetDataSetList":
+            return {"Dataset": [{"DatasetName": "NIPA", "DatasetDescription": "Standard NIPA tables"}]}
+        if method == "GetParameterList":
+            return {"Parameter": [{"ParameterName": "Year", "ParameterDescription": "Years",
+                                   "ParameterIsRequiredFlag": "1", "MultipleAcceptedFlag": "1", "AllValue": "X"}]}
+        raise AssertionError("no fake for %r" % params)
+
+    def column(self, src, name):
+        return self.run_lisp('(table-column %s "%s")' % (src, name)).items.tolist()
+
+    def test_a_nipa_table(self):
+        self.run_lisp('(define t (bea-nipa creds "T10101" :start-year 2024 :end-year 2025))')
+        self.assertShows("(table-column-names t)", '("date" "Gross domestic product" "Goods (line 3)" "Goods (line 17)")')
+        self.assertShows('(vector-ref (table-column t "date") 1)', "2024-04-01")         # quarterly first
+        gdp = self.column("t", "Gross domestic product")
+        self.assertAlmostEqual(gdp[0], 2024.01, places=2)
+        self.assertTrue(math.isnan(gdp[2]))                                            # "(NA)"
+        self.assertEqual(self.requests[-1]["Year"], "2024,2025")
+        self.run_lisp('(define t (bea-nipa creds "T10105" :lines 1 :frequency "A" :start-year 2025 :end-year 2025))')
+        self.assertAlmostEqual(self.column("t", "Gross domestic product")[0], 2.02501, places=4)   # millions -> billions
+        self.run_lisp('(define t (bea-nipa creds "T20600" :lines (list 35) :start-year 2025 :end-year 2025))')
+        self.assertEqual([r["Frequency"] for r in self.requests[-2:]], ["Q", "M"])     # no quarters: months
+        self.assertShows("(table-row-count t)", "12")                                   # monthly, the only kind
+        self.assertLispError('(bea-nipa creds "T10101" :lines (list 2))', "table T10101 has no line 2")
+
+    def test_short_names(self):
+        self.run_lisp('(define t (bea-series creds (list "real-gdp-growth" "personal-saving-rate")'
+                      ' :start-year 2025 :end-year 2025))')
+        self.assertShows("(table-column-names t)", '("date" "real-gdp-growth" "personal-saving-rate")')
+        self.assertShows("(table-row-count t)", "12")                      # quarters fall on months
+        self.assertTrue(math.isnan(self.column("t", "real-gdp-growth")[1]))   # nothing for February
+        self.run_lisp('(define t (bea-series creds "personal-saving-rate" :frequency "A" :start-year 2025 :end-year 2025))')
+        self.assertEqual(self.requests[-1]["TableName"], "T20100")         # its annual table
+        self.assertLispError('(bea-series creds "gdp" :frequency "M")', "gdp isn't published monthly")
+        self.assertLispError('(bea-series creds "gnp")', "there's no series named gnp")
+        self.assertShows('(vector-ref (table-column (bea-names) "name") 0)', '"gdp"')
+
+    def test_regional(self):
+        self.run_lisp('(define t (bea-regional creds "SAINC1" 3 (list "36" "02")))')
+        self.assertShows("(table-column-names t)", '("fips" "name" "2023" "2024" "unit")')
+        self.assertShows('(table-column t "name")', '#("New York" "Alaska")')     # the footnote's * is gone
+        self.assertEqual(self.column("t", "2024"), [20240, 20241])
+        self.assertEqual((self.requests[-1]["GeoFips"], self.requests[-1]["Year"]), ("36000,02000", "LAST5"))
+        self.run_lisp('(bea-regional creds "CAINC1" 3 "ny" :start-year 2020 :end-year 2021)')
+        self.assertEqual((self.requests[-1]["GeoFips"], self.requests[-1]["Year"]), ("NY", "2020,2021"))
+        self.assertShows('(table-column (bea-regional-lines creds "SAINC1") "line")', "#(1 3)")
+
+    def test_finding_things(self):
+        self.assertShows('(table-column (bea-datasets creds) "name")', '#("NIPA")')
+        self.assertShows('(table-column (bea-parameters creds "NIPA") "required")', "#(#t)")
+        self.assertShows('(table-column (bea-parameter-values creds "NIPA" "TableName" "monthly") "value")',
+                         '#("T20600")')
+        self.run_lisp('(define t (bea-get creds "NIPA" (list (cons "TableName" "T10105") (cons "Frequency" "A")'
+                      '                                 (cons "Year" "2025"))))')
+        self.assertAlmostEqual(self.column("t", "DataValue")[0], 2025.01, places=2)   # as the BEA sends it
+
+    def test_the_api_key_is_sent_but_never_shown(self):
+        seen = []
+
+        def fake_download(url, cache_hours, headers, who, shown_url=None):
+            seen.append((url, shown_url))
+            return json.dumps({"BEAAPI": {"Request": {"RequestParam": [{"ParameterName": "USERID",
+                                                                        "ParameterValue": "bea-key-321"}]},
+                                          "Error": {"APIErrorDescription": "Error retrieving NIPA data.",
+                                                    "ErrorDetail": {"Description": "Invalid TableName for bea-key-321"}}}}).encode()
+        with mock.patch.object(lisp_http, "download", fake_download):
+            with self.assertRaises(lisp_core.LispError) as caught:
+                self.real_bea_request(self.credentials, {"method": "GetData"}, 1, "bea-nipa")
+        self.assertIn("UserID=bea-key-321", seen[0][0])
+        self.assertNotIn("bea-key-321", seen[0][1])
+        self.assertIn("Invalid TableName", str(caught.exception))
+        self.assertNotIn("bea-key-321", str(caught.exception))
 
 
 class TestTastytrade(LispTestCase):
@@ -7613,7 +7845,7 @@ class TestExampleScripts(unittest.TestCase):
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
-    "fred-series", "tastytrade", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
+    "fred-series", "tastytrade", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(bea-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv",
     "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
 )

@@ -32,6 +32,7 @@ HOW THE CODE IS ORGANIZED
     lisp_finance.py       day counts, npv, irr, yield, duration, convexity, payment
     lisp_clock.py         current-time, time-add, sleep, sleep-until
     lisp_charts.py        plot-xy, plot-xy-regression, plot-xy-full, save-chart
+    lisp_plot_chart.py    plot-chart, plot-histogram, plot-panels
     lisp_csv.py           load-csv, write-columns-csv
     lisp_sqlite.py        sqlite-open, sqlite-query, sqlite-write-table, ...
     lisp_http.py          http-get-json, http-get-csv, ... (downloads from any web API)
@@ -40,6 +41,7 @@ HOW THE CODE IS ORGANIZED
     lisp_fdic.py          fdic-balance-sheet, fdic-financials, fdic-get, ... (bank data from the FDIC)
     lisp_census.py        census-get, census-profile, ... (demographic and economic data from the Census)
     lisp_bls.py           bls-series, bls-local-area, ... (prices, jobs, and pay from the BLS)
+    lisp_bea.py           bea-series, bea-nipa, bea-regional, ... (national and regional accounts from the BEA)
     lisp_tastytrade.py    tastytrade-*                     (downloads from tastytrade)
     lisp_sofr.py          sofr-* interest-rate modeling    (sofr-calibration-data
                                                             downloads from tastytrade)

@@ -34,6 +34,7 @@ from lisp_core import (
     reconstruct_macro_source, reconstruct_procedure_source, run_file, seval,
     set_verbose_level, throw_to, to_display_string, to_string,
 )
+import lisp_bea
 import lisp_bls
 import lisp_census
 import lisp_charts
@@ -1828,6 +1829,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_fdic.BUILTINS)
     env.update(lisp_census.BUILTINS)
     env.update(lisp_bls.BUILTINS)
+    env.update(lisp_bea.BUILTINS)
     env.update(lisp_http.BUILTINS)
     env.update(lisp_tastytrade.BUILTINS)
     env.update(lisp_sofr.BUILTINS)
