@@ -629,11 +629,14 @@ def lisp_assoc(key, alist):
 
 def lisp_member(x, lst):
     """(member x lst) -- the part of lst starting at the first element equal
-    to x, or #f if there's none."""
-    items = list_items(lst, "member")
-    for i, item in enumerate(items):
-        if lisp_equal(item, x):
-            return list_to_pairs(items[i:])
+    to x (lst's own pairs, not a copy), or #f if there's none."""
+    p = lst
+    while isinstance(p, Pair):
+        if lisp_equal(p.car, x):
+            return p
+        p = p.cdr
+    if p is not NIL:
+        raise LispError("member: expected a list, got %s" % _brief(lst))
     return False
 
 

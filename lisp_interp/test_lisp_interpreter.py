@@ -1388,6 +1388,8 @@ class TestLists(LispTestCase):
         self.assertShows("(assoc 'z al)", "#f")
         self.assertShows("(member 3 (list 1 2 3 4 5))", "(3 4 5)")
         self.assertShows("(member 99 (list 1 2 3))", "#f")
+        # the sublist is l's own, not a copy
+        self.assertShows("(let ((l (list 1 2 3))) (eq? (member 2 l) (cdr l)))", "#t")
 
     def test_assoc_uses_equal_so_strings_work(self):
         self.assertShows('(assoc "k" (list (cons "k" 1)))', '("k" . 1)')
@@ -6411,6 +6413,77 @@ print(w.output_view.toPlainText())
         self.assertIn("=> 3", next_run)
 
 
+class TestKenKen(unittest.TestCase):
+    """examples/kenken_example.lsp's solver. Its definitions are loaded once --
+    the file up to where it solves its own puzzles, which takes a while for
+    the 9 x 9 one (that runs with the slow examples)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.out = []
+        cls.env = lisp_builtins.make_global_env(output=cls.out.append)
+        with open(os.path.join(EXAMPLES, "kenken_example.lsp")) as f:
+            source = f.read()
+        cls.run_lisp(source[:source.index('(solve-and-show "A 4 x 4 puzzle"')])
+
+    @classmethod
+    def run_lisp(cls, src):
+        result = lisp_core.NIL
+        for expr in lisp_core.parse(src):
+            result = lisp_core.seval(expr, cls.env)
+        return result
+
+    def show(self, src):
+        return lisp_core.to_string(self.run_lisp(src))
+
+    def test_the_4_by_4_and_6_by_6_puzzles(self):
+        self.assertEqual(self.show("(kenken-solutions 4 puzzle-4)"), "(((4 3 1 2) (3 2 4 1) (2 1 3 4) (1 4 2 3)))")
+        self.assertEqual(self.show("(solve-kenken 6 puzzle-6)"),
+                         "((3 6 5 1 4 2) (4 1 6 5 2 3) (6 4 3 2 1 5) (5 3 2 4 6 1) (1 2 4 3 5 6) (2 5 1 6 3 4))")
+
+    def test_a_puzzle_with_two_solutions_and_one_with_none(self):
+        self.assertEqual(self.show("(kenken-solutions 2 '(((11 12 21 22) (+ 6))))"), "(((1 2) (2 1)) ((2 1) (1 2)))")
+        self.assertEqual(self.show("(kenken-solutions 2 '(((11 12 21 22) (+ 6))) :limit 1)"), "(((1 2) (2 1)))")
+        self.assertEqual(self.show("(solve-kenken 2 '(((11 12) (+ 3)) ((21 22) (* 3))))"), "#f")
+
+    def test_the_operations(self):
+        for src, expected in [("(comes-out? '+ 17 '(9 8))", "#t"), ("(comes-out? '* 12 '(3 4))", "#t"),
+                              ("(comes-out? '- 2 '(3 5))", "#t"), ("(comes-out? '/ 3 '(6 2))", "#t"),
+                              ("(comes-out? '/ 3 '(2 6))", "#t"), ("(comes-out? '/ 3 '(4 2))", "#f"),
+                              ("(comes-out? '- 1 '(6 2 3))", "#t"), ("(comes-out? '/ 2 '(12 3 2))", "#t"),
+                              ("(comes-out? '= 4 '(4))", "#t")]:
+            with self.subTest(src=src):
+                self.assertEqual(self.show(src), expected)
+        # no digit twice in a row or column, even within a cage -- but twice in a
+        # cage is fine, when the cells don't share a row or column (11 and 22)
+        self.assertEqual(self.show("(combinations-for '(11 12 22) '+ 5 3)"), "((1 3 1) (2 1 2))")
+
+    def test_a_puzzle_that_isnt_well_formed(self):
+        for src, message in [
+                ("(solve-kenken 2 '(((11 12) (+ 3)) ((12 21 22) (+ 3))))", "cell 12 is in two cages"),
+                ("(solve-kenken 2 '(((11 12) (+ 3)) ((21) (= 1))))", "cell 22 isn't in any cage"),
+                ("(solve-kenken 2 '(((11 12) (% 3)) ((21 22) (+ 3))))", "the operation must be + - * / or =, not %"),
+                ("(solve-kenken 2 '(((11 12) (= 3)) ((21 22) (+ 3))))", "an = cage has just one cell"),
+                ("(solve-kenken 2 '(((11) (- 1)) ((12 21 22) (+ 3))))", "a - or / cage needs at least two cells"),
+                ("(solve-kenken 2 '(((11 13) (+ 3)) ((21 22) (+ 3))))", "there's no cell 13 in a 2 x 2 grid")]:
+            with self.subTest(src=src):
+                with self.assertRaises(lisp_core.LispError) as caught:
+                    self.run_lisp(src)
+                self.assertIn(message, str(caught.exception))
+
+    def test_drawing_a_puzzle_as_text(self):
+        del self.out[:]
+        self.run_lisp("(show-kenken 4 puzzle-4 :solution (solve-kenken 4 puzzle-4))")
+        self.assertEqual("".join(self.out).splitlines()[:7],
+                         ["+-----+-----+-----+-----+",
+                          "|9+   |3×         |2    |",
+                          "|  4  |  3     1  |  2  |",
+                          "+     +-----+-----+-----+",
+                          "|           |9+         |",
+                          "|  3     2  |  4     1  |",
+                          "+-----+-----+-----+     +"])
+
+
 class TestChessProgram(unittest.TestCase):
     """examples/chess.lsp: its move generator gets the known perft counts, it
     reads and writes algebraic notation, and its search finds a mate."""
@@ -6535,6 +6608,7 @@ class TestExampleScripts(unittest.TestCase):
         "oas_monte_carlo_example.lsp",
         "othello_example.lsp",
         "chess_example.lsp",
+        "kenken_example.lsp",
     ]
 
     @classmethod
@@ -6661,6 +6735,13 @@ class TestExampleScripts(unittest.TestCase):
         self.assertIn("White plays Qxf7#", out)
         self.assertIn("White plays Nxc7+", out)
         self.assertIn("White plays Rd8+   (it sees a checkmate;", out)
+
+    def test_the_kenken_example_solves_its_9_by_9_puzzle(self):
+        if "kenken_example.lsp" not in self.results:
+            self.skipTest("kenken_example.lsp is slow: set LISP_TEST_SLOW to run it")
+        out = self.results["kenken_example.lsp"].stdout
+        self.assertEqual(out.count("Its one solution"), 3)
+        self.assertIn("|  1     4  |  5     3     7  |  2     9  |  6  |  8  |", out)
 
     def test_the_with_struct_example_produces_its_documented_output(self):
         out = self.results["with_struct_example.lsp"].stdout

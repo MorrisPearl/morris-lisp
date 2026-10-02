@@ -99,6 +99,7 @@ functions" as a reference to search rather than read start to end.
 - [A short example](#a-short-example)
 - [Examples after Norvig's *Paradigms of AI Programming*](#examples-after-norvigs-paradigms-of-ai-programming)
 - [A chess program](#a-chess-program)
+- [A KenKen solver](#a-kenken-solver)
 - [How the code is organized](#how-the-code-is-organized)
 - [Running the tests](#running-the-tests)
 - [Adding your own builtins](#adding-your-own-builtins)
@@ -2053,8 +2054,9 @@ same as Scheme — if none match.
 ```
 
 #### `(member x l)`
-The sublist of `l` starting at the first element `equal?` to `x`, or `#f`
-(not `'()`, same reasoning as `assoc`) if none match.
+The sublist of `l` starting at the first element `equal?` to `x` — `l`'s
+own pairs, not a copy — or `#f` (not `'()`, same reasoning as `assoc`) if
+none match.
 
 ```lisp
 (member 3 (list 1 2 3 4 5))    ; => (3 4 5)
@@ -6902,6 +6904,57 @@ Forsyth-Edwards Notation, to start somewhere else with `:position`.
 `examples/chess_example.lsp` shows the program checking its rules and
 finding a checkmate, a knight fork, and a sacrifice that mates in two.
 
+## A KenKen solver
+
+`examples/kenken_example.lsp` solves KenKen puzzles: an N × N grid to fill
+with the digits 1 to N, with no digit twice in any row or column, and each
+cage — a group of cells outlined in the puzzle — coming out right: its
+digits, combined by the cage's operation, give the cage's number. A cell
+is written as its row and column (`23` is row 2, column 3), and a cage as
+its cells and its arithmetic:
+
+| Cage | Means |
+|---|---|
+| `((11 12 13 23) (+ 17))` | the four digits add up to 17 |
+| `((31 41) (- 2))` | the larger digit less the smaller is 2 |
+| `((32 33) (* 12))` | the digits multiply to 12 |
+| `((34 44) (/ 3))` | the larger digit divided by the smaller is 3 |
+| `((42) (= 4))` | the digit is 4 |
+
+(A `-` or `/` cage of more than two cells works the same way: the largest
+digit less, or divided by, all the others.) A puzzle is its size and a
+list of its cages:
+
+```lisp
+(load "kenken_example.lsp")              ; solves its own three puzzles first
+(define puzzle
+  '(((11 21 22) (+ 9))  ((12 13) (* 3))     ((14) (= 2))
+    ((23 24 34) (+ 9))  ((31 32 41) (+ 4))  ((33 43 44) (* 18))
+    ((42) (= 4))))
+(solve-kenken 4 puzzle)                  ; ((4 3 1 2) (3 2 4 1) (2 1 3 4) (1 4 2 3)), a list of rows
+(length (kenken-solutions 4 puzzle))     ; 1 -- the puzzle has exactly one solution
+(show-kenken 4 puzzle :solution (solve-kenken 4 puzzle))
+```
+
+`solve-kenken` returns the solution as a list of rows, or `#f` if there's
+none; `kenken-solutions` returns up to `:limit` (default 2) solutions, so
+its length says whether a puzzle has exactly one; `show-kenken` draws the
+puzzle — in a Jupyter notebook as a grid with the cages outlined (with
+`display-html`), elsewhere as text — with the digits of a solution if
+`:solution` is given. A puzzle that isn't well formed (a cell in two cages
+or none, say) is an error that says what's wrong.
+
+How it solves them: for each cell, it keeps the digits the cell could
+still be, and for each cage, the combinations of digits that make its
+arithmetic come out. It rules out what can't be, over and over: a cage
+combination that needs a digit a cell can no longer be; a digit no
+combination puts in a cell; a digit already settled elsewhere in a row or
+column. And a digit that can go in only one cell of a row or column goes
+there. When that stalls, it guesses, at the cell with the fewest digits
+left, and goes back if the guess leads to a contradiction. The 4 × 4 and
+6 × 6 puzzles in the file take no guesses and well under a second; the
+9 × 9 one, which gives no digits and has large cages, about 10 seconds.
+
 ---
 
 ## How the code is organized
@@ -6913,7 +6966,7 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 | Directory | What's in it |
 |---|---|
 | `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `implied_vol.lsp`, `vol_smile.lsp` (fitting implied volatility smiles), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
-| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, and a chess program, `chess.lsp` (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
+| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, and a KenKen solver (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `tools/` | `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV, and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 
 `load` finds files in `lib/` and `examples/` from anywhere (see "Where
