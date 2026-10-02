@@ -1,67 +1,6 @@
+;
 ( define api-key "/Users/morris/credentials.json" )
 ( define creds   "/Users/morris/credentials.json" )
-
-; (display_markdown_table headers (tastytrade-option-chain api-key "BRK/B"))
-
-; some of the examples use api-key and some use creds
-; (while and do are in macros_init.lsp, which loads before this file)
-
-(define (do_md_table_spec z)
-  (string-append
-   "{"
-      (cond
-       ( (null? (cdr z)) "")
-       ( #t (string-append ":" (car (cdr z))))
-       )
-    "}|"
-   )
-  )
-
-(define (format_fixup_row r formats)
-    (cond ((null? r)
-	  ())
-	  ((null? (car r))
-	   (cons (if (string-contains? (car formats) "f") 0.0 ())
-		 (format_fixup_row (cdr r) (cdr formats))))
-	  (#t
-	   (cons (car r) (format_fixup_row (cdr r) (cdr formats))))
-	  ))
-
-(define (format_md_table headings data)
-    (let* ((output "")
-	   (aout (lambda (x) (set! output (string-append output (to-string x))))))
-
-      (define formats
-	  (string-append "|"
-			 (reduce string-append
-				 (map do_md_table_spec (map (lambda (x) (string-split x ":"))
-							    headings)) "" )
-			 "\n"))
-
-      (define column_headings (map car (map (lambda (x) (string-split x ":")) headings)))
-       
-      (aout " | ")
-      (dolist (x column_headings)
-	(aout x)
-	(aout " | "))
-
-      (aout "\n")
-      (aout " | ")
-    
-      (dolist (y headings)
-	(aout " ---: |"))
-      (aout "\n")
-
-      (define formats_list (cdr (string-split formats "|")))
-      (dolist (row data)
-	(aout (apply format (cons formats (format_fixup_row row formats_list))))
-										 
-	)
-      (display-markdown output)
-      )
-  )
-
-; model_utils.lsp
 ;
 ; A small utility for turning a fitted model -- from linear-regression,
 ; logistic-regression, or spline-regression, any kind model-predict
