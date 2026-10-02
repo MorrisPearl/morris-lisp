@@ -15,7 +15,8 @@ The boundaries are the Census's cartographic boundary files
 simplified for maps and clipped to the shoreline. Each is a zipped
 "shapefile" -- a .shp file of outlines and a .dbf file of each place's
 codes and name -- which this module reads itself. A file is downloaded
-once and kept for 30 days (in lisp_http's cache). No key is needed.
+once and kept for good, since a year's boundaries never change (see
+maps_directory). No key is needed.
 
 A map is drawn with the Albers equal-area projection, so places' sizes on
 the map are in proportion to their sizes on the ground. A map of the whole
@@ -29,6 +30,7 @@ of the country. A map of anything smaller has one projection fitted to it.
 import datetime
 import io
 import math
+import os
 import struct
 import zipfile
 
@@ -51,7 +53,6 @@ except ImportError:
     matplotlib = None           # (lisp_charts checks for matplotlib before anything is drawn)
 
 BOUNDARIES_URL = "https://www2.census.gov/geo/tiger/GENZ{year}/shp/{name}.zip"
-CACHE_HOURS = 24 * 30
 EARTH_RADIUS_KM = 6371.0
 
 # The kinds of place, with the names they can be asked for by.
@@ -161,14 +162,14 @@ def read_dbf(data, encoding):
     return [name for name, _, _ in fields], rows
 
 
-def read_shapefile(data, who):
-    """A zipped shapefile's bytes: its field names (without the "20" that
-    the 2020 ZIP code areas' end with: GEOID20 is GEOID), a row of values
-    for each place, and each place's Shape."""
+def read_shapefile(data, who, path="the file"):
+    """A zipped shapefile's bytes (from path): its field names (without the
+    "20" that the 2020 ZIP code areas' end with: GEOID20 is GEOID), a row
+    of values for each place, and each place's Shape."""
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile:
-        raise LispError("%s: the Census didn't send a zip file" % who)
+        raise LispError("%s: %s isn't a zip file -- delete it, and it will be downloaded again" % (who, path))
 
     def member(ending):
         found = [name for name in archive.namelist() if name.lower().endswith(ending)]
@@ -201,36 +202,52 @@ def state_code(state, who):
     raise LispError("%s: %r isn't a state's postal abbreviation (\"NY\") or FIPS code (36)" % (who, text))
 
 
-# The year found for each file, so it's looked for only once: (level, state, resolution) -> year
-_latest_years = {}
+def maps_directory():
+    """Where the boundary files are kept once they're downloaded -- for
+    good, since a year's boundaries never change: ~/.cache/morris_lisp/maps,
+    or the directory the LISP_MAPS_DIRECTORY environment variable names.
+    Each file has the Census's own name, such as cb_2025_us_county_20m.zip.
+    Delete one to free its space, or to have it downloaded again;
+    http-clear-cache leaves them alone."""
+    return (os.environ.get("LISP_MAPS_DIRECTORY")
+            or os.path.join(os.path.expanduser("~"), ".cache", "morris_lisp", "maps"))
 
 
 def boundary_file(level, state, year, resolution, who):
     """The bytes of the zipped boundary file for the level (and the state,
-    for a level with a file for each state), and its URL. Without a year,
-    the latest one there is a file for."""
+    for a level with a file for each state), and where it's kept. Without
+    a year: the newest one already kept, or else the newest the Census
+    has, which is then kept."""
     if level == "zcta":
         years = [2020]
     elif year is not None:
         years = [int(year)]
-    elif (level, state, resolution) in _latest_years:
-        years = [_latest_years[(level, state, resolution)]]
     else:
         this_year = datetime.date.today().year
         years = list(range(this_year, this_year - 6, -1))
     congresses = CONGRESSES if level == "congressional-district" else [None]
-    for candidate in years:
-        for congress in congresses:
-            name = FILE_NAMES[level].format(year=candidate, state=state, resolution=resolution, congress=congress)
-            url = BOUNDARIES_URL.format(year=candidate, name=name)
-            try:
-                data = lisp_http.download(url, CACHE_HOURS, None, who)
-            except LispError as e:
-                if "HTTP 404" in str(e):              # no such file: try the next
-                    continue
-                raise
-            _latest_years[(level, state, resolution)] = candidate
-            return data, url
+    candidates = [(candidate, FILE_NAMES[level].format(year=candidate, state=state, resolution=resolution,
+                                                       congress=congress))
+                  for candidate in years for congress in congresses]          # the newest first
+    directory = maps_directory()
+    for _, name in candidates:                  # one that's already kept: no need to ask the Census
+        path = os.path.join(directory, name + ".zip")
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                return f.read(), path
+    for candidate, name in candidates:
+        try:
+            data = lisp_http.download(BOUNDARIES_URL.format(year=candidate, name=name), 0, None, who)
+        except LispError as e:
+            if "HTTP 404" in str(e):              # no such file: try the next
+                continue
+            raise
+        path = os.path.join(directory, name + ".zip")
+        os.makedirs(directory, exist_ok=True)
+        with open(path + ".part", "wb") as f:    # (then renamed, so a download cut short isn't kept)
+            f.write(data)
+        os.replace(path + ".part", path)
+        return data, path
     raise LispError("%s: the Census has no %s boundary file%s at resolution %s%s" % (
         who, level, " for state %s" % state if state else "", resolution,
         " for %s" % years[0] if len(years) == 1 else " in the last few years"))
@@ -249,7 +266,9 @@ def census_shapes(level, *options):
     tract's or a place's level needs one). :resolution is "20m" (the
     simplest outlines), "5m", or "500k" (the most detailed); the default
     is 20m for the whole country, 500k for one state. :year picks the year
-    (the latest, if not given)."""
+    (if not given, the newest already downloaded, or else the newest the
+    Census has). A file is downloaded once, and kept for good (see
+    maps_directory)."""
     who = "census-shapes"
     options = keyword_options(options, ["state", "year", "resolution"], who)
     level_name = str(level).lower()
@@ -265,8 +284,8 @@ def census_shapes(level, *options):
         resolution = str(options.get("resolution") or ("500k" if state else "20m")).lower()
         if resolution not in RESOLUTIONS:
             raise LispError("%s: :resolution is one of %s" % (who, ", ".join(RESOLUTIONS)))
-    data, url = boundary_file(level, state if level in PER_STATE else None, options.get("year"), resolution, who)
-    names, rows, shapes = read_shapefile(data, who)
+    data, path = boundary_file(level, state if level in PER_STATE else None, options.get("year"), resolution, who)
+    names, rows, shapes = read_shapefile(data, who, path)
 
     if state and level not in PER_STATE:          # one state's places, from the file for the country
         if "STATEFP" not in names:

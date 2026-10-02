@@ -5258,8 +5258,19 @@ files (https://www.census.gov/geographies/mapping-files.html). These are
 its boundaries simplified for maps and clipped to the shoreline. Each is a
 zipped *shapefile*: a `.shp` file of outlines and a `.dbf` file of each
 place's codes and name. `lisp_maps.py` reads them itself, so no other
-package is needed. A file is downloaded once and kept for 30 days. No key
-is needed.
+package is needed. No key is needed.
+
+**Where the files are kept.** A boundary file is downloaded once and kept
+for good, since a year's boundaries never change.
+
+- They're in `~/.cache/morris_lisp/maps`, or the directory the
+  `LISP_MAPS_DIRECTORY` environment variable names.
+- Each has the Census's own name for it, such as
+  `cb_2025_us_county_20m.zip`. Most are small, but the ZIP code areas'
+  file is 67 MB.
+- To free the space, or to have a file downloaded again, delete it, or
+  the whole directory.
+- `http-clear-cache` leaves them alone.
 
 **The projection.** A map is drawn with the Albers equal-area
 projection: a place's size on the map is in proportion to its size on the
@@ -5312,8 +5323,11 @@ The 2020 ZCTA file's columns end in `20`; that's dropped, so it has
   country), `"5m"`, or `"500k"` (the most detail). The default is 20m for
   the whole country and 500k for one state. Tracts, places, and ZCTAs
   come only at 500k.
-- `:year` picks the boundaries' year. The default is the latest. ZCTAs
-  are always 2020's.
+- `:year` picks the boundaries' year. ZCTAs are always 2020's. Without
+  `:year`, it's the newest year already downloaded, so a map needs no
+  network once its file is kept. The first time, it's the newest year the
+  Census has. To use a later year's boundaries once there are any, give
+  `:year`.
 
 ```lisp
 (define states (census-shapes "state"))
@@ -5658,7 +5672,9 @@ so spaces and symbols in them are safe.
 ```
 
 #### `(http-clear-cache)`
-Deletes every saved download, and returns how many there were.
+Deletes every saved download, and returns how many there were. It doesn't
+delete the maps' boundary files, which are kept for good in their own
+directory (see "Maps").
 
 ### SEC financial statements
 

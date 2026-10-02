@@ -73,11 +73,13 @@ Good to know:
   shows a table, `plot-chart` charts it, and `plot-map` maps it.
   `fred-series` is the exception: it gives a pair of vectors, the dates
   and the values.
-- **Downloads are kept.** A download is saved on disk for 12 hours (maps'
-  outlines and lists of what there is, for 30 days). Running a notebook
-  again is quick and doesn't use up a source's daily allowance.
-  `fred-series` saves a download only if you ask: its fifth argument is
-  how many hours to keep it.
+- **Downloads are kept.** A download is saved on disk for 12 hours, and
+  lists of what there is for 30 days. Running a notebook again is quick
+  and doesn't use up a source's daily allowance. `fred-series` saves a
+  download only if you ask: its fifth argument is how many hours to keep
+  it.
+- **Maps' outlines are kept for good,** since they never change, in
+  `~/.cache/morris_lisp/maps`. Delete the files there to free the space.
 - **Limits.** The BLS allows 500 requests a day, and the BEA 100 a minute.
   The others are generous.
 

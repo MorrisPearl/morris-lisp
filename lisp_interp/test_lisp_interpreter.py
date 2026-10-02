@@ -2629,8 +2629,10 @@ class TestMaps(LispTestCase):
             if "GENZ2026" in url or "GENZ2025" in url:
                 raise lisp_core.LispError("%s: %s returned HTTP 404 Not Found" % (who, url))
             return archive
+        self.kept = tempfile.mkdtemp()               # where the boundary files are kept, for these tests
+        self.addCleanup(shutil.rmtree, self.kept, True)
         for patcher in (mock.patch.object(lisp_maps.lisp_http, "download", fake_download),
-                        mock.patch.dict(lisp_maps._latest_years, clear=True)):
+                        mock.patch.dict(os.environ, {"LISP_MAPS_DIRECTORY": self.kept})):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -2663,6 +2665,25 @@ class TestMaps(LispTestCase):
         self.assertLispError('(census-shapes "tract")', "give :state")
         self.assertLispError('(census-shapes "county" :state "XX")', "isn't a state's postal abbreviation")
         self.assertLispError('(census-shapes "parish")', "the levels are")
+
+    def test_boundary_files_are_kept_for_good(self):
+        self.run_lisp('(census-shapes "county")')
+        self.assertEqual(len(self.urls), 3)                                  # 2026 and 2025: none yet; 2024
+        self.assertEqual(os.listdir(self.kept), ["cb_2024_us_county_20m.zip"])
+        self.run_lisp('(census-shapes "county")')
+        self.assertEqual(len(self.urls), 3)                                  # kept: not downloaded again
+        shutil.copy(os.path.join(self.kept, "cb_2024_us_county_20m.zip"),
+                    os.path.join(self.kept, "cb_2025_us_county_20m.zip"))
+        self.run_lisp('(census-shapes "county")')
+        self.assertEqual(len(self.urls), 3)                                  # the newest kept: 2025's
+        self.run_lisp('(census-shapes "county" :year 2023)')
+        self.assertTrue(self.urls[-1].endswith("cb_2023_us_county_20m.zip"))
+        with open(os.path.join(self.kept, "cb_2023_us_county_20m.zip"), "wb") as f:
+            f.write(b"not a zip file")
+        self.assertLispError('(census-shapes "county" :year 2023)', "delete it, and it will be downloaded again")
+        with mock.patch.dict(os.environ, {"LISP_MAPS_DIRECTORY": ""}):
+            self.assertEqual(self.lisp_maps.maps_directory(),
+                             os.path.join(os.path.expanduser("~"), ".cache", "morris_lisp", "maps"))
 
     def test_the_projection_keeps_areas(self):
         """A one-degree square's area on the map is its area on the earth:
