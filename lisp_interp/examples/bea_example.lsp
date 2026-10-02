@@ -15,7 +15,7 @@
 (define latest (bea-series creds '("real-gdp-growth" "core-pce-price-index" "personal-saving-rate")
                            :start-year 2024))
 (display "The last six months:\n")
-(display-table (table-slice latest (- (table-row-count latest) 6)))
+(display-table (table-tail latest 6))
 
 ; --- 2. What made GDP grow ----------------------------------------------------------
 ; Any NIPA table, by its name: T10102 is the contributions to the percent
@@ -36,16 +36,14 @@
             :legend "upper left")
 
 ; --- 3. Inflation and saving, in panels ---------------------------------------------------
-; Year-over-year core PCE inflation, worked out from the monthly index.
+; Core PCE inflation: vector-pct-change gives each month's change in the
+; index from 12 months before, as a fraction (0.025 is 2.5%).
 (define monthly (bea-series creds '("core-pce-price-index" "personal-saving-rate") :start-year 2018))
-(define months (table-row-count monthly))
-(define (from-month-13 name) (vector-slice (table-column monthly name) 12))
-(define (a-year-before name) (vector-slice (table-column monthly name) 0 (- months 12)))
-(define core-inflation (- (/ (from-month-13 "core-pce-price-index") (a-year-before "core-pce-price-index")) 1))
-(define later-dates (from-month-13 "date"))
-(plot-panels (list (list (list (list "core PCE inflation" later-dates core-inflation))
+(define months (table-column monthly "date"))
+(define core-inflation (vector-pct-change (table-column monthly "core-pce-price-index") 12))
+(plot-panels (list (list (list (list "core PCE inflation" months core-inflation))
                          :y-format "{:.0%}" :y-lines (list (list 0.02 "the Fed's 2% goal")))
-                   (list (list (list "saving rate" later-dates (/ (from-month-13 "personal-saving-rate") 100)
+                   (list (list (list "saving rate" months (/ (table-column monthly "personal-saving-rate") 100)
                                      :fill #t :line #t))
                          :y-format "{:.0%}"))
              :title "Prices and saving" :legend #f
@@ -59,9 +57,8 @@
 ; too; the states' codes are from 01000 to 56000.
 (define income (bea-regional creds "SAINC1" 3 "STATE"))
 (define last-year (car (reverse (table-column-names (table-drop-columns income '("unit"))))))
-(define (a-state? fips) (and (string<? "00000" fips) (string<? fips "60000")))
-(define states (table-filter income (vector-map (lambda (fips) (if (a-state? fips) 1 0))
-                                                (table-column income "fips"))))
+(define fips (table-column income "fips"))
+(define states (table-filter income (vector-and (> fips "00000") (< fips "60000"))))
 (define richest (table-head (table-sort states last-year #t) 15))
 (display (format "\nPer capita personal income, {}, the 15 highest:\n" last-year))
 (display-table richest (list (list last-year ",")))

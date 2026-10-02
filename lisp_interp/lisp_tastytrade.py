@@ -39,7 +39,6 @@ import asyncio
 import calendar
 import concurrent.futures
 import datetime
-import json
 import os
 import re
 import urllib.parse
@@ -48,6 +47,7 @@ from lisp_core import (
     LispDate, LispError, LispHashTable, LispString, LispVector, NIL, Pair,
     is_true, list_to_pairs, pairs_to_list,
 )
+from lisp_data_common import read_credentials
 from lisp_http import json_to_lisp
 from lisp_tables import column_vector, make_table_value, table_from_rows
 
@@ -154,14 +154,9 @@ def _run_async(coro):
 
 
 def _tasty_load_credentials(path):
-    path = str(path)
-    if not os.path.exists(path):
-        raise LispError("tastytrade: credentials file not found: %s" % path)
-    try:
-        with open(path) as f:
-            creds = json.load(f)
-    except json.JSONDecodeError as e:
-        raise LispError("tastytrade: credentials file isn't valid JSON: %s" % e)
+    """The credentials file's entries, with its client secret and refresh
+    token checked for."""
+    creds = read_credentials(path, "tastytrade")
     for key in ("client_secret", "refresh_token"):
         if isinstance(creds.get(key), str):
             creds[key] = creds[key].strip()

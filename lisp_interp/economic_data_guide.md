@@ -63,21 +63,19 @@ starts:
 (define creds "/Users/you/credentials.json")
 ```
 
-Every function below takes `creds` first, with two exceptions:
-`fred-series` takes it second, and `census-shapes` doesn't need it.
+Every function below takes `creds` first, except `census-shapes`, which
+doesn't need it.
 
 Good to know:
 
 - **Results are tables.** Each function gives a table: a row for each date
   (or place, or company) and a column for each number. `display-table`
   shows a table, `plot-chart` charts it, and `plot-map` maps it.
-  `fred-series` is the exception: it gives a pair of vectors, the dates
-  and the values.
 - **Downloads are kept.** A download is saved on disk for 12 hours, and
   lists of what there is for 30 days. Running a notebook again is quick
-  and doesn't use up a source's daily allowance. `fred-series` saves a
-  download only if you ask: its fifth argument is how many hours to keep
-  it.
+  and doesn't use up a source's daily allowance. A download that fails in
+  a way that may pass (no answer, or the server's own trouble) is tried
+  once more before giving up.
 - **Maps' outlines are kept for good,** since they never change, in
   `~/.cache/morris_lisp/maps`. Delete the files there to free the space.
 - **Limits.** The BLS allows 500 requests a day, and the BEA 100 a minute.
@@ -97,8 +95,8 @@ one.
 | GDP: the value of everything the country produces | `(bea-series creds "gdp")` | BEA |
 | How fast the economy is growing | `(bea-series creds "real-gdp-growth")` | BEA |
 | What made it grow: consumers, businesses, government, trade | `(bea-nipa creds "T10102" :lines '(1 2 7 15 22))` | BEA |
-| Industrial production: factories, mines, utilities | `(fred-series "INDPRO" creds)` | Federal Reserve, via FRED |
-| How consumers feel | `(fred-series "UMCSENT" creds)` | University of Michigan, via FRED |
+| Industrial production: factories, mines, utilities | `(fred-table creds "INDPRO")` | Federal Reserve, via FRED |
+| How consumers feel | `(fred-table creds "UMCSENT")` | University of Michigan, via FRED |
 | Corporate profits, all companies together | `(bea-series creds "corporate-profits")` | BEA |
 | GDP of each state | `(bea-regional creds "SAGDP1" 3 "STATE")` (line 1 is real GDP) | BEA |
 
@@ -112,12 +110,12 @@ one.
 | What producers get for what they sell (the PPI) | `(bls-series creds "ppi-final-demand")` | BLS |
 | Import and export prices | `(bls-series creds '("import-prices" "export-prices"))` | BLS |
 | How expensive each state is, compared with the country as a whole (100) | `(bea-regional creds "SARPP" 1 "STATE")` | BEA |
-| Home prices | `(fred-series "CSUSHPINSA" creds)` (the Case-Shiller index) | S&P CoreLogic, via FRED |
-| The price of oil | `(fred-series "DCOILWTICO" creds)` | Energy Information Administration, via FRED |
+| Home prices | `(fred-table creds "CSUSHPINSA")` (the Case-Shiller index) | S&P CoreLogic, via FRED |
+| The price of oil | `(fred-table creds "DCOILWTICO")` | Energy Information Administration, via FRED |
 
 Price measures are *index numbers*: the CPI is 100 for 1982–84. Inflation
-is the percent change from a year before; [section 6](#6-putting-sources-together)
-shows how to work it out.
+is the change from a year before: `(vector-pct-change column 12)` works it
+out, as [section 6](#6-putting-sources-together) shows.
 
 ### Jobs and pay
 
@@ -140,8 +138,8 @@ shows how to work it out.
 | Americans' total income (personal income) | `(bea-series creds '("personal-income" "disposable-income"))` | BEA |
 | What consumers spend | `(bea-series creds "pce")` | BEA |
 | How much of their income people save | `(bea-series creds "personal-saving-rate")` | BEA |
-| Retail sales | `(fred-series "RSAFS" creds)` | Census, via FRED |
-| Consumer debt: credit cards, car loans, student loans | `(fred-series "TOTALSL" creds)` | Federal Reserve, via FRED |
+| Retail sales | `(fred-table creds "RSAFS")` | Census, via FRED |
+| Consumer debt: credit cards, car loans, student loans | `(fred-table creds "TOTALSL")` | Federal Reserve, via FRED |
 | Income per person in each state or county | `(bea-regional creds "CAINC1" 3 "NY")` (New York's counties) | BEA |
 | The typical household's income, and poverty, in any place | `(census-profile creds "county:*" :within "state:36")` | Census |
 
@@ -149,15 +147,15 @@ shows how to work it out.
 
 | To know | Ask | From |
 |---|---|---|
-| The Federal Reserve's interest rate (federal funds) | `(fred-series "FEDFUNDS" creds)` (monthly; `"DFF"` is daily) | Federal Reserve, via FRED |
-| SOFR, the rate that sets floating-rate loans | `(fred-series "SOFR" creds)` | New York Fed, via FRED |
-| Treasury yields | `(fred-series "DGS10" creds)` (10 years; also `"DGS3MO"`, `"DGS2"`, `"DGS30"`) | Treasury, via FRED |
-| The slope of the yield curve: 10 years less 2 | `(fred-series "T10Y2Y" creds)` | FRED |
-| Mortgage rates: 30 years, fixed | `(fred-series "MORTGAGE30US" creds)` | Freddie Mac, via FRED |
-| The money supply (M2) | `(fred-series "M2SL" creds)` | Federal Reserve, via FRED |
-| The Federal Reserve's balance sheet | `(fred-series "WALCL" creds)` | Federal Reserve, via FRED |
-| Banks' loans to businesses | `(fred-series "BUSLOANS" creds)` | Federal Reserve, via FRED |
-| Exchange rates: dollars per euro, and the dollar against all currencies | `(fred-series "DEXUSEU" creds)`, `(fred-series "DTWEXBGS" creds)` | Federal Reserve, via FRED |
+| The Federal Reserve's interest rate (federal funds) | `(fred-table creds "FEDFUNDS")` (monthly; `"DFF"` is daily) | Federal Reserve, via FRED |
+| SOFR, the rate that sets floating-rate loans | `(fred-table creds "SOFR")` | New York Fed, via FRED |
+| Treasury yields | `(fred-table creds "DGS10")` (10 years; also `"DGS3MO"`, `"DGS2"`, `"DGS30"`) | Treasury, via FRED |
+| The slope of the yield curve: 10 years less 2 | `(fred-table creds "T10Y2Y")` | FRED |
+| Mortgage rates: 30 years, fixed | `(fred-table creds "MORTGAGE30US")` | Freddie Mac, via FRED |
+| The money supply (M2) | `(fred-table creds "M2SL")` | Federal Reserve, via FRED |
+| The Federal Reserve's balance sheet | `(fred-table creds "WALCL")` | Federal Reserve, via FRED |
+| Banks' loans to businesses | `(fred-table creds "BUSLOANS")` | Federal Reserve, via FRED |
+| Exchange rates: dollars per euro, and the dollar against all currencies | `(fred-table creds "DEXUSEU")`, `(fred-table creds "DTWEXBGS")` | Federal Reserve, via FRED |
 | The Treasury's whole yield curve, each day | `http-get-csv`, from the Treasury's site (see the manual's [Downloading data from the web](lisp_interpreter_reference.md#downloading-data-from-the-web)) | Treasury |
 
 ### Housing
@@ -165,9 +163,9 @@ shows how to work it out.
 | To know | Ask | From |
 |---|---|---|
 | Home values, rents, homeownership, and vacancy, in any place | `(census-profile creds "county:*" :within "state:36")` | Census |
-| Housing starts | `(fred-series "HOUST" creds)` | Census, via FRED |
-| Home prices | `(fred-series "CSUSHPINSA" creds)` | S&P CoreLogic, via FRED |
-| Mortgage rates | `(fred-series "MORTGAGE30US" creds)` | Freddie Mac, via FRED |
+| Housing starts | `(fred-table creds "HOUST")` | Census, via FRED |
+| Home prices | `(fred-table creds "CSUSHPINSA")` | S&P CoreLogic, via FRED |
+| Mortgage rates | `(fred-table creds "MORTGAGE30US")` | Freddie Mac, via FRED |
 | How fast rents are rising | `(bls-series creds "cpi-rent")` | BLS |
 
 ### People and places
@@ -195,7 +193,7 @@ shows how to work it out.
 | A bank's certificate number, from its name | `(fdic-find-bank creds "wells fargo")` | FDIC |
 | A bank's balance sheet, income, and ratios | `(fdic-balance-sheet creds 3511)`, `(fdic-income-statement creds 3511)`, `(fdic-ratios creds 3511)` | FDIC |
 | Banks that have failed | `(fdic-get creds "failures" '(("filters" . "FAILDATE:[2023-01-01 TO *]")))` | FDIC |
-| All banks' lending together | `(fred-series "BUSLOANS" creds)` | Federal Reserve, via FRED |
+| All banks' lending together | `(fred-table creds "BUSLOANS")` | Federal Reserve, via FRED |
 
 ### Companies and markets
 
@@ -207,13 +205,13 @@ shows how to work it out.
 | Stock, ETF, option, futures, and crypto prices now | `(tastytrade-quotes creds '("SPY" "QQQ"))` | tastytrade |
 | An option chain | `(tastytrade-option-chain creds "SPY")`; `fit-vol-smiles` then finds options priced out of line | tastytrade |
 | A futures curve: oil, gold, the S&P 500, ... | `(tastytrade-futures-curve creds "CL")` | tastytrade |
-| The stock market as a whole | `(fred-series "SP500" creds)` (the last 10 years), `(fred-series "VIXCLS" creds)` (its volatility) | S&P and Cboe, via FRED |
+| The stock market as a whole | `(fred-table creds "SP500")` (the last 10 years), `(fred-table creds "VIXCLS")` (its volatility) | S&P and Cboe, via FRED |
 
 ### Trade with other countries
 
 | To know | Ask | From |
 |---|---|---|
-| The trade balance: exports less imports | `(fred-series "BOPGSTB" creds)` | Census and BEA, via FRED |
+| The trade balance: exports less imports | `(fred-table creds "BOPGSTB")` | Census and BEA, via FRED |
 | Import and export prices | `(bls-series creds '("import-prices" "export-prices"))` | BLS |
 | Trade in each product | `census-get` with the dataset `"timeseries/intltrade/exports/hs"` | Census |
 | All transactions with the rest of the world | `bea-get` with the dataset `"ITA"` | BEA |
@@ -276,7 +274,7 @@ yields, exchange rates, and copies of most of the BLS's, BEA's, and
 Census's main series. When you know a national number's FRED ID, FRED is
 the easiest way to get it; search https://fred.stlouisfed.org to find the
 ID. For numbers about places, and for detail, go to the agency itself.
-Function: `fred-series`.
+Function: `fred-table`.
 
 **Treasury** and **New York Fed.** The Treasury publishes the daily yield
 curve; the New York Fed publishes SOFR. FRED has both. To get them
@@ -432,42 +430,37 @@ yield (FRED), in three panels sharing one axis of dates:
 ```lisp
 (define growth (bea-series creds "real-gdp-growth" :start-year 2015))
 (define jobs (bls-series creds "unemployment-rate" :start-year 2015))
-(define ten-year (fred-series "DGS10" creds "2015-01-01"))      ; (dates . values)
+(define ten-year (fred-table creds "DGS10" :start-date "2015-01-01"))
 (plot-panels (list (list (list (list "real GDP growth" (table-column growth "date")
                                      (table-column growth "real-gdp-growth") :bars #t))
                          :y-label "percent, annual rate")
                    (list (list (list "unemployment" (table-column jobs "date")
                                      (table-column jobs "unemployment-rate")))
                          :y-label "percent")
-                   (list (list (list "10-year Treasury" (car ten-year) (cdr ten-year)))
+                   (list (list (list "10-year Treasury" (table-column ten-year "date")
+                                     (table-column ten-year "DGS10")))
                          :y-label "percent"))
              :title "Growth (BEA), jobs (BLS), and interest rates (FRED)" :legend #f
              :shade (list (list (date 2020 2 1) (date 2020 4 30) "recession")))
 ```
 
-**Inflation, from price indexes.** Inflation is an index's percent change
-from 12 months before. This works it out for the CPI (BLS) and the PCE
-price index (BEA), and charts the four of them:
+**Inflation, from price indexes.** Inflation is an index's change from
+12 months before, which `vector-pct-change` works out, as a fraction
+(`0.03` is 3%). This charts it for the CPI (BLS) and the PCE price index
+(BEA):
 
 ```lisp
 (define cpi (bls-series creds '("cpi" "core-cpi") :start-year 2018))
 (define pce (bea-series creds '("pce-price-index" "core-pce-price-index") :start-year 2018))
 
-; A column's percent change from 12 months before, as a series for plot-chart:
-; (name dates changes).
-(define (from-a-year-before table name)
-  (let* ((values (table-column table name))
-         (n (vector-length values)))
-    (list name
-          (vector-slice (table-column table "date") 12)
-          (* 100 (- (/ (vector-slice values 12) (vector-slice values 0 (- n 12))) 1)))))
+; A price index's inflation, as a series for plot-chart: (name dates changes)
+(define (inflation table name)
+  (list name (table-column table "date") (vector-pct-change (table-column table name) 12)))
 
-(plot-chart (list (from-a-year-before cpi "cpi")
-                  (from-a-year-before cpi "core-cpi")
-                  (from-a-year-before pce "pce-price-index")
-                  (from-a-year-before pce "core-pce-price-index"))
-            :title "Inflation, measured two ways" :y-label "percent change from a year before"
-            :y-lines (list (list 2 "the Fed's goal: 2%, measured by the PCE")))
+(plot-chart (list (inflation cpi "cpi") (inflation cpi "core-cpi")
+                  (inflation pce "pce-price-index") (inflation pce "core-pce-price-index"))
+            :title "Inflation, measured two ways" :y-format "{:.0%}"
+            :y-lines (list (list 0.02 "the Fed's goal: 2%, measured by the PCE")))
 ```
 
 **Places line up by their FIPS codes.** Every state and county has a code.
@@ -476,7 +469,7 @@ New York County, is 061, so 36061 in all).
 
 - `census-get` and `census-profile` give the state's and the county's
   codes in separate columns, `state` and `county`.
-- `bls-local-area` takes the 5-digit code.
+- `bls-local-area` takes the 5-digit code, or a list of them.
 - `bea-regional` gives 5 characters: a county's code, or a state's code
   followed by 000 (`36000`).
 - `census-shapes` gives each place's code as `GEOID`, and `plot-map`
@@ -527,7 +520,7 @@ borders drawn over it:
 | `census-profile` | A standard profile of any place | Census | [Census data](lisp_interpreter_reference.md#census-data) |
 | `census-get`, `census-variables`, `census-geographies`, `census-datasets` | Any Census dataset | Census | [Census data](lisp_interpreter_reference.md#census-data) |
 | `census-shapes`, `plot-map` | Outlines of places, and maps of them | Census | [Maps](lisp_interpreter_reference.md#maps) |
-| `fred-series` | Any FRED series | FRED | [FRED](lisp_interpreter_reference.md#fred-federal-reserve-bank-of-st-louis-data-and-csv-loading) |
+| `fred-table` (and `fred-series`, an older form that gives a pair of vectors) | Any FRED series, by date | FRED | [FRED](lisp_interpreter_reference.md#fred-federal-reserve-bank-of-st-louis-data-and-csv-loading) |
 | `http-get-json`, `http-get-csv`, `http-get-text` | Anything at a web address | any website | [Downloading data from the web](lisp_interpreter_reference.md#downloading-data-from-the-web) |
 | `sec-income-statement`, `sec-balance-sheet`, `sec-cash-flow-statement`, `sec-financials`, `sec-facts`, `sec-concepts`, `sec-company` | Companies' financial statements | SEC | [SEC financial statements](lisp_interpreter_reference.md#sec-financial-statements) |
 | `fdic-find-bank`, `fdic-balance-sheet`, `fdic-income-statement`, `fdic-ratios`, `fdic-financials`, `fdic-get`, `fdic-fields` | Banks' financial reports | FDIC | [FDIC bank data](lisp_interpreter_reference.md#fdic-bank-data) |

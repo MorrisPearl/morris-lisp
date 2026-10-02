@@ -55,8 +55,7 @@
 ; and its own, which census-get gives in three columns.
 (define incomes (census-get creds "acs/acs5" '("B19013_001E") "tract:*" :within "state:36 county:061"))
 (define ny-tracts (census-shapes "tract" :state "NY"))
-(define manhattan (table-filter ny-tracts (vector-map (lambda (county) (if (equal? county "061") 1 0))
-                                                     (table-column ny-tracts "COUNTYFP"))))
+(define manhattan (table-where ny-tracts "COUNTYFP" "061"))
 (plot-map manhattan :data incomes :key '("state" "county" "tract") :fill "B19013_001E"
           :fill-label "median household income" :format "${:,.0f}"
           :title "Median household income, Manhattan's census tracts")

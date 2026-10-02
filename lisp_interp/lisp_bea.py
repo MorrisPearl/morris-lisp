@@ -36,7 +36,8 @@ import json
 import math
 import urllib.parse
 
-from lisp_core import LispDate, LispError, LispString, LispVector, NIL, Pair, pairs_to_list
+from lisp_core import LispError, LispString, LispVector, NIL, Pair, pairs_to_list
+from lisp_data_common import credential, dated_table, records_table, text_list, year_range
 from lisp_stratify import keyword_options
 from lisp_tables import column_vector, make_table_value
 import lisp_http
@@ -44,7 +45,6 @@ import lisp_http
 API_URL = "https://apps.bea.gov/api/data"
 DATA_CACHE_HOURS = 12
 LIST_CACHE_HOURS = 24 * 30
-DEFAULT_YEARS = 10
 
 # Short names for some of the national accounts' headline series. Amounts
 # are in billions of dollars, at seasonally adjusted annual rates, as the
@@ -90,21 +90,6 @@ FREQUENCIES = {"A": "annual", "Q": "quarterly", "M": "monthly"}
 # Requests
 # ---------------------------------------------------------------------------
 
-def api_key(credentials_path, who):
-    """The credentials file's "bea_api_key" entry."""
-    try:
-        with open(str(credentials_path)) as f:
-            key = json.load(f).get("bea_api_key")
-    except OSError as e:
-        raise LispError("%s: couldn't open the credentials file %s: %s" % (who, credentials_path, e))
-    except json.JSONDecodeError as e:
-        raise LispError("%s: the credentials file isn't valid JSON: %s" % (who, e))
-    if not key:
-        raise LispError("%s: the credentials file has no \"bea_api_key\" entry (the BEA needs one: "
-                        "https://apps.bea.gov/API/signup/)" % who)
-    return key
-
-
 def error_text(error):
     """What the BEA's error says: its description, and any detail."""
     detail = error.get("ErrorDetail") or {}
@@ -117,7 +102,8 @@ def error_text(error):
 def bea_request(credentials_path, params, cache_hours, who):
     """One request to the API: its "Results", as Python data. The key goes on
     the request but never into an error message."""
-    key = api_key(credentials_path, who)
+    key = credential(credentials_path, "bea_api_key", who,
+                     "the BEA needs one, from https://apps.bea.gov/API/signup/")
     query = dict(params, UserID=key, ResultFormat="JSON")
     url = API_URL + "?" + urllib.parse.urlencode(query)
     shown_url = url.replace(key, "...")
@@ -176,12 +162,8 @@ def nipa_value(record):
 def year_list(options, who):
     """The years asked for, as the API takes them ("2017,2018,..."): from
     :start-year to :end-year, the last 10 years if they aren't given."""
-    this_year = datetime.date.today().year
-    end_year = int(options.get("end-year") or this_year)
-    start_year = int(options.get("start-year") or end_year - DEFAULT_YEARS + 1)
-    if start_year > end_year:
-        raise LispError("%s: :start-year %d is after :end-year %d" % (who, start_year, end_year))
-    return ",".join(str(year) for year in range(start_year, end_year + 1))
+    first, last = year_range(options, who)
+    return ",".join(str(year) for year in range(first, last + 1))
 
 
 def frequency_code(value, who):
@@ -189,27 +171,6 @@ def frequency_code(value, who):
     if code not in FREQUENCIES:
         raise LispError('%s: :frequency is "A" (annual), "Q" (quarterly), or "M" (monthly)' % who)
     return code
-
-
-def text_list(value, who, what):
-    """A string, or a list or vector of them, as a Python list of strings."""
-    if isinstance(value, str):
-        return [str(value)]
-    if isinstance(value, Pair):
-        return [str(v) for v in pairs_to_list(value)]
-    if isinstance(value, LispVector):
-        return [str(v) for v in value.items]
-    raise LispError("%s: %s must be a string or a list of strings" % (who, what))
-
-
-def dated_table(columns_by_heading):
-    """A table with a date column, oldest first, and a column for each
-    (heading, {date: value}), NaN where it has no value for a date."""
-    dates = sorted({date for _, by_date in columns_by_heading for date in by_date})
-    columns = [("date", column_vector([LispDate(d.year, d.month, d.day) for d in dates]))]
-    for heading, by_date in columns_by_heading:
-        columns.append((heading, column_vector([by_date.get(d, math.nan) for d in dates])))
-    return make_table_value(columns)
 
 
 # ---------------------------------------------------------------------------
@@ -425,25 +386,6 @@ def bea_regional_lines(credentials_path, table):
 # Anything else
 # ---------------------------------------------------------------------------
 
-def records_table(records):
-    """Records (dicts) as a table: a column for each field, in the order the
-    fields first appear; DataValue as a number."""
-    names = []
-    for record in records:
-        for name in record:
-            if name not in names:
-                names.append(name)
-
-    def lisp_value(name, value):
-        if name == "DataValue":
-            return number_of(value)
-        if isinstance(value, (dict, list)):
-            return LispString(json.dumps(value))
-        return None if value is None else LispString(str(value))
-    return make_table_value([(name, column_vector([lisp_value(name, r.get(name)) for r in records]))
-                             for name in names])
-
-
 def bea_get(credentials_path, dataset, parameters=NIL):
     """(bea-get creds dataset [parameters]) -- the data a dataset gives for
     the parameters, a list of (name . value) pairs as the API takes them,
@@ -457,7 +399,9 @@ def bea_get(credentials_path, dataset, parameters=NIL):
             raise LispError('%s: the parameters are a list of (name . value) pairs, such as ("Year" . "2025")' % who)
         value = entry.cdr.car if isinstance(entry.cdr, Pair) else entry.cdr
         params[str(entry.car)] = str(value)
-    return records_table(data_records(credentials_path, params, who))
+    records = data_records(credentials_path, params, who)
+    return records_table([dict(r, DataValue=number_of(r["DataValue"])) if "DataValue" in r else r
+                          for r in records])
 
 
 def bea_datasets(credentials_path):

@@ -1,7 +1,10 @@
-"""FRED data access for the Lisp interpreter: the fred-series builtin,
-which downloads one economic data series from the Federal Reserve Bank of
-St. Louis (https://fred.stlouisfed.org) and returns it as a pair of
-vectors, (dates . values).
+"""FRED data access for the Lisp interpreter: economic data series from
+the Federal Reserve Bank of St. Louis (https://fred.stlouisfed.org).
+
+  (fred-table creds ids [:start-date d :end-date d])
+                     one series or several, as a table with a row per date
+  (fred-series id [api-key start-date end-date cache-hours])
+                     one series, as a pair of vectors: (dates . values)
 
 Needs a free FRED API key -- see fred_series() for the three ways to
 supply one. The download goes through lisp_http, so it can be cached.
@@ -12,9 +15,12 @@ import os
 import urllib.parse
 
 from lisp_core import LispDate, LispError, LispVector, NIL, Pair
+from lisp_data_common import credential, dated_table, text_list
+from lisp_stratify import keyword_options
 import lisp_http
 
 FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
+CACHE_HOURS = 12        # fred-table's; fred-series keeps a download only if asked
 
 
 def _parse_fred_observations(observations):
@@ -37,25 +43,13 @@ def _parse_fred_observations(observations):
     return Pair(LispVector(dates), LispVector(values))
 
 
-def _fred_api_key_from_file(path):
-    """Load a "fred_api_key" entry out of a JSON credentials file -- the
-    same file used for tastytrade-* credentials, so both APIs' keys can
-    live in one place (see _tasty_load_credentials)."""
-    try:
-        with open(str(path)) as f:
-            data = json.load(f)
-    except OSError as e:
-        raise LispError("fred-series: could not open credentials file %r: %s" % (str(path), e))
-    except json.JSONDecodeError as e:
-        raise LispError("fred-series: credentials file %r isn't valid JSON: %s" % (str(path), e))
-    key = data.get("fred_api_key")
-    if not key:
-        raise LispError(
-            "fred-series: credentials file %r has no \"fred_api_key\" entry" % (str(path),))
-    return str(key).strip()
-
-
 def fred_series(series_id, api_key=None, start_date=None, end_date=None, cache_hours=None):
+    """(fred-series id [api-key start-date end-date cache-hours]) -- one FRED
+    series, as (dates-vector . values-vector); see download_series."""
+    return download_series(series_id, api_key, start_date, end_date, cache_hours, "fred-series")
+
+
+def download_series(series_id, api_key, start_date, end_date, cache_hours, who):
     """Fetch one FRED data series and return (dates-vector . values-vector).
 
     `api_key` may be a literal FRED API key, or the path to a JSON
@@ -71,14 +65,15 @@ def fred_series(series_id, api_key=None, start_date=None, end_date=None, cache_h
     notebook again doesn't fetch it again.
     """
     if api_key is not None and os.path.exists(str(api_key)):
-        api_key = _fred_api_key_from_file(api_key)
+        api_key = credential(api_key, "fred_api_key", who,
+                             "FRED needs one, from https://fred.stlouisfed.org/docs/api/api_key.html")
     if api_key is None:
         api_key = os.environ.get("FRED_API_KEY")
     if not api_key:
         raise LispError(
-            "fred-series: no API key given (pass one, pass the path to a "
+            "%s: no API key given (pass one, pass the path to a "
             "credentials JSON file with a \"fred_api_key\" entry, or set "
-            "the FRED_API_KEY environment variable)")
+            "the FRED_API_KEY environment variable)" % who)
 
     params = {
         "series_id": str(series_id),
@@ -94,18 +89,38 @@ def fred_series(series_id, api_key=None, start_date=None, end_date=None, cache_h
 
     url = FRED_URL + "?" + urllib.parse.urlencode(params)
     shown_url = url.replace(str(api_key), "...")        # so the API key never shows in an error
-    text = lisp_http.as_text(lisp_http.download(url, cache_hours, None, "fred-series", shown_url))
+    text = lisp_http.as_text(lisp_http.download(url, cache_hours, None, who, shown_url))
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        raise LispError("fred-series: FRED didn't return valid JSON; it starts: %s" % text[:200])
+        raise LispError("%s: FRED didn't return valid JSON; it starts: %s" % (who, text[:200]))
 
     if "observations" not in data:
-        raise LispError("fred-series: %s" % data.get("error_message", "unknown error from FRED"))
+        raise LispError("%s: %s" % (who, data.get("error_message", "unknown error from FRED")))
 
     return _parse_fred_observations(data["observations"])
 
 
+def fred_table(credentials_path, ids, *options):
+    """(fred-table creds ids [:start-date d :end-date d]) -- one FRED series,
+    or a list or vector of them, by ID ("UNRATE", "DGS10"), as a table: a
+    date column, oldest first, and a column for each series, headed by its
+    ID, with NaN where a series has no value for a date -- so daily,
+    weekly, and monthly series line up by date. All of each series, unless
+    :start-date or :end-date (a date, or "YYYY-MM-DD") says otherwise. Each
+    download is kept for 12 hours, as the other data functions' are."""
+    who = "fred-table"
+    options = keyword_options(options, ["start-date", "end-date"], who)
+    columns = []
+    for series_id in text_list(ids, who, "the series IDs"):
+        series = download_series(series_id, credentials_path, options.get("start-date"), options.get("end-date"),
+                                 CACHE_HOURS, who)
+        values = {date.date: value for date, value in zip(series.car.items, series.cdr.items.tolist())}
+        columns.append((series_id, values))
+    return dated_table(columns)
+
+
 BUILTINS = {
     "fred-series": fred_series,
+    "fred-table": fred_table,
 }

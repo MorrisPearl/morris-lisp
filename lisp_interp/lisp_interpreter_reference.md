@@ -24,6 +24,8 @@ non-obvious behavior or error conditions. For a quicker orientation, read
 "Running it", "Syntax", and "Special forms and standard macros" first, then treat "Built-in
 functions" as a reference to search rather than read start to end.
 
+<!-- This list is made from the headings below: after adding or renaming a section, run
+     python3 tools/make_contents.py -->
 ## Contents
 
 - [Running it](#running-it)
@@ -1770,6 +1772,7 @@ are the same, use `equal?`.
 (< 1 2 3)                      ; => #t
 (< 1 3 2)                      ; => #f -- 3<2 fails
 (= #(1 2 3) #(1 0 3))          ; => #(1 0 1)
+(= #("CA" "NY" "CA") "CA")     ; => #(1 0 1) -- text too, element by element
 (equal? #(1 2 3) #(1 0 3))     ; => #f
 ```
 
@@ -3330,13 +3333,15 @@ one: a column of numbers holds NaN where a row has `'()`, and a column of
                                               ; => (("name" . #("x" "y")) ("n" . #(1.0 nan)))
 ```
 
-#### `(table-head t [n])`, `(table-slice t start [end])`
-The first `n` rows (default 10); and the rows from `start` up to, but not
-including, `end` (default: to the end).
+#### `(table-head t [n])`, `(table-tail t [n])`, `(table-slice t start [end])`
+The first `n` rows (default 10); the last `n` rows (default 10), such as
+the latest months of a time series; and the rows from `start` up to, but
+not including, `end` (default: to the end).
 
 ```lisp
 (define t (make-table "x" #(10 20 30 40)))
 (table-head t 2)                  ; => (("x" . #(10 20)))
+(table-tail t 2)                  ; => (("x" . #(30 40)))
 (table-slice t 1 3)               ; => (("x" . #(20 30)))
 ```
 
@@ -3381,6 +3386,18 @@ picking elements", above); combine conditions with `vector-and` and
 (table-filter t (vector> (table-column t "balance") 75))   ; => (("state" . #("CA" "NY")) ("balance" . #(100 200)))
 (table-filter t (vector-and (vector= (table-column t "state") "CA")
                             (vector< (table-column t "balance") 75)))   ; => (("state" . #("CA")) ("balance" . #(50)))
+```
+
+#### `(table-where t column value)`
+Just the rows whose `column` holds `value`, or, if `value` is a list, any
+of its values. It's the same as `table-filter` with an `=` mask, for the
+commonest filter. Values match as `equal?` matches them: text, numbers,
+and dates.
+
+```lisp
+(define t (make-table "state" (vector "CA" "NY" "TX") "balance" #(100 200 50)))
+(table-where t "state" "NY")                ; => (("state" . #("NY")) ("balance" . #(200)))
+(table-where t "state" (list "CA" "TX"))    ; => (("state" . #("CA" "TX")) ("balance" . #(100 50)))
 ```
 
 #### `(table-sort t names [descending?])`
@@ -5400,8 +5417,7 @@ and gray for "no data", are shown below it. Returns `'()`.
 ; Manhattan's census tracts, colored by median household income (Census)
 (define incomes (census-get creds "acs/acs5" '("B19013_001E") "tract:*" :within "state:36 county:061"))
 (define ny-tracts (census-shapes "tract" :state "NY"))
-(define manhattan (table-filter ny-tracts (vector-map (lambda (c) (if (equal? c "061") 1 0))
-                                                     (table-column ny-tracts "COUNTYFP"))))
+(define manhattan (table-where ny-tracts "COUNTYFP" "061"))
 (plot-map manhattan :data incomes :key '("state" "county" "tract") :fill "B19013_001E"
           :format "${:,.0f}" :fill-label "median household income")
 ```
@@ -5511,9 +5527,30 @@ lsp`'s `(write-csv "mortgage_amortization_example.csv" *columns*)` call.
 
 ### FRED (Federal Reserve Bank of St. Louis) data, and CSV loading
 
+#### `(fred-table creds ids [:start-date d :end-date d])`
+One FRED series, or a list or vector of them, by ID (`"UNRATE"`,
+`"DGS10"`), as a table, like the other data functions give:
+
+- a `date` column, oldest first;
+- a column for each series, headed by its ID;
+- NaN where a series has no value for a date, so daily, weekly, and
+  monthly series line up by date.
+
+`creds` is the credentials file's path; its `"fred_api_key"` entry goes
+with each request. The table covers all of each series, unless
+`:start-date` or `:end-date` (a date, or `"YYYY-MM-DD"`) says otherwise.
+Each download is kept for 12 hours. FRED's site (https://fred.stlouisfed.org)
+finds a series' ID.
+
+```lisp
+(define rates (fred-table creds '("DGS10" "FEDFUNDS" "MORTGAGE30US") :start-date (date 2020 1 1)))
+(plot-chart (list (list "10-year Treasury" (table-column rates "date") (table-column rates "DGS10"))
+                  (list "30-year mortgage" (table-column rates "date") (table-column rates "MORTGAGE30US"))))
+```
+
 #### `(fred-series series-id [api-key] [start-date] [end-date] [cache-hours])`
-Fetches one FRED economic data series and returns `(dates-vector .
-values-vector)` — a dotted pair (built with `cons`, not a 2-element list;
+The older form: fetches one FRED economic data series and returns
+`(dates-vector . values-vector)` — a dotted pair (built with `cons`, not a 2-element list;
 `(cdr result)` is the values vector directly, no extra `car` needed) —
 parallel, row-aligned vectors of dates and numbers. Observations FRED
 marks as missing are silently skipped, so both vectors stay the same
@@ -5621,7 +5658,10 @@ that many hours reads the saved copy instead of the network: reruns are
 fast, you stay under the API's rate limits, and a notebook gives the same
 answer twice. Without `cache-hours` (or with 0), every call downloads.
 Saved copies go in `~/.cache/morris_lisp/http`, or the directory named by
-the `LISP_HTTP_CACHE` environment variable.
+the `LISP_HTTP_CACHE` environment variable. A saved copy more than 31
+days old is deleted when a new one is saved, so the directory doesn't
+only grow. (None of the built-in data functions keeps one longer, so a
+`cache-hours` of more than 744 acts as 744.)
 
 **Headers.** Each also takes an optional `headers`: a list of
 `(name . value)` pairs to send with the request, for an API that wants a
@@ -5629,6 +5669,10 @@ key in a header.
 
 A failed download — a bad URL, no network, or an error status from the
 server — raises a `LispError` giving the URL and the server's reason.
+Some failures may pass: no answer, a dropped connection, or the server's
+own trouble (HTTP 500 and up). Those are tried once more, two seconds
+later, before giving up. A failure that won't pass, such as a 404 (no
+such page), isn't tried again.
 
 #### `(http-get-json url [cache-hours headers])`
 The JSON at `url`, as Lisp data: a JSON object becomes a hash table with
@@ -6056,6 +6100,13 @@ bigger requests into as many as it takes. Data is kept for 12 hours.
 Values the BLS doesn't have, written `-`, are NaN. October 2025 is one of
 these: it wasn't collected because of the government shutdown.
 
+**Changes from a year before.** Price indexes are levels; inflation is
+their change from a year before. `(vector-pct-change column 12)` gives
+each value's change from 12 rows before (a year, in a monthly table; use 4
+for a quarterly one), as a fraction: `0.03` is 3%. The first 12 rows are
+NaN. `vector-diff` gives the difference instead, such as the jobs added
+each month (`(vector-diff payrolls 1)`).
+
 #### `(bls-series creds series [:start-year y :end-year y :annual flag])`
 One series, or a list or vector of them, as a table. Each series is an ID
 or a short name from `bls-names`. The table has a `date` column and a
@@ -6104,17 +6155,35 @@ missing title.
 (bls-series-info creds '("cpi" "LNS14000000"))
 ```
 
-#### `(bls-local-area creds fips [:start-year y :end-year y])`
-A state's or a county's labor force, employment, unemployment, and
+#### `(bls-local-area creds places [:start-year y :end-year y])`
+States' or counties' labor force, employment, unemployment, and
 unemployment rate (in percent), each month, as a table.
 
-- `fips` is the state's 2-digit code (`"36"`) or the county's 5-digit code (`"36061"`). These are the codes `census-get` gives.
-- States' numbers are seasonally adjusted; counties' aren't. The BLS doesn't adjust them.
-- The series behind it are `LA`, then `S` or `U`, a 15-character area code, and a measure: `03` is the rate, `04` unemployed, `05` employed, `06` labor force.
+- `places` is a state's 2-digit code (`"36"`) or a county's 5-digit code
+  (`"36061"`). These are the codes `census-get` gives.
+- For one place, the table has a row per month: `date`, `labor-force`,
+  `employed`, `unemployed`, and `unemployment-rate`.
+- `places` can also be a list or vector of codes, such as a column of
+  `census-shapes`' `GEOID`s. Then the table has a row per place per month,
+  with the place's code in a `fips` column first. Up to 12 places come in
+  one request, so every county in New York (62) takes 6 of the BLS's 500
+  requests a day.
+- States' numbers are seasonally adjusted; counties' aren't. The BLS
+  doesn't adjust them.
+- The series behind it are `LA`, then `S` or `U`, a 15-character area
+  code, and a measure: `03` is the rate, `04` unemployed, `05` employed,
+  `06` labor force.
 
 ```lisp
 (bls-local-area creds "36")                      ; New York State
 (bls-local-area creds "36061" :start-year 2020)  ; New York County (Manhattan)
+
+; Every county in New York, mapped by its unemployment rate in the latest month
+(define counties (census-shapes "county" :state "NY"))
+(define jobless (bls-local-area creds (table-column counties "GEOID") :start-year 2026))
+(define latest (table-where jobless "date" (vector-ref (table-column jobless "date")
+                                                       (- (table-row-count jobless) 1))))
+(plot-map counties :data latest :key "fips" :fill "unemployment-rate" :fill-label "unemployment rate, %")
 ```
 
 `examples/census_bls_example.lsp` does these things:
@@ -6158,6 +6227,13 @@ as `(NA)` or `(D)`, is NaN.
 
 **Dates.** A value is dated the first day of its period: a quarter's first
 day (2026Q2 is April 1), a month's first day, or January 1 for a year.
+
+**Changes from a year before.** The PCE price index is a level; inflation
+is its change from a year before. `(vector-pct-change column 12)` gives
+each value's change from 12 rows before (a year, in a monthly table; use 4
+for a quarterly one), as a fraction: `0.03` is 3%. The first 12 rows are
+NaN. `vector-diff` gives the difference instead, such as the change in the
+saving rate.
 
 #### `(bea-series creds names [:start-year y :end-year y :frequency f])`
 Headline series by short name, as a table. `names` is one short name or a
@@ -8137,7 +8213,7 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 |---|---|
 | `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `implied_vol.lsp`, `vol_smile.lsp` (fitting implied volatility smiles), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
 | `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, and a KenKen solver (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
-| `tools/` | `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV, and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
+| `tools/` | `make_contents.py`, which rebuilds this manual's Contents from its headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 
 `load` finds files in `lib/` and `examples/` from anywhere (see "Where
 `load` finds a file", under "Running it").
@@ -8165,7 +8241,8 @@ The Python files:
 | `lisp_csv.py` | `load-csv`, `write-columns-csv` |
 | `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, `sqlite-write-table`, ... |
 | `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
-| `lisp_fred.py` | `fred-series` (downloads from FRED, through `lisp_http.py`) |
+| `lisp_fred.py` | `fred-table`, `fred-series` (downloads from FRED, through `lisp_http.py`) |
+| `lisp_data_common.py` | What the data modules share: reading the credentials file, the years and lists of names they take, and making their tables |
 | `lisp_sec.py` | `sec-income-statement`, `sec-balance-sheet`, `sec-financials`, ...: financial statements from the SEC's XBRL data |
 | `lisp_fdic.py` | `fdic-balance-sheet`, `fdic-ratios`, `fdic-financials`, `fdic-get`, ...: banks' Call Report data from the FDIC |
 | `lisp_census.py` | `census-get`, `census-profile`, `census-variables`, ...: demographic and economic data from the Census Bureau |

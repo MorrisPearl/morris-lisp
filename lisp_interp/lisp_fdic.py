@@ -37,6 +37,7 @@ import json
 import urllib.parse
 
 from lisp_core import LispDate, LispError, LispString, NIL, Pair, pairs_to_list
+from lisp_data_common import credential, records_table
 from lisp_stratify import keyword_options
 from lisp_tables import column_vector, make_table_value
 import lisp_http
@@ -123,20 +124,9 @@ REPORT_NAMES = {"balance": "fdic-balance-sheet", "income": "fdic-income-statemen
 # Requests
 # ---------------------------------------------------------------------------
 
-def api_key(credentials_path, who):
-    """The credentials file's "fdic_api_key" entry, or None if it has none."""
-    try:
-        with open(str(credentials_path)) as f:
-            return json.load(f).get("fdic_api_key")
-    except OSError as e:
-        raise LispError("%s: couldn't open the credentials file %s: %s" % (who, credentials_path, e))
-    except json.JSONDecodeError as e:
-        raise LispError("%s: the credentials file isn't valid JSON: %s" % (who, e))
-
-
 def fdic_request(credentials_path, dataset, params, who):
     """One request to the API: its JSON answer, as Python data."""
-    key = api_key(credentials_path, who)
+    key = credential(credentials_path, "fdic_api_key", who)
     query = dict(params, **({"api_key": key} if key else {}))
     url = API_URL + dataset + "?" + urllib.parse.urlencode(query)
     shown_url = url.replace(str(key), "...") if key else url        # so the key never shows in an error
@@ -164,27 +154,6 @@ def fdic_records(credentials_path, dataset, params, who):
         records.extend(r["data"] for r in answer["data"])
         if not answer["data"] or len(records) >= answer["meta"]["total"]:
             return records
-
-
-def records_table(records, columns=None):
-    """Records (dicts) as a table: a column for each field, in the order the
-    fields first appear (or those given)."""
-    if columns is None:
-        columns = []
-        for record in records:
-            for name in record:
-                if name not in columns:
-                    columns.append(name)
-
-    def lisp_value(value):
-        if isinstance(value, str):
-            return LispString(value)
-        if isinstance(value, bool):
-            return int(value)
-        if isinstance(value, (dict, list)):
-            return LispString(json.dumps(value))
-        return value
-    return make_table_value([(name, column_vector([lisp_value(r.get(name)) for r in records])) for name in columns])
 
 
 # ---------------------------------------------------------------------------

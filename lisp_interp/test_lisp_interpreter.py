@@ -2098,6 +2098,16 @@ class TestTables(LispTestCase):
         self.assertShows('(row-ref (table-row loans 2) "state")', '"NY"')
         self.assertShows('(table-column (table-head loans 2) "id")', '#("a" "a")')
         self.assertShows('(table-column (table-slice loans 3) "id")', '#("b" "c")')
+        self.assertShows('(table-column (table-tail loans 2) "id")', '#("b" "c")')
+        self.assertShows('(table-column (table-tail loans) "id")', '#("a" "a" "b" "b" "c")')     # fewer than 10
+        self.assertShows('(table-row-count (table-tail loans 0))', "0")
+
+    def test_rows_where_a_column_holds_a_value(self):
+        self.assertShows('(table-column (table-where loans "state" "NY") "balance")', "#(200 195)")
+        self.assertShows('(table-column (table-where loans "id" (list "a" "c")) "balance")', "#(100 90 50)")
+        self.assertShows('(table-column (table-where loans "rate" 7.25) "id")', '#("c")')          # a decimal
+        self.assertShows('(table-row-count (table-where loans "state" "TX"))', "0")
+        self.assertShows('(= (table-column loans "state") "CA")', "#(1 1 0 0 1)")           # text, element by element
         self.assertShows("(table? loans)", "#t")
         self.assertShows("(table? (list 1))", "#f")
         self.assertLispError('(table-column loans "nope")', "no column named")
@@ -3511,7 +3521,9 @@ class TestBls(LispTestCase):
         self.assertEqual([(len(s), a, b) for s, a, b in self.requests],
                          [(50, 1990, 2009), (50, 2010, 2025), (10, 1990, 2009), (10, 2010, 2025)])
         self.assertShows("(table-row-count t)", str(36 * 12))
-        self.assertEqual(self.lisp_bls.year_range({}, "t")[1] - self.lisp_bls.year_range({}, "t")[0], 9)
+        import lisp_data_common
+        first, last = lisp_data_common.year_range({}, "t")
+        self.assertEqual(last - first, 9)                                     # the last 10 years
 
     def test_local_area(self):
         self.run_lisp('(define t (bls-local-area creds "36" :start-year 2021 :end-year 2021))')
@@ -3524,6 +3536,18 @@ class TestBls(LispTestCase):
         self.run_lisp('(bls-local-area creds 6 :start-year 2021 :end-year 2021)')
         self.assertIn("LASST060000000000003", self.requests[-1][0])
         self.assertLispError('(bls-local-area creds "NY")', "isn't a state's FIPS code")
+
+    def test_local_area_for_several_places(self):
+        self.run_lisp('(define t (bls-local-area creds (list "36" "36061" 6 "36") :start-year 2021 :end-year 2021))')
+        self.assertShows("(table-column-names t)",
+                         '("fips" "date" "labor-force" "employed" "unemployed" "unemployment-rate")')
+        self.assertEqual(self.column("t", "fips"), ["36"] * 12 + ["36061"] * 12 + ["06"] * 12)   # each place once
+        self.assertEqual(len(self.requests), 1)                              # 12 series: one request
+        del self.requests[:]
+        counties = lisp_core.list_to_pairs([lisp_core.LispString("36%03d" % (2 * i + 1)) for i in range(13)])
+        self.env[lisp_core.Symbol("counties")] = counties
+        self.run_lisp('(bls-local-area creds counties :start-year 2021 :end-year 2021)')
+        self.assertEqual([len(ids) for ids, _, _ in self.requests], [50, 2])   # 52 series: two requests
 
     def test_names_and_info(self):
         self.assertShows('(vector-ref (table-column (bls-names) "name") 0)', '"cpi"')
@@ -3556,6 +3580,46 @@ class TestBls(LispTestCase):
             with self.assertRaises(lisp_core.LispError) as caught:
                 self.real_bls_request(self.credentials, ["XYZ1"], 2020, 2021, "bls-series")
         self.assertIn("the BLS has no such series: XYZ1", str(caught.exception))
+
+
+class TestDataCommon(unittest.TestCase):
+    """lisp_data_common: what the data modules share."""
+
+    def credentials_file(self, text):
+        path = os.path.join(tempfile.mkdtemp(), "credentials.json")
+        self.addCleanup(shutil.rmtree, os.path.dirname(path), True)
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def test_reading_the_credentials_file(self):
+        import lisp_data_common as common
+        path = self.credentials_file('{"bea_api_key": " abc ", "empty": ""}')
+        self.assertEqual(common.credential(path, "bea_api_key", "t"), "abc")          # spaces trimmed
+        self.assertIsNone(common.credential(path, "fdic_api_key", "t"))             # optional: None
+        self.assertIsNone(common.credential(path, "empty", "t"))
+        with self.assertRaises(lisp_core.LispError) as caught:
+            common.credential(path, "sec_user_agent", "t", "the SEC asks for a name")
+        self.assertIn('the credentials file has no "sec_user_agent" entry -- the SEC asks for a name',
+                      str(caught.exception))
+        for text, message in (("{not json", "isn't valid JSON"), ("[1, 2]", "must hold a JSON object")):
+            with self.assertRaises(lisp_core.LispError) as caught:
+                common.credential(self.credentials_file(text), "x", "t")
+            self.assertIn(message, str(caught.exception))
+        with self.assertRaises(lisp_core.LispError) as caught:
+            common.credential("/no/such/file.json", "x", "t")
+        self.assertIn("couldn't open the credentials file", str(caught.exception))
+
+    def test_dated_tables_and_records(self):
+        import lisp_data_common as common
+        table = common.dated_table([("a", {datetime.date(2024, 2, 1): 2.0, datetime.date(2024, 1, 1): 1.0}),
+                                    ("b", {datetime.date(2024, 2, 1): 5.0})])
+        columns = dict((p.car, p.cdr.items.tolist()) for p in lisp_core.pairs_to_list(table))
+        self.assertEqual([str(d.date) for d in columns["date"]], ["2024-01-01", "2024-02-01"])
+        self.assertTrue(math.isnan(columns["b"][0]))
+        table = common.records_table([{"n": 1, "ok": True, "x": {"y": 2}}, {"n": 2, "s": "t"}])
+        columns = dict((p.car, p.cdr.items.tolist()) for p in lisp_core.pairs_to_list(table))
+        self.assertEqual((columns["n"], columns["ok"][0], columns["x"][0], columns["s"][1]), ([1, 2], 1, '{"y": 2}', "t"))
 
 
 class TestBea(LispTestCase):
@@ -4367,6 +4431,13 @@ class TestHttp(LispTestCase):
                     self.end_headers()
                     self.wfile.write(b'{"error_code":400,"error_message":"Bad Request.  The series does not exist."}')
                     return
+                elif self.path == "/broken" or (self.path == "/flaky" and Handler.hits.count("/flaky") == 1):
+                    self.send_response(503)                 # the server's own trouble (the first time, for /flaky)
+                    self.end_headers()
+                    self.wfile.write(b"try again later")
+                    return
+                elif self.path == "/flaky":
+                    body, kind = b'{"ok": true}', "json"
                 elif self.path.startswith("/fred?"):
                     body, kind = (b'{"observations": [{"date": "2024-01-01", "value": "5.33"},'
                                   b' {"date": "2024-02-01", "value": "."},'
@@ -4397,9 +4468,10 @@ class TestHttp(LispTestCase):
         super().setUp()
         cache = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, cache, True)
-        patcher = mock.patch.dict(os.environ, {"LISP_HTTP_CACHE": cache})
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (mock.patch.dict(os.environ, {"LISP_HTTP_CACHE": cache}),
+                        mock.patch.object(lisp_http, "RETRY_SECONDS", 0)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.handler.hits.clear()
 
     def test_json_becomes_hash_tables_and_lists(self):
@@ -4426,6 +4498,29 @@ class TestHttp(LispTestCase):
         self.run_lisp('(http-get-text "%s" 1)' % url)
         self.assertEqual(len(self.handler.hits), 4)
 
+    def test_a_failure_that_may_pass_is_tried_once_more(self):
+        self.assertShows('(hash-table-ref (http-get-json "%s/flaky") "ok")' % self.base, "#t")
+        self.assertEqual(self.handler.hits, ["/flaky", "/flaky"])           # 503, then fine
+        self.handler.hits.clear()
+        self.assertLispError('(http-get-text "%s/broken")' % self.base, "HTTP 503")
+        self.assertEqual(len(self.handler.hits), 2)
+        self.handler.hits.clear()
+        self.assertLispError('(http-get-text "%s/missing")' % self.base, "HTTP 404")
+        self.assertEqual(len(self.handler.hits), 1)                         # a 404 won't pass: no second try
+
+    def test_old_downloads_are_deleted(self):
+        cache = os.environ["LISP_HTTP_CACHE"]
+        now = time.time()
+        for file_name, days in (("old", 40), ("recent", 10)):
+            with open(os.path.join(cache, file_name), "w") as f:
+                f.write("saved")
+            os.utime(os.path.join(cache, file_name), (now - days * 24 * 3600,) * 2)
+        self.run_lisp('(http-get-text "%s/data.json" 1)' % self.base)           # saving one cleans up
+        remaining = os.listdir(cache)
+        self.assertNotIn("old", remaining)
+        self.assertIn("recent", remaining)
+        self.assertEqual(len(remaining), 2)                                  # recent, and the new download
+
     def test_url_building(self):
         self.assertShows('(http-url "https://x.org/a" (list (cons "q" "a b&c") (cons "n" 5)))',
                          '"https://x.org/a?q=a+b%26c&n=5"')
@@ -4447,6 +4542,23 @@ class TestHttp(LispTestCase):
             self.run_lisp('(fred-series "SOFR" "KEY123" \'() \'() 1)')
             self.run_lisp('(fred-series "SOFR" "KEY123" \'() \'() 1)')
         self.assertEqual(len(self.handler.hits) - before, 1)
+
+    def test_fred_table_lines_series_up_by_date(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        with open(os.path.join(folder, "credentials.json"), "w") as f:
+            json.dump({"fred_api_key": "KEY123"}, f)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(os.path.join(folder, "credentials.json"))
+        with mock.patch.object(lisp_fred, "FRED_URL", self.base + "/fred"):
+            self.run_lisp('(define t (fred-table creds (list "SOFR" "DGS10") :start-date (date 2024 1 1)))')
+            self.run_lisp('(fred-table creds (list "SOFR" "DGS10") :start-date (date 2024 1 1))')
+            self.assertLispError('(fred-table creds "NOPE")', "fred-table: ")
+        self.assertShows("(table-column-names t)", '("date" "SOFR" "DGS10")')
+        self.assertShows('(table-column t "date")', "#(2024-01-01 2024-03-01)")      # FRED's "." is left out
+        self.assertShows('(table-column t "DGS10")', "#(5.33 5.31)")
+        fred_hits = [hit for hit in self.handler.hits if hit.startswith("/fred")]
+        self.assertEqual(len(fred_hits), 3)                     # two series, then kept; then NOPE
+        self.assertIn("observation_start=2024-01-01", fred_hits[0])
 
     def test_a_fred_error_says_what_fred_said_without_the_api_key(self):
         with mock.patch.object(lisp_fred, "FRED_URL", self.base + "/fred"):

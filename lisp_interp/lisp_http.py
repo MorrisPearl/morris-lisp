@@ -12,7 +12,11 @@ saved copy instead of the network. That makes reruns fast, keeps you
 under an API's rate limits, and means a notebook gives the same answer
 twice. The files go in ~/.cache/morris_lisp/http (or the directory named
 by the LISP_HTTP_CACHE environment variable); (http-clear-cache) deletes
-them.
+them, and any more than KEPT_DAYS old are deleted as new ones are saved.
+
+A download that fails in a way that may pass -- no answer, a dropped
+connection, or the server's own trouble (HTTP 500 and up) -- is tried once
+more, after RETRY_SECONDS.
 
 JSON becomes Lisp data: an object becomes a hash table with string keys
 (read it with hash-table-ref), an array becomes a list, true/false become
@@ -35,6 +39,8 @@ from lisp_csv import table_from_csv_rows
 
 USER_AGENT = "morris-lisp (https://github.com/MorrisPearl/morris-lisp)"
 TIMEOUT_SECONDS = 30
+RETRY_SECONDS = 2       # how long to wait before trying a failed download again
+KEPT_DAYS = 31          # saved downloads older than this are deleted (no built-in keeps one 30 days or more)
 
 
 def cache_directory():
@@ -75,21 +81,53 @@ def download(url, cache_hours, headers, name, shown_url=None, body=None):
 
     try:
         request = urllib.request.Request(url, data=body, headers=request_headers)
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-            data = response.read()
-    except urllib.error.HTTPError as e:
-        detail = e.read(300).decode("utf-8", errors="replace").strip()
-        e.close()       # the error holds the connection open until it's closed
-        raise LispError("%s: %s returned HTTP %d %s%s" % (name, shown_url, e.code, e.reason,
-                                                          (" -- " + detail) if detail else ""))
-    except (urllib.error.URLError, OSError, ValueError) as e:
+    except ValueError as e:                     # not a URL
         raise LispError("%s: couldn't download %s: %s" % (name, shown_url, e))
+    data = fetch(request, name, shown_url, last_try=False)
+    if data is None:                            # it may have been a passing problem: once more, after a moment
+        time.sleep(RETRY_SECONDS)
+        data = fetch(request, name, shown_url, last_try=True)
 
     if hours > 0:
         os.makedirs(cache_directory(), exist_ok=True)
         with open(cached_file, "wb") as f:
             f.write(data)
+        delete_old_downloads()
     return data
+
+
+def fetch(request, name, shown_url, last_try):
+    """One try at a download: its bytes -- or, if it failed in a way that
+    may pass (no answer, a dropped connection, or HTTP 500 and up, the
+    server's own trouble) and this isn't the last try, None."""
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            return response.read()
+    except urllib.error.HTTPError as e:
+        detail = e.read(300).decode("utf-8", errors="replace").strip()
+        e.close()       # the error holds the connection open until it's closed
+        if e.code >= 500 and not last_try:
+            return None
+        raise LispError("%s: %s returned HTTP %d %s%s" % (name, shown_url, e.code, e.reason,
+                                                          (" -- " + detail) if detail else ""))
+    except (urllib.error.URLError, OSError) as e:
+        if not last_try:
+            return None
+        raise LispError("%s: couldn't download %s: %s" % (name, shown_url, e))
+
+
+def delete_old_downloads():
+    """Delete the saved downloads more than KEPT_DAYS old, so the cache
+    doesn't only grow."""
+    directory = cache_directory()
+    oldest_kept = time.time() - KEPT_DAYS * 24 * 3600
+    for file_name in os.listdir(directory):
+        path = os.path.join(directory, file_name)
+        try:
+            if os.path.getmtime(path) < oldest_kept:
+                os.remove(path)
+        except OSError:                         # (gone already)
+            pass
 
 
 def as_text(data):

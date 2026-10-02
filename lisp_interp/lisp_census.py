@@ -34,7 +34,8 @@ import json
 import math
 import urllib.parse
 
-from lisp_core import Keyword, LispError, LispString, LispVector, NIL, Pair, pairs_to_list
+from lisp_core import Keyword, LispError, LispString, NIL, pairs_to_list
+from lisp_data_common import credential, text_list
 from lisp_stratify import keyword_options
 from lisp_tables import column_vector, make_table_value
 import lisp_http
@@ -53,22 +54,11 @@ MISSING_VALUES = {-111111111, -222222222, -333333333, -555555555, -666666666, -8
 # Requests
 # ---------------------------------------------------------------------------
 
-def api_key(credentials_path, who):
-    """The credentials file's "us_census_api_key" entry, or None."""
-    try:
-        with open(str(credentials_path)) as f:
-            return json.load(f).get("us_census_api_key")
-    except OSError as e:
-        raise LispError("%s: couldn't open the credentials file %s: %s" % (who, credentials_path, e))
-    except json.JSONDecodeError as e:
-        raise LispError("%s: the credentials file isn't valid JSON: %s" % (who, e))
-
-
 def census_download(credentials_path, url, params, cache_hours, who):
     """The JSON at a Census address, as Python data -- [] if the Census
     found nothing. The key goes on the request but never into an error
     message."""
-    key = api_key(credentials_path, who)
+    key = credential(credentials_path, "us_census_api_key", who)
     query = urllib.parse.urlencode(dict(params, **({"key": key} if key else {})))
     full_url = url + ("?" + query if query else "")
     shown_url = full_url.replace(str(key), "...") if key else full_url
@@ -112,17 +102,6 @@ def dataset_path(credentials_path, dataset, year, who):
             raise LispError("%s: the Census has no dataset %s in the last few years -- give :year, or see "
                             "census-datasets" % (who, dataset))
     return "%d/%s" % (_latest_years[dataset], dataset)
-
-
-def text_list(value, who, what):
-    """A string, or a list or vector of them, as a Python list of strings."""
-    if isinstance(value, str):
-        return [str(value)]
-    if isinstance(value, Pair):
-        return [str(v) for v in pairs_to_list(value)]
-    if isinstance(value, LispVector):
-        return [str(v) for v in value.items]
-    raise LispError("%s: %s must be a string or a list of strings, not %r" % (who, what, value))
 
 
 def cell_value(text, is_code):

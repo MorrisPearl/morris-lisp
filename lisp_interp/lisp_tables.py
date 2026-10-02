@@ -139,6 +139,13 @@ def table_head(table, n=10):
     return make_table_value([(name, LispVector(v.items[:int(n)])) for name, v in columns])
 
 
+def table_tail(table, n=10):
+    """(table-tail table [n]) -- the last n rows (default 10)."""
+    columns = table_columns(table, "table-tail")
+    first = max(row_count(columns) - int(n), 0)
+    return make_table_value([(name, LispVector(v.items[first:])) for name, v in columns])
+
+
 def table_slice(table, start, end=None):
     """(table-slice table start [end]) -- rows start up to, but not
     including, end (default: to the last row)."""
@@ -154,6 +161,7 @@ LOOKING_BUILTINS = {
     "table-column": lambda t, column: find_column(table_columns(t, "table-column"), str(column), "table-column"),
     "table-row-count": lambda t: row_count(table_columns(t, "table-row-count")),
     "table-head": table_head,
+    "table-tail": table_tail,
     "table-slice": table_slice,
 }
 
@@ -414,6 +422,16 @@ def table_filter(table, mask):
     return make_table_value(take_rows(columns, np.flatnonzero(keep)))
 
 
+def table_where(table, column_name, value):
+    """(table-where table column value) -- just the rows whose column holds
+    value -- or, if value is a list, any of its values."""
+    columns = table_columns(table, "table-where")
+    wanted = pairs_to_list(value) if isinstance(value, Pair) else [value]
+    values = column_values(find_column(columns, str(column_name), "table-where"))
+    keep = [row for row, v in enumerate(values) if any(v == w for w in wanted)]
+    return make_table_value(take_rows(columns, np.array(keep, dtype=np.int64)))
+
+
 def table_sort(table, names, descending=False):
     """(table-sort table names [descending?]) -- the rows sorted by one
     column, or by several (the first name first, ties broken by the next).
@@ -453,6 +471,7 @@ def table_append(*tables):
 
 ROW_BUILTINS = {
     "table-filter": table_filter,
+    "table-where": table_where,
     "table-sort": table_sort,
     "table-append": table_append,
 }

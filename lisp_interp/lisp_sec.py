@@ -48,6 +48,7 @@ import json
 import time
 
 from lisp_core import LispDate, LispError, LispHashTable, LispString, Pair, list_to_pairs
+from lisp_data_common import credential
 from lisp_stratify import keyword_options
 from lisp_tables import column_vector, make_table_value
 import lisp_http
@@ -183,17 +184,8 @@ STATEMENT_NAMES = {"income": "sec-income-statement", "balance": "sec-balance-she
 
 def user_agent(credentials_path, who):
     """The "sec_user_agent" entry of the credentials file: who's asking."""
-    try:
-        with open(str(credentials_path)) as f:
-            agent = json.load(f).get("sec_user_agent")
-    except OSError as e:
-        raise LispError("%s: couldn't open the credentials file %s: %s" % (who, credentials_path, e))
-    except json.JSONDecodeError as e:
-        raise LispError("%s: the credentials file isn't valid JSON: %s" % (who, e))
-    if not agent:
-        raise LispError('%s: the credentials file has no "sec_user_agent" entry -- the SEC asks for a name '
-                        'and email address, such as "Jane Smith jane@example.com"' % who)
-    return str(agent)
+    return credential(credentials_path, "sec_user_agent", who, 'the SEC asks for a name and email address, '
+                      'such as "Jane Smith jane@example.com"')
 
 
 def sec_download(url, credentials_path, who):

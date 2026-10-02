@@ -37,7 +37,8 @@ HOW THE CODE IS ORGANIZED
     lisp_csv.py           load-csv, write-columns-csv
     lisp_sqlite.py        sqlite-open, sqlite-query, sqlite-write-table, ...
     lisp_http.py          http-get-json, http-get-csv, ... (downloads from any web API)
-    lisp_fred.py          fred-series                      (downloads from FRED)
+    lisp_fred.py          fred-table, fred-series          (downloads from FRED)
+    lisp_data_common.py   what the data modules share: the credentials file, years, tables
     lisp_sec.py           sec-income-statement, sec-financials, ... (financial statements from the SEC)
     lisp_fdic.py          fdic-balance-sheet, fdic-financials, fdic-get, ... (bank data from the FDIC)
     lisp_census.py        census-get, census-profile, ... (demographic and economic data from the Census)

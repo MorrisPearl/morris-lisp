@@ -15,8 +15,8 @@ them. These builtins put them in tables:
                                     "cpi": a table with a row per date
   (bls-series-info creds series)    what each series is
   (bls-names)                       the short names
-  (bls-local-area creds fips [:start-year :end-year])
-                                    a state's or a county's labor force,
+  (bls-local-area creds places [:start-year :end-year])
+                                    states' or counties' labor force,
                                     employment, and unemployment rate
 
 The credentials file's "bureau_of_labor_statistics_api_key" entry is sent
@@ -29,7 +29,8 @@ import datetime
 import json
 import math
 
-from lisp_core import LispDate, LispError, LispString, LispVector, NIL, Pair, list_to_pairs, pairs_to_list
+from lisp_core import LispError, LispString, LispVector, NIL, Pair, list_to_pairs, pairs_to_list
+from lisp_data_common import credential, dated_table, text_list, year_range
 from lisp_stratify import keyword_options
 from lisp_tables import column_vector, make_table_value
 import lisp_http
@@ -38,7 +39,6 @@ API_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
 CACHE_HOURS = 12
 MOST_SERIES = 50         # the most series, and years, the BLS gives in one request
 MOST_YEARS = 20
-DEFAULT_YEARS = 10
 
 # Short names for some of the series most often wanted: (name, series ID,
 # what it is).
@@ -76,23 +76,11 @@ ANNUAL_AVERAGE_PERIODS = {"M13", "Q05", "S03"}
 # Requests
 # ---------------------------------------------------------------------------
 
-def api_key(credentials_path, who):
-    """The credentials file's "bureau_of_labor_statistics_api_key" entry, or
-    None."""
-    try:
-        with open(str(credentials_path)) as f:
-            return json.load(f).get("bureau_of_labor_statistics_api_key")
-    except OSError as e:
-        raise LispError("%s: couldn't open the credentials file %s: %s" % (who, credentials_path, e))
-    except json.JSONDecodeError as e:
-        raise LispError("%s: the credentials file isn't valid JSON: %s" % (who, e))
-
-
 def bls_request(credentials_path, series_ids, start_year, end_year, who, catalog=False, annual=False):
     """One request: the series the BLS gives back (a list of dicts), for at
     most 50 series and 20 years. The key goes in the request but never
     into an error message."""
-    key = api_key(credentials_path, who)
+    key = credential(credentials_path, "bureau_of_labor_statistics_api_key", who)
     request = {"seriesid": series_ids, "startyear": str(start_year), "endyear": str(end_year)}
     if catalog:
         request["catalog"] = True
@@ -122,16 +110,8 @@ def series_list(series, who):
     """The series asked for -- one, or a list or vector of them -- as
     (heading, series ID) pairs: a short name ("cpi") is its own heading, an
     ID is its."""
-    if isinstance(series, str):
-        names = [str(series)]
-    elif isinstance(series, Pair):
-        names = [str(s) for s in pairs_to_list(series)]
-    elif isinstance(series, LispVector):
-        names = [str(s) for s in series.items]
-    else:
-        raise LispError("%s: expected a series ID or name, or a list of them, not %r" % (who, series))
     result = []
-    for name in names:
+    for name in text_list(series, who, "the series"):
         if name.lower() in SERIES_OF_NAME:
             result.append((name.lower(), SERIES_OF_NAME[name.lower()]))
         elif name.replace("_", "").isalnum():
@@ -139,17 +119,6 @@ def series_list(series, who):
         else:
             raise LispError("%s: %r isn't a series ID or one of the short names (see bls-names)" % (who, name))
     return result
-
-
-def year_range(options, who):
-    """The years asked for: :start-year to :end-year, the last 10 years if
-    they aren't given."""
-    this_year = datetime.date.today().year
-    end_year = int(options.get("end-year") or this_year)
-    start_year = int(options.get("start-year") or end_year - DEFAULT_YEARS + 1)
-    if start_year > end_year:
-        raise LispError("%s: :start-year %d is after :end-year %d" % (who, start_year, end_year))
-    return start_year, min(end_year, this_year)
 
 
 def chunks(items, size):
@@ -211,11 +180,7 @@ def bls_series(credentials_path, series, *options):
     annual = options.get("annual", NIL) not in (NIL, False)
     values = observations(sorted({series_id for _, series_id in wanted}), start_year, end_year, annual,
                           credentials_path, who)
-    dates = sorted({date for by_date in values.values() for date in by_date})
-    columns = [("date", column_vector([LispDate(d.year, d.month, d.day) for d in dates]))]
-    for heading, series_id in wanted:
-        columns.append((heading, column_vector([values[series_id].get(d, math.nan) for d in dates])))
-    return make_table_value(columns)
+    return dated_table([(heading, values[series_id]) for heading, series_id in wanted])
 
 
 def bls_series_info(credentials_path, series):
@@ -258,38 +223,61 @@ LOCAL_AREA_MEASURES = [("labor-force", "06"), ("employed", "05"), ("unemployed",
                        ("unemployment-rate", "03")]
 
 
-def local_area_code(fips, who):
-    """The LAUS area code for a state's FIPS code ("36", or 36) or a
-    county's ("36061"), and whether its numbers are seasonally adjusted
-    -- the BLS adjusts states' but not counties'."""
-    code = str(int(fips)) if isinstance(fips, (int, float)) else str(fips).strip()
+def place_fips(place, who):
+    """A state's FIPS code ("36", from "36" or 36) or a county's ("36061"),
+    as text."""
+    code = str(int(place)) if isinstance(place, (int, float)) else str(place).strip()
     if code.isdigit() and len(code) <= 2:
-        return "ST" + code.zfill(2) + "0" * 11, True
+        return code.zfill(2)
     if code.isdigit() and len(code) <= 5:
-        return "CN" + code.zfill(5) + "0" * 8, False
+        return code.zfill(5)
     raise LispError("%s: %r isn't a state's FIPS code (2 digits, such as \"36\") or a county's "
-                    "(5 digits, such as \"36061\")" % (who, fips))
+                    "(5 digits, such as \"36061\")" % (who, place))
 
 
-def bls_local_area(credentials_path, fips, *options):
-    """(bls-local-area creds fips [:start-year y :end-year y]) -- a state's
-    or a county's labor force, employment, unemployment, and unemployment
-    rate (percent), each month: a table. fips is the state's 2-digit code
-    ("36") or the county's 5-digit code ("36061") -- the codes census-get
-    gives. States' numbers are seasonally adjusted; counties' aren't."""
+def local_area_series(fips):
+    """A place's LAUS series IDs, by measure: "LA", then S if its numbers
+    are seasonally adjusted (a state's are; a county's aren't) or U, then
+    its 15-character area code, then the measure's code."""
+    if len(fips) == 2:
+        area, adjusted = "ST" + fips + "0" * 11, True
+    else:
+        area, adjusted = "CN" + fips + "0" * 8, False
+    return {name: "LA" + ("S" if adjusted else "U") + area + measure for name, measure in LOCAL_AREA_MEASURES}
+
+
+def bls_local_area(credentials_path, places, *options):
+    """(bls-local-area creds places [:start-year y :end-year y]) -- the labor
+    force, employment, unemployment, and unemployment rate (percent) of a
+    state or a county, each month: a table with a row per month. places is
+    a state's 2-digit FIPS code ("36") or a county's 5-digit code ("36061")
+    -- the codes census-get gives -- or a list or vector of them, which
+    gives a row per place per month, with the place's code in a fips
+    column first. Up to 12 places come in one request. States' numbers are
+    seasonally adjusted; counties' aren't."""
     who = "bls-local-area"
     options = keyword_options(options, ["start-year", "end-year"], who)
-    area, adjusted = local_area_code(fips, who)
-    series_ids = {name: "LA" + ("S" if adjusted else "U") + area + measure for name, measure in LOCAL_AREA_MEASURES}
+    several = isinstance(places, (Pair, LispVector))
+    given = pairs_to_list(places) if isinstance(places, Pair) else places.items.tolist() if several else [places]
+    codes = list(dict.fromkeys(place_fips(place, who) for place in given))     # (each once, in order)
+    series_of = {fips: local_area_series(fips) for fips in codes}
     start_year, end_year = year_range(options, who)
-    values = observations(sorted(series_ids.values()), start_year, end_year, False, credentials_path, who)
-    dates = sorted({date for by_date in values.values() for date in by_date})
-    if not dates:
-        raise LispError("%s: the BLS has no data for %s" % (who, fips))
-    columns = [("date", column_vector([LispDate(d.year, d.month, d.day) for d in dates]))]
-    for name, series_id in series_ids.items():
-        columns.append((name, column_vector([values[series_id].get(d, math.nan) for d in dates])))
-    return make_table_value(columns)
+    values = observations(sorted({sid for series in series_of.values() for sid in series.values()}),
+                          start_year, end_year, False, credentials_path, who)
+    tables = {fips: dated_table([(name, values[sid]) for name, sid in series_of[fips].items()]) for fips in codes}
+    empty = [fips for fips in codes if not pairs_to_list(tables[fips])[0].cdr.items.size]
+    if empty:
+        raise LispError("%s: the BLS has no data for %s" % (who, ", ".join(empty)))
+    if not several:
+        return tables[codes[0]]
+    rows = []                                   # (fips, date, the measures)
+    for fips in codes:
+        columns = [pair.cdr.items.tolist() for pair in pairs_to_list(tables[fips])]
+        rows += [(fips,) + tuple(row) for row in zip(*columns)]
+    names = ["fips", "date"] + [name for name, _ in LOCAL_AREA_MEASURES]
+    return make_table_value([(name, column_vector([LispString(r[j]) if j == 0 else r[j] for r in rows]))
+                             for j, name in enumerate(names)])
+
 
 
 BUILTINS = {

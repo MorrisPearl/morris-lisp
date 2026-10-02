@@ -48,21 +48,19 @@
 
 ; --- 4. The economy, from the BLS ------------------------------------------------
 ; bls-series takes series IDs, or short names for the ones most often wanted
-; (bls-names lists them). Each row is a month.
+; (bls-names lists them). Each row is a month. vector-pct-change gives each
+; month's change from 12 months before, as a fraction (0.03 is 3%).
 (define economy (bls-series creds '("cpi" "core-cpi" "average-hourly-earnings" "unemployment-rate")
                             :start-year 2024))
-(define months (table-row-count economy))
-(define (this-year name) (vector-slice (table-column economy name) 12))           ; month 13 on
-(define (a-year-before name) (vector-slice (table-column economy name) 0 (- months 12)))
-(define (yearly-change name) (- (/ (this-year name) (a-year-before name)) 1))
-(define changes (make-table "month" (this-year "date")
+(define (yearly-change name) (vector-pct-change (table-column economy name) 12))
+(define changes (make-table "month" (table-column economy "date")
                             "inflation" (yearly-change "cpi")
                             "core inflation" (yearly-change "core-cpi")
                             "wage growth" (yearly-change "average-hourly-earnings")
                             "real wage growth" (- (yearly-change "average-hourly-earnings") (yearly-change "cpi"))
-                            "unemployment" (/ (this-year "unemployment-rate") 100)))
+                            "unemployment" (/ (table-column economy "unemployment-rate") 100)))
 (display "\nPrices and pay, each compared with a year before:\n")
-(display-table (table-slice changes (- (table-row-count changes) 12))
+(display-table (table-tail changes 12)
                '(("inflation" ".1%") ("core inflation" ".1%") ("wage growth" ".1%")
                  ("real wage growth" ".1%") ("unemployment" ".1%")))
 
@@ -71,5 +69,13 @@
 ; Census gives -- for its labor force and unemployment each month.
 (define manhattan (bls-local-area creds (string-append "36" "061") :start-year 2025))
 (display "\nNew York County (Manhattan), the last six months:\n")
-(display-table (table-slice manhattan (- (table-row-count manhattan) 6))
+(display-table (table-tail manhattan 6)
+               '(("labor-force" ",.0f") ("employed" ",.0f") ("unemployed" ",.0f")))
+
+; A list of codes gives a row per place per month, with a fips column: here
+; New York City's five counties (its boroughs), in the latest month.
+(define boroughs (bls-local-area creds '("36005" "36047" "36061" "36081" "36085") :start-year 2026))
+(define last-month (vector-ref (table-column boroughs "date") (- (table-row-count boroughs) 1)))
+(display "\nNew York City's boroughs, the latest month:\n")
+(display-table (table-where boroughs "date" last-month)
                '(("labor-force" ",.0f") ("employed" ",.0f") ("unemployed" ",.0f")))
