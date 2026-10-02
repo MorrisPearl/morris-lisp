@@ -38,6 +38,7 @@ import lisp_charts
 import lisp_clock
 import lisp_csv
 import lisp_debug
+import lisp_fdic
 import lisp_finance
 import lisp_fred
 import lisp_http
@@ -1822,6 +1823,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_sqlite.BUILTINS)
     env.update(lisp_fred.BUILTINS)
     env.update(lisp_sec.BUILTINS)
+    env.update(lisp_fdic.BUILTINS)
     env.update(lisp_http.BUILTINS)
     env.update(lisp_tastytrade.BUILTINS)
     env.update(lisp_sofr.BUILTINS)

@@ -37,6 +37,7 @@ HOW THE CODE IS ORGANIZED
     lisp_http.py          http-get-json, http-get-csv, ... (downloads from any web API)
     lisp_fred.py          fred-series                      (downloads from FRED)
     lisp_sec.py           sec-income-statement, sec-financials, ... (financial statements from the SEC)
+    lisp_fdic.py          fdic-balance-sheet, fdic-financials, fdic-get, ... (bank data from the FDIC)
     lisp_tastytrade.py    tastytrade-*                     (downloads from tastytrade)
     lisp_sofr.py          sofr-* interest-rate modeling    (sofr-calibration-data
                                                             downloads from tastytrade)

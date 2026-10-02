@@ -2639,6 +2639,140 @@ class TestSecFinancials(LispTestCase):
         self.assertIn('the credentials file has no "sec_user_agent" entry', str(caught.exception))
 
 
+class TestFdic(LispTestCase):
+    """lisp_fdic, with the FDIC's API played by a fake -- no network. Bank
+    1234's Call Reports give interest income (in thousands) only for the
+    year to date, as they do; net income both ways (NETINC, NETINCQ)."""
+
+    QUARTERS = [   # REPDTE, INTINC (year to date), NETINC (ytd), NETINCQ, ASSET, ROA (ytd), ROAQ
+        ("20231231", 400, 100, 30, 10000, 1.0, 1.2),
+        ("20240331", 110, 25, 25, 10200, 0.98, 0.98),
+        ("20240630", 230, 55, 30, 10400, 1.05, 1.12),
+        ("20240930", 350, 80, 25, 10500, 1.02, 0.95),
+        ("20241231", 480, 110, 30, 10800, 1.03, 1.1),
+    ]
+    BANKS = [{"CERT": 1234, "NAME": "First Test Bank", "CITY": "Springfield", "STALP": "IL", "ASSET": 10800,
+              "ACTIVE": 1, "NAMEHCR": "TEST BANCORP", "REPDTE": "12/31/2024"},
+             {"CERT": 5678, "NAME": "First Test Bank West", "CITY": "Boise", "STALP": "ID", "ASSET": 900,
+              "ACTIVE": 1, "NAMEHCR": "", "REPDTE": "12/31/2024"},
+             {"CERT": 9999, "NAME": "First Test Savings", "CITY": "Gary", "STALP": "IN", "ASSET": 50,
+              "ACTIVE": 0, "NAMEHCR": "", "REPDTE": "03/31/2010"}]
+
+    def setUp(self):
+        super().setUp()
+        import lisp_fdic
+        self.lisp_fdic = lisp_fdic
+        self.credentials = os.path.join(tempfile.mkdtemp(), "credentials.json")
+        with open(self.credentials, "w") as f:
+            json.dump({"fdic_api_key": "secret-key-123"}, f)
+        self.addCleanup(shutil.rmtree, os.path.dirname(self.credentials), True)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(self.credentials)
+        self.requests = []
+        self.real_fdic_request = lisp_fdic.fdic_request
+
+        def fake_request(credentials_path, dataset, params, who):
+            self.requests.append((dataset, dict(params)))
+            if dataset == "financials":
+                records = [{"REPDTE": d, "NAME": "First Test Bank", "INTINC": i, "NETINC": n, "NETINCQ": nq,
+                            "ASSET": a, "ROA": r, "ROAQ": rq}
+                           for d, i, n, nq, a, r, rq in reversed(self.QUARTERS)]        # newest first
+            elif dataset == "institutions":
+                words = params.get("search", "").split(":", 1)[-1].lower()
+                records = [b for b in self.BANKS if words in b["NAME"].lower()]
+            else:
+                records = [{"ID": i, "N": i * 10} for i in range(1234)]
+            offset, limit = int(params.get("offset", 0)), int(params.get("limit", 10))
+            return {"meta": {"total": len(records)}, "data": [{"data": r} for r in records[offset:offset + limit]]}
+        patcher = mock.patch.object(lisp_fdic, "fdic_request", fake_request)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def column(self, src, name):
+        return self.run_lisp('(table-column %s "%s")' % (src, name)).items.tolist()
+
+    def assertClose(self, found, expected):
+        """Decimals, as vectors store them (in 32 bits: 0.98 is 0.9800000190734863)."""
+        self.assertEqual(len(found), len(expected))
+        for f, e in zip(found, expected):
+            self.assertAlmostEqual(f, e, places=5)
+
+    def test_quarters_from_year_to_date_figures(self):
+        self.run_lisp('(define f (fdic-financials creds 1234 :count 4))')
+        self.assertShows('(table-column f "report-date")', "#(2024-03-31 2024-06-30 2024-09-30 2024-12-31)")
+        self.assertEqual(self.column("f", "interest-income"), [110000, 120000, 120000, 130000])   # in dollars
+        self.assertEqual(self.column("f", "net-income"), [25000, 30000, 25000, 30000])            # NETINCQ
+        self.assertClose(self.column("f", "return-on-assets"), [0.98, 1.12, 0.95, 1.1])           # ROAQ
+        self.assertEqual(self.column("f", "total-assets"), [10200000, 10400000, 10500000, 10800000])
+
+    def test_years(self):
+        self.run_lisp('(define f (fdic-financials creds 1234 :period "annual"))')
+        self.assertShows('(table-column f "report-date")', "#(2023-12-31 2024-12-31)")
+        self.assertEqual(self.column("f", "interest-income"), [400000, 480000])     # the whole year
+        self.assertEqual(self.column("f", "net-income"), [100000, 110000])
+        self.assertClose(self.column("f", "return-on-assets"), [1.0, 1.03])         # ROA, not ROAQ
+
+    def test_reports_laid_out_as_statements(self):
+        self.run_lisp('(define i (fdic-income-statement creds 1234 :count 2))')
+        self.assertShows("(table-column-names i)", '("item" "2024-12-31" "2024-09-30" "unit" "field")')
+        items = self.column("i", "item")
+        self.assertClose([self.column("i", "2024-12-31")[items.index("Interest income")]], [0.13])   # in millions
+        self.assertEqual(self.column("i", "field")[items.index("Net income")], "NETINCQ")
+        self.run_lisp('(define r (fdic-ratios creds 1234 :period "annual" :count 1))')
+        items = self.column("r", "item")
+        self.assertClose([self.column("r", "2024-12-31")[items.index("Return on assets")]], [1.03])
+        self.assertEqual(self.column("r", "unit")[items.index("Return on assets")], "percent")
+        self.run_lisp('(define b (fdic-balance-sheet creds 1234 :count 1 :in-millions #f))')
+        items = self.column("b", "item")
+        self.assertEqual(self.column("b", "2024-12-31")[items.index("Total assets")], 10800000)
+
+    def test_banks_by_name(self):
+        self.run_lisp('(define found (fdic-find-bank creds "first test"))')
+        self.assertEqual(self.column("found", "cert"), [1234, 5678, 9999])
+        self.assertShows('(table-column found "last-report")', "#(2024-12-31 2024-12-31 2010-03-31)")
+        self.assertEqual(self.lisp_fdic.bank_cert(self.credentials, lisp_core.LispString("first test bank"), "t"), 1234)
+        self.assertEqual(self.lisp_fdic.bank_cert(self.credentials, lisp_core.LispString("first test bank west"), "t"), 5678)
+        self.assertLispError('(fdic-ratios creds "First Test")',
+                             "2 banks have names like First Test -- give the certificate number of one")
+        self.assertLispError('(fdic-ratios creds "Savings")', "no bank open now has a name like Savings")
+
+    def test_fdic_get_reads_every_page(self):
+        self.run_lisp('(define t (fdic-get creds "failures" (list (cons "fields" "ID,N"))))')
+        self.assertShows("(table-row-count t)", "1234")
+        self.assertEqual([params["offset"] for _, params in self.requests], [0])      # 10,000 a page
+        del self.requests[:]
+        self.run_lisp('(define t (fdic-get creds "failures"))')                         # every field: 500 a page
+        self.assertEqual([params["offset"] for _, params in self.requests], [0, 500, 1000])
+        self.run_lisp('(define t (fdic-get creds "failures" (list (cons "limit" "3"))))')
+        self.assertShows("(table-row-count t)", "3")
+        self.assertLispError('(fdic-get creds "banks")', "there's no dataset banks")
+
+    def test_what_the_fields_mean(self):
+        if importlib.util.find_spec("yaml") is None:
+            self.skipTest("the yaml package isn't installed")
+        definitions = ("properties:\n  data:\n    properties:\n"
+                       "      ASSET:\n        title: Total assets\n        description: All assets.\n"
+                       "      DEPUNA:\n        title: Uninsured deposits\n        description: >-\n"
+                       "          Deposits over the\n          insured limit.\n")
+        with mock.patch.object(lisp_http, "download", lambda *args: definitions.encode()):
+            self.run_lisp('(define all (fdic-fields creds "financials"))'
+                          '(define some (fdic-fields creds "financials" "uninsured"))')
+        self.assertShows('(table-column all "field")', '#("ASSET" "DEPUNA")')
+        self.assertShows('(table-column some "description")', '#("Deposits over the insured limit.")')
+
+    def test_the_api_key_is_sent_but_never_shown(self):
+        seen = []
+
+        def fake_download(url, cache_hours, headers, who, shown_url=None):
+            seen.append((url, shown_url))
+            raise lisp_core.LispError("%s: %s returned HTTP 500" % (who, shown_url))
+        with mock.patch.object(lisp_http, "download", fake_download):
+            with self.assertRaises(lisp_core.LispError) as caught:
+                self.real_fdic_request(self.credentials, "financials", {"filters": "CERT:1"}, "fdic-get")
+        self.assertIn("api_key=secret-key-123", seen[0][0])
+        self.assertNotIn("secret-key-123", seen[0][1])
+        self.assertNotIn("secret-key-123", str(caught.exception))
+
+
 class TestTastytrade(LispTestCase):
     """lisp_tastytrade, with tastytrade's API played by FakeTastytrade."""
 
@@ -7033,7 +7167,7 @@ class TestExampleScripts(unittest.TestCase):
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
-    "fred-series", "tastytrade", "sofr-", "(sec-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
+    "fred-series", "tastytrade", "sofr-", "(sec-", "(fdic-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv",
     "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
 )

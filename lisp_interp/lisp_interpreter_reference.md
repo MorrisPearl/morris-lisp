@@ -90,6 +90,7 @@ functions" as a reference to search rather than read start to end.
   - [FRED (Federal Reserve Bank of St. Louis) data, and CSV loading](#fred-federal-reserve-bank-of-st-louis-data-and-csv-loading)
   - [Downloading data from the web](#downloading-data-from-the-web)
   - [SEC financial statements](#sec-financial-statements)
+  - [FDIC bank data](#fdic-bank-data)
   - [SQLite](#sqlite)
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
@@ -5378,6 +5379,107 @@ A hash table with the company's `"name"` and `"cik"`.
 for Microsoft, margins and returns for three companies, and every annual
 EPS figure Coca-Cola has filed.
 
+### FDIC bank data
+
+(In `lisp_fdic.py`.) Every FDIC-insured bank files a Call Report each
+quarter — its balance sheet, income, loans, deposits, and capital — and the
+FDIC publishes them, with ratios it works out from them, back to 1984,
+through its BankFind API (https://api.fdic.gov/banks/docs/). These
+functions put them in tables, in the same form as the SEC functions above.
+
+The data is for each insured *bank*, not its holding company: Wells Fargo
+Bank, N.A., not Wells Fargo & Company. A bank is its FDIC certificate
+number (Wells Fargo Bank is 3511), or a name that matches just one bank
+open now — `fdic-find-bank` looks them up. Each function takes the
+credentials file's path first; its `"fdic_api_key"` entry, if it has one,
+goes with each request (the key never appears in an error message).
+Downloads are kept for 12 hours.
+
+**Amounts and periods.** The FDIC reports dollars in thousands; these
+functions give dollars (or millions, in the reports). Ratios are percents,
+as the FDIC gives them: `1.46` means 1.46%. Income in a Call Report is for
+the year to date; a quarter's figure is the FDIC's own quarterly one where
+it has one (net income, net interest income, and most others), or else the
+year to date less the year to date at the end of the quarter before. Ratios
+for a quarter are for the quarter alone, annualized. A year is the four
+quarters to December 31 — every bank's year, in a Call Report — so
+`:period "annual"` gives the December reports, with income and ratios for
+the whole year.
+
+#### `(fdic-find-bank creds name)`
+The banks, open or closed, whose names — now or before — match `name`,
+largest first: a table of `cert` (the certificate number), `name`, `city`,
+`state`, `total-assets` (dollars, at the last report), `active` (1 if
+open), `holding-company`, and `last-report` (the date of its last Call
+Report).
+
+```lisp
+(display-table (fdic-find-bank creds "silicon valley"))
+```
+
+#### `(fdic-balance-sheet creds bank [:period p :count n :in-millions flag])`, `(fdic-income-statement ...)`, `(fdic-ratios ...)`
+A report laid out as a statement: a row per item, a column per report
+date (newest first), then `unit` and `field` (the FDIC's name for it, for
+`fdic-get` and `fdic-fields`). `:period` is `"quarterly"` (the default) or
+`"annual"`; `:count` is how many periods (8 quarters or 5 years, unless
+given); dollar amounts are in millions unless `:in-millions` is `#f`.
+Ratios are rounded to two decimals here.
+
+| Report | Items |
+|---|---|
+| balance sheet | cash and due from banks, securities, fed funds sold and reverse repos, loans and leases, allowance for credit losses, net loans, total assets, total deposits, insured and uninsured deposits (estimated), brokered deposits, fed funds purchased and repos, other borrowed money, total liabilities, equity capital; loans by type: real estate (1-4 family, multifamily, construction, nonfarm nonresidential), commercial and industrial, consumer, agricultural |
+| income | interest income, interest expense, net interest income, noninterest income, noninterest expense, provision for credit losses, income before taxes, income taxes, net income, net charge-offs |
+| ratios | return on assets, return on equity, net interest margin, efficiency ratio, net charge-offs / loans, noncurrent loans / loans, net loans / deposits, equity / assets, tier 1 leverage ratio, common equity tier 1 ratio, total risk-based capital ratio; and full-time employees |
+
+```lisp
+(display-table (fdic-balance-sheet creds 3511 :count 4))
+(display-table (fdic-ratios creds "Wells Fargo Bank, National Association" :period "annual"))
+```
+
+#### `(fdic-financials creds bank [:period p :count n])`
+Every item, arranged for working with: a row per period (oldest first)
+and a column per item, named by its key (`total-assets`,
+`uninsured-deposits`, `net-income`, `return-on-assets`, ... — the items
+above, lower case, joined by hyphens), after `report-date` and `name`.
+Dollars and percents.
+
+```lisp
+(define svb (fdic-financials creds 24735))          ; Silicon Valley Bank's last 8 quarters
+(/ (table-column svb "uninsured-deposits") (table-column svb "total-deposits"))
+```
+
+#### `(fdic-get creds dataset [parameters])`
+Any of the FDIC's datasets — `"financials"` (every Call Report field,
+about 2,400 of them), `"institutions"`, `"failures"`, `"locations"`
+(branches), `"history"` (mergers and other changes), `"summary"`, `"sod"`
+(the summary of deposits, by branch), `"demographics"` — as a table, a
+column per field, with fields as the FDIC gives them (dollars in
+thousands; its own date formats). The parameters are a list of
+`(name . value)` pairs, as the API takes them: `"filters"`, `"fields"`,
+`"search"`, `"sort_by"`, `"sort_order"`, ... — all in upper case, as it
+asks. Every matching record comes back (in as many requests as that
+takes), unless `"limit"` is given.
+
+```lisp
+(fdic-get creds "failures" '(("filters" . "FAILDATE:[2023-01-01 TO *]")
+                             ("fields" . "NAME,CITY,FAILDATE,QBFASSET,COST")))
+(fdic-get creds "financials" '(("filters" . "CERT:3511 AND REPDTE:20241231")
+                               ("fields" . "REPDTE,ASSET,DEP,LNCI,LNRENRES")))
+```
+
+#### `(fdic-fields creds dataset [search])`
+What a dataset's fields mean: a table of `field`, `title`, and
+`description` — only those whose name or title contains `search`, if it's
+given. (Needs the `yaml` package, to read the FDIC's lists.)
+
+```lisp
+(display-table (fdic-fields creds "financials" "uninsured"))
+```
+
+`examples/fdic_example.lsp` finds a bank, shows Wells Fargo Bank's
+reports, follows Silicon Valley Bank's uninsured deposits and securities
+up to its failure, and lists the largest failures since 2023.
+
 ### SQLite
 
 (In `lisp_sqlite.py`.) Builtins for reading and writing a local SQLite
@@ -7245,6 +7347,7 @@ The Python files:
 | `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
 | `lisp_fred.py` | `fred-series` (downloads from FRED, through `lisp_http.py`) |
 | `lisp_sec.py` | `sec-income-statement`, `sec-balance-sheet`, `sec-financials`, ...: financial statements from the SEC's XBRL data |
+| `lisp_fdic.py` | `fdic-balance-sheet`, `fdic-ratios`, `fdic-financials`, `fdic-get`, ...: banks' Call Report data from the FDIC |
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
