@@ -125,14 +125,14 @@ def text_list(value, who, what):
     raise LispError("%s: %s must be a string or a list of strings, not %r" % (who, what, value))
 
 
-def cell_value(text, is_place_code):
+def cell_value(text, is_code):
     """One value from the Census, which sends every value as text: a number
     as a number -- NaN for one of its codes for no data -- unless it's a
-    place's code, or another code with leading zeros ("001"), which stays
-    text."""
+    code (a place's, or a predicate's), or another code with leading zeros
+    ("001"), which stays text."""
     if text is None:
         return None
-    if is_place_code or (len(text) > 1 and text.startswith("0") and not text.startswith("0.")):
+    if is_code or (len(text) > 1 and text.startswith("0") and not text.startswith("0.")):
         return LispString(text)
     try:
         number = float(text)
@@ -143,17 +143,18 @@ def cell_value(text, is_place_code):
     return int(number) if number.is_integer() and "." not in text else number
 
 
-def rows_table(rows, place_columns):
+def rows_table(rows, code_columns):
     """The Census's answer -- a header row, then a row per place -- as a
-    table. (A time series repeats each predicate asked for as a column; a
-    column comes only once.)"""
+    table, with the code_columns' values kept as text. (A time series
+    repeats each predicate asked for as a column; a column comes only
+    once.)"""
     header, records = rows[0], rows[1:]
     columns = []
     for j, name in enumerate(header):
         if name in header[:j]:
             continue
-        is_place_code = name in place_columns
-        columns.append((name, column_vector([cell_value(r[j], is_place_code) for r in records])))
+        is_code = name in code_columns
+        columns.append((name, column_vector([cell_value(r[j], is_code) for r in records])))
     return make_table_value(columns)
 
 
@@ -172,7 +173,10 @@ def place_names(clauses):
 
 
 def census_query(credentials_path, dataset, variables, geography, options, who):
-    """The rows the Census gives for the query: a list, header first."""
+    """The rows the Census gives for the query -- a list, header first --
+    and the names of the columns that hold codes, to keep as text: the
+    places' levels, and the predicates (as given, such as an industry's
+    code), except time."""
     path = dataset_path(credentials_path, dataset, options.get("year"), who)
     within = text_list(options["within"], who, ":within") if options.get("within", NIL) is not NIL else []
     params = {"get": ",".join(variables), "for": str(geography)}
@@ -183,7 +187,8 @@ def census_query(credentials_path, dataset, variables, geography, options, who):
     rows = census_download(credentials_path, API_URL + path, params, DATA_CACHE_HOURS, who)
     if not rows:
         raise LispError("%s: the Census found nothing for that" % who)
-    return rows, place_names([str(geography)] + within)
+    predicates = {str(entry.car) for entry in pairs_to_list(options.get("predicates", NIL))} - {"time"}
+    return rows, place_names([str(geography)] + within) | predicates
 
 
 # ---------------------------------------------------------------------------
@@ -198,12 +203,13 @@ def census_get(credentials_path, dataset, variables, geography, *options):
     variable and per place code. :within narrows the places ("state:36",
     or a list of such); :year picks the year (the latest, if not given);
     :predicates is a list of (name . value) pairs for anything else the
-    dataset takes, such as ("time" . "from 2020")."""
+    dataset takes, such as ("time" . "from 2020") or ("NAICS2017" . "52"); a
+    predicate's column (but time's) holds text, as it was given."""
     who = "census-get"
     options = keyword_options(options, ["within", "year", "predicates"], who)
-    rows, places = census_query(credentials_path, dataset, text_list(variables, who, "the variables"),
-                                geography, options, who)
-    return rows_table(rows, places)
+    rows, codes = census_query(credentials_path, dataset, text_list(variables, who, "the variables"),
+                               geography, options, who)
+    return rows_table(rows, codes)
 
 
 # The standard profile: each item is (key, how it's worked out). An item

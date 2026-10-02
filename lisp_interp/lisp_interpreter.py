@@ -33,6 +33,7 @@ HOW THE CODE IS ORGANIZED
     lisp_clock.py         current-time, time-add, sleep, sleep-until
     lisp_charts.py        plot-xy, plot-xy-regression, plot-xy-full, save-chart
     lisp_plot_chart.py    plot-chart, plot-histogram, plot-panels
+    lisp_maps.py          census-shapes, plot-map  (maps, from the Census's boundary files)
     lisp_csv.py           load-csv, write-columns-csv
     lisp_sqlite.py        sqlite-open, sqlite-query, sqlite-write-table, ...
     lisp_http.py          http-get-json, http-get-csv, ... (downloads from any web API)

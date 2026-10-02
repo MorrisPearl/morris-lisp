@@ -47,6 +47,8 @@ import time
 import unittest
 from unittest import mock
 
+import numpy as np
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -2559,6 +2561,213 @@ class TestPlotChart(LispTestCase):
             self.assertEqual(matplotlib.image.imread(os.path.join(folder, "own.png")).shape[:2], (100, 200))
 
 
+def shapefile_zip(records, fields):
+    """A zipped shapefile, as the Census's are, for testing: records are
+    (rings, values) -- rings a list of closed rings of (x, y) points, or []
+    for a record without a shape -- and fields are (name, kind, width)."""
+    import struct
+    import zipfile
+    contents = []
+    for rings, _ in records:
+        if not rings:
+            contents.append(struct.pack("<i", 0))
+            continue
+        points = [point for ring in rings for point in ring]
+        starts = [sum(len(r) for r in rings[:i]) for i in range(len(rings))]
+        xs, ys = [p[0] for p in points], [p[1] for p in points]
+        contents.append(struct.pack("<i4d2i", 5, min(xs), min(ys), max(xs), max(ys), len(rings), len(points))
+                        + struct.pack("<%di" % len(rings), *starts)
+                        + b"".join(struct.pack("<2d", x, y) for x, y in points))
+    body = b"".join(struct.pack(">2i", i + 1, len(c) // 2) + c for i, c in enumerate(contents))
+    shp = struct.pack(">7i", 9994, 0, 0, 0, 0, 0, (100 + len(body)) // 2) + struct.pack("<2i8d", 1000, 5, *[0.0] * 8) + body
+    header_length, record_length = 32 + 32 * len(fields) + 1, 1 + sum(width for _, _, width in fields)
+    dbf = struct.pack("<4BIHH20x", 3, 126, 1, 1, len(records), header_length, record_length)
+    for name, kind, width in fields:
+        dbf += struct.pack("<11sc4xBB14x", name.encode(), kind.encode(), width, 0)
+    dbf += b"\r"
+    for _, values in records:
+        dbf += b" " + b"".join((str(v).ljust(w) if k == "C" else str(v).rjust(w)).encode()
+                               for v, (_, k, w) in zip(values, fields))
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("cb_test.shp", shp)
+        z.writestr("cb_test.dbf", dbf + b"\x1a")
+        z.writestr("cb_test.cpg", "UTF-8")
+    return archive.getvalue()
+
+
+def square(lon, lat, size=1.0):
+    """A closed ring around a square, clockwise (as a shapefile's outside rings go)."""
+    return [(lon, lat), (lon, lat + size), (lon + size, lat + size), (lon + size, lat), (lon, lat)]
+
+
+class TestMaps(LispTestCase):
+    """lisp_maps: reading the Census's shapefiles (made up here, with the
+    Census's server played by a fake), the equal-area projection, and
+    plot-map."""
+
+    FIELDS = [("STATEFP", "C", 2), ("GEOID", "C", 5), ("NAME", "C", 20), ("ALAND", "N", 14)]
+    # Three made-up counties -- two in "state 36" (one with a lake in it), one in 06 -- and a record
+    # with no shape.
+    RECORDS = [([square(-75, 42, 2), [(-74.5, 42.5), (-73.5, 42.5), (-73.5, 43.5), (-74.5, 43.5), (-74.5, 42.5)]],
+                ["36", "36001", "Albany", 5000]),
+               ([square(-73, 42)], ["36", "36003", "Bronx", 1500]),
+               ([square(-120, 37)], ["06", "06001", "Alameda", 2000]),
+               ([], ["06", "06003", "Alpine", ""])]
+
+    def setUp(self):
+        super().setUp()
+        import lisp_maps
+        self.lisp_maps = lisp_maps
+        self.specs = []
+        self.env = lisp_builtins.make_global_env(output=self.out.append, plot=self.specs.append)
+        self.urls = []
+        archive = shapefile_zip(self.RECORDS, self.FIELDS)
+
+        def fake_download(url, cache_hours, headers, who, shown_url=None):
+            self.urls.append(url)
+            if "GENZ2026" in url or "GENZ2025" in url:
+                raise lisp_core.LispError("%s: %s returned HTTP 404 Not Found" % (who, url))
+            return archive
+        for patcher in (mock.patch.object(lisp_maps.lisp_http, "download", fake_download),
+                        mock.patch.dict(lisp_maps._latest_years, clear=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def column(self, src, name):
+        return self.run_lisp('(table-column %s "%s")' % (src, name)).items.tolist()
+
+    def test_reading_a_shapefile(self):
+        names, rows, shapes = self.lisp_maps.read_shapefile(shapefile_zip(self.RECORDS, self.FIELDS), "t")
+        self.assertEqual(names, ["STATEFP", "GEOID", "NAME", "ALAND"])
+        self.assertEqual(rows[0], ["36", "36001", "Albany", 5000])
+        self.assertEqual(rows[3][3], None)                                   # a blank number
+        self.assertEqual([len(shape.rings) for shape in shapes], [2, 1, 1, 0])
+        self.assertEqual(shapes[1].rings[0].tolist(), [list(p) for p in square(-73, 42)])
+        self.assertEqual(str(shapes[0]), "#<shape: 2 rings>")
+        renamed = shapefile_zip([([square(0, 0)], ["10027"])], [("GEOID20", "C", 5)])
+        self.assertEqual(self.lisp_maps.read_shapefile(renamed, "t")[0], ["GEOID"])     # 2020's "20" dropped
+
+    def test_census_shapes(self):
+        self.run_lisp('(define c (census-shapes "county"))')
+        self.assertShows("(table-column-names c)", '("STATEFP" "GEOID" "NAME" "ALAND" "shape")')
+        self.assertShows('(table-column c "GEOID")', '#("36001" "36003" "06001" "06003")')
+        self.assertTrue(self.urls[-1].endswith("GENZ2024/shp/cb_2024_us_county_20m.zip"))   # the latest there is
+        self.run_lisp('(define ny (census-shapes "county" :state "NY"))')
+        self.assertShows('(table-column ny "NAME")', '#("Albany" "Bronx")')
+        self.assertTrue(self.urls[-1].endswith("cb_2024_us_county_500k.zip"))   # one state: more detail
+        self.run_lisp('(census-shapes "tract" :state 6 :year 2023)')
+        self.assertTrue(self.urls[-1].endswith("GENZ2023/shp/cb_2023_06_tract_500k.zip"))
+        self.run_lisp('(census-shapes "zip")')
+        self.assertTrue(self.urls[-1].endswith("GENZ2020/shp/cb_2020_us_zcta520_500k.zip"))
+        self.assertLispError('(census-shapes "tract")', "give :state")
+        self.assertLispError('(census-shapes "county" :state "XX")', "isn't a state's postal abbreviation")
+        self.assertLispError('(census-shapes "parish")', "the levels are")
+
+    def test_the_projection_keeps_areas(self):
+        """A one-degree square's area on the map is its area on the earth:
+        R squared, times its width in radians, times the difference of the
+        sines of its latitudes -- wherever it is."""
+        R = self.lisp_maps.EARTH_RADIUS_KM
+        edge = np.linspace(0, 1, 400)
+        for lon, lat, parameters in ((-100, 30, (-96, 37.5, 29.5, 45.5)), (-80, 60, (-96, 37.5, 29.5, 45.5)),
+                                     (179.5, 52, (-154, 50, 55, 65))):        # (across the 180th meridian)
+            lons = np.concatenate([lon + 0 * edge, lon + edge, lon + 1 + 0 * edge, lon + 1 - edge])
+            lats = np.concatenate([lat + edge, lat + 1 + 0 * edge, lat + 1 - edge, lat + 0 * edge])
+            x, y = self.lisp_maps.albers(lons, lats, *parameters)
+            area = abs(self.lisp_maps.ring_area(np.column_stack([x, y])))
+            on_earth = R ** 2 * math.radians(1) * (math.sin(math.radians(lat + 1)) - math.sin(math.radians(lat)))
+            self.assertAlmostEqual(area / on_earth, 1, places=5)
+        self.assertAlmostEqual(float(self.lisp_maps.longitude_difference(179.8, -154)), -26.2, places=6)  # the short way
+
+    def test_where_places_go_on_a_map_of_the_country(self):
+        shape = self.lisp_maps.Shape
+        places = {"contiguous": shape([np.array(square(-100, 40))]), "alaska": shape([np.array(square(-150, 62))]),
+                  "hawaii": shape([np.array(square(-157, 20, 0.5))]), "puerto rico": shape([np.array(square(-66.5, 18, 0.3))]),
+                  "pacific": shape([np.array(square(144.6, 13.3, 0.3))])}                    # Guam
+        for region, place in places.items():
+            self.assertEqual(self.lisp_maps.place_region(place), region)
+        project = self.lisp_maps.map_projection(list(places.values()))
+        self.assertIsNone(project(places["pacific"]))                        # not drawn
+        alaska = project(places["alaska"])[0]
+        center_lon, origin_lat, p1, p2, scale = self.lisp_maps.NATIONAL_PROJECTIONS["alaska"]
+        corners = np.array(square(-150, 62))
+        own = np.column_stack(self.lisp_maps.albers(corners[:, 0], corners[:, 1], center_lon, origin_lat, p1, p2))
+        self.assertAlmostEqual(abs(self.lisp_maps.ring_area(alaska)) / abs(self.lisp_maps.ring_area(own)),
+                               0.35 ** 2)                                     # Alaska, at 35% of the scale
+        one_state = self.lisp_maps.map_projection([places["contiguous"]])     # a smaller map: fitted to it
+        x, y = one_state(places["contiguous"])[0].mean(axis=0)
+        self.assertLess(abs(x), 60)                                           # (its middle is near the middle)
+
+    def test_matching_data_to_places(self):
+        codes = ["06", "36", "48"]
+        self.env[lisp_core.Symbol("data")] = lisp_tables.make_table_value([
+            ("fips", lisp_core.LispVector([lisp_core.LispString("36000"), lisp_core.LispString("06000")])),
+            ("value", lisp_core.LispVector([5.0, 7.0]))])
+        values = self.lisp_maps.values_for_places(None, codes, self.run_lisp("data"), None, "value", "t")
+        self.assertEqual(values, [7.0, 5.0, None])                           # BEA's state codes: 36000 is 36
+        self.assertEqual(self.lisp_maps.normalized_code(6, 2), "06")
+        self.assertEqual(self.lisp_maps.normalized_code(1001.0, 5), "01001")
+        self.env[lisp_core.Symbol("twice")] = lisp_tables.make_table_value([
+            ("state", lisp_core.LispVector([lisp_core.LispString("36"), lisp_core.LispString("36")])),
+            ("county", lisp_core.LispVector([lisp_core.LispString("001"), lisp_core.LispString("001")])),
+            ("value", lisp_core.LispVector([1, 2]))])
+        with self.assertRaises(lisp_core.LispError) as caught:
+            self.lisp_maps.values_for_places(None, ["36001"], self.run_lisp("twice"), lisp_core.list_to_pairs(
+                [lisp_core.LispString("state"), lisp_core.LispString("county")]), "value", "t")
+        self.assertIn("more than one row for 36001", str(caught.exception))
+
+    def test_a_map_colored_by_values_with_symbols(self):
+        self.run_lisp('(define c (census-shapes "county"))'
+                      '(define d (make-table "state" #("36" "36" "06") "county" #("001" "003" "001")'
+                      '                      "income" #(50000 80000 nan) "people" #(1000 4000 0)))')
+        self.run_lisp('(plot-map c :data d :key (list "state" "county") :fill "income" :symbols "people"'
+                      '          :format "${:,.0f}" :title "T")')
+        spec = self.specs[-1]
+        self.assertEqual((spec["kind"], spec["title"], len(spec["places"])), ("map", "T", 3))   # Alpine: no shape
+        self.assertEqual(spec["fill"]["values"], [50000.0, 80000.0, None])
+        self.assertEqual([p[2] for p in spec["symbols"]["points"]], [1000.0, 4000.0])          # 0: no symbol
+        self.assertEqual(spec["symbols"]["legend_values"], [2500.0, 1000.0, 250.0])   # round numbers
+        if not lisp_charts.MATPLOTLIB_AVAILABLE:
+            return
+        fig = lisp_charts.Figure()
+        lisp_charts.FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
+        lisp_charts.draw_chart_on_axes(fig, ax, spec)
+        places, = ax.collections[:1]
+        self.assertEqual(len(places.get_paths()), 3)
+        symbols = [c for c in ax.collections if c is not places and len(c.get_sizes()) == 2][0]
+        sizes = sorted(symbols.get_sizes())
+        self.assertAlmostEqual(sizes[1] / sizes[0], 4.0)                     # areas in proportion to the values
+        self.assertEqual(len(fig.axes), 2)                                   # the map, and its color bar
+        legend = [t.get_text() for t in ax.get_legend().get_texts()]
+        self.assertEqual(legend, ["no data", "$2,500", "$1,000", "$250"])
+        self.run_lisp('(plot-chart (list (list "a" #(1 2) #(3 4))))')        # the GUI's next chart
+        lisp_charts.draw_chart_on_axes(fig, ax, self.specs[-1])
+        self.assertEqual((fig.axes, ax.axison, ax.get_aspect()), ([ax], True, "auto"))
+
+    def test_symbols_on_other_places_and_mistakes(self):
+        self.run_lisp('(define c (census-shapes "county"))'
+                      '(define d (make-table "GEOID" #("36003" "06001") "n" #(9 5)))')
+        self.run_lisp('(plot-map (table-head c 2) :symbols-on c :data d :symbols "n")')    # New York's two
+        spec = self.specs[-1]
+        self.assertEqual(len(spec["places"]), 2)
+        self.assertEqual([value for _, _, value in spec["symbols"]["points"]], [9.0])   # not California's: off the map
+        self.assertLispError('(plot-map c :data d :fill "n" :colors "rainbows")', "isn't one of matplotlib's color maps")
+        self.assertLispError('(plot-map (make-table "a" #(1)))', "must be a table from census-shapes")
+        self.assertLispError('(plot-map c :data (make-table "code" #("1")) :fill "code")', "give :key")
+        self.env = lisp_builtins.make_global_env(output=self.out.append)
+        self.run_lisp('(define c (census-shapes "county"))'
+                      '(plot-map c :data (make-table "GEOID" #("36003") "n" #(9)) :fill "n" :title "M")')
+        self.assertEqual(self.printed(), "[map] M\n  3 places, 1 colored by n\n")
+
+    def test_where_a_symbol_goes(self):
+        big, small = np.array(square(0, 0, 10), dtype=float), np.array(square(20, 0, 1), dtype=float)
+        self.assertEqual(self.lisp_maps.center_of([small, big]).tolist(), [5.0, 5.0])    # the largest piece's middle
+        self.assertEqual(self.lisp_maps.round_number_below(217075), 200000)
+        self.assertEqual(self.lisp_maps.round_number_below(0.03), 0.025)
+
+
 class TestDisplayHtml(LispTestCase):
     """display-html: HTML in a notebook, the plain text anywhere else."""
 
@@ -3147,6 +3356,16 @@ class TestCensus(LispTestCase):
         url, params = self.requests[-1]
         self.assertTrue(url.endswith("/data/2024/acs/acs5"))     # the latest year there's data for
         self.assertEqual((params["for"], params["in"]), ("county:*", "state:36"))
+
+    def test_predicates_come_back_as_text(self):
+        def fake_download(credentials_path, url, params, cache_hours, who):
+            return [["EMP", "NAICS2017", "time", "state"], ["1200", "52", "2024", "36"], ["900", "00", "2024", "36"]]
+        with mock.patch.object(self.lisp_census, "census_download", fake_download):
+            self.run_lisp('(define t (census-get creds "2023/cbp" "EMP" "state:36"'
+                          '                      :predicates (list (cons "NAICS2017" "52") (cons "time" "2024"))))')
+        self.assertShows('(table-column t "NAICS2017")', '#("52" "00")')     # codes, as they were given
+        self.assertEqual(self.column("t", "EMP"), [1200, 900])
+        self.assertEqual(self.column("t", "time"), [2024, 2024])               # time isn't a code
 
     def test_a_year_or_a_full_path(self):
         self.run_lisp('(census-get creds "acs/acs5" "NAME" "county:001" :within "state:36" :year 2019)')

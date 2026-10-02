@@ -1,6 +1,6 @@
 """Charts for the Lisp interpreter: plot-xy, plot-xy-regression,
 plot-xy-full, and save-chart here; plot-chart, plot-histogram, and
-plot-panels in lisp_plot_chart.py.
+plot-panels in lisp_plot_chart.py; plot-map in lisp_maps.py.
 
 A chart goes through two steps:
   1. build_chart_spec() turns Lisp vectors into a plain-data "chart spec"
@@ -17,6 +17,7 @@ import datetime
 
 from lisp_core import LispDate, LispError, LispVector, NIL, is_true, numeric_value, pairs_to_list
 from lisp_regression import fit_linear, fit_logistic
+import lisp_maps
 import lisp_plot_chart
 
 try:
@@ -121,16 +122,22 @@ def draw_chart_on_axes(fig, ax, spec):
     plot-chart's, plot-histogram's, and plot-panels' specs are drawn by
     lisp_plot_chart."""
     # The GUI draws every chart on the same figure and axes: first, undo
-    # what an earlier chart did to them -- secondary axes and panels added,
-    # ax moved to the top panel and brought to the front, a figure title.
+    # what an earlier chart did to them -- secondary axes, panels, and color
+    # bars added, ax moved to the top panel and brought to the front, a
+    # figure title, a map's equal scales and hidden axes.
     for other in list(fig.axes):
         if other is not ax:
             other.remove()
     ax.set_subplotspec(fig.add_gridspec(1, 1)[0])
     ax.set_zorder(0)
+    ax.set_aspect("auto")
+    ax.set_axis_on()
     fig.suptitle("")
     if spec.get("kind") in ("plot-chart", "panels"):
         lisp_plot_chart.draw(fig, ax, spec)
+        return
+    if spec.get("kind") == "map":
+        lisp_maps.draw(fig, ax, spec)
         return
     ax.clear()
 
@@ -226,6 +233,9 @@ def make_chart_builtins(plot):
     def plot_panels(panels, *options):
         return show(lisp_plot_chart.build_panels_spec(panels, options))
 
+    def plot_map(shapes, *options):
+        return show(lisp_maps.build_map_spec(shapes, options))
+
     def save_chart(filename, width=NIL, height=NIL, dpi=150.0):
         if last_chart["spec"] is None:
             raise LispError("save-chart: no chart has been plotted yet (call plot-xy, "
@@ -242,6 +252,7 @@ def make_chart_builtins(plot):
         "plot-chart": plot_chart,
         "plot-histogram": plot_histogram,
         "plot-panels": plot_panels,
+        "plot-map": plot_map,
         "save-chart": save_chart,
     }
 
@@ -251,6 +262,8 @@ def chart_summary_text(spec):
     notebook without matplotlib show instead of drawing the chart."""
     if spec.get("kind") in ("plot-chart", "panels"):
         return lisp_plot_chart.summary_text(spec)
+    if spec.get("kind") == "map":
+        return lisp_maps.summary_text(spec)
     lines = ["[chart] %s" % spec["title"]]
     for s in spec["series"]:
         how = "connected" if s["connect"] else "points only"

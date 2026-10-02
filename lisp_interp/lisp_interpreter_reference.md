@@ -3,15 +3,20 @@
 A small Lisp for getting data from various sources and modeling it: fast
 vector math and statistics, tables (filter, sort, group, join), monthly
 time series, linear/logistic/spline regression with standard errors and
-AUC, linear programming, SQLite, CSV files, downloads from any web API, FRED economic data,
-real tastytrade broker data (futures and equity option chains,
-futures-curve rich/cheap and calendar-spread carry analysis), and XY
-charts — plus dates, macros, struct inheritance, hash tables, `catch-error`
+AUC, linear programming, SQLite, CSV files, downloads from any web API,
+economic and financial data from the BLS, BEA, Census Bureau, FRED, SEC,
+and FDIC, real tastytrade broker data (futures and equity option chains,
+futures-curve rich/cheap and calendar-spread carry analysis), charts, and
+maps — plus dates, macros, struct inheritance, hash tables, `catch-error`
 error handling, a debugger (breakpoints, a debug hook), and an optional PyQt6 GUI. **Requires `numpy`**, unlike every other dependency mentioned in
 this document (PyQt6, matplotlib, pandas, tastytrade), which are all
 optional, feature-specific extras — numpy backs the vector datatype itself
 (see "Vectors", below), so it's needed for even the plainest console/
 batch-mode use of the interpreter.
+
+For a guide to the economic and financial data by topic — which agency
+publishes what, and which function gets it — see
+[economic_data_guide.md](economic_data_guide.md).
 
 This document aims to cover **every builtin and special form** the
 interpreter provides: what its arguments mean, what it returns, and any
@@ -86,6 +91,7 @@ functions" as a reference to search rather than read start to end.
   - [Regression models](#regression-models)
   - [Linear programming](#linear-programming)
   - [Charting](#charting)
+  - [Maps](#maps)
   - [Displaying tables](#displaying-tables)
   - [FRED (Federal Reserve Bank of St. Louis) data, and CSV loading](#fred-federal-reserve-bank-of-st-louis-data-and-csv-loading)
   - [Downloading data from the web](#downloading-data-from-the-web)
@@ -4945,7 +4951,7 @@ Two things to know about the answers:
 ### Charting
 
 `plot-xy`/`plot-xy-regression`/`plot-xy-full`/`plot-chart`/
-`plot-histogram`/`plot-panels` all build a chart and hand it to the GUI's
+`plot-histogram`/`plot-panels`/`plot-map` all build a chart and hand it to the GUI's
 chart tab (if running), a Jupyter cell (drawn inline), or a plain text
 summary printed to the console — either way, only the **most recently
 plotted** chart is remembered, which is what `save-chart` re-renders to a
@@ -5233,6 +5239,157 @@ file-write failure. Returns `'()`.
 (plot-xy prices (list squares))
 (save-chart "chart.png")
 (save-chart "chart.pdf" 10.0 7.5 300)   ; larger, higher-DPI PDF
+```
+
+### Maps
+
+(In `lisp_maps.py`.) `census-shapes` gets places' outlines, and
+`plot-map` draws maps of them:
+
+- each place colored by a value (a *choropleth* map);
+- a symbol on each place, sized by a value (a *proportional symbol* map);
+- or both.
+
+A map goes where every chart goes: inline in a notebook, the GUI's chart
+tab, or a one-line summary at the console. `save-chart` saves it.
+
+**The outlines** come from the Census Bureau's cartographic boundary
+files (https://www.census.gov/geographies/mapping-files.html). These are
+its boundaries simplified for maps and clipped to the shoreline. Each is a
+zipped *shapefile*: a `.shp` file of outlines and a `.dbf` file of each
+place's codes and name. `lisp_maps.py` reads them itself, so no other
+package is needed. A file is downloaded once and kept for 30 days. No key
+is needed.
+
+**The projection.** A map is drawn with the Albers equal-area
+projection: a place's size on the map is in proportion to its size on the
+ground, so big places don't look bigger than they are.
+
+A map of the whole country is drawn the usual way:
+
+- The contiguous states use the standard projection for them (standard
+  parallels 29.5° and 45.5° north, centered on 96° west).
+- Alaska, Hawaii, and Puerto Rico each get their own projection, and are
+  moved into the empty corners below. Alaska is drawn at 35% of the scale,
+  as on most maps of the country, so areas compare truly only within each
+  part.
+- Guam, American Samoa, and the Northern Mariana Islands aren't drawn.
+
+A map of anything smaller, such as one state or one county's tracts, has
+a projection fitted to it.
+
+#### `(census-shapes level [:state s :year y :resolution r])`
+The places of one kind, as a table: a row for each place, with its codes
+and names as the Census gives them, and its outline in the `shape`
+column. `level` is one of these:
+
+| Level | The places | Comes as |
+|---|---|---|
+| `"state"` | the 50 states, DC, and Puerto Rico | one file for the country |
+| `"county"` | counties and the places counted as counties (3,222, with Puerto Rico's municipios) | one file for the country |
+| `"tract"` | census tracts: neighborhoods of about 4,000 people | a file for each state: give `:state` |
+| `"place"` | cities, towns, and villages | a file for each state: give `:state` |
+| `"zcta"` (or `"zip"`) | ZIP code areas (ZCTAs), as drawn for the 2020 census | one file for the country (67 MB) |
+| `"congressional-district"` (or `"cd"`) | the districts of the current Congress | one file for the country |
+| `"metro-area"` (or `"cbsa"`) | metropolitan and micropolitan areas | one file for the country |
+| `"nation"` | the country's outline | one file |
+
+The columns that matter most:
+
+- `GEOID`: the place's code. A state is 2 digits (`"36"`), a county 5
+  (the state's and its own: `"36061"`), a tract 11 (its county's, then 6
+  more), and a ZCTA its ZIP code.
+- `NAME`.
+- `STATEFP` and `STUSPS`: the state's code and its abbreviation.
+- `ALAND` and `AWATER`: land and water area, in square meters.
+
+The 2020 ZCTA file's columns end in `20`; that's dropped, so it has
+`GEOID` and `NAME` too.
+
+- `:state` picks one state's places, by abbreviation (`"NY"`) or code
+  (`36`). Tracts and places need it.
+- `:resolution` is `"20m"` (the simplest outlines, fine for the whole
+  country), `"5m"`, or `"500k"` (the most detail). The default is 20m for
+  the whole country and 500k for one state. Tracts, places, and ZCTAs
+  come only at 500k.
+- `:year` picks the boundaries' year. The default is the latest. ZCTAs
+  are always 2020's.
+
+```lisp
+(define states (census-shapes "state"))
+(define ny-counties (census-shapes "county" :state "NY"))
+(define tracts (census-shapes "tract" :state "NY"))   ; New York's census tracts
+(define zips (census-shapes "zcta"))                   ; every ZIP code area
+```
+
+#### `(plot-map shapes [options])`
+A map of the places in `shapes`, a table from `census-shapes` (or a
+part of one, such as `(table-filter ...)` or `(table-head ...)`). With
+no options, each place is drawn in light gray, outlined.
+
+**Values from a table.** To color places or size symbols by values, give
+a table of them with `:data`, and say which of its columns holds the
+places' codes with `:key`:
+
+- `:key` is a column's name, or a list of columns whose values are put
+  together. `(list "state" "county")` makes `"36"` and `"061"` into
+  `"36061"`, which is how `census-get` gives a county's codes.
+- The default key is the data's `GEOID` column, or else its `fips`, `zip`,
+  or `zcta` column.
+
+Codes match the shapes' `GEOID`s, written as they are:
+
+- A number is padded with zeros: a state's `6` is `"06"`, a ZIP code's
+  `1001` is `"01001"`.
+- A state's 5-character BEA code (`"36000"`) is its 2-digit code.
+- A place with no row in the data has no value. Two rows for one place
+  are an error: add them up first, with `table-group-by`.
+
+Without `:data`, `:fill` and `:symbols` name columns of `shapes` itself,
+such as a column `table-join` added, or `ALAND`.
+
+| Option | What it does |
+|---|---|
+| `:fill` | The data column that colors the places. A place with no value is gray, and the legend says so. |
+| `:fill-label` | The color bar's label. The default is the column's name. |
+| `:colors` | A matplotlib color map: `"viridis"` (the default), `"YlGnBu"`, `"Blues"`, `"YlOrRd"`, `"RdBu"`, ... |
+| `:log` | `#t` for a log scale of colors, for values that run from small to very large, such as population. The values must be above 0. |
+| `:fill-min`, `:fill-max` | The values at the two ends of the colors. The defaults are the smallest and largest values. Values beyond them get the end colors. |
+| `:symbols` | The data column that sizes a symbol on each place. The symbol goes at the center of its largest piece. A symbol's *area* is in proportion to its value, so one twice as big stands for twice as much. A place with no value, or a value of 0 or less, has no symbol. |
+| `:symbol-label` | The symbols' legend title. The default is the column's name. |
+| `:symbols-on` | Other places to put the symbols on (another table from `census-shapes`), such as ZIP code areas on a map of states. Their codes then match the data. |
+| `:symbol-data`, `:symbol-key` | A different table, and key, for the symbols, when the colors and the symbols come from different tables. The defaults are `:data` and `:key`. |
+| `:symbol-size` | The largest symbol's width, in points (default 24) |
+| `:symbol-color` | The symbols' color (default red). They're partly see-through. |
+| `:symbol` | The symbols' shape: `"circle"` (the default), `"square"`, `"triangle"`, `"diamond"`, `"star"`, ... (as for `plot-chart`) |
+| `:format` | How the legends write values: a template, such as `"${:,.0f}"` or `"{:.1%}"`, as for `plot-chart`'s `:y-format` |
+| `:borders` | Another table from `census-shapes` whose outlines are drawn on top, such as the states' over a map of counties |
+| `:edge-color`, `:edge-width` | The places' outlines (default white and thin when colored, gray otherwise) |
+| `:title`, `:legend` | The title, and `#f` for no legends |
+| `:width`, `:height` | The map's size in inches. The default is 8 wide, and as tall as the map needs. |
+
+The color bar is beside the map. The symbols' sizes (three round values),
+and gray for "no data", are shown below it. Returns `'()`.
+
+```lisp
+; Every county, colored by per capita personal income (BEA), with the states' borders
+(define income (bea-regional creds "CAINC1" 3 "COUNTY" :start-year 2024 :end-year 2024))
+(plot-map (census-shapes "county") :data income :key "fips" :fill "2024" :log #t :colors "YlGnBu"
+          :format "${:,.0f}" :fill-label "per capita income" :borders (census-shapes "state"))
+
+; New York's counties, with a circle on each ZIP code area, sized by its population (Census)
+(define people (census-get creds "acs/acs5" '("B01003_001E") "zip code tabulation area:*"))
+(plot-map (census-shapes "county" :state "NY") :symbols-on (census-shapes "zcta")
+          :data people :key "zip code tabulation area" :symbols "B01003_001E" :symbol-label "people"
+          :format "{:,.0f}")
+
+; Manhattan's census tracts, colored by median household income (Census)
+(define incomes (census-get creds "acs/acs5" '("B19013_001E") "tract:*" :within "state:36 county:061"))
+(define ny-tracts (census-shapes "tract" :state "NY"))
+(define manhattan (table-filter ny-tracts (vector-map (lambda (c) (if (equal? c "061") 1 0))
+                                                     (table-column ny-tracts "COUNTYFP"))))
+(plot-map manhattan :data incomes :key '("state" "county" "tract") :fill "B19013_001E"
+          :format "${:,.0f}" :fill-label "median household income")
 ```
 
 ### Displaying tables
@@ -5780,7 +5937,8 @@ place.
   list of such strings.
 - `:predicates` is a list of `(name . value)` pairs for anything else the
   dataset takes, such as a time series' `"time"`, or `"NAICS2017"` for
-  County Business Patterns.
+  County Business Patterns. A predicate's column comes back as text, as it
+  was given (an industry's code `"52"`, like `"00"`), except `time`'s.
 
 ```lisp
 (census-get creds "acs/acs5" '("NAME" "B19013_001E") "county:*" :within "state:36")
@@ -7987,6 +8145,7 @@ The Python files:
 | `lisp_finance.py` | Day counts (`day-count`, `year-fraction`) and cash-flow math: `npv`, `irr`, `xnpv`, `xirr`, `payment`, `present-value`, `yield`, `duration`, `convexity`, ... |
 | `lisp_charts.py` | `plot-xy`, `plot-xy-regression`, `plot-xy-full`, `save-chart` |
 | `lisp_plot_chart.py` | `plot-chart`, `plot-histogram`, `plot-panels`: charts of several series, with bars, areas, a secondary axis, reference lines, and panels |
+| `lisp_maps.py` | `census-shapes`, `plot-map`: the Census's boundaries of states, counties, tracts, ZIP code areas, ..., and maps of them with an equal-area projection |
 | `lisp_csv.py` | `load-csv`, `write-columns-csv` |
 | `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, `sqlite-write-table`, ... |
 | `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
