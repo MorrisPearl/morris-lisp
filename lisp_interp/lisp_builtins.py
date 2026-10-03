@@ -48,6 +48,7 @@ import lisp_http
 import lisp_maps
 import lisp_regex
 import lisp_regression
+import lisp_schwab
 import lisp_sec
 import lisp_simplex
 import lisp_sofr
@@ -1832,6 +1833,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_bls.BUILTINS)
     env.update(lisp_bea.BUILTINS)
     env.update(lisp_maps.BUILTINS)
+    env.update(lisp_schwab.BUILTINS)
     env.update(lisp_http.BUILTINS)
     env.update(lisp_tastytrade.BUILTINS)
     env.update(lisp_sofr.BUILTINS)

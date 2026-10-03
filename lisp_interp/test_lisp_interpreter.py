@@ -30,6 +30,7 @@ form (`show`, i.e. what the REPL would print), or the text the program
 displayed (`printed`).
 """
 
+import base64
 import contextlib
 import datetime
 import importlib.util
@@ -3753,6 +3754,138 @@ class TestBea(LispTestCase):
         self.assertNotIn("bea-key-321", seen[0][1])
         self.assertIn("Invalid TableName", str(caught.exception))
         self.assertNotIn("bea-key-321", str(caught.exception))
+
+
+class TestSchwab(LispTestCase):
+    """lisp_schwab, with Schwab played by a fake -- no network, no sign-in
+    window. The two made-up accounts end 1111 and 2222."""
+
+    ACCOUNTS = [{"accountNumber": "10001111", "hashValue": "HASH1"}, {"accountNumber": "20002222", "hashValue": "HASH2"}]
+    POSITIONS = {"10001111": [{"longQuantity": 100.0, "shortQuantity": 0.0, "averagePrice": 150.0, "marketValue": 23000.0,
+                               "longOpenProfitLoss": 8000.0, "currentDayProfitLoss": 120.0,
+                               "instrument": {"symbol": "AAPL", "description": "APPLE INC", "assetType": "EQUITY",
+                                              "cusip": "037833100"}}],
+                 "20002222": [{"longQuantity": 0.0, "shortQuantity": 5.0, "averagePrice": 2.5, "marketValue": -700.0,
+                               "shortOpenProfitLoss": -450.0, "currentDayProfitLoss": -20.0,
+                               "instrument": {"symbol": "SPY   261218C00700000", "description": "SPY CALL",
+                                              "assetType": "OPTION"}}]}
+
+    def setUp(self):
+        super().setUp()
+        import lisp_schwab
+        self.lisp_schwab = lisp_schwab
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        self.credentials = os.path.join(folder, "credentials.json")
+        with open(self.credentials, "w") as f:
+            json.dump({"Schwab_Client_ID": "app-key", "Schwab_Client_Secret": "app-secret"}, f)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(self.credentials)
+        self.requests = []
+        patcher = mock.patch.object(lisp_schwab, "schwab_request", self.fake_request)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_request(self, method, url, who, headers, body=None):
+        self.requests.append((method, url, headers, body))
+        path = url.split("?")[0].replace(self.lisp_schwab.API_URL, "")
+        if path == "/v1/oauth/token":
+            return 200, {}, {"access_token": "access-%d" % len(self.requests), "refresh_token": "refresh-1",
+                             "expires_in": 1800}
+        if path == "/trader/v1/accounts/accountNumbers":
+            return 200, {}, self.ACCOUNTS
+        if path == "/trader/v1/accounts":
+            return 200, {}, [{"securitiesAccount": {"accountNumber": a["accountNumber"], "type": "MARGIN",
+                                                    "currentBalances": {"liquidationValue": 1000.0, "cashBalance": 50.0},
+                                                    "positions": self.POSITIONS[a["accountNumber"]]}}
+                             for a in self.ACCOUNTS]
+        if path == "/trader/v1/accounts/HASH2":
+            return 200, {}, {"securitiesAccount": {"accountNumber": "20002222", "positions": self.POSITIONS["20002222"]}}
+        if path == "/marketdata/v1/quotes":
+            return 200, {}, {"AAPL": {"quote": {"bidPrice": 229.9, "askPrice": 230.1, "lastPrice": 230.0},
+                                      "reference": {"description": "Apple Inc"}}}
+        if path == "/marketdata/v1/pricehistory":
+            return 200, {}, {"candles": [{"datetime": 1704175200000, "open": 1, "high": 2, "low": 0.5, "close": 1.5,
+                                          "volume": 100}]}           # 2024-01-02, 06:00 UTC
+        if path == "/trader/v1/accounts/HASH1/orders" and method == "POST":
+            return 201, {"Location": self.lisp_schwab.API_URL + "/trader/v1/accounts/HASH1/orders/98765"}, None
+        if method == "DELETE":
+            return 200, {}, None
+        raise AssertionError("no fake for %s %s" % (method, url))
+
+    def sign_in(self):
+        with mock.patch.object(self.lisp_schwab, "has_web_engine", lambda: True), \
+                mock.patch.object(self.lisp_schwab, "login_in_window",
+                                  lambda url, callback: "https://127.0.0.1/?code=C0DE%40&session=s"):
+            self.run_lisp("(schwab-login creds)")
+
+    def column(self, src, name):
+        return self.run_lisp('(table-column %s "%s")' % (src, name)).items.tolist()
+
+    def test_signing_in(self):
+        self.assertLispError("(schwab-accounts creds)", "not signed in to Schwab -- sign in with (schwab-login creds)")
+        self.sign_in()
+        method, url, headers, body = self.requests[0]
+        self.assertEqual((method, url), ("POST", self.lisp_schwab.TOKEN_URL))
+        self.assertEqual(headers["Authorization"], "Basic " + base64.b64encode(b"app-key:app-secret").decode())
+        self.assertIn("code=C0DE%40", body.decode())                         # the code, decoded and sent back
+        self.assertIn("redirect_uri=https%3A%2F%2F127.0.0.1", body.decode())
+        path = self.lisp_schwab.token_file(self.credentials)
+        self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")        # readable only by you
+        self.run_lisp("(schwab-accounts creds)")
+        self.assertEqual(self.requests[-1][2]["Authorization"], "Bearer access-1")
+
+    def test_tokens_are_renewed_and_run_out(self):
+        self.sign_in()
+        tokens = self.lisp_schwab.load_tokens(self.credentials, "t")
+        self.lisp_schwab.save_tokens(self.credentials, dict(tokens, access_expires=0))      # 30 minutes later
+        self.run_lisp("(schwab-accounts creds)")
+        renewal = self.requests[-2]
+        self.assertIn("grant_type=refresh_token", renewal[3].decode())
+        self.assertNotEqual(self.requests[-1][2]["Authorization"], "Bearer access-1")
+        tokens = self.lisp_schwab.load_tokens(self.credentials, "t")
+        self.lisp_schwab.save_tokens(self.credentials, dict(tokens, access_expires=0, refresh_expires=0))  # a week later
+        self.assertLispError("(schwab-accounts creds)", "the Schwab sign-in has run out")
+
+    def test_accounts_and_positions(self):
+        self.sign_in()
+        self.run_lisp("(define a (schwab-accounts creds))")
+        self.assertShows('(table-column a "account")', '#("10001111" "20002222")')
+        self.assertEqual(self.column("a", "value"), [1000.0, 1000.0])
+        self.run_lisp("(define p (schwab-positions creds))")
+        self.assertShows('(table-column p "symbol")', '#("AAPL" "SPY   261218C00700000")')
+        self.assertEqual(self.column("p", "quantity"), [100.0, -5.0])          # short: negative
+        self.assertEqual(self.column("p", "unrealized-gain"), [8000.0, -450.0])
+        self.run_lisp('(define p (schwab-positions creds :account "2222"))')      # by its last digits
+        self.assertShows('(table-column p "account")', '#("20002222")')
+        self.assertLispError('(schwab-positions creds :account "9999")', "no account matches '9999' -- the accounts end 1111, 2222")
+
+    def test_quotes_and_prices(self):
+        self.sign_in()
+        self.run_lisp('(define q (schwab-quotes creds (list "AAPL" "NOPE")))')
+        self.assertAlmostEqual(self.column("q", "bid")[0], 229.9, places=4)
+        self.assertTrue(math.isnan(self.column("q", "bid")[1]))                   # unknown: NaN
+        self.assertIn("symbols=AAPL%2CNOPE", self.requests[-1][1])
+        self.run_lisp('(define h (schwab-price-history creds "AAPL" :start-date "2024-01-01"))')
+        self.assertShows('(table-column h "date")', "#(2024-01-02)")
+        self.assertIn("startDate=1704067200000", self.requests[-1][1])
+
+    def test_orders(self):
+        self.sign_in()
+        self.run_lisp('(define o (schwab-order "buy" "aapl" 10 :type "LIMIT" :price 150))')
+        order = self.lisp_schwab.lisp_to_json(self.run_lisp("o"))
+        self.assertEqual(order["orderLegCollection"][0], {"instruction": "BUY", "quantity": 10,
+                                                          "instrument": {"symbol": "AAPL", "assetType": "EQUITY"}})
+        self.assertEqual((order["orderType"], order["price"], order["duration"]), ("LIMIT", 150, "DAY"))
+        self.assertLispError('(schwab-order "BUY" "AAPL" 10 :type "LIMIT")', "a LIMIT order needs :price")
+        self.assertLispError('(schwab-order "BUY_TO_OPEN" "AAPL" 1)', "an equity order's instruction is one of")
+        sent = len(self.requests)
+        self.assertLispError('(schwab-place-order creds "1111" o)', "nothing was sent")
+        self.assertEqual(len(self.requests), sent)                             # not one request
+        self.assertShows('(schwab-place-order creds "1111" o :confirm #t)', "98765")
+        method, url, headers, body = self.requests[-1]
+        self.assertEqual((method, json.loads(body)), ("POST", order))
+        self.assertShows('(schwab-cancel-order creds "1111" 98765)', "#t")
+        self.assertEqual(self.requests[-1][:2], ("DELETE", self.lisp_schwab.API_URL + "/trader/v1/accounts/HASH1/orders/98765"))
 
 
 class TestTastytrade(LispTestCase):
@@ -8197,7 +8330,7 @@ class TestExampleScripts(unittest.TestCase):
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
-    "fred-series", "tastytrade", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(bea-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
+    "fred-series", "tastytrade", "schwab-", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(bea-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv",
     "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
 )

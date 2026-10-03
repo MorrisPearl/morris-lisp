@@ -104,6 +104,7 @@ functions" as a reference to search rather than read start to end.
   - [BEA data](#bea-data)
   - [SQLite](#sqlite)
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
+  - [Schwab (your accounts)](#schwab-your-accounts)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
   - [Input / output](#input--output)
   - [Metaprogramming](#metaprogramming)
@@ -7210,6 +7211,130 @@ ten `tastytrade-*` builtins; abridged here:
 (hash-table-ref (tastytrade-get creds (list "instruments" "equities" "BRK/B")) "description")
 ```
 
+### Schwab (your accounts)
+
+(In `lisp_schwab.py`.) Your Charles Schwab accounts, through Schwab's API
+(https://developer.schwab.com):
+
+- what's in each account;
+- quotes, and daily price histories for stocks and ETFs;
+- orders, for whenever you want them.
+
+It needs an app registered on Schwab's developer site, with its key and
+secret in the credentials file as `"Schwab_Client_ID"` and
+`"Schwab_Client_Secret"`. If the app's callback URL isn't
+`https://127.0.0.1`, give it as `"Schwab_Callback_URL"`.
+
+**Signing in.** Schwab signs in with OAuth, so a program never sees your
+password. `(schwab-login creds)` opens a small browser window with
+Schwab's sign-in page. There you log in and approve the app.
+
+- Schwab then sends the window to the app's callback URL, with a code in
+  it. The window watches for that, closes, and trades the code for tokens.
+- The tokens are kept in `schwab_tokens.json`, next to the credentials
+  file, readable only by you.
+- The access token lasts 30 minutes and is renewed as needed. The sign-in
+  itself lasts 7 days; then `schwab-login` again. A function that needs
+  it says so when it has run out.
+- The window needs PyQt6's web engine (`pip install PyQt6-WebEngine`).
+  Without it, Schwab's page opens in your own browser instead. After you
+  sign in, that browser ends on an error page at `https://127.0.0.1/...`;
+  paste that address when asked.
+- It works from the console, a notebook, or the GUI.
+
+Nothing is cached: every call asks Schwab.
+
+#### `(schwab-login creds)`
+Sign in, as above. Returns `#t`.
+
+#### `(schwab-accounts creds)`
+Each of your accounts, as a table:
+
+- `account`: its number;
+- `type`: `CASH` or `MARGIN`;
+- `value`: what it would be worth if everything were sold (Schwab's
+  liquidation value);
+- `cash`;
+- `long-value`, `short-value`: the market value of its long and short
+  positions.
+
+#### `(schwab-positions creds [:account a])`
+What's in your accounts, as a table with a row for each holding in each
+account. Its columns:
+
+- `account`, `symbol`, `description`;
+- `asset-type`: `EQUITY`, `OPTION`, `MUTUAL_FUND`, ...;
+- `quantity`: negative for a short position;
+- `average-price`: what was paid, on average;
+- `market-value`, `unrealized-gain`, `day-gain`;
+- `cusip`.
+
+`:account` picks one account, by its number or its last 3 or more digits
+(as text, such as `"1234"`). Cash isn't a holding: see `schwab-accounts`.
+
+```lisp
+(define holdings (schwab-positions creds))
+(display-table (table-sort holdings "market-value" #t) '(("market-value" ",.0f") ("unrealized-gain" ",.0f")))
+(table-group-by holdings "account" '(("total" sum "market-value")))     ; each account's total
+```
+
+#### `(schwab-quotes creds symbols)`
+Quotes for a symbol, or a list or vector of them, as a table: `symbol`,
+`description`, `bid`, `ask`, `last`, `mark`, `change`, `change-percent`,
+`volume`, `52-week-high`, `52-week-low`. A symbol can be a stock, an ETF,
+an index (`$SPX`), or an option. One Schwab doesn't know has NaNs.
+
+#### `(schwab-price-history creds symbol [:start-date d :end-date d :frequency f])`
+A stock's, ETF's, or index's prices, as a table of `date`, `open`,
+`high`, `low`, `close`, and `volume`, oldest first, as Schwab gives them.
+
+- `:frequency` is `"daily"` (the default), `"weekly"`, or `"monthly"`.
+- It covers the last 10 years, unless `:start-date` or `:end-date` (dates,
+  or `"YYYY-MM-DD"`) says otherwise.
+
+`vector-pct-change` turns closing prices into returns: `(vector-pct-change
+(table-column h "close") 1)`.
+
+#### `(schwab-orders creds [:account a :days n])`
+The orders entered in the last `n` days (30, unless `:days` says;
+Schwab keeps 60), in all your accounts or just `:account`'s, as a table:
+`account`, `order-id`, `entered`, `status`, `instruction`, `symbol`,
+`quantity`, `filled`, `type`, `price`, `duration`.
+
+#### `(schwab-get creds path [parameters])`
+The answer to any of the API's requests for information, as Lisp data.
+`path` is its path, such as `"/trader/v1/userPreference"` or
+`"/marketdata/v1/chains"`, and `parameters` a list of `(name . value)`
+pairs.
+
+#### Orders: `schwab-order`, `schwab-preview-order`, `schwab-place-order`, `schwab-cancel-order`
+For whenever you want to trade.
+
+- `(schwab-order instruction symbol quantity [:type t :price p :stop-price s :duration d :asset-type a])`
+  makes an order, as a hash table in Schwab's form. It sends nothing.
+  - The `instruction` for a stock or ETF is `BUY`, `SELL`, `SELL_SHORT`,
+    or `BUY_TO_COVER`.
+  - For an option (`:asset-type "OPTION"`, with the option's symbol), it's
+    `BUY_TO_OPEN`, `BUY_TO_CLOSE`, `SELL_TO_OPEN`, or `SELL_TO_CLOSE`.
+  - `:type` is `MARKET` (the default), `LIMIT` (needs `:price`), `STOP`
+    (needs `:stop-price`), or `STOP_LIMIT` (needs both).
+  - `:duration` is `DAY` (the default), `GOOD_TILL_CANCEL`, or
+    `FILL_OR_KILL`.
+- `(schwab-preview-order creds account order)` gives what Schwab makes of
+  the order, without placing it: any warnings or reasons it would be
+  rejected, and the estimated cost.
+- `(schwab-place-order creds account order :confirm #t)` places it, for
+  real, and returns its order ID. **Nothing is sent without
+  `:confirm #t`.** An app can place 10 orders a day.
+- `(schwab-cancel-order creds account order-id)` cancels an order that
+  hasn't been filled.
+
+```lisp
+(define order (schwab-order "BUY" "VTI" 10 :type "LIMIT" :price 250.00))
+(schwab-preview-order creds "1234" order)               ; check it first
+; (schwab-place-order creds "1234" order :confirm #t)   ; then, if you mean it
+```
+
 ### Implied volatility smiles: finding options out of line
 
 `lib/vol_smile.lsp` fits a model of implied volatility to an option chain
@@ -8249,6 +8374,7 @@ The Python files:
 | `lisp_bls.py` | `bls-series`, `bls-local-area`, `bls-names`, ...: prices, jobs, and pay from the Bureau of Labor Statistics |
 | `lisp_bea.py` | `bea-series`, `bea-nipa`, `bea-regional`, `bea-get`, ...: the national and regional accounts from the Bureau of Economic Analysis |
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
+| `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders`, ...: your Schwab accounts |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |

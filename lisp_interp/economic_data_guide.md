@@ -52,6 +52,7 @@ Never put it in a repository.
 | `fdic_api_key` | FDIC (optional) | https://api.fdic.gov/banks/docs/ |
 | `sec_user_agent` | SEC. There's no key, but the SEC asks every program to send a name and an email address. | — |
 | `client_secret`, `refresh_token` | tastytrade, a brokerage account | see `tasty_api/README.md` |
+| `Schwab_Client_ID`, `Schwab_Client_Secret` | Charles Schwab, a brokerage account: your app's key and secret | https://developer.schwab.com; then sign in once a week with `(schwab-login creds)` |
 
 Maps' outlines (`census-shapes`) need no key.
 
@@ -203,6 +204,8 @@ out, as [section 6](#6-putting-sources-together) shows.
 | All three statements, laid out for working out margins and returns | `(sec-financials creds "KO")` | SEC |
 | Any other number a company reports | `(sec-concepts creds "AAPL")` to find it, then `sec-facts` | SEC |
 | Stock, ETF, option, futures, and crypto prices now | `(tastytrade-quotes creds '("SPY" "QQQ"))` | tastytrade |
+| A stock's or ETF's daily prices, for years | `(schwab-price-history creds "AAPL")` | Schwab |
+| What's in your own accounts | `(schwab-positions creds)` | Schwab |
 | An option chain | `(tastytrade-option-chain creds "SPY")`; `fit-vol-smiles` then finds options priced out of line | tastytrade |
 | A futures curve: oil, gold, the S&P 500, ... | `(tastytrade-futures-curve creds "CL")` | tastytrade |
 | The stock market as a whole | `(fred-table creds "SP500")` (the last 10 years), `(fred-table creds "VIXCLS")` (its volatility) | S&P and Cboe, via FRED |
@@ -293,6 +296,11 @@ It publishes every insured bank's quarterly financial report (its *Call
 Report*) back to 1984, the banks that have failed, and each branch's
 deposits. Functions: `fdic-find-bank`, `fdic-balance-sheet`,
 `fdic-income-statement`, `fdic-ratios`, `fdic-financials`, `fdic-get`.
+
+**Schwab**, a brokerage: what's in your accounts, quotes, and years of
+daily prices for any stock or ETF. It needs your account and a sign-in
+each week. Functions: `schwab-positions`, `schwab-accounts`,
+`schwab-quotes`, `schwab-price-history`.
 
 **tastytrade**, a brokerage, not a government agency. It gives what
 markets are trading at now: stocks, ETFs, options, futures, and crypto.
@@ -525,6 +533,7 @@ borders drawn over it:
 | `sec-income-statement`, `sec-balance-sheet`, `sec-cash-flow-statement`, `sec-financials`, `sec-facts`, `sec-concepts`, `sec-company` | Companies' financial statements | SEC | [SEC financial statements](lisp_interpreter_reference.md#sec-financial-statements) |
 | `fdic-find-bank`, `fdic-balance-sheet`, `fdic-income-statement`, `fdic-ratios`, `fdic-financials`, `fdic-get`, `fdic-fields` | Banks' financial reports | FDIC | [FDIC bank data](lisp_interpreter_reference.md#fdic-bank-data) |
 | `tastytrade-quotes`, `tastytrade-option-chain`, `tastytrade-futures-curve`, `tastytrade-get`, `sofr-calibration-data` | Market prices, option chains, futures curves | tastytrade | [tastytrade](lisp_interpreter_reference.md#tastytrade-real-broker-data) |
+| `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders` | Your accounts' holdings; quotes; years of daily prices | Schwab | [Schwab](lisp_interpreter_reference.md#schwab-your-accounts) |
 
 Example programs in [`examples/`](examples/) show each source at work:
 
@@ -540,7 +549,8 @@ Example programs in [`examples/`](examples/) show each source at work:
 
 **What isn't here:**
 
-- Long price histories for individual stocks. FRED has the S&P 500 for the
-  last 10 years, and tastytrade gives prices as of now.
+- Price histories for individual stocks without a Schwab account. FRED
+  has the S&P 500 for the last 10 years, and tastytrade gives prices as of
+  now.
 - Most numbers about other countries' economies. FRED has some.
 - Loan-level data, such as individual mortgages.

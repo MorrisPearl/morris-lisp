@@ -8,11 +8,19 @@ they're installed. Nothing else in the interpreter imports this file, so
 everything else works without PyQt6.
 """
 
+import importlib
 import sys
 
 from lisp_core import LispAbort, LispError, NIL, format_error_report, parse, seval, to_string
 from lisp_builtins import load_init_file, make_global_env
 from lisp_charts import MATPLOTLIB_AVAILABLE, draw_chart_on_axes, render_chart_to_file
+
+try:
+    # Qt's web engine must be loaded before the application starts, for
+    # schwab-login's sign-in window to open from the GUI.
+    importlib.import_module("PyQt6.QtWebEngineWidgets")
+except ImportError:
+    pass
 
 try:
     from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex

@@ -45,6 +45,7 @@ HOW THE CODE IS ORGANIZED
     lisp_bls.py           bls-series, bls-local-area, ... (prices, jobs, and pay from the BLS)
     lisp_bea.py           bea-series, bea-nipa, bea-regional, ... (national and regional accounts from the BEA)
     lisp_tastytrade.py    tastytrade-*                     (downloads from tastytrade)
+    lisp_schwab.py        schwab-*  (your Schwab accounts: positions, quotes, prices, orders)
     lisp_sofr.py          sofr-* interest-rate modeling    (sofr-calibration-data
                                                             downloads from tastytrade)
     lisp_gui.py           the PyQt6 window
