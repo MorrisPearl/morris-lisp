@@ -3164,6 +3164,41 @@ missing value is `nan`.
 (vector-rolling-mean #(1 2 3 4 5) 3)   ; => #(nan nan 2.0 3.0 4.0)
 ```
 
+#### `(vector-drawdowns dates values percent)`
+Each time `values` fell more than `percent` percent (e.g. `10` or `20`)
+below their previous high — a market's or a portfolio's drawdowns.
+`dates` and `values` are vectors of the same length, oldest first; the
+values must be above 0, and missing ones are skipped. The result is a
+table (in `lisp_tables.py`) with a row per drop:
+
+| Column | What it is |
+|---|---|
+| `peak-date`, `peak` | the high the values fell from |
+| `below-date` | the first date they were more than `percent` below it |
+| `trough-date`, `trough` | the lowest point before they got back to the high |
+| `drop-pct` | how far the trough is below the high, in percent |
+| `recovery-date` | the first date they were back at the high or above; `'()` if they haven't been yet |
+
+A drop is counted once: it lasts until the values get back to the high,
+and only after that can the next one begin, from a new high.
+
+```lisp
+(define d (vector (date 2020 1 1) (date 2020 1 2) (date 2020 1 3) (date 2020 1 4)
+                  (date 2020 1 5) (date 2020 1 6) (date 2020 1 7) (date 2020 1 8)))
+(display-table (vector-drawdowns d #(100 95 85 88 80 101 120 100) 10))
+; peak-date    peak  below-date  trough-date  trough   drop-pct  recovery-date
+; ----------  -----  ----------  -----------  ------  ---------  -------------
+; 2020-01-01  100.0  2020-01-03  2020-01-05     80.0       20.0  2020-01-06
+; 2020-01-07  120.0  2020-01-08  2020-01-08    100.0  16.666666
+```
+
+With prices from FRED, say the S&P 500's 20% drops:
+
+```lisp
+(define sp (fred-table creds "SP500"))
+(display-table (vector-drawdowns (table-column sp "date") (table-column sp "SP500") 20))
+```
+
 #### Building vectors
 
 #### `(vector-range end)`, `(vector-range start end [step])`

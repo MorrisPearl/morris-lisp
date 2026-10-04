@@ -807,9 +807,69 @@ SUMMARY_BUILTINS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Drawdowns
+# ---------------------------------------------------------------------------
+
+def vector_drawdowns(dates, values, percent):
+    """(vector-drawdowns dates values percent) -- each time the values fell
+    more than `percent` percent below their previous high, as a table with
+    a row per drop: the high (peak-date, peak), the date the drop first
+    went past `percent` (below-date), the lowest point before the values
+    got back to the high (trough-date, trough), how far that is below the
+    high in percent (drop-pct), and the date they got back to the high
+    (recovery-date, '() if they haven't yet). Missing values are skipped."""
+    who = "vector-drawdowns"
+    if not isinstance(dates, LispVector) or not isinstance(values, LispVector):
+        raise LispError("%s: dates and values must be vectors" % who)
+    if len(dates.items) != len(values.items):
+        raise LispError("%s: dates has %d elements but values has %d"
+                        % (who, len(dates.items), len(values.items)))
+    if not is_number(percent) or percent <= 0:
+        raise LispError("%s: percent must be a number above 0, such as 10, not %s" % (who, _brief(percent)))
+    numbers = floats_of(values, who)
+
+    drops = []          # one dict per drop
+    current = None      # the drop under way, if the values are more than `percent` below the high
+    peak_value, peak_date = None, None
+    for date, value in zip(dates.items, numbers):
+        value = float(value)
+        if np.isnan(value):
+            continue
+        if value <= 0:
+            raise LispError("%s: the values must be above 0, but one on %s is %s"
+                            % (who, to_string(date), value))
+        if peak_value is None or value >= peak_value:
+            # A new high, or back to the old one: any drop under way is over.
+            if current is not None:
+                current["recovery-date"] = date
+                current = None
+            peak_value, peak_date = value, date
+        elif current is not None:
+            # Still in a drop: is this its lowest point so far?
+            if value < current["trough"]:
+                current["trough-date"], current["trough"] = date, value
+        elif (1 - value / peak_value) * 100 > percent:
+            # More than `percent` below the high: a new drop.
+            current = {"peak-date": peak_date, "peak": peak_value, "below-date": date,
+                       "trough-date": date, "trough": value, "recovery-date": None}
+            drops.append(current)
+
+    for drop in drops:
+        drop["drop-pct"] = (1 - drop["trough"] / drop["peak"]) * 100
+    headings = ["peak-date", "peak", "below-date", "trough-date", "trough", "drop-pct", "recovery-date"]
+    return make_table_value([(h, column_vector([drop[h] for drop in drops])) for h in headings])
+
+
+DRAWDOWN_BUILTINS = {
+    "vector-drawdowns": vector_drawdowns,
+}
+
+
 BUILTINS = {}
 BUILTINS.update(LOOKING_BUILTINS)
 BUILTINS.update(ROW_VIEW_BUILTINS)
 BUILTINS.update(COLUMN_BUILTINS)
 BUILTINS.update(ROW_BUILTINS)
 BUILTINS.update(SUMMARY_BUILTINS)
+BUILTINS.update(DRAWDOWN_BUILTINS)

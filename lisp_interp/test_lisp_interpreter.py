@@ -2103,6 +2103,22 @@ class TestTables(LispTestCase):
         self.assertShows('(table-column (table-tail loans) "id")', '#("a" "a" "b" "b" "c")')     # fewer than 10
         self.assertShows('(table-row-count (table-tail loans 0))', "0")
 
+    def test_drawdowns(self):
+        self.run_lisp("(define dd-dates (vector (date 2020 1 1) (date 2020 1 2) (date 2020 1 3) (date 2020 1 4)"
+                      " (date 2020 1 5) (date 2020 1 6) (date 2020 1 7) (date 2020 1 8)))")
+        self.run_lisp("(define dd (vector-drawdowns dd-dates #(100 95 85 88 80 101 120 100) 10))")
+        self.assertShows("(table-row-count dd)", "2")
+        self.assertShows('(table-column dd "peak")', "#(100.0 120.0)")
+        self.assertShows('(table-column dd "below-date")', "#(2020-01-03 2020-01-08)")
+        self.assertShows('(table-column dd "trough-date")', "#(2020-01-05 2020-01-08)")
+        self.assertShows('(table-column dd "trough")', "#(80.0 100.0)")
+        self.assertAlmostEqual(float(self.run_lisp('(vector-ref (table-column dd "drop-pct") 1)')), 100 / 6, places=4)
+        self.assertShows('(table-column dd "recovery-date")', "#(2020-01-06 ())")     # the second hasn't recovered
+        self.assertShows("(table-row-count (vector-drawdowns dd-dates #(100 95 85 88 80 101 120 100) 25))", "0")
+        self.assertShows("(table-row-count (vector-drawdowns #(1 2 3) #(100 nan 85) 10))", "1")   # NaN skipped
+        self.assertLispError("(vector-drawdowns #(1 2) #(1 2 3) 10)", "dates has 2 elements but values has 3")
+        self.assertLispError("(vector-drawdowns #(1 2) #(100 -5) 10)", "must be above 0")
+
     def test_rows_where_a_column_holds_a_value(self):
         self.assertShows('(table-column (table-where loans "state" "NY") "balance")', "#(200 195)")
         self.assertShows('(table-column (table-where loans "id" (list "a" "c")) "balance")', "#(100 90 50)")
