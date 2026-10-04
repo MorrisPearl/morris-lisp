@@ -3774,7 +3774,8 @@ class TestBea(LispTestCase):
 
 class TestSchwab(LispTestCase):
     """lisp_schwab, with Schwab played by a fake -- no network, no sign-in
-    window. The two made-up accounts end 1111 and 2222."""
+    window. The two made-up accounts end 1111 and 2222; the first is named
+    "Brokerage", and the second has no name."""
 
     ACCOUNTS = [{"accountNumber": "10001111", "hashValue": "HASH1"}, {"accountNumber": "20002222", "hashValue": "HASH2"}]
     POSITIONS = {"10001111": [{"longQuantity": 100.0, "shortQuantity": 0.0, "averagePrice": 150.0, "marketValue": 23000.0,
@@ -3809,6 +3810,12 @@ class TestSchwab(LispTestCase):
                              "expires_in": 1800}
         if path == "/trader/v1/accounts/accountNumbers":
             return 200, {}, self.ACCOUNTS
+        if path == "/trader/v1/userPreference":
+            return 200, {}, {"accounts": [{"accountNumber": "10001111", "nickName": "Brokerage"},
+                                          {"accountNumber": "20002222", "nickName": ""}]}
+        if path == "/trader/v1/orders":
+            return 200, {}, [{"accountNumber": 10001111, "orderId": 555, "status": "FILLED", "quantity": 10.0,
+                              "orderLegCollection": [{"instruction": "BUY", "instrument": {"symbol": "AAPL"}}]}]
         if path == "/trader/v1/accounts":
             return 200, {}, [{"securitiesAccount": {"accountNumber": a["accountNumber"], "type": "MARGIN",
                                                     "currentBalances": {"liquidationValue": 1000.0, "cashBalance": 50.0},
@@ -3816,6 +3823,8 @@ class TestSchwab(LispTestCase):
                              for a in self.ACCOUNTS]
         if path == "/trader/v1/accounts/HASH2":
             return 200, {}, {"securitiesAccount": {"accountNumber": "20002222", "positions": self.POSITIONS["20002222"]}}
+        if path == "/trader/v1/accounts/HASH1":
+            return 200, {}, {"securitiesAccount": {"accountNumber": "10001111", "positions": self.POSITIONS["10001111"]}}
         if path == "/marketdata/v1/quotes":
             return 200, {}, {"AAPL": {"quote": {"bidPrice": 229.9, "askPrice": 230.1, "lastPrice": 230.0},
                                       "reference": {"description": "Apple Inc"}}}
@@ -3854,8 +3863,9 @@ class TestSchwab(LispTestCase):
         self.sign_in()
         tokens = self.lisp_schwab.load_tokens(self.credentials, "t")
         self.lisp_schwab.save_tokens(self.credentials, dict(tokens, access_expires=0))      # 30 minutes later
+        sent = len(self.requests)
         self.run_lisp("(schwab-accounts creds)")
-        renewal = self.requests[-2]
+        renewal = self.requests[sent]                      # renewed first, then asked
         self.assertIn("grant_type=refresh_token", renewal[3].decode())
         self.assertNotEqual(self.requests[-1][2]["Authorization"], "Bearer access-1")
         tokens = self.lisp_schwab.load_tokens(self.credentials, "t")
@@ -3865,15 +3875,19 @@ class TestSchwab(LispTestCase):
     def test_accounts_and_positions(self):
         self.sign_in()
         self.run_lisp("(define a (schwab-accounts creds))")
-        self.assertShows('(table-column a "account")', '#("10001111" "20002222")')
+        self.assertShows('(table-column a "account")', '#("Brokerage" "...2222")')     # names, not numbers
         self.assertEqual(self.column("a", "value"), [1000.0, 1000.0])
         self.run_lisp("(define p (schwab-positions creds))")
         self.assertShows('(table-column p "symbol")', '#("AAPL" "SPY   261218C00700000")')
         self.assertEqual(self.column("p", "quantity"), [100.0, -5.0])          # short: negative
         self.assertEqual(self.column("p", "unrealized-gain"), [8000.0, -450.0])
         self.run_lisp('(define p (schwab-positions creds :account "2222"))')      # by its last digits
-        self.assertShows('(table-column p "account")', '#("20002222")')
-        self.assertLispError('(schwab-positions creds :account "9999")', "no account matches '9999' -- the accounts end 1111, 2222")
+        self.assertShows('(table-column p "account")', '#("...2222")')
+        self.assertShows('(table-column (schwab-positions creds) "account")', '#("Brokerage" "...2222")')
+        self.assertShows('(table-column (schwab-positions creds :account "brokerage") "symbol")',
+                         '#("AAPL")')                                                 # by its name
+        self.assertLispError('(schwab-positions creds :account "9999")',
+                             "no account matches '9999' -- the accounts are Brokerage, ...2222")
 
     def test_quotes_and_prices(self):
         self.sign_in()
@@ -3887,6 +3901,9 @@ class TestSchwab(LispTestCase):
 
     def test_orders(self):
         self.sign_in()
+        self.run_lisp("(define listed (schwab-orders creds))")
+        self.assertShows('(table-column listed "account")', '#("Brokerage")')     # its number is a number here
+        self.assertShows('(table-column listed "symbol")', '#("AAPL")')
         self.run_lisp('(define o (schwab-order "buy" "aapl" 10 :type "LIMIT" :price 150))')
         order = self.lisp_schwab.lisp_to_json(self.run_lisp("o"))
         self.assertEqual(order["orderLegCollection"][0], {"instruction": "BUY", "quantity": 10,
@@ -3900,7 +3917,7 @@ class TestSchwab(LispTestCase):
         self.assertShows('(schwab-place-order creds "1111" o :confirm #t)', "98765")
         method, url, headers, body = self.requests[-1]
         self.assertEqual((method, json.loads(body)), ("POST", order))
-        self.assertShows('(schwab-cancel-order creds "1111" 98765)', "#t")
+        self.assertShows('(schwab-cancel-order creds "Brokerage" 98765)', "#t")
         self.assertEqual(self.requests[-1][:2], ("DELETE", self.lisp_schwab.API_URL + "/trader/v1/accounts/HASH1/orders/98765"))
 
 

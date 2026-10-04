@@ -7279,13 +7279,26 @@ Schwab's sign-in page. There you log in and approve the app.
 
 Nothing is cached: every call asks Schwab.
 
+**Accounts are shown by name**, the nickname you gave each one on
+Schwab's site; one without a nickname is shown as `...` and the last 4
+digits of its number. Wherever a function wants an account (`:account`,
+or an order's `account`), give its name (upper or lower case), its
+number, or the last 3 or more digits of its number, as text: `"IRA"` or
+`"1234"`.
+
+**Every field.** Each table has the most useful of the fields Schwab
+sends. The comments in each function in `lisp_schwab.py` list all of
+them: dozens of balances for an account, tax-lot prices for a holding,
+dividends and P/E for a quote, fills for an order. `schwab-get` gets any
+of them, as Lisp data.
+
 #### `(schwab-login creds)`
 Sign in, as above. Returns `#t`.
 
 #### `(schwab-accounts creds)`
 Each of your accounts, as a table:
 
-- `account`: its number;
+- `account`: its name;
 - `type`: `CASH` or `MARGIN`;
 - `value`: what it would be worth if everything were sold (Schwab's
   liquidation value);
@@ -7297,15 +7310,15 @@ Each of your accounts, as a table:
 What's in your accounts, as a table with a row for each holding in each
 account. Its columns:
 
-- `account`, `symbol`, `description`;
+- `account` (its name), `symbol`, `description`;
 - `asset-type`: `EQUITY`, `OPTION`, `MUTUAL_FUND`, ...;
 - `quantity`: negative for a short position;
 - `average-price`: what was paid, on average;
 - `market-value`, `unrealized-gain`, `day-gain`;
 - `cusip`.
 
-`:account` picks one account, by its number or its last 3 or more digits
-(as text, such as `"1234"`). Cash isn't a holding: see `schwab-accounts`.
+`:account` picks one account, by its name or number (see above). Cash
+isn't a holding: see `schwab-accounts`.
 
 ```lisp
 (define holdings (schwab-positions creds))
@@ -7340,7 +7353,13 @@ Schwab keeps 60), in all your accounts or just `:account`'s, as a table:
 The answer to any of the API's requests for information, as Lisp data.
 `path` is its path, such as `"/trader/v1/userPreference"` or
 `"/marketdata/v1/chains"`, and `parameters` a list of `(name . value)`
-pairs.
+pairs. For example, every balance of every account, or a quote's
+dividends and P/E:
+
+```lisp
+(schwab-get creds "/trader/v1/accounts")
+(schwab-get creds "/marketdata/v1/quotes" '(("symbols" . "AAPL") ("fields" . "quote,fundamental")))
+```
 
 #### Orders: `schwab-order`, `schwab-preview-order`, `schwab-place-order`, `schwab-cancel-order`
 For whenever you want to trade.
@@ -7366,8 +7385,8 @@ For whenever you want to trade.
 
 ```lisp
 (define order (schwab-order "BUY" "VTI" 10 :type "LIMIT" :price 250.00))
-(schwab-preview-order creds "1234" order)               ; check it first
-; (schwab-place-order creds "1234" order :confirm #t)   ; then, if you mean it
+(schwab-preview-order creds "IRA" order)               ; check it first
+; (schwab-place-order creds "IRA" order :confirm #t)   ; then, if you mean it
 ```
 
 ### Implied volatility smiles: finding options out of line

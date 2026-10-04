@@ -12,7 +12,7 @@ After that the other functions just work, until the refresh token runs out
 a week later; then (schwab-login creds) again.
 
   (schwab-login creds)                       sign in: opens a browser window
-  (schwab-accounts creds)                    each account: its number, type, value, and cash
+  (schwab-accounts creds)                    each account: its name, type, value, and cash
   (schwab-positions creds [:account a])      what's in each account: a row per holding
   (schwab-quotes creds symbols)              quotes
   (schwab-price-history creds symbol [:start-date :end-date :frequency])
@@ -31,6 +31,13 @@ entries are the app's key and secret ("Schwab_Callback_URL" too, if the
 app's isn't https://127.0.0.1). The tokens are kept in schwab_tokens.json,
 next to the credentials file, readable only by you. Nothing is cached:
 every call asks Schwab.
+
+Accounts are shown by name: the nickname you gave each one on Schwab's
+site. Wherever an account is wanted, it can be given by that name, by its
+number, or by the last few digits of its number.
+
+The comments in each function list all the fields Schwab's answer has,
+including the ones its table leaves out; (schwab-get creds path) gets them.
 """
 
 import base64
@@ -281,18 +288,46 @@ def api_get(credentials_path, path, who, params=None):
     return api_call(credentials_path, "GET", path, who, params)[1]
 
 
+def account_names(credentials_path, who):
+    """Each account's name, by its number: the nickname you gave it on
+    Schwab's site, or -- for one without a nickname -- "..." and the last 4
+    digits of its number.
+
+    Schwab's /trader/v1/userPreference answer has, for each account (in
+    "accounts"): accountNumber, primaryAccount, type, nickName,
+    displayAcctId (such as "...1234"), autoPositionEffect, accountColor,
+    lotSelectionMethod, hasFuturesAccount, hasForexAccount. (Besides
+    "accounts", it has "streamerInfo" and "offers", which aren't used.)"""
+    preferences = api_get(credentials_path, "/trader/v1/userPreference", who) or {}
+    names = {}
+    for account in preferences.get("accounts", []):
+        number_text = str(account.get("accountNumber", ""))
+        names[number_text] = (account.get("nickName") or "").strip() or "..." + number_text[-4:]
+    return names
+
+
+def account_name(names, account_number):
+    """An account's name, from account_names (its number's last 4 digits if
+    Schwab didn't list it)."""
+    number_text = str(account_number)
+    return names.get(number_text) or "..." + number_text[-4:]
+
+
 def find_account(credentials_path, account, who):
     """An account's number and the code ("hash") the API names it by: given
-    as its number, or the last 3 or more digits of it (as text, to keep
-    leading zeros)."""
+    as its name (upper or lower case), its number, or the last 3 or more
+    digits of it (as text, to keep leading zeros)."""
     accounts = api_get(credentials_path, "/trader/v1/accounts/accountNumbers", who) or []
+    names = account_names(credentials_path, who)
     text = str(int(account)) if isinstance(account, (int, float)) else str(account).strip()
-    matches = [a for a in accounts
-               if a["accountNumber"] == text or (len(text) >= 3 and a["accountNumber"].endswith(text))]
+    matches = [a for a in accounts if account_name(names, a["accountNumber"]).lower() == text.lower()]
+    if not matches:
+        matches = [a for a in accounts
+                   if a["accountNumber"] == text or (len(text) >= 3 and a["accountNumber"].endswith(text))]
     if len(matches) != 1:
-        raise LispError("%s: %s account matches %r -- the accounts end %s"
+        raise LispError("%s: %s account matches %r -- the accounts are %s"
                         % (who, "more than one" if matches else "no", text,
-                           ", ".join(a["accountNumber"][-4:] for a in accounts)))
+                           ", ".join(account_name(names, a["accountNumber"]) for a in accounts)))
     return matches[0]["accountNumber"], matches[0]["hashValue"]
 
 
@@ -315,15 +350,43 @@ def table_of(rows, names):
 
 def schwab_accounts(credentials_path):
     """(schwab-accounts creds) -- each of your accounts: a table of its
-    number, type (CASH or MARGIN), value (what it would be worth sold:
+    name, type (CASH or MARGIN), value (what it would be worth sold:
     Schwab's liquidation value), cash, and the market value of its long
     and short positions."""
+    # Schwab's /trader/v1/accounts answer has, for each account:
+    #
+    #   securitiesAccount: accountNumber, type, roundTrips, isDayTrader,
+    #     isClosingOnlyRestricted, isPortfolioMargin, isIntradayMargin, pfcbFlag;
+    #     positions (see schwab-positions), with ?fields=positions;
+    #     initialBalances (at the start of the day), currentBalances, and
+    #     projectedBalances, each some of these:
+    #       accountValue, accruedInterest, availableFunds,
+    #       availableFundsNonMarginableTrade, bondValue, buyingPower,
+    #       buyingPowerNonMarginableTrade, cashAvailableForTrading,
+    #       cashAvailableForWithdrawal, cashBalance, cashCall, cashDebitCallValue,
+    #       cashReceipts, dayTradingBuyingPower, dayTradingBuyingPowerCall,
+    #       dayTradingEquityCall, equity, equityPercentage,
+    #       intradayBuyingPowerAmount, isInCall, liquidationValue,
+    #       longMarginValue, longMarketValue, longNonMarginableMarketValue,
+    #       longOptionMarketValue, longStockValue, maintenanceCall,
+    #       maintenanceRequirement, margin, marginBalance, marginEquity,
+    #       moneyMarketFund, mutualFundValue, pendingDeposits, regTCall,
+    #       savings, shortBalance, shortMarginValue, shortMarketValue,
+    #       shortOptionMarketValue, shortStockValue, sma, stockBuyingPower,
+    #       totalCash, unsettledCash
+    #   aggregatedBalance: currentLiquidationValue, liquidationValue,
+    #     intradayBuyingPowerAmount, currentIntradayBuyingPowerAmount
+    #
+    # The table uses type and currentBalances' liquidationValue, cashBalance,
+    # longMarketValue, and shortMarketValue. The rest can be had with
+    # (schwab-get creds "/trader/v1/accounts").
     who = "schwab-accounts"
+    names = account_names(credentials_path, who)
     rows = []
     for entry in api_get(credentials_path, "/trader/v1/accounts", who) or []:
         account = entry.get("securitiesAccount", {})
         balances = account.get("currentBalances", {})
-        rows.append((account.get("accountNumber", ""), account.get("type", ""),
+        rows.append((account_name(names, account.get("accountNumber", "")), account.get("type", ""),
                      number(balances.get("liquidationValue")), number(balances.get("cashBalance")),
                      number(balances.get("longMarketValue")), number(balances.get("shortMarketValue"))))
     return table_of(rows, ["account", "type", "value", "cash", "long-value", "short-value"])
@@ -333,12 +396,12 @@ POSITION_COLUMNS = ["account", "symbol", "description", "asset-type", "quantity"
                     "market-value", "unrealized-gain", "day-gain", "cusip"]
 
 
-def position_row(account_number, position):
+def position_row(account, position):
     """One holding: what it is, how much (short positions negative), what it
     cost on average, and what it's worth and has gained."""
     instrument = position.get("instrument", {})
     gains = [position.get(k) for k in ("longOpenProfitLoss", "shortOpenProfitLoss") if position.get(k) is not None]
-    return (account_number, instrument.get("symbol", ""), instrument.get("description", ""),
+    return (account, instrument.get("symbol", ""), instrument.get("description", ""),
             instrument.get("assetType", ""),
             number(position.get("longQuantity") or 0) - number(position.get("shortQuantity") or 0),
             number(position.get("averagePrice")), number(position.get("marketValue")),
@@ -349,11 +412,28 @@ def position_row(account_number, position):
 def schwab_positions(credentials_path, *options):
     """(schwab-positions creds [:account a]) -- what's in your accounts: a
     table with a row for each holding in each account -- or just one
-    account's, given by its number or its last few digits -- of the
-    account, symbol, description, asset type (EQUITY, OPTION, ...),
+    account's, given by its name, its number, or its last few digits -- of
+    the account's name, symbol, description, asset type (EQUITY, OPTION, ...),
     quantity (negative for a short position), average price paid, market
     value, unrealized gain, today's gain, and CUSIP. Cash isn't a holding:
     see schwab-accounts."""
+    # Schwab's answer has, for each holding (securitiesAccount's "positions"):
+    #
+    #   longQuantity, shortQuantity, settledLongQuantity, settledShortQuantity,
+    #   previousSessionLongQuantity, previousSessionShortQuantity, agedQuantity,
+    #   averagePrice, averageLongPrice, averageShortPrice,
+    #   taxLotAverageLongPrice, taxLotAverageShortPrice,
+    #   marketValue, maintenanceRequirement, currentDayCost,
+    #   longOpenProfitLoss, shortOpenProfitLoss,
+    #   currentDayProfitLoss, currentDayProfitLossPercentage,
+    #   instrument: assetType, symbol, cusip, description, netChange,
+    #     uniformSymbol, type; and for an option, putCall and underlyingSymbol
+    #
+    # The table uses longQuantity less shortQuantity, averagePrice,
+    # marketValue, longOpenProfitLoss plus shortOpenProfitLoss,
+    # currentDayProfitLoss, and the instrument's symbol, description,
+    # assetType, and cusip. The rest can be had with
+    # (schwab-get creds "/trader/v1/accounts" '(("fields" . "positions"))).
     who = "schwab-positions"
     options = keyword_options(options, ["account"], who)
     if options.get("account", NIL) is not NIL:
@@ -361,11 +441,12 @@ def schwab_positions(credentials_path, *options):
         entries = [api_get(credentials_path, "/trader/v1/accounts/" + account_hash, who, {"fields": "positions"})]
     else:
         entries = api_get(credentials_path, "/trader/v1/accounts", who, {"fields": "positions"}) or []
+    names = account_names(credentials_path, who)
     rows = []
     for entry in entries:
         account = (entry or {}).get("securitiesAccount", {})
         for position in account.get("positions", []):
-            rows.append(position_row(account.get("accountNumber", ""), position))
+            rows.append(position_row(account_name(names, account.get("accountNumber", "")), position))
     return table_of(rows, POSITION_COLUMNS)
 
 
@@ -384,6 +465,32 @@ def schwab_quotes(credentials_path, symbols):
     of symbol, description, bid, ask, last, mark, the change and percent
     change from the last close, volume, and the 52-week high and low, in
     the order given. A symbol Schwab doesn't know has NaNs."""
+    # Schwab's answer has, for each symbol (an index, such as $SPX, has fewer):
+    #
+    #   assetMainType, assetSubType, quoteType, realtime, ssid, symbol
+    #   quote: 52WeekHigh, 52WeekLow, askMICId, askPrice, askSize, askTime,
+    #     bidMICId, bidPrice, bidSize, bidTime, closePrice, highPrice, lastMICId,
+    #     lastPrice, lastSize, lowPrice, mark, markChange, markPercentChange,
+    #     netChange, netPercentChange, openPrice, postMarketChange,
+    #     postMarketPercentChange, quoteTime, securityStatus, totalVolume,
+    #     tradeTime (the times in milliseconds since 1970)
+    #   reference: cusip, description, exchange, exchangeName, isHardToBorrow,
+    #     isShortable, htbRate, optionable, ethOptionEligible, hasBinaryOptions
+    #   fundamental (with "fundamental" in fields): avg10DaysVolume,
+    #     avg1YearVolume, declarationDate, divAmount, divExDate, divFreq,
+    #     divPayAmount, divPayDate, divYield, eps, fundLeverageFactor,
+    #     lastEarningsDate, nextDivExDate, nextDivPayDate, peRatio,
+    #     sharesOutstanding
+    #   extended (with "extended"; trading outside market hours): askPrice,
+    #     askSize, bidPrice, bidSize, lastPrice, lastSize, mark, quoteTime,
+    #     totalVolume, tradeTime
+    #   regular (with "regular"): regularMarketLastPrice,
+    #     regularMarketLastSize, regularMarketNetChange,
+    #     regularMarketPercentChange, regularMarketTradeTime
+    #
+    # The table uses reference's description and the quote fields in
+    # QUOTE_FIELDS. The rest can be had with (schwab-get creds
+    # "/marketdata/v1/quotes" '(("symbols" . "AAPL,SPY") ("fields" . "quote,reference,fundamental"))).
     who = "schwab-quotes"
     wanted = text_list(symbols, who, "the symbols")
     answer = api_get(credentials_path, "/marketdata/v1/quotes", who,
@@ -416,6 +523,9 @@ def schwab_price_history(credentials_path, symbol, *options):
     them. :frequency is "daily" (the default), "weekly", or "monthly". The
     last 10 years, unless :start-date or :end-date (dates, or YYYY-MM-DD)
     says otherwise."""
+    # Schwab's answer has symbol, empty (true if there are no prices), and
+    # candles, each with datetime (milliseconds since 1970), open, high,
+    # low, close, and volume -- all of which the table uses.
     who = "schwab-price-history"
     options = keyword_options(options, ["start-date", "end-date", "frequency"], who)
     frequency = str(options.get("frequency", "daily")).lower()
@@ -453,6 +563,27 @@ def schwab_orders(credentials_path, *options):
     account, order ID, when it was entered, status, instruction (BUY, SELL,
     ...), symbol, quantity, quantity filled, order type, price, and
     duration -- in all your accounts, or just :account's."""
+    # Schwab's answer has, for each order:
+    #
+    #   accountNumber, orderId, status, enteredTime, closeTime, session,
+    #   duration, orderType, complexOrderStrategyType, orderStrategyType,
+    #   quantity, filledQuantity, remainingQuantity, price, cancelable,
+    #   editable, requestedDestination, destinationLinkName
+    #   orderLegCollection (one per leg): orderLegType, legId, instruction,
+    #     positionEffect, quantity, instrument (assetType, cusip, symbol,
+    #     uniformSymbol, description, instrumentId, type; for an option,
+    #     putCall, underlyingSymbol, and optionDeliverables: symbol,
+    #     deliverableUnits)
+    #   orderActivityCollection (one per fill): activityType, activityId,
+    #     executionType, quantity, orderRemainingQuantity, executionLegs
+    #     (legId, quantity, mismarkedQuantity, price, time, instrumentId)
+    #
+    # Others appear on some orders, such as stopPrice, and childOrderStrategies
+    # for one order that sets off another. The table uses accountNumber,
+    # orderId, enteredTime, status, quantity, filledQuantity, orderType,
+    # price, duration, and the first leg's instruction and symbol. The rest
+    # can be had with (schwab-get creds "/trader/v1/orders" ...), giving
+    # fromEnteredTime and toEnteredTime.
     who = "schwab-orders"
     options = keyword_options(options, ["account", "days"], who)
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -463,10 +594,11 @@ def schwab_orders(credentials_path, *options):
         orders = api_get(credentials_path, "/trader/v1/accounts/%s/orders" % account_hash, who, params)
     else:
         orders = api_get(credentials_path, "/trader/v1/orders", who, params)
+    names = account_names(credentials_path, who)
     rows = []
     for order in orders or []:
         leg = (order.get("orderLegCollection") or [{}])[0]
-        rows.append((str(order.get("accountNumber", "")), number(order.get("orderId")), order.get("enteredTime", ""),
+        rows.append((account_name(names, order.get("accountNumber", "")), number(order.get("orderId")), order.get("enteredTime", ""),
                      order.get("status", ""), leg.get("instruction", ""), leg.get("instrument", {}).get("symbol", ""),
                      number(order.get("quantity")), number(order.get("filledQuantity")),
                      order.get("orderType", ""), number(order.get("price")), order.get("duration", "")))
@@ -553,9 +685,9 @@ def schwab_preview_order(credentials_path, account, order):
 
 def schwab_place_order(credentials_path, account, order, *options):
     """(schwab-place-order creds account order :confirm #t) -- place an
-    order, for real, in the account (its number, or its last few digits).
-    Nothing is sent without :confirm #t. Returns the order's ID. (The app
-    can place at most 10 orders a day.)"""
+    order, for real, in the account (its name, its number, or its last few
+    digits). Nothing is sent without :confirm #t. Returns the order's ID.
+    (The app can place at most 10 orders a day.)"""
     who = "schwab-place-order"
     options = keyword_options(options, ["confirm"], who)
     if options.get("confirm") is not True:
