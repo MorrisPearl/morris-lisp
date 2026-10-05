@@ -991,13 +991,21 @@ def _resolve_all_predictor_specs(max_knots, columns, names=None):
             for col, name in zip(columns, names)]
 
 
+def _category_text(category):
+    """A category as a report or message shows it: a number to 6
+    significant digits, and anything else (text, a date) as it is."""
+    if isinstance(category, (int, float)) and not isinstance(category, bool):
+        return "%.6g" % category
+    return str(category)
+
+
 def _spline_expand_value(v, spec, name):
     if spec.mode == "categorical":
         if v not in spec.categories:
             raise LispError(
                 "spline-regression: %s value %r was not one of the categories "
                 "seen while fitting (%s)" % (
-                    name, v, ", ".join("%.6g" % c for c in spec.categories)))
+                    name, v, ", ".join(_category_text(c) for c in spec.categories)))
         return [1.0 if v == cat else 0.0 for cat in spec.categories[1:]]
     row = [v]
     for t in spec.knots:
@@ -1058,7 +1066,7 @@ def _spline_feature_labels(specs, names):
     for name, spec in zip(names, specs):
         if spec.mode == "categorical":
             for cat in spec.categories[1:]:
-                labels.append("%s = %.6g" % (name, cat))
+                labels.append("%s = %s" % (name, _category_text(cat)))
         else:
             labels.append(name)
             for t in spec.knots:
@@ -1077,9 +1085,9 @@ def _spline_report_lines(model):
     lines.append("  predictors = %d" % model.k)
     for name, spec in zip(names, model.predictor_specs):
         if spec.mode == "categorical":
-            cats = ", ".join("%.6g" % c for c in spec.categories)
-            lines.append("  %s: categorical -- categories %s (baseline %.6g)"
-                          % (name, cats, spec.categories[0]))
+            cats = ", ".join(_category_text(c) for c in spec.categories)
+            lines.append("  %s: categorical -- categories %s (baseline %s)"
+                          % (name, cats, _category_text(spec.categories[0])))
         else:
             knot_text = ", ".join("%.6g" % t for t in spec.knots) if spec.knots else "(none -- plain linear)"
             hint = ""
