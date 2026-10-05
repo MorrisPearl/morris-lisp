@@ -32,7 +32,7 @@
 
 (define (segment-pattern? pattern)
   "Whether pattern starts with a segment variable: ((?* var) ...)."
-  (and (pair? pattern) (pair? (car pattern)) (eq? (car (car pattern)) '?*)))
+  (and (pair? pattern) (pair? (car pattern)) (eq? (caar pattern) '?*)))
 
 (define (pat-match pattern input bindings)
   "Match pattern against input, given the bindings made so far."

@@ -134,7 +134,7 @@
 can be a name is checked by %scope-lambda, as for any procedure.)"
   (if (not (and (pair? binding)
                 (pair? (cdr binding))
-                (null? (cdr (cdr binding)))))
+                (null? (cddr binding))))
       (error who "each binding must be (name value), not" binding)
       '()))
 
@@ -142,12 +142,12 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
   "Signal an error unless bindings is a list of (name value)."
   (if (not (list? bindings))
       (error who "expected a list of bindings, ((name value)...), not" bindings)
-      (map (lambda (binding) (let--check-binding binding who)) bindings)))
+      (for-each (lambda (binding) (let--check-binding binding who)) bindings)))
 
 (defmacro let (bindings . body)
   (let--check-bindings bindings "let:")
   `((%scope-lambda ,(map car bindings) ,@body)
-    ,@(map (lambda (binding) (car (cdr binding))) bindings)))
+    ,@(map cadr bindings)))
 
 ; (let* ((name value)...) body...)
 ; Like let, but binds the names one at a time, so each value can use the
@@ -198,8 +198,8 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
       (error "dolist: expected (dolist (var list [result]) body...), not" spec)
       '())
   (let ((var (car spec))
-        (list-expr (car (cdr spec)))
-        (result-expr (if (= (length spec) 3) (car (cdr (cdr spec))) ''()))
+        (list-expr (cadr spec))
+        (result-expr (if (= (length spec) 3) (caddr spec) ''()))
         (loop-name (gensym "dolist-loop"))
         (remaining (gensym "dolist-remaining"))
         (items (gensym "dolist-items")))
@@ -374,8 +374,8 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
         ((and (list? column)
               (= (length column) 2)
               (symbol? (car column))
-              (string? (car (cdr column))))
-         `(,(car column) (table-column ,table-var ,(car (cdr column)))))
+              (string? (cadr column)))
+         `(,(car column) (table-column ,table-var ,(cadr column))))
         (else
          (error "with-columns: each column must be a name, or (variable \"column\"), not" column))))
 

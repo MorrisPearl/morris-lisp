@@ -13,7 +13,7 @@
 
 (display "dolist: summing a list") (newline)
 (define total 0)
-(dolist (x (list 1 2 3 4 5)) (set! total (+ total x)))
+(dolist (x (list 1 2 3 4 5)) (incf total x))
 (display "  total = ") (display total) (newline)
 
 (display "dolist: printing with a result-expr") (newline)
@@ -60,8 +60,6 @@
 (display "  count-down 1,000,000 -> ") (display (count-down 1000000 0)) (newline)
 
 (display "dolist over a 300,000-element list (also tail-recursive under the hood)") (newline)
-(define (make-range n acc)
-  (if (= n 0) acc (make-range (- n 1) (cons n acc))))
 (define visited 0)
-(dolist (x (make-range 300000 '())) (set! visited (+ visited 1)))
+(dolist (x (iota 300000 1)) (incf visited))
 (display "  elements visited -> ") (display visited) (newline)

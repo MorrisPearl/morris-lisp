@@ -164,7 +164,7 @@
 ; How spread out the simplex is: the largest difference, in any
 ; coordinate, between the best point and any other point.
 (define (nm--size simplex)
-  (let ((best_point (cdr (car simplex))))
+  (let ((best_point (cdar simplex)))
     (reduce max
             (map (lambda (vertex)
                    (reduce max (map (lambda (a b) (abs (- a b))) best_point (cdr vertex)) 0.0))
@@ -183,7 +183,7 @@
 
 ; Move every vertex halfway toward the best one (keeping the best).
 (define (nm--shrink f simplex)
-  (let ((best_point (cdr (car simplex))))
+  (let ((best_point (cdar simplex)))
     (cons (car simplex)
           (map (lambda (vertex)
                  (nm--try f (nm--point-along best_point (cdr vertex) 0.5)))

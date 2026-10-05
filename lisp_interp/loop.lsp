@@ -169,11 +169,11 @@ variables than there are elements gives the extra ones the value ()."
 (do . form) or (test . form). A test that fails ends the loop, and skips
 the rest of that pass, so the actions after a test go inside an if."
   (cond ((null? actions) '())
-        ((eq? (car (car actions)) 'test)
-         (list `(if ,(cdr (car actions))
+        ((eq? (caar actions) 'test)
+         (list `(if ,(cdar actions)
                     (begin ,@(loop--nest (cdr actions) keep-going))
                     (set! ,keep-going #f))))
-        (else (cons (cdr (car actions))
+        (else (cons (cdar actions)
                     (loop--nest (cdr actions) keep-going)))))
 
 ; Accumulating: collect, append, sum, count, maximize, minimize. An
@@ -250,7 +250,7 @@ up in the variables just below, and at the end assemble puts it together."
         (error "loop: the clauses ended where" what "was expected")))
 
   (define (bind! variable init)
-    (set! bindings (cons (list variable init) bindings)))
+    (push (list variable init) bindings))
 
   (define (once! expression name)
     ; Something evaluated once, before the loop starts, and used on every
@@ -266,10 +266,10 @@ up in the variables just below, and at the end assemble puts it together."
       (bind! variable ''())))
 
   (define (do! form)
-    (set! actions (cons (cons 'do form) actions)))
+    (push (cons 'do form) actions))
 
   (define (test! form)
-    (set! actions (cons (cons 'test form) actions)))
+    (push (cons 'test form) actions))
 
   (define (set-variables! pattern value)
     (dolist (form (loop--pattern-setters pattern value))
@@ -284,7 +284,7 @@ up in the variables just below, and at the end assemble puts it together."
     (if (not (null? tail)) (bind! tail ''()))
     (if (not (null? scratch)) (bind! scratch ''()))
     (define entry (list name kind tail scratch))
-    (set! accumulators (cons entry accumulators))
+    (push entry accumulators)
     entry)
 
   (define (accumulator variable kind)
@@ -305,7 +305,7 @@ up in the variables just below, and at the end assemble puts it together."
     (define into? (and (pair? after) (eq? (car after) 'into)))
     (define variable (if into? (expect (cdr after) "a variable after into") '()))
     (do! (loop--accumulate word (accumulator variable (loop--kind word)) expression))
-    (if into? (cdr (cdr after)) after))
+    (if into? (cddr after) after))
 
   ; --- when, if, unless ------------------------------------------------
 
@@ -348,7 +348,7 @@ up in the variables just below, and at the end assemble puts it together."
             (loop--after-forms (cdr rest)))
       ((return) (set! uses-block? #t)
                 (do! `(throw ',block-name ,(expect (cdr rest) "a value after return")))
-                (cdr (cdr rest)))
+                (cddr rest))
       ((collect append sum count maximize minimize) (parse-accumulation word (cdr rest)))
       ((when) (parse-conditional (cdr rest) #f))
       ((unless) (parse-conditional (cdr rest) #t))
@@ -407,7 +407,7 @@ up in the variables just below, and at the end assemble puts it together."
           (else
            (do! `(let ((,value ,init))
                    ,@(loop--pattern-setters variable value)))))
-    (if then? (cdr (cdr after)) after))
+    (if then? (cddr after) after))
 
   (define (for-numbers variable rest)
     ; from / downfrom, to / below / downto / above, and by, in any order
@@ -420,19 +420,19 @@ up in the variables just below, and at the end assemble puts it together."
       (define word (if (pair? rest) (loop--word (car rest)) '()))
       (cond ((eq? word 'from)
              (set! start (expect (cdr rest) "a value after from"))
-             (read-options (cdr (cdr rest))))
+             (read-options (cddr rest)))
             ((eq? word 'downfrom)
              (set! start (expect (cdr rest) "a value after downfrom"))
              (set! counting-down? #t)
-             (read-options (cdr (cdr rest))))
+             (read-options (cddr rest)))
             ((member word '(to below downto above))
              (set! end (expect (cdr rest) (string-append "a value after " (symbol->string word))))
              (set! end-word word)
              (if (member word '(downto above)) (set! counting-down? #t))
-             (read-options (cdr (cdr rest))))
+             (read-options (cddr rest)))
             ((eq? word 'by)
              (set! step (expect (cdr rest) "a value after by"))
-             (read-options (cdr (cdr rest))))
+             (read-options (cddr rest)))
             (else rest)))
     (define left-over (read-options rest))
     (if (not (symbol? variable))
@@ -466,11 +466,11 @@ up in the variables just below, and at the end assemble puts it together."
     (if (not (and (pair? after-which) (member (car after-which) '(of in))))
         (error "loop: expected of or in after" which))
     (define table (expect (cdr after-which) "a hash table"))
-    (define after-table (cdr (cdr after-which)))
+    (define after-table (cddr after-which))
     (define using? (and (pair? after-table) (eq? (car after-table) 'using)))
     (define other-variable
       (if using?
-          (car (cdr (expect (cdr after-table) "(hash-key k) or (hash-value v) after using")))
+          (cadr (expect (cdr after-table) "(hash-key k) or (hash-value v) after using"))
           '()))
     (define table-variable (gensym "table"))
     (define keys (gensym "keys"))
@@ -486,7 +486,7 @@ up in the variables just below, and at the end assemble puts it together."
     (do! `(set! ,keys (cdr ,keys)))
     (set-variables! variable (if (eq? which 'hash-key) key value))
     (if using? (do! `(set! ,other-variable ,(if (eq? which 'hash-key) value key))))
-    (if using? (cdr (cdr after-table)) after-table))
+    (if using? (cddr after-table) after-table))
 
   (define (parse-for rest)
     (define variable (expect rest "a variable after for"))
@@ -509,7 +509,7 @@ up in the variables just below, and at the end assemble puts it together."
     (define after (cdr rest))
     (define value? (and (pair? after) (eq? (car after) '=)))
     (bind! variable (if value? (expect (cdr after) "a value after =") ''()))
-    (define left-over (if value? (cdr (cdr after)) after))
+    (define left-over (if value? (cddr after) after))
     (if (and (pair? left-over) (eq? (car left-over) 'and))
         (parse-with (cdr left-over))
         left-over))
@@ -541,9 +541,9 @@ up in the variables just below, and at the end assemble puts it together."
       ((with) (parse-with (cdr rest)))
       ((repeat) (parse-repeat (cdr rest)))
       ((while) (test! (expect (cdr rest) "a test after while"))
-               (cdr (cdr rest)))
+               (cddr rest))
       ((until) (test! `(not ,(expect (cdr rest) "a test after until")))
-               (cdr (cdr rest)))
+               (cddr rest))
       ((always never thereis) (parse-exit-test word (cdr rest)))
       ((initially) (set! initially-forms (append initially-forms (loop--leading-forms (cdr rest))))
                    (loop--after-forms (cdr rest)))
@@ -578,7 +578,7 @@ up in the variables just below, and at the end assemble puts it together."
   ; (loop named name ...) gives the loop's block a name
   (if (and (pair? clauses) (eq? (car clauses) 'named))
       (begin (set! block-name (expect (cdr clauses) "a name after named"))
-             (set! clauses (cdr (cdr clauses)))))
+             (set! clauses (cddr clauses))))
   (bind! keep-going #t)
   (parse-all clauses)
   (assemble))

@@ -82,9 +82,8 @@
 (define *clauses* (make-hash-table))
 
 (define (add-clause clause)
-  (let ((predicate (car (car clause))))
-    (hash-table-set! *clauses* predicate
-                     (append (hash-table-ref *clauses* predicate '()) (list clause)))))
+  (let ((predicate (caar clause)))
+    (hash-table-update! *clauses* predicate (lambda (clauses) (append clauses (list clause))) '())))
 
 (defmacro <- (head . body)
   "(<- head goal ...): add a clause."
@@ -99,7 +98,7 @@
     (cond ((variable? x) (string->symbol (format "{}.{}" x *renamings*)))
           ((pair? x) (cons (rename (car x)) (rename (cdr x))))
           (else x)))
-  (set! *renamings* (+ *renamings* 1))
+  (incf *renamings*)
   (rename x))
 
 ; To prove a goal, try each clause for its predicate: if the goal unifies
@@ -133,7 +132,7 @@ so that (every ?x.31 (dog ?x.31) ...) reads as (every ?x (dog ?x) ...)."
     (define (tidy x)
       (cond ((variable? x)
              (unless (assoc x names)
-               (set! names (cons (cons x (list-ref '(?x ?y ?z ?u ?v ?w) (length names))) names)))
+               (push (cons x (list-ref '(?x ?y ?z ?u ?v ?w) (length names))) names))
              (cdr (assoc x names)))
             ((pair? x) (cons (tidy (car x)) (tidy (cdr x))))
             (else x)))
@@ -191,7 +190,7 @@ makes all the goals true."
                             (list (if (eq? (car part) ':word)
                                       (list '= before (cons (cadr part) after))
                                       (append part (list before after))))))
-        (set! i (+ i 1))))
+        (incf i)))
     (cons (append head (list (words-variable 0) (words-variable i)))
           goals)))
 

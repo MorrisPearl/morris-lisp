@@ -102,32 +102,30 @@ before it. dividends is a list of (ex-dividend-date amount)."
              (amount (second dividend))
              (years (/ (days-between (today) ex-date) 365)))
         (when (> years 0)
-          (set! total (+ total (* (>= expirations ex-date) amount (exp (* (- rate) years))))))))
+          (incf total (* (>= expirations ex-date) amount (exp (* (- rate) years)))))))
     total))
 
 (define (with-smile-columns chain rate dividends)
   "The chain with each option's T, discount factor, forward, K, implied
 volatilities at the bid, mid, and ask, and Y added as columns."
-  (let* ((column (lambda (name) (table-column chain name)))
-         (T (/ (column "days-to-expiration") 365))
-         (discount (exp (* (- rate) T)))
-         (forward (/ (- (column "underlying-price")
-                        (dividends-present-value (column "expiration-date") rate dividends))
-                     discount))
-         (strike (column "strike"))
-         (call? (= (column "type") "Call"))
-         (iv (lambda (price) (black-implied-vol call? price forward strike T discount)))
-         (iv-mid (iv (column "mid"))))
-    (make-table-from-columns
-      chain
-      (list (cons "T" T)
-            (cons "discount" discount)
-            (cons "forward" forward)
-            (cons "K" (log (/ strike forward)))
-            (cons "iv-bid" (iv (column "bid")))
-            (cons "iv-mid" iv-mid)
-            (cons "iv-ask" (iv (column "ask")))
-            (cons "Y" (* T iv-mid iv-mid))))))
+  (with-columns (days-to-expiration underlying-price expiration-date strike type mid bid ask) chain
+    (let* ((T (/ days-to-expiration 365))
+           (discount (exp (* (- rate) T)))
+           (forward (/ (- underlying-price (dividends-present-value expiration-date rate dividends))
+                       discount))
+           (call? (= type "Call"))
+           (iv (lambda (price) (black-implied-vol call? price forward strike T discount)))
+           (iv-mid (iv mid)))
+      (make-table-from-columns
+        chain
+        (list (cons "T" T)
+              (cons "discount" discount)
+              (cons "forward" forward)
+              (cons "K" (log (/ strike forward)))
+              (cons "iv-bid" (iv bid))
+              (cons "iv-mid" iv-mid)
+              (cons "iv-ask" (iv ask))
+              (cons "Y" (* T iv-mid iv-mid)))))))
 
 (define (make-table-from-columns table columns)
   "table with each (name . vector) in columns added."
@@ -139,18 +137,18 @@ volatilities at the bid, mid, and ask, and Y added as columns."
   "The options worth fitting to: traded today, with open interest, a bid,
 and a spread no wider than max-vol-spread in volatility; and, if
 out-of-the-money-only, only calls with K >= 0 and puts with K <= 0."
-  (let* ((column (lambda (name) (table-column options name)))
-         (call? (= (column "type") "Call"))
-         (liquid (vector-and (> (column "volume") 0)
-                             (> (column "open-interest") 0)
-                             (> (column "bid") 0)
-                             (> (column "T") 0)
-                             (<= (- (column "iv-ask") (column "iv-bid")) max-vol-spread)))
-         (out-of-the-money (vector-or (vector-and call? (>= (column "K") 0))
-                                      (vector-and (vector-not call?) (<= (column "K") 0)))))
-    (table-filter options (if out-of-the-money-only
-                              (vector-and liquid out-of-the-money)
-                              liquid))))
+  (with-columns (type volume open-interest bid T iv-ask iv-bid K) options
+    (let* ((call? (= type "Call"))
+           (liquid (vector-and (> volume 0)
+                               (> open-interest 0)
+                               (> bid 0)
+                               (> T 0)
+                               (<= (- iv-ask iv-bid) max-vol-spread)))
+           (out-of-the-money (vector-or (vector-and call? (>= K 0))
+                                        (vector-and (vector-not call?) (<= K 0)))))
+      (table-filter options (if out-of-the-money-only
+                                (vector-and liquid out-of-the-money)
+                                liquid)))))
 
 ; ---------------------------------------------------------------------------
 ; The fit
@@ -158,8 +156,7 @@ out-of-the-money-only, only calls with K >= 0 and puts with K <= 0."
 
 (define (smile-term options name)
   "The values of one of the model's terms, for each option."
-  (let ((T (table-column options "T"))
-        (K (table-column options "K")))
+  (with-columns (T K) options
     (cond ((string=? name "T") T)
           ((string=? name "sqrt(T)") (sqrt T))
           ((string=? name "K") K)
@@ -184,22 +181,20 @@ out-of-the-money-only, only calls with K >= 0 and puts with K <= 0."
                 ask is below it, \"\" otherwise
   edge          how far: the bid less model-price, or model-price less the
                 ask (0 for neither)"
-  (let* ((column (lambda (name) (table-column options name)))
-         (Y (column "Y"))
-         (fitted-Y (- Y (model-residuals model (smile-predictors options terms) Y)))
-         (fitted-iv (sqrt (/ (max fitted-Y 0) (column "T"))))
-         (model-price (black-price (= (column "type") "Call") (column "forward") (column "strike")
-                                   (column "T") (column "discount") fitted-iv))
-         (rich (> (column "bid") model-price))
-         (cheap (< (column "ask") model-price)))
-    (make-table-from-columns
-      options
-      (list (cons "fitted-iv" fitted-iv)
-            (cons "iv-residual" (- (column "iv-mid") fitted-iv))
-            (cons "model-price" model-price)
-            (cons "signal" (vector-where rich "rich" (vector-where cheap "cheap" "")))
-            (cons "edge" (vector-where rich (- (column "bid") model-price)
-                                       (vector-where cheap (- model-price (column "ask")) 0.0)))))))
+  (with-columns (Y T type forward strike discount bid ask iv-mid) options
+    (let* ((fitted-Y (- Y (model-residuals model (smile-predictors options terms) Y)))
+           (fitted-iv (sqrt (/ (max fitted-Y 0) T)))
+           (model-price (black-price (= type "Call") forward strike T discount fitted-iv))
+           (rich (> bid model-price))
+           (cheap (< ask model-price)))
+      (make-table-from-columns
+        options
+        (list (cons "fitted-iv" fitted-iv)
+              (cons "iv-residual" (- iv-mid fitted-iv))
+              (cons "model-price" model-price)
+              (cons "signal" (vector-where rich "rich" (vector-where cheap "cheap" "")))
+              (cons "edge" (vector-where rich (- bid model-price)
+                                         (vector-where cheap (- model-price ask) 0.0))))))))
 
 (define (parity-forward options)
   "The forward price that put-call parity implies: at the strike nearest
@@ -278,19 +273,17 @@ options as the fit has coefficients isn't fit."
          (summary '())
          (models '()))
     (dolist (expiration expirations)
-      (let* ((group (table-filter options (= (table-column options "expiration-date") expiration)))
+      (let* ((group (table-where options "expiration-date" expiration))
              (model (cond ((= (table-row-count group) 0) #f)
                           ((not by-expiration) shared-model)
                           ((< (table-row-count group) enough) #f)
                           (else (fit-smile group terms)))))
         (when model
           (set! group (with-fit group model terms))
-          (set! fitted (cons group fitted))
-          (set! models (cons (cons expiration model) models)))
-        (set! summary (cons (expiration-summary (table-filter all-options (= (table-column all-options "expiration-date")
-                                                                             expiration))
-                                                group model terms)
-                            summary))))
+          (push group fitted)
+          (push (cons expiration model) models))
+        (push (expiration-summary (table-where all-options "expiration-date" expiration) group model terms)
+              summary)))
     (make-vol-smile-fit
       :options (if (null? fitted) (table-head options 0) (apply table-append (reverse fitted)))
       :expirations (table-from-rows (reverse summary)
@@ -332,16 +325,9 @@ is below it."
 (define (plot-vol-smile fit expiration)
   "A chart of one expiration's implied volatilities against strike: at the
 bid, at the ask, and the fit's."
-  (let ((options (table-sort (table-filter (vol-smile-fit-options fit)
-                                           (= (table-column (vol-smile-fit-options fit) "expiration-date")
-                                              expiration))
-                             "strike")))
+  (let ((options (table-sort (table-where (vol-smile-fit-options fit) "expiration-date" expiration) "strike")))
     (when (= (table-row-count options) 0)
       (error "plot-vol-smile: no options were fit for" expiration))
-    (plot-xy-full (table-column options "strike")
-                  (list (table-column options "iv-bid") (table-column options "iv-ask")
-                        (table-column options "fitted-iv"))
-                  (list "IV at bid" "IV at ask" "fit")
-                  #f
-                  (format "Implied volatility, {} expiration" expiration)
-                  #f)))
+    (with-columns (strike iv-bid iv-ask fitted-iv) options
+      (plot-xy-full strike (list iv-bid iv-ask fitted-iv) (list "IV at bid" "IV at ask" "fit")
+                    #f (format "Implied volatility, {} expiration" expiration) #f))))

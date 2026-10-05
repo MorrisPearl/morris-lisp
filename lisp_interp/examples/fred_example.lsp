@@ -8,24 +8,19 @@
 ;   - pass a literal key string instead ("abc123...") , or
 ;   - set the FRED_API_KEY environment variable and delete the arg below.
 ;
-; Exercises fred-series (the only FRED builtin) across its full argument
-; range: series + key alone, and both accepted forms of an optional
-; start-date/end-date range (LispDate values, and "YYYY-MM-DD" strings).
+; Exercises fred-series across its full argument range: series + key
+; alone, and both accepted forms of an optional start-date/end-date range
+; (LispDate values, and "YYYY-MM-DD" strings). fred-series gives one series
+; as a (dates . values) pair; fred-table gives several as one table, with a
+; row per date (see "FRED" in the reference manual).
 ; ---------------------------------------------------------------------
 
 (define api-key "/Users/morris/credentials.json")
 
-; A small helper to print a (dates . values) series returned by
-; fred-series, one observation per line -- this Lisp has no built-in
-; loop construct, so iteration is just ordinary recursion.
-(define (print-series dates values i n)
-  (if (< i n)
-      (begin
-        (display "  ") (display (vector-ref dates i))
-        (display "  ") (display (vector-ref values i))
-        (newline)
-        (print-series dates values (+ i 1) n))
-      #t))
+; A small helper to show a (dates . values) series returned by
+; fred-series as a table: a column of dates, and one of values.
+(define (show-series name series)
+  (display-table (make-table "date" (car series) name (cdr series))))
 
 ; --- 1. fetch a full series: US Real Gross Domestic Product ("GDP") ---
 (define gdp (fred-series "GDP" api-key))
@@ -46,12 +41,12 @@
 ;        start-date/end-date, given as `date` values ---
 (define unrate (fred-series "UNRATE" api-key (date 2020 1 1) (date 2020 12 31)))
 (display "UNRATE, 2020 (civilian unemployment rate, %):") (newline)
-(print-series (car unrate) (cdr unrate) 0 (vector-length (car unrate)))
+(show-series "UNRATE" unrate)
 (newline)
 
 ; --- 3. a third series, with the date range given as "YYYY-MM-DD"
 ;        strings instead -- both forms work interchangeably ---
 (define fedfunds (fred-series "FEDFUNDS" api-key "2023-01-01" "2023-12-31"))
 (display "FEDFUNDS, 2023 (effective federal funds rate, %):") (newline)
-(print-series (car fedfunds) (cdr fedfunds) 0 (vector-length (car fedfunds)))
+(show-series "FEDFUNDS" fedfunds)
 (newline)

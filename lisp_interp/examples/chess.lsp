@@ -115,13 +115,13 @@ passant square, or -."
     (dolist (square all-squares)
       (vector-set! board square empty))
     (dolist (c (regex-find-all "." (first fields)))       ; each character, as a string
-      (cond ((string=? c "/") (set! rank (- rank 1)) (set! file 0))
-            ((string-search "12345678" c) (set! file (+ file (string->number c))))
+      (cond ((string=? c "/") (decf rank) (set! file 0))
+            ((string-search "12345678" c) (incf file (string->number c)))
             (else
              (let ((kind (string-search "PNBRQK" (string-upcase c))))
                (vector-set! board (square file rank)
                             (* (+ kind 1) (if (string=? c (string-upcase c)) white black)))
-               (set! file (+ file 1))))))
+               (incf file)))))
     (make-position
       :board board
       :side (if (string=? (second fields) "w") white black)
@@ -244,7 +244,7 @@ whether or not it leaves that side's own king in check."
         (let ((to (+ from direction)))
           (while (= (vector-ref board to) empty)
             (add! from to)
-            (set! to (+ to direction)))
+            (incf to direction))
           (when (enemy? (vector-ref board to) side)
             (add! from to)))))
     (define (pawn-moves! from)
@@ -305,7 +305,7 @@ square in turn.)"
   (define (first-piece-toward direction)
     (let ((s (+ square direction)))
       (while (= (vector-ref board s) empty)
-        (set! s (+ s direction)))
+        (incf s direction))
       (vector-ref board s)))
   (let ((behind (* -10 by)))            ; by's pawns attack from one rank behind
     (or (= (piece-at (- behind 1)) (* by pawn))
@@ -601,7 +601,7 @@ piece with a cheap one is best, and promoting is good."
   "The value of position to the side to move, looking depth moves ahead:
 exactly, if it's between alpha and beta; otherwise alpha or less, or beta
 or more."
-  (set! *positions-searched* (+ *positions-searched* 1))
+  (incf *positions-searched*)
   (cond
     ((and (= depth 0) (checkmated? position))
      (- checkmate-value))
@@ -631,7 +631,7 @@ or more."
   "The value of position to the side to move, looking only at captures
 (and promotions). The side to move needn't capture, so the static
 evaluation is the least it's worth."
-  (set! *positions-searched* (+ *positions-searched* 1))
+  (incf *positions-searched*)
   (let ((side (position-side position))
         (stand-pat (evaluate position)))
     (when (> stand-pat alpha)
@@ -723,7 +723,7 @@ first-side is the side that made the first of them."
             ((null? words) (push (format "{}...{}" number move) words))
             (else (push move words)))
       (when (= side black)
-        (set! number (+ number 1)))
+        (incf number))
       (set! side (- side)))
     (string-join (reverse words))))
 

@@ -37,22 +37,21 @@
 
 ; --- 2. Filter whole columns at once ----------------------------------------
 ; Calls expiring in 20 to 60 days, with at least 100 contracts of open
-; interest. Each comparison gives a mask (1 where it's true); vector-and
+; interest. with-columns makes each column it names a variable, holding the
+; whole column. Each comparison gives a mask (1 where it's true); vector-and
 ; keeps the rows where every mask is 1.
-(define (column name) (table-column chain name))
-
 (define liquid-calls
-  (table-filter chain
-                (vector-and (= (column "type") "Call")
-                            (<= 20 (column "days-to-expiration") 60)
-                            (>= (column "open-interest") 100))))
+  (with-columns (type days-to-expiration open-interest) chain
+    (table-filter chain
+                  (vector-and (= type "Call")
+                              (<= 20 days-to-expiration 60)
+                              (>= open-interest 100)))))
 
 ; A new column, computed from two others: what each day of the option's life
 ; costs, at the middle of the bid and ask, and the table sorted by it.
 (define liquid-calls-per-day
-  (table-add-column liquid-calls "price-per-day"
-                    (/ (table-column liquid-calls "mid")
-                       (table-column liquid-calls "days-to-expiration"))))
+  (with-columns (mid days-to-expiration) liquid-calls
+    (table-add-column liquid-calls "price-per-day" (/ mid days-to-expiration))))
 
 (display "Calls, 20 to 60 days, open interest of at least 100, cheapest per day first:\n")
 (display-table (table-sort (table-select liquid-calls-per-day

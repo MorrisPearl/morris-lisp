@@ -57,7 +57,7 @@
 
 ; The chain is a table, so whole columns can be used at once -- here, the
 ; calls only -- or it can be looked at one option at a time, as rows:
-(define calls (table-filter chain (= (table-column chain "type") "Call")))
+(define calls (table-where chain "type" "Call"))
 (dolist (option (table-rows calls))
   (with-struct option
     (display (format "  {} strike {:,.2f}, {} days\n" symbol strike days-to-expiration))))

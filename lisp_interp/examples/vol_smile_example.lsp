@@ -36,7 +36,7 @@
 ; fitting them one at a time, so it can also show an expiration that's out
 ; of line with the others.
 (define surface (fit-vol-smiles chain :rate 0.045 :by-expiration #f))
-(display (model-report (cdr (car (vol-smile-fit-models surface)))))
+(display (model-report (cdar (vol-smile-fit-models surface))))
 (newline)
 (display "\nUnder the single fit, the options furthest from it:\n")
 (define surface-options (vol-smile-fit-options surface))
@@ -49,4 +49,4 @@
                vol-smile-formats)
 
 ; --- 4. A chart of the first expiration that was fit -------------------------
-(plot-vol-smile fit (car (car (vol-smile-fit-models fit))))
+(plot-vol-smile fit (caar (vol-smile-fit-models fit)))

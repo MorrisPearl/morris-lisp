@@ -81,11 +81,11 @@
       ((null? items) '())
       ((eq? (car items) :value_calculation)
        (cons (car items)
-             (cons (list 'quote (car (cdr items)))
-                   (quote-value-calc (cdr (cdr items))))))
+             (cons (list 'quote (cadr items))
+                   (quote-value-calc (cddr items)))))
       (#t (cons (car items)
-                (cons (car (cdr items))
-                      (quote-value-calc (cdr (cdr items))))))))
+                (cons (cadr items)
+                      (quote-value-calc (cddr items)))))))
   (let ((rewritten (quote-value-calc plist)))
     `(begin
        (define ,var-name
@@ -134,14 +134,14 @@
   (define matches (collect *columns* 0))
   (cond
     ((null? matches) (error "lag/find-column: no column named" name))
-    ((null? (cdr matches)) (cdr (car matches)))
+    ((null? (cdr matches)) (cdar matches))
     (#t
      (let ((cur-pos (if (null? current-column) -1 (position-of current-column *columns* 0)))
-           (last-match (cdr (car (reverse matches)))))
+           (last-match (cdar (reverse matches))))
        (define (scan remaining best)
          (cond
            ((null? remaining) best)
-           ((<= (car (car remaining)) cur-pos) (scan (cdr remaining) (cdr (car remaining))))
+           ((<= (caar remaining) cur-pos) (scan (cdr remaining) (cdar remaining)))
            (#t best)))
        (scan matches last-match)))))
 
@@ -177,10 +177,7 @@
     (#t (contains? item (cdr lst)))))
 
 (define (all-satisfied? prereqs done)
-  (cond
-    ((null? prereqs) #t)
-    ((contains? (car prereqs) done) (all-satisfied? (cdr prereqs) done))
-    (#t #f)))
+  (every (lambda (prereq) (contains? prereq done)) prereqs))
 
 ; Kahn's algorithm: repeatedly pull out every column whose `after`
 ; prerequisites are already in `done`, until every column has been
@@ -194,7 +191,7 @@
                              remaining)))
          (if (null? ready)
              (error "calculate-all: circular or missing `after` dependency")
-             (visit (filter (lambda (c) (not (contains? c ready))) remaining)
+             (visit (remove-if (lambda (c) (contains? c ready)) remaining)
                     (append done ready)))))))
   (visit columns '()))
 

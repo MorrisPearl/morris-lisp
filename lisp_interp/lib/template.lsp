@@ -126,7 +126,7 @@
 
 (define (template--alist-get alist key default)
   (let ((entry (assoc key alist)))
-    (if entry (car (cdr entry)) default)))
+    (if entry (cadr entry) default)))
 
 (define (template--alist-set alist key value)
   (cons (list key value) alist))
@@ -406,7 +406,7 @@ this safe against SQL injection, and for the {{#each ... sep ...}} \"IN
 ; ---------------------------------------------------------------------
 
 (defmacro template-bindings pairs
-  (cons 'list (map (lambda (pair) (list 'list (list 'quote (car pair)) (car (cdr pair)))) pairs)))
+  (cons 'list (map (lambda (pair) (list 'list (list 'quote (car pair)) (cadr pair))) pairs)))
 
 ; ---------------------------------------------------------------------
 ; Convenience: render a template in SQL mode and run it in one call.

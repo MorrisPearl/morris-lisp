@@ -18,12 +18,15 @@
 
 ; --- 2. A bank's reports, as it would show them ----------------------------------
 ; Quarters, newest first, amounts in millions; :period "annual" for year ends.
+; The field column (the FDIC's name for each item) is left out of the
+; display: its format is hide. The balance sheet has more than 20 lines,
+; so :max-rows #f shows all of them.
 (display "\nWells Fargo Bank -- balance sheet:\n")
-(display-table (table-drop-columns (fdic-balance-sheet creds 3511 :count 4) '("field")))
+(display-table (fdic-balance-sheet creds 3511 :count 4) '(("field" hide)) :max-rows #f)
 (display "\nIncome, each quarter:\n")
-(display-table (table-drop-columns (fdic-income-statement creds 3511 :count 4) '("field")))
+(display-table (fdic-income-statement creds 3511 :count 4) '(("field" hide)))
 (display "\nRatios (in percent), each year:\n")
-(display-table (table-drop-columns (fdic-ratios creds 3511 :period "annual" :count 5) '("field")))
+(display-table (fdic-ratios creds 3511 :period "annual" :count 5) '(("field" hide)))
 
 ; --- 3. Working with the numbers ---------------------------------------------------
 ; fdic-financials has every item, a row per quarter, in dollars. Silicon
@@ -31,16 +34,16 @@
 ; its deposits that were uninsured, and how its securities compared with
 ; its equity.
 (define svb (fdic-financials creds 24735 :count 8))
-(define (column name) (table-column svb name))
 (display "\nSilicon Valley Bank, its last eight quarters:\n")
-(display-table (make-table "quarter" (column "report-date")
-                           "deposits ($bn)" (/ (column "total-deposits") 1e9)
-                           "uninsured" (/ (column "uninsured-deposits") (column "total-deposits"))
-                           "securities ($bn)" (/ (column "securities") 1e9)
-                           "securities / equity" (/ (column "securities") (column "equity"))
-                           "return on assets" (/ (column "return-on-assets") 100))
-               '(("deposits ($bn)" ",.1f") ("uninsured" ".0%") ("securities ($bn)" ",.1f")
-                 ("securities / equity" ".1f") ("return on assets" ".2%")))
+(with-columns (report-date total-deposits uninsured-deposits securities equity return-on-assets) svb
+  (display-table (make-table "quarter" report-date
+                             "deposits ($bn)" (/ total-deposits 1e9)
+                             "uninsured" (/ uninsured-deposits total-deposits)
+                             "securities ($bn)" (/ securities 1e9)
+                             "securities / equity" (/ securities equity)
+                             "return on assets" (/ return-on-assets 100))
+                 '(("deposits ($bn)" ",.1f") ("uninsured" ".0%") ("securities ($bn)" ",.1f")
+                   ("securities / equity" ".1f") ("return on assets" ".2%"))))
 
 ; --- 4. Anything else the FDIC has ---------------------------------------------------
 ; fdic-get reads any of its datasets; fdic-fields says what the fields mean.

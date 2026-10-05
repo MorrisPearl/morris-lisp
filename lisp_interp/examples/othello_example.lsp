@@ -301,7 +301,7 @@ ahead, but only for values between alpha and beta."
   (let ((move ((if (= player black) (maximizer weighted-squares) (alpha-beta-searcher 2 weighted-squares))
                player (vector-copy board))))
     (make-move move player board)
-    (set! moves-made (+ moves-made 1))
+    (incf moves-made)
     (set! player (next-to-play board player))))
 (print-board board)
 (display (format "{} moves; {}\n" moves-made

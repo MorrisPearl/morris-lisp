@@ -83,7 +83,7 @@
   "A phrase of category lhs, made of the parts rhs so far, and needing the
 categories in needed to finish it: every way to finish it from the
 remaining words, and every bigger phrase it can start."
-  (set! *calls* (+ *calls* 1))
+  (incf *calls*)
   (if (null? needed)
       (let ((tree (cons lhs rhs)))
         (cons (cons tree remaining)
@@ -91,7 +91,7 @@ remaining words, and every bigger phrase it can start."
                             (extend-parse (rule-lhs rule) (list tree) remaining (cdr (rule-rhs rule))))
                           (rules-starting-with lhs))))
       (append-map (lambda (next)
-                    (if (eq? (car (car next)) (car needed))
+                    (if (eq? (caar next) (car needed))
                         (extend-parse lhs (append rhs (list (car next))) (cdr next) (cdr needed))
                         '()))
                   (parse remaining))))
@@ -195,13 +195,13 @@ remaining words, and every bigger phrase it can start."
         (parts (cdr tree)))
     (if (and (null? (cdr parts)) (not (pair? (car parts))))
         ; a word: the meaning its lexical rule gives it
-        (rule-meaning (car (filter (lambda (rule) (and (eq? (rule-lhs rule) category)
-                                                       (eq? (rule-rhs rule) (car parts))))
-                                   *grammar*)))
+        (rule-meaning (find-if (lambda (rule) (and (eq? (rule-lhs rule) category)
+                                                   (eq? (rule-rhs rule) (car parts))))
+                               *grammar*))
         ; a phrase: its rule's procedure, applied to the meanings of its parts
-        (let ((rule (car (filter (lambda (rule) (and (eq? (rule-lhs rule) category)
-                                                     (equal? (rule-rhs rule) (map car parts))))
-                                 *grammar*))))
+        (let ((rule (find-if (lambda (rule) (and (eq? (rule-lhs rule) category)
+                                                 (equal? (rule-rhs rule) (map car parts))))
+                             *grammar*)))
           (apply (rule-meaning rule) (map meaning parts))))))
 
 (define (meanings text)

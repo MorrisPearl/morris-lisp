@@ -58,7 +58,7 @@
 ; --- 4. unquote-splicing: splice the ELEMENTS of a list into a template,
 ;        not the list itself -- quasiquote works standalone too, it isn't
 ;        only for macro bodies (this just builds and displays the CODE,
-;        as data; there's no `eval` builtin in this interpreter to run it) ---
+;        as data, without running it; eval would run it) ---
 
 (define extra-args (list 10 20 30))
 (display "`(+ 1 2 ,@extra-args) builds -> ")
@@ -84,7 +84,7 @@
 (define i 0)
 (define total 0)
 (my-while (< i 200000)
-  (begin (set! total (+ total i)) (set! i (+ i 1))))
+  (begin (incf total i) (incf i)))
 (display "my-while summed 0..199999 -> ") (display total) (newline)
 
 (define a '(b c d e))
@@ -93,10 +93,9 @@
    (define n '(1 2 3))
    (my-while (not (null? n))
      (begin
-      (print (cons (car a) (car n)))
-      (set! n (cdr n))
+      (print (cons (car a) (pop n)))
       )
      )
-   (set! a (cdr a))
+   (pop a)
    )
   )

@@ -13,35 +13,35 @@
 
 ; --- 1. A company's statements, as it would show them -----------------------
 ; A row per line item, a column per fiscal year (newest first), amounts in
-; millions; the source column says which concepts the numbers came from.
+; millions. The source column, which says which concepts the numbers came
+; from, is left out of the display: its format is hide.
 (display (format "{}\n\n" (hash-table-ref (sec-company creds "AAPL") "name")))
 (display "Income statement:\n")
-(display-table (table-drop-columns (sec-income-statement creds "AAPL") '("source")))
+(display-table (sec-income-statement creds "AAPL") '(("source" hide)))
 (display "\nBalance sheet:\n")
-(display-table (table-drop-columns (sec-balance-sheet creds "AAPL") '("source")))
+(display-table (sec-balance-sheet creds "AAPL") '(("source" hide)))
 (display "\nCash flow statement:\n")
-(display-table (table-drop-columns (sec-cash-flow-statement creds "AAPL") '("source")))
+(display-table (sec-cash-flow-statement creds "AAPL") '(("source" hide)))
 
 ; --- 2. Quarters --------------------------------------------------------------
 ; A fourth quarter, which has no 10-Q, is the year less the first three.
 (display "\nMicrosoft's last 6 quarters:\n")
-(display-table (table-drop-columns (sec-income-statement creds "MSFT" :period "quarterly" :count 6)
-                                   '("source")))
+(display-table (sec-income-statement creds "MSFT" :period "quarterly" :count 6) '(("source" hide)))
 
 ; --- 3. Working with the numbers ------------------------------------------------
 ; sec-financials has every line item, a row per period, in dollars: ready
 ; for the table and vector functions. Here, margins and returns for three
 ; companies over five years.
 (define (ratios ticker)
-  (let* ((f (sec-financials creds ticker))
-         (column (lambda (name) (table-column f name))))
-    (make-table "company" (make-vector (table-row-count f) ticker)
-                "year-end" (column "period-end")
-                "revenue ($bn)" (/ (column "revenue") 1e9)
-                "gross margin" (/ (column "gross-profit") (column "revenue"))
-                "net margin" (/ (column "net-income") (column "revenue"))
-                "return on equity" (/ (column "net-income") (column "stockholders-equity"))
-                "free cash flow ($bn)" (/ (column "free-cash-flow") 1e9))))
+  (let ((f (sec-financials creds ticker)))
+    (with-columns (period-end revenue gross-profit net-income stockholders-equity free-cash-flow) f
+      (make-table "company" (make-vector (table-row-count f) ticker)
+                  "year-end" period-end
+                  "revenue ($bn)" (/ revenue 1e9)
+                  "gross margin" (/ gross-profit revenue)
+                  "net margin" (/ net-income revenue)
+                  "return on equity" (/ net-income stockholders-equity)
+                  "free cash flow ($bn)" (/ free-cash-flow 1e9)))))
 
 (display "\nMargins and returns:\n")
 (display-table (table-append (ratios "AAPL") (ratios "MSFT") (ratios "KO"))
@@ -53,10 +53,9 @@
 ; value it has reported for one -- each period, in each filing.
 (define eps (sec-facts creds "KO" "EarningsPerShareDiluted"))
 (define annual-eps
-  (table-filter eps (vector-and (= (table-column eps "form") "10-K")
-                                (> (days-between (table-column eps "start") (table-column eps "end")) 300))))
+  (with-columns (form start end) eps
+    (table-filter eps (vector-and (= form "10-K") (> (days-between start end) 300)))))
 (display (format "\nCoca-Cola has reported diluted EPS {} times, {} of them for a whole year in a 10-K;\n"
                  (table-row-count eps) (table-row-count annual-eps)))
 (display "the last few -- each year is reported again, for comparison, in the next two 10-Ks:\n")
-(display-table (table-select (table-slice annual-eps (- (table-row-count annual-eps) 6))
-                             '("start" "end" "value" "form" "filed")))
+(display-table (table-select (table-tail annual-eps 6) '("start" "end" "value" "form" "filed")))

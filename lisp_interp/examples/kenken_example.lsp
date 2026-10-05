@@ -172,7 +172,7 @@ combinations, which make-kenken adds."
          (groups-of (make-hash-table)))
     (dolist (group groups)
       (dolist (cell (group-cells group))
-        (hash-table-set! groups-of cell (cons group (hash-table-ref groups-of cell '())))))
+        (hash-table-update! groups-of cell (lambda (groups) (cons group groups)) '())))
     (make-puzzle :size size :cages cages :groups groups :groups-of groups-of)))
 
 ; The solver's state: for each cell, the digits it could still be, and for
@@ -252,11 +252,11 @@ others, and a digit with only one cell it can go in goes there."
             (when (and (not (= other cell))
                        (member (car digits) (digits-of possibilities other)))
               (limit-digits! possibilities other
-                             (filter (lambda (d) (not (= d (car digits)))) (digits-of possibilities other)))
+                             (remove (car digits) (digits-of possibilities other)))
               (push other changed))))))
     (dolist (cell line)
       (dolist (digit (digits-of possibilities cell))
-        (hash-table-set! places digit (cons cell (hash-table-ref places digit '())))))
+        (hash-table-update! places digit (lambda (cells) (cons cell cells)) '())))
     (loop for digit from 1 to size
           do (let ((cells (hash-table-ref places digit '())))
                (when (null? cells)
@@ -276,8 +276,7 @@ they're on it already)."
     (dolist (group to-do)
       (hash-table-set! waiting (group-number group) #t))
     (while (pair? to-do)
-      (let ((group (car to-do)))
-        (set! to-do (cdr to-do))
+      (let ((group (pop to-do)))
         (hash-table-remove! waiting (group-number group))
         (dolist (cell (if (group-cage group)
                           (apply-cage! possibilities (group-cage group))

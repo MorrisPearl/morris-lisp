@@ -151,10 +151,7 @@ binomial theorem is faster still.)"
   "An infix expression (a list, or a single number or symbol), as prefix."
   (let ((tokens (if (pair? expression) expression (list expression))))
     (define (peek) (if (null? tokens) '() (car tokens)))
-    (define (next!)
-      (let ((token (car tokens)))
-        (set! tokens (cdr tokens))
-        token))
+    (define (next!) (pop tokens))
     (define (sum)                       ; product + product - product ...
       (define (more left)
         (cond ((eq? (peek) '+) (next!) (more (list '+ left (product))))

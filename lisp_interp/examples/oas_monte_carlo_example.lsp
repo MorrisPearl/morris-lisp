@@ -70,8 +70,8 @@
 (define sim (sofr-simulate-mortgage-rate-paths
               extended-forward-rates sigma1 sigma2 horizon-years n-paths
               mortgage-spread 42))
-(define short-rate-paths (car (cdr sim)))
-(define mortgage-paths (car (cdr (cdr (cdr sim)))))
+(define short-rate-paths (second sim))
+(define mortgage-paths (fourth sim))
 
 (display "Simulated ") (display n-paths) (display " paths over ")
 (display horizon-years) (display " years.") (newline)
