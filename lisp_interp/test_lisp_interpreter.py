@@ -2913,12 +2913,34 @@ class TestDisplayTable(LispTestCase):
         self.assertLispError("(display-table 5)", "display-table: not a table")
         self.assertLispError("(display-table t '(5))", "each format must be (name spec)")
         self.assertLispError("(display-table t '((\"symbol\" \".2f\")))", "display-table: column symbol: format:")
+        self.assertLispError("(display-table t :max-rows -1)", ":max-rows must be a whole number, 0 or more, or #f")
+        self.assertLispError("(display-table t :rows 5)", ":rows isn't an option -- the options are :max-rows")
 
     def test_a_long_table_shows_its_first_rows_and_says_so(self):
-        with mock.patch.object(lisp_builtins, "DISPLAY_TABLE_MAX_ROWS", 1):
-            self.run_lisp("(display-table t)")
-        self.assertTrue(self.printed().endswith("(the first 1 of 2 rows -- see table-slice for the others)\n"),
-                        self.printed())
+        self.run_lisp("(display-table t :max-rows 1)")
+        self.assertEqual(self.printed(), "symbol  strike      iv  volume\n"
+                                         "------  ------  ------  ------\n"
+                                         "SPY C      450  0.2345   12345\n"
+                                         "(the first 1 of 2 rows -- :max-rows shows more)\n")
+
+    def test_twenty_rows_unless_max_rows_says_otherwise(self):
+        self.run_lisp('(define long (make-table "n" (list->vector (iota 25))))')
+        self.run_lisp("(display-table long)")
+        self.assertTrue(self.printed().endswith("19\n(the first 20 of 25 rows -- :max-rows shows more)\n"))
+        self.out.clear()
+        self.run_lisp('(display-table long \'(("n" ",")) :max-rows #f)')         # after formats; #f: every row
+        self.assertTrue(self.printed().endswith("\n23\n24\n"), self.printed())
+        self.out.clear()
+        self.run_lisp("(display-table long :max-rows 0)")
+        self.assertEqual(self.printed(), "n\n-\n(the first 0 of 25 rows -- :max-rows shows more)\n")
+
+    def test_a_hidden_column_is_left_out(self):
+        self.run_lisp("(display-table t '((\"strike\" hide) (\"iv\" \"hide\") (\"volume\" \",\")))")
+        self.assertEqual(self.printed(), "symbol  volume\n------  ------\nSPY C   12,345\nSPY|P       67\n")
+        self.out.clear()
+        self.run_lisp("(display-table t '((\"symbol\" hide) (\"strike\" hide) (\"iv\" hide) (\"volume\" hide)))")
+        self.assertEqual(self.printed(), "(every column is hidden)\n")
+        self.assertShows('(table-column-names t)', '("symbol" "strike" "iv" "volume")')      # the table is unchanged
 
     def test_what_the_table_callback_receives(self):
         shown = []

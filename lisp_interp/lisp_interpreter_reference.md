@@ -5520,7 +5520,7 @@ and gray for "no data", are shown below it. Returns `'()`.
 
 ### Displaying tables
 
-#### `(display-table table [formats])`
+#### `(display-table table [formats] [:max-rows n])`
 Shows a table, with a heading for each column, numbers right-aligned and
 text left-aligned, and nothing in a cell whose value is missing (NaN, or
 `'()`). `table` is a table (see "Tables") or a list of rows (see
@@ -5537,6 +5537,14 @@ commas and two decimals, `".1%"` for a percentage, `","` for a whole number
 with commas. A column with no format shows its values as `display` would. A
 format for a column the table doesn't have isn't used, so one list of
 formats can serve every view of the same data.
+
+**Leaving out a column.** A column whose format is `hide` isn't shown:
+`'(("shape" hide))` leaves out a map's outlines, say, without changing the
+table or making another one.
+
+**How many rows.** It shows the first 20 rows, and a note if there are
+more. `:max-rows n` shows the first `n` instead, and `:max-rows #f` every
+row. It comes after the formats, if there are any.
 
 ```lisp
 (define loans (make-table "id" (vector "a" "b" "c")
@@ -5555,9 +5563,24 @@ b    98,000.50  5.750%
 c   250,000.00  7.000%
 ```
 
-To show some of the columns, or in another order, use `table-select`; to
-show some of the rows, `table-filter`, `table-head`, or `table-slice`. A
-table longer than 1,000 rows shows its first 1,000 and a note saying so.
+and
+
+```lisp
+(display-table loans '(("id" hide) ("balance" ",.2f") ("rate" ".3%")) :max-rows 2)
+```
+
+prints
+
+```
+   balance    rate
+----------  ------
+125,000.00  6.250%
+ 98,000.50  5.750%
+(the first 2 of 3 rows -- :max-rows shows more)
+```
+
+To show the columns in another order, use `table-select`; to show other
+rows, `table-filter`, `table-tail`, or `table-slice`.
 `display-table` has no knowledge of `defstruct` columns or any other
 structure; `lib/column_engine.lsp` is a small example library, built on
 `defstruct` and `&key`, that registers named `column` structs (each with

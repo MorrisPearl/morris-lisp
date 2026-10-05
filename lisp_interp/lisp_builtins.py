@@ -1558,7 +1558,8 @@ def make_output_builtins(out, markdown, html):
     }
 
 
-DISPLAY_TABLE_MAX_ROWS = 1000   # a longer table shows this many rows, and a note saying so
+DISPLAY_TABLE_MAX_ROWS = 20    # display-table's :max-rows, unless it's given
+HIDDEN = "hide"                 # the format that leaves a column out of display-table
 
 
 def make_display_table_builtin(out, show_table):
@@ -1567,23 +1568,34 @@ def make_display_table_builtin(out, show_table):
     hands over is a list of (column name, the cells' text, alignment)
     tuples; the alignment is "right" for a column of numbers, else "left"."""
 
-    def display_table(data, formats=NIL):
-        """(display-table table [formats]) -- show a table, or a list of rows
-        (see table-rows), with each column's numbers laid out by a format
-        spec, e.g. '(("balance" ",.2f") ("rate" ".3%"))."""
+    def display_table(data, *arguments):
+        """(display-table table [formats] [:max-rows n]) -- show a table, or a
+        list of rows (see table-rows), with each column's numbers laid out by
+        a format spec, e.g. '(("balance" ",.2f") ("rate" ".3%")). A column
+        whose format is hide isn't shown. Shows the first :max-rows rows (20,
+        unless given; #f for all of them), and a note if there are more."""
+        formats = NIL
+        if arguments and not isinstance(arguments[0], Keyword):
+            formats, arguments = arguments[0], arguments[1:]
+        options = lisp_stratify.keyword_options(arguments, ["max-rows"], "display-table")
+        max_rows = options.get("max-rows", DISPLAY_TABLE_MAX_ROWS)
+        if max_rows is not False and (isinstance(max_rows, bool) or not isinstance(max_rows, int) or max_rows < 0):
+            raise LispError("display-table: :max-rows must be a whole number, 0 or more, or #f for every row, not %s"
+                            % (_brief(max_rows),))
+
         columns = lisp_tables.table_columns(lisp_tables.table_or_rows(data, "display-table"), "display-table")
         specs = format_specs(formats)
         n_rows = lisp_tables.row_count(columns)
-        shown = min(n_rows, DISPLAY_TABLE_MAX_ROWS)
+        shown = n_rows if max_rows is False else min(n_rows, max_rows)
         cells = [(name, [cell_text(value, specs.get(name), name) for value in lisp_tables.column_values(v)[:shown]],
                   column_alignment(v))
-                 for name, v in columns]
-        if not columns:
-            out.write("(an empty table)\n")
+                 for name, v in columns if specs.get(name) != HIDDEN]
+        if not cells:
+            out.write("(every column is hidden)\n" if columns else "(an empty table)\n")
             return NIL
         show_table(cells)
         if shown < n_rows:
-            out.write("(the first %s of %s rows -- see table-slice for the others)\n"
+            out.write("(the first %s of %s rows -- :max-rows shows more)\n"
                       % (format(shown, ","), format(n_rows, ",")))
         return NIL
 
@@ -1594,7 +1606,8 @@ def format_specs(formats):
     """display-table's formats -- a list of (name spec), or (name . spec) --
     as a dict from column name to spec. A format for a column the table
     doesn't have is simply not used, so one list of formats can serve every
-    view of the same data."""
+    view of the same data. The spec hide (a symbol, or the string "hide")
+    becomes "hide", like any other spec."""
     specs = {}
     for entry in list_items(formats, "display-table"):
         if not isinstance(entry, Pair):
