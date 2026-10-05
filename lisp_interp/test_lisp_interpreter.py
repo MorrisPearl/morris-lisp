@@ -2103,6 +2103,26 @@ class TestTables(LispTestCase):
         self.assertShows('(table-column (table-tail loans) "id")', '#("a" "a" "b" "b" "c")')     # fewer than 10
         self.assertShows('(table-row-count (table-tail loans 0))', "0")
 
+    def test_with_columns(self):
+        self.assertShows("(with-columns (balance rate) loans (vector-weighted-mean rate balance))",
+                         "5.4602272727272725")              # the missing rate is skipped
+        self.assertShows('(with-columns ((amount "balance") id) loans (list (vector-ref id 2) (vector-sum amount)))',
+                         '("b" 635)')
+        self.assertShows('(with-columns (SP500) (make-table "SP500" #(1 2)) SP500)', "#(1 2)")      # case kept
+        self.run_lisp('(define prices (make-table "date" (vector (date 2024 1 2) (date 2024 1 3)) "close" #(100 104)))')
+        self.assertShows('(with-columns ((day "date") close) prices (vector-select close (>= day (date 2024 1 3))))',
+                         "#(104)")                          # renamed, so the date function still works
+        self.run_lisp("(define made 0)")
+        self.run_lisp("(define (get-loans) (set! made (+ made 1)) loans)")
+        self.assertShows("(with-columns (id month balance) (get-loans) (set! made (+ made 10)) (vector-sum month))", "7")
+        self.assertShows("made", "11")                      # the table expression ran once; every body form ran
+        self.assertLispError("(with-columns (balance) loans balance) balance", "unbound")   # local to the body
+        self.assertLispError("(with-columns (balanse) loans balanse)", "no column named 'balanse' (the columns are:")
+        self.assertLispError("(with-columns ((amount balance)) loans amount)",
+                             'each column must be a name, or (variable "column"), not (amount balance)')
+        self.assertLispError("(with-columns balance loans balance)", "expected (with-columns (column...) table body...)")
+        self.assertIsInstance(self.env[lisp_core.Symbol("with-columns")], lisp_core.Macro)
+
     def test_drawdowns(self):
         self.run_lisp("(define dd-dates (vector (date 2020 1 1) (date 2020 1 2) (date 2020 1 3) (date 2020 1 4)"
                       " (date 2020 1 5) (date 2020 1 6) (date 2020 1 7) (date 2020 1 8)))")

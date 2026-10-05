@@ -11,6 +11,7 @@
 ;   (do ((var init [step])...) (end-test result...) body...)
 ;   (assert test [message...])
 ;   (with-sqlite (var path) body...)
+;   (with-columns (column...) table body...)
 ;   (when test body...)
 ;   (unless test body...)
 ;   (push item variable), (pop variable), (incf variable [n]), (decf variable [n])
@@ -341,6 +342,51 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
        (unwind-protect
            (begin ,@body)
          (sqlite-close ,var)))))
+
+; (with-columns (column...) table body...)
+; Evaluates table once, then evaluates the body forms with a variable for
+; each column listed, bound to that column's vector (as table-column gives
+; it), and returns the last one's value -- as Common Lisp's with-slots does
+; for an object's slots. Each column is written as
+;
+;   name                 a variable called name, for the column of the same
+;                        name (a name keeps its case: SP500 is the column
+;                        "SP500")
+;   (variable "column")  a variable called variable, for the column
+;                        "column" -- for a column whose name would hide a
+;                        function the body calls (such as date), or can't be
+;                        a variable (such as "2024", or a name with spaces)
+;
+;   (with-columns ((day "date") close) prices
+;     (vector-select close (>= day (date 2024 1 3))))
+;
+; expands to (with a gensym name for the table, so it's evaluated only once)
+;
+;   (let ((%with-columns-table-1 prices))
+;     (let ((day (table-column %with-columns-table-1 "date"))
+;           (close (table-column %with-columns-table-1 "close")))
+;       (vector-select close (>= day (date 2024 1 3)))))
+(define (with-columns--binding column table-var)
+  "One entry of with-columns' column list -- name, or (variable \"column\")
+-- as the let binding it becomes."
+  (cond ((symbol? column)
+         `(,column (table-column ,table-var ,(symbol->string column))))
+        ((and (list? column)
+              (= (length column) 2)
+              (symbol? (car column))
+              (string? (car (cdr column))))
+         `(,(car column) (table-column ,table-var ,(car (cdr column)))))
+        (else
+         (error "with-columns: each column must be a name, or (variable \"column\"), not" column))))
+
+(defmacro with-columns (columns table . body)
+  (if (not (list? columns))
+      (error "with-columns: expected (with-columns (column...) table body...), not" columns)
+      '())
+  (let ((table-var (gensym "with-columns-table")))
+    `(let ((,table-var ,table))
+       (let ,(map (lambda (column) (with-columns--binding column table-var)) columns)
+         ,@body))))
 
 ; (when test body...)
 ; If test is true, evaluates the body forms and returns the last one's

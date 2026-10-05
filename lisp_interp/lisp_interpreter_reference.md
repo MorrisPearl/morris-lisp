@@ -42,6 +42,7 @@ functions" as a reference to search rather than read start to end.
   - [Local variables](#local-variables)
     - [let](#let)
     - [let*](#let-1)
+    - [with-columns](#with-columns)
   - [Choosing](#choosing)
     - [if](#if)
     - [cond](#cond)
@@ -241,7 +242,7 @@ written in Lisp in `macros_init.lsp` and `loop.lsp`, which every new
 environment loads at startup (see "Running it", above). You use both the
 same way, so they're described together here, grouped by what they're for.
 For the curious, the macros are `let`, `let*`, `dolist`, `while`, `do`,
-`loop`, `when`, `unless`, `case`, `assert`, `with-sqlite`,
+`loop`, `when`, `unless`, `case`, `assert`, `with-sqlite`, `with-columns`,
 `pretty-print-function`, and `pretty-print-macro`; everything else here is
 a special form.
 
@@ -434,6 +435,12 @@ the same form.
 ```lisp
 (let* ((a 1) (b (+ a 1))) (list a b))   ; => (1 2) -- b's val sees a
 ```
+
+#### with-columns
+#### `(with-columns (column...) table body...)`
+A macro that binds a variable to each listed column of a table, as `let`
+would, then evaluates the body: `(with-columns (balance rate) loans
+...)`. See "Tables", below.
 
 ### Choosing
 
@@ -3274,6 +3281,59 @@ columns, if there's none by that name), and the number of rows.
 (table-column t "balance")        ; => #(100 90)
 (table-row-count t)               ; => 2
 ```
+
+#### `(with-columns (column...) table body...)`
+Evaluates `table` once, binds a variable to each column listed, and
+evaluates the `body` forms, returning the last one's value. It saves
+writing `(table-column t "...")` for each column a calculation uses, as
+Common Lisp's `with-slots` does for an object's slots. Each column is
+written as either:
+
+- `name`: a variable called `name`, for the column of the same name. A
+  name keeps its case, so `SP500` is the column `"SP500"`.
+- `(variable "column")`: a variable called `variable`, for the column
+  `"column"`. Use it when the column's name would hide a function the
+  body calls, or can't be a variable at all, such as `"2024"` or a name
+  with spaces.
+
+**Watch out for `date`.** Variables and functions share one namespace, so
+a variable named `date` hides the `date` function inside the body:
+`(date 2024 1 3)` there fails with "not a procedure". Nearly every dated
+table has a `date` column, so give it another name, as in
+`((day "date") close)` below. Other column names that are also functions
+include `last` (in `schwab-quotes`), and `count`, `min`, and `max` (in
+`table-describe`).
+
+```lisp
+(define loans (make-table "balance" #(100 90 200 195 50)
+                          "rate"    #(6.0 6.0 4.5 4.5 7.25)))
+(with-columns (balance rate) loans
+  (vector-weighted-mean rate balance))               ; => 5.165354330708661
+
+(define prices (make-table "date"  (vector (date 2024 1 2) (date 2024 1 3) (date 2024 1 4))
+                           "close" #(100 104 102)))
+(with-columns ((day "date") close) prices
+  (vector-select close (>= day (date 2024 1 3))))    ; => #(104 102)
+```
+
+It's a standard macro (in `macros_init.lsp`). The last example becomes
+this `let`, as `macroexpand-1` shows:
+
+```
+(let ((%with-columns-table-1 prices))
+  (let ((day (table-column %with-columns-table-1 "date"))
+        (close (table-column %with-columns-table-1 "close")))
+    (vector-select close (>= day (date 2024 1 3)))))
+```
+
+- The variables exist only in the body, as with `let`.
+- They're the table's own vectors, as `table-column` gives them, not
+  copies: `vector-set!` on one changes the table. `set!` changes only the
+  variable.
+- A column that isn't in the table is an error that lists the table's
+  columns.
+- To work one row at a time, `with-struct` makes each of a row's values a
+  variable (see "Rows", below).
 
 **Rows.** A table is stored as columns, which suits formulas that work on
 whole columns: `(* (table-column t "balance") 0.01)`. Some data is better
