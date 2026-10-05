@@ -189,7 +189,7 @@ def login_in_window(url, callback):
     the page goes to the callback URL. Returns that URL -- with the code in
     it -- or None if the window is closed first."""
     global _qt_application
-    from PyQt6.QtCore import QEventLoop, QUrl
+    from PyQt6.QtCore import QEventLoop, QTimer, QUrl
     from PyQt6.QtWebEngineCore import QWebEnginePage
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     from PyQt6.QtWidgets import QApplication
@@ -227,7 +227,14 @@ def login_in_window(url, callback):
     window.raise_()
     window.activateWindow()
     waiting.exec()
+    # Close the window, then let Qt run for a second to carry that out. In a
+    # notebook or at the console, nothing else runs Qt's events, so without
+    # this the window would stay on the screen. (A quarter of a second isn't
+    # enough: macOS's animation of the window closing would stop part way.)
     window.close()
+    closing = QEventLoop()
+    QTimer.singleShot(1000, closing.quit)
+    closing.exec()
     return landed[0] if landed else None
 
 

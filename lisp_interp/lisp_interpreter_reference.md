@@ -7262,10 +7262,14 @@ secret in the credentials file as `"Schwab_Client_ID"` and
 
 **Signing in.** Schwab signs in with OAuth, so a program never sees your
 password. `(schwab-login creds)` opens a small browser window with
-Schwab's sign-in page. There you log in and approve the app.
+Schwab's sign-in page. There you go through whatever steps Schwab uses
+for your account: logging in, perhaps two-factor authentication, and
+approving the app for one or more of your accounts, which it may ask
+about a few times.
 
 - Schwab then sends the window to the app's callback URL, with a code in
-  it. The window watches for that, closes, and trades the code for tokens.
+  it. The window watches for that, closes, and uses the code to get the
+  tokens that let the app connect to Schwab.
 - The tokens are kept in `schwab_tokens.json`, next to the credentials
   file, readable only by you.
 - The access token lasts 30 minutes and is renewed as needed. The sign-in
@@ -7288,9 +7292,9 @@ number, or the last 3 or more digits of its number, as text: `"IRA"` or
 
 **Every field.** Each table has the most useful of the fields Schwab
 sends. The comments in each function in `lisp_schwab.py` list all of
-them: dozens of balances for an account, tax-lot prices for a holding,
-dividends and P/E for a quote, fills for an order. `schwab-get` gets any
-of them, as Lisp data.
+the available fields: dozens of balances for an account, tax-lot prices
+for a holding, dividends and P/E for a quote, fills for an order, etc.
+`schwab-get` gets any of them, as Lisp data.
 
 #### `(schwab-login creds)`
 Sign in, as above. Returns `#t`.
