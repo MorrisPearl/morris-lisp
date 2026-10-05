@@ -48,6 +48,7 @@ import lisp_http
 import lisp_maps
 import lisp_regex
 import lisp_regression
+import lisp_save
 import lisp_schwab
 import lisp_sec
 import lisp_simplex
@@ -1859,6 +1860,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(make_display_table_builtin(out, table))
     env.update(lisp_charts.make_chart_builtins(plot))
     env.update(make_eval_builtins(env, out))
+    env.update(lisp_save.make_save_builtins(env))
     env.update(make_introspection_builtins(env, out))
     env.update(lisp_debug.make_debug_builtins(env, out))
 

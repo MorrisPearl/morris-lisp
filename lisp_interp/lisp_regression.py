@@ -1058,6 +1058,39 @@ class LispSplineModel:
         return "#<%s-model predictors=%d knots=%d>" % (self.kind, self.k, total_knots)
 
 
+def model_data(model):
+    """A fitted model as plain data -- a dict of strings, numbers, lists,
+    and dicts -- for save-variables to write as JSON; model_from_data makes
+    the model again. A field that's None is left out."""
+    if isinstance(model, LispSplineModel):
+        specs = []
+        for spec in model.predictor_specs:
+            fields = {"mode": spec.mode, "knots": list(spec.knots), "categories": list(spec.categories)}
+            if spec.n_distinct is not None:
+                fields["n-distinct"] = spec.n_distinct
+            specs.append(fields)
+        data = {"kind": model.kind, "k": model.k, "inner-model": model_data(model.inner_model),
+                "predictor-specs": specs}
+    else:
+        data = {"kind": model.kind, "coefficients": [float(c) for c in model.coefficients],
+                "intercept": float(model.intercept), "stats": dict(model.stats)}
+    if model.predictor_names is not None:
+        data["predictor-names"] = list(model.predictor_names)
+    if model.y_name is not None:
+        data["y-name"] = model.y_name
+    return data
+
+
+def model_from_data(data):
+    """The model that model_data describes."""
+    names = data.get("predictor-names")
+    if "inner-model" in data:
+        specs = [_PredictorSpec(spec["mode"], spec["knots"], spec["categories"], spec.get("n-distinct"))
+                 for spec in data["predictor-specs"]]
+        return LispSplineModel(model_from_data(data["inner-model"]), specs, data["k"], names, data.get("y-name"))
+    return LispModel(data["kind"], data["coefficients"], data["intercept"], data["stats"], names, data.get("y-name"))
+
+
 def _spline_feature_labels(specs, names):
     """One label per expanded feature, in _spline_expand_value's order: the
     predictor's name for its linear term, "name (knot T)" for each hinge,

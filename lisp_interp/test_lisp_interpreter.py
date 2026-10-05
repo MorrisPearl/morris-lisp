@@ -2966,6 +2966,139 @@ class TestDisplayTable(LispTestCase):
                          "| K\\*sqrt(T)\\_x | \\<1\\> \\`a\\` \\~b\\~ |")
 
 
+class TestSaveVariables(LispTestCase):
+    """save-variables and load-variables: variables saved in a JSON file,
+    and defined again from it -- here, in a new environment, as in a later
+    session."""
+
+    VALUES = """
+      (defstruct point x y)
+      (define n 42)
+      (define rate 0.0625)
+      (define missing nan)
+      (define big -inf)
+      (define name "Pool \\"A\\" \u2014 2024")
+      (define flags (list #t #f '()))
+      (define sym 'balance)
+      (define key :max-rows)
+      (define day (date 2024 1 2))
+      (define nested (list 1 (list 2 3) (vector 4 5) "six"))
+      (define dotted (cons 'a 1))
+      (define improper (cons 1 (cons 2 3)))
+      (define v-float (vector 1.5 nan 0.1))
+      (define v-int #(1 2 300))
+      (define v-bits #(1 0 1))
+      (define v-text (vector-lag (vector "a" "b" "c")))
+      (define v-dates (vector (date 2024 1 2) (date 2024 2 1)))
+      (define loans (make-table "id" (vector "a" "b") "balance" #(100.5 90) "start" (vector (date 2020 1 1) (date 2021 6 30))))
+      (define pairs (list (cons 'a #(1 2)) (cons 'b #(3 4))))     ; symbols, so not a table
+      (define h (make-hash-table))
+      (hash-table-set! h "CA" 1)
+      (hash-table-set! h 'NY (list 1 2))
+      (hash-table-set! h (date 2024 1 1) "new year")
+      (define p (make-point :x 1 :y (vector 2 3)))
+      (define rows (table-rows loans))"""
+    NAMES = ("n rate missing big name flags sym key day nested dotted improper v-float v-int v-bits v-text "
+             "v-dates loans pairs h p rows")
+
+    def setUp(self):
+        super().setUp()
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        self.path = os.path.join(folder, "work.json")
+        self.env[lisp_core.Symbol("path")] = lisp_core.LispString(self.path)
+        self.later = lisp_builtins.make_global_env(output=self.out.append)       # a later session
+        self.later[lisp_core.Symbol("path")] = lisp_core.LispString(self.path)
+
+    def test_every_kind_of_data_comes_back_as_it_was(self):
+        self.run_lisp(self.VALUES)
+        self.assertShows("(save-variables path %s)" % self.NAMES, "(%s)" % self.NAMES)
+        self.run_lisp("(defstruct point x y)", env=self.later)
+        names = self.run_lisp("(load-variables path)", env=self.later)
+        self.assertEqual(lisp_core.to_string(names), "(%s)" % self.NAMES)
+        for name in self.NAMES.split():
+            symbol = lisp_core.Symbol(name)
+            self.assertEqual(lisp_core.to_string(self.later[symbol]), lisp_core.to_string(self.env[symbol]), name)
+        for name in ("v-float", "v-int", "v-bits", "v-text", "v-dates"):            # stored the same way
+            symbol = lisp_core.Symbol(name)
+            self.assertEqual(self.later[symbol].items.dtype, self.env[symbol].items.dtype, name)
+        self.assertEqual(self.later[lisp_core.Symbol("v-float")].items[2], np.float32(0.1))
+        self.assertEqual(self.run_lisp("(list (hash-table-ref h 'NY) (hash-table-ref h (date 2024 1 1)) (point? p)"
+                                       " (point-x p) (row-ref (cadr rows) \"start\") (table? loans) (table? pairs))",
+                                       env=self.later),
+                         self.run_lisp("(list (hash-table-ref h 'NY) (hash-table-ref h (date 2024 1 1)) (point? p)"
+                                       " (point-x p) (row-ref (cadr rows) \"start\") (table? loans) (table? pairs))"))
+
+    def test_the_file_is_plain_json(self):
+        self.run_lisp(self.VALUES)
+        self.run_lisp("(save-variables path missing big sym day loans p)")
+        def refuse(constant):
+            raise AssertionError("not plain JSON: " + constant)
+        with open(self.path, encoding="utf-8") as f:
+            document = json.load(f, parse_constant=refuse)
+        self.assertEqual((document["format"], document["version"]), ("morris-lisp variables", 1))
+        self.assertEqual(document["variables"], {
+            "missing": None, "big": {"number": "-inf"}, "sym": {"symbol": "balance"}, "day": {"date": "2024-01-02"},
+            "loans": {"table": [["id", ["a", "b"]], ["balance", [100.5, 90.0]],
+                                ["start", [{"date": "2020-01-01"}, {"date": "2021-06-30"}]]]},
+            "p": {"struct": "point", "slots": {"x": 1, "y": {"vector": [2, 3]}}}})
+
+    def test_load_variables_defines_them_at_the_top_level(self):
+        self.run_lisp("(define rate 0.05) (save-variables path rate)")
+        self.run_lisp("(define (restore) (load-variables path)) (restore)", env=self.later)
+        self.assertShows("rate", "0.05")
+        self.assertEqual(self.later[lisp_core.Symbol("rate")], 0.05)
+
+    def test_models_predict_and_report_the_same(self):
+        self.run_lisp("""
+          (define x (cons "income" #(10 20 30 40 50 60 70 80)))
+          (define kind (cons "kind" (vector "own" "rent" "own" "rent" "own" "rent" "own" "rent")))
+          (define y (cons "spend" #(9 15 33 38 52 58 74 77)))
+          (define linear (linear-regression (list x) y))
+          (define lad (lad-regression (list x) y))
+          (define logistic (logistic-regression (list x) (cons "default" #(0 0 1 0 1 0 1 1))))
+          (define spline (spline-regression (list x kind) y (list 1 'categorical)))""")
+        self.run_lisp("(save-variables path linear lad logistic spline)")
+        self.run_lisp("(load-variables path)", env=self.later)
+        for model in ("linear", "lad", "logistic"):
+            for src in ("(model-predict %s (list 45))" % model, "(model-report %s)" % model):
+                self.assertEqual(self.run_lisp(src, env=self.later), self.run_lisp(src), src)
+        for src in ('(model-predict spline (list 45 "rent"))', "(model-report spline)"):
+            self.assertEqual(self.run_lisp(src, env=self.later), self.run_lisp(src), src)
+        self.assertIn("kind: categorical -- categories own, rent (baseline own)", self.run_lisp("(model-report spline)"))
+
+    def test_what_cant_be_saved(self):
+        self.run_lisp("(define rate 0.05) (save-variables path rate)")
+        self.run_lisp("(define (f x) x) (define stuff (list 1 f))")
+        self.assertLispError("(save-variables path rate stuff)",
+                             "save-variables: can't save stuff: it is or holds #<procedure f>, which isn't data")
+        self.run_lisp("(load-variables path)", env=self.later)                   # the earlier file, as it was
+        self.assertEqual(self.later[lisp_core.Symbol("rate")], 0.05)
+        self.assertLispError("(save-variables path (+ 1 2))", "save-variables: expected the names of variables, not (+ 1 2)")
+        self.assertLispError("(save-variables path)", "expected (save-variables path name...), with at least one name")
+        self.assertLispError("(save-variables path nowhere)", "unbound")
+
+    def test_what_cant_be_loaded(self):
+        self.run_lisp(self.VALUES)
+        self.run_lisp("(save-variables path rate p)")
+        with self.assertRaises(lisp_core.LispError) as caught:
+            self.run_lisp("(load-variables path)", env=self.later)
+        self.assertIn("load-variables: can't load p: there's no point struct type -- define it with defstruct first",
+                      str(caught.exception))
+        self.assertNotIn(lisp_core.Symbol("rate"), self.later)                     # nothing defined
+        self.run_lisp("(defstruct point x y z)", env=self.later)
+        with self.assertRaises(lisp_core.LispError) as caught:
+            self.run_lisp("(load-variables path)", env=self.later)
+        self.assertIn("a point now has the slots x, y, z, but the saved one has x, y", str(caught.exception))
+        with open(self.path, "w") as f:
+            f.write('{"rate": 0.05}')
+        self.assertLispError("(load-variables path)", "isn't a file save-variables wrote")
+        with open(self.path, "w") as f:
+            f.write("not JSON")
+        self.assertLispError("(load-variables path)", "isn't a JSON file")
+        self.assertLispError('(load-variables "/no/such/file.json")', "couldn't read /no/such/file.json")
+
+
 class TestOptionChainTable(LispTestCase):
     """tastytrade-option-chain's rows become a table (no network needed to
     test that part), and examples/option_chain_example.lsp runs on one."""

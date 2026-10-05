@@ -108,6 +108,7 @@ functions" as a reference to search rather than read start to end.
   - [Schwab (your accounts)](#schwab-your-accounts)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
   - [Input / output](#input--output)
+  - [Saving variables](#saving-variables)
   - [Metaprogramming](#metaprogramming)
   - [Introspection / debugging](#introspection--debugging)
   - [Debugging](#debugging-1)
@@ -7658,6 +7659,85 @@ Undoes `redirect-output`: closes whatever file is currently open (if any)
 and returns to writing to the console/GUI log. Safe to call even if no
 redirect is active.
 
+### Saving variables
+
+`save-variables` saves variables in a file, and `load-variables` defines
+them again later: in the same session, or after the notebook's kernel has
+restarted. The file is JSON, which any program can read (Python's `json`,
+pandas, a text editor), and loading one runs no code.
+
+#### `(save-variables path name...)`
+Saves each named variable's value in the JSON file at `path` (replacing
+the file, if there is one), and returns the names. It's a macro, so the
+names aren't quoted: it saves both the names and the values.
+
+```lisp
+(define rates #(0.05 0.06))
+(define loans (make-table "id" (vector "a" "b") "balance" #(100 90)))
+(save-variables "work.json" loans rates)          ; => (loans rates)
+```
+
+It can save numbers (`nan` and `inf` included), strings, symbols,
+keywords, `#t` and `#f`, lists, vectors, tables, dates, hash tables,
+structs, and regression models, and any of those inside another. It can't
+save a procedure, which holds its environment, not just data. Nor can it
+save a SQLite connection, or a map's outlines (`census-shapes` reads them
+again quickly). Trying to is an error naming the variable, and nothing is
+written.
+
+#### `(load-variables path)`
+Defines each variable saved in the file again, at the top level (even
+when it's called inside a function), and returns their names. Nothing is
+defined unless every value can be read.
+
+```lisp
+(load-variables "work.json")                      ; => (loans rates)
+```
+
+A struct is made with the type `defstruct` has defined by that name, so
+run the `defstruct` first. If the type's slots have changed since the
+struct was saved, that's an error. A table's rows (see `table-rows`) need
+no `defstruct`.
+
+- A vector comes back stored the same way: float32 numbers stay float32,
+  whole numbers stay whole numbers.
+- Values are saved as copies. Two variables that held the same list hold
+  two equal lists after loading. A list or struct that holds itself can't
+  be saved.
+- A table of 200,000 rows and four columns takes about a second to save
+  and a second to load, in an 11 MB file. For tables of millions of rows,
+  `sqlite-write-table` (see "SQLite") is faster and smaller.
+
+**The file.** JSON has fewer kinds of values than Lisp, so a value JSON
+has no kind for is written as an object that says what it is:
+
+| Lisp | JSON |
+|---|---|
+| `42`, `2.5` | `42`, `2.5` |
+| `nan` | `null` |
+| `inf`, `-inf` | `{"number": "inf"}`, `{"number": "-inf"}` |
+| `"text"` | `"text"` |
+| `#t`, `#f` | `true`, `false` |
+| `(1 2 3)`, `'()` | `[1, 2, 3]`, `[]` |
+| `(a . 1)` | `{"pair": [{"symbol": "a"}, 1]}` |
+| `balance`, `:max-rows` | `{"symbol": "balance"}`, `{"keyword": ":max-rows"}` |
+| `#(1 2 3)` | `{"vector": [1, 2, 3]}` |
+| `2024-01-02` | `{"date": "2024-01-02"}` |
+| a table | `{"table": [["id", ["a", "b"]], ["balance", [100, 90]]]}` |
+| a hash table | `{"hash-table": [[key, value], ...]}` |
+| a struct | `{"struct": "point", "slots": {"x": 1, "y": 2}}` |
+| a regression model | `{"model": {"kind": "linear", "coefficients": [...], ...}}` |
+
+The file has a line per variable:
+
+```
+{"format": "morris-lisp variables", "version": 1, "saved": "2026-10-05 14:30:00",
+ "variables": {
+  "loans": {"table": [["id", ["a", "b"]], ["balance", [100, 90]]]},
+  "rates": {"vector": [0.05, 0.06]}
+ }}
+```
+
 ### Metaprogramming
 
 #### `(eval expr)`
@@ -8498,6 +8578,7 @@ The Python files:
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
 | `lisp_debug.py` | `break`, `unbreak`, `set-debug-hook!`, `abort`, `locals`, `break-on-error`, ...: the debugging functions (the machinery is in `lisp_core.py`) |
 | `lisp_regression.py` | `linear-regression`, `lad-regression`, `logistic-regression`, `spline-regression`, `model-report`, ... |
+| `lisp_save.py` | `save-variables` (with its macro in `macros_init.lsp`) and `load-variables`: variables in a JSON file |
 | `lisp_simplex.py` | `lp-read-file`, `lp-solve`: linear programming (uses `simplex/`) |
 | `lisp_clock.py` | The clock: `current-time`, `today`, `time-add`, `sleep`, `sleep-until`, ... |
 | `lisp_finance.py` | Day counts (`day-count`, `year-fraction`) and cash-flow math: `npv`, `irr`, `xnpv`, `xirr`, `payment`, `present-value`, `yield`, `duration`, `convexity`, ... |

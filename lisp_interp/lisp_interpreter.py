@@ -69,7 +69,8 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
     cond, and, or, defmacro, defstruct, with-struct, catch-error,
     unwind-protect, catch (with the throw function), breakpoint, backtrace
   - standard macros written in Lisp (macros_init.lsp): let, let*, dolist,
-    while, do, when, unless, case, assert, with-sqlite, with-columns
+    while, do, when, unless, case, assert, with-sqlite, with-columns,
+    save-variables
   - loop, the Common Lisp loop macro (loop.lsp): for x in / on / across,
     counting, collect / sum / count / maximize, when / unless, return, ...
   - macro expansion is remembered, so each macro call is expanded only once

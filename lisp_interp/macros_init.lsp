@@ -16,6 +16,7 @@
 ;   (unless test body...)
 ;   (push item variable), (pop variable), (incf variable [n]), (decf variable [n])
 ;   (case key-expr ((key...) body...)... [(else body...)])
+;   (save-variables path name...)
 ;   (pretty-print-function name), (pretty-print-macro name)
 ;
 ; let, let*, and dolist come first, because the other macros use them.
@@ -510,6 +511,32 @@ the last clause, the only place an else clause is allowed."
   (let ((key-var (gensym "case-key")))
     `(let ((,key-var ,key-expr))
        (cond ,@(case--cond-clauses key-var clauses)))))
+
+; (save-variables path name...)
+; Saves each named variable's value -- numbers, strings, lists, vectors,
+; tables, dates, hash tables, structs, regression models -- in the JSON
+; file at path (replacing the file, if there is one), and returns their
+; names. (load-variables path) defines them all again, in this session or
+; a later one. It's a macro so that it sees the variables' names, and not
+; just their values:
+;
+;   (save-variables "work.json" loans rates)
+;
+; expands to
+;
+;   (%save-variables "work.json" (list (cons 'loans loans) (cons 'rates rates)))
+;
+; and %save-variables, in lisp_save.py, writes the file.
+(define (save-variables--pair name)
+  "One of save-variables' names, as the (name . value) pair it saves."
+  (unless (symbol? name)
+    (error "save-variables: expected the names of variables, not" name))
+  `(cons ',name ,name))
+
+(defmacro save-variables (path . names)
+  (when (null? names)
+    (error "save-variables: expected (save-variables path name...), with at least one name"))
+  `(%save-variables ,path (list ,@(map save-variables--pair names))))
 
 ; (pretty-print-function name), (pretty-print-macro name)
 ; Print the definition of the procedure, or macro, called name, spread out
