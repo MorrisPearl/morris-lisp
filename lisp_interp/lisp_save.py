@@ -1,7 +1,8 @@
 """Saving variables in a file, and defining them again later, for the Lisp
 interpreter:
 
-  (save-variables path name...)   save each named variable's value in a
+  (save-variables path name... [:leave-out-procedures #t])
+                                  save each named variable's value in a
                                   JSON file (a macro, in macros_init.lsp,
                                   that calls %save-variables, below)
   (load-variables path)           define each variable saved in the file
@@ -37,7 +38,10 @@ is written as an object that says what it is:
 
 A procedure can't be saved: it holds its environment, not just data. Nor
 can a SQLite connection, or a map's outlines (census-shapes reads those
-again quickly, from the files it keeps).
+again quickly, from the files it keeps). But with :leave-out-procedures
+#t, a struct's slots that hold procedures are left out of the file, and
+load-variables gives them their defaults: it makes each struct with its
+constructor, make-NAME, which gives every slot it isn't given its default.
 """
 
 import datetime
@@ -50,9 +54,10 @@ import numpy as np
 import lisp_regression
 import lisp_tables
 from lisp_core import (
-    Keyword, LispDate, LispError, LispHashTable, LispString, LispStruct, LispVector, NIL, Pair, Symbol,
-    _brief, _date_from_pydate, _lisp_scalar, list_to_pairs, pairs_to_list,
+    Keyword, LispDate, LispError, LispHashTable, LispString, LispStruct, LispVector, NIL, Pair, Procedure, Symbol,
+    _brief, _date_from_pydate, _lisp_scalar, apply_proc, is_true, list_to_pairs, pairs_to_list,
 )
+from lisp_stratify import keyword_options
 
 FORMAT = "morris-lisp variables"
 VERSION = 1
@@ -72,6 +77,16 @@ def is_proper_list(p):
     return p is NIL
 
 
+def is_procedure(value):
+    """Whether value is a procedure, as procedure? says: a lambda or a builtin."""
+    return isinstance(value, Procedure) or callable(value)
+
+
+def with_article(word):
+    """word, with a or an before it."""
+    return ("an " if word[:1].lower() in "aeiou" else "a ") + word
+
+
 def is_table(value):
     """Whether value is a table: a list of (name . vector) columns, all the
     same length, each named by a string. (A list of (symbol . vector) pairs
@@ -88,9 +103,10 @@ def is_table(value):
     return p is NIL and len(lengths) == 1
 
 
-def encode(value):
-    """A Lisp value as JSON's (see the table at the top). Raises LispError,
-    saying what it is, for a value that isn't data."""
+def encode(value, leave_out_procedures=False):
+    """A Lisp value as JSON's (see the table at the top). With
+    leave_out_procedures, a struct's slots that hold procedures are left
+    out. Raises LispError, saying what's wrong, for a value that isn't data."""
     if isinstance(value, np.generic):
         value = _lisp_scalar(value)
     if value is NIL:
@@ -112,22 +128,39 @@ def encode(value):
     if isinstance(value, LispDate):
         return {"date": value.date.isoformat()}
     if isinstance(value, LispVector):
-        return {"vector": [encode(_lisp_scalar(x)) for x in value.items]}
+        return {"vector": [encode(_lisp_scalar(x), leave_out_procedures) for x in value.items]}
     if isinstance(value, Pair):
         if is_table(value):
-            return {"table": [[str(column.car), [encode(_lisp_scalar(x)) for x in column.cdr.items]]
+            return {"table": [[str(column.car), [encode(_lisp_scalar(x), leave_out_procedures)
+                                                 for x in column.cdr.items]]
                               for column in pairs_to_list(value)]}
         if is_proper_list(value):
-            return [encode(x) for x in pairs_to_list(value)]
-        return {"pair": [encode(value.car), encode(value.cdr)]}
+            return [encode(x, leave_out_procedures) for x in pairs_to_list(value)]
+        return {"pair": [encode(value.car, leave_out_procedures), encode(value.cdr, leave_out_procedures)]}
     if isinstance(value, LispHashTable):
-        return {"hash-table": [[encode(key), encode(v)] for key, v in value.table.items()]}
+        return {"hash-table": [[encode(key, leave_out_procedures), encode(v, leave_out_procedures)]
+                               for key, v in value.table.items()]}
     if isinstance(value, LispStruct):
-        return {"struct": str(value.struct_type.name),
-                "slots": {str(slot): encode(v) for slot, v in value.values.items()}}
+        return {"struct": str(value.struct_type.name), "slots": encode_slots(value, leave_out_procedures)}
     if isinstance(value, (lisp_regression.LispModel, lisp_regression.LispSplineModel)):
         return {"model": encode_plain(lisp_regression.model_data(value))}
-    raise LispError(_brief(value))
+    raise LispError("it is or holds %s, which isn't data -- data is numbers, strings, symbols, lists, vectors, "
+                    "tables, dates, hash tables, structs, and regression models" % (_brief(value),))
+
+
+def encode_slots(struct, leave_out_procedures):
+    """A struct's slots, as JSON's: an object with a member for each slot,
+    except, with leave_out_procedures, the slots that hold procedures."""
+    slots = {}
+    for slot, value in struct.values.items():
+        if is_procedure(value):
+            if leave_out_procedures:
+                continue
+            raise LispError("it is or holds %s whose %s slot holds %s, which isn't data -- to leave a struct's "
+                            "procedures out of the file, give save-variables :leave-out-procedures #t"
+                            % (with_article(str(struct.struct_type.name)), slot, _brief(value)))
+        slots[str(slot)] = encode(value, leave_out_procedures)
+    return slots
 
 
 def encode_plain(data):
@@ -194,44 +227,57 @@ def decode_plain(data, env, row_types):
 
 
 def decode_struct(data, env, row_types):
-    """A saved struct, of the type of that name now defined. A table's rows
-    (see table-rows) are structs of a type made for each table, so one is
-    made for them here, the same for each set of columns."""
+    """A saved struct, made by its type's constructor, make-NAME, as defstruct
+    has defined it now. So a slot the file doesn't have -- one that held a
+    procedure, left out by :leave-out-procedures, or one the defstruct has
+    gained since -- gets its default, just as make-NAME gives it.
+
+    A table's rows (see table-rows) have no constructor: they're structs of
+    a type made for each table, so one is made for them here, the same for
+    each set of columns."""
     name, slots = data["struct"], data["slots"]
     struct_type = env.lookup_or_none(Symbol("%%struct-type-%s" % name))
     if struct_type is None and name == "row":
         if tuple(slots) not in row_types:
             row_types[tuple(slots)] = lisp_tables.row_type(list(slots))
-        struct_type = row_types[tuple(slots)]
-    if struct_type is None:
+        return LispStruct(row_types[tuple(slots)],
+                          {Symbol(slot): decode(value, env, row_types) for slot, value in slots.items()})
+    constructor = env.lookup_or_none(Symbol("make-%s" % name))
+    if struct_type is None or constructor is None:
         raise LispError("there's no %s struct type -- define it with defstruct first" % name)
     slot_names = [str(slot) for slot, _ in struct_type.slots]
-    if sorted(slot_names) != sorted(slots):
-        raise LispError("a %s now has the slots %s, but the saved one has %s"
-                        % (name, ", ".join(slot_names), ", ".join(slots)))
-    return LispStruct(struct_type, {Symbol(slot): decode(slots[slot], env, row_types) for slot in slot_names})
+    unknown = [slot for slot in slots if slot not in slot_names]
+    if unknown:
+        raise LispError("the saved %s has slots %s doesn't have now: %s"
+                        % (name, with_article(name), ", ".join(unknown)))
+    arguments = []
+    for slot in slot_names:
+        if slot in slots:
+            arguments += [Keyword(":" + slot), decode(slots[slot], env, row_types)]
+    return apply_proc(constructor, arguments)
 
 
 # ---------------------------------------------------------------------------
 # save-variables and load-variables
 # ---------------------------------------------------------------------------
 
-def save_variables(path, pairs):
-    """(%save-variables path pairs) -- what (save-variables path name...)
-    becomes: write each (name . value) of pairs in the JSON file at path,
-    replacing the file if there is one, and return the names. The file is
-    written only once every value is known to be data, so a value that
-    can't be saved leaves an earlier file as it was."""
+def save_variables(path, pairs, *options):
+    """(%save-variables path pairs [:leave-out-procedures #t]) -- what
+    (save-variables path name...) becomes: write each (name . value) of
+    pairs in the JSON file at path, replacing the file if there is one, and
+    return the names. The file is written only once every value is known to
+    be data, so a value that can't be saved leaves an earlier file as it
+    was."""
     who = "save-variables"
+    options = keyword_options(options, ["leave-out-procedures"], who)
+    leave_out_procedures = is_true(options.get("leave-out-procedures", False))
     names, lines = [], []
     for pair in pairs_to_list(pairs):
         name = str(pair.car)
         try:
-            data = encode(pair.cdr)
+            data = encode(pair.cdr, leave_out_procedures)
         except LispError as e:
-            raise LispError("%s: can't save %s: it is or holds %s, which isn't data -- data is numbers, strings, "
-                            "symbols, lists, vectors, tables, dates, hash tables, structs, and regression models"
-                            % (who, name, e))
+            raise LispError("%s: can't save %s: %s" % (who, name, e))
         except RecursionError:
             raise LispError("%s: can't save %s: it holds itself (a list, vector, or struct inside itself)"
                             % (who, name))

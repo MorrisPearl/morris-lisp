@@ -3075,8 +3075,41 @@ class TestSaveVariables(LispTestCase):
         self.run_lisp("(load-variables path)", env=self.later)                   # the earlier file, as it was
         self.assertEqual(self.later[lisp_core.Symbol("rate")], 0.05)
         self.assertLispError("(save-variables path (+ 1 2))", "save-variables: expected the names of variables, not (+ 1 2)")
-        self.assertLispError("(save-variables path)", "expected (save-variables path name...), with at least one name")
+        self.assertLispError("(save-variables path)",
+                             "expected (save-variables path name... [:leave-out-procedures #t]), with at least one name")
         self.assertLispError("(save-variables path nowhere)", "unbound")
+
+    def test_a_structs_procedures_can_be_left_out_and_come_back_as_their_defaults(self):
+        tranche = "(defstruct tranche (children ()) (money 0.0) (f (lambda (x) (* x 3))))"
+        self.run_lisp(tranche)
+        self.run_lisp("(define senior (make-tranche :money 100.0 :children (list (make-tranche :money 40.0))))")
+        self.assertLispError("(save-variables path senior)",
+                             "can't save senior: it is or holds a tranche whose f slot holds #<procedure>, which "
+                             "isn't data -- to leave a struct's procedures out of the file, give save-variables "
+                             ":leave-out-procedures #t")
+        self.assertShows("(save-variables path senior :leave-out-procedures #t)", "(senior)")
+        with open(self.path, encoding="utf-8") as f:
+            saved = json.load(f)["variables"]["senior"]
+        self.assertEqual(saved["slots"], {"children": [{"struct": "tranche", "slots": {"children": [], "money": 40.0}}],
+                                          "money": 100.0})
+        self.run_lisp(tranche, env=self.later)
+        self.run_lisp("(load-variables path)", env=self.later)
+        self.assertEqual(lisp_core.to_string(self.run_lisp(
+            "(list (tranche-money senior) ((tranche-f senior) 2) ((tranche-f (car (tranche-children senior))) 5))",
+            env=self.later)), "(100.0 6 15)")
+
+    def test_a_slot_the_file_doesnt_have_gets_its_default_as_make_gives_it(self):
+        self.run_lisp("(defstruct loan balance) (define big (make-loan :balance 200000)) (save-variables path big)")
+        self.run_lisp("(defstruct loan balance (fee (* balance 0.01)))", env=self.later)   # a slot gained since
+        self.run_lisp("(load-variables path)", env=self.later)
+        self.assertEqual(self.run_lisp("(loan-fee big)", env=self.later), 2000.0)        # from the saved balance
+
+    def test_leaving_out_procedures_is_only_for_a_structs_slots(self):
+        self.run_lisp("(define (f x) x) (define h (make-hash-table)) (hash-table-set! h 'rule f)")
+        self.assertLispError("(save-variables path f :leave-out-procedures #t)", "can't save f: it is or holds #<procedure f>")
+        self.assertLispError("(save-variables path h :leave-out-procedures #t)", "can't save h: it is or holds #<procedure f>")
+        self.assertLispError("(save-variables path h :skip #t)", ":skip isn't an option -- the options are :leave-out-procedures")
+        self.assertLispError("(save-variables path :leave-out-procedures #t)", "with at least one name")
 
     def test_what_cant_be_loaded(self):
         self.run_lisp(self.VALUES)
@@ -3086,10 +3119,10 @@ class TestSaveVariables(LispTestCase):
         self.assertIn("load-variables: can't load p: there's no point struct type -- define it with defstruct first",
                       str(caught.exception))
         self.assertNotIn(lisp_core.Symbol("rate"), self.later)                     # nothing defined
-        self.run_lisp("(defstruct point x y z)", env=self.later)
+        self.run_lisp("(defstruct point x)", env=self.later)                         # it has lost its y slot
         with self.assertRaises(lisp_core.LispError) as caught:
             self.run_lisp("(load-variables path)", env=self.later)
-        self.assertIn("a point now has the slots x, y, z, but the saved one has x, y", str(caught.exception))
+        self.assertIn("can't load p: the saved point has slots a point doesn't have now: y", str(caught.exception))
         with open(self.path, "w") as f:
             f.write('{"rate": 0.05}')
         self.assertLispError("(load-variables path)", "isn't a file save-variables wrote")

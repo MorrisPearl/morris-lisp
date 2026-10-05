@@ -7666,7 +7666,7 @@ them again later: in the same session, or after the notebook's kernel has
 restarted. The file is JSON, which any program can read (Python's `json`,
 pandas, a text editor), and loading one runs no code.
 
-#### `(save-variables path name...)`
+#### `(save-variables path name... [:leave-out-procedures #t])`
 Saves each named variable's value in the JSON file at `path` (replacing
 the file, if there is one), and returns the names. It's a macro, so the
 names aren't quoted: it saves both the names and the values.
@@ -7685,6 +7685,20 @@ save a SQLite connection, or a map's outlines (`census-shapes` reads them
 again quickly). Trying to is an error naming the variable, and nothing is
 written.
 
+**A struct's procedures.** A struct with a procedure in a slot, such as
+the `f` of `(defstruct tranche (money 0.0) (f (lambda (x) (* x 3))))`, can
+be saved with `:leave-out-procedures #t`. The slots that hold procedures
+are left out of the file, and `load-variables` gives them their defaults.
+So a struct whose procedure wasn't its slot's default gets the default
+back, not its own. A procedure anywhere but in a struct's slot is still an
+error.
+
+```lisp
+(defstruct tranche (money 0.0) (f (lambda (x) (* x 3))))
+(define senior (make-tranche :money 100.0))
+(save-variables "tranches.json" senior :leave-out-procedures #t)   ; => (senior)
+```
+
 #### `(load-variables path)`
 Defines each variable saved in the file again, at the top level (even
 when it's called inside a function), and returns their names. Nothing is
@@ -7694,10 +7708,19 @@ defined unless every value can be read.
 (load-variables "work.json")                      ; => (loans rates)
 ```
 
-A struct is made with the type `defstruct` has defined by that name, so
-run the `defstruct` first. If the type's slots have changed since the
-struct was saved, that's an error. A table's rows (see `table-rows`) need
-no `defstruct`.
+A struct is made by its constructor, `make-NAME`, as `defstruct` has
+defined it, so run the `defstruct` first. A slot that isn't in the file
+gets its default, just as `make-NAME` gives it: a procedure left out by
+`:leave-out-procedures #t`, or a slot the `defstruct` has gained since. (A
+default can use the slots before it, such as `(fee (* balance 0.01))`.) A
+saved slot that the struct type no longer has is an error. A table's rows
+(see `table-rows`) need no `defstruct`.
+
+```lisp
+(defstruct tranche (money 0.0) (f (lambda (x) (* x 3))))
+(load-variables "tranches.json")                  ; => (senior)
+((tranche-f senior) 2)                            ; => 6, from the default
+```
 
 - A vector comes back stored the same way: float32 numbers stay float32,
   whole numbers stay whole numbers.
