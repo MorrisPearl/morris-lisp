@@ -27,8 +27,7 @@ import math
 
 import numpy as np
 
-from lisp_core import Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, list_to_pairs, pairs_to_list
-from lisp_stratify import keyword_options
+from lisp_core import Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, keyword_options, list_to_pairs, pairs_to_list
 
 try:
     import matplotlib.dates

@@ -3487,16 +3487,19 @@ picking elements", above); combine conditions with `vector-and` and
                             (vector< (table-column t "balance") 75)))   ; => (("state" . #("CA")) ("balance" . #(50)))
 ```
 
-#### `(table-where t column value)`
+#### `(table-where t column value [:key f] [:test predicate])`
 Just the rows whose `column` holds `value`, or, if `value` is a list, any
 of its values. It's the same as `table-filter` with an `=` mask, for the
 commonest filter. Values match as `equal?` matches them: text, numbers,
-and dates.
+and dates. To match some other way — ignoring case, say — give `:key` or
+`:test` (see "Matching with `:key` and `:test`", below). `:key` is applied
+to `value` as well as to the cells.
 
 ```lisp
 (define t (make-table "state" (vector "CA" "NY" "TX") "balance" #(100 200 50)))
 (table-where t "state" "NY")                ; => (("state" . #("NY")) ("balance" . #(200)))
 (table-where t "state" (list "CA" "TX"))    ; => (("state" . #("CA" "TX")) ("balance" . #(100 50)))
+(table-where t "state" "ny" :key string-downcase)   ; => (("state" . #("NY")) ("balance" . #(200)))
 ```
 
 #### `(table-sort t names [descending?])`
@@ -3521,7 +3524,7 @@ the first table's order).
 (table-append (make-table "x" #(1 2)) (make-table "x" #(3)))   ; => (("x" . #(1 2 3)))
 ```
 
-#### `(table-group-by t keys aggregations)`
+#### `(table-group-by t keys aggregations [:key f] [:test predicate])`
 One row per distinct value of the key column(s), sorted by key, holding
 the key columns followed by one column per aggregation. Each aggregation
 is a list:
@@ -3558,7 +3561,18 @@ tables").
 Group by several columns by passing a list of keys, e.g.
 `(table-group-by loans (list "state" "month") ...)`.
 
-#### `(table-join left right keys [how])`
+To group values that differ only in case, say, give `:key` or `:test` (see
+"Matching with `:key` and `:test`", below). With `:key`, the key columns
+show what `f` made of each group's values — `"a"` for `"A"` and `"a"`, with
+`string-downcase`. With `:test`, a group shows its first key value in sorted
+order, and each value joins the first earlier group it matches.
+
+```lisp
+(define names (make-table "n" (vector "b" "A" "a") "v" #(1 2 3)))
+(table-group-by names "n" (list (list "total" 'sum "v")) :key string-downcase)   ; => (("n" . #("a" "b")) ("total" . #(5 1)))
+```
+
+#### `(table-join left right keys [how] [:key f] [:test predicate])`
 Combine the rows of two tables whose key column(s) match. Each output row
 is a row of `left` followed by the other columns of the matching `right`
 row. `how` is:
@@ -3578,6 +3592,51 @@ monthly market data to loan-month rows — see "Monthly time series", below.
 (table-join loans rates "month")   ; => (("id" . #("a" "a")) ("month" . #(1 2)) ("mortgage_rate" . #(6.5 6.25)))
 (table-join loans rates "month" 'left)   ; => (("id" . #("a" "a" "b")) ("month" . #(1 2 3)) ("mortgage_rate" . #(6.5 6.25 nan)))
 ```
+
+Key values match when they are equal. To match some other way — names
+that differ in case or punctuation, say — give `:key` or `:test`, below.
+The output keeps `left`'s own key values.
+
+#### Matching with `:key` and `:test`
+`table-where`, `table-group-by`, and `table-join` match values that are
+equal. Each takes two optional keyword arguments, as in Common Lisp, to
+match them some other way:
+
+- `:key f` — a procedure of one value, applied to every value before they
+  are compared; values that are equal afterward match. In `table-join` it is
+  applied to both tables' key columns, in `table-where` to `value` and to
+  the column, and in `table-group-by` to the key columns. `f` must return a
+  number, a string, or a date (or `'()`, which is missing).
+- `:test p` — a procedure of two values that says whether they match: in
+  `table-join` it is given a `left` value and a `right` value, in
+  `table-where` `value` and then a cell, and in `table-group-by` an earlier
+  group's value and a later one's. Use it for matching that isn't "equal
+  after changing each value", such as numbers within a tolerance.
+
+Give both and `p` is given what `f` made of the values. A missing value is
+never given to `f` or `p`: it matches only another missing value, as it
+does without them. With several key columns, every one must match; `p` is
+applied to each column in turn.
+
+**Prefer `:key`.** `f` is applied once to each distinct value, and the
+matching is still done a column at a time with numpy, so a join of a
+500-row table to one of 10,000 distinct names takes about 0.01 seconds.
+`p` can only be applied to *pairs* of distinct values — 5,000,000 of them
+here — so the same join takes about 18 seconds.
+
+```lisp
+(define holdings (make-table "name" (vector "Apple Inc." "Microsoft" "Tesla") "weight" #(7.25 5.8 1.2)))
+(define industries (make-table "name" (vector "APPLE INC" "microsoft") "industry" (vector "Tech" "Tech")))
+(define (plain name) (string-downcase (regex-replace "[.,]" name "")))   ; ignore case, periods, and commas
+(table-join holdings industries "name" :key plain)   ; => (("name" . #("Apple Inc." "Microsoft")) ("weight" . #(7.25 5.8)) ("industry" . #("Tech" "Tech")))
+(table-join holdings industries "name" 'left :key plain)   ; => (("name" . #("Apple Inc." "Microsoft" "Tesla")) ("weight" . #(7.25 5.8 1.2)) ("industry" . #("Tech" "Tech" ())))
+(table-where holdings "name" "APPLE INC" :key plain)   ; => (("name" . #("Apple Inc.")) ("weight" . #(7.25)))
+
+(define (close? a b) (< (abs (- a b)) 0.05))   ; numbers within 0.05
+(table-join (make-table "x" (vector 4.01 5.5)) (make-table "x" (vector 4.0 5.49) "j" #(7 8)) "x" :test close?)   ; => (("x" . #(4.01 5.5)) ("j" . #(7 8)))
+```
+
+`table-sort` doesn't take them: it orders values rather than matching them.
 
 #### `(table-describe t)`
 A table summarizing each numeric column: how many values are present,

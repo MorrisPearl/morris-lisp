@@ -29,9 +29,8 @@ import datetime
 import json
 import math
 
-from lisp_core import LispError, LispString, LispVector, NIL, Pair, list_to_pairs, pairs_to_list
+from lisp_core import LispError, LispString, LispVector, NIL, Pair, keyword_options, list_to_pairs, pairs_to_list
 from lisp_data_common import credential, dated_table, text_list, year_range
-from lisp_stratify import keyword_options
 from lisp_tables import column_vector, make_table_value
 import lisp_http
 

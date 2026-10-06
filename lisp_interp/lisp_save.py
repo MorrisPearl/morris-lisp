@@ -55,9 +55,8 @@ import lisp_regression
 import lisp_tables
 from lisp_core import (
     Keyword, LispDate, LispError, LispHashTable, LispString, LispStruct, LispVector, NIL, Pair, Procedure, Symbol,
-    _brief, _date_from_pydate, _lisp_scalar, apply_proc, is_true, list_to_pairs, pairs_to_list,
+    _brief, _date_from_pydate, _lisp_scalar, apply_proc, is_true, keyword_options, list_to_pairs, pairs_to_list,
 )
-from lisp_stratify import keyword_options
 
 FORMAT = "morris-lisp variables"
 VERSION = 1

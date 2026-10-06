@@ -34,9 +34,8 @@ import json
 import math
 import urllib.parse
 
-from lisp_core import Keyword, LispError, LispString, NIL, pairs_to_list
+from lisp_core import Keyword, LispError, LispString, NIL, keyword_options, pairs_to_list
 from lisp_data_common import credential, text_list
-from lisp_stratify import keyword_options
 from lisp_tables import column_vector, make_table_value
 import lisp_http
 

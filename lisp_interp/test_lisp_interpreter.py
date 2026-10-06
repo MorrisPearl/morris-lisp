@@ -2093,6 +2093,7 @@ class TestTables(LispTestCase):
                                     "state"   (vector "CA" "CA" "NY" "NY" "CA")
                                     "balance" #(100 90 200 195 50)
                                     "rate"    (vector 6.0 6.0 4.5 nan 7.25)))""")
+        self.run_lisp("(define (same-ignoring-case? a b) (string=? (string-downcase a) (string-downcase b)))")
 
     def test_looking_at_a_table(self):
         self.assertShows("(table-column-names loans)", '("id" "month" "state" "balance" "rate")')
@@ -2140,6 +2141,29 @@ class TestTables(LispTestCase):
         self.assertShows("(table-row-count (vector-drawdowns #(1 2 3) #(100 nan 85) 10))", "1")   # NaN skipped
         self.assertLispError("(vector-drawdowns #(1 2) #(1 2 3) 10)", "dates has 2 elements but values has 3")
         self.assertLispError("(vector-drawdowns #(1 2) #(100 -5) 10)", "must be above 0")
+
+    def test_where_with_key_and_test(self):
+        self.assertShows('(table-column (table-where loans "state" "ny" :key string-downcase) "balance")', "#(200 195)")
+        self.assertShows('(table-column (table-where loans "id" (list "A" "C") :key string-downcase) "balance")',
+                         "#(100 90 50)")
+        self.assertShows('(table-column (table-where loans "state" "ny" :test same-ignoring-case?) "balance")',
+                         "#(200 195)")
+        self.assertShows('(table-column (table-where loans "rate" 6 :key floor) "id")', '#("a" "a")')   # a missing rate matches nothing
+        # the test is given the value, then the cell
+        self.assertShows('(table-column (table-where loans "balance" 150 :test (lambda (value cell) (> cell value))) "id")',
+                         '#("b" "b")')
+        # and what the key made of each, with both given
+        self.assertShows('(table-column (table-where loans "state" "Nevada" :key (lambda (s) (substring s 0 1))'
+                         ' :test string=?) "balance")', "#(200 195)")
+        self.assertLispError('(table-where loans "state" "NY" :test 5)', ":test must be a procedure of two values")
+        self.assertLispError('(table-where loans "state" "NY" :key "downcase")', ":key must be a procedure of one value")
+        self.assertLispError('(table-where loans "state" "NY" :tset string=?)', ":tset isn't an option -- the options are :key, :test")
+        self.assertLispError('(table-where loans "state" "NY" :key (lambda (s) (list s)))', ":key must return a number, string, or date")
+        # the key is applied once to each distinct value, not once to each row
+        self.run_lisp("(define calls 0)")
+        self.run_lisp("(define (counting-downcase s) (set! calls (+ calls 1)) (string-downcase s))")
+        self.run_lisp('(table-where loans "state" "ny" :key counting-downcase)')
+        self.assertShows("calls", "3")                      # "ny", and the column's two distinct values, CA and NY
 
     def test_rows_where_a_column_holds_a_value(self):
         self.assertShows('(table-column (table-where loans "state" "NY") "balance")', "#(200 195)")
@@ -2211,6 +2235,25 @@ class TestTables(LispTestCase):
                          ' ("wm" . #(90.0 200.0)) ("p90" . #(98.0 199.5)))')
         self.assertLispError("(table-group-by loans \"state\" (list (list \"x\" 'weighted-mean \"rate\")))", "weight column")
 
+    def test_group_by_with_key_and_test(self):
+        self.run_lisp('(define names (make-table "name" (vector "b" "A" "a" "B" "c") "v" #(1 2 3 4 5)))')
+        aggregations = ('(list (list "total" (quote sum) "v") (list "first" (quote first) "v")'
+                        ' (list "last" (quote last) "v"))')
+        # :key -- rows whose keyed values are equal share a group, which shows the keyed value;
+        # each group's rows stay in the table's order (so "B" comes after "b" in the table, but is the last)
+        self.assertShows('(table-group-by names "name" %s :key string-downcase)' % aggregations,
+                         '(("name" . #("a" "b" "c")) ("total" . #(5 5 5)) ("first" . #(2 1 5)) ("last" . #(3 4 5)))')
+        # :test -- a group shows its first key value in sorted order
+        self.assertShows('(table-group-by names "name" %s :test same-ignoring-case?)' % aggregations,
+                         '(("name" . #("A" "B" "c")) ("total" . #(5 5 5)) ("first" . #(2 1 5)) ("last" . #(3 4 5)))')
+        # with several key columns, every one must match
+        self.run_lisp('(define two-keys (make-table "name" (vector "A" "a" "A" "b") "m" #(1 1 2 1)))')
+        self.assertShows('(table-column (table-group-by two-keys (list "name" "m") (list (list "n" (quote count)))'
+                         ' :test (lambda (a b) (if (string? a) (same-ignoring-case? a b) (= a b)))) "n")', "#(2 1 1)")
+        self.assertShows('(table-column (table-group-by (table-head names 0) "name" (list (list "n" (quote count)))'
+                         ' :test same-ignoring-case?) "n")', "#()")
+        self.assertLispError('(table-group-by names "name" %s :test 5)' % aggregations, ":test must be a procedure")
+
     def test_join(self):
         self.run_lisp('(define rates (make-table "month" #(1 2) "mkt" #(6.5 6.25) "rate" #(1 2)))')
         self.assertShows('(table-column (table-join loans rates "month") "mkt")', "#(6.5 6.25 6.5 6.25 6.5)")
@@ -2225,6 +2268,86 @@ class TestTables(LispTestCase):
                          "#(10.0 20.0 nan)")
         self.assertShows('(table-column (table-join (make-table "k" (vector "y")) two "k") "v")', "#()")
         self.assertLispError('(table-join loans rates "month" (quote outer))', "how must be")
+
+    def test_join_with_key(self):
+        self.run_lisp("""
+          (define holdings (make-table "name" (vector "Apple Inc." "BROWN-FORMAN CORP" "Microsoft" "Tesla")
+                                       "weight" #(7.25 0.5 5.8 1.2)))
+          (define industries (make-table "name" (vector "APPLE INC" "brown forman corp" "microsoft" "Nvidia")
+                                         "industry" (vector "Tech" "Beverages" "Tech" "Chips")))
+          (define (plain s) (string-downcase (regex-replace "[.,]" (regex-replace "-" s " ") "")))""")
+        self.assertShows('(table-column (table-join holdings industries "name") "industry")', "#()")
+        self.assertShows('(table-column (table-join holdings industries "name" :key string-downcase) "industry")',
+                         '#("Tech")')                       # only Microsoft differs from its twin in just its case
+        self.assertShows('(table-column (table-join holdings industries "name" :key plain) "industry")',
+                         '#("Tech" "Beverages" "Tech")')
+        self.assertShows('(table-column (table-join holdings industries "name" :key plain) "name")',
+                         '#("Apple Inc." "BROWN-FORMAN CORP" "Microsoft")')    # the left table's own key values
+        self.assertShows("(table-column (table-join holdings industries \"name\" 'left :key plain) \"industry\")",
+                         '#("Tech" "Beverages" "Tech" ())')
+        # numbers, with a key that makes them match
+        self.assertShows('(table-column (table-join (make-table "x" #(1 2 3)) (make-table "x" #(11 12 20) "j" #(7 8 9)) "x"'
+                         ' :key (lambda (n) (mod n 10))) "j")', "#(7 8)")
+        # with several key columns, every one must match
+        self.run_lisp('(define a (make-table "k" (vector "x" "x" "y") "m" #(1 2 1) "n" #(1 2 3)))')
+        self.run_lisp('(define b (make-table "k" (vector "X" "X" "Y") "m" #(1 2 2) "v" #(10 20 30)))')
+        self.assertShows('(table-column (table-join a b (list "k" "m") :key (lambda (x) (if (string? x) (string-downcase x) x))) "v")',
+                         "#(10 20)")
+        self.assertLispError('(table-join holdings industries "name" :key 5)', ":key must be a procedure of one value")
+        self.assertLispError('(table-join holdings industries "name" :key list)', ":key must return a number, string, or date")
+
+    def test_join_with_test(self):
+        self.run_lisp('(define left (make-table "k" (vector "x" "X" "y" "z") "n" #(1 2 3 4)))')
+        self.run_lisp('(define right (make-table "k" (vector "X" "x" "Y") "v" #(10 20 30)))')
+        # each left row gets the right rows that match it, in the left table's order and then the right's
+        self.assertShows('(table-column (table-join left right "k" :test same-ignoring-case?) "v")', "#(10 20 10 20 30)")
+        self.assertShows('(table-column (table-join left right "k" :test same-ignoring-case?) "k")', '#("x" "x" "X" "X" "y")')
+        self.assertShows("(table-column (table-join left right \"k\" 'left :test same-ignoring-case?) \"v\")",
+                         "#(10.0 20.0 10.0 20.0 30.0 nan)")
+        # the test is given the left value, then the right
+        self.assertShows('(table-column (table-join (make-table "k" #(1 5)) (make-table "k" #(3 4) "v" #(30 40)) "k"'
+                         ' :test (lambda (left right) (< left right))) "v")', "#(30 40)")
+        # numbers that are close; a decimal such as 4.01 reaches the test as 4.01
+        self.assertShows('(table-column (table-join (make-table "x" (vector 4.01 5.5)) (make-table "x" (vector 4.0 5.49) "j" #(7 8))'
+                         ' "x" :test (lambda (a b) (< (abs (- a b)) 0.05))) "j")', "#(7 8)")
+        # with several key columns, every one must match
+        self.run_lisp('(define a (make-table "k" (vector "x" "x" "y") "m" #(1 2 1) "n" #(1 2 3)))')
+        self.run_lisp('(define b (make-table "k" (vector "X" "X" "Y") "m" #(1 2 2) "v" #(10 20 30)))')
+        self.assertShows('(table-column (table-join a b (list "k" "m") :test (lambda (p q) (if (string? p) (same-ignoring-case? p q) (= p q)))) "v")',
+                         "#(10 20)")
+        # after :key, the test is given what the key made
+        self.assertShows('(table-column (table-join (make-table "k" (vector "Ab" "cD")) (make-table "k" (vector "AB " "cd") "v" #(1 2))'
+                         ' "k" :key string-downcase :test (lambda (a b) (string-starts-with? b a))) "v")', "#(1 2)")
+        # no rows on one side
+        self.assertShows('(table-row-count (table-join (table-head left 0) right "k" :test same-ignoring-case?))', "0")
+        self.assertShows('(table-row-count (table-join left (table-head right 0) "k" :test same-ignoring-case?))', "0")
+        self.assertShows("(table-column (table-join left (table-head right 0) \"k\" 'left :test same-ignoring-case?) \"v\")",
+                         "#(nan nan nan nan)")
+        self.assertLispError('(table-join left right "k" :test 5)', ":test must be a procedure of two values")
+        self.assertLispError('(table-join left right "k" :test)', "after the first arguments come :name value pairs")
+        self.assertLispError("(table-join left right \"k\" 'outer :test same-ignoring-case?)", "how must be")
+
+    def test_join_with_test_applies_it_to_distinct_key_values(self):
+        # loans has 2 distinct months and so does rates: 2 x 2 = 4 calls, not 5 x 2 = 10
+        self.run_lisp('(define rates (make-table "month" #(1 2) "mkt" #(6.5 6.25)))')
+        self.run_lisp("(define calls 0)")
+        self.run_lisp("(define (counting-equal a b) (set! calls (+ calls 1)) (= a b))")
+        self.assertShows('(table-column (table-join loans rates "month" :test counting-equal) "mkt")', "#(6.5 6.25 6.5 6.25 6.5)")
+        self.assertShows("calls", "4")
+
+    def test_a_missing_key_never_reaches_key_or_test(self):
+        # the missing ones would make string-downcase and same-ignoring-case? fail; a missing key matches only another
+        self.run_lisp("""
+          (define with-missing (table-join (make-table "n" #(1 2 3)) (make-table "n" #(1 3) "k" (vector "x" "y")) "n" (quote left)))
+          (define other-missing (table-join (make-table "m" #(1 2)) (make-table "m" #(1) "k" (vector "X")) "m" (quote left)))""")
+        self.assertShows('(table-column with-missing "k")', '#("x" () "y")')
+        self.assertShows('(table-column (table-join with-missing other-missing "k" (quote left) :key string-downcase) "m")',
+                         "#(1.0 2.0 nan)")
+        self.assertShows('(table-column (table-join with-missing other-missing "k" (quote left) :test same-ignoring-case?) "m")',
+                         "#(1.0 2.0 nan)")
+        self.assertShows('(table-column (table-where with-missing "k" "X" :key string-downcase) "n")', "#(1)")
+        self.assertShows('(table-column (table-group-by with-missing "k" (list (list "rows" (quote count))) :key string-upcase) "k")',
+                         '#("X" "Y" ())')
 
     def test_describe(self):
         self.run_lisp("(define d (table-describe loans))")

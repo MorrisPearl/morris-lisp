@@ -51,10 +51,11 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
-from lisp_core import Keyword, LispDate, LispError, LispHashTable, LispString, LispVector, NIL, Pair, pairs_to_list
+from lisp_core import (
+    Keyword, LispDate, LispError, LispHashTable, LispString, LispVector, NIL, Pair, keyword_options, pairs_to_list,
+)
 from lisp_data_common import credential, text_list
 from lisp_http import json_to_lisp
-from lisp_stratify import keyword_options
 from lisp_tables import column_vector, make_table_value
 
 API_URL = "https://api.schwabapi.com"

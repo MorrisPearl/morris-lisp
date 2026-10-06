@@ -29,7 +29,7 @@ from lisp_core import (
     LispVector, Macro, NIL, Pair, Procedure, Symbol,
     _brief, _date_from_pydate, _lisp_scalar, _vector_widen_for,
     apply_proc, builtin_names, check_numbers, lisp_equal, plural, check_vector_elements, expand_macro, gensym,
-    get_verbose_level, is_true,
+    get_verbose_level, is_true, keyword_options,
     list_to_pairs, pairs_to_list, parse, pretty_print_string,
     reconstruct_macro_source, reconstruct_procedure_source, run_file, seval,
     set_verbose_level, throw_to, to_display_string, to_string,
@@ -1580,7 +1580,7 @@ def make_display_table_builtin(out, show_table):
         formats = NIL
         if arguments and not isinstance(arguments[0], Keyword):
             formats, arguments = arguments[0], arguments[1:]
-        options = lisp_stratify.keyword_options(arguments, ["max-rows"], "display-table")
+        options = keyword_options(arguments, ["max-rows"], "display-table")
         max_rows = options.get("max-rows", DISPLAY_TABLE_MAX_ROWS)
         if max_rows is not False and (isinstance(max_rows, bool) or not isinstance(max_rows, int) or max_rows < 0):
             raise LispError("display-table: :max-rows must be a whole number, 0 or more, or #f for every row, not %s"

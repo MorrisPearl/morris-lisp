@@ -14,9 +14,8 @@ import json
 import os
 import urllib.parse
 
-from lisp_core import LispDate, LispError, LispVector, NIL, Pair
+from lisp_core import LispDate, LispError, LispVector, NIL, Pair, keyword_options
 from lisp_data_common import credential, dated_table, text_list
-from lisp_stratify import keyword_options
 import lisp_http
 
 FRED_URL = "https://api.stlouisfed.org/fred/series/observations"

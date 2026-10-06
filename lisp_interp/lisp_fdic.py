@@ -36,9 +36,8 @@ it has one. Downloads are kept for 12 hours (in lisp_http's cache).
 import json
 import urllib.parse
 
-from lisp_core import LispDate, LispError, LispString, NIL, Pair, pairs_to_list
+from lisp_core import LispDate, LispError, LispString, NIL, Pair, keyword_options, pairs_to_list
 from lisp_data_common import credential, records_table
-from lisp_stratify import keyword_options
 from lisp_tables import column_vector, make_table_value
 import lisp_http
 

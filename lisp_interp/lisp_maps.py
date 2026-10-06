@@ -36,8 +36,7 @@ import zipfile
 
 import numpy as np
 
-from lisp_core import LispError, LispString, LispVector, NIL, Pair, pairs_to_list
-from lisp_stratify import keyword_options
+from lisp_core import LispError, LispString, LispVector, NIL, Pair, keyword_options, pairs_to_list
 from lisp_tables import column_values, column_vector, find_column, make_table_value, table_columns
 from lisp_plot_chart import SYMBOLS, formatted_number, is_number, is_off, log_ticks, number_format, tick_text
 import lisp_http

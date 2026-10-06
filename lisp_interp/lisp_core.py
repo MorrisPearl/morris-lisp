@@ -1764,6 +1764,20 @@ def check_vector_elements(args, name):
             raise LispError("%s: not a number, string, or date: %r" % (name, a))
 
 
+def keyword_options(options, allowed, who):
+    """A builtin's trailing :name value arguments, as a dict (name -> value)."""
+    if len(options) % 2:
+        raise LispError("%s: after the first arguments come :name value pairs, such as :weight \"balance\"" % who)
+    result = {}
+    for name, value in zip(options[::2], options[1::2]):
+        key = str(name)[1:] if isinstance(name, Keyword) else None
+        if key not in allowed:
+            raise LispError("%s: %s isn't an option -- the options are %s"
+                            % (who, _brief(name), ", ".join(":" + a for a in allowed)))
+        result[key] = value
+    return result
+
+
 def numeric_value(v):
     """A vector element as a plain number: a date becomes its day number
     (date.toordinal()); a number is returned unchanged."""

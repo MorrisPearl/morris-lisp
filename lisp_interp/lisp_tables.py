@@ -19,8 +19,9 @@ of rows are practical.
 import numpy as np
 
 from lisp_core import (
-    LispDate, LispError, LispHashTable, LispString, LispStruct, LispStructType, LispVector, NIL, Pair, Symbol,
-    _brief, _lisp_scalar, is_true, list_to_pairs, pairs_to_list, to_string,
+    Keyword, LispDate, LispError, LispHashTable, LispString, LispStruct, LispStructType, LispVector, NIL, Pair,
+    Procedure, Symbol,
+    _brief, _lisp_scalar, apply_proc, is_true, keyword_options, list_to_pairs, pairs_to_list, to_string,
 )
 from lisp_vector_math import factorize, floats_of, is_number, missing_mask, to_vector, truth_of
 
@@ -101,6 +102,78 @@ def take_with_missing(v, index):
 def symbol_argument(x):
     """A symbol-or-string option such as 'left or "left", as a string."""
     return str(x).lower()
+
+
+# ---------------------------------------------------------------------------
+# Comparing values with :key and :test
+# ---------------------------------------------------------------------------
+
+# table-where, table-group-by, and table-join normally match values that are
+# equal. Each takes two optional keyword arguments, as in Common Lisp, to say
+# what matches instead:
+#   :key f      a procedure of one value, applied to every value before it is
+#               compared -- e.g. string-downcase, to ignore case. Values that
+#               are equal after that match. f is applied once to each distinct
+#               value, and the comparing is still done with numpy, so this is
+#               fast on big tables.
+#   :test p     a procedure of two values that says whether they match (the
+#               values after :key, if there is one) -- e.g. numbers within a
+#               tolerance. p is applied to pairs of distinct values, so this
+#               is much slower than :key on big tables.
+
+def comparison_options(options, who):
+    """The :key and :test procedures among a builtin's trailing :name value
+    arguments, as (key, test); None for one that isn't there."""
+    given = keyword_options(options, ["key", "test"], who)
+    for name, takes in (("key", "one value, such as string-downcase"), ("test", "two values, such as string=?")):
+        procedure = given.get(name)
+        if procedure is not None and not (isinstance(procedure, Procedure) or callable(procedure)):
+            raise LispError("%s: :%s must be a procedure of %s, not %s" % (who, name, takes, _brief(procedure)))
+    return given.get("key"), given.get("test")
+
+
+def is_missing(value):
+    """Whether a table value (a Lisp value, as column_values gives) is missing."""
+    return value is None or (isinstance(value, float) and value != value)
+
+
+def keyed_values(values, key, who):
+    """(key v) for each v in values, a list of table values. key is applied
+    once to each distinct value, and never to a missing one; that stays missing
+    (None). key must return a number, a string, or a date -- or '(), which
+    is missing."""
+    keyed_by_value = {}
+    keyed = []
+    for v in values:
+        if is_missing(v):
+            keyed.append(None)
+            continue
+        if v not in keyed_by_value:
+            result = apply_proc(key, [v])
+            if result is NIL:
+                result = None
+            elif not (is_number(result) or isinstance(result, (LispString, LispDate))):
+                raise LispError("%s: :key must return a number, string, or date, but it returned %s for %s"
+                                % (who, _brief(result), _brief(v)))
+            keyed_by_value[v] = result
+        keyed.append(keyed_by_value[v])
+    return keyed
+
+
+def keyed_vector(vector, key, who):
+    """A vector of (key v) for each value v in the vector (see keyed_values)."""
+    keyed = keyed_values(column_values(vector), key, who)
+    if all(is_number(v) for v in keyed if v is not None):
+        keyed = [float("nan") if v is None else v for v in keyed]       # numbers are missing as NaN
+    return LispVector(keyed)
+
+
+def values_match(test, a, b):
+    """Whether (test a b) is true. A missing value is never given to the
+    test: it matches only another missing value, as it does with no test."""
+    if is_missing(a) or is_missing(b):
+        return is_missing(a) and is_missing(b)
+    return is_true(apply_proc(test, [a, b]))
 
 
 # ---------------------------------------------------------------------------
@@ -422,13 +495,27 @@ def table_filter(table, mask):
     return make_table_value(take_rows(columns, np.flatnonzero(keep)))
 
 
-def table_where(table, column_name, value):
-    """(table-where table column value) -- just the rows whose column holds
-    value -- or, if value is a list, any of its values."""
+def table_where(table, column_name, value, *options):
+    """(table-where table column value [:key f] [:test predicate]) -- just
+    the rows whose column holds value -- or, if value is a list, any of its
+    values. With :key, f is applied to the value and to every cell before
+    they are compared. With :test, a cell matches when (predicate value
+    cell) is true, instead of when it equals value."""
     columns = table_columns(table, "table-where")
+    key, test = comparison_options(options, "table-where")
     wanted = pairs_to_list(value) if isinstance(value, Pair) else [value]
     values = column_values(find_column(columns, str(column_name), "table-where"))
-    keep = [row for row, v in enumerate(values) if any(v == w for w in wanted)]
+    if key is not None:
+        wanted, values = keyed_values(wanted, key, "table-where"), keyed_values(values, key, "table-where")
+    if test is None:
+        keep = [row for row, v in enumerate(values) if any(v == w for w in wanted)]
+    else:
+        # The test is applied once to each distinct value in the column, not to each row.
+        matches = {}
+        for v in values:
+            if v not in matches:
+                matches[v] = any(values_match(test, w, v) for w in wanted)
+        keep = [row for row, v in enumerate(values) if matches[v]]
     return make_table_value(take_rows(columns, np.array(keep, dtype=np.int64)))
 
 
@@ -497,6 +584,38 @@ def group_rows(key_vectors):
     starts = np.concatenate([[0], np.cumsum(counts)[:-1]]).astype(np.int64)
     key_values = [[distinct[c] for c in group_codes[:, j]] for j, (_, distinct) in enumerate(factorized)]
     return order, starts, counts, key_values
+
+
+def group_key_values(key_vectors, order, starts):
+    """Each group's key values as Lisp values (what a :test predicate is
+    given): a tuple per group, with one value for each key column."""
+    columns = [column_values(v) for v in key_vectors]
+    return [tuple(values[order[start]] for values in columns) for start in starts]
+
+
+def merge_matching_groups(key_vectors, group_result, test):
+    """group_rows' result (group_result) with groups whose keys match merged
+    into one. Each group in turn joins the first earlier group whose key
+    values match its own -- (test earlier-value this-value) is true for every
+    key column -- or, if none does, starts a new group. A merged group shows
+    its first group's key values, and has its rows in table order."""
+    order, starts, counts, key_values = group_result
+    values = group_key_values(key_vectors, order, starts)
+    first_groups = []        # the group that began each merged group
+    members = []             # the groups merged into each
+    for g, value in enumerate(values):
+        for m, first in enumerate(first_groups):
+            if all(values_match(test, a, b) for a, b in zip(values[first], value)):
+                members[m].append(g)
+                break
+        else:
+            first_groups.append(g)
+            members.append([g])
+    rows = [np.sort(np.concatenate([order[starts[g]:starts[g] + counts[g]] for g in group])) for group in members]
+    merged_counts = np.array([len(r) for r in rows], dtype=np.int64)
+    merged_starts = np.concatenate([[0], np.cumsum(merged_counts)[:-1]]).astype(np.int64)
+    merged_key_values = [[column[g] for g in first_groups] for column in key_values]
+    return np.concatenate(rows), merged_starts, merged_counts, merged_key_values
 
 
 def group_sums(values, starts):
@@ -662,19 +781,26 @@ def aggregate(function, column, weights, order, starts, counts, as_vector=to_vec
     raise LispError("table-group-by: unknown function %s" % function)
 
 
-def table_group_by(table, keys, aggregations):
-    """(table-group-by table keys aggregations) -- one row per distinct
-    value of the key column(s), sorted by key, with the key columns
-    followed by one column per aggregation. Each aggregation is a list
+def table_group_by(table, keys, aggregations, *options):
+    """(table-group-by table keys aggregations [:key f] [:test predicate]) --
+    one row per distinct value of the key column(s), sorted by key, with the
+    key columns followed by one column per aggregation. Each aggregation is a list
         (new-name function column)       e.g. ("total" sum "balance")
         (new-name weighted-mean column weight-column)
         (new-name count)
     where function is one of SUMMARY_FUNCTIONS (count is the rows in the
     group), or (percentile p) or (weighted-percentile p); the weighted ones
-    need a weight column. Missing values are skipped."""
+    need a weight column. Missing values are skipped. With :key, f is applied
+    to the key values, rows whose results are equal go in one group, and the
+    key columns show the results. With :test, key values that (predicate
+    earlier-value later-value) calls a match go in one group, shown with its
+    first key value in sorted order."""
     columns = table_columns(table, "table-group-by")
+    key, test = comparison_options(options, "table-group-by")
     key_names = names_argument(keys, "table-group-by")
     key_vectors = [find_column(columns, n, "table-group-by") for n in key_names]
+    if key is not None:
+        key_vectors = [keyed_vector(v, key, "table-group-by") for v in key_vectors]
     specs = []
     for spec in pairs_to_list(aggregations):
         parts = pairs_to_list(spec) if isinstance(spec, Pair) else []
@@ -694,7 +820,10 @@ def table_group_by(table, keys, aggregations):
     if row_count(columns) == 0:
         return make_table_value([(n, LispVector([])) for n in key_names] +
                                 [(s[0], LispVector([])) for s in specs])
-    order, starts, counts, key_values = group_rows(key_vectors)
+    group_result = group_rows(key_vectors)
+    if test is not None:
+        group_result = merge_matching_groups(key_vectors, group_result, test)
+    order, starts, counts, key_values = group_result
     result = [(n, LispVector(values)) for n, values in zip(key_names, key_values)]
     for new_name, function, percent, column, weights in specs:
         result.append((new_name, aggregate(function, column, weights, order, starts, counts, percent=percent)))
@@ -722,24 +851,12 @@ def matching_keys(left_vectors, right_vectors):
     return ids[:n_left], ids[n_left:]
 
 
-def table_join(left, right, keys, how="inner"):
-    """(table-join left right keys [how]) -- combine rows of two tables whose
-    key column(s) match. Each output row is a left row followed by the
-    matching right row's other columns. how is 'inner (the default: only
-    left rows with a match) or 'left (every left row; where there's no
-    match, the right columns are missing). A left row matching several
-    right rows appears once for each. Rows keep the left table's order. A
-    right column with the same name as a left one gets "_right" added."""
-    how = symbol_argument(how)
-    if how not in ("inner", "left"):
-        raise LispError("table-join: how must be 'inner or 'left, got %s" % how)
-    left_columns = table_columns(left, "table-join")
-    right_columns = table_columns(right, "table-join")
-    key_names = names_argument(keys, "table-join")
-    left_keys = [find_column(left_columns, n, "table-join") for n in key_names]
-    right_keys = [find_column(right_columns, n, "table-join") for n in key_names]
-    n_left, n_right = row_count(left_columns), row_count(right_columns)
-
+def join_rows_by_equal_keys(left_keys, right_keys, how):
+    """Which rows a join puts together, when key values match by being equal.
+    Returns (left_index, right_index): for each output row, the row of the
+    left table and of the right table, or -1 for "no right row" (the left
+    rows that have no match, when how is "left")."""
+    n_left, n_right = len(left_keys[0].items), len(right_keys[0].items)
     if n_left and n_right:
         left_ids, right_ids = matching_keys(left_keys, right_keys)
     else:
@@ -759,6 +876,70 @@ def table_join(left, right, keys, how="inner"):
     has_match = np.repeat(matches > 0, rows_per_left)
     right_index = np.full(len(left_index), -1, dtype=np.int64)
     right_index[has_match] = right_order[np.repeat(lo, rows_per_left)[has_match] + nth_match[has_match]]
+    return left_index, right_index
+
+
+def join_rows_by_test(left_keys, right_keys, how, test):
+    """Which rows a join puts together (as join_rows_by_equal_keys returns
+    them), when key values match by (test left-value right-value) being true
+    for every key column. The test is applied to each pair of distinct key
+    values, not to each pair of rows."""
+    n_left, n_right = len(left_keys[0].items), len(right_keys[0].items)
+    no_rows = np.zeros(0, dtype=np.int64)
+    right_rows_of = [no_rows] * n_left            # for each left row, the right rows that match it
+    if n_left and n_right:
+        left_order, left_starts, left_counts, _ = group_rows(left_keys)
+        right_order, right_starts, right_counts, _ = group_rows(right_keys)
+        left_values = group_key_values(left_keys, left_order, left_starts)
+        right_values = group_key_values(right_keys, right_order, right_starts)
+        for g, left_value in enumerate(left_values):
+            matching_groups = [h for h, right_value in enumerate(right_values)
+                               if all(values_match(test, a, b) for a, b in zip(left_value, right_value))]
+            rows = [right_order[right_starts[h]:right_starts[h] + right_counts[h]] for h in matching_groups]
+            matching_rows = np.sort(np.concatenate(rows)) if rows else no_rows
+            for row in left_order[left_starts[g]:left_starts[g] + left_counts[g]]:
+                right_rows_of[row] = matching_rows
+
+    counts = np.array([len(rows) for rows in right_rows_of], dtype=np.int64)
+    rows_per_left = counts if how == "inner" else np.maximum(counts, 1)
+    left_index = np.repeat(np.arange(n_left), rows_per_left)
+    no_match = np.array([-1], dtype=np.int64)
+    pieces = [rows if len(rows) else no_match for rows in right_rows_of if len(rows) or how == "left"]
+    right_index = np.concatenate(pieces) if pieces else no_rows
+    return left_index, right_index
+
+
+def table_join(left, right, keys, *options):
+    """(table-join left right keys [how] [:key f] [:test predicate]) --
+    combine rows of two tables whose key column(s) match. Each output row is
+    a left row followed by the matching right row's other columns. how is
+    'inner (the default: only left rows with a match) or 'left (every left
+    row; where there's no match, the right columns are missing). A left row
+    matching several right rows appears once for each. Rows keep the left
+    table's order. A right column with the same name as a left one gets
+    "_right" added. Key values match when they are equal -- or, with :key,
+    when (f value) is equal for both; or, with :test, when (predicate
+    left-value right-value) is true for every key column."""
+    how = "inner"
+    if options and not isinstance(options[0], Keyword):
+        how, options = options[0], options[1:]
+    how = symbol_argument(how)
+    if how not in ("inner", "left"):
+        raise LispError("table-join: how must be 'inner or 'left, got %s" % how)
+    key, test = comparison_options(options, "table-join")
+    left_columns = table_columns(left, "table-join")
+    right_columns = table_columns(right, "table-join")
+    key_names = names_argument(keys, "table-join")
+    left_keys = [find_column(left_columns, n, "table-join") for n in key_names]
+    right_keys = [find_column(right_columns, n, "table-join") for n in key_names]
+    if key is not None:
+        left_keys = [keyed_vector(v, key, "table-join") for v in left_keys]
+        right_keys = [keyed_vector(v, key, "table-join") for v in right_keys]
+
+    if test is None:
+        left_index, right_index = join_rows_by_equal_keys(left_keys, right_keys, how)
+    else:
+        left_index, right_index = join_rows_by_test(left_keys, right_keys, how, test)
 
     result = take_rows(left_columns, left_index)
     left_names = {n for n, _ in left_columns}

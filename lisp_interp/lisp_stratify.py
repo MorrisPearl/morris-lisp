@@ -30,8 +30,8 @@ values too.
 import numpy as np
 
 from lisp_core import (
-    Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, Symbol,
-    _brief, _lisp_scalar, is_true, list_to_pairs, pairs_to_list, to_display_string,
+    LispDate, LispError, LispString, LispVector, NIL, Pair, Symbol,
+    _brief, _lisp_scalar, is_true, keyword_options, list_to_pairs, pairs_to_list, to_display_string,
 )
 from lisp_tables import (
     WEIGHTED_FUNCTIONS, aggregate, find_column, make_table_value, row_count, summary_function, table_columns,
@@ -211,20 +211,6 @@ def summary_specs(columns, summaries, weight_vector):
         heading = str(parts[2]) if len(parts) == 3 else "%s (%s)" % (column_name, function_text)
         specs.append((heading, function, percent, find_column(columns, column_name, "stratify")))
     return specs
-
-
-def keyword_options(options, allowed, who):
-    """A builtin's trailing :name value arguments, as a dict (name -> value)."""
-    if len(options) % 2:
-        raise LispError("%s: after the first arguments come :name value pairs, such as :weight \"balance\"" % who)
-    result = {}
-    for name, value in zip(options[::2], options[1::2]):
-        key = str(name)[1:] if isinstance(name, Keyword) else None
-        if key not in allowed:
-            raise LispError("%s: %s isn't an option -- the options are %s"
-                            % (who, _brief(name), ", ".join(":" + a for a in allowed)))
-        result[key] = value
-    return result
 
 
 # ---------------------------------------------------------------------------

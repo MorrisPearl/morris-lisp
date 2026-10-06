@@ -47,9 +47,8 @@ import datetime
 import json
 import time
 
-from lisp_core import LispDate, LispError, LispHashTable, LispString, Pair, list_to_pairs
+from lisp_core import LispDate, LispError, LispHashTable, LispString, Pair, keyword_options, list_to_pairs
 from lisp_data_common import credential
-from lisp_stratify import keyword_options
 from lisp_tables import column_vector, make_table_value
 import lisp_http
 

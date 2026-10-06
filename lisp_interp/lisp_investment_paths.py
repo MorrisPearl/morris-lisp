@@ -43,8 +43,7 @@ import random
 
 import numpy as np
 
-from lisp_core import LispDate, LispError, LispVector
-from lisp_stratify import keyword_options
+from lisp_core import LispDate, LispError, LispVector, keyword_options
 from lisp_tables import find_column, make_table_value, table_columns
 from lisp_vector_math import floats_of, is_number, to_vector
 
