@@ -1,0 +1,55 @@
+; investment_paths_example.lsp
+;
+; Simulating an investment's future prices from its own past: copy blocks of
+; consecutive days from its history, end to end, until there's a year of
+; them -- see "Simulating investment prices" in the reference manual.
+;
+; It needs a Schwab sign-in for the prices ((schwab-login creds); it lasts
+; a week), and an "alpha_vantage_api_key" entry in the credentials file for
+; the dividends. creds is set to its path in init.lsp.
+; Run it from the examples directory:
+;   python3 ../lisp_interpreter.py investment_paths_example.lsp
+
+; --- 1. Dividends are part of an investment's return -------------------------
+; Schwab's prices aren't adjusted for dividends, so on the day an investment
+; goes ex-dividend its price drops, and the return from the prices alone is
+; low by what it pays. Alpha Vantage has the dividends themselves.
+(define spy-prices (schwab-price-history creds "SPY"))
+(define spy-dividends (alpha-vantage-dividends creds "SPY"))
+(define (average-yearly-return returns)      ; log returns, 252 trading days a year
+  (* 252 (vector-mean (table-column returns "log-return"))))
+(display (format "SPY, from its prices alone:   {:.2%} a year\n"
+                 (average-yearly-return (daily-returns spy-prices))))
+(display (format "SPY, with its dividends:      {:.2%} a year\n"
+                 (average-yearly-return (daily-returns spy-prices :dividends spy-dividends))))
+
+; --- 2. Berkshire Hathaway, which pays none ----------------------------------------
+; The ten years of prices Schwab gives, as a table of daily log returns.
+(define prices (schwab-price-history creds "BRK/A"))
+(define history (daily-returns prices))
+(display (format "\nBRK/A: {} daily returns, {:.1%} a year on average, volatility {:.1%} a year\n"
+                 (table-row-count history)
+                 (average-yearly-return history)
+                 (* (sqrt 252) (vector-stdev (table-column history "log-return")))))
+
+; Take that average out, and put in the return we expect: 8% a year.
+(define returns (adjust-returns history 0.08))
+
+; --- 3. A thousand paths ---------------------------------------------------------------
+; Each path starts at today's price and goes 252 trading days, in blocks of
+; 10 days. A different seed for each path makes each one different, and the
+; whole run the same every time.
+(define start-price (vector-ref (table-column prices "close") (- (table-row-count prices) 1)))
+(define (one-path i) (bootstrap-path returns start-price 252 10 :seed (+ 1000 i)))
+(define paths (map one-path (iota 1000)))
+
+; Where the paths end up, as the change from today's price.
+(define year-returns
+  (vector-sub (vector-div (list->vector (map (lambda (path) (vector-ref path 251)) paths)) start-price) 1))
+(display (format "\nBRK/A today: {:,.2f}\nAfter a year, of 1000 paths:\n" start-price))
+(dolist (fraction '(0.05 0.25 0.5 0.75 0.95))
+  (display (format "  {:>4.0%} of the paths ended below {:>+7.1%}\n" fraction (vector-quantile year-returns fraction))))
+(display (format "  the average path ended {:+.1%}; {:.0%} of the paths lost money\n"
+                 (vector-mean year-returns) (vector-mean (> 0 year-returns))))
+(plot-histogram year-returns :bins 30 :x-format "{:+.0%}" :title "BRK/A, a year from now"
+                :x-label "change from today's price")

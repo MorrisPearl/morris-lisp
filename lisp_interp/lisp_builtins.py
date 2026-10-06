@@ -34,6 +34,7 @@ from lisp_core import (
     reconstruct_macro_source, reconstruct_procedure_source, run_file, seval,
     set_verbose_level, throw_to, to_display_string, to_string,
 )
+import lisp_alpha_vantage
 import lisp_bea
 import lisp_bls
 import lisp_census
@@ -45,6 +46,7 @@ import lisp_fdic
 import lisp_finance
 import lisp_fred
 import lisp_http
+import lisp_investment_paths
 import lisp_maps
 import lisp_regex
 import lisp_regression
@@ -1848,10 +1850,12 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_bea.BUILTINS)
     env.update(lisp_maps.BUILTINS)
     env.update(lisp_schwab.BUILTINS)
+    env.update(lisp_alpha_vantage.BUILTINS)
     env.update(lisp_http.BUILTINS)
     env.update(lisp_tastytrade.BUILTINS)
     env.update(lisp_sofr.BUILTINS)
     env.update(lisp_simplex.BUILTINS)
+    env.update(lisp_investment_paths.BUILTINS)
     env.update(lisp_finance.BUILTINS)
     env.update(lisp_clock.BUILTINS)
 

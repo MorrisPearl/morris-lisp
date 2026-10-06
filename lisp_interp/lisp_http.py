@@ -59,13 +59,17 @@ def headers_argument(headers, name):
     return result
 
 
-def download(url, cache_hours, headers, name, shown_url=None, body=None):
+def download(url, cache_hours, headers, name, shown_url=None, body=None, check=None):
     """The bytes at `url`: from the cache if a copy younger than cache_hours
     is saved there, otherwise from the network (saving a copy if
     cache_hours is more than 0). An error message shows shown_url in place
     of url, if it's given -- for a URL with an API key in it. Given a body
     (bytes), the request is a POST that sends it; the cache tells requests
-    with different bodies apart."""
+    with different bodies apart. Given check, a function that raises an
+    error if the bytes it's passed aren't an answer -- for a web API that
+    reports a problem in an answer that says it's fine (HTTP 200) -- it's
+    called with each download before it's saved, so a problem isn't
+    kept."""
     url = str(url)
     shown_url = shown_url or url
     request_headers = {"User-Agent": USER_AGENT}
@@ -87,6 +91,8 @@ def download(url, cache_hours, headers, name, shown_url=None, body=None):
     if data is None:                            # it may have been a passing problem: once more, after a moment
         time.sleep(RETRY_SECONDS)
         data = fetch(request, name, shown_url, last_try=True)
+    if check:
+        check(data)
 
     if hours > 0:
         os.makedirs(cache_directory(), exist_ok=True)

@@ -106,7 +106,9 @@ functions" as a reference to search rather than read start to end.
   - [SQLite](#sqlite)
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Schwab (your accounts)](#schwab-your-accounts)
+  - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
+  - [Simulating investment prices](#simulating-investment-prices)
   - [Input / output](#input--output)
   - [Saving variables](#saving-variables)
   - [Metaprogramming](#metaprogramming)
@@ -7477,6 +7479,39 @@ For whenever you want to trade.
 ; (schwab-place-order creds "IRA" order :confirm #t)   ; then, if you mean it
 ```
 
+### Alpha Vantage (dividends)
+
+(In `lisp_alpha_vantage.py`.) The dividends a stock has paid, from Alpha
+Vantage (https://www.alphavantage.co), a market-data site with a free tier.
+Schwab's API gives only a stock's latest dividend, not its history.
+
+It needs a free API key (https://www.alphavantage.co/support/#api-key), as
+the `"alpha_vantage_api_key"` entry of the credentials file. A free key is
+limited to 25 requests a day, and to one a second, so each download is
+kept for 12 hours, as the other data functions' are (`(http-clear-cache)`
+deletes them). An answer that says a limit has been passed is not kept.
+
+#### `(alpha-vantage-dividends creds symbol)`
+A stock's or ETF's dividends: a table with a row for each, oldest first,
+of its `ex-date` (the first day its shares trade without the dividend),
+`declaration-date`, `record-date`, `payment-date`, and `amount` per share.
+A date Alpha Vantage doesn't have, as for the oldest dividends, is `'()`.
+A share class is written `"BRK-B"` or, as Schwab writes it, `"BRK/B"`. A
+stock that has paid no dividends (or one Alpha Vantage doesn't know) has a
+table with no rows.
+
+```lisp
+(define dividends (alpha-vantage-dividends creds "SPY"))
+(display-table (table-tail dividends 3))
+; ex-date     declaration-date  record-date  payment-date    amount
+; ----------  ----------------  -----------  ------------  --------
+; 2026-03-20  2026-01-02        2026-03-20   2026-04-30    1.796999
+; 2026-06-18  2026-01-02        2026-06-18   2026-07-31    1.903516
+; 2026-09-18  2026-01-02        2026-09-18   2026-10-30    1.888834
+```
+
+`daily-returns` takes this table as its `:dividends`: see "Simulating investment prices".
+
 ### Implied volatility smiles: finding options out of line
 
 `lib/vol_smile.lsp` fits a model of implied volatility to an option chain
@@ -7557,6 +7592,127 @@ whole chain is priced at once; `call?` is a vector of 1 for each call and
 ```
 
 `examples/vol_smile_example.lsp` does all of this.
+
+### Simulating investment prices
+
+(In `lisp_investment_paths.py`.) An investment's possible futures, made from its own
+past, by a **block bootstrap**. Tomorrow is likely to be something like
+the days in the investment's history, so a future is built by copying pieces of
+the past, end to end. Each piece is a *block* of consecutive days, rather
+than one day at a time, so that a stretch of wild days (or calm ones)
+stays together, as it does in life. Three functions, one after another:
+
+1. `daily-returns` makes a table of returns from prices (and dividends).
+2. `adjust-returns` takes out those returns' average and puts in the
+   return you expect.
+3. `bootstrap-path` makes one path of future prices from them. Call it
+   once for each path you want.
+
+**The returns are log returns**, ln(today's price / yesterday's), which
+add up: the price after a run of days is the starting price times *e* to
+the sum of the days' log returns. So changing a set of returns' average is
+a matter of subtracting one number and adding another. A table of returns
+has a `date` and a `log-return` column.
+
+#### `(daily-returns prices [:dividends table])`
+An investment's daily log returns: a table of `date` and `log-return`, oldest
+first, with a row for each day of `prices` but the first. `prices` is a
+table with `date` and `close` columns, oldest first, as `schwab-price-history`
+makes.
+
+Schwab's prices are not adjusted for dividends: on the day an investment first
+trades without its dividend (its ex-date) the price drops, and the return
+from prices alone is low by what the investment pays. `:dividends`, a table with
+`ex-date` and `amount` columns, as `alpha-vantage-dividends` makes, puts
+them back: a dividend is part of the return of its ex-date, which is
+ln((close + dividend) / yesterday's close). (A dividend on a day with no
+price, such as a Saturday, goes with the next day there is a price. One
+before the first price, or after the last, is left out.) The returns then
+are an investment's *total* return, so a path made from them is the price with
+its dividends reinvested.
+
+```lisp
+(define prices (list (cons "date" (vector (date 2024 1 2) (date 2024 1 3) (date 2024 1 4)))
+                     (cons "close" (vector 100.0 110.0 99.0))))
+(define dividends (list (cons "ex-date" (vector (date 2024 1 4)))
+                        (cons "amount" (vector 1.0))))
+(table-column (daily-returns prices) "date")                                             ; => #(2024-01-03 2024-01-04)
+(vector-round (table-column (daily-returns prices) "log-return") 4)                      ; => #(0.0953 -0.1054)
+(vector-round (table-column (daily-returns prices :dividends dividends) "log-return") 4) ; => #(0.0953 -0.0953)
+```
+
+#### `(adjust-returns returns annual-return [:days-per-year n])`
+`returns` with its `log-return` column changed (its other columns stay as
+they are): the average is taken out, then a number is added so that the
+investment's **expected annual return** is `annual-return`, 0.08 for 8%.
+(An investment's history has the return it happened to have; this is the
+one you expect from here.)
+
+Not just `annual-return` spread over the days, though. The price rises by
+the daily returns, not by the log returns, and their average is higher
+than the log returns' by about half the variance (more for one that
+jumps around). So the number added makes the average of the *daily
+returns* come out at (1 + `annual-return`) ^ (1 / `:days-per-year`) - 1,
+the one that makes a year of them 8%. `:days-per-year` is 252 trading
+days, unless said otherwise. With blocks of a single day, the paths'
+average price a year out is exactly right (apart from chance); with longer
+blocks, close to right. `annual-return` must be above -1 (a loss of all of
+it).
+
+```lisp
+(define returns (list (cons "log-return" (vector 0.01 -0.02 0.015 0.0))))
+(define adjusted (adjust-returns returns 0.08))
+(format "{:.6f}" (vector-mean (vector-exp (table-column adjusted "log-return"))))   ; => "1.000305"
+(format "{:.6f}" (expt 1.08 (/ 1.0 252)))                                           ; => "1.000305"
+```
+
+#### `(bootstrap-path returns start-price days block-size [:seed n])`
+One path of future prices, as a vector of `days` prices: the first is the
+day after `start-price`'s. `returns` is a table with a `log-return`
+column, such as `adjust-returns` makes. The path is made of blocks of
+`block-size` consecutive returns, each starting at a day of the history
+picked at random, put end to end until there are `days` of them (the last
+block is cut short if it has to be). The prices are what `start-price`
+becomes with those returns.
+
+- **Paths wrap.** A block that runs past the end of the history carries on
+  from its start, so every day of the history is as likely as any other to
+  be in a block.
+- **`block-size`** is how many days stay together: 1 draws days one at a
+  time, as an ordinary bootstrap does, with no memory of the day before.
+  Something like 10 or 20 keeps an investment's stretches of high and low
+  volatility. It can't be more than the number of returns.
+- **`:seed`**, a whole number, makes the path the same every time. It has
+  the function's own random numbers (as `vectors-shuffle`'s seed does),
+  so it doesn't change the shared generator that `random-float` and
+  `random-int` use. **Give each path its own seed**, such as `(+ 1000 i)`
+  for the path numbered `i`, or every path is the same one. Without
+  `:seed`, the shared generator is used, so one `(random-seed 42)` before
+  you make all the paths makes them the same each time.
+- A path can't have a day more extreme than the days of the history it
+  is made from, so the longer a history (that is still like the future)
+  the better.
+
+```lisp
+(define returns (list (cons "log-return" (vector 0.01 -0.02 0.015 0.0 0.005))))
+(vector-length (bootstrap-path returns 100 252 3))                   ; => 252
+(vector-round (bootstrap-path returns 100 5 2 :seed 1) 2)            ; => #(98.02 99.5 100.0 101.01 102.02)
+(equal? (bootstrap-path returns 100 5 2 :seed 1)
+        (bootstrap-path returns 100 5 2 :seed 1))                    ; => #t
+```
+
+A thousand paths of an investment's next year, and where they end up. This
+needs a Schwab sign-in, and `examples/investment_paths_example.lsp` has it all:
+
+```lisp
+(define prices (schwab-price-history creds "BRK/A"))        ; ten years, as Schwab gives them
+(define returns (adjust-returns (daily-returns prices) 0.08))
+(define start-price (vector-ref (table-column prices "close") (- (table-row-count prices) 1)))
+(define paths (map (lambda (i) (bootstrap-path returns start-price 252 10 :seed (+ 1000 i)))
+                   (iota 1000)))                            ; a list of 1000 vectors of 252 prices
+(define year-ends (list->vector (map (lambda (path) (vector-ref path 251)) paths)))
+(vector-quantile (vector-div year-ends start-price) #(0.05 0.5 0.95))   ; the 5th, 50th, and 95th percentiles
+```
 
 ### Input / output
 
@@ -8619,7 +8775,9 @@ The Python files:
 | `lisp_bls.py` | `bls-series`, `bls-local-area`, `bls-names`, ...: prices, jobs, and pay from the Bureau of Labor Statistics |
 | `lisp_bea.py` | `bea-series`, `bea-nipa`, `bea-regional`, `bea-get`, ...: the national and regional accounts from the Bureau of Economic Analysis |
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
+| `lisp_alpha_vantage.py` | `alpha-vantage-dividends`: a stock's dividends from Alpha Vantage, through `lisp_http.py` |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders`, ...: your Schwab accounts |
+| `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `bootstrap-path`: simulated prices of an investment |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |

@@ -53,6 +53,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import lisp_alpha_vantage  # noqa: E402
 import lisp_builtins  # noqa: E402  (these need the sys.path line above)
 import lisp_core     # noqa: E402
 import lisp_charts  # noqa: E402
@@ -63,6 +64,7 @@ import lisp_http  # noqa: E402
 import lisp_jupyter_debug  # noqa: E402
 import lisp_tastytrade  # noqa: E402
 import lisp_tables  # noqa: E402
+import lisp_vector_math  # noqa: E402
 
 INTERPRETER = os.path.join(HERE, "lisp_interpreter.py")
 LIB = os.path.join(HERE, "lib")                 # the Lisp libraries that come with the interpreter
@@ -4805,6 +4807,16 @@ class TestHttp(LispTestCase):
                     self.end_headers()
                     self.wfile.write(b'{"error_code":400,"error_message":"Bad Request.  The series does not exist."}')
                     return
+                elif self.path.startswith("/alpha?") and "symbol=NOPE" in self.path:
+                    body, kind = (b'{"Information": "Thank you for using Alpha Vantage! The limit for KEY123 is 25 requests a day."}'), "json"
+                elif self.path.startswith("/alpha?") and "symbol=NONE" in self.path:
+                    body, kind = b'{"symbol": "NONE", "data": []}', "json"
+                elif self.path.startswith("/alpha?"):
+                    body, kind = (b'{"symbol": "X", "data": ['
+                                  b'{"ex_dividend_date": "2024-03-15", "declaration_date": "2024-02-01",'
+                                  b' "record_date": "2024-03-16", "payment_date": "2024-04-01", "amount": "0.25"},'
+                                  b'{"ex_dividend_date": "2023-12-14", "declaration_date": "None",'
+                                  b' "record_date": "None", "payment_date": "None", "amount": "0.2"}]}'), "json"
                 elif self.path == "/broken" or (self.path == "/flaky" and Handler.hits.count("/flaky") == 1):
                     self.send_response(503)                 # the server's own trouble (the first time, for /flaky)
                     self.end_headers()
@@ -4940,6 +4952,56 @@ class TestHttp(LispTestCase):
                 self.run_lisp('(fred-series "NOPE" "KEY123")')
         self.assertIn("The series does not exist", str(cm.exception))
         self.assertNotIn("KEY123", str(cm.exception))
+
+    def use_credentials(self, entries):
+        """creds, in the Lisp environment, is a credentials file with these entries."""
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        with open(os.path.join(folder, "credentials.json"), "w") as f:
+            json.dump(entries, f)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(os.path.join(folder, "credentials.json"))
+
+    def test_alpha_vantage_dividends_are_a_table_oldest_first(self):
+        self.use_credentials({"alpha_vantage_api_key": "KEY123"})
+        with mock.patch.object(lisp_alpha_vantage, "ALPHA_VANTAGE_URL", self.base + "/alpha"):
+            self.run_lisp('(define d (alpha-vantage-dividends creds "BRK/B"))')
+        self.assertShows("(table-column-names d)",
+                         '("ex-date" "declaration-date" "record-date" "payment-date" "amount")')
+        self.assertShows('(table-column d "ex-date")', "#(2023-12-14 2024-03-15)")
+        self.assertShows('(table-column d "declaration-date")', "#(() 2024-02-01)")      # "None" is missing
+        self.assertShows('(table-column d "payment-date")', "#(() 2024-04-01)")
+        self.assertShows('(table-column d "amount")', "#(0.2 0.25)")
+        hit = [hit for hit in self.handler.hits if hit.startswith("/alpha")][0]
+        self.assertIn("function=DIVIDENDS", hit)
+        self.assertIn("symbol=BRK-B", hit)                      # as Alpha Vantage writes a share class
+        self.assertIn("apikey=KEY123", hit)
+
+    def test_a_stock_with_no_dividends_has_a_table_with_no_rows(self):
+        self.use_credentials({"alpha_vantage_api_key": "KEY123"})
+        with mock.patch.object(lisp_alpha_vantage, "ALPHA_VANTAGE_URL", self.base + "/alpha"):
+            self.run_lisp('(define d (alpha-vantage-dividends creds "NONE"))')
+        self.assertShows("(table-row-count d)", "0")
+        self.assertShows("(length (table-column-names d))", "5")
+
+    def test_alpha_vantage_says_why_without_the_api_key_and_a_problem_is_not_kept(self):
+        self.use_credentials({"alpha_vantage_api_key": "KEY123"})
+        with mock.patch.object(lisp_alpha_vantage, "ALPHA_VANTAGE_URL", self.base + "/alpha"):
+            for _ in range(2):
+                with self.assertRaises(lisp_core.LispError) as cm:
+                    self.run_lisp('(alpha-vantage-dividends creds "NOPE")')
+                self.assertIn("Alpha Vantage says: Thank you for using Alpha Vantage! The limit for", str(cm.exception))
+                self.assertNotIn("KEY123", str(cm.exception))
+        self.assertEqual(len([hit for hit in self.handler.hits if hit.startswith("/alpha")]), 2)   # not cached
+
+    def test_good_dividends_are_kept_for_a_while(self):
+        self.use_credentials({"alpha_vantage_api_key": "KEY123"})
+        with mock.patch.object(lisp_alpha_vantage, "ALPHA_VANTAGE_URL", self.base + "/alpha"):
+            self.run_lisp('(alpha-vantage-dividends creds "X") (alpha-vantage-dividends creds "X")')
+        self.assertEqual(len([hit for hit in self.handler.hits if hit.startswith("/alpha")]), 1)
+
+    def test_alpha_vantage_needs_its_key_in_the_credentials_file(self):
+        self.use_credentials({"fred_api_key": "x"})
+        self.assertLispError('(alpha-vantage-dividends creds "X")', 'no "alpha_vantage_api_key" entry')
 
 class TestDates(LispTestCase):
 
@@ -5317,6 +5379,197 @@ class TestVolSmile(LispTestCase):
         self.assertShows('(table-column (vol-smile-fit-expirations fit) "intercept")', "#(nan nan nan)")
         self.assertShows("(table-row-count (vol-smile-fit-options fit))", "0")
         self.assertLispError('(fit-vol-smiles chain :terms (list "K^3"))', "there's no term K^3")
+
+
+class TestInvestmentPaths(LispTestCase):
+    """lisp_investment_paths.py: daily-returns, adjust-returns, and bootstrap-path."""
+
+    PRICES = """(define prices (list (cons "date" (vector (date 2024 1 2) (date 2024 1 3) (date 2024 1 4)
+                                                     (date 2024 1 5) (date 2024 1 8)))
+                                    (cons "close" (vector 100.0 110.0 99.0 99.0 108.9))))"""
+    # (a Saturday's ex-date, the 6th, goes with the next day there's a price, the 8th)
+    DIVIDENDS = """(define dividends (list (cons "ex-date" (vector (date 2023 12 1) (date 2024 1 4)
+                                                               (date 2024 1 6) (date 2024 2 1)))
+                                           (cons "amount" (vector 5.0 1.0 2.0 7.0))))"""
+
+    def numbers(self, src):
+        return [float(x) for x in self.run_lisp(src).items]
+
+    def assertNumbers(self, src, expected, places=6):
+        actual = self.numbers(src)
+        self.assertEqual(len(actual), len(expected), msg=src)
+        for a, e in zip(actual, expected):
+            self.assertAlmostEqual(a, e, places=places, msg=src)
+
+    def make_returns(self, name, values):
+        """A table of log returns, called `name` in the Lisp environment."""
+        table = lisp_tables.make_table_value([("log-return", lisp_vector_math.to_vector(np.array(values)))])
+        self.env[lisp_core.Symbol(name)] = table
+
+    def a_year_of_returns(self, name="history"):
+        self.make_returns(name, np.random.default_rng(1).normal(0.0008, 0.012, 400))
+
+    # -- daily-returns ------------------------------------------------------
+
+    def test_daily_returns_are_log_returns_from_the_second_day(self):
+        self.run_lisp(self.PRICES)
+        self.assertShows("(table-column-names (daily-returns prices))", '("date" "log-return")')
+        self.assertShows('(table-column (daily-returns prices) "date")', "#(2024-01-03 2024-01-04 2024-01-05 2024-01-08)")
+        self.assertNumbers('(table-column (daily-returns prices) "log-return")',
+                           [math.log(1.1), math.log(0.9), 0.0, math.log(1.1)])
+
+    def test_a_dividend_is_part_of_the_return_of_the_day_it_goes_ex(self):
+        self.run_lisp(self.PRICES + self.DIVIDENDS)
+        self.assertNumbers('(table-column (daily-returns prices :dividends dividends) "log-return")',
+                           [math.log(1.1), math.log((99 + 1) / 110), 0.0, math.log((108.9 + 2) / 99)])
+        # (the ones before the first price and after the last count for nothing)
+
+    def test_dividends_on_one_day_add_up(self):
+        self.run_lisp(self.PRICES + """(define dividends (list (cons "ex-date" (vector (date 2024 1 4) (date 2024 1 4)))
+                                                              (cons "amount" (vector 1.0 0.5))))""")
+        self.assertNumbers('(table-column (daily-returns prices :dividends dividends) "log-return")',
+                           [math.log(1.1), math.log((99 + 1.5) / 110), 0.0, math.log(1.1)])
+
+    def test_no_dividends_changes_nothing(self):
+        self.run_lisp(self.PRICES + """(define none (list (cons "ex-date" (vector)) (cons "amount" (vector))))""")
+        plain = self.show("(daily-returns prices)")
+        self.assertEqual(self.show("(daily-returns prices :dividends none)"), plain)
+        self.assertEqual(self.show("(daily-returns prices :dividends '())"), plain)
+
+    def test_what_daily_returns_wont_take(self):
+        self.run_lisp(self.PRICES + self.DIVIDENDS)
+        self.assertLispError("""(daily-returns (list (cons "date" (vector (date 2024 1 3) (date 2024 1 2)))
+                                                      (cons "close" (vector 1.0 2.0))))""", "oldest first")
+        self.assertLispError("""(daily-returns (list (cons "date" (vector (date 2024 1 2) (date 2024 1 2)))
+                                                      (cons "close" (vector 1.0 2.0))))""", "oldest first")
+        self.assertLispError("""(daily-returns (list (cons "date" (vector (date 2024 1 2) (date 2024 1 3)))
+                                                      (cons "close" (vector 1.0 0.0))))""", "above 0")
+        self.assertLispError("""(daily-returns (list (cons "date" (vector (date 2024 1 2) (date 2024 1 3)))
+                                                      (cons "close" (vector 1.0 nan))))""", "above 0")
+        self.assertLispError("""(daily-returns (list (cons "date" (vector (date 2024 1 2)))
+                                                      (cons "close" (vector 1.0))))""", "at least two prices")
+        self.assertLispError('(daily-returns (table-drop-columns prices "close"))', "no column named 'close'")
+        self.assertLispError('(daily-returns prices :dividends (table-drop-columns dividends "amount"))',
+                             "no column named 'amount'")
+        self.assertLispError("""(daily-returns prices :dividends (list (cons "ex-date" (vector (date 2024 1 4)))
+                                                                      (cons "amount" (vector -1.0))))""", "0 or more")
+        self.assertLispError("(daily-returns prices :dividend dividends)", ":dividend isn't an option")
+
+    # -- adjust-returns -----------------------------------------------------
+
+    def test_the_adjusted_returns_average_what_was_asked(self):
+        self.a_year_of_returns()
+        self.run_lisp("(define adjusted (adjust-returns history 0.08))")
+        average_growth = self.run_lisp('(vector-mean (vector-exp (table-column adjusted "log-return")))')
+        self.assertAlmostEqual(average_growth, 1.08 ** (1 / 252), places=7)
+        self.run_lisp("(define in-days (adjust-returns history -0.5 :days-per-year 365))")
+        average_growth = self.run_lisp('(vector-mean (vector-exp (table-column in-days "log-return")))')
+        self.assertAlmostEqual(average_growth, 0.5 ** (1 / 365), places=7)
+
+    def test_adjusting_moves_the_returns_without_spreading_them(self):
+        self.a_year_of_returns()
+        self.run_lisp("(define adjusted (adjust-returns history 0.08))")
+        before = self.run_lisp('(vector-stdev (table-column history "log-return"))')
+        self.assertAlmostEqual(self.run_lisp('(vector-stdev (table-column adjusted "log-return"))'), before, places=7)
+        self.assertShows("(table-row-count adjusted)", "400")
+
+    def test_adjusting_keeps_the_other_columns(self):
+        self.run_lisp(self.PRICES + "(define adjusted (adjust-returns (daily-returns prices) 0.08))")
+        self.assertShows("(table-column-names adjusted)", '("date" "log-return")')
+        self.assertShows('(table-column adjusted "date")', "#(2024-01-03 2024-01-04 2024-01-05 2024-01-08)")
+
+    def test_what_adjust_returns_wont_take(self):
+        self.a_year_of_returns()
+        self.assertLispError("(adjust-returns history -1)", "above -1")
+        self.assertLispError('(adjust-returns history "8%")', "above -1")
+        self.assertLispError("(adjust-returns history 0.08 :days-per-year 0)", ":days-per-year must be a number above 0")
+        self.assertLispError("(adjust-returns (list (cons \"x\" (vector 1.0))) 0.08)", "no column named 'log-return'")
+        self.assertLispError("(adjust-returns history 0.08 :days 252)", ":days isn't an option")
+
+    # -- bootstrap-path -----------------------------------------------------
+
+    def log_returns_along(self, path, start_price):
+        """The log return of each step of a path (a LispVector of prices)."""
+        return np.diff(np.log(np.concatenate([[start_price], np.array(path.items, dtype=np.float64)])))
+
+    def test_a_path_is_blocks_of_consecutive_returns_that_wrap_around(self):
+        returns = [0.01, 0.02, 0.03, 0.04, 0.05]
+        self.make_returns("five", returns)
+        for seed in range(30):
+            path = self.run_lisp("(bootstrap-path five 100 7 3 :seed %d)" % seed)
+            self.assertEqual(len(path.items), 7)
+            steps = self.log_returns_along(path, 100)
+            which = [int(np.argmin(np.abs(np.array(returns) - step))) for step in steps]
+            for step, day in zip(steps, which):
+                self.assertAlmostEqual(step, returns[day], places=5)
+            for block in (0, 3):                                # two blocks of 3, then one day of a third
+                self.assertEqual(which[block + 1], (which[block] + 1) % 5)
+                self.assertEqual(which[block + 2], (which[block] + 2) % 5)
+
+    def test_every_start_is_possible_including_the_last_days_of_the_history(self):
+        self.make_returns("three", [0.01, 0.02, 0.03])
+        turns = set()
+        for seed in range(40):
+            path = self.run_lisp("(bootstrap-path three 100 3 3 :seed %d)" % seed)
+            turns.add(tuple(np.round(self.log_returns_along(path, 100), 2)))
+        self.assertEqual(turns, {(0.01, 0.02, 0.03), (0.02, 0.03, 0.01), (0.03, 0.01, 0.02)})
+
+    def test_a_path_has_the_days_asked_for(self):
+        self.a_year_of_returns()
+        for days, block in ((252, 10), (1, 10), (10, 10), (11, 10), (5, 1), (400, 400)):
+            with self.subTest(days=days, block=block):
+                self.assertShows("(vector-length (bootstrap-path history 50 %d %d))" % (days, block), str(days))
+
+    def test_a_seed_gives_the_same_path_every_time(self):
+        self.a_year_of_returns()
+        path = lambda seed: self.show("(bootstrap-path history 100 50 5 :seed %d)" % seed)
+        self.assertEqual(path(3), path(3))
+        self.assertNotEqual(path(3), path(4))
+
+    def test_without_a_seed_the_paths_come_from_the_shared_generator(self):
+        self.a_year_of_returns()
+        self.run_lisp("(random-seed 7)")
+        first = self.show("(bootstrap-path history 100 50 5)")
+        second = self.show("(bootstrap-path history 100 50 5)")
+        self.assertNotEqual(first, second)
+        self.run_lisp("(random-seed 7)")
+        self.assertEqual(self.show("(bootstrap-path history 100 50 5)"), first)
+
+    def test_a_seeded_path_leaves_the_shared_generator_alone(self):
+        self.a_year_of_returns()
+        self.run_lisp("(random-seed 7)")
+        expected = self.run_lisp("(random-float)")
+        self.run_lisp("(random-seed 7)")
+        self.run_lisp("(bootstrap-path history 100 50 5 :seed 1)")
+        self.assertEqual(self.run_lisp("(random-float)"), expected)
+
+    def test_the_expected_price_after_a_year_is_the_expected_return(self):
+        self.a_year_of_returns()
+        self.run_lisp("(define adjusted (adjust-returns history 0.08))")
+        # exactly right for blocks of one day (the 4000 paths' average is within about 0.003 of it,
+        # while leaving out the adjustment for the log returns' spread is off by 0.02); for longer
+        # blocks it depends on the history's own ups and downs in a row, so only close
+        for block, delta in ((1, 0.008), (21, 0.03)):
+            with self.subTest(block=block):
+                finals = self.run_lisp("""(vector-mean (list->vector
+                    (map (lambda (i) (vector-ref (bootstrap-path adjusted 100 252 %d :seed i) 251))
+                         (iota 4000))))""" % block)
+                self.assertAlmostEqual(finals / 100, 1.08, delta=delta)
+
+    def test_what_bootstrap_path_wont_take(self):
+        self.make_returns("five", [0.01, 0.02, 0.03, 0.04, 0.05])
+        self.assertLispError("(bootstrap-path five 100 0 3)", "days must be a whole number, 1 or more")
+        self.assertLispError("(bootstrap-path five 100 2.5 3)", "days must be a whole number")
+        self.assertLispError("(bootstrap-path five 100 7 0)", "block-size must be a whole number, 1 or more")
+        self.assertLispError("(bootstrap-path five 100 7 6)", "block-size 6 is more than the 5 returns")
+        self.assertLispError("(bootstrap-path five 0 7 3)", "start price must be a number above 0")
+        self.assertLispError('(bootstrap-path five "100" 7 3)', "start price must be a number above 0")
+        self.assertLispError("(bootstrap-path five 100 7 3 :seed -1)", ":seed must be a whole number, 0 or more")
+        self.assertLispError("(bootstrap-path five 100 7 3 :seed 1.5)", ":seed must be a whole number")
+        self.assertLispError("(bootstrap-path five 100 7 3 :wrap #f)", ":wrap isn't an option")
+        self.assertLispError('(bootstrap-path (list (cons "x" (vector 1.0))) 100 7 3)', "no column named 'log-return'")
+        self.assertLispError('(bootstrap-path (list (cons "log-return" (vector 0.01 nan))) 100 7 1)', "not missing or infinite")
+        self.assertLispError('(bootstrap-path (list (cons "log-return" (vector))) 100 7 1)', "there are no returns")
 
 
 class TestLinearProgramming(LispTestCase):
@@ -8571,7 +8824,7 @@ class TestExampleScripts(unittest.TestCase):
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
-    "fred-series", "tastytrade", "schwab-", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(bea-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
+    "fred-series", "tastytrade", "schwab-", "alpha-vantage-", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(bea-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "plot-xy", "save-chart", "load-csv", "write-columns-csv",
     "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
 )
