@@ -7,6 +7,10 @@ lisp_interp/Untitled*.ipynb
 
 
 .DS_Store
+
+*/spy_holdings.csv
+*/spy_holdings.xlsx
+	
 lisp_interp/**/prepayment_incentive_curve.png
 lisp_interp/**/synthetic_mbs_pools.csv
 lisp_interp/**/mortgage_amortization_example.csv
