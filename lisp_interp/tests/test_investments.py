@@ -686,6 +686,220 @@ class TestInvestmentPaths(LispTestCase):
         self.assertLispError("(bootstrap-path flat 100 5 1 :dividends 5)", "not a table")
 
 
+class TestVolatilityModel(LispTestCase):
+    """lisp_investment_paths.py: volatility-model, volatility-history, volatility-forecast, and paths whose
+    volatility starts at today's (bootstrap-path, bootstrap-days, and bootstrap-paths with :volatility)."""
+
+    WEIGHTS = (0.02, 0.15, 0.85)            # up-day, down-day, and variance weights, for made-up histories
+
+    @staticmethod
+    def made_up_history(weights, days=4000, seed=3, volatility=0.2):
+        """Daily log returns made by the model itself, with these weights and normal shocks: a history whose
+        volatility changes as the model says, around `volatility` (for a year)."""
+        up, down, variance_weight = weights
+        long_run = volatility ** 2 / 252
+        variance = long_run
+        constant = long_run * (1 - variance_weight - (up + down) / 2)
+        returns = []
+        for shock in np.random.default_rng(seed).standard_normal(days):
+            move = math.sqrt(variance) * shock
+            returns.append(0.0003 + move)
+            variance = constant + (down if move < 0 else up) * move * move + variance_weight * variance
+        return np.array(returns)
+
+    def make_returns(self, name, values, column="log-return"):
+        self.env[lisp_core.Symbol(name)] = lisp_tables.make_table_value(
+            [(column, lisp_vector_math.to_vector(np.array(values)))])
+
+    def table_numbers(self, src):
+        return {str(p.car): [float(x) for x in p.cdr.items] if p.cdr.items.dtype.kind == "f" else list(p.cdr.items)
+                for p in lisp_core.pairs_to_list(self.run_lisp(src))}
+
+    def stored(self, name):
+        """A table of returns' log-return column, as the interpreter has it (float32, as float64)."""
+        return np.array(self.run_lisp('(table-column %s "log-return")' % name).items, dtype=np.float64)
+
+    # -- volatility-model -------------------------------------------------------
+
+    def test_the_fit_finds_the_weights_a_history_was_made_with(self):
+        self.make_returns("history", self.made_up_history(self.WEIGHTS))
+        model = self.table_numbers("(volatility-model history)")
+        self.assertEqual([str(x) for x in model["investment"]], ["log-return"])
+        self.assertAlmostEqual(model["up-day-weight"][0], 0.02, delta=0.03)
+        self.assertAlmostEqual(model["down-day-weight"][0], 0.15, delta=0.05)
+        self.assertAlmostEqual(model["variance-weight"][0], 0.85, delta=0.04)
+        self.assertAlmostEqual(model["persistence"][0], 0.935, delta=0.02)
+        self.assertAlmostEqual(model["long-run-volatility"][0], 0.2, delta=0.02)
+        symmetric = self.table_numbers("(volatility-model history :symmetric #t)")
+        self.assertEqual(symmetric["up-day-weight"], symmetric["down-day-weight"])
+        self.assertGreater(model["log-likelihood"][0], symmetric["log-likelihood"][0] + 10)    # down days do differ
+
+    def test_the_model_s_numbers_are_what_its_weights_make_of_the_history(self):
+        self.make_returns("history", self.made_up_history(self.WEIGHTS))
+        model = self.table_numbers("(volatility-model history)")
+        up, down, variance_weight = (model[name][0] for name in ("up-day-weight", "down-day-weight", "variance-weight"))
+        moves = self.stored("history") - self.stored("history").mean()
+        long_run = np.mean(moves ** 2)
+        # the variances, with the constant the weights were fitted with (from the moves' down share) ...
+        moves_down_share = np.sum(moves[moves < 0] ** 2) / np.sum(moves ** 2)
+        constant = long_run * (1 - variance_weight - up * (1 - moves_down_share) - down * moves_down_share)
+        variances, variance = [], long_run
+        for move in moves:
+            variances.append(variance)
+            variance = constant + (down if move < 0 else up) * move * move + variance_weight * variance
+        # ... times the number that makes the shocks' squares average 1
+        size = np.mean(moves ** 2 / np.array(variances))
+        shocks = moves / np.sqrt(np.array(variances) * size)
+        down_share = np.sum(shocks[shocks < 0] ** 2) / np.sum(shocks ** 2)
+        persistence = variance_weight + up * (1 - down_share) + down * down_share
+        self.assertAlmostEqual(model["next-day-volatility"][0], math.sqrt(variance * size * 252), places=5)
+        self.assertAlmostEqual(model["long-run-volatility"][0], math.sqrt(long_run * 252), places=5)
+        self.assertAlmostEqual(model["down-share"][0], down_share, places=5)
+        self.assertAlmostEqual(model["persistence"][0], persistence, places=5)
+        self.assertAlmostEqual(model["half-life"][0], math.log(0.5) / math.log(persistence), places=3)
+        self.assertEqual(model["days-per-year"], [252.0])
+
+        history = self.table_numbers("(volatility-history history (volatility-model history))")
+        self.assertEqual(list(history), ["log-return", "volatility", "shock"])
+        self.assertTrue(np.allclose(history["shock"], shocks, atol=1e-5))
+        self.assertTrue(np.allclose(np.array(history["volatility"]) / math.sqrt(252) * np.array(history["shock"]),
+                                    moves, atol=1e-7))
+        self.assertAlmostEqual(np.mean(np.array(history["shock"]) ** 2), 1.0, places=5)
+
+    def test_a_year_of_365_days_and_a_history_with_dates(self):
+        self.make_returns("history", self.made_up_history(self.WEIGHTS, days=300))
+        a_year = self.table_numbers("(volatility-model history)")
+        every_day = self.table_numbers("(volatility-model history :days-per-year 365)")
+        self.assertAlmostEqual(every_day["long-run-volatility"][0] / a_year["long-run-volatility"][0],
+                               math.sqrt(365 / 252), places=5)
+        self.run_lisp('(define dated (make-table "date" (vector-append (make-vector 299 (date 2024 1 2)) '
+                      '(vector (date 2024 1 3))) "log-return" (table-column history "log-return")))')
+        self.assertShows('(vector-ref (table-column (volatility-history dated (volatility-model dated)) "date") 299)',
+                         "2024-01-03")
+
+    def test_what_the_model_won_t_take(self):
+        self.make_returns("short", [0.01, -0.01] * 40)
+        self.assertLispError("(volatility-model short)", "it takes at least 100 returns to fit a volatility model, not 80")
+        self.make_returns("flat", [0.01] * 200)
+        self.assertLispError("(volatility-model flat)", "the returns are all the same")
+        self.make_returns("history", self.made_up_history(self.WEIGHTS, days=300))
+        self.assertLispError("(volatility-model history :days-per-year 0)", ":days-per-year must be a number above 0")
+        self.run_lisp('(define two (make-table "A" (table-column history "log-return") '
+                      '"B" (* 2 (table-column history "log-return"))))')
+        self.assertLispError("(volatility-history two (volatility-model two))",
+                             "the table has the returns of 2 investments (A, B) -- pick one with table-select")
+        self.assertLispError("(volatility-forecast (volatility-model two) 5)",
+                             "the model must be one investment's, a table of one row")
+        self.assertLispError("(volatility-history history (volatility-model two))",
+                             "the volatility model has no row for log-return (it has A, B)")
+        self.run_lisp('(define model (table-add-column (volatility-model history) "variance-weight" 0.99))')
+        self.assertLispError("(volatility-history history model)", "its persistence must be less than 1")
+        self.run_lisp('(define model (table-add-column (volatility-model history) "up-day-weight" -0.1))')
+        self.assertLispError("(bootstrap-path history 100 5 1 :volatility model)", "weights must all be 0 or more")
+        self.assertLispError("(bootstrap-path history 100 5 1 :start-volatility 0.2)",
+                             ":start-volatility needs :volatility")
+        self.assertLispError("(bootstrap-path history 100 5 1 :volatility (volatility-model history) :start-volatility 0)",
+                             ":start-volatility must be a number above 0")
+
+    # -- volatility-forecast ------------------------------------------------------
+
+    def test_the_forecast_goes_from_the_next_day_s_volatility_to_the_long_run(self):
+        self.make_returns("history", self.made_up_history(self.WEIGHTS))
+        self.run_lisp("(define model (volatility-model history))")
+        model = self.table_numbers("model")
+        next_day, long_run, persistence = (model[name][0] for name in
+                                           ("next-day-volatility", "long-run-volatility", "persistence"))
+        self.assertAlmostEqual(self.run_lisp("(volatility-forecast model 1)"), next_day, places=6)
+        # the average of the first 3 days' variances, each persistence of the last's difference from the long run
+        days = [long_run ** 2 + persistence ** k * (0.3 ** 2 - long_run ** 2) for k in range(3)]
+        self.assertAlmostEqual(self.run_lisp("(volatility-forecast model 3 :start-volatility 0.3)"),
+                               math.sqrt(sum(days) / 3), places=6)
+        forecast = [float(x) for x in self.run_lisp("(volatility-forecast model #(1 10 100 10000))").items]
+        self.assertEqual(len(forecast), 4)
+        self.assertAlmostEqual(forecast[-1], long_run, delta=0.001)
+        self.run_lisp('(define memoryless (table-add-column model "persistence" 0.0))')
+        self.assertAlmostEqual(self.run_lisp("(volatility-forecast memoryless 4 :start-volatility 0.3)"),
+                               math.sqrt((0.3 ** 2 + 3 * long_run ** 2) / 4), places=6)
+        self.assertLispError("(volatility-forecast model 0)", "days must be whole numbers, 1 or more")
+        self.assertLispError('(volatility-forecast (table-add-column model "persistence" 1.0) 5)',
+                             "persistence must be at least 0 and less than 1")
+
+    def test_the_paths_are_as_volatile_as_the_forecast_says(self):
+        self.make_returns("history", self.made_up_history(self.WEIGHTS))
+        self.run_lisp("(define model (volatility-model history))")
+        log_returns = self.stored("history")
+        weights = lisp_investment_paths.VolatilityWeights(*(self.table_numbers("model")[name][0] for name in
+                                                            lisp_investment_paths.WEIGHT_COLUMNS))
+        paths, days = 20000, 10
+        for start in (None, 0.4):
+            moves = np.empty((paths, days))
+            for i in range(paths):
+                rows = lisp_investment_paths.days_drawn(len(log_returns), days, 1, i, "test")
+                start_variance = None if start is None else start ** 2 / 252
+                moves[i], _ = lisp_investment_paths.returns_with_volatility(log_returns, weights, rows, start_variance)
+            moves -= moves.mean(axis=0)               # (each day's average, over the paths)
+            realized = math.sqrt(np.mean(moves ** 2) * 252)
+            forecast = self.run_lisp("(volatility-forecast model %d%s)" % (days, "" if start is None else
+                                                                         " :start-volatility %s" % start))
+            self.assertAlmostEqual(realized / forecast, 1.0, delta=0.01, msg=start)
+
+    # -- paths ----------------------------------------------------------------------
+
+    def test_a_model_with_no_memory_makes_the_same_paths_as_none(self):
+        # weights of 0: every day's variance is the long-run variance, so every shock times it is the day's move
+        self.make_returns("history", self.made_up_history(self.WEIGHTS, days=300))
+        self.run_lisp('(define model (table-add-column (table-add-column (table-add-column (volatility-model history) '
+                      '"up-day-weight" 0.0) "down-day-weight" 0.0) "variance-weight" 0.0))')
+        plain = self.run_lisp("(bootstrap-path history 100 50 5 :seed 4)").items
+        modeled = self.run_lisp("(bootstrap-path history 100 50 5 :seed 4 :volatility model)").items
+        self.assertTrue(np.allclose(plain, modeled, rtol=1e-6))
+
+    def test_bootstrap_days_shows_how_the_path_s_returns_were_made(self):
+        self.make_returns("history", self.made_up_history(self.WEIGHTS, days=500))
+        self.run_lisp("(define model (volatility-model history))")
+        days = self.table_numbers("(bootstrap-days history 30 4 :seed 2 :volatility model :start-volatility 0.3)")
+        self.assertEqual(list(days), ["day", "log-return", "shock", "volatility", "path-return"])
+        self.assertAlmostEqual(days["volatility"][0], 0.3, places=6)
+        model = self.table_numbers("model")
+        up, down, variance_weight = (model[name][0] for name in lisp_investment_paths.WEIGHT_COLUMNS)
+        moves = self.stored("history") - self.stored("history").mean()
+        constant = np.mean(moves ** 2) * (1 - model["persistence"][0])
+        variance = 0.3 ** 2 / 252
+        for day in range(29):                 # each day's variance, from the day before's and its move
+            move = math.sqrt(variance) * days["shock"][day]
+            variance = constant + (down if move < 0 else up) * move * move + variance_weight * variance
+            self.assertAlmostEqual(days["volatility"][day + 1], math.sqrt(variance * 252), places=4)
+        prices = self.run_lisp("(bootstrap-path history 100 30 4 :seed 2 :volatility model :start-volatility 0.3)")
+        self.assertTrue(np.allclose(prices.items, 100 * np.exp(np.cumsum(days["path-return"])), rtol=1e-5))
+        starting = self.table_numbers("(bootstrap-days history 30 4 :seed 2 :volatility model)")
+        self.assertAlmostEqual(starting["volatility"][0], model["next-day-volatility"][0], places=6)
+        self.assertEqual(starting["shock"], days["shock"])
+
+    def test_paths_with_a_volatility_model_grow_at_the_expected_return(self):
+        self.make_returns("history", self.made_up_history(self.WEIGHTS))
+        self.run_lisp("(define adjusted (adjust-returns history 0.3)) (define model (volatility-model history))")
+        ends = [self.run_lisp("(vector-ref (bootstrap-path adjusted 100 63 1 :seed %d :volatility model "
+                              ":start-volatility 0.5) 62)" % i) for i in range(3000)]
+        error = np.std(ends) / math.sqrt(len(ends))
+        self.assertAlmostEqual(np.mean(ends), 100 * 1.3 ** (63 / 252), delta=3 * error)
+
+    def test_paths_of_several_investments_each_have_their_own_model(self):
+        a = self.made_up_history(self.WEIGHTS, days=600, seed=1)
+        b = self.made_up_history((0.1, 0.1, 0.8), days=600, seed=2, volatility=0.4)
+        self.env[lisp_core.Symbol("both")] = lisp_tables.make_table_value(
+            [("A", lisp_vector_math.to_vector(a)), ("B", lisp_vector_math.to_vector(b))])
+        self.run_lisp("(define model (volatility-model both))")
+        self.assertShows('(table-column model "investment")', '#("A" "B")')
+        paths = self.table_numbers('(bootstrap-paths both (list (cons "A" 100) (cons "B" 50)) 20 3 :seed 9 '
+                                   ':volatility model :start-volatility (list (cons "A" 0.1) (cons "B" 0.6)))')
+        for name, price, start in (("A", 100, 0.1), ("B", 50, 0.6)):
+            alone = self.run_lisp('(bootstrap-path (table-select both "%s") %d 20 3 :seed 9 :volatility model '
+                                  ':start-volatility %s)' % (name, price, start))
+            self.assertTrue(np.allclose(paths[name], alone.items), msg=name)
+        self.assertLispError('(bootstrap-paths both (list (cons "A" 100) (cons "B" 50)) 20 3 :volatility model '
+                             ':start-volatility (list (cons "A" 0.1)))', ":start-volatility has none for B")
+
+
 class TestOptionCheck(LispTestCase):
     """option-payoffs, and lib/option_check.lsp, on made-up option chains priced as
     paths from a made-up history say they should be, with some options priced out of line."""
@@ -1045,6 +1259,51 @@ class TestOptionCheck(LispTestCase):
         shown = self.printed()
         self.assertIn("The paths' volatility was multiplied by 1.", shown)
         self.assertIn("The 3 options with the most expected profit if the underlying earns its expected return", shown)
+
+    # -- starting at today's volatility -----------------------------------------------
+
+    def test_with_a_volatility_model_the_paths_start_at_today_s_volatility(self):
+        # options priced at the history's volatility; paths that start at 10% and go back toward it, with a
+        # half-life of about 14 days, value the options of each expiration at the volatility the model forecasts
+        self.make_chain(self.START)
+        self.run_lisp('(define model (table-add-column (table-add-column (table-add-column (volatility-model returns) '
+                      '"up-day-weight" 0.05) "down-day-weight" 0.05) "variance-weight" 0.9))')
+        self.run_lisp(self.CHECK % ":volatility model :start-volatility 0.1 :out-of-the-money-only #f")
+        log_returns = np.array(self.run_lisp('(table-column returns "log-return")').items, dtype=np.float64)
+        persistence = lisp_investment_paths.filtered_history(
+            log_returns.tobytes(), lisp_investment_paths.VolatilityWeights(0.05, 0.05, 0.9)).persistence
+        long_run = np.mean((log_returns - log_returns.mean()) ** 2) * 252
+        for number, trading in enumerate((25, 60, 120)):
+            expiration = lisp_calendar.trading_days_after(self.START, trading)
+            T = (expiration - self.START).days / 365
+            forecast = math.sqrt(long_run + (0.1 ** 2 - long_run) * (1 - persistence ** trading)
+                                 / (trading * (1 - persistence)))
+            date = "(date %d %d %d)" % (expiration.year, expiration.month, expiration.day)
+            model_iv = self.run_lisp('(vector-median (table-column (table-where checked "expiration-date" %s) '
+                                     '"model-iv"))' % date)
+            self.assertAlmostEqual(model_iv, forecast * math.sqrt((trading / 252) / T), delta=0.005, msg=trading)
+        self.assertAlmostEqual(float(self.column("start-volatility")[0]), 0.1, places=6)
+        self.assertAlmostEqual(float(self.column("long-run-volatility")[0]), math.sqrt(long_run), places=5)
+
+    def test_volatility_t_fits_a_model_and_show_option_check_says_where_it_started(self):
+        self.make_chain(self.START)
+        self.run_lisp(self.CHECK % ":volatility #t :match-volatility #t")
+        self.run_lisp("(define model (volatility-model returns))")
+        scale = float(self.column("volatility-scale")[0])
+        self.assertAlmostEqual(float(self.column("start-volatility")[0]),
+                               scale * self.run_lisp('(vector-ref (table-column model "next-day-volatility") 0)'),
+                               places=5)
+        self.assertAlmostEqual(float(self.column("long-run-volatility")[0]),
+                               scale * self.run_lisp('(vector-ref (table-column model "long-run-volatility") 0)'),
+                               places=5)
+        self.run_lisp("(show-option-check checked :count 3)")
+        shown = self.printed()
+        self.assertRegex(shown, r"The paths' volatility started at \d+\.\d% and went back toward \d+\.\d%, "
+                                r"as the volatility model says\.")
+        self.assertNotIn("start-volatility", shown)
+        self.run_lisp(self.CHECK % "")
+        self.assertNotIn("start-volatility", [str(x) for x in
+                                              lisp_core.pairs_to_list(self.run_lisp("(table-column-names checked)"))])
 
     # -- check-option-prices and show-option-check --------------------------------
 

@@ -51,7 +51,11 @@
 ; (show-option-check says what the middle iv-residual of each expiration is;
 ; and iv-vs-expiration is what is left of an option's iv-residual after
 ; that, for finding the options that are out of line with the rest of their
-; expiration.) And an option on a stock can be
+; expiration.) :volatility #t helps with the next few days: the paths start
+; at today's volatility, as a volatility model (volatility-model) fitted to
+; the history estimates it, and go back toward the history's, as the model
+; says, instead of being as wild as the history is on average from the
+; start. And an option on a stock can be
 ; exercised early, which the paths' values leave out, so by default only
 ; the out-of-the-money options are used, as in vol_smile.lsp. Or, with
 ; :early-exercise #t, what the right to exercise early is worth (from a
@@ -133,16 +137,20 @@ than tolerance of it."
                      price (vector-ref (table-column first-expiration "expiration-date") 0) parity forward
                      (+ price (* (- parity forward) discount)))))))
 
-(define (option-check--payoffs options returns schedule annual-return scale paths block-size seed)
+(define (option-check--payoffs options returns schedule annual-return scale paths block-size seed
+                              model start-volatility)
   "What each option pays on average at its expiration (option-payoffs), over
 simulated paths of the underlying's price as long as the longest option has.
 The returns are adjusted to grow at annual-return, with their volatility
-multiplied by scale; the schedule's dividends come off the price."
+multiplied by scale; the schedule's dividends come off the price. With
+model, a volatility model ('() for none), the paths' volatility starts at
+the model's today's (times scale), or at start-volatility, if it isn't '()."
   (let* ((horizon (vector-max (table-column options "trading-days")))
          (start-price (vector-ref (table-column options "underlying-price") 0))
          (adjusted (adjust-returns returns annual-return :volatility-scale scale))
          (simulated (map (lambda (i) (bootstrap-path adjusted start-price horizon block-size
-                                                       :seed (+ seed i) :dividends schedule))
+                                                       :seed (+ seed i) :dividends schedule
+                                                       :volatility model :start-volatility start-volatility))
                          (iota paths))))
     (option-payoffs simulated (table-column options "trading-days") (table-column options "strike")
                     (= (table-column options "type") "Call"))))
@@ -239,7 +247,8 @@ procedure from a scale to the options compared (option-check--compare)."
                                                (paths 5000) (block-size 10) (seed 1) (max-vol-spread 0.02)
                                                (out-of-the-money-only #t) (min-paths-paid 50) (standard-errors 2)
                                                (forward-tolerance 0.002) (expected-return '())
-                                               (match-volatility #f) (early-exercise #f))
+                                               (match-volatility #f) (early-exercise #f)
+                                               (volatility #f) (start-volatility '()))
   "Check an option chain's prices against values from simulated paths.
 chain is a table as tastytrade-option-chain makes; returns is the
 underlying's table of returns, as daily-returns makes it (with its
@@ -268,7 +277,12 @@ early-exercise #t takes what the right to exercise early is worth off the
 options' prices before comparing them with the paths' European values, and
 adds it to the values after (the column early-exercise has it): for
 checking in-the-money options too (out-of-the-money-only #f). The
-implied volatilities are then of the prices without it.
+implied volatilities are then of the prices without it. volatility #t
+fits a volatility model to the returns (volatility-model), or volatility
+can be one (one row, for the returns' log-return column); then the paths'
+volatility starts at the model's today's, or at start-volatility, for a
+year, if that's given, and goes back toward the history's, and the
+columns start-volatility and long-run-volatility have those two.
 
 The result is a table, the options furthest out of line first, with these
 columns added to the chain's own: model-price, the value from the paths;
@@ -305,8 +319,12 @@ values: they are not adjusted for risk."
       (when (= (table-row-count options) 0)
         (error "check-option-chain: no option is liquid enough to check -- see max-vol-spread"))
       (let* ((risk-neutral (- (exp rate) 1))
+             (model (cond ((eq? volatility #t) (volatility-model returns))
+                          ((or (not volatility) (null? volatility)) '())
+                          (else volatility)))
              (payoffs-at (lambda (annual-return scale)
-                           (option-check--payoffs options returns schedule annual-return scale paths block-size seed)))
+                           (option-check--payoffs options returns schedule annual-return scale paths block-size seed
+                                                  model start-volatility)))
              (compared-at (lambda (scale)
                             (option-check--compare options (payoffs-at risk-neutral scale) '()
                                                    min-paths-paid standard-errors)))
@@ -314,16 +332,22 @@ values: they are not adjusted for risk."
              (real-payoffs (if (null? expected-return) '() (payoffs-at expected-return scale)))
              (compared (option-check--compare options (payoffs-at risk-neutral scale) real-payoffs
                                               min-paths-paid standard-errors))
-             (checked (if early-exercise (option-check--with-early-exercise compared) compared)))
-        (if match-volatility
-            (table-add-column checked "volatility-scale" scale)
-            checked)))))
+             (checked (if early-exercise (option-check--with-early-exercise compared) compared))
+             (scaled (if match-volatility (table-add-column checked "volatility-scale" scale) checked)))
+        (if (null? model)
+            scaled
+            (let ((start (if (null? start-volatility)
+                             (* scale (vector-ref (table-column model "next-day-volatility") 0))
+                             start-volatility))
+                  (long-run (* scale (vector-ref (table-column model "long-run-volatility") 0))))
+              (table-add-column (table-add-column scaled "start-volatility" start) "long-run-volatility" long-run)))))))
 
 (define (check-option-prices creds symbol &key (months 3) (strikes 15) (start-date (today)) (start-price '())
                                                (rate 0.04) (paths 5000) (block-size 10) (seed 1)
                                                (max-vol-spread 0.02) (out-of-the-money-only #t)
                                                (min-paths-paid 50) (standard-errors 2) (forward-tolerance 0.002)
-                                               (expected-return '()) (match-volatility #f) (early-exercise #f))
+                                               (expected-return '()) (match-volatility #f) (early-exercise #f)
+                                               (volatility #f) (start-volatility '()))
   "Get an underlying's option chain (from tastytrade; months ahead, with
 the strikes nearest the price), its prices (from Schwab) and dividends
 (from Alpha Vantage), make paths, value every option from them, and check
@@ -337,7 +361,8 @@ takes the other arguments, and gives the result."
                         :max-vol-spread max-vol-spread :out-of-the-money-only out-of-the-money-only
                         :min-paths-paid min-paths-paid :standard-errors standard-errors
                         :forward-tolerance forward-tolerance :expected-return expected-return
-                        :match-volatility match-volatility :early-exercise early-exercise)))
+                        :match-volatility match-volatility :early-exercise early-exercise
+                        :volatility volatility :start-volatility start-volatility)))
 
 ; ---------------------------------------------------------------------------
 ; Showing the results
@@ -347,7 +372,8 @@ takes the other arguments, and gives the result."
   '(("strike" ",.2f") ("bid" ",.2f") ("ask" ",.2f") ("iv-bid" ".1%") ("iv-mid" ".1%") ("iv-ask" ".1%")
     ("model-price" ",.3f") ("standard-error" ",.3f") ("paths-paid" ",.0f") ("model-iv" ".1%")
     ("iv-residual" "+.1%") ("iv-vs-expiration" "+.1%") ("median-iv-residual" "+.1%") ("edge" ",.3f")
-    ("expected-value" ",.3f") ("expected-profit" ",.3f") ("volatility-scale" ".3f") ("early-exercise" ",.3f")))
+    ("expected-value" ",.3f") ("expected-profit" ",.3f") ("volatility-scale" ".3f") ("early-exercise" ",.3f")
+    ("start-volatility" ".1%") ("long-run-volatility" ".1%")))
 
 (define (option-check-expirations checked)
   "A table with a row for each expiration: how many options were checked,
@@ -372,11 +398,19 @@ whose ask is below it; and, if there is an expected return, the count
 options whose expected profit is greatest."
   (let* ((matched (member "volatility-scale" (table-column-names checked)))
          (scale (if matched (vector-ref (table-column checked "volatility-scale") 0) 1.0))
+         (modeled (member "start-volatility" (table-column-names checked)))
+         (start (if modeled (vector-ref (table-column checked "start-volatility") 0) 0.0))
+         (long-run (if modeled (vector-ref (table-column checked "long-run-volatility") 0) 0.0))
          (checked (if matched (table-drop-columns checked "volatility-scale") checked))       ; (said here instead)
+         (checked (if modeled (table-drop-columns checked '("start-volatility" "long-run-volatility")) checked))
          (columns (table-column-names checked))
          (by-expiration (table-add-column checked "distance" (abs (table-column checked "iv-vs-expiration")))))
     (when matched
       (display (format "The paths' volatility was multiplied by {:.3f}, to match the market's overall level.\n" scale)))
+    (when modeled
+      (display (format (string-append "The paths' volatility started at {:.1%} and went back toward {:.1%}, "
+                                      "as the volatility model says.\n")
+                       start long-run)))
     (display (format "{} options. The middle iv-residual, the market's volatility less the paths', in each expiration:\n"
                      (table-row-count checked)))
     (display-table (option-check-expirations checked) option-check-formats)

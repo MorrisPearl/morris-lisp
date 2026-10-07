@@ -101,3 +101,58 @@
 (display (format "A 3-month SPY call at {:,.2f}: {:.2f} +/- {:.2f} with the dividends, {:.2f} +/- {:.2f} without\n"
                  spy-start-price (first with-dividends) (second with-dividends)
                  (first without-dividends) (second without-dividends)))
+
+; --- 6. Starting at today's volatility -----------------------------------------
+; The paths above copy blocks from anywhere in the history, so they start as
+; wild as the history is on average, however calm or wild the market is
+; today. A volatility model estimates how volatile each day of the history
+; was, from the day before and how big its move was -- a fall counts for
+; more than a rise -- and makes paths that start at today's volatility, and
+; go back toward the history's (see "Starting paths from today's
+; volatility" in the reference manual).
+(define spy-model (volatility-model spy-returns))
+(display "\nSPY's volatility model:\n")
+(display-table (table-select spy-model '("next-day-volatility" "long-run-volatility" "half-life"
+                                         "up-day-weight" "down-day-weight" "variance-weight"))
+               '(("next-day-volatility" ".1%") ("long-run-volatility" ".1%") ("half-life" ".0f")))
+(display (format "Treating up and down days differently fits better by {:.0f} in log-likelihood.\n"
+                 (- (vector-ref (table-column spy-model "log-likelihood") 0)
+                    (vector-ref (table-column (volatility-model spy-returns :symmetric #t) "log-likelihood") 0))))
+
+; What it expects the volatility to be, on average, over the next days.
+(define horizons #(1 5 21 63 126 252))
+(display "The volatility it expects over the next days:\n")
+(display-table (make-table "trading-days" horizons "volatility" (volatility-forecast spy-model horizons))
+               '(("volatility" ".1%")))
+
+; What it says the volatility was, on each day of the history.
+(define spy-history (volatility-history spy-returns spy-model))
+(plot-chart (list (list "SPY" (table-column spy-history "date") (table-column spy-history "volatility") :line #t))
+            :title "SPY's volatility, as the model estimates it" :y-format "{:.0%}")
+
+; The paths still differ in volatility: some turn wild and some stay calm.
+; But they start from today's, as these spreads of the paths' volatility in
+; their first month show.
+(define (first-month-volatility path)        ; a path's volatility in its first 21 days, for a year
+  (let ((returns (vector-log (vector-div (vector-slice path 1 22) (vector-slice path 0 21)))))
+    (* (sqrt 252) (vector-stdev returns))))
+(define (first-month-spread model)
+  (list->vector (map (lambda (i) (first-month-volatility
+                                  (bootstrap-path spy-returns spy-start-price 22 10 :seed (+ 1000 i) :volatility model)))
+                     (iota 2000))))
+(display "\nEach path's volatility in its first month: the 5th, 25th, 50th, 75th, and 95th percentiles of 2000 paths:\n")
+(display (format "  copying the history's returns:  {}\n"
+                 (vector-round (vector-quantile (first-month-spread '()) #(0.05 0.25 0.5 0.75 0.95)) 3)))
+(display (format "  with the volatility model:      {}\n"
+                 (vector-round (vector-quantile (first-month-spread spy-model) #(0.05 0.25 0.5 0.75 0.95)) 3)))
+
+; The 3-month call of section 5, with paths that start at today's volatility.
+(define (spy-call-value-from-today schedule)
+  (let ((paths (map (lambda (i) (bootstrap-path spy-returns spy-start-price spy-days 1
+                                                :seed (+ 1000 i) :dividends schedule :volatility spy-model))
+                    (iota 5000))))
+    (option-value paths (lambda (path) (max 0 (- (vector-ref path (- spy-days 1)) spy-start-price)))
+                  rate (/ spy-days 252.0))))
+(define from-today (spy-call-value-from-today spy-schedule))
+(display (format "The 3-month SPY call, from paths that start at today's volatility: {:.2f} +/- {:.2f}\n"
+                 (first from-today) (second from-today)))

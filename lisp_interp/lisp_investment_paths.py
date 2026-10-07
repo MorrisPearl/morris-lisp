@@ -8,8 +8,17 @@ investment's own daily returns.
                      expected annual return (and their volatility, if asked)
   (dividend-schedule dividends start-date days [:repeat-last-year #t])
                      the dividends an investment will pay in the days of a path
-  (bootstrap-path returns start-price days block-size [:seed n] [:dividends schedule])
+  (bootstrap-path returns start-price days block-size [:seed n] [:dividends schedule]
+                  [:volatility model] [:start-volatility x])
                      one simulated path of future prices
+  (bootstrap-days returns days block-size [:seed n] [:volatility model] [:start-volatility x])
+                     the days of the history a path is made of
+  (volatility-model returns [:symmetric #t] [:days-per-year n])
+                     a model of an investment's volatility, which changes from day to day
+  (volatility-history returns model)
+                     what the model says the volatility was on each day of the history
+  (volatility-forecast model days [:start-volatility x])
+                     the average volatility the model expects over the next days
   (option-value paths payoff rate years)
                      what an option is worth, from many paths
   (option-payoffs paths days strikes calls)
@@ -49,6 +58,27 @@ given.
 THE PATHS wrap: a block that runs off the end of the history carries on
 from its start, so every day is as likely as any other to be in a block.
 
+TODAY'S VOLATILITY: a path copies blocks from anywhere in the history, so
+it starts as wild as the history is on average, however calm or wild the
+market is today. With :volatility, a model from volatility-model, a path
+starts at today's volatility instead, and its volatility changes from day
+to day as the model says, going back toward the history's average:
+
+  1. The model estimates each day's volatility, from the day before's and
+     how big the day before's move was (the formula is at next_variance).
+  2. Each day's return less the average, divided by that day's volatility,
+     is a "shock": how many of its own standard deviations the day moved.
+     A 3% drop on a calm day is a big shock; on a wild day, a small one.
+  3. A path copies the shocks of its blocks' days, instead of their
+     returns, and multiplies each by the path's own volatility that day,
+     which it then updates by the same formula with the move it just made.
+
+So a path's first days are about as wild as the days just before it, and
+a big simulated move makes the days after it wild, until they calm down
+again -- each path differently. This is called "filtered historical
+simulation"; the formula is a "GJR-GARCH(1,1)" model, fitted with the
+long-run variance set to the history's ("variance targeting").
+
 OPTION VALUES: the value of an option (or anything else paid after the
 prices of a path) is estimated by working out what each path pays, taking
 its present value, and averaging them. For that to be the option's fair
@@ -67,12 +97,14 @@ which (random-seed n) makes reproducible.
 import datetime
 import math
 import random
+from collections import namedtuple
+from functools import lru_cache
 
 import numpy as np
 
 from lisp_core import (
-    LispDate, LispError, LispVector, Pair, _lisp_scalar, apply_proc, is_true, keyword_options, list_to_pairs,
-    pairs_to_list,
+    LispDate, LispError, LispString, LispVector, Pair, _lisp_scalar, apply_proc, is_true, keyword_options,
+    list_to_pairs, pairs_to_list,
 )
 import lisp_calendar
 from lisp_time_series import months_later
@@ -165,13 +197,15 @@ def return_columns(returns, who):
     return columns
 
 
-def log_returns_of(returns, who):
-    """The one column of returns of one investment's table of returns."""
+def one_investment_returns(returns, who, several="bootstrap-paths makes paths of several"):
+    """The name and the returns of the one column of returns of one
+    investment's table of returns. `several` says what to do instead, if
+    the table has more than one."""
     columns = return_columns(returns, who)
     if len(columns) > 1:
-        raise LispError("%s: the table has the returns of %d investments (%s) -- bootstrap-paths makes paths of "
-                        "several" % (who, len(columns), ", ".join(name for name, _ in columns)))
-    return columns[0][1]
+        raise LispError("%s: the table has the returns of %d investments (%s) -- %s"
+                        % (who, len(columns), ", ".join(name for name, _ in columns), several))
+    return columns[0]
 
 
 def adjusted_column(log_returns, annual_return, volatility_scale, days_per_year):
@@ -336,23 +370,41 @@ def prices_with_dividends(start_price, growth, schedule):
 
 def bootstrap_path(returns, start_price, days, block_size, *options):
     """(bootstrap-path returns start-price days block-size [:seed n]
-    [:dividends schedule]) -- one simulated path of prices, as a vector of
-    `days` prices: the first is the day after start-price's. returns is a
-    table with a log-return column. Blocks of block-size consecutive
-    returns, each beginning at a random day of the history, are put end to
-    end until there are `days` of them (the last block is cut short if it
-    has to be), and the prices are what start-price becomes with those
-    returns. :dividends is a schedule, as dividend-schedule makes, of
-    dividends that take their amounts off the price on their days."""
+    [:dividends schedule] [:volatility model] [:start-volatility x]) -- one
+    simulated path of prices, as a vector of `days` prices: the first is
+    the day after start-price's. returns is a table with a log-return
+    column. Blocks of block-size consecutive returns, each beginning at a
+    random day of the history, are put end to end until there are `days`
+    of them (the last block is cut short if it has to be), and the prices
+    are what start-price becomes with those returns. :dividends is a
+    schedule, as dividend-schedule makes, of dividends that take their
+    amounts off the price on their days. :volatility is a model, as
+    volatility-model makes: the path starts at the volatility the model
+    gives the day after the history (or at :start-volatility x, for a
+    year, if it's given), and the days' returns are their shocks times
+    the path's own volatility (see returns_with_volatility)."""
     who = "bootstrap-path"
-    options = keyword_options(options, ["seed", "dividends"], who)
-    seed = options.get("seed")
+    options = keyword_options(options, ["seed", "dividends", "volatility", "start-volatility"], who)
     schedule = schedule_days_and_amounts(options.get("dividends"), who)
-    log_returns = log_returns_of(returns, who)
+    name, log_returns = one_investment_returns(returns, who)
     if not is_number(start_price) or start_price <= 0:
         raise LispError("%s: the start price must be a number above 0, not %s" % (who, start_price))
-    chosen = log_returns[days_drawn(len(log_returns), days, block_size, seed, who)]
+    rows = days_drawn(len(log_returns), days, block_size, options.get("seed"), who)
+    chosen = path_log_returns(name, log_returns, rows, options.get("volatility"), options.get("start-volatility"), who)
     return to_vector(prices_with_dividends(start_price, np.cumsum(chosen), schedule))
+
+
+def path_log_returns(name, log_returns, rows, model, start_volatility, who):
+    """A path's log returns, from the history's days `rows` (as days_drawn
+    picks them): the returns of those days; or, with a volatility model,
+    the returns returns_with_volatility makes, starting at start_volatility
+    (for a year), if it isn't None."""
+    if model is None:
+        if start_volatility is not None:
+            raise LispError("%s: :start-volatility needs :volatility, a model as volatility-model makes" % who)
+        return log_returns[rows]
+    weights, start_variance = weights_and_start(model, name, log_returns, start_volatility, who)
+    return returns_with_volatility(log_returns, weights, rows, start_variance)[0]
 
 
 def days_drawn(history_days, days, block_size, seed, who):
@@ -373,6 +425,388 @@ def days_drawn(history_days, days, block_size, seed, who):
     # each block's days in a row, from where it starts; % wraps them around the end of the history
     block_days = (starts[:, None] + np.arange(block_size)) % history_days
     return block_days.ravel()[:days]
+
+
+def bootstrap_days(returns, days, block_size, *options):
+    """(bootstrap-days returns days block-size [:seed n] [:volatility model]
+    [:start-volatility x]) -- the days of the history a path is made of: a
+    table of day (1 for the path's first), the date of the history's day it
+    copies (if the table of returns has dates), and that day's returns.
+    With the same :seed, bootstrap-path and bootstrap-paths make their
+    paths from these days. With :volatility (for one investment's
+    returns), three more columns say how the path's returns were made from
+    them: shock, the day of the history's; volatility, the path's that day
+    (for a year); and path-return, the path's log return."""
+    who = "bootstrap-days"
+    options = keyword_options(options, ["seed", "volatility", "start-volatility"], who)
+    columns = return_columns(returns, who)
+    rows = days_drawn(len(columns[0][1]), days, block_size, options.get("seed"), who)
+    table = [("day", to_vector(np.arange(1, len(rows) + 1)))]
+    names = [name for name, _ in table_columns(returns, who)]
+    if "date" in names:
+        table.append(("date", LispVector(find_column(table_columns(returns, who), "date", who).items[rows])))
+    table += [(name, to_vector(values[rows])) for name, values in columns]
+
+    model = options.get("volatility")
+    if model is None:
+        if options.get("start-volatility") is not None:
+            raise LispError("%s: :start-volatility needs :volatility, a model as volatility-model makes" % who)
+        return make_table_value(table)
+    name, log_returns = one_investment_returns(returns, who, "pick one with table-select")
+    weights, start_variance = weights_and_start(model, name, log_returns, options.get("start-volatility"), who)
+    path_returns, volatilities = returns_with_volatility(log_returns, weights, rows, start_variance)
+    shocks = filtered_history(log_returns.tobytes(), weights).shocks[rows]
+    days_per_year = model_days_per_year(model, who)
+    return make_table_value(table + [("shock", to_vector(shocks)),
+                                     ("volatility", to_vector(volatilities * math.sqrt(days_per_year))),
+                                     ("path-return", to_vector(path_returns))])
+
+
+# ---------------------------------------------------------------------------
+# Volatility that changes from day to day
+# ---------------------------------------------------------------------------
+
+# The model's three weights, as numbers (or as arrays, for several sets of
+# them at once): see next_variance.
+VolatilityWeights = namedtuple("VolatilityWeights", ["up_day_weight", "down_day_weight", "variance_weight"])
+WEIGHT_COLUMNS = ("up-day-weight", "down-day-weight", "variance-weight")    # their columns in a model's table
+
+MINIMUM_HISTORY = 100           # returns, to fit a model to
+MOST_PERSISTENCE = 0.998        # a half-life of 346 days; any more, and the volatility hardly goes back at all
+# The weights volatility-model tries: each from the first number to the second,
+# by the first of SEARCH_STEPS; then by each finer step, near the best so far.
+SEARCH_RANGES = {"up_day_weight": (0.0, 0.3), "down_day_weight": (0.0, 0.5), "variance_weight": (0.5, 0.99)}
+SEARCH_STEPS = (0.02, 0.005, 0.001)
+EXP_TERMS = 16                  # terms of the series for e^x (average_exp_series)
+
+
+def next_variance(variance, move, weights, constant):
+    """The model: the variance (the volatility squared, for a day) of the
+    day after a day with variance `variance` on which the investment moved
+    `move` (its return less the average return):
+
+        constant + up-day-weight (or down-day-weight, if move < 0) x move^2
+                 + variance-weight x variance
+
+    So a big move makes the next day's volatility higher -- a down move by
+    more than an up move, if down-day-weight is the bigger. The constant
+    pulls the variance back toward the long-run variance (constant_for):
+    on average, the variance's difference from it shrinks each day to
+    `persistence` of what it was (persistence_of)."""
+    reaction = weights.down_day_weight if move < 0 else weights.up_day_weight
+    return constant + reaction * move * move + weights.variance_weight * variance
+
+
+def persistence_of(weights, down_share):
+    """How much of the variance's difference from the long-run variance is
+    left the next day, on average: variance-weight, plus the up-day and
+    down-day weights, each for its share of the moves. down_share is the
+    share of the moves' squares, added up, that is on down days: of the
+    shocks' (filtered_history), for a path, or, while the weights are being
+    fitted and there are no shocks yet, of the history's moves'."""
+    return (weights.variance_weight + weights.up_day_weight * (1 - down_share)
+            + weights.down_day_weight * down_share)
+
+
+def constant_for(weights, long_run, down_share):
+    """The model's constant: the one that makes the variance go back toward
+    long_run, the long-run variance (a day's)."""
+    return long_run * (1 - persistence_of(weights, down_share))
+
+
+def half_life(persistence):
+    """How many days it takes for half of a difference from the long-run
+    variance to go, on average."""
+    return math.log(0.5) / math.log(persistence) if persistence > 0 else 0.0
+
+
+def moves_of(log_returns, who):
+    """A history's moves (its returns less their average), its long-run
+    variance (the moves squared, averaged), and the share of that variance
+    that is on down days."""
+    if len(log_returns) < MINIMUM_HISTORY:
+        raise LispError("%s: it takes at least %d returns to fit a volatility model, not %d"
+                        % (who, MINIMUM_HISTORY, len(log_returns)))
+    moves = log_returns - log_returns.mean()
+    long_run = float(np.mean(moves ** 2))
+    if long_run == 0:
+        raise LispError("%s: the returns are all the same, so there is no volatility to model" % who)
+    down_share = float(np.sum(moves[moves < 0] ** 2) / np.sum(moves ** 2))
+    return moves, long_run, down_share
+
+
+def log_likelihoods(moves, long_run, down_share, weights):
+    """How well the model fits the history with each of several sets of
+    weights (weights' elements are arrays, an element for each set): the log
+    of how likely the history's moves are, if each day's comes from a
+    normal distribution with the variance the model gives that day. A move
+    that is big for its day's variance counts against a set of weights,
+    and so does a variance that is big for its day's move. The higher, the
+    better the fit. down_share is the moves'. Returns those, and for each
+    set, the share of its shocks' squares that is on down days (as
+    filtered_history finds it)."""
+    constant = constant_for(weights, long_run, down_share)
+    variance = np.full(len(weights.variance_weight), long_run)       # the first day's
+    total = np.zeros(len(weights.variance_weight))
+    shocks_squared = np.zeros(len(weights.variance_weight))         # added up
+    down_shocks_squared = np.zeros(len(weights.variance_weight))    # those on down days
+    for move in moves:
+        total -= 0.5 * (math.log(2 * math.pi) + np.log(variance) + move * move / variance)
+        shocks_squared += move * move / variance
+        if move < 0:
+            down_shocks_squared += move * move / variance
+        variance = next_variance(variance, move, weights, constant)
+    return total, down_shocks_squared / shocks_squared
+
+
+def fitted_weights(moves, long_run, down_share, symmetric):
+    """The weights that fit the history best (log_likelihoods), and how well:
+    found by trying every set of weights on a grid that covers
+    SEARCH_RANGES, and then on finer and finer grids, around the best so
+    far (as far as the last grid's step on each side). A set whose
+    persistence is more than MOST_PERSISTENCE, with the moves' down share
+    (down_share) or with its shocks', isn't taken. symmetric: the up-day
+    and down-day weights are the same."""
+    names = ["up_day_weight", "variance_weight"] if symmetric else list(VolatilityWeights._fields)
+    best = None
+    for number, step in enumerate(SEARCH_STEPS):
+        axes = []
+        for name in names:
+            low, high = SEARCH_RANGES[name]
+            if best is not None:
+                last_step = SEARCH_STEPS[number - 1]
+                low, high = max(low, getattr(best, name) - last_step), min(high, getattr(best, name) + last_step)
+            axes.append(np.round(np.arange(low, high + step / 2, step), 3))
+        grid = [axis.ravel() for axis in np.meshgrid(*axes, indexing="ij")]      # every set of them
+        tried = VolatilityWeights(grid[0], grid[0], grid[1]) if symmetric else VolatilityWeights(*grid)
+        allowed = persistence_of(tried, down_share) <= MOST_PERSISTENCE
+        tried = VolatilityWeights(*(weight[allowed] for weight in tried))
+        scores, shocks_down_share = log_likelihoods(moves, long_run, down_share, tried)
+        scores[persistence_of(tried, shocks_down_share) > MOST_PERSISTENCE] = -np.inf
+        i = int(np.argmax(scores))
+        best = VolatilityWeights(*(float(weight[i]) for weight in tried))
+        best_score = float(scores[i])
+    return best, best_score
+
+
+def average_exp_series(shocks):
+    """The coefficients of a polynomial in v whose value is the average,
+    over the shocks z, of e^(v z). Since e^x = 1 + x + x^2/2! + x^3/3! + ...,
+    that average is 1 + v avg(z) + v^2 avg(z^2)/2! + v^3 avg(z^3)/3! + ...
+    -- here to EXP_TERMS terms, so that it is off by less than a millionth
+    even if a day's volatility (v) times a shock were 2. Highest power
+    first, as np.polyval takes them."""
+    return np.array([np.mean(shocks ** k) / math.factorial(k) for k in reversed(range(EXP_TERMS))])
+
+
+# What the model makes of a history: see filtered_history.
+FilteredHistory = namedtuple("FilteredHistory", ["variances", "shocks", "next_variance", "down_share", "persistence",
+                                                 "constant", "log_growth", "exp_series"])
+
+
+@lru_cache(maxsize=32)
+def filtered_history(returns_bytes, weights):
+    """What the model, with these weights, makes of a history of log returns
+    (given as the bytes of a float64 array, so that the answer can be kept:
+    every path made from the same history and weights needs the same):
+      variances      each day's variance, as the model estimates it the day
+                     before (the first day's is the long-run variance)
+      shocks         each day's move divided by its volatility
+      next_variance  the variance of the day after the history's last
+      down_share     the share of the shocks' squares, added up, on down days
+      persistence    the paths' (persistence_of, with that down_share)
+      constant       the paths' (constant_for, with that down_share)
+      log_growth     the log of the daily growth the returns have: of the
+                     average of e^return, which adjust-returns sets
+      exp_series     the series for the average of e^(v x shock) (average_exp_series)
+    The variances are found with the constant the weights were fitted with
+    (with the moves' down share); then all of them, and next_variance, are
+    multiplied by the one number that makes the shocks' squares average
+    exactly 1, as a volatility's shocks should (they come out within a few
+    percent of it). Then a path's variance is the size of its moves
+    squared, on average, and the paths' constant makes it go back toward
+    the history's long-run variance. The history must be one moves_of
+    takes, and the weights' persistence with either down share less than 1."""
+    log_returns = np.frombuffer(returns_bytes, dtype=np.float64)
+    moves, long_run, moves_down_share = moves_of(log_returns, "filtered_history")
+    fitted_constant = constant_for(weights, long_run, moves_down_share)
+    variances = np.empty(len(moves))
+    variance = long_run
+    for day, move in enumerate(moves):
+        variances[day] = variance
+        variance = next_variance(variance, move, weights, fitted_constant)
+    size = np.mean(moves ** 2 / variances)          # the shocks' squares' average, before
+    variances, variance = variances * size, variance * size
+    shocks = moves / np.sqrt(variances)
+    down_share = float(np.sum(shocks[shocks < 0] ** 2) / np.sum(shocks ** 2))
+    return FilteredHistory(variances, shocks, variance, down_share, persistence_of(weights, down_share),
+                           constant_for(weights, long_run, down_share), math.log(np.mean(np.exp(log_returns))),
+                           average_exp_series(shocks))
+
+
+def returns_with_volatility(log_returns, weights, rows, start_variance=None):
+    """A path's log returns, made from the history's days `rows` (as
+    days_drawn picks them) with the model's volatility: each day's is its
+    day of the history's shock times the path's volatility that day, plus
+    the drift. The path's variance starts at start_variance (a day's), or,
+    if that's None, the history's next_variance; after each day, it is
+    updated (next_variance) with the move the path just made. The drift
+    makes e^return average out, over all the history's shocks, at the
+    daily growth the history's returns have (which adjust-returns sets): it
+    is the log of that growth, less the log of the average of
+    e^(volatility x shock). Returns the path's log returns and its
+    volatility each day (a day's), as arrays."""
+    history = filtered_history(log_returns.tobytes(), weights)
+    variance = history.next_variance if start_variance is None else start_variance
+    volatilities = np.empty(len(rows))
+    moves = np.empty(len(rows))
+    for day, row in enumerate(rows):
+        volatilities[day] = math.sqrt(variance)
+        moves[day] = volatilities[day] * history.shocks[row]
+        variance = next_variance(variance, moves[day], weights, history.constant)
+    drift = history.log_growth - np.log(np.polyval(history.exp_series, volatilities))
+    return moves + drift, volatilities
+
+
+def model_row(model, name, who):
+    """The number of the row of a volatility model (a table, as
+    volatility-model makes) that is for the investment `name`."""
+    investments = [str(x) for x in find_column(table_columns(model, who), "investment", who).items]
+    if name not in investments:
+        raise LispError("%s: the volatility model has no row for %s (it has %s) -- make it from the same returns"
+                        % (who, name, ", ".join(investments) or "none"))
+    return investments.index(name)
+
+
+def model_days_per_year(model, who):
+    days_per_year = floats_of(find_column(table_columns(model, who), "days-per-year", who), who)
+    if len(days_per_year) == 0 or not days_per_year[0] > 0:
+        raise LispError("%s: the volatility model's days-per-year must be a number above 0" % who)
+    return float(days_per_year[0])
+
+
+def weights_and_start(model, name, log_returns, start_volatility, who):
+    """The weights of a volatility model for the investment `name`, whose
+    returns are log_returns, and the variance (a day's) a path starts at:
+    start_volatility's (for a year), or, if that's None, None, for the
+    history's next_variance."""
+    columns = table_columns(model, who)
+    row = model_row(model, name, who)
+    weights = VolatilityWeights(*(float(floats_of(find_column(columns, column, who), who)[row])
+                                  for column in WEIGHT_COLUMNS))
+    if not all(weight >= 0 for weight in weights):
+        raise LispError("%s: the volatility model's weights must all be 0 or more" % who)
+    _, _, moves_down_share = moves_of(log_returns, who)
+    if (persistence_of(weights, moves_down_share) >= 1 or
+            filtered_history(log_returns.tobytes(), weights).persistence >= 1):
+        raise LispError("%s: the volatility model's weights add up to too much: its persistence must be less than "
+                        "1, or the volatility would never go back" % who)
+    if start_volatility is None:
+        return weights, None
+    if not is_number(start_volatility) or start_volatility <= 0:
+        raise LispError("%s: :start-volatility must be a number above 0, 0.2 for 20%%, not %s"
+                        % (who, start_volatility))
+    return weights, start_volatility ** 2 / model_days_per_year(model, who)
+
+
+def volatility_model(returns, *options):
+    """(volatility-model returns [:symmetric #t] [:days-per-year n]) -- a
+    model of each investment's volatility, fitted to its history (the
+    returns less their average): a table with a row for each column of
+    returns, and these columns:
+      investment           the name of the column of returns (log-return,
+                           for one investment's returns)
+      next-day-volatility  the volatility the model gives the day after the
+                           history's last, for a year
+      long-run-volatility  the history's volatility, which the model's goes
+                           back toward, for a year
+      half-life            how many days it takes for half of a difference
+                           from the long-run variance to go, on average
+      up-day-weight, down-day-weight, variance-weight
+                           the model's weights (see next_variance)
+      persistence          how much of a difference from the long-run
+                           variance is left the next day, on average
+      down-share           the share of the shocks' squares on down days
+      log-likelihood       how well the weights fit (the higher the better:
+                           for comparing models of the same returns)
+      days-per-year        what the volatilities are for a year of (252,
+                           unless :days-per-year says)
+    The weights are those that fit the history best (fitted_weights).
+    :symmetric #t makes the up-day and down-day weights the same."""
+    who = "volatility-model"
+    options = keyword_options(options, ["symmetric", "days-per-year"], who)
+    days_per_year = options.get("days-per-year", DAYS_PER_YEAR)
+    if not is_number(days_per_year) or days_per_year <= 0:
+        raise LispError("%s: :days-per-year must be a number above 0, not %s" % (who, days_per_year))
+    symmetric = is_true(options.get("symmetric", False))
+    rows = []
+    for name, log_returns in return_columns(returns, who):
+        moves, long_run, moves_down_share = moves_of(log_returns, who)
+        weights, score = fitted_weights(moves, long_run, moves_down_share, symmetric)
+        history = filtered_history(log_returns.tobytes(), weights)
+        rows.append((name, math.sqrt(history.next_variance * days_per_year), math.sqrt(long_run * days_per_year),
+                     half_life(history.persistence)) + tuple(weights) +
+                    (history.persistence, history.down_share, score, days_per_year))
+    names = ["investment", "next-day-volatility", "long-run-volatility", "half-life", *WEIGHT_COLUMNS,
+             "persistence", "down-share", "log-likelihood", "days-per-year"]
+    return make_table_value([(names[0], LispVector([LispString(row[0]) for row in rows]))] +
+                            [(column, to_vector(np.array([row[i] for row in rows], dtype=np.float64)))
+                             for i, column in enumerate(names) if i > 0])
+
+
+def volatility_history(returns, model):
+    """(volatility-history returns model) -- what a volatility model says
+    about each day of an investment's history: a table of date (if the
+    returns have dates), the returns, volatility (the model's estimate of
+    the day's, made the day before, for a year), and shock (the day's
+    return less the average, divided by the day's volatility)."""
+    who = "volatility-history"
+    name, log_returns = one_investment_returns(returns, who, "pick one with table-select")
+    weights, _ = weights_and_start(model, name, log_returns, None, who)
+    history = filtered_history(log_returns.tobytes(), weights)
+    days_per_year = model_days_per_year(model, who)
+    table = []
+    if "date" in [column for column, _ in table_columns(returns, who)]:
+        table.append(("date", find_column(table_columns(returns, who), "date", who)))
+    return make_table_value(table + [(name, to_vector(log_returns)),
+                                     ("volatility", to_vector(np.sqrt(history.variances * days_per_year))),
+                                     ("shock", to_vector(history.shocks))])
+
+
+def volatility_forecast(model, days, *options):
+    """(volatility-forecast model days [:start-volatility x]) -- the
+    volatility a model expects over the next `days` days, on average, for a
+    year: a number, or for a vector of days, a vector. model is one
+    investment's, a table of one row, as volatility-model makes. The first
+    day's volatility is the model's next-day-volatility, or x, if it's
+    given; after that, the variance's difference from the long-run
+    variance shrinks to `persistence` of itself each day, on average, so the
+    variance of day k is long-run + persistence^(k-1) x (first day's -
+    long-run), and the average of the first n days' is
+    long-run + (first day's - long-run) x (1 - persistence^n) / (n x (1 - persistence))."""
+    who = "volatility-forecast"
+    options = keyword_options(options, ["start-volatility"], who)
+    columns = table_columns(model, who)
+
+    def number(column):
+        values = floats_of(find_column(columns, column, who), who)
+        if len(values) != 1:
+            raise LispError("%s: the model must be one investment's, a table of one row (pick one with table-where), "
+                            "not %d rows" % (who, len(values)))
+        return float(values[0])
+
+    long_run = number("long-run-volatility") ** 2
+    first_day = options.get("start-volatility", number("next-day-volatility"))
+    if not is_number(first_day) or first_day <= 0:
+        raise LispError("%s: :start-volatility must be a number above 0, 0.2 for 20%%, not %s" % (who, first_day))
+    persistence = number("persistence")
+    if not 0 <= persistence < 1:
+        raise LispError("%s: the model's persistence must be at least 0 and less than 1, not %s" % (who, persistence))
+    n = floats_of(days, who) if isinstance(days, LispVector) else np.array([days], dtype=np.float64)
+    if not np.all((n >= 1) & (n == np.round(n))):
+        raise LispError("%s: days must be whole numbers, 1 or more" % who)
+    average = long_run + (first_day ** 2 - long_run) * (1 - persistence ** n) / (n * (1 - persistence))
+    return to_vector(np.sqrt(average)) if isinstance(days, LispVector) else float(np.sqrt(average[0]))
 
 
 # ---------------------------------------------------------------------------
@@ -457,29 +891,15 @@ def option_payoffs(paths, days, strikes, calls):
                              ("paths-paid", to_vector(paid))])
 
 
-def bootstrap_days(returns, days, block_size, *options):
-    """(bootstrap-days returns days block-size [:seed n]) -- the days of the
-    history a path is made of: a table of day (1 for the path's first), the
-    date of the history's day it copies (if the table of returns has dates),
-    and that day's returns. With the same :seed, bootstrap-path and
-    bootstrap-paths make their paths from these days."""
-    who = "bootstrap-days"
-    options = keyword_options(options, ["seed"], who)
-    columns = return_columns(returns, who)
-    rows = days_drawn(len(columns[0][1]), days, block_size, options.get("seed"), who)
-    table = [("day", to_vector(np.arange(1, len(rows) + 1)))]
-    names = [name for name, _ in table_columns(returns, who)]
-    if "date" in names:
-        table.append(("date", LispVector(find_column(table_columns(returns, who), "date", who).items[rows])))
-    return make_table_value(table + [(name, to_vector(values[rows])) for name, values in columns])
-
-
 BUILTINS = {
     "daily-returns": daily_returns,
     "adjust-returns": adjust_returns,
     "dividend-schedule": dividend_schedule,
     "bootstrap-path": bootstrap_path,
     "bootstrap-days": bootstrap_days,
+    "volatility-model": volatility_model,
+    "volatility-history": volatility_history,
+    "volatility-forecast": volatility_forecast,
     "option-value": option_value,
     "option-payoffs": option_payoffs,
 }

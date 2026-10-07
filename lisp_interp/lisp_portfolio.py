@@ -1,7 +1,8 @@
 """Portfolios of investments, for the Lisp interpreter.
 
   (combine-returns named-returns)          several investments' returns, lined up by date
-  (bootstrap-paths returns start-prices days block-size [:seed n] [:dividends schedules])
+  (bootstrap-paths returns start-prices days block-size [:seed n] [:dividends schedules]
+                   [:volatility model] [:start-volatility x])
                                            paths of all of them, made from the same days
   (portfolio-value prices weights [:start-prices p] [:rebalance n] [:start-value v])
                                            a portfolio's value along a table of prices
@@ -15,7 +16,10 @@ daily-returns) by date, keeping the days they all have, in a table with a
 column of returns for each, named for it. adjust-returns gives each its
 expected return. bootstrap-paths then copies the same days of the history
 for all of them, so that when one had a bad day in the history, the others
-have that day too: their correlation is kept.
+have that day too: their correlation is kept. With a volatility model
+(volatility-model, made from the same table of returns: it has a row for
+each investment), each one's volatility starts at its own today's and
+changes as its own model says, and the paths copy the same days' shocks.
 
 WEIGHTS and other things that have a number for each investment are lists
 of (name . number) pairs: (list (cons "SPY" 0.6) (cons "TLT" 0.4)).
@@ -40,7 +44,8 @@ import numpy as np
 
 from lisp_core import LispError, LispString, LispVector, Pair, is_true, keyword_options, list_to_pairs, pairs_to_list
 from lisp_investment_paths import (
-    days_drawn, named_numbers, prices_with_dividends, return_columns, schedule_days_and_amounts, whole_number,
+    days_drawn, named_numbers, path_log_returns, prices_with_dividends, return_columns, schedule_days_and_amounts,
+    whole_number,
 )
 from lisp_tables import find_column, make_table_value, table_columns
 from lisp_vector_math import floats_of, is_number, to_vector
@@ -80,15 +85,19 @@ def combine_returns(named_returns):
 
 def bootstrap_paths(returns, start_prices, days, block_size, *options):
     """(bootstrap-paths returns start-prices days block-size [:seed n]
-    [:dividends schedules]) -- one path of prices for each of several
-    investments, made from the same days of the history: a table of day (1
-    for the first) and a column of prices for each investment. returns is a
-    table with a column of returns for each, as combine-returns makes (and
-    adjust-returns adjusts); start-prices a list of (name . price), one for
-    each; :dividends a list of (name . schedule), as dividend-schedule makes,
-    for those that pay dividends. As bootstrap-path does for one."""
+    [:dividends schedules] [:volatility model] [:start-volatility x]) -- one
+    path of prices for each of several investments, made from the same
+    days of the history: a table of day (1 for the first) and a column of
+    prices for each investment. returns is a table with a column of returns
+    for each, as combine-returns makes (and adjust-returns adjusts);
+    start-prices a list of (name . price), one for each; :dividends a list
+    of (name . schedule), as dividend-schedule makes, for those that pay
+    dividends; :volatility a model with a row for each investment, as
+    volatility-model makes from the same returns; and :start-volatility one
+    volatility for all of them, or a list of (name . volatility), one for
+    each. As bootstrap-path does for one."""
     who = "bootstrap-paths"
-    options = keyword_options(options, ["seed", "dividends"], who)
+    options = keyword_options(options, ["seed", "dividends", "volatility", "start-volatility"], who)
     columns = return_columns(returns, who)
     names = [name for name, _ in columns]
     prices = named_numbers(start_prices, names, "start-prices", who)
@@ -101,9 +110,16 @@ def bootstrap_paths(returns, start_prices, days, block_size, *options):
                             % (who, ", ".join(names)))
         schedules[str(entry.car)] = schedule_days_and_amounts(entry.cdr, who)
 
+    start_volatilities = {name: None for name in names}
+    if options.get("start-volatility") is not None:
+        start_volatilities = named_numbers(options["start-volatility"], names, ":start-volatility", who)
+
     rows = days_drawn(len(columns[0][1]), days, block_size, options.get("seed"), who)   # the same days for every one
-    paths = [(name, to_vector(prices_with_dividends(prices[name], np.cumsum(values[rows]), schedules.get(name, []))))
-             for name, values in columns]
+    paths = []
+    for name, values in columns:
+        log_returns = path_log_returns(name, values, rows, options.get("volatility"), start_volatilities[name], who)
+        paths.append((name, to_vector(prices_with_dividends(prices[name], np.cumsum(log_returns),
+                                                            schedules.get(name, [])))))
     return make_table_value([("day", to_vector(np.arange(1, len(rows) + 1)))] + paths)
 
 

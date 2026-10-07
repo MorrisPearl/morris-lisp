@@ -112,6 +112,7 @@ as a reference to search rather than read start to end.
   - [Option prices](#option-prices)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
   - [Simulating investment prices](#simulating-investment-prices)
+  - [Starting paths from today's volatility](#starting-paths-from-todays-volatility)
   - [Checking option prices against simulated paths](#checking-option-prices-against-simulated-paths)
   - [Portfolios](#portfolios)
   - [Input / output](#input--output)
@@ -229,7 +230,9 @@ a section of this document.
    counts and cash flows" (`npv`, `irr`, `yield`, `duration`, ...).
 4. **Simulated prices.** "Simulating investment prices": an investment's
    returns, with its dividends, and paths of its price made from its own
-   history; `bootstrap-days` shows which days a path copied. "Portfolios":
+   history; `bootstrap-days` shows which days a path copied. "Starting
+   paths from today's volatility": `volatility-model`, so that paths start
+   as calm or as wild as the market is today. "Portfolios":
    several investments together, their covariance and correlation, a
    portfolio's value, and Markowitz's best weights.
 5. **Options.** "Option prices": Black-Scholes, implied volatility, the
@@ -7828,7 +7831,9 @@ another:
 3. `dividend-schedule`, for an investment that pays dividends, lists the
    ones to come in the days of a path.
 4. `bootstrap-path` makes one path of future prices from them. Call it
-   once for each path you want.
+   once for each path you want. With `:volatility`, a model that
+   `volatility-model` makes, a path starts at today's volatility, not the
+   history's average: see "Starting paths from today's volatility".
 5. `option-value` is what an option is worth, from a list of paths. And
    `option-payoffs` is what many options pay at once, from a list of
    paths, for a whole option chain: see "Checking option prices against
@@ -7941,7 +7946,7 @@ an option that ends before an ex-date doesn't have its dividend taken off.
 (The four dates of a year later are Saturdays; and the Monday after the
 second, February 15, 2027, is Washington's Birthday.)
 
-#### `(bootstrap-path returns start-price days block-size [:seed n] [:dividends schedule])`
+#### `(bootstrap-path returns start-price days block-size [:seed n] [:dividends schedule] [:volatility model] [:start-volatility x])`
 One path of future prices, as a vector of `days` prices: the first is the
 day after `start-price`'s. `returns` is a table with a `log-return`
 column, such as `adjust-returns` makes. The path is made of blocks of
@@ -7972,6 +7977,13 @@ becomes with those returns.
   included, as `daily-returns` gives with `:dividends`, so that all of the
   investment's return, dividends too, grows at the rate `adjust-returns`
   was given.
+- **`:volatility`** is a volatility model, as `volatility-model` makes: the
+  path starts at today's volatility, and its volatility changes from day
+  to day as the model says, going back toward the history's. Its days'
+  returns are the history's shocks times the path's own volatility. See
+  "Starting paths from today's volatility". **`:start-volatility`**, for
+  a year (0.12 for 12%), starts it somewhere else, such as at the
+  volatility the market expects.
 - A path can't have a day more extreme than the days of the history it
   is made from, so the longer a history (that is still like the future)
   the better.
@@ -8002,13 +8014,17 @@ needs a Schwab sign-in, and `examples/investment_paths_example.lsp` has it all:
 (vector-quantile (vector-div year-ends start-price) #(0.05 0.5 0.95))   ; the 5th, 50th, and 95th percentiles
 ```
 
-#### `(bootstrap-days returns days block-size [:seed n])`
+#### `(bootstrap-days returns days block-size [:seed n] [:volatility model] [:start-volatility x])`
 The days of the history a path is made of, to see how it was built: a
 table of `day` (1 for the path's first), the `date` of the history's day
 it copies (if the table of returns has dates), and that day's returns.
 With the same `:seed`, `bootstrap-path` (and `bootstrap-paths`) make their
 paths from these days: a path's price on a day is its start price times *e*
-to the sum of the returns up to that day.
+to the sum of the returns up to that day. With `:volatility`, for one
+investment's returns, three columns more say how the path's returns were
+made from them: `shock`, the history's day's; `volatility`, the path's
+that day, for a year; and `path-return`, the path's return, which is what
+its prices are made of then.
 
 ```lisp
 (define returns (make-table "date" (vector (date 2024 1 3) (date 2024 1 4) (date 2024 1 5))
@@ -8145,6 +8161,198 @@ noise.
 (table-column payoffs "paths-paid")    ; => #(2 2 0 2)
 ```
 
+### Starting paths from today's volatility
+
+(In `lisp_investment_paths.py`.) A path made by `bootstrap-path` copies
+blocks from anywhere in the history, so it starts out as wild as the
+history is on average, however calm or wild the market is today. In
+October 2026, SPY's volatility over the last month was 10%, and over the
+last ten years 18%: its paths started at 18%, while the market priced the
+next weeks at about 10%. A **volatility model** makes a path start at
+today's volatility instead. Then the path's volatility changes from day to
+day, as the model says: a big move makes the days after it wild, calm days
+let it settle, and on average it goes back toward the history's. So the
+paths still differ in volatility, some turning wild and some staying calm,
+but they all start from today's. This is called *filtered historical
+simulation*, and it works in three steps:
+
+1. **Each day's volatility in the history is estimated** from the day
+   before's, and from how big the day before's *move* was (its return less
+   the average return):
+
+   ```
+   tomorrow's variance = constant
+                       + up-day-weight   x today's move squared   (if it went up)
+                         or down-day-weight x today's move squared (if it went down)
+                       + variance-weight x today's variance
+   ```
+
+   A variance is a volatility squared, here a day's. For SPY's ten years
+   to October 2026, the weights that fit best are 0.036 for an up day,
+   0.236 for a down day, and 0.827 for the variance: a fall raises the
+   volatility more than six times as much as a rise of the same size. The
+   constant pulls the variance back toward the history's: each day, on
+   average, its difference from it shrinks to its **persistence** of
+   itself (0.980 for SPY), so that half of the difference is gone in its
+   **half-life** (34 trading days).
+2. **Each day's return becomes a shock**: its move divided by that day's
+   volatility, so how many of its own standard deviations it moved. A 3%
+   drop on a calm day is a big shock; on a wild day, a small one. The
+   shocks keep the history's fat tails and its crashes, but not the calm or
+   the wild stretch each one came in.
+3. **A path is made of shocks.** It copies blocks of the history's days,
+   as before, but takes their shocks: each day's return is its shock times
+   the path's own volatility that day, and then the path's volatility is
+   updated by the formula, with the move the path just made. It starts at
+   the volatility the model gives the day after the history's last, or at
+   `:start-volatility`, if that's given.
+
+What SPY's model expected, from the close of October 6, 2026 (with
+`volatility-forecast`):
+
+| Over the next | 1 day | 1 week | 1 month | 3 months | 6 months | 1 year |
+|---|---|---|---|---|---|---|
+| Volatility | 9.6% | 10.0% | 11.5% | 13.8% | 15.4% | 16.7% |
+
+```lisp
+(define returns (adjust-returns (daily-returns (schwab-price-history creds "SPY")) 0.08))
+(define model (volatility-model returns))
+(display-table model)
+(define paths (map (lambda (i) (bootstrap-path returns 100 252 10 :seed (+ 1000 i) :volatility model))
+                   (iota 1000)))
+```
+
+**How the weights are found.** `volatility-model` tries every set of
+weights on a grid: 0 to 0.3 for an up day, 0 to 0.5 for a down day, and
+0.5 to 0.99 for the variance, 0.02 apart; then sets 0.005 apart, near the
+best of those; and then 0.001 apart, near the best of them. The best set is
+the one under which the history is most likely. Each day's move is
+supposed to come from a normal distribution with the variance the model
+gives that day, and the set that makes the moves most probable wins: its
+`log-likelihood` is the highest. A big move on a day the model called
+calm counts against a set of weights, and so does a wild forecast for a
+quiet day. The constant isn't searched for: it is set to make the variance
+go back toward the history's (*variance targeting*). A set whose
+persistence would be more than 0.998 isn't taken, since its volatility
+would hardly go back at all. In the usual names, the formula is a
+*GJR-GARCH(1,1)* model: `up-day-weight` is alpha, `down-day-weight` is
+alpha + gamma, and `variance-weight` is beta.
+
+**Two details.** The persistence is the variance weight plus the up-day
+and down-day weights, each counted for its share of the shocks' squares:
+`down-share` is the share on down days (0.585 for SPY). And the shocks are
+scaled so that their squares average exactly 1, as a volatility's shocks
+should (they come out within a few percent of it anyway). Then a path's
+volatility is the size of its moves, on average, and it goes back toward
+the history's volatility.
+
+**The paths are lopsided.** `volatility-forecast` is the square root of
+the average variance: what the paths have on average, taken all together.
+But a few paths turn very wild, and most stay calmer, so the typical path
+is calmer than the forecast. For SPY's next 59 trading days, from October
+7, 2026: the forecast was 13.7%, and the middle path's volatility 10.7%.
+The paths' own implied volatility (from what an option is worth on them,
+by Black's formula) was 11.4% at the money, 16.4% for a put struck 10%
+below, and 9.9% for a call struck 5% above. That is a skew, like the
+market's, and it comes from the down days' bigger weight and from the
+crashes among the shocks. An option at the money is priced by the typical
+path more than by the average one.
+
+**What it leaves out.**
+
+- **Correlation.** Each investment's volatility is modeled, and
+  `bootstrap-paths` copies the same days' shocks for all of them, so their
+  correlation is the history's. But it is the same correlation, whatever
+  the volatility: in a crash, investments usually move together more than
+  they do on average.
+- **The weights are fitted to one history**, by one simple formula. Ten
+  other years would give other weights, and the half-life especially is
+  only roughly known.
+- **Blocks.** With blocks of more than one day, a block's shocks are
+  consecutive days, and the drift and the forecast are close to right
+  rather than exact, as for `bootstrap-path`.
+
+#### `(volatility-model returns [:symmetric #t] [:days-per-year n])`
+A model of each investment's volatility, fitted to its history: a table
+with a row for each column of returns (one, `log-return`, for one
+investment's table; one for each investment, for `combine-returns`'). It
+takes at least 100 returns, and a fraction of a second. Its columns:
+
+| Column | What it holds |
+|---|---|
+| `investment` | the name of the column of returns |
+| `next-day-volatility` | the volatility the model gives the day after the history's last, for a year: today's |
+| `long-run-volatility` | the history's volatility, for a year, which the model's goes back toward |
+| `half-life` | how many days it takes for half of a difference from the long-run variance to go, on average |
+| `up-day-weight`, `down-day-weight`, `variance-weight` | the weights in the formula above |
+| `persistence` | how much of a difference from the long-run variance is left the next day, on average |
+| `down-share` | the share of the shocks' squares that is on down days |
+| `log-likelihood` | how well the weights fit the history: the higher the better, for comparing models of the same returns |
+| `days-per-year` | how many days the volatilities are for a year of: 252, unless `:days-per-year` says |
+
+`:symmetric #t` makes the up-day and down-day weights the same: compare
+the two models' `log-likelihood` to see how much better treating them
+differently fits. (For SPY it was 42 higher: much better.)
+
+A model is just a table, and you can change it: `table-add-column`
+replaces a column, so `(table-add-column model "variance-weight" 0.9)` is
+the same model with another weight. `bootstrap-path` uses the three
+weights and `days-per-year`, and works out the rest from the returns it is
+given, as `volatility-model` does. So a model of an investment's returns
+works for those returns after `adjust-returns`, too: their average doesn't
+matter, and if their volatility is scaled, the paths' is scaled the same
+way.
+
+```lisp
+(random-seed 7)
+(define (made-up-day i) (* (if (< i 250) 0.06 0.02) (- (random-float) 0.5)))   ; wild for 250 days, then calm for 50
+(define history (make-table "log-return" (list->vector (map made-up-day (iota 300)))))
+(define model (volatility-model history))
+(vector-round (table-column model "long-run-volatility") 3)   ; => #(0.261)
+(vector-round (table-column model "next-day-volatility") 3)   ; => #(0.111)
+(vector-round (volatility-forecast model #(1 21 252)) 3)       ; => #(0.111 0.123 0.194)
+(table-column-names (bootstrap-days history 5 2 :seed 1 :volatility model))
+                                       ; => ("day" "log-return" "shock" "volatility" "path-return")
+(vector-round (table-column (bootstrap-days history 5 2 :seed 1 :volatility model :start-volatility 0.5)
+                            "volatility") 3)                   ; => #(0.5 0.464 0.446 0.447 0.451)
+```
+
+#### `(volatility-history returns model)`
+What a volatility model says about each day of one investment's history: a
+table of `date` (if the returns have dates), the returns, `volatility` (the
+model's estimate of the day's volatility, made the day before, for a
+year), and `shock` (the day's move divided by that, as a day's). Chart
+`volatility` against `date` to see the history's calm and wild stretches.
+The shocks are what the paths copy, and their squares average 1.
+
+```lisp
+(define days (volatility-history history model))
+(table-column-names days)                     ; => ("log-return" "volatility" "shock")
+(< (abs (- (vector-mean (* (table-column days "shock") (table-column days "shock"))) 1)) 0.000001)   ; => #t
+```
+
+#### `(volatility-forecast model days [:start-volatility x])`
+The volatility a model expects over the next `days` days, on average, for
+a year: a number, or for a vector of days, a vector. `model` is one
+investment's, a table of one row: `(table-where model "investment" "SPY")`
+picks one from a model of several. The first day's volatility is the
+model's `next-day-volatility`, or `:start-volatility`. After that, the
+variance's difference from the long-run variance shrinks to `persistence`
+of itself each day, so the average variance of the first *n* days is
+
+    long-run + (first day's - long-run) x (1 - persistence^n) / (n x (1 - persistence))
+
+and the forecast is its square root. It uses only `next-day-volatility`,
+`long-run-volatility`, and `persistence`. With a persistence of 0, the
+variance is back to the long run's the second day:
+
+```lisp
+(define made-up (make-table "investment" #("log-return") "next-day-volatility" #(0.1)
+                            "long-run-volatility" #(0.2) "persistence" #(0.0)))
+(vector-round (volatility-forecast made-up #(4)) 4)       ; => #(0.1803)
+```
+(The square root of (0.1² + 3 × 0.2²) / 4.)
+
 ### Checking option prices against simulated paths
 
 `lib/option_check.lsp` finds the options in a chain whose prices are
@@ -8201,6 +8409,8 @@ other settings on one chain. Its options:
 | `:forward-tolerance` | 0.002 | see below |
 | `:match-volatility` | `#f` | `#t` multiplies the paths' volatility by the one number that makes the middle `iv-residual` 0: the market's overall level of volatility, in place of the history's (see below). The number is in the `volatility-scale` column, and `show-option-check` says it |
 | `:expected-return` | none | the underlying's expected annual return, dividends included, 0.08 for 8%. It adds what each option is worth if the underlying does earn that: the last three columns below (see below) |
+| `:volatility` | `#f` | `#t` fits a volatility model to the returns (`volatility-model`), or give one: the paths start at today's volatility and go back toward the history's (see "Starting paths from today's volatility"). The columns `start-volatility` and `long-run-volatility` have the two, and `show-option-check` says them |
+| `:start-volatility` | the model's | with `:volatility`: the volatility the paths start at, for a year, such as the market's for the next month |
 | `:early-exercise` | `#f` | `#t` allows for the right to exercise early: what it is worth (the American price less the European one, by `american-price`'s binomial tree at the option's own implied volatility) is taken off the bid, ask, and mid before they are compared with the paths' European values, and added to `model-price` after. Then in-the-money options can be checked too: give `:out-of-the-money-only #f` as well |
 
 An option also has to be liquid, as `vol_smile.lsp` has it: traded today,
@@ -8223,6 +8433,7 @@ The result has the chain's own columns, and these:
 | `expected-value` | with `:expected-return`: the present value, at the interest rate, of what the option pays on average if the underlying earns that return |
 | `favors` | with `:expected-return`: `"buying"` if `expected-value` is above the ask (by `:standard-errors` of its own error), `"selling"` if it is below the bid, `""` if neither |
 | `expected-profit` | with `:expected-return`: how far: `expected-value` less the ask, or the bid less `expected-value` (0 for neither) |
+| `start-volatility`, `long-run-volatility` | with `:volatility`: the volatility the paths started at, and the one they went back toward, the same in every row. With `:match-volatility`, both are scaled too (but not a `:start-volatility` that was given) |
 | `early-exercise` | with `:early-exercise`: what the right to exercise early is worth. The implied volatilities are then of the prices without it, and `model-price` and `expected-value` have it in them |
 
 #### `(show-option-check checked [:count n])`
@@ -8230,7 +8441,9 @@ Shows the middle `iv-residual` of each expiration, the `count` (10) options
 furthest from the paths' values, the `count` furthest from the middle
 `iv-residual` of their expiration, and every option that is rich or cheap;
 and, with `:expected-return`, the `count` with the most `expected-profit`.
-With `:match-volatility` it first says how much the volatility was scaled.
+With `:match-volatility` it first says how much the volatility was scaled,
+and with `:volatility`, where the paths' volatility started and what it
+went back toward.
 
 #### `(option-check-expirations checked)`
 A table with a row for each expiration: its days, how many options were
@@ -8279,6 +8492,27 @@ the market's prices.
   So the options "furthest from the paths' values" are the shortest ones,
   and say little. What is more telling is `iv-vs-expiration`: the options
   that are out of line with the rest of *their* expiration.
+- **`:volatility #t` starts the paths at today's volatility.** On the
+  afternoon of October 7, 2026, SPY's model put it at 9.6%, and the
+  shortest options came into line. These are the middle `iv-residual`s of
+  some of the expirations, without the model and with it:
+
+  ```
+  expiration-date  days-to-expiration  without  with
+  2026-10-08                        1    -8.0%  -0.7%
+  2026-10-09                        2    -7.0%  -0.4%
+  2026-10-16                        9    -3.8%  +1.1%
+  2026-10-30                       23    -3.1%  +2.1%
+  2026-11-20                       44    -2.3%  +3.0%
+  2026-12-31                       85    -2.0%  +2.8%
+  ```
+
+  The options one to three months out came out rich by 2 to 3 points
+  instead. Part of that is what the market charges for volatility risk:
+  options' implied volatility is usually above the volatility that
+  follows. And part may be the model's: its paths are lopsided, and their
+  volatility at the money is less than its forecast (see "The paths are
+  lopsided", above).
 - **The underlying's price and the options' must be from the same moment.**
   If the market is closed, the options' prices are the last close's, while
   the underlying's can be from after hours, and then calls look rich and
@@ -8301,7 +8535,8 @@ the market's prices.
   the time to expiration, and the history's doesn't, so the options that
   expire soonest come out cheap, and the ones that expire in months come
   out rich, by a point or two. The median `iv-residual` of each expiration,
-  in `show-option-check`, shows it.
+  in `show-option-check`, shows it. (`:volatility` gives the paths a term
+  structure of their own, and the two can be used together.)
 - **`:expected-return` is not risk-neutral**, and is for a different
   question: not what an option should cost, but what it is expected to pay if
   the underlying earns that. The second paths are the first ones, with the
@@ -8353,15 +8588,20 @@ date they all have. `adjust-returns` gives each its expected return, and
 (table-column both "date")      ; => #(2024-01-03 2024-01-04 2024-01-05)
 ```
 
-#### `(bootstrap-paths returns start-prices days block-size [:seed n] [:dividends schedules])`
+#### `(bootstrap-paths returns start-prices days block-size [:seed n] [:dividends schedules] [:volatility model] [:start-volatility x])`
 A path for each of several investments, made from **the same days** of
 the history: when one had a bad day in the history, the others have that
 day too, so their correlation is kept. A table of `day` (1 for the first)
 and a column of prices for each investment. `returns` is a table as
 `combine-returns` makes (and `adjust-returns` adjusts); `start-prices` a
 list of `(name . price)`; `:dividends` a list of `(name . schedule)`, as
-`dividend-schedule` makes, for those that pay them. Otherwise it is
-`bootstrap-path`, and `bootstrap-days` shows the days it copied.
+`dividend-schedule` makes, for those that pay them. `:volatility` is a
+volatility model with a row for each investment (`volatility-model` of the
+same table): each one's volatility starts at its own today's and changes
+as its own model says, and the paths copy the same days' shocks.
+`:start-volatility` is then one volatility for all of them, or a list of
+`(name . volatility)`. Otherwise it is `bootstrap-path`, and
+`bootstrap-days` shows the days it copied.
 
 ```lisp
 (define paths (bootstrap-paths both (list (cons "A" 100) (cons "B" 50)) 4 2 :seed 3))
@@ -9522,7 +9762,7 @@ The Python files:
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
 | `lisp_alpha_vantage.py` | `alpha-vantage-dividends`: a stock's dividends from Alpha Vantage, through `lisp_http.py` |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders`, ...: your Schwab accounts |
-| `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `option-value`, `option-payoffs`: simulated prices of an investment, and what options on it are worth |
+| `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `bootstrap-days`, `volatility-model`, `volatility-history`, `volatility-forecast`, `option-value`, `option-payoffs`: simulated prices of an investment, with its volatility starting at today's if asked, and what options on it are worth |
 | `lisp_calendar.py` | `trading-day?`, `add-trading-days`, `trading-days-between`, `nyse-holidays`, ...: the NYSE's trading days |
 | `lisp_futures.py` | `futures-curve-fit`, `futures-leg-carry`: a futures curve's rich and cheap contracts, and its carry |
 | `lisp_portfolio.py` | `combine-returns`, `bootstrap-paths`, `portfolio-value`, `covariance-matrix`, `correlation-matrix`, `minimum-variance-weights`, `mean-variance-weights`, ...: portfolios |
