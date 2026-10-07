@@ -113,13 +113,11 @@
       '()
       (cons (car lst) (list-take (cdr lst) (- n 1)))))
 
-(plot-xy-full sim-years
-              (append (list-take short-rate-paths 5) (list-take mortgage-rate-paths 5))
-              (list "short-1" "short-2" "short-3" "short-4" "short-5"
-                    "mtg-1" "mtg-2" "mtg-3" "mtg-4" "mtg-5")
-              #t
-              "Simulated SOFR short-rate and proxy mortgage-rate paths"
-              #f)
+(plot-chart (map (lambda (name path) (list name sim-years path))
+                 (list "short-1" "short-2" "short-3" "short-4" "short-5"
+                       "mtg-1" "mtg-2" "mtg-3" "mtg-4" "mtg-5")
+                 (append (list-take short-rate-paths 5) (list-take mortgage-rate-paths 5)))
+            :title "Simulated SOFR short-rate and proxy mortgage-rate paths")
 
 ; USING ONE PATH TO DRIVE MORTGAGE CASHFLOWS: sofr_floating_rate_example.
 ; lsp and mortgage_amortization_example.lsp both already show how to read

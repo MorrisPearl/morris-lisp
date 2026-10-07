@@ -2463,6 +2463,34 @@ class TestPlotChart(LispTestCase):
         self.assertEqual(len(legends), 1)
         return [t.get_text() for t in legends[0].get_texts()]
 
+    def test_a_fitted_line_follows_its_series(self):
+        self.run_lisp('(plot-chart (list (list "y" #(1 2 3 4) #(3 5 7 9) :symbol #t :fit "linear")))')
+        data, fit = self.specs[-1]["series"]
+        self.assertEqual(fit["label"], "y, linear fit")
+        self.assertEqual((fit["x"], fit["line"], fit["symbol"]), ([1.0, 4.0], "dashed", None))
+        np.testing.assert_allclose(fit["y"], [3.0, 9.0])          # y = 2x + 1
+        self.assertIsNone(data["line"])                           # (the series itself is only symbols)
+
+    def test_a_least_absolute_deviation_fit_isnt_pulled_by_an_outlier(self):
+        self.run_lisp('(plot-chart (list (list "y" #(1 2 3 4 5) #(3 5 7 9 100) :symbol #t :fit "lad")))')
+        fit = self.specs[-1]["series"][1]
+        self.assertEqual(fit["label"], "y, lad fit")
+        np.testing.assert_allclose(fit["y"], [3.0, 11.0], atol=1e-6)   # y = 2x + 1, despite the 100
+
+    def test_a_logistic_fit_is_an_s_shaped_curve(self):
+        self.run_lisp('(plot-chart (list (list "p" #(1 2 3 4 5 6) #(0 0 1 0 1 1) :symbol #t :fit "logistic")))')
+        fit = self.specs[-1]["series"][1]
+        self.assertEqual(len(fit["x"]), 100)
+        self.assertTrue(all(0 < y < 1 for y in fit["y"]))
+        self.assertEqual(fit["y"], sorted(fit["y"]))                # rising, for these
+
+    def test_a_fit_against_dates_and_what_fit_wont_take(self):
+        self.run_lisp('(plot-chart (list (list "d" (vector (date 2024 1 1) (date 2024 7 1)) #(1 2) :fit "linear")))')
+        self.assertEqual(self.specs[-1]["series"][1]["x"], [datetime.date(2024, 1, 1), datetime.date(2024, 7, 1)])
+        self.assertLispError('(plot-chart (list (list "y" #(1 2 3) #(1 2 3) :fit "cubic")))', ':fit is "linear", "lad", or "logistic"')
+        self.assertLispError('(plot-chart (list (list "y" (vector "a" "b" "c") #(1 2 3) :fit "linear")))',
+                             "for X values that are numbers or dates")
+
     def test_series_and_how_each_is_drawn(self):
         self.run_lisp('(plot-chart (list (list "a" (vector (date 2024 1 1) (date 2024 2 1) (date 2024 3 1))'
                       '                        (vector 1 nan 3))'
@@ -9104,7 +9132,7 @@ class TestJupyterDebugger(unittest.TestCase):
 
     def test_drawing_a_chart_still_works_in_the_kernel(self):
         # the kernel sets matplotlib's backend early, for ipywidgets.interact's sake
-        cell = self.fe.run("(plot-xy #(1 2 3) (list #(1 4 9)))")
+        cell = self.fe.run('(plot-chart (list (list "squares" #(1 2 3) #(1 4 9))))')
         self.assertEqual(cell.errors, [])
 
 
@@ -9762,7 +9790,7 @@ class TestExampleScripts(unittest.TestCase):
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
     "fred-series", "tastytrade", "schwab-", "alpha-vantage-", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(bea-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
-    "plot-xy", "save-chart", "load-csv", "write-columns-csv",
+    "save-chart", "load-csv", "write-columns-csv",
     "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
 )
 # examples whose documented value is illustrative rather than exact

@@ -298,5 +298,8 @@ bid, at the ask, and the fit's."
     (when (= (table-row-count options) 0)
       (error "plot-vol-smile: no options were fit for" expiration))
     (with-columns (strike iv-bid iv-ask fitted-iv) options
-      (plot-xy-full strike (list iv-bid iv-ask fitted-iv) (list "IV at bid" "IV at ask" "fit")
-                    #f (format "Implied volatility, {} expiration" expiration) #f))))
+      (plot-chart (list (list "IV at bid" strike iv-bid :symbol #t)
+                        (list "IV at ask" strike iv-ask :symbol #t)
+                        (list "fit" strike fitted-iv))
+                  :title (format "Implied volatility, {} expiration" expiration)
+                  :x-label "strike" :y-format "{:.0%}"))))

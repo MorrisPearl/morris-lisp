@@ -5199,56 +5199,14 @@ Two things to know about the answers:
 
 ### Charting
 
-`plot-xy`/`plot-xy-regression`/`plot-xy-full`/`plot-chart`/
-`plot-histogram`/`plot-panels`/`plot-map` all build a chart and hand it to the GUI's
-chart tab (if running), a Jupyter cell (drawn inline), or a plain text
-summary printed to the console — either way, only the **most recently
-plotted** chart is remembered, which is what `save-chart` re-renders to a
-file. The `plot-xy` functions have exactly one X vector; if it contains
-dates, the axis is formatted as dates automatically. `plot-chart` gives
-each series its own X values, and can draw bars, areas, reference lines,
-shading, and a secondary axis; `plot-histogram` and `plot-panels` are built
-on it. Each Y series gets its own cycling
-marker shape (circle, square, triangle, diamond, ...). Charts only ever
-plot against a single X vector, even though the regression functions
-themselves support multiple predictors — for a multi-predictor model, use
-`model-report`/`model-predict` instead of a chart overlay.
-
-#### `(plot-xy x-vec y-list)`
-Plots `x-vec` against every vector in `y-list` (a Lisp list of vectors, all
-the same length as `x-vec`). Every series is connected with lines,
-auto-labeled `"Y1"`, `"Y2"`, ..., title fixed as `"XY Chart"`, no
-regression overlay. Returns `'()`.
-
-```lisp
-(define prices (vector 10 20 30 40 50))
-(define squares (vector-map (lambda (x) (* x x)) prices))
-(plot-xy prices (list squares))
-```
-
-#### `(plot-xy-regression x-vec y-vec label [kind])`
-Plots one Y series (points only, not connected) against `x-vec`, plus a
-regression line/curve fit to it. `label` becomes both the legend label and
-part of the title. `kind` is `"linear"` (default) or `"logistic"` — any
-other value raises an error. Returns `'()`.
-
-```lisp
-(plot-xy-regression prices demand "Demand" "logistic")
-```
-
-#### `(plot-xy-full x-vec y-list labels connect? title reg-label [reg-kind])`
-Full control over a chart. `labels` is a Lisp list of strings (must be
-exactly as long as `y-list`) or `'()` for auto labels. `connect?`
-(`#t`/`#f`) applies to every series. `title` is the chart title. `reg-label`
-is either `#f` (no regression overlay) or the label of one of the plotted
-series to fit a line/curve to (raises an error if it doesn't match any
-plotted series). `reg-kind` defaults to `"linear"` (same validation as
-`plot-xy-regression`). Returns `'()`.
-
-```lisp
-(plot-xy-full prices (list doubled squares) (list "Doubled" "Squares")
-              #t "Prices vs Derived" "Squares" "linear")
-```
+`plot-chart`, `plot-histogram`, `plot-panels`, and `plot-map` build a chart
+and hand it to the GUI's chart tab (if it's running), a Jupyter cell (drawn
+there), or the console (a plain text summary). Only the most recently
+plotted chart is remembered, which is what `save-chart` saves to a file.
+`plot-chart` draws any number of series, each with its own X values, as
+symbols, lines, bars, or filled areas, and with a line fitted to a series
+by regression (`:fit`); `plot-histogram` and `plot-panels` are built on
+it. (`plot-map` is under "Maps".)
 
 #### `(plot-chart series [options])`
 Several series on one chart, each with its own X values, drawn with any
@@ -5290,6 +5248,7 @@ A series' line connects its points from left to right.
 | `:labels` | `#t` prints each value on the chart: at the end of each bar (in the middle, for stacked bars), or above each point. They're written in the axis's `:y-format`, if it has one. Otherwise, numbers from 100 up are whole numbers with commas, and smaller ones have three significant digits. A format (see `:y-format`) writes them that way. |
 | `:color` | any matplotlib color: `"red"`, `"navy"`, `"#1f77b4"`, ... The default is the next color in matplotlib's cycle. The series' symbols, line, bars, and fill are all this color. |
 | `:line-width`, `:symbol-size` | this series' own, in place of the chart's |
+| `:fit` | `"linear"` draws the straight line fitted to the series by least squares (`linear-regression`); `"lad"`, by least absolute deviation (`lad-regression`), which a few outliers barely move; and `"logistic"` the S-shaped curve of a logistic regression (for Y values between 0 and 1), as a dashed black line named for the series and the fit. The X values must be numbers or dates. For a model with more than one predictor, see `model-report` and `model-predict` |
 | `:secondary` | `#t` puts the series on the secondary axis, which has its own scale. That axis is on the right, or at the top of a horizontal chart. Use it for a series whose values are on a very different scale from the others, such as a rate beside amounts in dollars. The legend adds "(right)" or "(top)" to the series' name. |
 
 **Chart options**, after the series:
@@ -5485,7 +5444,7 @@ has been plotted yet this session, if matplotlib isn't installed, or on any
 file-write failure. Returns `'()`.
 
 ```lisp
-(plot-xy prices (list squares))
+(plot-chart (list (list "squares" prices squares)))
 (save-chart "chart.png")
 (save-chart "chart.pdf" 10.0 7.5 300)   ; larger, higher-DPI PDF
 ```
@@ -5894,7 +5853,7 @@ than there are columns is an error; a row with fewer is padded with blanks.
 (table-column-names pools)
 (define cpr (table-column pools "cpr"))
 (define incentive (table-column pools "rate_incentive_pct"))
-(plot-xy incentive (list cpr))
+(plot-chart (list (list "CPR" incentive cpr :symbol #t)))
 
 (define d2 (load-csv "no_header.csv" #f))   ; no header row -> Column1, Column2, ...
 ```
@@ -7042,13 +7001,13 @@ months to check for a listed contract — months that don't exist for this
 product (e.g. non-quarterly months on ES/NQ/ZN) are skipped, not an error.
 Returns `(cons delivery-dates-vector prices-vector)`, one entry per
 contract month that has a price — its settlement price if it has one,
-else its last trade — sorted by delivery date, ready for `plot-xy`,
+else its last trade — sorted by delivery date, ready for `plot-chart`,
 `linear-regression`, `spline-regression`, and so on. For the contracts'
 bids and asks, give their symbols (`"/CLZ6"`) to `tastytrade-quotes`.
 
 ```lisp
 (define curve (tastytrade-futures-curve "tastytrade_credentials.json" "CL" 12))
-(plot-xy (car curve) (list (cdr curve)))
+(plot-chart (list (list "CL" (car curve) (cdr curve))))
 ```
 
 #### `(tastytrade-futures-curve-rows credentials-path product [n-months])`
@@ -7178,7 +7137,7 @@ Needs `term_structure/term_structure_model.py` (next to this repo's
 (define curve (sofr-forward-curve (tastytrade-futures-curve-rows creds "SR3" 40)))
 (define sofr-months (car curve))
 (define sofr-forward-rates (cdr curve))
-(plot-xy sofr-months (list sofr-forward-rates))
+(plot-chart (list (list "SOFR forward" sofr-months sofr-forward-rates)))
 ```
 
 See `examples/sofr_floating_rate_example.lsp` for feeding
@@ -7344,7 +7303,7 @@ Returns `(list years-vector short-rate-paths ten-year-paths)`:
 (define sim (sofr-simulate-rate-paths sofr-forward-rates 0.005 0.01 5.0 20 42))
 (define years (list-ref sim 0))
 (define short-rate-paths (list-ref sim 1))
-(plot-xy years short-rate-paths)   ; y-list already IS a list of vectors
+(plot-chart (map (lambda (path) (list "short rate" years path)) short-rate-paths) :legend #f)
 ```
 
 #### `(sofr-simulate-mortgage-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths mortgage-spread [seed a theta-bar tenor-years])`
@@ -9220,7 +9179,7 @@ Lisp call stack (most recent call last):
 (define m (logistic-regression prices demand))
 (display (model-report m))
 
-(plot-xy-regression prices demand "Demand" "logistic")
+(plot-chart (list (list "Demand" prices demand :symbol #t :fit "logistic")))
 (save-chart "demand.png")
 ```
 
@@ -9375,7 +9334,7 @@ The Python files:
 | `lisp_clock.py` | The clock: `current-time`, `today`, `time-add`, `sleep`, `sleep-until`, ... |
 | `lisp_options.py` | `bsm-price`, `implied-vol`, the Greeks (`bsm-delta`, ...), `black-price`, `american-price`, ...: option prices |
 | `lisp_finance.py` | Day counts (`day-count`, `year-fraction`) and cash-flow math: `npv`, `irr`, `xnpv`, `xirr`, `payment`, `present-value`, `yield`, `duration`, `convexity`, ... |
-| `lisp_charts.py` | `plot-xy`, `plot-xy-regression`, `plot-xy-full`, `save-chart` |
+| `lisp_charts.py` | The `plot-` builtins and `save-chart` (the charts themselves are in `lisp_plot_chart.py` and `lisp_maps.py`) |
 | `lisp_plot_chart.py` | `plot-chart`, `plot-histogram`, `plot-panels`: charts of several series, with bars, areas, a secondary axis, reference lines, and panels |
 | `lisp_maps.py` | `census-shapes`, `plot-map`: the Census's boundaries of states, counties, tracts, ZIP code areas, ..., and maps of them with an equal-area projection |
 | `lisp_csv.py` | `load-csv`, `write-columns-csv` |

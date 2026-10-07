@@ -23,11 +23,13 @@ draws a spec with matplotlib -- for the GUI's chart tab, a Jupyter cell,
 or save-chart.
 """
 
+import datetime
 import math
 
 import numpy as np
 
 from lisp_core import Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, keyword_options, list_to_pairs, pairs_to_list
+from lisp_regression import fit_lad, fit_linear, fit_logistic
 
 try:
     import matplotlib.dates
@@ -53,7 +55,8 @@ CHART_DEFAULTS = {"title": "", "x-label": "", "y-label": "", "secondary-label": 
                   "secondary-min": None, "secondary-max": None, "secondary-ticks": None, "secondary-log": False,
                   "secondary-format": None, "secondary-lines": NIL}
 # The options each series can have.
-SERIES_OPTIONS = ["symbol", "line", "bars", "fill", "labels", "color", "line-width", "symbol-size", "secondary"]
+SERIES_OPTIONS = ["symbol", "line", "bars", "fill", "labels", "color", "line-width", "symbol-size", "secondary", "fit"]
+FITS = ["linear", "lad", "logistic"]   # the regressions :fit can draw
 
 MOST_LOG_TICKS = 8              # a log scale has at most this many ticks, unless :y-ticks says
 INCHES_PER_CATEGORY = 0.25      # a horizontal chart of categories is this much taller for each one
@@ -205,6 +208,9 @@ def series_spec(entry, number, chart, who):
         if fill_values is not None:
             fill_to.append(float(fill_values[j]))
 
+    fit = options.get("fit", False)
+    if not is_off(fit) and str(fit) not in FITS:
+        raise LispError('%s: :fit is "linear", "lad", or "logistic", not %r' % (who, fit))
     bars = not is_off(options.get("bars", False))
     if bars and len(set(xs)) < len(xs):
         raise LispError("%s: series %s has bars, so it can have only one Y value for each X" % (who, name))
@@ -223,7 +229,28 @@ def series_spec(entry, number, chart, who):
             "color": None if is_off(options.get("color", False)) else str(options["color"]),
             "secondary": not is_off(options.get("secondary", False)),
             "line_width": float(options.get("line-width", chart["line-width"])),
-            "symbol_size": float(options.get("symbol-size", chart["symbol-size"]))}
+            "symbol_size": float(options.get("symbol-size", chart["symbol-size"])),
+            "fit": None if is_off(fit) else str(fit)}
+
+
+def fitted_line(s, who):
+    """The series for the line fitted to series s by regression, from its
+    smallest X value to its largest: the straight line of least squares for
+    "linear", or of least absolute deviation for "lad" (which outliers barely
+    move), or the S-shaped curve of a "logistic" regression (for Y values
+    from 0 to 1), as a dashed black line."""
+    if s["x_kind"] not in ("number", "date"):
+        raise LispError("%s: series %s has :fit, which is for X values that are numbers or dates" % (who, s["label"]))
+    is_date = s["x_kind"] == "date"
+    xs = [x.toordinal() if is_date else x for x in s["x"]]
+    fit = {"linear": fit_linear, "lad": fit_lad, "logistic": fit_logistic}[s["fit"]]
+    model = fit([xs], s["y"])
+    along = np.linspace(min(xs), max(xs), 100 if s["fit"] == "logistic" else 2)
+    return dict(s, label="%s, %s fit" % (s["label"], s["fit"]),
+                x=[datetime.date.fromordinal(int(round(x))) for x in along] if is_date else [float(x) for x in along],
+                y=[float(model.predict([x])) for x in along],
+                symbol=None, line="dashed", bars=False, fill=False, fill_to=[], labels=False, label_format=None,
+                color="black", fit=None)
 
 
 def y_value(value, who, what):
@@ -350,7 +377,11 @@ def chart_spec(series, chart, who):
     entries = values_of(series, who, "the series")
     if not entries:
         raise LispError("%s: there are no series to plot" % who)
-    specs = [series_spec(entry, i, chart, who) for i, entry in enumerate(entries)]
+    specs = []
+    for i, entry in enumerate(entries):
+        specs.append(series_spec(entry, i, chart, who))
+        if specs[-1]["fit"]:
+            specs.append(fitted_line(specs[-1], who))              # (drawn right after it)
     kinds = {s["x_kind"] for s in specs if s["x_kind"]}
     if len(kinds) > 1:
         raise LispError("%s: the X values must be all dates, all numbers, or all text -- these have %s"

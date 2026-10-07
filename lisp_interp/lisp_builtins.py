@@ -1803,7 +1803,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     The five optional arguments say where this environment's output goes,
     so the same interpreter can run in the console, the GUI, or Jupyter:
       output    receives the text written by display/newline/print
-      plot      receives each chart spec from plot-xy... (see lisp_charts)
+      plot      receives each chart spec from the plot- functions (see lisp_charts)
       table     receives each table from display-table, as a list of
                 (name, cell texts, alignment) tuples
       markdown  receives each string from display-markdown

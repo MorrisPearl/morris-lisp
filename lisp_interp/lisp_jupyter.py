@@ -44,12 +44,12 @@ def _notebook_output(text):
 def _print_chart_summary(spec):
     """The no-matplotlib fallback: the same one-line-per-series summary the
     console prints, so a notebook without matplotlib still gets SOME
-    feedback from plot-xy/plot-xy-regression/plot-xy-full."""
+    feedback from the plot- functions."""
     print(chart_summary_text(spec), end="")
 
 
 def _notebook_plot(spec):
-    """plot-xy... -- draw the chart inline, as a PNG image. Falls back to the
+    """The plot- functions' charts, drawn inline, as a PNG image. Falls back to the
     console's text summary without matplotlib or IPython."""
     if not (_MATPLOTLIB_AVAILABLE and _IPYTHON_AVAILABLE):
         _print_chart_summary(spec)

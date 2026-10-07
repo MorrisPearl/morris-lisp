@@ -53,6 +53,7 @@
 (display "Predicted CPR, incentive= 2.0: ") (display (model-predict m (list 2.0 24 0))) (newline)
 
 ; --- chart: CPR vs rate incentive, with the fitted regression curve ---
-(plot-xy-regression incentive cpr "CPR" "logistic")
+(plot-chart (list (list "CPR" incentive cpr :symbol #t :fit "logistic"))
+            :title "CPR against the rate incentive, with a logistic fit" :x-label "rate incentive (%)")
 (save-chart "prepayment_incentive_curve.png")
 (display "Saved prepayment_incentive_curve.png") (newline)

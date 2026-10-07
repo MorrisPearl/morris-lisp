@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """morris_lisp: a small, Common-Lisp-flavored Lisp interpreter with numeric
-vectors, dates, regression, XY charts, SQLite, and access to FRED and
+vectors, dates, regression, charts, SQLite, and access to FRED and
 tastytrade market data.
 
 HOW TO RUN IT
@@ -32,7 +32,7 @@ HOW THE CODE IS ORGANIZED
     lisp_finance.py       day counts, npv, irr, yield, duration, convexity, payment
     lisp_options.py       bsm-price, implied-vol, the Greeks, black-price, american-price (option prices)
     lisp_clock.py         current-time, time-add, sleep, sleep-until
-    lisp_charts.py        plot-xy, plot-xy-regression, plot-xy-full, save-chart
+    lisp_charts.py        the plot- builtins, and save-chart
     lisp_plot_chart.py    plot-chart, plot-histogram, plot-panels
     lisp_maps.py          census-shapes, plot-map  (maps, from the Census's boundary files)
     lisp_csv.py           load-csv, write-columns-csv
@@ -109,7 +109,7 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
     the Greeks, and American options by binomial tree
   - day counts (30/360, ACT/360, ACT/365, ACT/ACT), npv, irr, xnpv, xirr,
     yield, duration, convexity, and the level payment on a loan
-  - XY charts, and saving them as PNG/PDF/SVG
+  - charts (plot-chart and the rest), and saving them as PNG/PDF/SVG
   - reading data from SQLite, CSV files, any web API (with caching), FRED,
     and tastytrade; writing it to SQLite and CSV
   - redirect-output / reset-output, to send display output to a file

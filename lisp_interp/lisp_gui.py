@@ -1,6 +1,6 @@
 """The PyQt6 GUI for the Lisp interpreter: an input box, an output log, a
 "Table" tab (filled by display-table), and a "Chart" tab (drawn by the
-plot-xy... builtins, with a "Save Chart..." button).
+plot- builtins, with a "Save Chart..." button).
 
 Opened by running lisp_interpreter.py with no arguments. Needs PyQt6 and
 matplotlib (pip install PyQt6 matplotlib); PYQT_AVAILABLE says whether
@@ -42,7 +42,7 @@ except ImportError:
 if PYQT_AVAILABLE:
 
     class ChartCanvas(FigureCanvasQTAgg):
-        """Shows a chart spec (see lisp_charts.build_chart_spec) in the Chart tab,
+        """Shows a chart spec (see lisp_charts) in the Chart tab,
         drawn by the same draw_chart_on_axes() that save-chart uses."""
 
         def __init__(self):
@@ -116,71 +116,18 @@ if PYQT_AVAILABLE:
             super().keyPressEvent(event)
 
     WELCOME_MESSAGE = (
-        "Simple Lisp, with vectors/dates, XY charts, and FRED data access.\n"
-        "Try, for example:\n"
+        "A Lisp for investment analysis: tables, vectors, dates, charts, regression,\n"
+        "option prices, simulated paths, and data from FRED, the SEC, Schwab, and more.\n"
+        "The manual is lisp_interpreter_reference.md. Try, for example:\n"
         "  (define prices (vector 10 20 30 40 50))\n"
-        "  (define doubled (vector-map (lambda (x) (* x 2)) prices))\n"
-        "  (define powers-of-two (vector-iterate 1 8 (lambda (x) (* x 2))))\n"
-        "  (define squares #(1 4 9 16 25))\n"
-        "  (define home-type (vector 0 1 0 1 1))  ; 0=own, 1=rent\n"
-        "  (plot-xy prices (list doubled squares))\n"
-        "  (plot-xy-regression prices squares \"Squares\")             ; linear\n"
-        "  (define m (logistic-regression prices (vector 0 1 0 1 1)))  ; y in [0,1]\n"
-        "  (display (model-report m))\n"
-        "  (plot-xy-regression prices (vector 0 1 0 1 1) \"Y\" \"logistic\")\n"
-        "  ; multiple predictors: pass a list of x-vectors instead of one\n"
-        "  (define m2 (linear-regression (list prices squares) doubled))\n"
-        "  (display (model-coefficients m2))\n"
-        "  ; train/test split: fit on a subset, evaluate on the rest\n"
-        "  (define n-train (floor (* (vector-length prices) 0.7)))\n"
-        "  (define train-x (vector-take prices n-train))\n"
-        "  (define test-x (vector-drop prices n-train))\n"
-        "  (define m3 (linear-regression train-x (vector-take squares n-train)))\n"
-        "  (display (model-evaluate m3 test-x (vector-drop squares n-train)))\n"
-        "  (define d (fred-series \"GDP\" \"YOUR_FRED_API_KEY\"))\n"
-        "  (plot-xy (car d) (list (cdr d)))\n"
-        "  (save-chart \"chart.png\")   ; or use the Save Chart... button\n"
-        "  ; spline-regression: a bit of non-linearity via hinge functions\n"
-        "  (define m4 (spline-regression prices squares 3))  ; up to 3 auto knots\n"
-        "  (display (model-report m4))\n"
-        "  ; explicit knots (e.g. bracketing a critical range) instead of auto:\n"
-        "  (define m5 (spline-regression prices squares (list 25 35)))\n"
-        "  ; or let suggest-knots propose locations from the data itself:\n"
-        "  (define knots (suggest-knots prices squares 2 2))\n"
-        "  (define m5b (spline-regression prices squares knots))\n"
-        "  ; different max knots per predictor: pass a list instead of one number\n"
-        "  (define m6 (spline-regression (list prices squares) doubled (list 1 0)))\n"
-        "  ; a 2-3-valued predictor (e.g. home-type: 0=own/1=rent) -> 'categorical\n"
-        "  (define m7 (spline-regression (list prices home-type) doubled\n"
-        "                                 (list 2 (quote categorical))))\n"
-        "  (define m8 (spline-regression (vector 10 20 30 40 50 60 70 80 90 100 110 120)\n"
-        "                                 (vector 0 0 1 0 1 1 0 1 1 1 0 1) 2 #t))\n"
-        "  ; load-csv returns (cons headers vectors); e.g.:\n"
-        "  ; (define d2 (load-csv \"data.csv\"))  (define cols (cdr d2))\n"
-        "  ; tastytrade real broker data (needs a credentials JSON file --\n"
-        "  ; see tasty_api/README.md for one-time OAuth setup):\n"
-        "  (define creds \"tastytrade_credentials.json\")\n"
-        "  (define curve (tastytrade-futures-curve creds \"CL\" 12))\n"
-        "  (plot-xy (car curve) (list (cdr curve)))\n"
-        "  (define chain (tastytrade-option-chain creds \"CL\" 3 10 #f))\n"
-        "  (display (length chain))  ; #f above skips the slower IV stream\n"
-        "  ; equity option chains work the same way -- any symbol not\n"
-        "  ; starting with \"/\" and not a futures short code is fetched\n"
-        "  ; as an equity chain, no translation needed:\n"
-        "  (define aapl-chain (tastytrade-option-chain creds \"AAPL\" 2 10 #f))\n"
-        "  ; rich/cheap curve analysis (fetch once, re-analyze free of charge\n"
-        "  ; with different assumptions -- these two are pure, no networking):\n"
-        "  (define rows (tastytrade-futures-curve-rows creds \"CL\" 12))\n"
-        "  (define fit (tastytrade-curve-fit rows 0.75))\n"
-        "  (define legs (tastytrade-leg-carry rows 4.25 3.0 1.0))\n"
-        "  ; structs + keyword args (see column_engine.lsp for a full\n"
-        "  ; mortgage-amortization example built on these):\n"
-        "  (defstruct point x y (label \"\"))\n"
-        "  (define p (make-point :x 1 :y 2))\n"
-        "  (display (list (point-x p) (point-y p) (point? p)))\n"
+        "  (define squares (vector-map (lambda (x) (* x x)) prices))\n"
         "  (display-table (make-table \"price\" prices \"square\" squares))\n"
-        "display-table fills the Table tab; plot-xy... calls draw\n"
-        "into the Chart tab.\n"
+        "  (plot-chart (list (list \"squares\" prices squares :symbol #t :fit \"linear\")))\n"
+        "  (define m (linear-regression prices squares))\n"
+        "  (display (model-report m))\n"
+        "  (bsm-price \"call\" 100 105 0.5 0.04 0.25)\n"
+        "  (save-chart \"chart.png\")   ; or use the Save Chart... button\n"
+        "display-table fills the Table tab, and the plot- functions draw in the Chart tab.\n"
         "Press Ctrl+Enter, or click Run, to evaluate.\n\n"
     )
 
@@ -250,8 +197,8 @@ if PYQT_AVAILABLE:
             self._append_text(text)
 
         def _on_plot(self, spec):
-            """Called directly by the Lisp `plot-xy...` builtins with a
-            plain-data chart spec (see build_chart_spec)."""
+            """Called directly by the Lisp plot- builtins with a plain-data
+            chart spec (see lisp_charts)."""
             self.last_chart_spec = spec
             self.chart_canvas.plot(spec)
             self.tabs.setCurrentIndex(1)
@@ -265,7 +212,7 @@ if PYQT_AVAILABLE:
         def _on_save_chart(self):
             if self.last_chart_spec is None:
                 QMessageBox.information(
-                    self, "No chart yet", "Plot a chart first, e.g. with plot-xy.")
+                    self, "No chart yet", "Plot a chart first, e.g. with plot-chart.")
                 return
             path, _ = QFileDialog.getSaveFileName(
                 self, "Save Chart", "chart.png",
