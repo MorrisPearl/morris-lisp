@@ -5502,6 +5502,39 @@ class TestOptionPrices(LispTestCase):
                              "no column named 'time'")
 
 
+class TestFuturesCurve(LispTestCase):
+    """lisp_futures.py: futures-curve-fit and futures-leg-carry, on made-up curve rows."""
+
+    def setUp(self):
+        super().setUp()
+        # (delivery-month futures-symbol days-to-delivery price): a price growing 5% a year, but for one
+        # contract 3% above it
+        rows = []
+        for i, days in enumerate((30, 120, 210, 300, 390, 480)):
+            price = 70 * math.exp(0.05 * days / 365) * (1.03 if i == 3 else 1.0)
+            rows.append("(list (date 2027 %d 1) \"CL%d\" %d %r)" % (i + 1, i, days, price))
+        self.run_lisp("(define rows (list %s))" % " ".join(rows))
+
+    def test_the_contract_above_the_curve_is_rich(self):
+        fit = self.run_lisp("(futures-curve-fit rows 1.0 1)")
+        signals = {str(lisp_core.pairs_to_list(row)[1]): str(lisp_core.pairs_to_list(row)[6])
+                   for row in lisp_core.pairs_to_list(fit)}
+        self.assertEqual(signals["CL3"], "Rich")
+        self.assertEqual(sum(1 for s in signals.values() if s == "Rich"), 1)
+        self.assertShows("(futures-curve-fit (list (car rows) (cadr rows)))", "()")      # too few to fit
+
+    def test_the_carry_between_each_month_and_the_next(self):
+        legs = [lisp_core.pairs_to_list(leg) for leg in lisp_core.pairs_to_list(self.run_lisp("(futures-leg-carry rows 4.0 1.0)"))]
+        self.assertEqual(len(legs), 5)
+        carries = [float(leg[5]) for leg in legs]
+        self.assertAlmostEqual(carries[0], 5.0, places=6)      # 5% a year, in percent
+        self.assertAlmostEqual(float(legs[0][6]), 1.0, places=6)   # net storage: carry less funding
+        self.assertAlmostEqual(float(legs[0][7]), 0.0, places=6)   # convenience yield: funding + storage - carry
+        self.assertGreater(carries[2], 5.5)                    # into the rich contract
+        self.assertLess(carries[3], 4.5)                       # out of it
+        self.assertShows("(futures-leg-carry (list (car rows)) 4.0 1.0)", "()")
+
+
 class TestVolSmile(LispTestCase):
     """lib/vol_smile.lsp, on a made-up option chain whose implied volatilities
     follow a known smile, Y = a + b K + c K^2 for each expiration, with one

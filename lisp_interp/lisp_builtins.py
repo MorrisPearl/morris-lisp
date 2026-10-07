@@ -46,6 +46,7 @@ import lisp_debug
 import lisp_fdic
 import lisp_finance
 import lisp_fred
+import lisp_futures
 import lisp_http
 import lisp_investment_paths
 import lisp_maps
@@ -1854,6 +1855,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_alpha_vantage.BUILTINS)
     env.update(lisp_http.BUILTINS)
     env.update(lisp_tastytrade.BUILTINS)
+    env.update(lisp_futures.BUILTINS)
     env.update(lisp_sofr.BUILTINS)
     env.update(lisp_simplex.BUILTINS)
     env.update(lisp_investment_paths.BUILTINS)

@@ -46,6 +46,7 @@ HOW THE CODE IS ORGANIZED
     lisp_bls.py           bls-series, bls-local-area, ... (prices, jobs, and pay from the BLS)
     lisp_bea.py           bea-series, bea-nipa, bea-regional, ... (national and regional accounts from the BEA)
     lisp_tastytrade.py    tastytrade-*                     (downloads from tastytrade)
+    lisp_futures.py       futures-curve-fit, futures-leg-carry (a futures curve's rich, cheap, and carry)
     lisp_schwab.py        schwab-*  (your Schwab accounts: positions, quotes, prices, orders)
     lisp_alpha_vantage.py alpha-vantage-dividends  (a stock's dividends, from Alpha Vantage)
     lisp_investment_paths.py  daily-returns, adjust-returns, dividend-schedule, bootstrap-path, option-value

@@ -19,7 +19,7 @@ import os
 import sys
 
 from lisp_core import LispError, LispString, LispVector, Pair, list_to_pairs, pairs_to_list
-from lisp_tastytrade import tasty_row_field
+from lisp_futures import row_field
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "term_structure"))
 
@@ -69,8 +69,8 @@ def sofr_forward_curve_fn(curve_rows):
 
     sofr_futures = []
     for r in rows:
-        days = float(tasty_row_field(r, 2))
-        price = float(tasty_row_field(r, 3))
+        days = float(row_field(r, 2))
+        price = float(row_field(r, 3))
         end_months = round(days / _SOFR_DAYS_PER_MONTH)
         sofr_futures.append({
             "start_months": end_months - 3,

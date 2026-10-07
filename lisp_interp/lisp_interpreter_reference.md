@@ -6745,9 +6745,9 @@ it's kept and reused by the calls after it, for each credentials file,
 until it runs out (when the next call logs in again by itself). They all
 work in a Jupyter notebook too.
 
-`tastytrade-products`, `tastytrade-curve-fit`, and `tastytrade-leg-carry`
-use no network: the first lists the futures product codes, and the other
-two analyze a futures curve already fetched with
+`tastytrade-products` uses no network: it lists the futures product codes.
+Nor do `futures-curve-fit` and `futures-leg-carry` (in `lisp_futures.py`),
+which analyze a futures curve already fetched with
 `tastytrade-futures-curve-rows`, so you can fetch a curve once and re-run
 either analysis as often as you like.
 
@@ -6957,12 +6957,12 @@ of rows, each a 4-element list:
 `futures-symbol` has the leading `"/"` stripped (e.g. `"CLZ6"`);
 `days-to-delivery` is an integer (negative if the contract's
 first-of-month delivery date has passed but it's still trading). This is
-the input `tastytrade-curve-fit` and `tastytrade-leg-carry` take — fetch
+the input `futures-curve-fit` and `futures-leg-carry` take — fetch
 once with this, then call either one as often as you like.
 
 ```lisp
 (define rows (tastytrade-futures-curve-rows "tastytrade_credentials.json" "CL" 8))
-(define fit (tastytrade-curve-fit rows 0.75))
+(define fit (futures-curve-fit rows 0.75))
 ```
 
 #### `(tastytrade-test-connection credentials-path)`
@@ -6983,8 +6983,8 @@ The futures short codes (around 60) that `tastytrade-futures-curve`,
 (tastytrade-products)          ; => ("ES" "MES" "NQ" "MNQ" "YM" "MYM" ... "SR3" ...)
 ```
 
-#### `(tastytrade-curve-fit curve-rows [rich-cheap-threshold-pct poly-degree])`
-Pure function — no networking. Per-contract rich/cheap analysis: fits
+#### `(futures-curve-fit curve-rows [rich-cheap-threshold-pct poly-degree])`
+(In `lisp_futures.py`.) Pure function — no networking. Per-contract rich/cheap analysis: fits
 `ln(price)` vs. `days-to-delivery` with a low-order polynomial across
 every row in `curve-rows` (the output of `tastytrade-futures-curve-rows`,
 or anything shaped the same way), then flags each contract's deviation
@@ -7007,11 +7007,11 @@ Needs at least 3 rows; returns `'()` if `curve-rows` has fewer.
 
 ```lisp
 (define rows (tastytrade-futures-curve-rows creds "CL" 8))
-(define fit (tastytrade-curve-fit rows 0.75))
-(define fit-strict (tastytrade-curve-fit rows 0.25))   ; re-run, no re-fetch, tighter threshold
+(define fit (futures-curve-fit rows 0.75))
+(define fit-strict (futures-curve-fit rows 0.25))   ; re-run, no re-fetch, tighter threshold
 ```
 
-#### `(tastytrade-leg-carry curve-rows funding-rate-pct storage-cost-pct [leg-signal-threshold-pct])`
+#### `(futures-leg-carry curve-rows funding-rate-pct storage-cost-pct [leg-signal-threshold-pct])`
 Pure function — no networking. Pairwise (adjacent contract month)
 implied cost-of-carry decomposition. For each pair of adjacent months in
 `curve-rows` (near, far) with positive spacing between them:
@@ -7045,7 +7045,7 @@ there's no physical storage — the *math* (the implied carry rate `c`) is
 still valid and meaningful, but the storage/convenience-yield split
 doesn't map to anything real; read those two fields as "what a
 storage-cost story would require to be true, if you insisted on one" for
-those products, not as an actual estimate. `tastytrade-curve-fit`'s
+those products, not as an actual estimate. `futures-curve-fit`'s
 per-contract rich/cheap view is the more broadly meaningful of the two
 for non-commodity products.
 
@@ -7053,7 +7053,7 @@ Needs at least 2 rows; returns `'()` if `curve-rows` has fewer, or if no
 adjacent pair has positive day spacing.
 
 ```lisp
-(define legs (tastytrade-leg-carry rows 4.25 3.0 1.0))
+(define legs (futures-leg-carry rows 4.25 3.0 1.0))
 ```
 
 #### `(sofr-forward-curve curve-rows)`
@@ -7353,8 +7353,8 @@ ten `tastytrade-*` builtins; abridged here:
 ; rich/cheap analysis and implied carry: fetch the curve rows once, then
 ; analyze with no further network use
 (define curve-rows (tastytrade-futures-curve-rows creds "CL" 8))
-(define fit (tastytrade-curve-fit curve-rows 0.75))
-(define legs (tastytrade-leg-carry curve-rows 4.25 3.0 1.0))
+(define fit (futures-curve-fit curve-rows 0.75))
+(define legs (futures-leg-carry curve-rows 4.25 3.0 1.0))
 
 ; anything else the API offers: market metrics as a table, and one
 ; instrument's description
@@ -9290,6 +9290,7 @@ The Python files:
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders`, ...: your Schwab accounts |
 | `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `option-value`, `option-payoffs`: simulated prices of an investment, and what options on it are worth |
 | `lisp_calendar.py` | `trading-day?`, `add-trading-days`, `trading-days-between`, `nyse-holidays`, ...: the NYSE's trading days |
+| `lisp_futures.py` | `futures-curve-fit`, `futures-leg-carry`: a futures curve's rich and cheap contracts, and its carry |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |

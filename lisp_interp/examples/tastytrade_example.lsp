@@ -89,20 +89,20 @@
 (display-table aapl-chain chain-formats)
 (newline)
 
-; --- 7. tastytrade-curve-fit: per-contract rich/cheap vs. a fitted
+; --- 7. futures-curve-fit: per-contract rich/cheap vs. a fitted
 ;        curve. Fetch the curve ROWS once (unlike plain
 ;        tastytrade-futures-curve, these also carry the futures symbol
-;        and days-to-delivery that the analysis needs); tastytrade-curve-fit
+;        and days-to-delivery that the analysis needs); futures-curve-fit
 ;        itself does no networking, so re-running it with a different
 ;        threshold is instant. ---
 (define curve-rows (tastytrade-futures-curve-rows creds "CL" 8))
-(define fit (tastytrade-curve-fit curve-rows 0.75))
+(define fit (futures-curve-fit curve-rows 0.75))
 (display "CL curve-fit rich/cheap (threshold 0.75%):") (newline)
 (display "  (delivery-month symbol days-to-delivery price fitted-price rich-cheap-pct signal)") (newline)
 (print-each fit)
 (newline)
 
-; --- 8. tastytrade-leg-carry: pairwise (adjacent contract month)
+; --- 8. futures-leg-carry: pairwise (adjacent contract month)
 ;        implied cost-of-carry decomposition -- also pure, no
 ;        networking, reusing curve-rows from step 7. See the big
 ;        methodology comment at the top of tasty_api/relative_value.py
@@ -110,7 +110,7 @@
 ;        convenience-yield split is only literal for a storable physical
 ;        commodity like CL; for financial futures read it as
 ;        illustrative, not a real estimate). ---
-(define legs (tastytrade-leg-carry curve-rows 4.25 3.0 1.0))
+(define legs (futures-leg-carry curve-rows 4.25 3.0 1.0))
 (display "CL implied carry by leg (funding rate 4.25%, storage cost 3.0%):") (newline)
 (display "  (near-month far-month near-price far-price days-between carry-rate-pct net-storage-pct convenience-yield-pct signal)") (newline)
 (print-each legs)
