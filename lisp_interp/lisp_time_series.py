@@ -9,11 +9,12 @@ yyyymm->month-number (for loan data's 202301-style reporting periods), and
 month-number->yyyymm convert back and forth; each takes a single value or a
 whole vector.
 
-SERIES: a time series is (dates . values) -- a pair of vectors, the shape
-fred-series returns. series-monthly turns a daily or weekly series into a
-monthly one; series-values-at looks a series up at chosen months (e.g. to
-attach a market rate to every loan-month row); series-table lines several
-series up, month by month, in one table.
+SERIES: a time series is a table with a column of dates and columns of
+numbers, as fred-table, schwab-price-history, and bls-series make.
+series-monthly turns a daily or weekly series into a monthly one;
+series-values-at looks a series up at chosen months (e.g. to attach a
+market rate to every loan-month row); series-table lines several series
+up, month by month, in one table.
 """
 
 import calendar
@@ -21,8 +22,8 @@ import datetime
 
 import numpy as np
 
-from lisp_core import LispDate, LispError, LispVector, NIL, Pair, _date_from_pydate, is_true, pairs_to_list
-from lisp_tables import make_table_value
+from lisp_core import LispDate, LispError, LispVector, NIL, Pair, _date_from_pydate, is_true, keyword_options, pairs_to_list
+from lisp_tables import make_table_value, table_columns
 from lisp_vector_math import floats_of, is_number, to_vector
 
 
@@ -196,30 +197,42 @@ MONTH_BUILTINS = {
 
 
 # ---------------------------------------------------------------------------
-# Series: (dates . values)
+# Series: tables of dates and numbers
 # ---------------------------------------------------------------------------
 
-def series_parts(series, name):
-    """A series' month numbers and values as numpy arrays, in date order,
-    leaving out missing values."""
-    if not (isinstance(series, Pair) and isinstance(series.car, LispVector)
-            and isinstance(series.cdr, LispVector)):
-        raise LispError("%s: a series is (dates . values), a pair of vectors" % name)
-    dates, values = series.car.items.tolist(), floats_of(series.cdr, name)
-    if len(dates) != len(values):
-        raise LispError("%s: the series has %d dates but %d values" % (name, len(dates), len(values)))
-    keep = [i for i, d in enumerate(dates) if isinstance(d, LispDate) and not np.isnan(values[i])]
-    days = np.array([dates[i].date.toordinal() for i in keep], dtype=np.int64)
-    months = np.array([month_of_date(dates[i], name) for i in keep], dtype=np.int64)
-    values = values[keep]
-    order = np.argsort(days, kind="stable")
-    return months[order], values[order]
+def is_date_column(vector):
+    items = vector.items.tolist()
+    return vector.items.dtype == object and any(isinstance(d, LispDate) for d in items) and \
+        all(d is None or isinstance(d, LispDate) for d in items)
 
 
-def monthly_values(series, how, name):
-    """One value per month that has data: (months, values) numpy arrays,
-    months ascending. how is mean, last, first, sum, min, or max."""
-    months, values = series_parts(series, name)
+def series_columns(table, who):
+    """A series table's rows' day numbers and month numbers (-1 for a row
+    without a date), and its columns of values, as (name, float array): every
+    column of numbers but its dates and a month column. Its dates are its
+    column named date, or, if it has none, its one column of dates."""
+    columns = table_columns(table, who)
+    date_names = [name for name, _ in columns if name == "date"] or \
+        [name for name, vector in columns if is_date_column(vector)]
+    if len(date_names) != 1:
+        raise LispError("%s: a series is a table with a column of dates (named date, if it has more than one)" % who)
+    dates = dict(columns)[date_names[0]].items.tolist()
+    days = np.array([d.date.toordinal() if isinstance(d, LispDate) else -1 for d in dates], dtype=np.int64)
+    months = np.array([month_of_date(d, who) if isinstance(d, LispDate) else -1 for d in dates], dtype=np.int64)
+    values = [(name, floats_of(vector, who)) for name, vector in columns
+              if name not in (date_names[0], "month") and np.issubdtype(vector.items.dtype, np.number)]
+    if not values:
+        raise LispError("%s: the table has no column of numbers besides its dates" % who)
+    return days, months, values
+
+
+def monthly_values(days, months, values, how, who):
+    """One column's values, one per month that has data: (months, values)
+    numpy arrays, months ascending. how is mean, last, first, sum, min, or
+    max. A row without a date or a value is left out."""
+    keep = (days >= 0) & ~np.isnan(values)
+    order = np.argsort(days[keep], kind="stable")
+    months, values = months[keep][order], values[keep][order]
     if len(months) == 0:
         return months, values
     distinct, group = np.unique(months, return_inverse=True)
@@ -238,24 +251,15 @@ def monthly_values(series, how, name):
     elif how == "max":
         result = np.maximum.reduceat(values, starts)
     else:
-        raise LispError("%s: how must be mean, last, first, sum, min, or max, got %s" % (name, how))
+        raise LispError("%s: :how must be mean, last, first, sum, min, or max, not %s" % (who, how))
     return distinct, result
 
 
-def series_monthly(series, how="mean"):
-    """(series-monthly series [how]) -- a daily or weekly series turned into
-    a monthly one: one value per month that has data, dated the first of
-    the month. how says which value: mean (the default), last, first, sum,
-    min, or max. Missing values are skipped."""
-    months, values = monthly_values(series, str(how).lower(), "series-monthly")
-    return Pair(LispVector([date_of_month(m) for m in months]), to_vector(values))
-
-
-def values_at(series, months, fill_forward, name):
-    """The series' monthly averages at each of `months` (a numpy array of
-    month numbers): NaN for a month without data -- or, with fill_forward,
-    the value of the latest earlier month that has data."""
-    series_months, series_values = monthly_values(series, "mean", name)
+def values_at(series_months, series_values, months, fill_forward):
+    """A column's monthly values (series_months, series_values) at each of
+    `months` (a numpy array of month numbers): NaN for a month without data
+    -- or, with fill_forward, the value of the latest earlier month that has
+    data."""
     result = np.full(len(months), np.nan)
     if len(series_months) == 0:
         return result
@@ -268,6 +272,28 @@ def values_at(series, months, fill_forward, name):
     return result
 
 
+def monthly_table(months, columns):
+    """A table of month, date (the first of the month), and these (name,
+    values) columns, for these month numbers."""
+    return make_table_value([("month", to_vector(months)), ("date", LispVector([date_of_month(m) for m in months]))] +
+                            [(name, to_vector(values)) for name, values in columns])
+
+
+def series_monthly(table, *options):
+    """(series-monthly table [:how h]) -- a daily or weekly series made
+    monthly: a table of month, date (the first of the month), and each of
+    the table's columns of numbers, with a row for each month that has data.
+    :how says which of a month's values: mean (the default), last, first,
+    sum, min, or max. Missing values are left out."""
+    who = "series-monthly"
+    options = keyword_options(options, ["how"], who)
+    how = str(options.get("how", "mean")).lower()
+    days, months, values = series_columns(table, who)
+    monthly = [(name, monthly_values(days, months, column, how, who)) for name, column in values]
+    all_months = np.unique(np.concatenate([m for _, (m, _) in monthly]))
+    return monthly_table(all_months, [(name, values_at(m, v, all_months, False)) for name, (m, v) in monthly])
+
+
 def months_argument(months, name):
     """A vector of month numbers or dates, as a numpy array of month numbers."""
     if not isinstance(months, LispVector):
@@ -277,40 +303,58 @@ def months_argument(months, name):
     return months.items.astype(np.int64)
 
 
-def series_values_at(series, months, fill_forward=False):
-    """(series-values-at series months [fill-forward?]) -- the series' value
-    in each of the given months (a vector of month numbers or dates), such
-    as a loan table's month column. A series with several values in a month
-    (weekly, daily) is averaged over the month. A month with no data gives
-    NaN -- or, with fill-forward? #t, the latest earlier month's value."""
-    wanted = months_argument(months, "series-values-at")
-    return to_vector(values_at(series, wanted, is_true(fill_forward), "series-values-at"))
+def series_values_at(table, months, *options):
+    """(series-values-at table months [:column name] [:fill-forward #t]) --
+    a column of a series in each of the given months (a vector of month
+    numbers or dates), such as a loan table's month column. :column is the
+    column, if the table has more than one. A series with several values in
+    a month (weekly, daily) is averaged over the month. A month with no data
+    gives NaN -- or, with :fill-forward #t, the latest earlier month's value."""
+    who = "series-values-at"
+    options = keyword_options(options, ["column", "fill-forward"], who)
+    days, series_months, values = series_columns(table, who)
+    if "column" in options:
+        chosen = [column for name, column in values if name == str(options["column"])]
+        if not chosen:
+            raise LispError("%s: the table has no column of numbers named %s (it has %s)"
+                            % (who, options["column"], ", ".join(name for name, _ in values)))
+        column = chosen[0]
+    elif len(values) == 1:
+        column = values[0][1]
+    else:
+        raise LispError("%s: the table has %d columns of numbers (%s): say which with :column"
+                        % (who, len(values), ", ".join(name for name, _ in values)))
+    months_with_data, monthly = monthly_values(days, series_months, column, "mean", who)
+    return to_vector(values_at(months_with_data, monthly, months_argument(months, who),
+                               is_true(options.get("fill-forward", False))))
 
 
-def series_table(named_series, fill_forward=False):
-    """(series-table (list (cons name series) ...) [fill-forward?]) -- a
-    table lining several series up by month. Its columns are "month" (month
-    numbers), "date" (the first of each month), and one column per series,
-    named as given. The months run from the earliest month any series has
-    data to the latest, every month included. A series with several values
-    in a month is averaged; a month with no data is NaN -- or, with
-    fill-forward? #t, the series' latest earlier value."""
-    entries = []
-    for entry in pairs_to_list(named_series):
-        if not isinstance(entry, Pair):
-            raise LispError("series-table: expected a list of (name . series) pairs")
-        entries.append((str(entry.car), entry.cdr))
-    if not entries:
-        raise LispError("series-table: expected at least one (name . series) pair")
-    all_months = [monthly_values(s, "mean", "series-table")[0] for _, s in entries]
-    non_empty = [m for m in all_months if len(m)]
-    if not non_empty:
-        raise LispError("series-table: none of the series has any data")
-    months = np.arange(min(m[0] for m in non_empty), max(m[-1] for m in non_empty) + 1)
-    columns = [("month", to_vector(months)), ("date", LispVector([date_of_month(m) for m in months]))]
-    for column_name, series in entries:
-        columns.append((column_name, to_vector(values_at(series, months, is_true(fill_forward), "series-table"))))
-    return make_table_value(columns)
+def series_table(tables, *options):
+    """(series-table tables [:fill-forward #t]) -- several series, a list of
+    tables, lined up by month in one table: month, date (the first of each
+    month), and every column of numbers of the tables, under its own name.
+    The months run from the earliest month any of them has data to the
+    latest, every month included. A column with several values in a month is
+    averaged; a month with no data is NaN -- or, with :fill-forward #t, the
+    column's latest earlier value."""
+    who = "series-table"
+    options = keyword_options(options, ["fill-forward"], who)
+    fill_forward = is_true(options.get("fill-forward", False))
+    monthly = []
+    for table in pairs_to_list(tables) if (tables is NIL or isinstance(tables, Pair)) else [None]:
+        if table is None:
+            raise LispError("%s: expected a list of tables" % who)
+        days, months, values = series_columns(table, who)
+        for name, column in values:
+            if name in [n for n, _ in monthly]:
+                raise LispError("%s: two of the tables have a column named %s -- rename one (table-rename-column)"
+                                % (who, name))
+            monthly.append((name, monthly_values(days, months, column, "mean", who)))
+    with_data = [m for _, (m, _) in monthly if len(m)]
+    if not with_data:
+        raise LispError("%s: none of the tables has any data" % who)
+    all_months = np.arange(min(m[0] for m in with_data), max(m[-1] for m in with_data) + 1)
+    return monthly_table(all_months, [(name, values_at(m, v, all_months, fill_forward)) for name, (m, v) in monthly])
 
 
 SERIES_BUILTINS = {

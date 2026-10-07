@@ -55,7 +55,7 @@
 ; --- 2. historical-vol cross-check (illustrated, not fetched here) -------
 
 ; See oas_monte_carlo.lsp's annualized-realized-vol docstring for how to
-; run this for real against fred-series "DFF"/"DGS10". Here we just
+; run this for real against FRED's "DFF" and "DGS10". Here we just
 ; assume sigma1/sigma2 outright, since this example has no network
 ; access.
 (define sigma1 0.010)    ; short-rate factor vol, decimal annualized

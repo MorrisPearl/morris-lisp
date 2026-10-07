@@ -1,52 +1,29 @@
-; ---------------------------------------------------------------------
-; FRED example: retrieve and print economic data series from the Federal
-; Reserve Bank of St. Louis (FRED). Needs a free API key -- get one at
-; https://fred.stlouisfed.org/docs/api/api_key.html, then either:
-;   - add it to your tastytrade credentials JSON file as "fred_api_key"
-;     (see tasty_api/README.md) and pass that file's path below, as
-;     shown -- the same file both APIs' credentials can live in, or
-;   - pass a literal key string instead ("abc123...") , or
-;   - set the FRED_API_KEY environment variable and delete the arg below.
+; fred_example.lsp
 ;
-; Exercises fred-series across its full argument range: series + key
-; alone, and both accepted forms of an optional start-date/end-date range
-; (LispDate values, and "YYYY-MM-DD" strings). fred-series gives one series
-; as a (dates . values) pair; fred-table gives several as one table, with a
-; row per date (see "FRED" in the reference manual).
-; ---------------------------------------------------------------------
+; Economic data from FRED, the Federal Reserve Bank of St. Louis.
+; fred-table downloads one series or several, by ID, as a table with a row
+; for each date -- see "FRED" in the reference manual. It needs a free FRED
+; API key (https://fred.stlouisfed.org/docs/api/api_key.html), as the
+; "fred_api_key" entry of the credentials file. creds is set to its path in
+; init.lsp. Run it from the examples directory:
+;   python3 ../lisp_interpreter.py fred_example.lsp
 
-(define api-key "/Users/morris/credentials.json")
+; --- 1. A whole series: US GDP, quarterly ------------------------------------
+(define gdp (fred-table creds "GDP"))
+(define gdp-dates (table-column gdp "date"))
+(display (format "GDP: {} quarterly observations, from {} to {}\n"
+                 (table-row-count gdp) (vector-ref gdp-dates 0) (vector-ref gdp-dates (- (table-row-count gdp) 1))))
+(display-table (table-tail gdp 4) '(("GDP" ",.1f")))
 
-; A small helper to show a (dates . values) series returned by
-; fred-series as a table: a column of dates, and one of values.
-(define (show-series name series)
-  (display-table (make-table "date" (car series) name (cdr series))))
+; --- 2. A range of dates: the unemployment rate in 2020 -----------------------
+; The dates can be dates or "YYYY-MM-DD" text.
+(display "\nThe unemployment rate in 2020, %:\n")
+(display-table (fred-table creds "UNRATE" :start-date (date 2020 1 1) :end-date "2020-12-31") :max-rows #f)
 
-; --- 1. fetch a full series: US Real Gross Domestic Product ("GDP") ---
-(define gdp (fred-series "GDP" api-key))
-(define gdp-dates (car gdp))
-(define gdp-values (cdr gdp))          ; NOT (car (cdr gdp)) -- (cdr gdp) IS
-                                        ; the values vector already; fred-series
-                                        ; returns a cons pair, not a 2-element list
-(define gdp-n (vector-length gdp-values))   ; vector-length, not length -- these
-                                             ; are vectors, not Lisp lists
-(display "GDP: ") (display gdp-n) (display " quarterly observations") (newline)
-(display "  first:  ") (display (vector-ref gdp-dates 0))
-(display "  ") (display (vector-ref gdp-values 0)) (newline)
-(display "  latest: ") (display (vector-ref gdp-dates (- gdp-n 1)))
-(display "  ") (display (vector-ref gdp-values (- gdp-n 1))) (newline)
-(newline)
-
-; --- 2. a second series, restricted to a date range with an explicit
-;        start-date/end-date, given as `date` values ---
-(define unrate (fred-series "UNRATE" api-key (date 2020 1 1) (date 2020 12 31)))
-(display "UNRATE, 2020 (civilian unemployment rate, %):") (newline)
-(show-series "UNRATE" unrate)
-(newline)
-
-; --- 3. a third series, with the date range given as "YYYY-MM-DD"
-;        strings instead -- both forms work interchangeably ---
-(define fedfunds (fred-series "FEDFUNDS" api-key "2023-01-01" "2023-12-31"))
-(display "FEDFUNDS, 2023 (effective federal funds rate, %):") (newline)
-(show-series "FEDFUNDS" fedfunds)
-(newline)
+; --- 3. Several series at once, lined up -----------------------------------------
+; A daily series (the 10-year Treasury), a weekly one (the 30-year mortgage
+; rate), and a monthly one (fed funds): one table, a row for each date any
+; of them has, then the monthly averages of each.
+(define rates (fred-table creds '("DGS10" "MORTGAGE30US" "FEDFUNDS") :start-date "2025-01-01"))
+(display (format "\n{} dates since the start of 2025; by month:\n" (table-row-count rates)))
+(display-table (series-monthly rates) '(("month" hide) ("DGS10" ".2f") ("MORTGAGE30US" ".2f") ("FEDFUNDS" ".2f")))

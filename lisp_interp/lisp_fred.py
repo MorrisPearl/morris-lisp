@@ -1,17 +1,15 @@
 """FRED data access for the Lisp interpreter: economic data series from
 the Federal Reserve Bank of St. Louis (https://fred.stlouisfed.org).
 
-  (fred-table creds ids [:start-date d :end-date d])
+  (fred-table creds ids [:start-date d :end-date d :cache-hours h])
                      one series or several, as a table with a row per date
-  (fred-series id [api-key start-date end-date cache-hours])
-                     one series, as a pair of vectors: (dates . values)
 
-Needs a free FRED API key -- see fred_series() for the three ways to
-supply one. The download goes through lisp_http, so it can be cached.
+Needs a free FRED API key, as the "fred_api_key" entry of the credentials
+file (https://fred.stlouisfed.org/docs/api/api_key.html). The download goes
+through lisp_http, so it can be cached.
 """
 
 import json
-import os
 import urllib.parse
 
 from lisp_core import LispDate, LispError, LispVector, NIL, Pair, keyword_options
@@ -19,7 +17,7 @@ from lisp_data_common import credential, dated_table, text_list
 import lisp_http
 
 FRED_URL = "https://api.stlouisfed.org/fred/series/observations"
-CACHE_HOURS = 12        # fred-table's; fred-series keeps a download only if asked
+CACHE_HOURS = 12        # how long fred-table keeps a download, unless :cache-hours says
 
 
 def _parse_fred_observations(observations):
@@ -42,37 +40,14 @@ def _parse_fred_observations(observations):
     return Pair(LispVector(dates), LispVector(values))
 
 
-def fred_series(series_id, api_key=None, start_date=None, end_date=None, cache_hours=None):
-    """(fred-series id [api-key start-date end-date cache-hours]) -- one FRED
-    series, as (dates-vector . values-vector); see download_series."""
-    return download_series(series_id, api_key, start_date, end_date, cache_hours, "fred-series")
-
-
-def download_series(series_id, api_key, start_date, end_date, cache_hours, who):
-    """Fetch one FRED data series and return (dates-vector . values-vector).
-
-    `api_key` may be a literal FRED API key, or the path to a JSON
-    credentials file with a "fred_api_key" entry (the same file used for
-    tastytrade-* credentials, so both APIs' keys can live in one place).
-    It may also be omitted entirely if the FRED_API_KEY environment
-    variable is set. A free API key can be requested at
-    https://fred.stlouisfed.org/docs/api/api_key.html
-    `start_date` / `end_date`, if given, are "YYYY-MM-DD" strings (or
-    LispDate values) limiting the observation range; pass '() for either
-    to leave it open. `cache_hours`, if given, keeps the download on disk
-    for that many hours, as http-get-json does, so running the same
-    notebook again doesn't fetch it again.
-    """
-    if api_key is not None and os.path.exists(str(api_key)):
-        api_key = credential(api_key, "fred_api_key", who,
-                             "FRED needs one, from https://fred.stlouisfed.org/docs/api/api_key.html")
-    if api_key is None:
-        api_key = os.environ.get("FRED_API_KEY")
-    if not api_key:
-        raise LispError(
-            "%s: no API key given (pass one, pass the path to a "
-            "credentials JSON file with a \"fred_api_key\" entry, or set "
-            "the FRED_API_KEY environment variable)" % who)
+def download_series(series_id, credentials_path, start_date, end_date, cache_hours, who):
+    """One FRED series, as (dates-vector . values-vector), with FRED's
+    missing observations left out. The key is the credentials file's
+    "fred_api_key". start_date and end_date, if not None, are dates or
+    "YYYY-MM-DD" text limiting the observations. The download is kept for
+    cache_hours, as http-get-json keeps one."""
+    api_key = credential(credentials_path, "fred_api_key", who,
+                         "FRED needs one, from https://fred.stlouisfed.org/docs/api/api_key.html")
 
     params = {
         "series_id": str(series_id),
@@ -101,25 +76,25 @@ def download_series(series_id, api_key, start_date, end_date, cache_hours, who):
 
 
 def fred_table(credentials_path, ids, *options):
-    """(fred-table creds ids [:start-date d :end-date d]) -- one FRED series,
+    """(fred-table creds ids [:start-date d :end-date d :cache-hours h]) -- one FRED series,
     or a list or vector of them, by ID ("UNRATE", "DGS10"), as a table: a
     date column, oldest first, and a column for each series, headed by its
     ID, with NaN where a series has no value for a date -- so daily,
     weekly, and monthly series line up by date. All of each series, unless
     :start-date or :end-date (a date, or "YYYY-MM-DD") says otherwise. Each
-    download is kept for 12 hours, as the other data functions' are."""
+    download is kept for 12 hours, as the other data functions' are, unless
+    :cache-hours says otherwise (0: download it every time)."""
     who = "fred-table"
-    options = keyword_options(options, ["start-date", "end-date"], who)
+    options = keyword_options(options, ["start-date", "end-date", "cache-hours"], who)
     columns = []
     for series_id in text_list(ids, who, "the series IDs"):
         series = download_series(series_id, credentials_path, options.get("start-date"), options.get("end-date"),
-                                 CACHE_HOURS, who)
+                                 options.get("cache-hours", CACHE_HOURS), who)
         values = {date.date: value for date, value in zip(series.car.items, series.cdr.items.tolist())}
         columns.append((series_id, values))
     return dated_table(columns)
 
 
 BUILTINS = {
-    "fred-series": fred_series,
     "fred-table": fred_table,
 }

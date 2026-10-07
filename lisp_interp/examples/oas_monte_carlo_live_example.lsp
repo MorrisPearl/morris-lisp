@@ -44,8 +44,11 @@
 
 (load "oas_monte_carlo.lsp")
 
-(define (fred-latest-value series) (vector-ref (cdr series) (- (vector-length (cdr series)) 1)))
-(define (fred-latest-date series) (vector-ref (car series) (- (vector-length (car series)) 1)))
+(define (latest table column)
+  ; the date and value of a FRED table's latest value in column, as (date value)
+  (let ((known (table-filter table (vector-not (vector-nan? (table-column table column))))))
+    (list (vector-ref (table-column known "date") (- (table-row-count known) 1))
+          (vector-ref (table-column known column) (- (table-row-count known) 1)))))
 
 ; --- 1. fetch the SOFR futures curve AND calibration options ------------
 
@@ -91,27 +94,22 @@
 ; --- 3. fetch the Treasury par curve from FRED, extend the SOFR curve --
 
 (display "Fetching Treasury par yields from FRED...") (newline)
-(define dgs3mo-series (fred-series "DGS3MO" creds))
-(define dgs6mo-series (fred-series "DGS6MO" creds))
-(define dgs1-series (fred-series "DGS1" creds))
-(define dgs2-series (fred-series "DGS2" creds))
-(define dgs5-series (fred-series "DGS5" creds))
-(define dgs10-series (fred-series "DGS10" creds))
-(define dgs30-series (fred-series "DGS30" creds))
+(define treasury (fred-table creds '("DGS3MO" "DGS6MO" "DGS1" "DGS2" "DGS5" "DGS10" "DGS30")))
+(define (latest-yield column) (/ (second (latest treasury column)) 100.0))   ; as a decimal
 
-(define yield-3m (/ (fred-latest-value dgs3mo-series) 100.0))
-(define yield-6m (/ (fred-latest-value dgs6mo-series) 100.0))
-(define yield-1y (/ (fred-latest-value dgs1-series) 100.0))
-(define yield-2y (/ (fred-latest-value dgs2-series) 100.0))
-(define yield-5y (/ (fred-latest-value dgs5-series) 100.0))
-(define yield-10y (/ (fred-latest-value dgs10-series) 100.0))
-(define yield-30y (/ (fred-latest-value dgs30-series) 100.0))
+(define yield-3m (latest-yield "DGS3MO"))
+(define yield-6m (latest-yield "DGS6MO"))
+(define yield-1y (latest-yield "DGS1"))
+(define yield-2y (latest-yield "DGS2"))
+(define yield-5y (latest-yield "DGS5"))
+(define yield-10y (latest-yield "DGS10"))
+(define yield-30y (latest-yield "DGS30"))
 
 (display "  3m=") (display yield-3m) (display " 6m=") (display yield-6m)
 (display " 1y=") (display yield-1y) (display " 2y=") (display yield-2y)
 (display " 5y=") (display yield-5y) (display " 10y=") (display yield-10y)
 (display " 30y=") (display yield-30y) (display "  (as of ")
-(display (fred-latest-date dgs10-series)) (display ")") (newline)
+(display (first (latest treasury "DGS10"))) (display ")") (newline)
 
 (define extended-forward-rates
   (sofr-extend-curve-with-treasury sofr-forward-rates real-months
@@ -121,16 +119,16 @@
 ; --- 4. historical-vol cross-check for fitted sigma1/sigma2 -------------
 
 (display "Fetching historical rate history from FRED for a vol cross-check...") (newline)
-(define dff-series (fred-series "DFF" creds))     ; daily effective fed funds rate
-(define vol-window-days 504)                      ; ~2 years of business days
+(define dff (table-column (fred-table creds "DFF") "DFF"))         ; the daily effective fed funds rate, %
+(define dgs10 (table-column (fred-table creds "DGS10") "DGS10"))   ; the 10-year Treasury's, %
+(define vol-window-days 504)                                       ; ~2 years of business days
 
-(define (fred-recent-decimal-values series n)
-  (define pct_values (cdr series))
-  (define len (vector-length pct_values))
-  (vector-mul (vector-drop pct_values (max 0 (- len n))) 0.01))
+(define (recent-decimal-values percents n)
+  ; the last n values, as decimals
+  (vector-mul (vector-drop percents (max 0 (- (vector-length percents) n))) 0.01))
 
-(define dff-recent (fred-recent-decimal-values dff-series vol-window-days))
-(define dgs10-recent (fred-recent-decimal-values dgs10-series vol-window-days))
+(define dff-recent (recent-decimal-values dff vol-window-days))
+(define dgs10-recent (recent-decimal-values dgs10 vol-window-days))
 
 (define historical-vol-short (annualized-realized-vol dff-recent 252))
 (define historical-vol-level (annualized-realized-vol dgs10-recent 252))
@@ -143,10 +141,10 @@
 ; --- 5. fetch the current market mortgage rate from FRED -----------------
 
 (display "Fetching the current 30-year mortgage rate from FRED...") (newline)
-(define mortgage30us-series (fred-series "MORTGAGE30US" creds))
-(define note-rate-percent (fred-latest-value mortgage30us-series))   ; already in percent points
+(define mortgage30us (fred-table creds "MORTGAGE30US"))
+(define note-rate-percent (second (latest mortgage30us "MORTGAGE30US")))   ; already in percent points
 (display "  MORTGAGE30US: ") (display note-rate-percent) (display "%  (as of ")
-(display (fred-latest-date mortgage30us-series)) (display ")") (newline)
+(display (first (latest mortgage30us "MORTGAGE30US"))) (display ")") (newline)
 
 ; --- 6. simulate Monte Carlo mortgage-rate paths off the fitted model,
 ;        extended curve --------------------------------------------------
@@ -219,7 +217,7 @@
   (display "  sigma2 (level factor vol)       = ") (display fitted-sigma2) (newline)
   (display "  total squared pricing error     = ") (display fitted-error) (newline) (newline)
 
-  (display "Treasury par yields (FRED, as of ") (display (fred-latest-date dgs10-series))
+  (display "Treasury par yields (FRED, as of ") (display (first (latest treasury "DGS10")))
   (display "):") (newline)
   (display "  3m=") (display yield-3m) (display "  6m=") (display yield-6m)
   (display "  1y=") (display yield-1y) (display "  2y=") (display yield-2y) (newline)
@@ -242,7 +240,7 @@
   (display "   (fitted sigma2 = ") (display fitted-sigma2) (display ")") (newline) (newline)
 
   (display "Current 30-year mortgage rate (FRED MORTGAGE30US, as of ")
-  (display (fred-latest-date mortgage30us-series)) (display "): ")
+  (display (first (latest mortgage30us "MORTGAGE30US"))) (display "): ")
   (display note-rate-percent) (display "%") (newline) (newline)
 
   (display "--- ASSUMPTIONS (not fetched) ---") (newline) (newline)

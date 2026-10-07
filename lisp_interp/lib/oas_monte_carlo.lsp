@@ -76,8 +76,8 @@
 ; series, not the two-factor model's own latent state -- but they're a
 ; fast, no-options-data-needed sanity check that a fitted sigma1/sigma2
 ; is at least the right ORDER OF MAGNITUDE:
-;   (define dff (fred-series "DFF" api-key))
-;   (define dff-annual-vol (annualized-realized-vol (cdr dff) 252))
+;   (define dff (table-column (fred-table creds "DFF") "DFF"))
+;   (define dff-annual-vol (annualized-realized-vol dff 252))
 (define (annualized-realized-vol rate_levels periods_per_year)
   ; the sample standard deviation of the period-to-period changes
   ; (vector-diff's first element is NaN, which vector-stdev skips),

@@ -11,7 +11,7 @@ needs), and it never touches the network, the GUI, your credentials, or any
 file outside a temporary directory -- so it is safe to run anywhere, anytime.
 The two slowest example scripts (about 15s and 60s) are skipped unless you
 set LISP_TEST_SLOW=1. Not covered on purpose: anything that needs a network
-connection or an account (fred-series, tastytrade-*, sofr-calibration-data).
+connection or an account (fred-table, tastytrade-*, sofr-calibration-data).
 The GUI and the Jupyter kernel get only a check of their error reports.
 "Running the tests" in lisp_interpreter_reference.md lists more ways to run
 it, e.g. one test class at a time.
@@ -4869,30 +4869,43 @@ class TestTimeSeries(LispTestCase):
 
     def test_series(self):
         self.run_lisp("""
-          (define s (cons (vector (date 2023 1 5) (date 2023 1 20) (date 2023 3 1) (date 2023 3 9))
-                          (vector 6.0 7.0 nan 5.0)))""")
-        self.assertShows("(series-monthly s)", "(#(2023-01-01 2023-03-01) . #(6.5 5.0))")
-        self.assertShows("(series-monthly s 'first)", "(#(2023-01-01 2023-03-01) . #(6.0 5.0))")
-        self.assertShows("(series-monthly s 'sum)", "(#(2023-01-01 2023-03-01) . #(13.0 5.0))")
-        self.assertLispError("(series-monthly s 'median)", "how must be")
+          (define s (make-table "date" (vector (date 2023 1 5) (date 2023 1 20) (date 2023 3 1) (date 2023 3 9))
+                                "rate" (vector 6.0 7.0 nan 5.0)))""")
+        self.assertShows('(series-monthly s)',
+                         '(("month" . #(24276 24278)) ("date" . #(2023-01-01 2023-03-01)) ("rate" . #(6.5 5.0)))')
+        self.assertShows("(table-column (series-monthly s :how 'first) \"rate\")", "#(6.0 5.0)")
+        self.assertShows("(table-column (series-monthly s :how 'last) \"rate\")", "#(7.0 5.0)")
+        self.assertShows("(table-column (series-monthly s :how 'sum) \"rate\")", "#(13.0 5.0)")
+        self.assertLispError("(series-monthly s :how 'median)", ":how must be")
         self.assertShows("(series-values-at s (month-range (date 2022 12 1) (date 2023 4 1)))",
                          "#(nan 6.5 nan 5.0 nan)")
-        self.assertShows("(series-values-at s (month-range (date 2022 12 1) (date 2023 4 1)) #t)",
+        self.assertShows("(series-values-at s (month-range (date 2022 12 1) (date 2023 4 1)) :fill-forward #t)",
                          "#(nan 6.5 6.5 5.0 5.0)")
         self.assertShows("(series-values-at s (vector (date 2023 1 1)))", "#(6.5)")
 
+    def test_a_series_can_have_several_columns_and_its_dates_another_name(self):
+        self.run_lisp("""
+          (define prices (make-table "Date" (vector (date 2023 1 3) (date 2023 1 31) (date 2023 2 1))
+                                     "close" #(10.0 12.0 11.0) "volume" #(100 300 200)))""")
+        self.assertShows("(table-column-names (series-monthly prices :how 'last))", '("month" "date" "close" "volume")')
+        self.assertShows("(table-column (series-monthly prices :how 'last) \"close\")", "#(12.0 11.0)")
+        self.assertShows("(series-values-at prices (vector (date 2023 2 1)) :column \"volume\")", "#(200.0)")
+        self.assertLispError("(series-values-at prices (vector (date 2023 2 1)))", "say which with :column")
+        self.assertLispError("(series-values-at prices (vector (date 2023 2 1)) :column \"open\")", "no column of numbers named open")
+        self.assertLispError("(series-monthly (make-table \"x\" #(1 2)))", "a table with a column of dates")
+
     def test_series_table(self):
         self.run_lisp("""
-          (define a (cons (vector (date 2023 1 1) (date 2023 3 1)) #(1 3)))
-          (define b (cons (vector (date 2023 2 15)) #(20)))
-          (define t (series-table (list (cons "a" a) (cons "b" b))))""")
+          (define a (make-table "date" (vector (date 2023 1 1) (date 2023 3 1)) "a" #(1 3)))
+          (define b (make-table "date" (vector (date 2023 2 15)) "b" #(20)))
+          (define t (series-table (list a b)))""")
         self.assertShows("(table-column-names t)", '("month" "date" "a" "b")')
         self.assertShows('(table-column t "month")', "#(24276 24277 24278)")
         self.assertShows('(table-column t "a")', "#(1.0 nan 3.0)")
         self.assertShows('(table-column t "b")', "#(nan 20.0 nan)")
-        self.assertShows('(table-column (series-table (list (cons "b" b) (cons "a" a)) #t) "b")',
-                         "#(nan 20.0 20.0)")
-        self.assertLispError("(series-table (list (cons \"a\" 5)))", "a pair of vectors")
+        self.assertShows('(table-column (series-table (list b a) :fill-forward #t) "b")', "#(nan 20.0 20.0)")
+        self.assertLispError("(series-table (list a a))", "two of the tables have a column named a")
+        self.assertLispError("(series-table 5)", "expected a list of tables")
 
 
 class TestCsvFiles(LispTestCase):
@@ -5070,17 +5083,6 @@ class TestHttp(LispTestCase):
 # ---------------------------------------------------------------------------
 
 
-    def test_fred_series_downloads_through_the_shared_code(self):
-        with mock.patch.object(lisp_fred, "FRED_URL", self.base + "/fred"):
-            self.assertShows('(fred-series "SOFR" "KEY123")', "(#(2024-01-01 2024-03-01) . #(5.33 5.31))")
-
-    def test_fred_series_can_be_cached(self):
-        with mock.patch.object(lisp_fred, "FRED_URL", self.base + "/fred"):
-            before = len(self.handler.hits)
-            self.run_lisp('(fred-series "SOFR" "KEY123" \'() \'() 1)')
-            self.run_lisp('(fred-series "SOFR" "KEY123" \'() \'() 1)')
-        self.assertEqual(len(self.handler.hits) - before, 1)
-
     def test_fred_table_lines_series_up_by_date(self):
         folder = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, folder, True)
@@ -5099,9 +5101,10 @@ class TestHttp(LispTestCase):
         self.assertIn("observation_start=2024-01-01", fred_hits[0])
 
     def test_a_fred_error_says_what_fred_said_without_the_api_key(self):
+        self.use_credentials({"fred_api_key": "KEY123"})
         with mock.patch.object(lisp_fred, "FRED_URL", self.base + "/fred"):
             with self.assertRaises(lisp_core.LispError) as cm:
-                self.run_lisp('(fred-series "NOPE" "KEY123")')
+                self.run_lisp('(fred-table creds "NOPE")')
         self.assertIn("The series does not exist", str(cm.exception))
         self.assertNotIn("KEY123", str(cm.exception))
 
@@ -9789,7 +9792,7 @@ class TestExampleScripts(unittest.TestCase):
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
-    "fred-series", "tastytrade", "schwab-", "alpha-vantage-", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(bea-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
+    "fred-table", "tastytrade", "schwab-", "alpha-vantage-", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(bea-", "(sleep", "(load ", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "save-chart", "load-csv", "write-columns-csv",
     "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
 )

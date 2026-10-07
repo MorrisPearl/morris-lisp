@@ -3822,9 +3822,11 @@ fast. The functions below convert dates, and the `YYYYMM` values loan-level
 data uses for reporting periods (e.g. `202301`), to and from month
 numbers. Each takes a single value or a whole vector.
 
-**Series.** A time series is `(dates . values)`, a pair of vectors — the
-shape `fred-series` returns. Build one from two table columns with
-`(cons (table-column t "date") (table-column t "value"))`.
+**Series.** A time series is a table with a column of dates and columns of
+numbers, as `fred-table`, `schwab-price-history`, and `bls-series` make. Its
+dates are its column named `date`, or, if it has none, its one column of
+dates. Its values are its other columns of numbers (but a `month`
+column).
 
 #### `(date->month-number d)`, `(month-number->date m)`
 A date's month number (the day of the month is ignored), and the first day
@@ -3872,47 +3874,52 @@ and `last` may be dates or month numbers.
 (month-range (date 2020 11 1) (date 2021 2 1))      ; => #(24250 24251 24252 24253)
 ```
 
-#### `(series-monthly series [how])`
-A daily or weekly series made monthly: one value per month that has data,
-dated the first of the month. `how` chooses the value: `'mean` (the
-default), `'last`, `'first`, `'sum`, `'min`, or `'max`. Missing values are
-skipped.
+#### `(series-monthly table [:how h])`
+A daily or weekly series made monthly: a table of `month` (month numbers),
+`date` (the first of the month), and each of the table's columns of
+numbers, with a row for each month that has data. `:how` chooses which of
+a month's values: `'mean` (the default), `'last`, `'first`, `'sum`,
+`'min`, or `'max`. Missing values are left out. With `:how 'last`, a table
+of daily prices becomes one of month-end prices.
 
 ```lisp
-(define weekly (cons (vector (date 2023 1 5) (date 2023 1 12) (date 2023 2 2))
-                     #(6.5 6.25 6.0)))
-(series-monthly weekly)          ; => (#(2023-01-01 2023-02-01) . #(6.375 6.0))
-(series-monthly weekly 'last)    ; => (#(2023-01-01 2023-02-01) . #(6.25 6.0))
+(define weekly (make-table "date" (vector (date 2023 1 5) (date 2023 1 12) (date 2023 2 2))
+                           "rate" #(6.5 6.25 6.0)))
+(table-column (series-monthly weekly) "rate")              ; => #(6.375 6.0)
+(table-column (series-monthly weekly :how 'last) "rate")   ; => #(6.25 6.0)
+(table-column (series-monthly weekly) "date")              ; => #(2023-01-01 2023-02-01)
 ```
 
-#### `(series-values-at series months [fill-forward?])`
-The series' value in each of the given months (a vector of month numbers,
-or of dates). Several values in one month are averaged. A month with no
-data gives `nan` — or, with `fill-forward?` `#t`, the latest earlier
+#### `(series-values-at table months [:column name] [:fill-forward #t])`
+A column of a series in each of the given months (a vector of month
+numbers, or of dates). `:column` says which, if the table has more than
+one column of numbers. Several values in one month are averaged. A month
+with no data gives `nan`, or, with `:fill-forward #t`, the latest earlier
 month's value. This is the simplest way to attach a market series to every
 loan-month row:
 
 ```lisp
-(define weekly (cons (vector (date 2023 1 5) (date 2023 1 12) (date 2023 3 2))
-                     #(6.5 6.25 6.0)))
+(define weekly (make-table "date" (vector (date 2023 1 5) (date 2023 1 12) (date 2023 3 2))
+                           "rate" #(6.5 6.25 6.0)))
 (define months (month-range (date 2023 1 1) (date 2023 4 1)))
-(series-values-at weekly months)       ; => #(6.375 nan 6.0 nan)
-(series-values-at weekly months #t)    ; => #(6.375 6.375 6.0 6.0)
+(series-values-at weekly months)                   ; => #(6.375 nan 6.0 nan)
+(series-values-at weekly months :fill-forward #t)  ; => #(6.375 6.375 6.0 6.0)
 ```
 
-#### `(series-table (list (cons name series) ...) [fill-forward?])`
-A table lining several series up by month, with the columns `"month"`
-(month numbers), `"date"` (the first of each month), and one column per
-series, named as given. The months run from the earliest month any series
-has data to the latest, every month included. Several values in one month
-are averaged; a month with no data is `nan` — or, with `fill-forward?` `#t`,
-that series' latest earlier value.
+#### `(series-table tables [:fill-forward #t])`
+Several series, a list of tables, lined up by month in one table: `month`
+(month numbers), `date` (the first of each month), and every column of
+numbers of the tables, under its own name (two tables can't have a column
+of the same name: `table-rename-column` one of them). The months run from
+the earliest month any of them has data to the latest, every month
+included. Several values in one month are averaged; a month with no data
+is `nan`, or, with `:fill-forward #t`, that column's latest earlier value.
 
 ```lisp
-(define mortgage (cons (vector (date 2023 1 5) (date 2023 1 12) (date 2023 3 2))
-                       #(6.5 6.25 6.0)))
-(define cpi (cons (vector (date 2023 1 1) (date 2023 2 1)) #(300.5 301.1)))
-(series-table (list (cons "mortgage" mortgage) (cons "cpi" cpi)))   ; => (("month" . #(24276 24277 24278)) ("date" . #(2023-01-01 2023-02-01 2023-03-01)) ("mortgage" . #(6.375 nan 6.0)) ("cpi" . #(300.5 301.1 nan)))
+(define mortgage (make-table "date" (vector (date 2023 1 5) (date 2023 1 12) (date 2023 3 2))
+                             "mortgage" #(6.5 6.25 6.0)))
+(define cpi (make-table "date" (vector (date 2023 1 1) (date 2023 2 1)) "cpi" #(300.5 301.1)))
+(series-table (list mortgage cpi))   ; => (("month" . #(24276 24277 24278)) ("date" . #(2023-01-01 2023-02-01 2023-03-01)) ("mortgage" . #(6.375 nan 6.0)) ("cpi" . #(300.5 301.1 nan)))
 ```
 
 **Putting it together** — attach the 30-year mortgage rate and the
@@ -3920,16 +3927,14 @@ that series' latest earlier value.
 FRED API key):
 
 ```lisp
-(define market (series-table (list (cons "mortgage30" (fred-series "MORTGAGE30US" creds))
-                                   (cons "dgs10" (fred-series "DGS10" creds)))
-                             #t))
+(define market (series-table (list (fred-table creds '("MORTGAGE30US" "DGS10"))) :fill-forward #t))
 (define loans (sqlite-query conn "SELECT loan_id, monthly_reporting_period, current_interest_rate FROM loan_performance"))
 (define loans (table-add-column loans "month"
                 (yyyymm->month-number (table-column loans "monthly_reporting_period"))))
 (define loans (table-join loans market "month" 'left))
 (define loans (table-add-column loans "incentive"
                 (vector-sub (table-column loans "current_interest_rate")
-                            (table-column loans "mortgage30"))))
+                            (table-column loans "MORTGAGE30US"))))
 ```
 
 ### Structs
@@ -4185,10 +4190,10 @@ sleeps until the top of the next hour:
               (* 60 60))))
 
 (define (check-rates)
-  (let ((sofr (fred-series "SOFR" api-key)))
+  (let ((sofr (table-column (fred-table creds "SOFR" :cache-hours 0) "SOFR")))   ; (0: not a saved copy)
     (display (format "{}  SOFR {:.2f}%\n"
                      (time->string (current-time))
-                     (vector-ref (cdr sofr) (- (vector-length (cdr sofr)) 1))))))
+                     (vector-ref sofr (- (vector-length sofr) 1))))))
 
 ; Every hour, on the hour, for the next 8 hours:
 (loop repeat 8
@@ -5741,7 +5746,7 @@ lsp`'s `(write-csv "mortgage_amortization_example.csv" *columns*)` call.
 
 ### FRED (Federal Reserve Bank of St. Louis) data, and CSV loading
 
-#### `(fred-table creds ids [:start-date d :end-date d])`
+#### `(fred-table creds ids [:start-date d :end-date d :cache-hours h])`
 One FRED series, or a list or vector of them, by ID (`"UNRATE"`,
 `"DGS10"`), as a table, like the other data functions give:
 
@@ -5753,7 +5758,8 @@ One FRED series, or a list or vector of them, by ID (`"UNRATE"`,
 `creds` is the credentials file's path; its `"fred_api_key"` entry goes
 with each request. The table covers all of each series, unless
 `:start-date` or `:end-date` (a date, or `"YYYY-MM-DD"`) says otherwise.
-Each download is kept for 12 hours. FRED's site (https://fred.stlouisfed.org)
+Each download is kept for 12 hours, unless `:cache-hours` says otherwise
+(0 downloads it every time). FRED's site (https://fred.stlouisfed.org)
 finds a series' ID.
 
 ```lisp
@@ -5762,75 +5768,8 @@ finds a series' ID.
                   (list "30-year mortgage" (table-column rates "date") (table-column rates "MORTGAGE30US"))))
 ```
 
-#### `(fred-series series-id [api-key] [start-date] [end-date] [cache-hours])`
-The older form: fetches one FRED economic data series and returns
-`(dates-vector . values-vector)` — a dotted pair (built with `cons`, not a 2-element list;
-`(cdr result)` is the values vector directly, no extra `car` needed) —
-parallel, row-aligned vectors of dates and numbers. Observations FRED
-marks as missing are silently skipped, so both vectors stay the same
-length.
-
-- `series-id` — the FRED series mnemonic, e.g. `"GDP"`, `"UNRATE"`,
-  `"FEDFUNDS"`.
-- `api-key` (optional) can be given three ways, tried in this order: (1) if
-  it's a path that exists on disk, it's read as a JSON credentials file
-  with a `"fred_api_key"` entry — the same file format `tastytrade-*`
-  credentials use below, so one file can hold both; (2) otherwise, if it's
-  a non-empty string, used as a literal API key directly; (3) if omitted,
-  falls back to the `FRED_API_KEY` environment variable. A free key can be
-  requested at https://fred.stlouisfed.org/docs/api/api_key.html.
-- `start-date`/`end-date` (optional) restrict the observation range. Each
-  may be a `date` value or a literal `"YYYY-MM-DD"` string — both forms
-  work interchangeably and can be mixed — or `'()` to leave that end open.
-- `cache-hours` (optional): keep the download on disk for that many hours,
-  so running the same notebook again reads the saved copy instead of
-  fetching the series again — the same cache as the `http-get-*`
-  functions (see "Downloading data from the web"). No caching unless
-  given. For example, `(fred-series "DGS10" api-key '() '() 12)`.
-
-Raises `LispError` on a missing/invalid credentials file, a missing API
-key, a network/HTTP failure, or a FRED-side error (bad series ID, bad key,
-etc).
-
-**Example** (also runnable as [`fred_example.lsp`](examples/fred_example.lsp) —
-`python3 ../lisp_interpreter.py fred_example.lsp`, from `examples/`). Exercises all three
-argument forms:
-
-```lisp
-(define api-key "tastytrade_credentials.json")   ; edit to your credentials file's path
-
-; A small helper to print a (dates . values) series returned by
-; fred-series, one observation per line.
-(define (print-series dates values i n)
-  (if (< i n)
-      (begin
-        (display "  ") (display (vector-ref dates i))
-        (display "  ") (display (vector-ref values i))
-        (newline)
-        (print-series dates values (+ i 1) n))
-      #t))
-
-; --- 1. fetch a full series: US Real Gross Domestic Product ("GDP") ---
-(define gdp (fred-series "GDP" api-key))
-(define gdp-dates (car gdp))
-(define gdp-values (cdr gdp))          ; NOT (car (cdr gdp)) -- (cdr gdp) IS
-                                        ; the values vector already; fred-series
-                                        ; returns a cons pair, not a 2-element list
-(define gdp-n (vector-length gdp-values))   ; vector-length, not length -- these
-                                             ; are vectors, not Lisp lists
-(display "GDP: ") (display gdp-n) (display " quarterly observations") (newline)
-
-; --- 2. a second series, restricted to a date range given as `date` values ---
-(define unrate (fred-series "UNRATE" api-key (date 2020 1 1) (date 2020 12 31)))
-(display "UNRATE, 2020 (civilian unemployment rate, %):") (newline)
-(print-series (car unrate) (cdr unrate) 0 (vector-length (car unrate)))
-
-; --- 3. a third series, with the date range as "YYYY-MM-DD" strings instead ---
-(define fedfunds (fred-series "FEDFUNDS" api-key "2023-01-01" "2023-12-31"))
-(display "FEDFUNDS, 2023 (effective federal funds rate, %):") (newline)
-(print-series (car fedfunds) (cdr fedfunds) 0 (vector-length (car fedfunds)))
-
-```
+`examples/fred_example.lsp` has more: a whole series, a date range, and
+several series lined up by month.
 
 #### `(load-csv filename [has-header?])`
 (In `lisp_csv.py`.) Reads a CSV file into a table (see "Tables") — a list
@@ -5912,8 +5851,7 @@ The CSV file at `url`, as a table, read exactly as `load-csv` reads a file.
                 "daily-treasury-rates.csv/2026/all?type=daily_treasury_yield_curve"
                 "&field_tdr_date_value=2026&page&_format=csv")
               #t 12))
-(define ten-year (cons (table-column ust "Date") (table-column ust "10 Yr")))
-(series-monthly ten-year)        ; monthly averages of the 10-year yield
+(series-monthly (table-select ust '("Date" "10 Yr")))   ; monthly averages of the 10-year yield
 ```
 
 #### `(http-get-text url [cache-hours headers])`
@@ -5949,7 +5887,7 @@ and foreign companies that file annual reports (20-F, 40-F).
 
 **Credentials.** The SEC asks every program that downloads from it to say
 who's asking, with a name and an email address. Put them in your
-credentials file (the one `tastytrade-*` and `fred-series` use) as
+credentials file (the one `tastytrade-*` and `fred-table` use) as
 `"sec_user_agent"`:
 ```json
 {"sec_user_agent": "Jane Smith jane@example.com", ...}
@@ -6795,7 +6733,7 @@ JSON file,
 {"client_secret": "...", "refresh_token": "...", "is_test": false}
 ```
 (`is_test` defaults to `false` if omitted). This is the same file
-`fred-series` can read a `"fred_api_key"` entry from, so one JSON file can
+`fred-table` reads a `"fred_api_key"` entry from, so one JSON file can
 hold both APIs' credentials. See `tasty_api/README.md` for the one-time
 OAuth setup (create an OAuth application on tastytrade, save the client
 secret, then use "Create Grant" to generate a refresh token — refresh
@@ -7347,7 +7285,7 @@ hundreds-to-thousands of per-path cashflow vectors fast). It adds:
 - `annualized-realized-vol` — a historical-data cross-check for
   `sofr-calibrate-model`'s fitted `sigma1`/`sigma2` (or a quick sanity
   check with no options data at all), from a plain rate-level vector —
-  see its docstring for a worked `fred-series "DFF"`/`"DGS10"` example.
+  see its docstring for a worked example with FRED's `"DFF"` and `"DGS10"`.
 - `simple-mortgage-cashflows` / `mortgage-cashflows-per-path` — a fast,
   direct (not `column_engine.lsp`-based) fixed-rate, PSA-prepaying
   pass-through cashflow generator, reusing `prepayment_model.lsp`'s
@@ -7376,7 +7314,7 @@ illustrative, in the same spirit as `term_structure_model.py`'s own
 the same pipeline against REAL data instead: the SOFR futures curve and
 calibration options from tastytrade (`sofr-calibration-data`), the
 Treasury par curve and the DFF/DGS10 historical-vol cross-check from
-`fred-series`, and the mortgage note rate from FRED's `MORTGAGE30US` —
+`fred-table`, and the mortgage note rate from FRED's `MORTGAGE30US` —
 only the security's own market price has no live source wired up
 anywhere in this codebase, so that one number stays an assumption.
 Writes `oas_monte_carlo_live_report.txt` (and prints the same report to
@@ -9340,7 +9278,7 @@ The Python files:
 | `lisp_csv.py` | `load-csv`, `write-columns-csv` |
 | `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, `sqlite-write-table`, ... |
 | `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
-| `lisp_fred.py` | `fred-table`, `fred-series` (downloads from FRED, through `lisp_http.py`) |
+| `lisp_fred.py` | `fred-table` (downloads from FRED, through `lisp_http.py`) |
 | `lisp_data_common.py` | What the data modules share: reading the credentials file, the years and lists of names they take, and making their tables |
 | `lisp_sec.py` | `sec-income-statement`, `sec-balance-sheet`, `sec-financials`, ...: financial statements from the SEC's XBRL data |
 | `lisp_fdic.py` | `fdic-balance-sheet`, `fdic-ratios`, `fdic-financials`, `fdic-get`, ...: banks' Call Report data from the FDIC |
@@ -9423,7 +9361,7 @@ LISP_TEST_SLOW=1 python3 -m unittest test_lisp_interpreter
 ```
 
 **What isn't tested.** Anything that needs the network or an account:
-`fred-series`, `tastytrade-*`, and `sofr-calibration-data`. The
+`fred-table`, `tastytrade-*`, and `sofr-calibration-data`. The
 `http-get-*` functions are tested against a small web server that the
 tests start on your own computer. The GUI gets only a check that its error
 report looks right; it runs off-screen, so no window opens, and it's skipped
