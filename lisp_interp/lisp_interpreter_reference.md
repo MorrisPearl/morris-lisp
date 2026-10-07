@@ -112,6 +112,7 @@ functions" as a reference to search rather than read start to end.
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
   - [Simulating investment prices](#simulating-investment-prices)
   - [Checking option prices against simulated paths](#checking-option-prices-against-simulated-paths)
+  - [Portfolios](#portfolios)
   - [Input / output](#input--output)
   - [Saving variables](#saving-variables)
   - [Metaprogramming](#metaprogramming)
@@ -7652,6 +7653,34 @@ The volatility at which `american-price` gives `price`, by bisection, as
 for each option, so it takes a moment for a chain: fewer `:steps` make it
 faster.
 
+#### `(binomial-tree type spot strike time rate vol [american-price's options])`
+Every node of the tree `american-price` prices one option with, to see how
+it gets its answer: a table, from the first step to the last, with a row
+for each node. It has 5 steps unless `:steps` says otherwise, so it can be
+read. Its columns:
+
+| Column | What it holds |
+|---|---|
+| `step` | the step, 0 for now |
+| `ups` | how many of the steps to this node went up |
+| `time` | in years |
+| `price` | the stock's price there |
+| `hold` | what keeping the option is worth there: the next step's values, weighted by the chances of going up and down, and discounted; `nan` at expiration |
+| `exercise` | what exercising it there pays |
+| `value` | the option's value there: the larger of `hold` and `exercise`, if it can be exercised early |
+| `early` | 1 where exercising before expiration is worth more than keeping the option |
+
+The first row's `value` is the option's price.
+
+```lisp
+(define tree (binomial-tree "put" 100 100 1 0.05 0.2 :steps 3))
+(display-table tree)
+(vector-round (table-column tree "value") 4)   ; => #(6.4996 2.1954 11.8691 0.0 4.893 20.6213 0.0 0.0 10.9053 29.2778)
+(table-column tree "early")                    ; => #(0 0 0 0 0 1 0 0 0 0)
+```
+After two steps down, at a price of 79.38, exercising the put pays
+20.62, and keeping it is worth 18.97: it's exercised early.
+
 ### Implied volatility smiles: finding options out of line
 
 `lib/vol_smile.lsp` fits a model of implied volatility to an option chain
@@ -7802,6 +7831,10 @@ average price a year out is exactly right (apart from chance); with longer
 blocks, close to right. `annual-return` must be above -1 (a loss of all of
 it).
 
+For several investments' returns, as `combine-returns` makes (see
+"Portfolios"), `annual-return` is one number for all of them, or a list
+of `(name . annual-return)`, one for each.
+
 `:volatility-scale` (1, no change, unless given) multiplies the returns'
 spread about their average, so that the volatility is that many times the
 history's: 1.2 is 20% more, and 0.8 is 20% less. The expected annual
@@ -7914,6 +7947,23 @@ needs a Schwab sign-in, and `examples/investment_paths_example.lsp` has it all:
 (define year-ends (list->vector (map (lambda (path) (vector-ref path 251)) paths)))
 (vector-quantile (vector-div year-ends start-price) #(0.05 0.5 0.95))   ; the 5th, 50th, and 95th percentiles
 ```
+
+#### `(bootstrap-days returns days block-size [:seed n])`
+The days of the history a path is made of, to see how it was built: a
+table of `day` (1 for the path's first), the `date` of the history's day
+it copies (if the table of returns has dates), and that day's returns.
+With the same `:seed`, `bootstrap-path` (and `bootstrap-paths`) make their
+paths from these days: a path's price on a day is its start price times *e*
+to the sum of the returns up to that day.
+
+```lisp
+(define returns (make-table "date" (vector (date 2024 1 3) (date 2024 1 4) (date 2024 1 5))
+                            "log-return" #(-0.02 0.03 0.0)))
+(table-column (bootstrap-days returns 4 2 :seed 3) "date")   ; => #(2024-01-03 2024-01-04 2024-01-05 2024-01-03)
+(vector-round (bootstrap-path returns 100 4 2 :seed 3) 2)    ; => #(98.02 101.01 101.01 99.0)
+```
+(The second block starts on the history's last day, and carries on from
+its first.)
 
 #### `(option-value paths payoff rate years)`
 What an option is worth, estimated from simulated paths of its
@@ -8223,6 +8273,134 @@ the market's prices.
   difference of about two standard errors the least that means anything.
   More `:paths` make it smaller (four times as many, half), but not the
   history's differences from the future.
+
+### Portfolios
+
+(In `lisp_portfolio.py`.) Several investments together: their returns
+lined up by date, paths of all of them, a portfolio's value, and the
+weights that Markowitz's mean-variance analysis says are best.
+
+Weights, start prices, and expected returns are lists of `(name .
+number)` pairs: `(list (cons "SPY" 0.6) (cons "TLT" 0.4))`.
+
+#### `(combine-returns named-returns)`
+Several investments' returns, a list of `(name . returns)`, each a table
+as `daily-returns` makes it, lined up by date: a table of `date` and a
+column of returns for each investment, named for it, with a row for each
+date they all have. `adjust-returns` gives each its expected return, and
+`covariance-matrix` and `bootstrap-paths` take it.
+
+```lisp
+(define a (make-table "date" (vector (date 2024 1 2) (date 2024 1 3) (date 2024 1 4) (date 2024 1 5))
+                      "log-return" #(0.01 -0.02 0.03 0.0)))
+(define b (make-table "date" (vector (date 2024 1 3) (date 2024 1 4) (date 2024 1 5) (date 2024 1 8))
+                      "log-return" #(0.005 0.01 -0.01 0.02)))
+(define both (combine-returns (list (cons "A" a) (cons "B" b))))
+(table-column both "date")      ; => #(2024-01-03 2024-01-04 2024-01-05)
+```
+
+#### `(bootstrap-paths returns start-prices days block-size [:seed n] [:dividends schedules])`
+A path for each of several investments, made from **the same days** of
+the history: when one had a bad day in the history, the others have that
+day too, so their correlation is kept. A table of `day` (1 for the first)
+and a column of prices for each investment. `returns` is a table as
+`combine-returns` makes (and `adjust-returns` adjusts); `start-prices` a
+list of `(name . price)`; `:dividends` a list of `(name . schedule)`, as
+`dividend-schedule` makes, for those that pay them. Otherwise it is
+`bootstrap-path`, and `bootstrap-days` shows the days it copied.
+
+```lisp
+(define paths (bootstrap-paths both (list (cons "A" 100) (cons "B" 50)) 4 2 :seed 3))
+(vector-round (table-column paths "A") 2)     ; => #(98.02 101.01 101.01 99.0)
+```
+
+#### `(portfolio-value prices weights [:start-prices p] [:rebalance n] [:start-value v])`
+A portfolio's value along a table of prices (a column for each investment
+and a row for each day: a price history, or `bootstrap-paths`' paths), as a
+vector with a value for each row. `weights` must add to 1. The portfolio is
+bought with `:start-value` (1 unless given), at `:start-prices` if they're
+given, and otherwise at the first row's prices. `:rebalance n` puts it back
+to the weights every `n` rows (21 is about a month of trading days); without
+it, it is bought and held. The prices should have any dividends in them
+(total returns, with no `:dividends` schedule): the portfolio doesn't get
+them otherwise.
+
+```lisp
+(define prices (make-table "A" #(100.0 110.0 121.0) "B" #(100.0 100.0 100.0)))
+(vector-round (portfolio-value prices (list (cons "A" 0.5) (cons "B" 0.5))) 4)              ; => #(1.0 1.05 1.105)
+(vector-round (portfolio-value prices (list (cons "A" 0.5) (cons "B" 0.5)) :rebalance 1) 4) ; => #(1.0 1.05 1.1025)
+```
+Bought and held, A grows to 60.5% of the portfolio; put back to half and
+half each day, it doesn't.
+
+#### `(covariance-matrix returns [:days-per-year n])`, `(correlation-matrix returns)`
+The covariance and the correlation of each pair of investments' returns,
+as a table: an `investment` column with their names, and a column for each
+of them, so `display-table` shows the matrix. The covariance is for a year:
+the daily returns' covariance times the days in a year (252, unless
+`:days-per-year` says). A correlation is from -1 to 1.
+
+```lisp
+(vector-round (table-column (covariance-matrix both) "A") 4)    ; => #(0.1596 0.0231)
+(vector-round (table-column (correlation-matrix both) "B") 4)   ; => #(0.35 1.0)
+(display-table (correlation-matrix both))
+```
+
+#### `(minimum-variance-weights covariance [:long-only #t])`, `(mean-variance-weights expected-returns covariance risk-aversion [:long-only #t])`
+The weights, adding to 1, that make a portfolio's variance least, or its
+expected return less `risk-aversion` / 2 times its variance greatest,
+as a list of `(name . weight)`. `covariance` is a table as
+`covariance-matrix` makes; `expected-returns` a list of `(name . annual
+return)`. The larger `risk-aversion`, the nearer the weights are to the
+minimum-variance ones; the smaller, the more of the investments with the
+highest expected returns.
+
+- A weight can be below 0, selling the investment short, unless
+  `:long-only #t`. Without it, the answer is a formula: a set of linear
+  equations, solved.
+- With `:long-only #t`, it is found by solving those equations for fewer
+  and fewer of the investments: one that would have a weight below 0 is
+  left out (its weight is 0), and one left out is let back in if the
+  portfolio would be better with some of it, until neither happens. Then
+  the answer meets the conditions for the best one.
+
+```lisp
+(define cov (make-table "investment" (vector "X" "Y" "Z")
+                        "X" #(0.04 0.006 -0.01) "Y" #(0.006 0.09 0.02) "Z" #(-0.01 0.02 0.0225)))
+(define (in-tenths-of-a-percent weights) (map (lambda (p) (cons (car p) (round (* 1000 (cdr p))))) weights))
+(in-tenths-of-a-percent (minimum-variance-weights cov))                 ; => (("X" . 410) ("Y" . -70) ("Z" . 660))
+(in-tenths-of-a-percent (minimum-variance-weights cov :long-only #t))   ; => (("X" . 394) ("Y" . 0) ("Z" . 606))
+(in-tenths-of-a-percent (mean-variance-weights (list (cons "X" 0.06) (cons "Y" 0.12) (cons "Z" 0.04)) cov 4))
+; => (("X" . 408) ("Y" . 206) ("Z" . 386))
+```
+
+#### `(portfolio-volatility weights covariance)`
+The volatility of a portfolio with these weights, by the covariance matrix
+(for a year, as `covariance-matrix` gives it): the square root of the sum
+of `weight(i) × weight(j) × covariance(i, j)`.
+
+```lisp
+(format "{:.4f}" (portfolio-volatility (minimum-variance-weights cov) cov))   ; => "0.0968"
+```
+
+**Putting it together**: two ETFs' prices from Schwab, their returns lined
+up, paths of a year that grow at the interest rate, and the value of a
+60/40 portfolio rebalanced every month along each:
+
+```lisp
+(define spy (daily-returns (schwab-price-history creds "SPY") :dividends (alpha-vantage-dividends creds "SPY")))
+(define tlt (daily-returns (schwab-price-history creds "TLT") :dividends (alpha-vantage-dividends creds "TLT")))
+(define both (adjust-returns (combine-returns (list (cons "SPY" spy) (cons "TLT" tlt))) (- (exp 0.04) 1)))
+(display-table (correlation-matrix both))
+(define ends
+  (map (lambda (i)
+         (let ((paths (bootstrap-paths both (list (cons "SPY" 1) (cons "TLT" 1)) 252 10 :seed i)))
+           (vector-ref (portfolio-value paths (list (cons "SPY" 0.6) (cons "TLT" 0.4))
+                                        :start-prices (list (cons "SPY" 1) (cons "TLT" 1)) :rebalance 21)
+                       251)))
+       (iota 1000)))
+(vector-quantile (list->vector ends) #(0.05 0.5 0.95))
+```
 
 ### Input / output
 
@@ -9291,6 +9469,7 @@ The Python files:
 | `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `option-value`, `option-payoffs`: simulated prices of an investment, and what options on it are worth |
 | `lisp_calendar.py` | `trading-day?`, `add-trading-days`, `trading-days-between`, `nyse-holidays`, ...: the NYSE's trading days |
 | `lisp_futures.py` | `futures-curve-fit`, `futures-leg-carry`: a futures curve's rich and cheap contracts, and its carry |
+| `lisp_portfolio.py` | `combine-returns`, `bootstrap-paths`, `portfolio-value`, `covariance-matrix`, `correlation-matrix`, `minimum-variance-weights`, `mean-variance-weights`, ...: portfolios |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |

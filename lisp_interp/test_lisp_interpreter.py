@@ -35,6 +35,7 @@ import contextlib
 import datetime
 import importlib.util
 import io
+import itertools
 import json
 import math
 import os
@@ -62,6 +63,7 @@ import lisp_core     # noqa: E402
 import lisp_charts  # noqa: E402
 import lisp_clock  # noqa: E402
 import lisp_plot_chart  # noqa: E402
+import lisp_portfolio  # noqa: E402
 import lisp_fred  # noqa: E402
 import lisp_http  # noqa: E402
 import lisp_jupyter_debug  # noqa: E402
@@ -5491,6 +5493,22 @@ class TestOptionPrices(LispTestCase):
         self.assertAlmostEqual(self.price('(american-implied-vol (american-price "put" 100 110 0.5 0.04 0.3 :steps 100) '
                                           '"put" 100 110 0.5 0.04 :steps 100)'), 0.3, places=7)
 
+    def test_the_binomial_tree_shows_how_american_price_is_found(self):
+        tree = dict(lisp_tables.table_columns(self.run_lisp('(binomial-tree "put" 100 100 1 0.05 0.2 :steps 3)'), "t"))
+        self.assertEqual(sorted(tree), ["early", "exercise", "hold", "price", "step", "time", "ups", "value"])
+        self.assertEqual(len(tree["step"].items), 10)                       # 1 + 2 + 3 + 4 nodes
+        self.assertAlmostEqual(float(tree["value"].items[0]), self.price('(american-price "put" 100 100 1 0.05 0.2 :steps 3)'),
+                               places=5)
+        early = [(int(s), int(u)) for s, u, e in zip(tree["step"].items, tree["ups"].items, tree["early"].items) if e]
+        self.assertEqual(early, [(2, 0)])                                   # two steps down: worth exercising
+        for value, hold, exercise in zip(tree["value"].items, tree["hold"].items, tree["exercise"].items):
+            if not math.isnan(float(hold)):
+                self.assertAlmostEqual(float(value), max(float(hold), float(exercise)), places=4)
+        calls = dict(lisp_tables.table_columns(self.run_lisp('(binomial-tree "call" 100 100 1 0.05 0.2)'), "t"))
+        self.assertEqual(len(calls["step"].items), 21)                      # 5 steps unless asked
+        self.assertEqual(sum(int(e) for e in calls["early"].items), 0)      # never, for a call without dividends
+        self.assertLispError('(binomial-tree "put" #(100 110) 100 1 0.05 0.2)', "one option at a time")
+
     def test_what_the_option_functions_wont_take(self):
         self.assertLispError('(bsm-price "straddle" 100 100 1 0.05 0.2)', 'an option type is "call" or "put"')
         self.assertLispError('(bsm-price "call" "100" 100 1 0.05 0.2)', "spot must be a number or a vector")
@@ -5883,9 +5901,9 @@ class TestInvestmentPaths(LispTestCase):
     def test_what_adjust_returns_wont_take(self):
         self.a_year_of_returns()
         self.assertLispError("(adjust-returns history -1)", "above -1")
-        self.assertLispError('(adjust-returns history "8%")', "above -1")
+        self.assertLispError('(adjust-returns history "8%")', "must be a number, or a list of (name . number) pairs")
         self.assertLispError("(adjust-returns history 0.08 :days-per-year 0)", ":days-per-year must be a number above 0")
-        self.assertLispError("(adjust-returns (list (cons \"x\" (vector 1.0))) 0.08)", "no column named 'log-return'")
+        self.assertLispError("(adjust-returns (list (cons \"date\" (vector (date 2024 1 2)))) 0.08)", "no column of returns")
         self.assertLispError("(adjust-returns history 0.08 :days 252)", ":days isn't an option")
         self.assertLispError("(adjust-returns history 0.08 :volatility-scale 0)", ":volatility-scale must be a number above 0")
         self.assertLispError('(adjust-returns history 0.08 :volatility-scale "2")', ":volatility-scale must be a number above 0")
@@ -5971,7 +5989,9 @@ class TestInvestmentPaths(LispTestCase):
         self.assertLispError("(bootstrap-path five 100 7 3 :seed -1)", ":seed must be a whole number, 0 or more")
         self.assertLispError("(bootstrap-path five 100 7 3 :seed 1.5)", ":seed must be a whole number")
         self.assertLispError("(bootstrap-path five 100 7 3 :wrap #f)", ":wrap isn't an option")
-        self.assertLispError('(bootstrap-path (list (cons "x" (vector 1.0))) 100 7 3)', "no column named 'log-return'")
+        self.assertLispError('(bootstrap-path (list (cons "date" (vector (date 2024 1 2)))) 100 7 3)', "no column of returns")
+        self.assertLispError('(bootstrap-path (list (cons "a" (vector 0.01)) (cons "b" (vector 0.02))) 100 7 1)',
+                             "the returns of 2 investments (a, b)")
         self.assertLispError('(bootstrap-path (list (cons "log-return" (vector 0.01 nan))) 100 7 1)', "not missing or infinite")
         self.assertLispError('(bootstrap-path (list (cons "log-return" (vector))) 100 7 1)', "there are no returns")
 
@@ -6573,6 +6593,188 @@ class TestOptionCheck(LispTestCase):
         self.assertIn("Options whose bid is above the paths' value (rich) or ask below it (cheap):", shown)
         for symbol in ("X1C105", "X2P95"):
             self.assertIn(symbol, shown)
+
+
+class TestPortfolio(LispTestCase):
+    """lisp_portfolio.py: several investments' returns, paths of them, a portfolio's value, covariance, and
+    mean-variance weights."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("""
+          (define a (make-table "date" (vector (date 2024 1 2) (date 2024 1 3) (date 2024 1 4) (date 2024 1 5))
+                                "log-return" #(0.01 -0.02 0.03 0.0)))
+          (define b (make-table "date" (vector (date 2024 1 3) (date 2024 1 4) (date 2024 1 5) (date 2024 1 8))
+                                "log-return" #(0.005 0.01 -0.01 0.02)))
+          (define both (combine-returns (list (cons "A" a) (cons "B" b))))""")
+
+    def pairs(self, src):
+        return {str(p.car): float(p.cdr) for p in lisp_core.pairs_to_list(self.run_lisp(src))}
+
+    def test_returns_are_lined_up_on_the_dates_they_all_have(self):
+        self.assertShows("both", '(("date" . #(2024-01-03 2024-01-04 2024-01-05)) ("A" . #(-0.02 0.03 0.0)) '
+                                 '("B" . #(0.005 0.01 -0.01)))')
+        self.assertLispError('(combine-returns (list (cons "A" a) (cons "A" b)))', "two of them are named A")
+        self.assertLispError('(combine-returns (list (cons "both" both)))', "the returns of more than one investment")
+        self.assertLispError("(combine-returns 5)", "expected a list of (name . returns)")
+
+    def test_each_investment_gets_its_own_expected_return(self):
+        self.run_lisp('(define adjusted (adjust-returns both (list (cons "A" 0.10) (cons "B" 0.02))))')
+        for name, rate in (("A", 0.10), ("B", 0.02)):
+            growth = float(self.run_lisp('(vector-mean (vector-exp (table-column adjusted "%s")))' % name))
+            self.assertAlmostEqual(growth, (1 + rate) ** (1 / 252), places=7)
+        self.assertShows('(table-column adjusted "date")', "#(2024-01-03 2024-01-04 2024-01-05)")
+        self.assertLispError('(adjust-returns both (list (cons "A" 0.10)))', "has none for B")
+
+    def test_paths_of_several_investments_copy_the_same_days(self):
+        self.run_lisp("""(define twice (make-table "date" (vector (date 2024 1 2) (date 2024 1 3) (date 2024 1 4))
+                                                   "X" #(0.01 -0.02 0.03) "Y" #(0.02 -0.04 0.06)))""")
+        paths = self.run_lisp('(bootstrap-paths twice (list (cons "X" 100) (cons "Y" 100)) 40 2 :seed 5)')
+        columns = dict(lisp_tables.table_columns(paths, "test"))
+        x = np.log(np.array(columns["X"].items, dtype=float) / 100)
+        y = np.log(np.array(columns["Y"].items, dtype=float) / 100)
+        np.testing.assert_allclose(y, 2 * x, atol=1e-5)          # Y's return is twice X's, every day
+        self.assertEqual(list(columns["day"].items), list(range(1, 41)))
+
+    def test_the_days_of_a_path_are_shown_by_bootstrap_days(self):
+        days = dict(lisp_tables.table_columns(self.run_lisp("(bootstrap-days both 30 2 :seed 9)"), "test"))
+        paths = dict(lisp_tables.table_columns(
+            self.run_lisp('(bootstrap-paths both (list (cons "A" 100) (cons "B" 50)) 30 2 :seed 9)'), "test"))
+        np.testing.assert_allclose(np.array(paths["A"].items, dtype=float),
+                                   100 * np.exp(np.cumsum(np.array(days["A"].items, dtype=float))), rtol=1e-5)
+        self.assertTrue(all(isinstance(d, lisp_core.LispDate) for d in days["date"].items))
+
+    def test_a_dividend_schedule_is_for_the_investment_it_names(self):
+        self.run_lisp('(define schedule (list (cons "day" (vector 1)) (cons "amount" (vector 1.0))))')
+        plain = dict(lisp_tables.table_columns(
+            self.run_lisp('(bootstrap-paths both (list (cons "A" 100) (cons "B" 50)) 3 1 :seed 1)'), "t"))
+        paid = dict(lisp_tables.table_columns(self.run_lisp(
+            '(bootstrap-paths both (list (cons "A" 100) (cons "B" 50)) 3 1 :seed 1 :dividends (list (cons "B" schedule)))'), "t"))
+        self.assertEqual(list(paid["A"].items), list(plain["A"].items))
+        self.assertAlmostEqual(float(paid["B"].items[0]), float(plain["B"].items[0]) - 1.0, places=4)
+        self.assertLispError('(bootstrap-paths both (list (cons "A" 100)) 3 1)', "start-prices has none for B")
+        self.assertLispError('(bootstrap-paths both (list (cons "A" 100) (cons "B" 50)) 3 1 :dividends (list (cons "C" schedule)))',
+                             "for the investments A, B")
+
+    def test_a_portfolio_bought_and_held_or_rebalanced(self):
+        self.run_lisp('(define prices (make-table "A" #(100.0 110.0 121.0) "B" #(100.0 100.0 100.0)))')
+        weights = '(list (cons "A" 0.5) (cons "B" 0.5))'
+        # bought and held: 0.5 of A and 0.5 of B, at the first prices
+        self.assertNumbers = TestInvestmentPaths.assertNumbers.__get__(self)
+        np.testing.assert_allclose(np.array(self.run_lisp("(portfolio-value prices %s)" % weights).items, dtype=float),
+                                   [1.0, 1.05, 1.105], rtol=1e-6)
+        # put back to half and half after each day: the second day starts from 1.05, half in A
+        np.testing.assert_allclose(np.array(self.run_lisp("(portfolio-value prices %s :rebalance 1)" % weights).items,
+                                            dtype=float), [1.0, 1.05, 1.05 * 1.05], rtol=1e-6)
+        np.testing.assert_allclose(np.array(self.run_lisp(
+            '(portfolio-value prices %s :start-prices (list (cons "A" 50) (cons "B" 100)) :start-value 100)' % weights).items,
+            dtype=float), [150.0, 160.0, 171.0], rtol=1e-6)
+        self.assertLispError('(portfolio-value prices (list (cons "A" 0.5) (cons "B" 0.6)))', "add up to")
+        self.assertLispError('(portfolio-value prices (list (cons "A" 0.5) (cons "C" 0.5)))', "no column named 'C'")
+
+    def test_covariance_and_correlation_are_numpy_s(self):
+        data = np.array([[-0.02, 0.03, 0.0], [0.005, 0.01, -0.01]])
+        cov = dict(lisp_tables.table_columns(self.run_lisp("(covariance-matrix both)"), "t"))
+        self.assertEqual([str(n) for n in cov["investment"].items], ["A", "B"])
+        np.testing.assert_allclose(np.column_stack([np.array(cov[n].items, dtype=float) for n in ("A", "B")]),
+                                   np.cov(data) * 252, rtol=1e-5)
+        monthly = dict(lisp_tables.table_columns(self.run_lisp("(covariance-matrix both :days-per-year 12)"), "t"))
+        self.assertAlmostEqual(float(monthly["A"].items[0]), np.cov(data)[0, 0] * 12, places=6)
+        corr = dict(lisp_tables.table_columns(self.run_lisp("(correlation-matrix both)"), "t"))
+        self.assertAlmostEqual(float(corr["B"].items[0]), np.corrcoef(data)[0, 1], places=5)
+        self.assertAlmostEqual(float(corr["A"].items[0]), 1.0, places=6)
+
+    COVARIANCE = [[0.04, 0.006, -0.01], [0.006, 0.09, 0.02], [-0.01, 0.02, 0.0225]]
+
+    def make_covariance(self, matrix=None, names=("X", "Y", "Z")):
+        matrix = np.array(matrix or self.COVARIANCE)
+        self.env[lisp_core.Symbol("cov")] = lisp_portfolio.matrix_table(list(names), matrix)
+        return np.array(matrix, dtype=np.float32).astype(float)        # (as a vector stores it)
+
+    def test_minimum_variance_weights_are_the_formula_s(self):
+        matrix = self.make_covariance()
+        inverse_ones = np.linalg.solve(matrix, np.ones(3))
+        expected = inverse_ones / inverse_ones.sum()
+        w = self.pairs("(minimum-variance-weights cov)")
+        np.testing.assert_allclose([w["X"], w["Y"], w["Z"]], expected, atol=1e-9)
+        self.assertAlmostEqual(float(self.run_lisp("(portfolio-volatility (minimum-variance-weights cov) cov)")),
+                               math.sqrt(expected @ matrix @ expected), places=9)
+
+    def test_long_only_weights_are_the_best_with_none_below_0(self):
+        matrix = self.make_covariance([[0.04, 0.057, 0.0], [0.057, 0.09, 0.0], [0.0, 0.0, 0.09]])
+        unconstrained = self.pairs("(minimum-variance-weights cov)")
+        self.assertLess(min(unconstrained.values()), 0)                   # (selling one short helps here)
+        w = self.pairs("(minimum-variance-weights cov :long-only #t)")
+        weights = np.array([w["X"], w["Y"], w["Z"]])
+        self.assertAlmostEqual(weights.sum(), 1.0, places=12)
+        self.assertGreaterEqual(weights.min(), 0.0)
+        best = min(np.array(g) @ matrix @ np.array(g)                       # every weighting on a fine grid
+                   for g in ((i / 200, j / 200, 1 - i / 200 - j / 200) for i in range(201) for j in range(201 - i)))
+        self.assertLessEqual(weights @ matrix @ weights, best + 1e-12)
+
+    def test_long_only_weights_are_the_best_of_every_subset_of_investments(self):
+        # The best long-only weights are the formula's on some subset of the investments (the others 0): so try
+        # every subset, keep the answers with no weight below 0, and take the best -- for random problems in which
+        # several investments are left out and let back in along the way.
+        generator = np.random.default_rng(11)
+        names = ("A", "B", "C", "D", "E", "F")
+        # (the last: one of the few in which C, left out on the way, has to be let back in)
+        problems = [(generator.normal(0, 0.2, (n, n)), n) for n in (5, 6) * 6]
+        for trial in range(13):
+            if trial < 12:
+                factors, n = problems[trial]
+                matrix = self.make_covariance(
+                    (factors @ factors.T / n + np.diag(generator.uniform(0.001, 0.02, n))).tolist(), names=names[:n])
+                mu = generator.normal(0.06, 0.05, n)
+                risk_aversion = float(generator.choice([0.5, 2.0, 8.0]))
+            else:
+                n = 3
+                matrix = self.make_covariance([[0.070427, -0.03459, 0.005215], [-0.03459, 0.051586, 0.020359],
+                                               [0.005215, 0.020359, 0.020649]], names=names[:n])
+                mu, risk_aversion = np.array([0.000653, 0.19507, 0.194107]), 0.5
+            Q, c = risk_aversion * matrix, mu
+
+            def objective(w):
+                return w @ Q @ w / 2 - c @ w
+            best = None
+            for size in range(1, n + 1):
+                for subset in itertools.combinations(range(n), size):
+                    w, _ = lisp_portfolio.solve_on(list(subset), Q, c)
+                    if w.min() >= -1e-12 and (best is None or objective(w) < objective(best)):
+                        best = w
+            expected = " ".join('(cons "%s" %r)' % (names[i], float(mu[i])) for i in range(n))
+            found = self.pairs("(mean-variance-weights (list %s) cov %r :long-only #t)" % (expected, risk_aversion))
+            weights = np.array([found[names[i]] for i in range(n)])
+            with self.subTest(trial=trial):
+                self.assertGreaterEqual(weights.min(), 0.0)
+                self.assertAlmostEqual(weights.sum(), 1.0, places=12)
+                self.assertAlmostEqual(objective(weights), objective(best), places=10)
+
+    def test_mean_variance_weights(self):
+        matrix = self.make_covariance()
+        expected = '(list (cons "X" 0.06) (cons "Y" 0.12) (cons "Z" 0.04))'
+        mu = np.array([0.06, 0.12, 0.04])
+        w = self.pairs("(mean-variance-weights %s cov 4)" % expected)
+        weights = np.array([w["X"], w["Y"], w["Z"]])
+        # the best: 4 cov w - mu is the same for every investment, and the weights add to 1
+        slopes = 4 * matrix @ weights - mu
+        np.testing.assert_allclose(slopes, slopes[0], atol=1e-9)
+        self.assertAlmostEqual(weights.sum(), 1.0, places=12)
+        cautious = self.pairs("(mean-variance-weights %s cov 1e6)" % expected)
+        least = self.pairs("(minimum-variance-weights cov)")
+        for name in "XYZ":
+            self.assertAlmostEqual(cautious[name], least[name], places=4)
+        bold = self.pairs("(mean-variance-weights %s cov 0.01 :long-only #t)" % expected)
+        self.assertAlmostEqual(bold["Y"], 1.0, places=9)                  # all in the highest expected return
+
+    def test_what_the_portfolio_functions_wont_take(self):
+        self.make_covariance([[0.04, 0.04], [0.04, 0.04]], names=("X", "Y"))
+        self.assertLispError("(minimum-variance-weights cov)", "singular")
+        self.make_covariance()
+        self.assertLispError('(mean-variance-weights (list (cons "X" 0.1)) cov 2)', "expected-returns has none for Y, Z")
+        self.assertLispError('(mean-variance-weights (list (cons "X" 0.1) (cons "Y" 0.1) (cons "Z" 0.1)) cov 0)',
+                             "risk-aversion must be a number above 0")
+        self.assertLispError("(minimum-variance-weights both)", "no column named 'investment'")
 
 
 class TestLinearProgramming(LispTestCase):

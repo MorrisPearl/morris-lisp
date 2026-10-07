@@ -147,44 +147,84 @@ def dividends_by_day(dividends, day_numbers, who):
     return paid
 
 
-def log_returns_of(returns, who):
-    """The log-return column of a table of returns, as an array of numbers."""
-    values = floats_of(find_column(table_columns(returns, who), RETURN_COLUMN, who), who)
-    if len(values) == 0:
+def return_columns(returns, who):
+    """A table of returns' columns of returns, as (name, array of numbers):
+    every column of numbers but its date. One investment's table, as
+    daily-returns makes it, has one, log-return; combine-returns' has one
+    for each investment."""
+    columns = [(name, floats_of(vector, who)) for name, vector in table_columns(returns, who)
+               if name != "date" and (np.issubdtype(vector.items.dtype, np.number) or len(vector.items) == 0)]
+    if not columns:
+        raise LispError("%s: the table has no column of returns (log-return, as daily-returns makes)" % who)
+    if len(columns[0][1]) == 0:
         raise LispError("%s: there are no returns" % who)
-    if not np.all(np.isfinite(values)):
-        raise LispError("%s: every return must be a number, not missing or infinite" % who)
-    return values
+    for name, values in columns:
+        if not np.all(np.isfinite(values)):
+            raise LispError("%s: every return must be a number, not missing or infinite (%s has one that isn't)"
+                            % (who, name))
+    return columns
+
+
+def log_returns_of(returns, who):
+    """The one column of returns of one investment's table of returns."""
+    columns = return_columns(returns, who)
+    if len(columns) > 1:
+        raise LispError("%s: the table has the returns of %d investments (%s) -- bootstrap-paths makes paths of "
+                        "several" % (who, len(columns), ", ".join(name for name, _ in columns)))
+    return columns[0][1]
+
+
+def adjusted_column(log_returns, annual_return, volatility_scale, days_per_year):
+    """One column of log returns with the average taken out, the spread
+    about it multiplied by volatility_scale, and then a number added that
+    makes the daily returns average (1 + annual_return) ^ (1 / days_per_year) - 1."""
+    centered = (log_returns - log_returns.mean()) * volatility_scale
+    daily_growth = (1 + annual_return) ** (1 / days_per_year)       # 1.0003 for 8%
+    return centered + math.log(daily_growth / np.exp(centered).mean())
 
 
 def adjust_returns(returns, annual_return, *options):
     """(adjust-returns returns annual-return [:days-per-year n]
-    [:volatility-scale x]) -- the table of returns with its log-return column
-    changed: the average taken out, the returns' spread about it multiplied
-    by x (1 unless given: no change), then a number added so that the daily
-    returns average (1 + annual-return) ^ (1 / days-per-year) - 1.
-    annual-return is the expected annual return, 0.08 for 8%;
-    :days-per-year is 252 unless said otherwise; :volatility-scale 1.2
-    makes the volatility 20% more than the history's."""
+    [:volatility-scale x]) -- the table of returns with its returns changed:
+    the average taken out, the returns' spread about it multiplied by x (1
+    unless given: no change), then a number added so that the daily returns
+    average (1 + annual-return) ^ (1 / days-per-year) - 1. annual-return is
+    the expected annual return, 0.08 for 8%; for a table of several
+    investments' returns (combine-returns makes one), one for all of them,
+    or a list of (name . annual-return), one for each. :days-per-year is 252
+    unless said otherwise; :volatility-scale 1.2 makes the volatility 20%
+    more than the history's."""
     who = "adjust-returns"
     options = keyword_options(options, ["days-per-year", "volatility-scale"], who)
     days_per_year = options.get("days-per-year", DAYS_PER_YEAR)
     volatility_scale = options.get("volatility-scale", 1)
-    if not is_number(annual_return) or annual_return <= -1:
-        raise LispError("%s: the annual return must be a number above -1, as 0.08 is 8%%, not %s"
-                        % (who, annual_return))
     if not is_number(days_per_year) or days_per_year <= 0:
         raise LispError("%s: :days-per-year must be a number above 0, not %s" % (who, days_per_year))
     if not is_number(volatility_scale) or volatility_scale <= 0:
         raise LispError("%s: :volatility-scale must be a number above 0, not %s" % (who, volatility_scale))
+    columns = return_columns(returns, who)
+    annual_returns = named_numbers(annual_return, [name for name, _ in columns], "the annual return", who)
+    for name, rate in annual_returns.items():
+        if rate <= -1:
+            raise LispError("%s: the annual return must be a number above -1, as 0.08 is 8%%, not %s" % (who, rate))
+    adjusted = {name: to_vector(adjusted_column(values, annual_returns[name], volatility_scale, days_per_year))
+                for name, values in columns}
+    return make_table_value([(name, adjusted.get(name, column)) for name, column in table_columns(returns, who)])
 
-    log_returns = log_returns_of(returns, who)
-    centered = (log_returns - log_returns.mean()) * volatility_scale
-    daily_growth = (1 + annual_return) ** (1 / days_per_year)       # 1.0003 for 8%
-    shift = math.log(daily_growth / np.exp(centered).mean())
-    adjusted = to_vector(centered + shift)
-    return make_table_value([(name, adjusted if name == RETURN_COLUMN else column)
-                             for name, column in table_columns(returns, who)])
+
+def named_numbers(value, names, what, who):
+    """A number for each of names, as a dict: from one number, the same for
+    all, or a list of (name . number) pairs, one for each."""
+    if is_number(value):
+        return {name: float(value) for name in names}
+    pairs = pairs_to_list(value) if isinstance(value, Pair) else None
+    if pairs is None or not all(isinstance(p, Pair) and is_number(p.cdr) for p in pairs):
+        raise LispError("%s: %s must be a number, or a list of (name . number) pairs, not %s" % (who, what, value))
+    numbers = {str(p.car): float(p.cdr) for p in pairs}
+    missing = [name for name in names if name not in numbers]
+    if missing:
+        raise LispError("%s: %s has none for %s" % (who, what, ", ".join(missing)))
+    return numbers
 
 
 # ---------------------------------------------------------------------------
@@ -311,20 +351,28 @@ def bootstrap_path(returns, start_price, days, block_size, *options):
     log_returns = log_returns_of(returns, who)
     if not is_number(start_price) or start_price <= 0:
         raise LispError("%s: the start price must be a number above 0, not %s" % (who, start_price))
+    chosen = log_returns[days_drawn(len(log_returns), days, block_size, seed, who)]
+    return to_vector(prices_with_dividends(start_price, np.cumsum(chosen), schedule))
+
+
+def days_drawn(history_days, days, block_size, seed, who):
+    """The days of the history a path's days are copied from, as an array of
+    row numbers: blocks of block_size days in a row, each starting at a day
+    picked at random (with its own generator for a seed, or the shared one),
+    end to end until there are `days` of them, and wrapping around the end
+    of the history."""
     days = whole_number(days, "days", who, 1)
     block_size = whole_number(block_size, "block-size", who, 1)
-    if block_size > len(log_returns):
-        raise LispError("%s: block-size %d is more than the %d returns" % (who, block_size, len(log_returns)))
+    if block_size > history_days:
+        raise LispError("%s: block-size %d is more than the %d returns" % (who, block_size, history_days))
     if seed is not None:
         seed = whole_number(seed, ":seed", who, 0)
-
     generator = random if seed is None else random.Random(seed)
     blocks = math.ceil(days / block_size)
-    starts = np.array([generator.randrange(len(log_returns)) for _ in range(blocks)])
+    starts = np.array([generator.randrange(history_days) for _ in range(blocks)])
     # each block's days in a row, from where it starts; % wraps them around the end of the history
-    block_days = (starts[:, None] + np.arange(block_size)) % len(log_returns)
-    chosen = log_returns[block_days.ravel()[:days]]
-    return to_vector(prices_with_dividends(start_price, np.cumsum(chosen), schedule))
+    block_days = (starts[:, None] + np.arange(block_size)) % history_days
+    return block_days.ravel()[:days]
 
 
 # ---------------------------------------------------------------------------
@@ -409,11 +457,29 @@ def option_payoffs(paths, days, strikes, calls):
                              ("paths-paid", to_vector(paid))])
 
 
+def bootstrap_days(returns, days, block_size, *options):
+    """(bootstrap-days returns days block-size [:seed n]) -- the days of the
+    history a path is made of: a table of day (1 for the path's first), the
+    date of the history's day it copies (if the table of returns has dates),
+    and that day's returns. With the same :seed, bootstrap-path and
+    bootstrap-paths make their paths from these days."""
+    who = "bootstrap-days"
+    options = keyword_options(options, ["seed"], who)
+    columns = return_columns(returns, who)
+    rows = days_drawn(len(columns[0][1]), days, block_size, options.get("seed"), who)
+    table = [("day", to_vector(np.arange(1, len(rows) + 1)))]
+    names = [name for name, _ in table_columns(returns, who)]
+    if "date" in names:
+        table.append(("date", LispVector(find_column(table_columns(returns, who), "date", who).items[rows])))
+    return make_table_value(table + [(name, to_vector(values[rows])) for name, values in columns])
+
+
 BUILTINS = {
     "daily-returns": daily_returns,
     "adjust-returns": adjust_returns,
     "dividend-schedule": dividend_schedule,
     "bootstrap-path": bootstrap_path,
+    "bootstrap-days": bootstrap_days,
     "option-value": option_value,
     "option-payoffs": option_payoffs,
 }

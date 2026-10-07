@@ -12,6 +12,8 @@ binomial tree.
   (american-price type spot strike time rate vol [:dividend-yield q] [:dividends table]
                   [:steps n] [:early-exercise #f])
   (american-implied-vol price type spot strike time rate [the same options])
+  (binomial-tree type spot strike time rate vol [american-price's options])
+                                                      every node of the tree american-price uses
 
 ARGUMENTS: each can be a number or a vector, with an element for each
 option, so a whole chain is priced at once, and the answer is then a
@@ -53,8 +55,8 @@ import math
 
 import numpy as np
 
-from lisp_core import LispError, LispVector, keyword_options
-from lisp_tables import find_column, table_columns
+from lisp_core import Keyword, LispError, LispVector, keyword_options
+from lisp_tables import find_column, make_table_value, table_columns
 from lisp_vector_math import floats_of, is_number, to_vector
 
 LOWEST_VOL, HIGHEST_VOL = 0.001, 5.0        # the range implied volatility is looked for in
@@ -282,9 +284,14 @@ def dividends_option(options, who):
     return times, amounts
 
 
-def tree_price(call, spot, strike, time, rate, vol, q, dividend_times, dividend_amounts, steps, early):
+def tree_price(call, spot, strike, time, rate, vol, q, dividend_times, dividend_amounts, steps, early, nodes=None):
     """One option's price, by a binomial tree of `steps` steps; early says
-    whether it can be exercised before it expires (American) or not."""
+    whether it can be exercised before it expires (American) or not. If
+    nodes is a list, a row is added to it for each node of the tree, from
+    the last step back to the first: (step, ups, time, price, hold,
+    exercise, value), hold being what keeping the option is worth there (NaN
+    at expiration), exercise what exercising it then pays, and value the
+    option's value there."""
     if math.isnan(vol) or math.isnan(spot):
         return math.nan                                 # (no volatility to price it with)
     if time <= 0:
@@ -310,16 +317,27 @@ def tree_price(call, spot, strike, time, rate, vol, q, dividend_times, dividend_
     if start <= 0:
         raise LispError("american-price: the dividends are worth more than the price")
 
-    def exercise_values(step):
-        """What the option would pay at each node of a step, exercised then."""
-        prices = start * up ** (step - 2.0 * np.arange(step + 1)) + dividends_to_come(step * dt)
+    def prices_at(step):
+        """The stock's price at each node of a step, most ups first."""
+        return start * up ** (step - 2.0 * np.arange(step + 1)) + dividends_to_come(step * dt)
+
+    def exercise_values(prices):
         return np.maximum(prices - strike, 0.0) if call else np.maximum(strike - prices, 0.0)
 
-    values = exercise_values(steps)
+    def record(step, prices, hold, exercise, values):
+        if nodes is not None:
+            for j in range(step + 1):
+                nodes.append((step, step - j, step * dt, prices[j], hold[j], exercise[j], values[j]))
+
+    prices = prices_at(steps)
+    values = exercise_values(prices)
+    record(steps, prices, np.full(steps + 1, np.nan), values, values)
     for step in range(steps - 1, -1, -1):
-        values = step_discount * (chance_up * values[:-1] + (1 - chance_up) * values[1:])
-        if early:
-            values = np.maximum(values, exercise_values(step))
+        hold = step_discount * (chance_up * values[:-1] + (1 - chance_up) * values[1:])
+        prices = prices_at(step)
+        exercise = exercise_values(prices)
+        values = np.maximum(hold, exercise) if early else hold
+        record(step, prices, hold, exercise, values)
     return float(values[0])
 
 
@@ -367,6 +385,35 @@ def american_implied_vol(price, kind, spot, strike, time, rate, *options):
     return answer(np.array(found), [price, kind, spot, strike, time, rate])
 
 
+def binomial_tree(kind, spot, strike, time, rate, vol, *options):
+    """(binomial-tree type spot strike time rate vol [:dividend-yield q]
+    [:dividends table] [:steps n] [:early-exercise #f]) -- every node of the
+    tree american-price prices one option with (5 steps, unless :steps
+    says), as a table, from the first step to the last: step, ups (how many
+    of its steps were up), time (in years), price (the stock's), hold (what
+    keeping the option is worth there; NaN at expiration), exercise (what
+    exercising it there pays), value (the option's value there: the larger
+    of the two, if it can be exercised early), and early (1 where
+    exercising before expiration is worth more than keeping it). The first
+    row's value is the option's price."""
+    who = "binomial-tree"
+    if any(isinstance(a, LispVector) for a in (kind, spot, strike, time, rate, vol)):
+        raise LispError("%s: one option at a time: its arguments are numbers, not vectors" % who)
+    options = list(options)
+    if not any(isinstance(o, Keyword) and str(o) == ":steps" for o in options[::2]):
+        options += [Keyword(":steps"), 5]
+    arrays, q, (times, amounts), steps, early = american_arrays(kind, spot, strike, time, rate, vol, options, who)
+    nodes = []
+    tree_price(*[a[0] for a in arrays], q, times, amounts, steps, early, nodes)
+    nodes.sort(key=lambda n: n[0])                      # the first step first (each step's nodes, most ups first)
+    columns = list(zip(*nodes))
+    early_rows = [int(step < steps and exercise > 0 and exercise > hold) for step, _, _, _, hold, exercise, _ in nodes]
+    return make_table_value([("step", to_vector(np.array(columns[0]))), ("ups", to_vector(np.array(columns[1]))),
+                             ("time", to_vector(np.array(columns[2]))), ("price", to_vector(np.array(columns[3]))),
+                             ("hold", to_vector(np.array(columns[4]))), ("exercise", to_vector(np.array(columns[5]))),
+                             ("value", to_vector(np.array(columns[6]))), ("early", to_vector(np.array(early_rows)))])
+
+
 BUILTINS = {
     "normal-cdf": normal_cdf,
     "black-price": black_price,
@@ -380,4 +427,5 @@ BUILTINS = {
     "bsm-rho": bsm_greek("rho", rho),
     "american-price": american_price,
     "american-implied-vol": american_implied_vol,
+    "binomial-tree": binomial_tree,
 }

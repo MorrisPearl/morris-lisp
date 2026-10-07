@@ -52,6 +52,7 @@ HOW THE CODE IS ORGANIZED
     lisp_investment_paths.py  daily-returns, adjust-returns, dividend-schedule, bootstrap-path, option-value
                           (simulated prices of an investment, and an option's value)
     lisp_calendar.py      trading-day?, add-trading-days, trading-days-between: the NYSE's trading days
+    lisp_portfolio.py     combine-returns, bootstrap-paths, portfolio-value, covariance-matrix, mean-variance-weights, ...
     lisp_sofr.py          sofr-* interest-rate modeling    (sofr-calibration-data
                                                             downloads from tastytrade)
     lisp_gui.py           the PyQt6 window
@@ -104,7 +105,8 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - linear programming (the simplex method)
   - simulated prices: a block bootstrap of an investment's own daily returns, with
     its dividends (daily-returns, adjust-returns, dividend-schedule, bootstrap-path),
-    and what options on one are worth (option-value, option-payoffs, and lib/option_check.lsp, which
+    and portfolios of several (combine-returns, bootstrap-paths, portfolio-value, covariance and
+    mean-variance weights); what options on one are worth (option-value, option-payoffs, and lib/option_check.lsp, which
     checks a chain's prices against them); the NYSE's trading days
   - option prices: Black-Scholes-Merton, Black's formula, implied volatility,
     the Greeks, and American options by binomial tree
