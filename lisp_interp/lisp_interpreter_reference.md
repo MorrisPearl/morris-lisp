@@ -7780,7 +7780,7 @@ its dividends reinvested.
 (vector-round (table-column (daily-returns prices :dividends dividends) "log-return") 4) ; => #(0.0953 -0.0953)
 ```
 
-#### `(adjust-returns returns annual-return [:days-per-year n])`
+#### `(adjust-returns returns annual-return [:days-per-year n] [:volatility-scale x])`
 `returns` with its `log-return` column changed (its other columns stay as
 they are): the average is taken out, then a number is added so that the
 investment's **expected annual return** is `annual-return`, 0.08 for 8%.
@@ -7798,11 +7798,22 @@ average price a year out is exactly right (apart from chance); with longer
 blocks, close to right. `annual-return` must be above -1 (a loss of all of
 it).
 
+`:volatility-scale` (1, no change, unless given) multiplies the returns'
+spread about their average, so that the volatility is that many times the
+history's: 1.2 is 20% more, and 0.8 is 20% less. The expected annual
+return is still `annual-return`. It is for when the volatility to
+expect isn't the history's, as `check-option-chain`'s `:match-volatility`
+finds for an option chain.
+
 ```lisp
 (define returns (list (cons "log-return" (vector 0.01 -0.02 0.015 0.0))))
 (define adjusted (adjust-returns returns 0.08))
 (format "{:.6f}" (vector-mean (vector-exp (table-column adjusted "log-return"))))   ; => "1.000305"
 (format "{:.6f}" (expt 1.08 (/ 1.0 252)))                                           ; => "1.000305"
+(define wilder (adjust-returns returns 0.08 :volatility-scale 2))
+(format "{:.4f}" (/ (vector-stdev (table-column wilder "log-return"))
+                    (vector-stdev (table-column adjusted "log-return"))))           ; => "2.0000"
+(format "{:.6f}" (vector-mean (vector-exp (table-column wilder "log-return"))))     ; => "1.000305"
 ```
 
 #### `(dividend-schedule dividends start-date days [:repeat-last-year #t])`
@@ -8080,6 +8091,8 @@ other settings on one chain. Its options:
 | `:min-paths-paid` | 50 | an option the paths pay something on in fewer paths than this is left out: they say too little about it |
 | `:standard-errors` | 2 | a bid has to be above the value, or an ask below it, by this many standard errors of the paths' own noise to count as rich or cheap |
 | `:forward-tolerance` | 0.002 | see below |
+| `:match-volatility` | `#f` | `#t` multiplies the paths' volatility by the one number that makes the middle `iv-residual` 0: the market's overall level of volatility, in place of the history's (see below). The number is in the `volatility-scale` column, and `show-option-check` says it |
+| `:expected-return` | none | the underlying's expected annual return, dividends included, 0.08 for 8%. It adds what each option is worth if the underlying does earn that: the last three columns below (see below) |
 
 An option also has to be liquid, as `vol_smile.lsp` has it: traded today,
 with open interest and a bid.
@@ -8097,15 +8110,43 @@ The result has the chain's own columns, and these:
 | `iv-vs-expiration` | `iv-residual` less the middle (median) one of the options that expire the same day |
 | `signal` | `"rich"` if the bid is above `model-price`, `"cheap"` if the ask is below it, `""` if neither |
 | `edge` | how far: the bid less `model-price`, or `model-price` less the ask (0 for neither) |
+| `volatility-scale` | with `:match-volatility`: the number the paths' volatility was multiplied by, the same in every row |
+| `expected-value` | with `:expected-return`: the present value, at the interest rate, of what the option pays on average if the underlying earns that return |
+| `favors` | with `:expected-return`: `"buying"` if `expected-value` is above the ask (by `:standard-errors` of its own error), `"selling"` if it is below the bid, `""` if neither |
+| `expected-profit` | with `:expected-return`: how far: `expected-value` less the ask, or the bid less `expected-value` (0 for neither) |
 
 #### `(show-option-check checked [:count n])`
 Shows the middle `iv-residual` of each expiration, the `count` (10) options
 furthest from the paths' values, the `count` furthest from the middle
-`iv-residual` of their expiration, and every option that is rich or cheap.
+`iv-residual` of their expiration, and every option that is rich or cheap;
+and, with `:expected-return`, the `count` with the most `expected-profit`.
+With `:match-volatility` it first says how much the volatility was scaled.
 
 #### `(option-check-expirations checked)`
 A table with a row for each expiration: its days, how many options were
 checked, their middle `iv-residual`, and how many are rich and cheap.
+
+**What "risk-neutral" means.** The paths grow at the interest rate, not at
+the return the underlying is expected to earn. That is valuing as if
+investors didn't charge for risk: every asset is supposed to earn the
+interest rate on average, and an option is worth its discounted average
+payoff. Nobody believes the stock earns the interest rate. It is a
+calculation, and it works because an option can be copied. An example in one
+step: a stock at 100 goes to 120 or 90, the interest rate is 5%, and a call
+struck at 100 pays 20 or 0. Hold ⅔ of a share and borrow 57.14, and you owe
+60 in either case, so you hold exactly what the call pays: 20 if the stock
+rises, 0 if it falls. That costs 66.67 − 57.14 = 9.52, so the call must cost
+9.52, whatever the chance of a rise. The probability that makes the stock
+earn 5%, 100 × 1.05 = *q* × 120 + (1 − *q*) × 90, is *q* = 0.5, and
+0.5 × 20 / 1.05 = 9.52 too. That *q* isn't a forecast: if the real chance of
+a rise is 80%, the call still costs 9.52, though its real average payoff,
+discounted, is 15.24. So the option's price depends on the stock's
+volatility, not on how much it is expected to earn; and investors'
+feelings about risk are in the stock's price already. Here only the drift
+is changed: the paths keep the history's volatility, tails and skew, and
+the market's own risk-neutral distribution also has a price for the risk of
+a crash and of volatility in it, so an `iv-residual` is not all mistake in
+the market's prices.
 
 **What to make of it.** The paths know the history and nothing else, so:
 
@@ -8139,6 +8180,30 @@ checked, their middle `iv-residual`, and how many are rich and cheap.
   today), or run it when the market is open. If the interest rate or the
   dividends are what's wrong, `:forward-tolerance` lets it go on, but the
   options are then out of line by that.
+- **`:match-volatility` takes out the market's overall level.** It finds
+  the number to multiply the paths' volatility by (it tries it, then
+  multiplies it by the middle ratio of `iv-mid` to `model-iv`, up to 5 times
+  or until that is within 0.2% of 1), so that the options left out of line
+  are those out of line with the market's general level, not the history's.
+  On the morning of October 7, 2026 it was 0.80 for SPY: the market was
+  expecting 80% of the history's volatility, which had the crash of 2020 in
+  it. One number can't remove the rest: the market's volatility rises with
+  the time to expiration, and the history's doesn't, so the options that
+  expire soonest come out cheap, and the ones that expire in months come
+  out rich, by a point or two. The median `iv-residual` of each expiration,
+  in `show-option-check`, shows it.
+- **`:expected-return` is not risk-neutral**, and is for a different
+  question: not what an option should cost, but what it is expected to pay if
+  the underlying earns that. The second paths are the first ones, with the
+  same seeds and the same volatility, but growing at `:expected-return`, so
+  the difference between the two values is only the growth. The result
+  isn't adjusted for risk. When the expected return is above the interest
+  rate, calls are expected to earn more than the interest rate and puts less:
+  so calls tend to favor buying and puts selling, which is the underlying's
+  risk premium (what investors are paid to bear its risk), and more for
+  options that are more leveraged. A positive `expected-profit` is an
+  expected value, and only worth having if you want the risk that comes with
+  it.
 - **An in-the-money option, or one the paths rarely pay on, says little**,
   which is why they're left out unless asked for.
 - **Noise.** `standard-error` is the paths' own, and it makes a

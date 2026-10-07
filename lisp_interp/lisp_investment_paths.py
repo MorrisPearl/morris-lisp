@@ -3,9 +3,9 @@ investment's own daily returns.
 
   (daily-returns prices [:dividends table])
                      an investment's daily returns, from its prices (and dividends)
-  (adjust-returns returns annual-return [:days-per-year n])
+  (adjust-returns returns annual-return [:days-per-year n] [:volatility-scale x])
                      the returns, with their average changed to give an
-                     expected annual return
+                     expected annual return (and their volatility, if asked)
   (dividend-schedule dividends start-date days [:repeat-last-year #t])
                      the dividends an investment will pay in the days of a path
   (bootstrap-path returns start-price days block-size [:seed n] [:dividends schedule])
@@ -157,22 +157,28 @@ def log_returns_of(returns, who):
 
 
 def adjust_returns(returns, annual_return, *options):
-    """(adjust-returns returns annual-return [:days-per-year n]) -- the table
-    of returns with its log-return column changed: the average taken out,
-    then a number added so that the daily returns average (1 + annual-return)
-    ^ (1 / days-per-year) - 1. annual-return is the expected annual return,
-    0.08 for 8%; :days-per-year is 252 unless said otherwise."""
+    """(adjust-returns returns annual-return [:days-per-year n]
+    [:volatility-scale x]) -- the table of returns with its log-return column
+    changed: the average taken out, the returns' spread about it multiplied
+    by x (1 unless given: no change), then a number added so that the daily
+    returns average (1 + annual-return) ^ (1 / days-per-year) - 1.
+    annual-return is the expected annual return, 0.08 for 8%;
+    :days-per-year is 252 unless said otherwise; :volatility-scale 1.2
+    makes the volatility 20% more than the history's."""
     who = "adjust-returns"
-    options = keyword_options(options, ["days-per-year"], who)
+    options = keyword_options(options, ["days-per-year", "volatility-scale"], who)
     days_per_year = options.get("days-per-year", DAYS_PER_YEAR)
+    volatility_scale = options.get("volatility-scale", 1)
     if not is_number(annual_return) or annual_return <= -1:
         raise LispError("%s: the annual return must be a number above -1, as 0.08 is 8%%, not %s"
                         % (who, annual_return))
     if not is_number(days_per_year) or days_per_year <= 0:
         raise LispError("%s: :days-per-year must be a number above 0, not %s" % (who, days_per_year))
+    if not is_number(volatility_scale) or volatility_scale <= 0:
+        raise LispError("%s: :volatility-scale must be a number above 0, not %s" % (who, volatility_scale))
 
     log_returns = log_returns_of(returns, who)
-    centered = log_returns - log_returns.mean()
+    centered = (log_returns - log_returns.mean()) * volatility_scale
     daily_growth = (1 + annual_return) ** (1 / days_per_year)       # 1.0003 for 8%
     shift = math.log(daily_growth / np.exp(centered).mean())
     adjusted = to_vector(centered + shift)

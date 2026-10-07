@@ -5693,6 +5693,17 @@ class TestInvestmentPaths(LispTestCase):
         self.assertAlmostEqual(self.run_lisp('(vector-stdev (table-column adjusted "log-return"))'), before, places=7)
         self.assertShows("(table-row-count adjusted)", "400")
 
+    def test_a_volatility_scale_spreads_the_returns_and_keeps_the_average_return(self):
+        self.a_year_of_returns()
+        self.run_lisp("(define scaled (adjust-returns history 0.08 :volatility-scale 1.5))")
+        before = self.run_lisp('(vector-stdev (table-column history "log-return"))')
+        self.assertAlmostEqual(self.run_lisp('(vector-stdev (table-column scaled "log-return"))'), 1.5 * before, places=6)
+        average_growth = self.run_lisp('(vector-mean (vector-exp (table-column scaled "log-return")))')
+        self.assertAlmostEqual(average_growth, 1.08 ** (1 / 252), places=7)
+        self.run_lisp("(define unscaled (adjust-returns history 0.08 :volatility-scale 1))")
+        self.assertEqual(self.show('(table-column unscaled "log-return")'),
+                         self.show('(table-column (adjust-returns history 0.08) "log-return")'))
+
     def test_adjusting_keeps_the_other_columns(self):
         self.run_lisp(self.PRICES + "(define adjusted (adjust-returns (daily-returns prices) 0.08))")
         self.assertShows("(table-column-names adjusted)", '("date" "log-return")')
@@ -5705,6 +5716,8 @@ class TestInvestmentPaths(LispTestCase):
         self.assertLispError("(adjust-returns history 0.08 :days-per-year 0)", ":days-per-year must be a number above 0")
         self.assertLispError("(adjust-returns (list (cons \"x\" (vector 1.0))) 0.08)", "no column named 'log-return'")
         self.assertLispError("(adjust-returns history 0.08 :days 252)", ":days isn't an option")
+        self.assertLispError("(adjust-returns history 0.08 :volatility-scale 0)", ":volatility-scale must be a number above 0")
+        self.assertLispError('(adjust-returns history 0.08 :volatility-scale "2")', ":volatility-scale must be a number above 0")
 
     # -- bootstrap-path -----------------------------------------------------
 
@@ -5997,19 +6010,20 @@ class TestOptionCheck(LispTestCase):
             [("log-return", lisp_vector_math.to_vector(values))])
 
     def make_chain(self, start, planted=None, dividend=None, trading_days=(25, 60, 120), name="chain", priced_at=None,
-                   vol_shift=None):
+                   vol_shift=None, vol_scale=1.0):
         """A chain, as `chain`, of options on 100 at these numbers of trading days after start, priced as
         paths of this history say they should be (Black's formula, with the volatility the paths have in
         calendar time) -- times a number, for the options in `planted`, {(expiration number, type, strike):
         number}. dividend, a (date, amount), is paid before the expirations after it. priced_at is the price of
         the underlying when the options were priced, if it isn't the 100 the chain says it is. vol_shift is
-        {expiration number: volatility added to every option's of that expiration}."""
+        {expiration number: volatility added to every option's of that expiration}; vol_scale, a number
+        every option's volatility is multiplied by."""
         rows = []
         for number, trading in enumerate(trading_days):
             expiration = lisp_calendar.trading_days_after(start, trading)
             calendar_days = (expiration - start).days
             T = calendar_days / 365
-            vol = self.volatility * math.sqrt((trading / 252) / T) + (vol_shift or {}).get(number, 0.0)
+            vol = self.volatility * math.sqrt((trading / 252) / T) * vol_scale + (vol_shift or {}).get(number, 0.0)
             discount = math.exp(-self.RATE * T)
             present_value = 0.0
             if dividend and dividend[0] <= expiration:
@@ -6208,6 +6222,96 @@ class TestOptionCheck(LispTestCase):
                              "no option is liquid enough")
         self.assertLispError("(check-option-chain chain returns :start-date (date 2026 10 5) :paths 1)", "at least two paths")
 
+    # -- :match-volatility and :expected-return ---------------------------------------
+
+    def test_without_matching_the_market_s_higher_volatility_makes_every_option_rich(self):
+        self.make_chain(self.START, vol_scale=1.3)               # the market has 30% more volatility than the history
+        self.run_lisp(self.CHECK % "")
+        self.assertAlmostEqual(float(self.run_lisp('(vector-median (table-column checked "iv-residual"))')),
+                               0.06, delta=0.01)                 # 0.3 of 20 volatility points
+        self.assertGreater(sum(1 for x in self.column("signal") if str(x) == "rich"), 0.7 * len(self.column("signal")))
+
+    def test_matching_the_volatility_finds_the_market_s_overall_level(self):
+        self.make_chain(self.START, planted=self.PLANTED, vol_scale=1.3)
+        self.run_lisp(self.CHECK % ":match-volatility #t")
+        scales = [float(x) for x in self.column("volatility-scale")]
+        self.assertAlmostEqual(scales[0], 1.3, delta=0.03)
+        self.assertEqual(len(set(scales)), 1)                    # (one number, in every row)
+        self.assertAlmostEqual(float(self.run_lisp('(vector-median (table-column checked "iv-residual"))')),
+                               0.0, delta=0.005)
+        symbols = self.column("symbol")
+        self.assertEqual({str(x) for x in symbols[:4]}, {"X1C105", "X1C110", "X2P90", "X2P95"})
+        self.assertEqual({str(s) for s, signal in zip(symbols, self.column("signal")) if str(signal)},
+                         {"X1C105", "X1C110", "X2P90", "X2P95"})
+
+    def test_matching_a_chain_the_paths_already_fit_changes_nothing_much(self):
+        self.make_chain(self.START)
+        self.run_lisp(self.CHECK % ":match-volatility #t")
+        self.assertAlmostEqual(float(self.column("volatility-scale")[0]), 1.0, delta=0.02)
+
+    def test_there_must_be_an_option_to_match_the_volatility_with(self):
+        self.make_chain(self.START)
+        self.assertLispError("(check-option-chain chain returns :start-date (date 2026 10 5) :paths 500 :min-paths-paid 100000 "
+                             ":match-volatility #t)", "no option to match the volatility with")
+
+    def test_no_expected_return_no_expected_columns(self):
+        self.make_chain(self.START)
+        self.run_lisp(self.CHECK % "")
+        names = [str(x) for x in lisp_core.pairs_to_list(self.run_lisp("(table-column-names checked)"))]
+        self.assertNotIn("expected-value", names)
+        self.assertNotIn("volatility-scale", names)
+
+    def test_an_expected_return_above_the_interest_rate_raises_calls_and_lowers_puts(self):
+        self.make_chain(self.START)
+        self.run_lisp(self.CHECK % ":expected-return 0.15")
+        names = [str(x) for x in lisp_core.pairs_to_list(self.run_lisp("(table-column-names checked)"))]
+        self.assertEqual(names[-3:], ["expected-value", "favors", "expected-profit"])
+        for kind, price, expected in zip(self.column("type"), self.column("model-price"), self.column("expected-value")):
+            if str(kind) == "Call":
+                self.assertGreaterEqual(float(expected), float(price))      # (the same paths, growing faster)
+            else:
+                self.assertLessEqual(float(expected), float(price))
+
+    def test_the_expected_return_that_is_the_interest_rate_changes_nothing_so_favors_is_signal(self):
+        self.make_chain(self.START, planted=self.PLANTED)
+        self.run_lisp(self.CHECK % ":expected-return (- (exp 0.04) 1)")
+        for price, expected in zip(self.column("model-price"), self.column("expected-value")):
+            self.assertAlmostEqual(float(expected), float(price), places=5)
+        words = {"rich": "selling", "cheap": "buying", "": ""}
+        for signal, favors in zip(self.column("signal"), self.column("favors")):
+            self.assertEqual(str(favors), words[str(signal)])
+
+    def test_with_matched_volatility_the_expected_return_paths_have_the_same_volatility(self):
+        self.make_chain(self.START, vol_scale=1.3)
+        self.run_lisp(self.CHECK % ":match-volatility #t :expected-return (- (exp 0.04) 1)")
+        for price, expected in zip(self.column("model-price"), self.column("expected-value")):
+            self.assertAlmostEqual(float(expected), float(price), places=5)
+
+    def test_a_much_higher_expected_return_favors_buying_calls_and_selling_puts(self):
+        self.make_chain(self.START)
+        self.run_lisp(self.CHECK % ":expected-return 0.6")
+        favors = [(str(kind), str(side)) for kind, side in zip(self.column("type"), self.column("favors"))]
+        self.assertIn(("Call", "buying"), favors)
+        self.assertIn(("Put", "selling"), favors)
+        self.assertNotIn(("Call", "selling"), favors)
+        self.assertNotIn(("Put", "buying"), favors)
+        for side, profit, expected, bid, ask in zip(*[self.column(name) for name in
+                                                       ("favors", "expected-profit", "expected-value", "bid", "ask")]):
+            if str(side) == "buying":
+                self.assertAlmostEqual(float(profit), float(expected) - float(ask), places=4)
+            elif str(side) == "selling":
+                self.assertAlmostEqual(float(profit), float(bid) - float(expected), places=4)
+            else:
+                self.assertEqual(float(profit), 0.0)
+
+    def test_showing_the_volatility_scale_and_the_expected_profit(self):
+        self.make_chain(self.START, vol_scale=1.3)
+        self.run_lisp(self.CHECK % ":match-volatility #t :expected-return 0.3")
+        self.run_lisp("(show-option-check checked :count 3)")
+        shown = self.printed()
+        self.assertIn("The paths' volatility was multiplied by 1.", shown)
+        self.assertIn("The 3 options with the most expected profit if the underlying earns its expected return", shown)
+
     # -- check-option-prices and show-option-check --------------------------------
 
     def test_check_option_prices_gets_the_chain_the_prices_and_the_dividends(self):
@@ -6238,6 +6342,11 @@ class TestOptionCheck(LispTestCase):
         self.assertEqual(sorted(asked), [("chain", "creds.json", "XYZ", 4, 9), ("dividends", "creds.json", "XYZ"),
                                          ("prices", "creds.json", "XYZ")])
         self.assertEqual({str(x) for x in self.column("symbol")[:4]}, {"X1C105", "X1C110", "X2P90", "X2P95"})
+        self.run_lisp('(define checked (check-option-prices "creds.json" "XYZ" :paths 2000 :block-size 1 :seed 7 '
+                      ':expected-return 0.08 :match-volatility #t))')
+        names = [str(x) for x in lisp_core.pairs_to_list(self.run_lisp("(table-column-names checked)"))]
+        self.assertIn("expected-value", names)
+        self.assertIn("volatility-scale", names)
 
     def test_showing_the_check(self):
         self.make_chain(self.START, planted=self.PLANTED)

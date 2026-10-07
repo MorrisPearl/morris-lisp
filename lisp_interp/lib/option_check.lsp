@@ -24,6 +24,18 @@
 ; own noise), "cheap" if the ask is below it. The options are sorted by how
 ; far iv-residual is from 0.
 ;
+; Two things can be asked for. :match-volatility #t multiplies the paths'
+; volatility by the one number that brings the paths' values into line with
+; the market's prices overall (the middle iv-residual becomes 0), so that
+; the options that are out of line are those out of line with the market's
+; general level of volatility, and not with the history's. And
+; :expected-return, the underlying's expected annual return, makes a second
+; set of paths, the same ones but for that growth, and adds what each option
+; is worth if the underlying does earn that, and whether that favors buying
+; or selling it. That is an expected value: it is not adjusted for risk, and
+; a call is expected to earn more than the interest rate whenever the
+; underlying is.
+;
 ; The options' prices and the underlying's must be from the same moment. If
 ; the market is closed, the options' prices are the last close's, but the
 ; underlying's price can be one from after hours, and then calls look rich
@@ -83,20 +95,25 @@ than tolerance of it."
                      price (vector-ref (table-column first-expiration "expiration-date") 0) parity forward
                      (+ price (* (- parity forward) discount)))))))
 
-(define (option-check--paths options returns schedule rate paths block-size seed)
-  "A list of simulated paths of the underlying's price, as many days long as
-the longest option has. The returns are adjusted to grow at the interest
-rate; the schedule's dividends come off the price."
-  (let ((horizon (vector-max (table-column options "trading-days")))
-        (start-price (vector-ref (table-column options "underlying-price") 0))
-        (fair-returns (adjust-returns returns (- (exp rate) 1))))
-    (map (lambda (i) (bootstrap-path fair-returns start-price horizon block-size
-                                     :seed (+ seed i) :dividends schedule))
-         (iota paths))))
+(define (option-check--payoffs options returns schedule annual-return scale paths block-size seed)
+  "What each option pays on average at its expiration (option-payoffs), over
+simulated paths of the underlying's price as long as the longest option has.
+The returns are adjusted to grow at annual-return, with their volatility
+multiplied by scale; the schedule's dividends come off the price."
+  (let* ((horizon (vector-max (table-column options "trading-days")))
+         (start-price (vector-ref (table-column options "underlying-price") 0))
+         (adjusted (adjust-returns returns annual-return :volatility-scale scale))
+         (simulated (map (lambda (i) (bootstrap-path adjusted start-price horizon block-size
+                                                       :seed (+ seed i) :dividends schedule))
+                         (iota paths))))
+    (option-payoffs simulated (table-column options "trading-days") (table-column options "strike")
+                    (= (table-column options "type") "Call"))))
 
 (define option-check-columns
   '("symbol" "type" "expiration-date" "days-to-expiration" "strike" "bid" "ask" "iv-bid" "iv-mid" "iv-ask"
     "model-price" "standard-error" "paths-paid" "model-iv" "iv-residual" "iv-vs-expiration" "signal" "edge"))
+
+(define option-check-expected-columns '("expected-value" "favors" "expected-profit"))
 
 (define (option-check--typical-by-expiration options)
   "For each option, the middle (median) iv-residual of the options that
@@ -108,13 +125,35 @@ expire the same day."
                        (vector-median (table-column (table-where options "expiration-date" expiration) "iv-residual"))))
     (list->vector (map (lambda (expiration) (hash-table-ref typical expiration)) (vector->list expirations)))))
 
-(define (option-check--compare options simulated min-paths-paid standard-errors)
+(define (option-check--expected real-payoffs discount bid ask standard-errors)
+  "The columns about what each option is worth if the underlying earns its
+expected return, as (name . vector) pairs; none if real-payoffs, what the
+options pay on average over paths with that return, is '(). expected-value
+is the present value of that, at the interest rate; favors, \"buying\" if it is
+above the ask (by standard-errors of its error) and \"selling\" if below the
+bid; and expected-profit how far."
+  (if (null? real-payoffs)
+      '()
+      (let* ((expected-value (* discount (table-column real-payoffs "payoff")))
+             (expected-error (* discount (table-column real-payoffs "payoff-error")))
+             (buy (> (- expected-value (* standard-errors expected-error)) ask))
+             (sell (< (+ expected-value (* standard-errors expected-error)) bid)))
+        (list (cons "expected-value" expected-value)
+              (cons "favors" (vector-where buy "buying" (vector-where sell "selling" "")))
+              (cons "expected-profit" (vector-where buy (- expected-value ask)
+                                                    (vector-where sell (- bid expected-value) 0.0)))))))
+
+(define (option-check--compare options payoffs real-payoffs min-paths-paid standard-errors)
   "The options with what the paths say about each added as columns, as
 check-option-chain says, the ones the paths say too little about left out,
-and the rest in order of how far out of line they are."
-  (let* ((payoffs (option-payoffs simulated (table-column options "trading-days") (table-column options "strike")
-                                  (= (table-column options "type") "Call")))
-         (with-payoffs (make-table-from-columns options payoffs)))
+and the rest in order of how far out of line they are. payoffs is what the
+options pay on average (option-payoffs) over paths that grow at the interest
+rate, and real-payoffs the same over paths with the underlying's expected
+return, or '() for no expected return."
+  (let ((with-payoffs (make-table-from-columns options payoffs))
+        (columns (if (null? real-payoffs)
+                     option-check-columns
+                     (append option-check-columns option-check-expected-columns))))
     (with-columns (payoff payoff-error paths-paid type forward strike T discount bid ask iv-mid) with-payoffs
       (let* ((model-price (* discount payoff))
              (standard-error (* discount payoff-error))
@@ -123,29 +162,46 @@ and the rest in order of how far out of line they are."
              (cheap (< ask (- model-price (* standard-errors standard-error))))
              (compared (make-table-from-columns
                          with-payoffs
-                         (list (cons "model-price" model-price)
-                               (cons "standard-error" standard-error)
-                               (cons "model-iv" model-iv)
-                               (cons "iv-residual" (- iv-mid model-iv))
-                               (cons "signal" (vector-where rich "rich" (vector-where cheap "cheap" "")))
-                               (cons "edge" (vector-where rich (- bid model-price)
-                                                          (vector-where cheap (- model-price ask) 0.0))))))
+                         (append (list (cons "model-price" model-price)
+                                       (cons "standard-error" standard-error)
+                                       (cons "model-iv" model-iv)
+                                       (cons "iv-residual" (- iv-mid model-iv))
+                                       (cons "signal" (vector-where rich "rich" (vector-where cheap "cheap" "")))
+                                       (cons "edge" (vector-where rich (- bid model-price)
+                                                                  (vector-where cheap (- model-price ask) 0.0))))
+                                 (option-check--expected real-payoffs discount bid ask standard-errors))))
              (enough (table-filter compared (vector-and (>= paths-paid min-paths-paid)
                                                         (vector-not (vector-nan? (table-column compared "iv-residual")))))))
         (if (= (table-row-count enough) 0)
-            (table-select (table-add-column enough "iv-vs-expiration" nan) option-check-columns)
+            (table-select (table-add-column enough "iv-vs-expiration" nan) columns)
             (let ((with-typical (table-add-column enough "iv-vs-expiration"
                                                   (- (table-column enough "iv-residual")
                                                      (option-check--typical-by-expiration enough)))))
               (table-select (table-sort (table-add-column with-typical "distance"
                                                           (abs (table-column with-typical "iv-residual")))
                                         "distance" #t)
-                            option-check-columns)))))))
+                            columns)))))))
+
+(define (option-check--fit-scale compared-at scale tries)
+  "The number to multiply the history's volatility by, to bring the paths'
+values into line with the market's prices overall: try scale, and if the
+middle ratio of the options' iv-mid to their model-iv isn't within 0.2% of
+1, multiply scale by it (an option's model-iv is about in proportion to the
+volatility of the paths) and try again, up to tries times. compared-at is a
+procedure from a scale to the options compared (option-check--compare)."
+  (let ((compared (compared-at scale)))
+    (when (= (table-row-count compared) 0)
+      (error "check-option-chain: there is no option to match the volatility with"))
+    (let ((ratio (vector-median (/ (table-column compared "iv-mid") (table-column compared "model-iv")))))
+      (cond ((< (abs (- ratio 1)) 0.002) scale)
+            ((= tries 1) (* scale ratio))
+            (else (option-check--fit-scale compared-at (* scale ratio) (- tries 1)))))))
 
 (define (check-option-chain chain returns &key (start-date (today)) (start-price '()) (rate 0.04) (dividends '())
                                                (paths 5000) (block-size 10) (seed 1) (max-vol-spread 0.02)
                                                (out-of-the-money-only #t) (min-paths-paid 50) (standard-errors 2)
-                                               (forward-tolerance 0.002))
+                                               (forward-tolerance 0.002) (expected-return '())
+                                               (match-volatility #f))
   "Check an option chain's prices against values from simulated paths.
 chain is a table as tastytrade-option-chain makes; returns is the
 underlying's table of returns, as daily-returns makes it (with its
@@ -165,7 +221,11 @@ say too little about it; and a bid has to be above the value, or an ask
 below it, by standard-errors of the paths' own error to count as rich or
 cheap. forward-tolerance is how far the forward from put-call parity may be
 from the one the underlying's price gives, in the first expiration, as a
-fraction of it: 0.002 is 0.2%.
+fraction of it: 0.002 is 0.2%. match-volatility #t multiplies the paths'
+volatility by the number that makes the middle iv-residual 0 (adds the
+column volatility-scale, which has it). expected-return is the underlying's
+expected annual return, dividends included, 0.08 for 8%: with it, the
+columns expected-value, favors, and expected-profit are added.
 
 The result is a table, the options furthest out of line first, with these
 columns added to the chain's own: model-price, the value from the paths;
@@ -174,7 +234,13 @@ model-iv, the volatility of that price; iv-residual, iv-mid less model-iv;
 iv-vs-expiration, iv-residual less the middle one of the options that expire
 the same day; signal, \"rich\" if the bid is above model-price, \"cheap\" if the ask is
 below it, \"\" if neither; and edge, how far: the bid less model-price, or
-model-price less the ask (0 for neither)."
+model-price less the ask (0 for neither). With expected-return: expected-value,
+the present value of what the option pays on average if the underlying earns
+that (with the same volatility), at the interest rate; favors, \"buying\" if
+that is above the ask by standard-errors of its error, \"selling\" if it is below the bid
+by that, \"\" if neither; and expected-profit, how far: expected-value less
+the ask, or the bid less expected-value (0 for neither). These are expected
+values: they are not adjusted for risk."
   (let* ((priced (if (null? start-price) chain (table-add-column chain "underlying-price" start-price)))
          (calendar-days (days-between start-date (table-column priced "expiration-date")))
          (trading-days (option-check--trading-days priced start-date))
@@ -192,14 +258,25 @@ model-price less the ask (0 for neither)."
       (option-check--require-fitting-prices all-options forward-tolerance)
       (when (= (table-row-count options) 0)
         (error "check-option-chain: no option is liquid enough to check -- see max-vol-spread"))
-      (option-check--compare options
-                             (option-check--paths options returns schedule rate paths block-size seed)
-                             min-paths-paid standard-errors))))
+      (let* ((risk-neutral (- (exp rate) 1))
+             (payoffs-at (lambda (annual-return scale)
+                           (option-check--payoffs options returns schedule annual-return scale paths block-size seed)))
+             (compared-at (lambda (scale)
+                            (option-check--compare options (payoffs-at risk-neutral scale) '()
+                                                   min-paths-paid standard-errors)))
+             (scale (if match-volatility (option-check--fit-scale compared-at 1.0 5) 1.0))
+             (real-payoffs (if (null? expected-return) '() (payoffs-at expected-return scale)))
+             (checked (option-check--compare options (payoffs-at risk-neutral scale) real-payoffs
+                                             min-paths-paid standard-errors)))
+        (if match-volatility
+            (table-add-column checked "volatility-scale" scale)
+            checked)))))
 
 (define (check-option-prices creds symbol &key (months 3) (strikes 15) (start-date (today)) (start-price '())
                                                (rate 0.04) (paths 5000) (block-size 10) (seed 1)
                                                (max-vol-spread 0.02) (out-of-the-money-only #t)
-                                               (min-paths-paid 50) (standard-errors 2) (forward-tolerance 0.002))
+                                               (min-paths-paid 50) (standard-errors 2) (forward-tolerance 0.002)
+                                               (expected-return '()) (match-volatility #f))
   "Get an underlying's option chain (from tastytrade; months ahead, with
 the strikes nearest the price), its prices (from Schwab) and dividends
 (from Alpha Vantage), make paths, value every option from them, and check
@@ -212,7 +289,8 @@ takes the other arguments, and gives the result."
                         :dividends dividends :paths paths :block-size block-size :seed seed
                         :max-vol-spread max-vol-spread :out-of-the-money-only out-of-the-money-only
                         :min-paths-paid min-paths-paid :standard-errors standard-errors
-                        :forward-tolerance forward-tolerance)))
+                        :forward-tolerance forward-tolerance :expected-return expected-return
+                        :match-volatility match-volatility)))
 
 ; ---------------------------------------------------------------------------
 ; Showing the results
@@ -221,7 +299,8 @@ takes the other arguments, and gives the result."
 (define option-check-formats
   '(("strike" ",.2f") ("bid" ",.2f") ("ask" ",.2f") ("iv-bid" ".1%") ("iv-mid" ".1%") ("iv-ask" ".1%")
     ("model-price" ",.3f") ("standard-error" ",.3f") ("paths-paid" ",.0f") ("model-iv" ".1%")
-    ("iv-residual" "+.1%") ("iv-vs-expiration" "+.1%") ("median-iv-residual" "+.1%") ("edge" ",.3f")))
+    ("iv-residual" "+.1%") ("iv-vs-expiration" "+.1%") ("median-iv-residual" "+.1%") ("edge" ",.3f")
+    ("expected-value" ",.3f") ("expected-profit" ",.3f") ("volatility-scale" ".3f")))
 
 (define (option-check-expirations checked)
   "A table with a row for each expiration: how many options were checked,
@@ -242,9 +321,15 @@ the middle iv-residual of them, and how many are rich and cheap."
   "Show the middle iv-residual of each expiration, the count options
 furthest from the paths' values, the count furthest from their expiration's
 middle iv-residual, and every option whose bid is above the paths' value or
-whose ask is below it."
-  (let ((columns (table-column-names checked))
-        (by-expiration (table-add-column checked "distance" (abs (table-column checked "iv-vs-expiration")))))
+whose ask is below it; and, if there is an expected return, the count
+options whose expected profit is greatest."
+  (let* ((matched (member "volatility-scale" (table-column-names checked)))
+         (scale (if matched (vector-ref (table-column checked "volatility-scale") 0) 1.0))
+         (checked (if matched (table-drop-columns checked "volatility-scale") checked))       ; (said here instead)
+         (columns (table-column-names checked))
+         (by-expiration (table-add-column checked "distance" (abs (table-column checked "iv-vs-expiration")))))
+    (when matched
+      (display (format "The paths' volatility was multiplied by {:.3f}, to match the market's overall level.\n" scale)))
     (display (format "{} options. The middle iv-residual, the market's volatility less the paths', in each expiration:\n"
                      (table-row-count checked)))
     (display-table (option-check-expirations checked) option-check-formats)
@@ -255,4 +340,8 @@ whose ask is below it."
                    option-check-formats)
     (display "\nOptions whose bid is above the paths' value (rich) or ask below it (cheap):\n")
     (display-table (table-sort (table-filter checked (vector-not (= (table-column checked "signal") ""))) "edge" #t)
-                   option-check-formats)))
+                   option-check-formats)
+    (when (member "expected-profit" columns)
+      (display (format "\nThe {} options with the most expected profit if the underlying earns its expected return,\n" count))
+      (display "buying at the ask or selling at the bid (an expected value: not adjusted for risk):\n")
+      (display-table (table-head (table-sort checked "expected-profit" #t) count) option-check-formats))))
