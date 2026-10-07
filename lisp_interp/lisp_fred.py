@@ -12,7 +12,7 @@ through lisp_http, so it can be cached.
 import json
 import urllib.parse
 
-from lisp_core import LispDate, LispError, LispVector, NIL, Pair, keyword_options
+from lisp_core import LispDate, LispError, LispVector, Pair, date_argument, keyword_options
 from lisp_data_common import credential, dated_table, text_list
 import lisp_http
 
@@ -54,12 +54,10 @@ def download_series(series_id, credentials_path, start_date, end_date, cache_hou
         "api_key": str(api_key),
         "file_type": "json",
     }
-    if start_date is not None and start_date is not NIL:
-        params["observation_start"] = (
-            start_date.date.isoformat() if isinstance(start_date, LispDate) else str(start_date))
-    if end_date is not None and end_date is not NIL:
-        params["observation_end"] = (
-            end_date.date.isoformat() if isinstance(end_date, LispDate) else str(end_date))
+    if start_date is not None:
+        params["observation_start"] = date_argument(start_date, who, ":start-date").isoformat()
+    if end_date is not None:
+        params["observation_end"] = date_argument(end_date, who, ":end-date").isoformat()
 
     url = FRED_URL + "?" + urllib.parse.urlencode(params)
     shown_url = url.replace(str(api_key), "...")        # so the API key never shows in an error

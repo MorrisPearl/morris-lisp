@@ -344,6 +344,27 @@ def _date_from_pydate(pydate):
     return obj
 
 
+def parse_date_text(text):
+    """text as a LispDate if it's a date written YYYY-MM-DD, otherwise None."""
+    text = str(text)
+    if len(text) != 10 or text[4] != "-" or text[7] != "-":
+        return None
+    try:
+        return LispDate(int(text[:4]), int(text[5:7]), int(text[8:]))
+    except ValueError:
+        return None
+
+
+def date_argument(value, who, what):
+    """A date argument -- a date, or YYYY-MM-DD text -- as a datetime.date."""
+    if isinstance(value, LispDate):
+        return value.date
+    parsed = parse_date_text(value) if isinstance(value, str) else None
+    if parsed is None:
+        raise LispError("%s: %s must be a date, or YYYY-MM-DD text, not %s" % (who, what, _brief(value)))
+    return parsed.date
+
+
 class Procedure:
     """A user-defined function, made by `lambda` or `define`.
 

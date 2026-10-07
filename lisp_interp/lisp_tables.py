@@ -21,7 +21,7 @@ import numpy as np
 from lisp_core import (
     Keyword, LispDate, LispError, LispHashTable, LispString, LispStruct, LispStructType, LispVector, NIL, Pair,
     Procedure, Symbol,
-    _brief, _lisp_scalar, apply_proc, is_true, keyword_options, list_to_pairs, pairs_to_list, to_string,
+    _brief, _lisp_scalar, apply_proc, is_true, keyword_options, list_to_pairs, pairs_to_list, to_string, parse_date_text,
 )
 from lisp_vector_math import factorize, floats_of, is_number, missing_mask, to_vector, truth_of
 
@@ -395,14 +395,14 @@ ROW_VIEW_BUILTINS = {
 }
 
 
-def parse_iso_date(text):
-    """text as a LispDate if it's exactly YYYY-MM-DD, otherwise None."""
-    if len(text) != 10 or text[4] != "-" or text[7] != "-":
-        return None
-    try:
-        return LispDate(int(text[:4]), int(text[5:7]), int(text[8:]))
-    except ValueError:
-        return None
+def table_from_tuples(rows, names):
+    """Rows (Python tuples or lists, a value for each name) as a table with
+    these column names: text is Lisp text, None is missing, and a column of
+    YYYY-MM-DD text is a column of dates (see column_vector)."""
+    def lisp_value(value):
+        return LispString(value) if isinstance(value, str) else value
+    return make_table_value([(name, column_vector([lisp_value(row[j]) for row in rows]))
+                             for j, name in enumerate(names)])
 
 
 def column_vector(values):
@@ -418,9 +418,9 @@ def column_vector(values):
             all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in present):
         return LispVector([float("nan") if v is None else v for v in values])
     if present and all(isinstance(v, str) for v in present):
-        dates = [parse_iso_date(v) for v in present]
+        dates = [parse_date_text(v) for v in present]
         if all(d is not None for d in dates):
-            return LispVector([None if v is None else parse_iso_date(v) for v in values])
+            return LispVector([None if v is None else parse_date_text(v) for v in values])
     return LispVector(values)
 
 

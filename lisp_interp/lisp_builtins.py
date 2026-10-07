@@ -32,7 +32,7 @@ from lisp_core import (
     get_verbose_level, is_true, keyword_options,
     list_to_pairs, pairs_to_list, parse, pretty_print_string,
     reconstruct_macro_source, reconstruct_procedure_source, run_file, seval,
-    set_verbose_level, throw_to, to_display_string, to_string,
+    set_verbose_level, throw_to, to_display_string, to_string, parse_date_text,
 )
 import lisp_alpha_vantage
 import lisp_bea
@@ -1431,11 +1431,10 @@ def date_to_string(d):
 
 
 def string_to_date(s):
-    try:
-        y, m, d = str(s).split("-")
-        return LispDate(int(y), int(m), int(d))
-    except Exception:
+    parsed = parse_date_text(s)
+    if parsed is None:
         raise LispError("string->date: invalid date string %r (want YYYY-MM-DD)" % (str(s),))
+    return parsed
 
 
 def date_add_days(d, n):

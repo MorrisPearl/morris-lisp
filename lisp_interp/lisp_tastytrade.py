@@ -36,7 +36,6 @@ builtins then raise a clear error when called.
 """
 
 import asyncio
-import calendar
 import concurrent.futures
 import datetime
 import os
@@ -49,7 +48,8 @@ from lisp_core import (
 )
 from lisp_data_common import read_credentials
 from lisp_http import json_to_lisp
-from lisp_tables import column_vector, make_table_value, table_from_rows
+from lisp_tables import column_vector, make_table_value, table_from_rows, table_from_tuples
+from lisp_time_series import months_later
 
 
 try:
@@ -701,16 +701,6 @@ def _tasty_resolve_symbol(symbol):
     return ("equity", upper)
 
 
-def _tasty_add_months(d, n):
-    """d shifted forward by n months, clamped to the last valid day of
-    the target month (e.g. Jan 31 + 1 month -> Feb 28/29, not Mar 3)."""
-    month0 = d.month - 1 + int(n)
-    year = d.year + month0 // 12
-    month = month0 % 12 + 1
-    day = min(d.day, calendar.monthrange(year, month)[1])
-    return datetime.date(year, month, day)
-
-
 def _expiration(option):
     return datetime.date.fromisoformat(option["expiration-date"])
 
@@ -719,7 +709,7 @@ def _options_within(kind, options, n_months, today):
     """The options to consider: for futures, those on the next n_months
     delivery months; for equities, those expiring in the next n_months."""
     if kind == "equity":
-        cutoff = _tasty_add_months(today, n_months)
+        cutoff = months_later(today, n_months)
         return [o for o in options if today <= _expiration(o) <= cutoff]
     by_delivery_month = {}
     for option in options:
@@ -827,9 +817,7 @@ def option_chain_table(rows):
     """The option chain's rows (as _option_row makes them) as a table, one
     column per field. A value tastytrade didn't report is '() in the row,
     which is NaN in a column of numbers."""
-    values_by_column = [[row[j] for row in rows] for j in range(len(OPTION_CHAIN_COLUMNS))]
-    return make_table_value([(name, column_vector(values))
-                             for name, values in zip(OPTION_CHAIN_COLUMNS, values_by_column)])
+    return table_from_tuples(rows, OPTION_CHAIN_COLUMNS)
 
 
 # ---------------------------------------------------------------------------

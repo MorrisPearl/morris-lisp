@@ -75,6 +75,7 @@ from lisp_core import (
     pairs_to_list,
 )
 import lisp_calendar
+from lisp_time_series import months_later
 from lisp_tables import find_column, make_table_value, table_columns
 from lisp_vector_math import floats_of, is_number, to_vector
 
@@ -190,24 +191,15 @@ def adjust_returns(returns, annual_return, *options):
 # The dividends to come
 # ---------------------------------------------------------------------------
 
-def years_later(day, years):
-    """The same date, years later (February 29 is February 28 in a year that
-    isn't a leap year)."""
-    try:
-        return day.replace(year=day.year + years)
-    except ValueError:
-        return day.replace(year=day.year + years, day=28)
-
-
 def last_years_dividends_to_come(dividends, start, last_day):
     """The dividends of the year up to start, as (ex-date, amount), repeated
     each year after it, as far as last_day."""
-    one_year_before = years_later(start, -1)
+    one_year_before = months_later(start, -12)
     last_year = [(day, amount) for day, amount in dividends if one_year_before < day <= start]
     coming = []
     years_ahead = 1
-    while last_year and years_later(min(day for day, _ in last_year), years_ahead) <= last_day:
-        coming += [(years_later(day, years_ahead), amount) for day, amount in last_year]
+    while last_year and months_later(min(day for day, _ in last_year), 12 * years_ahead) <= last_day:
+        coming += [(months_later(day, 12 * years_ahead), amount) for day, amount in last_year]
         years_ahead += 1
     return coming
 

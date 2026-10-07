@@ -52,11 +52,12 @@ import urllib.request
 import webbrowser
 
 from lisp_core import (
-    Keyword, LispDate, LispError, LispHashTable, LispString, LispVector, NIL, Pair, keyword_options, pairs_to_list,
+    Keyword, LispDate, LispError, LispHashTable, LispString, LispVector, NIL, Pair, date_argument, keyword_options,
+    pairs_to_list,
 )
 from lisp_data_common import credential, text_list
 from lisp_http import json_to_lisp
-from lisp_tables import column_vector, make_table_value
+from lisp_tables import table_from_tuples
 
 API_URL = "https://api.schwabapi.com"
 AUTHORIZE_URL = API_URL + "/v1/oauth/authorize"
@@ -344,14 +345,6 @@ def number(value):
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else float("nan")
 
 
-def table_of(rows, names):
-    """Rows (tuples) as a table with these column names; text as text."""
-    def lisp_value(value):
-        return LispString(value) if isinstance(value, str) else value
-    return make_table_value([(name, column_vector([lisp_value(row[j]) for row in rows]))
-                             for j, name in enumerate(names)])
-
-
 # ---------------------------------------------------------------------------
 # Accounts and positions
 # ---------------------------------------------------------------------------
@@ -397,7 +390,7 @@ def schwab_accounts(credentials_path):
         rows.append((account_name(names, account.get("accountNumber", "")), account.get("type", ""),
                      number(balances.get("liquidationValue")), number(balances.get("cashBalance")),
                      number(balances.get("longMarketValue")), number(balances.get("shortMarketValue"))))
-    return table_of(rows, ["account", "type", "value", "cash", "long-value", "short-value"])
+    return table_from_tuples(rows, ["account", "type", "value", "cash", "long-value", "short-value"])
 
 
 POSITION_COLUMNS = ["account", "symbol", "description", "asset-type", "quantity", "average-price",
@@ -455,7 +448,7 @@ def schwab_positions(credentials_path, *options):
         account = (entry or {}).get("securitiesAccount", {})
         for position in account.get("positions", []):
             rows.append(position_row(account_name(names, account.get("accountNumber", "")), position))
-    return table_of(rows, POSITION_COLUMNS)
+    return table_from_tuples(rows, POSITION_COLUMNS)
 
 
 # ---------------------------------------------------------------------------
@@ -509,18 +502,12 @@ def schwab_quotes(credentials_path, symbols):
         quote = found.get("quote", {})
         rows.append((symbol, found.get("reference", {}).get("description", ""))
                     + tuple(number(quote.get(field)) for _, field in QUOTE_FIELDS))
-    return table_of(rows, ["symbol", "description"] + [name for name, _ in QUOTE_FIELDS])
+    return table_from_tuples(rows, ["symbol", "description"] + [name for name, _ in QUOTE_FIELDS])
 
 
 def milliseconds(value, who, what):
     """A date (or "YYYY-MM-DD") as the milliseconds since 1970 Schwab takes."""
-    if isinstance(value, LispDate):
-        day = value.date
-    else:
-        try:
-            day = datetime.date.fromisoformat(str(value))
-        except ValueError:
-            raise LispError("%s: %s must be a date, or YYYY-MM-DD text" % (who, what))
+    day = date_argument(value, who, what)
     return int(datetime.datetime(day.year, day.month, day.day, tzinfo=datetime.timezone.utc).timestamp() * 1000)
 
 
@@ -554,7 +541,7 @@ def schwab_price_history(credentials_path, symbol, *options):
         day = datetime.datetime.fromtimestamp(candle["datetime"] / 1000, tz=datetime.timezone.utc).date()
         rows.append((LispDate(day.year, day.month, day.day),) +
                     tuple(number(candle.get(k)) for k in ("open", "high", "low", "close", "volume")))
-    return table_of(rows, ["date", "open", "high", "low", "close", "volume"])
+    return table_from_tuples(rows, ["date", "open", "high", "low", "close", "volume"])
 
 
 # ---------------------------------------------------------------------------
@@ -610,7 +597,7 @@ def schwab_orders(credentials_path, *options):
                      order.get("status", ""), leg.get("instruction", ""), leg.get("instrument", {}).get("symbol", ""),
                      number(order.get("quantity")), number(order.get("filledQuantity")),
                      order.get("orderType", ""), number(order.get("price")), order.get("duration", "")))
-    return table_of(rows, ["account", "order-id", "entered", "status", "instruction", "symbol", "quantity",
+    return table_from_tuples(rows, ["account", "order-id", "entered", "status", "instruction", "symbol", "quantity",
                            "filled", "type", "price", "duration"])
 
 

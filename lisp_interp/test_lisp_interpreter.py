@@ -67,6 +67,7 @@ import lisp_http  # noqa: E402
 import lisp_jupyter_debug  # noqa: E402
 import lisp_tastytrade  # noqa: E402
 import lisp_tables  # noqa: E402
+import lisp_time_series  # noqa: E402
 import lisp_vector_math  # noqa: E402
 
 INTERPRETER = os.path.join(HERE, "lisp_interpreter.py")
@@ -5728,11 +5729,12 @@ class TestTradingCalendar(LispTestCase):
                     self.assertShows("(trading-days-between %s (add-trading-days %s %d))" % (start, start, n), str(n))
 
     def test_what_the_calendar_wont_take(self):
-        self.assertLispError("(trading-day? 5)", "not a date")
-        self.assertLispError('(next-trading-day "2026-10-07")', "not a date")
+        self.assertLispError("(trading-day? 5)", "the date must be a date, or YYYY-MM-DD text")
+        self.assertShows('(next-trading-day "2026-10-10")', "2026-10-12")         # (text is a date too)
+        self.assertLispError('(next-trading-day "October 10")', "must be a date")
         self.assertLispError("(add-trading-days (date 2026 10 7) 2.5)", "whole number")
         self.assertLispError("(add-trading-days (date 2026 10 7) #t)", "whole number")
-        self.assertLispError("(trading-days-between (date 2026 10 7) 3)", "not a date")
+        self.assertLispError("(trading-days-between (date 2026 10 7) 3)", "the end must be a date")
         self.assertLispError("(nyse-holidays 2026.0)", "the year must be a whole number")
         self.assertLispError("(nyse-holidays 0)", "the year must be a whole number")
 
@@ -6287,7 +6289,7 @@ class TestOptionCheck(LispTestCase):
     def test_dividends_the_last_year_had_are_taken_off_the_options_that_expire_after_their_dates(self):
         today = datetime.date.today()
         last_year = today - datetime.timedelta(days=100)
-        ex_date = lisp_calendar.first_trading_day_from(lisp_investment_paths.years_later(last_year, 1))
+        ex_date = lisp_calendar.first_trading_day_from(lisp_time_series.months_later(last_year, 12))
         self.make_chain(today, dividend=(ex_date, 2.0), trading_days=(60, 130, 220))
         self.env[lisp_core.Symbol("actual")] = lisp_tables.make_table_value([
             ("ex-date", lisp_core.LispVector([lisp_core.LispDate(last_year.year, last_year.month, last_year.day)])),

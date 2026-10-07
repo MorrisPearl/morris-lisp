@@ -31,7 +31,7 @@ September 11, 2001 -- aren't known to the rules.
 import datetime
 from functools import lru_cache
 
-from lisp_core import LispDate, LispError, LispVector, _date_from_pydate
+from lisp_core import LispError, LispVector, _date_from_pydate, date_argument
 
 MONDAY, THURSDAY = 0, 3
 SATURDAY = 5
@@ -147,22 +147,16 @@ def count_trading_days(start, end):
 # The Lisp functions
 # ---------------------------------------------------------------------------
 
-def date_argument(value, who):
-    if not isinstance(value, LispDate):
-        raise LispError("%s: not a date: %r" % (who, value))
-    return value.date
-
-
 def trading_day_p(d):
     """(trading-day? date) -- #t if the market is open that day: a Monday
     through Friday that isn't a holiday."""
-    return is_trading_day(date_argument(d, "trading-day?"))
+    return is_trading_day(date_argument(d, "trading-day?", "the date"))
 
 
 def next_trading_day(d):
     """(next-trading-day date) -- the date, if the market is open that day,
     and if not the first day after it that it's open."""
-    return _date_from_pydate(first_trading_day_from(date_argument(d, "next-trading-day")))
+    return _date_from_pydate(first_trading_day_from(date_argument(d, "next-trading-day", "the date")))
 
 
 def add_trading_days(d, n):
@@ -170,7 +164,7 @@ def add_trading_days(d, n):
     before it if n is negative. With n of 0 it is the date itself, whether
     or not that's a trading day."""
     who = "add-trading-days"
-    day = date_argument(d, who)
+    day = date_argument(d, who, "the date")
     if not isinstance(n, int) or isinstance(n, bool):
         raise LispError("%s: the number of days must be a whole number, not %r" % (who, n))
     return _date_from_pydate(trading_days_after(day, n))
@@ -181,7 +175,7 @@ def trading_days_between(start, end):
     after start, up to and including end: 1 from a Friday to the Monday
     after it, if that is a trading day. Negative if end is before start."""
     who = "trading-days-between"
-    return count_trading_days(date_argument(start, who), date_argument(end, who))
+    return count_trading_days(date_argument(start, who, "the start"), date_argument(end, who, "the end"))
 
 
 def nyse_holidays(year):

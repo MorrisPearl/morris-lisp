@@ -94,10 +94,17 @@ def month_number_to_yyyymm(m):
     return each(m, yyyymm_of_month)
 
 
-def add_months(d, n):
-    year, month_index = divmod(d.date.year * 12 + d.date.month - 1 + int(n), 12)
+def months_later(day, n):
+    """The datetime.date n months after day (before it, if n is negative),
+    with a day past the end of the new month made its last: January 31 and
+    a month is February 28 or 29, and February 29 and a year, February 28."""
+    year, month_index = divmod(day.year * 12 + day.month - 1 + int(n), 12)
     last_day = calendar.monthrange(year, month_index + 1)[1]
-    return _date_from_pydate(datetime.date(year, month_index + 1, min(d.date.day, last_day)))
+    return datetime.date(year, month_index + 1, min(day.day, last_day))
+
+
+def add_months(d, n):
+    return _date_from_pydate(months_later(d.date, n))
 
 
 def date_add_months(d, n):
