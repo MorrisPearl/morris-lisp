@@ -37,9 +37,10 @@ OPTION VALUES: the value of an option (or anything else paid after the
 prices of a path) is estimated by working out what each path pays, taking
 its present value, and averaging them. For that to be the option's fair
 value, and not just what it pays on average if the investment earns what
-you expect, the paths must grow at the interest rate (less the dividend
-yield, for an investment that pays one): make them from returns that
-adjust-returns has given the interest rate as the annual return.
+you expect, the paths must grow at the interest rate: make them from
+returns that adjust-returns has given the interest rate as the annual
+return. Dividends that are known are taken off the start price, as their
+present value; see option-value in the manual.
 
 RANDOM NUMBERS: with :seed, bootstrap-path uses its own generator (as
 vectors-shuffle does), so the same seed gives the same path every time --

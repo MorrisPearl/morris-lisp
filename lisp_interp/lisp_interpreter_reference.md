@@ -7818,11 +7818,43 @@ the investment does earn 8%, not what it costs to be paid in every case.
 
 - Make the paths from `(adjust-returns returns (- (exp rate) 1))`: the
   annual return that grows a price at the continuously compounded `rate`.
-- For an investment that pays dividends, with a continuous yield `q`: use
-  returns from `daily-returns` *without* `:dividends`, and the annual
-  return `(- (exp (- rate q)) 1)`. A path made from returns with dividends
-  is the investment with its dividends reinvested, not the price the
-  option is written on.
+- **Dividends take money out of the price, so the paths must lose it
+  too.** When the dividends before the option expires are known, in
+  amounts and ex-dates, start the paths from the price less their present
+  value (each discounted from its ex-date to today), and make the returns
+  *with* `:dividends`, so that all of the investment's return, dividends
+  included, grows at the interest rate. The option is paid on the price at
+  the end, after every one of those dividends has been paid, and every
+  path has lost the same dollar amounts, whatever the price did. A
+  dividend after the option expires doesn't matter, and isn't counted.
+  `dividends-present-value`, in `lib/vol_smile.lsp`, works the present
+  value out (it counts the dividends before an expiration date, and no
+  others). This is for an option paid on the final price, a call or a put.
+  For one that depends on how the price got there, these paths are the
+  price less the present value of the dividends still to come, not the
+  price itself.
+- **A yield, instead.** When dividends are small, regular, and spread
+  through the year, as an index's are, or their dates aren't known, a
+  continuous yield `q` is simpler: use returns *without* `:dividends`, and
+  the annual return `(- (exp (- rate q)) 1)`.
+  But a yield takes a bit of dividend off every day, and in proportion to
+  the price (a path where the price doubles has doubled dividends), where
+  real dividends come all at once, in set amounts. That makes little
+  difference to a one-year option and its quarterly dividends, but a lot
+  to one shorter than the time between them. In Black-Scholes, for a
+  one-year at-the-money call at 20% volatility on 100, with four quarterly
+  dividends of 0.50, a 2% yield is 0.1% from the known dividends' value;
+  for a call that expires before the first ex-date it is 3.5% low, as the
+  yield takes off a dividend that never comes.
+
+```lisp
+(load "vol_smile.lsp")
+(define dividends (list (list (date 2026 11 20) 0.50) (list (date 2027 2 19) 0.50)))   ; ex-date, amount
+(define expiry (date 2027 3 19))
+(define present-value (vector-ref (dividends-present-value (vector expiry) rate dividends) 0))
+(define paths (map (lambda (i) (bootstrap-path fair-returns (- spot present-value) days 1 :seed i)) (iota 5000)))
+```
+
 - A path has a price for each trading day, so `years` is its days divided
   by the days in a year, as `adjust-returns` takes them (252): `years` of 1
   for 252 days.
