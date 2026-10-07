@@ -110,6 +110,7 @@ functions" as a reference to search rather than read start to end.
   - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
   - [Simulating investment prices](#simulating-investment-prices)
+  - [Checking option prices against simulated paths](#checking-option-prices-against-simulated-paths)
   - [Input / output](#input--output)
   - [Saving variables](#saving-variables)
   - [Metaprogramming](#metaprogramming)
@@ -7741,7 +7742,10 @@ another:
    ones to come in the days of a path.
 4. `bootstrap-path` makes one path of future prices from them. Call it
    once for each path you want.
-5. `option-value` is what an option is worth, from a list of paths.
+5. `option-value` is what an option is worth, from a list of paths. And
+   `option-payoffs` is what many options pay at once, from a list of
+   paths, for a whole option chain: see "Checking option prices against
+   simulated paths".
 
 **The returns are log returns**, ln(today's price / yesterday's), which
 add up: the price after a run of days is the starting price times *e* to
@@ -7993,6 +7997,154 @@ history's volatility, gave 72,350. The paths' volatility over the year was
 low with longer blocks, 0.3% to 0.4%.) What comes out is the value if the
 future is like this history, which is not the market's price: the market's
 is from the volatility it expects.
+
+#### `(option-payoffs paths days strikes calls)`
+What many European options pay, on average, over a list of paths: a table
+with a row for each option, and these columns:
+
+| Column | What it holds |
+|---|---|
+| `payoff` | the average of what the option pays at expiration, before discounting |
+| `payoff-error` | its standard error |
+| `paths-paid` | how many paths it pays something on |
+
+`paths` is a list of paths, vectors of prices that are all the same
+length. `days`, `strikes`, and `calls` are vectors with an element for
+each option: `days`, the number of the path's day it expires on (1 for the
+first); `strikes`; and `calls`, 1 for a call and 0 for a put. A call pays
+the price on its day less the strike, if that is more than 0, and a put
+the strike less the price. Discount the payoffs for the time to
+expiration, as `option-value` does for one option. All the options are
+valued from the same paths, so what they say about one another is not
+noise.
+
+```lisp
+(define paths (list #(10.0 11.0 12.0) #(10.0 9.0 8.0) #(10.0 10.0 10.0) #(10.0 12.0 14.0)))
+; a call on day 3 struck at 10, a put on day 3 at 11, a call on day 1 at 10, and a put on day 2 at 11
+(define payoffs (option-payoffs paths #(3 3 1 2) #(10 11 10 11) #(1 0 1 0)))
+(table-column payoffs "payoff")        ; => #(1.5 1.0 0.0 0.75)
+(table-column payoffs "paths-paid")    ; => #(2 2 0 2)
+```
+
+### Checking option prices against simulated paths
+
+`lib/option_check.lsp` finds the options in a chain whose prices are
+furthest from what simulated paths of the underlying's price say they are
+worth. `lib/vol_smile.lsp`, above, judges an option by the other options;
+this judges it by the underlying's own history. It does all of it:
+
+1. gets the option chain from tastytrade, the price history from Schwab,
+   and the dividends from Alpha Vantage;
+2. makes the returns, with the dividends in them, grown at the interest
+   rate (see "Simulating investment prices");
+3. makes a set of paths, as long as the longest option, with the last year's
+   dividends supposed to go on;
+4. values every option in the chain from those same paths, with
+   `option-payoffs`, discounted at the interest rate; and
+5. compares each option's price with its value, in volatility: the
+   implied volatility of the price, `iv-mid`, and of the value, `model-iv`,
+   as `vol_smile.lsp` works them out (Black's formula, on the forward that
+   the dividends give).
+
+```lisp
+(load "option_check.lsp")
+(define checked (check-option-prices creds "SPY" :rate 0.04))
+(show-option-check checked)
+```
+
+#### `(check-option-prices creds symbol [options])`
+The whole thing, for an underlying. `months` (3) is how many months ahead
+to get expirations, and `strikes` (15) how many strikes nearest the price
+to keep in each; its other options are `check-option-chain`'s, below. It
+takes some seconds. The result is a table, with the options furthest out of
+line first.
+
+#### `(check-option-chain chain returns [options])`
+The same, from a chain and returns you already have: `chain` is a table as
+`tastytrade-option-chain` makes, and `returns` the underlying's table of
+returns as `daily-returns` makes it, *with its dividends* if it pays any. It
+is the function to use with a chain from another source, or for trying
+other settings on one chain. Its options:
+
+| Option | Default | What it does |
+|---|---|---|
+| `:start-date` | today | the date of the chain's prices. The time to each expiration is counted from it, in calendar days for the discounting and in trading days for the paths. (The rest of the day itself isn't counted: an option that expires today isn't checked.) |
+| `:start-price` | the chain's `underlying-price` | the underlying's price at that time |
+| `:rate` | 0.04 | the interest rate, continuously compounded: set it to the current one |
+| `:dividends` | none | the table of the underlying's actual dividends, as `alpha-vantage-dividends` makes it, whose last year is supposed to go on (`dividend-schedule`); `'()` for none |
+| `:paths` | 5000 | how many paths |
+| `:block-size` | 10 | the days in a block of the history (see `bootstrap-path`: it changes the answer) |
+| `:seed` | 1 | the paths' seeds are this one, and the next ones |
+| `:max-vol-spread` | 0.02 | an option whose bid and ask are further apart than this in volatility isn't used |
+| `:out-of-the-money-only` | `#t` | use only calls with strikes at or above the forward and puts at or below it: the paths' values leave out early exercise, which an option on a stock has, and an in-the-money option's price has more of it |
+| `:min-paths-paid` | 50 | an option the paths pay something on in fewer paths than this is left out: they say too little about it |
+| `:standard-errors` | 2 | a bid has to be above the value, or an ask below it, by this many standard errors of the paths' own noise to count as rich or cheap |
+| `:forward-tolerance` | 0.002 | see below |
+
+An option also has to be liquid, as `vol_smile.lsp` has it: traded today,
+with open interest and a bid.
+
+The result has the chain's own columns, and these:
+
+| Column | What it holds |
+|---|---|
+| `iv-bid`, `iv-mid`, `iv-ask` | the implied volatility of the option's bid, mid, and ask |
+| `model-price` | the option's value from the paths |
+| `standard-error` | its error, from there being only so many paths |
+| `paths-paid` | how many paths the option pays something on |
+| `model-iv` | the implied volatility of `model-price` |
+| `iv-residual` | `iv-mid` less `model-iv`: positive if the option is priced above the paths' value, negative if below. The options are in order of its distance from 0 |
+| `iv-vs-expiration` | `iv-residual` less the middle (median) one of the options that expire the same day |
+| `signal` | `"rich"` if the bid is above `model-price`, `"cheap"` if the ask is below it, `""` if neither |
+| `edge` | how far: the bid less `model-price`, or `model-price` less the ask (0 for neither) |
+
+#### `(show-option-check checked [:count n])`
+Shows the middle `iv-residual` of each expiration, the `count` (10) options
+furthest from the paths' values, the `count` furthest from the middle
+`iv-residual` of their expiration, and every option that is rich or cheap.
+
+#### `(option-check-expirations checked)`
+A table with a row for each expiration: its days, how many options were
+checked, their middle `iv-residual`, and how many are rich and cheap.
+
+**What to make of it.** The paths know the history and nothing else, so:
+
+- **The market's volatility is not the history's.** When the market expects
+  more volatility than the history had, most of the options are rich; when
+  less, most are cheap. And the difference is biggest for the options that
+  expire soonest, since the history says the least about the next few days:
+  it is the market's term structure of volatility, and the first table of
+  `show-option-check` shows it. From the close of October 6, 2026, with SPY
+  at 779.09 and the market calm:
+
+  ```
+  expiration-date  days-to-expiration  options  median-iv-residual  rich  cheap
+  2026-10-07                        1       15               -8.9%     0     15
+  2026-10-16                       10       15               -4.3%     0     15
+  2026-11-20                       45       15               -2.6%     0     15
+  2026-12-31                       86       15               -2.1%     0     15
+  ```
+
+  So the options "furthest from the paths' values" are the shortest ones,
+  and say little. What is more telling is `iv-vs-expiration`: the options
+  that are out of line with the rest of *their* expiration.
+- **The underlying's price and the options' must be from the same moment.**
+  If the market is closed, the options' prices are the last close's, while
+  the underlying's can be from after hours, and then calls look rich and
+  puts cheap, or the other way around. So the check first sees that the
+  forward from the underlying's price and the one from put-call parity
+  agree for the first expiration, to `:forward-tolerance` (0.002 is 0.2%),
+  and stops if they don't, saying what the underlying's price must have
+  been. Give that as `:start-price` (and `:start-date`, if it was before
+  today), or run it when the market is open. If the interest rate or the
+  dividends are what's wrong, `:forward-tolerance` lets it go on, but the
+  options are then out of line by that.
+- **An in-the-money option, or one the paths rarely pay on, says little**,
+  which is why they're left out unless asked for.
+- **Noise.** `standard-error` is the paths' own, and it makes a
+  difference of about two standard errors the least that means anything.
+  More `:paths` make it smaller (four times as many, half), but not the
+  history's differences from the future.
 
 ### Input / output
 
@@ -9016,7 +9168,7 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 
 | Directory | What's in it |
 |---|---|
-| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `implied_vol.lsp`, `vol_smile.lsp` (fitting implied volatility smiles), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
+| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `implied_vol.lsp`, `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
 | `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, and a KenKen solver (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `tools/` | `make_contents.py`, which rebuilds this manual's Contents from its headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 
@@ -9057,7 +9209,7 @@ The Python files:
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
 | `lisp_alpha_vantage.py` | `alpha-vantage-dividends`: a stock's dividends from Alpha Vantage, through `lisp_http.py` |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders`, ...: your Schwab accounts |
-| `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `option-value`: simulated prices of an investment, and what an option on it is worth |
+| `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `option-value`, `option-payoffs`: simulated prices of an investment, and what options on it are worth |
 | `lisp_calendar.py` | `trading-day?`, `add-trading-days`, `trading-days-between`, `nyse-holidays`, ...: the NYSE's trading days |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |

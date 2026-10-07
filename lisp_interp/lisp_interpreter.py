@@ -102,7 +102,8 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
   - linear programming (the simplex method)
   - simulated prices: a block bootstrap of an investment's own daily returns, with
     its dividends (daily-returns, adjust-returns, dividend-schedule, bootstrap-path),
-    and what an option on one is worth (option-value); the NYSE's trading days
+    and what options on one are worth (option-value, option-payoffs, and lib/option_check.lsp, which
+    checks a chain's prices against them); the NYSE's trading days
   - day counts (30/360, ACT/360, ACT/365, ACT/ACT), npv, irr, xnpv, xirr,
     yield, duration, convexity, and the level payment on a loan
   - XY charts, and saving them as PNG/PDF/SVG

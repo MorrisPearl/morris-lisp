@@ -12,6 +12,8 @@ investment's own daily returns.
                      one simulated path of future prices
   (option-value paths payoff rate years)
                      what an option is worth, from many paths
+  (option-payoffs paths days strikes calls)
+                     what many European options pay on average, from many paths
 
 The idea: tomorrow's price is probably like the days in the investment's own
 history, so build a future by copying pieces of the past. Each piece is a
@@ -363,10 +365,57 @@ def option_value(paths, payoff, rate, years):
     return list_to_pairs([float(present_values.mean()), float(standard_error)])
 
 
+def option_payoffs(paths, days, strikes, calls):
+    """(option-payoffs paths days strikes calls) -- what many European
+    options pay, on average, over a list of paths: a table with a row for
+    each option and the columns payoff (the average of what it pays at
+    expiration, before discounting), payoff-error (its standard error), and
+    paths-paid (how many paths it pays something on). paths is a list of
+    paths, vectors of prices of the same length, such as bootstrap-path makes.
+    Each option has a day, the number of the path's day it expires on (1 for
+    the first), a strike, and a call, 1 for a call or 0 for a put: all three
+    are vectors with an element for each option. A call pays the price less
+    the strike, if more than 0, and a put the strike less the price."""
+    who = "option-payoffs"
+    if not isinstance(paths, Pair) or not all(isinstance(p, LispVector) for p in pairs_to_list(paths)):
+        raise LispError("%s: paths must be a list of vectors of prices, such as a list of bootstrap-path's" % who)
+    path_list = pairs_to_list(paths)
+    if len(path_list) < 2:
+        raise LispError("%s: it takes at least two paths to estimate a value and its error" % who)
+    if len({len(p.items) for p in path_list}) > 1:
+        raise LispError("%s: the paths must all be the same length" % who)
+    prices = np.array([p.items for p in path_list], dtype=np.float64)       # a row for each path, a column for each day
+    path_count, path_days = prices.shape
+
+    days = floats_of(days, who)
+    strikes = floats_of(strikes, who)
+    calls = floats_of(calls, who) != 0
+    if not len(days) == len(strikes) == len(calls):
+        raise LispError("%s: days, strikes, and calls must have an element for each option (%d, %d, %d)"
+                        % (who, len(days), len(strikes), len(calls)))
+    if not np.all(days == np.round(days)) or not np.all((days >= 1) & (days <= path_days)):
+        raise LispError("%s: every day must be a whole number from 1 to the paths' %d days" % (who, path_days))
+
+    average = np.zeros(len(days))
+    error = np.zeros(len(days))
+    paid = np.zeros(len(days), dtype=np.int64)
+    for day in np.unique(days):
+        options = np.flatnonzero(days == day)
+        final_prices = prices[:, int(day) - 1][:, None]                         # a column: the price on that day
+        payoffs = np.where(calls[options], final_prices - strikes[options], strikes[options] - final_prices)
+        payoffs = np.maximum(payoffs, 0.0)                                      # a row for each path, a column for each option
+        average[options] = payoffs.mean(axis=0)
+        error[options] = payoffs.std(axis=0, ddof=1) / math.sqrt(path_count)
+        paid[options] = (payoffs > 0).sum(axis=0)
+    return make_table_value([("payoff", to_vector(average)), ("payoff-error", to_vector(error)),
+                             ("paths-paid", to_vector(paid))])
+
+
 BUILTINS = {
     "daily-returns": daily_returns,
     "adjust-returns": adjust_returns,
     "dividend-schedule": dividend_schedule,
     "bootstrap-path": bootstrap_path,
     "option-value": option_value,
+    "option-payoffs": option_payoffs,
 }
