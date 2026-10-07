@@ -64,6 +64,7 @@ lisp_core.py imports none of the other files, so it can be read on its own.
     macros_init.lsp, loop.lsp  the standard macros, written in Lisp
     lib/                  Lisp libraries to load: solver.lsp, template.lsp, ...
     examples/             example programs, and the data they read
+    notebooks/            Jupyter notebooks that use it; scratch/ has experiments, not part of it
     tools/                build_pool_dataset.py (Freddie Mac data -> CSV)
 
 WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)

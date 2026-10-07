@@ -168,9 +168,9 @@
 ; since A/B/C's own claims absorb the whole pool, but if A/B/C happen to
 ; retire in THIS SAME period with cash still left over, this lets Z pick
 ; it up immediately instead of it being stranded (silently lost, since
-; nothing else claims it and cash doesn't carry over between periods) --
-; a real gap an earlier version of this file had. bal_z's formula
-; (further down) is unconditional the same way, for the same reason.
+; nothing else claims it and cash doesn't carry over between periods).
+; bal_z's formula (further down) is unconditional the same way, for the
+; same reason.
 
 ; 1/0, not #t/#f -- a column's series is a vector, and vectors only hold
 ; numbers or dates (see check_vector_elements() in lisp_core.py).

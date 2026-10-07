@@ -1,47 +1,28 @@
 ; oas_monte_carlo.lsp
 ;
-; Option-Adjusted Spread (OAS), computed the standard way: simulate many
-; interest-rate paths (term_structure_model.py's two-factor model, via
-; sofr-simulate-rate-paths / sofr-simulate-mortgage-rate-paths), discount
-; a security's cashflows along each path using that path's own rates
-; PLUS a trial spread, average the discounted values across paths to get
-; a model price, then solve (by bisection) for whichever spread makes
-; that model price match the security's actual market price. The
-; resulting spread is the OAS -- the extra yield the security offers
-; over the risk-free curve once the value of its embedded rate-optionality
-; (here: prepayment risk) has been stripped out.
+; The option-adjusted spread (OAS) of a security whose cashflows depend on
+; interest rates, such as a mortgage pool, which prepays faster when rates
+; fall. Simulate many paths of rates (sofr-simulate-rate-paths, or
+; sofr-simulate-mortgage-rate-paths, the two-factor model in
+; term_structure/term_structure_model.py); discount the security's
+; cashflows along each path at that path's own rates plus a spread; and
+; average them, for a model price. The OAS is the spread at which the model
+; price is the security's market price, found by bisection: the yield the
+; security pays over the rates, with the value of its option (here, the
+; borrowers' option to prepay) taken out.
 ;
-; This is the same discounting convention term_structure_model.py's own
-; price_callable_bond_mc() uses for a callable bond, generalized here to
-; an arbitrary cashflow vector (so it works for a mortgage pool too) and
-; extended to SOLVE for the OAS instead of taking it as an input --
-; price_callable_bond_mc()'s docstring explicitly flags that direction as
-; unimplemented; oas-solve, below, is that missing piece, done in Lisp
-; rather than added to the Python model.
+; Three pieces, each usable on its own:
+;   1. annualized-realized-vol -- the volatility of a rate's history, to
+;      check the sigma1 and sigma2 that sofr-calibrate-model fits.
+;   2. path-present-value, oas-model-price, oas-solve -- the OAS of any
+;      vector of monthly cashflows, one per path.
+;   3. simple-mortgage-cashflows, mortgage-cashflows-per-path -- the
+;      cashflows of one fixed-rate, prepaying mortgage pool on each path,
+;      with prepayment_model.lsp's CPR. (column_engine.lsp makes richer
+;      cashflows, a tranche waterfall's, one table at a time; this is a
+;      plain loop, fast enough for thousands of paths.)
 ;
-; Three independent pieces, usable on their own:
-;   1. annualized-realized-vol -- a historical-data cross-check for the
-;      sigma1/sigma2 volatilities sofr-calibrate-model fits, or for a
-;      quick sanity check when you don't have SOFR futures options handy
-;      at all.
-;   2. path-present-value / oas-model-price / oas-solve -- the generic
-;      Monte Carlo OAS engine (works on ANY monthly cashflow vector, not
-;      just mortgages).
-;   3. simple-mortgage-cashflows -- a fast, direct (not column_engine.lsp
-;      -based) per-path cashflow generator for a single fixed-rate,
-;      prepaying mortgage, reusing prepayment_model.lsp's CPR/SMM. Kept
-;      OUT of column_engine.lsp deliberately: an OAS run needs one
-;      cashflow vector per Monte Carlo path (hundreds to thousands), and
-;      column_engine.lsp's registry/topological-sort/global-rebinding
-;      machinery -- built for readability on a SINGLE calculated table --
-;      would make that needlessly slow. This does NOT touch
-;      mortgage_amortization_example.lsp or tranche.lsp -- those are a
-;      richer, single-path CMO/tranche waterfall; this is a narrower,
-;      many-paths-fast pricer for one pass-through cashflow stream.
-;
-; See oas_monte_carlo_example.lsp for a worked end-to-end run (curve
-; extension -> historical-vol cross-check -> path simulation -> cashflow
-; generation -> OAS solve).
+; oas_monte_carlo_example.lsp runs it all, from the rate curve to the OAS.
 
 (load "prepayment_model.lsp")
 

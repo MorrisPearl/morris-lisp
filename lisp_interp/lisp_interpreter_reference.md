@@ -1,18 +1,17 @@
-# Simple Lisp — Reference
+# morris-lisp — Reference
 
-A small Lisp for getting data from various sources and modeling it: fast
-vector math and statistics, tables (filter, sort, group, join), monthly
-time series, linear/logistic/spline regression with standard errors and
-AUC, linear programming, SQLite, CSV files, downloads from any web API,
-economic and financial data from the BLS, BEA, Census Bureau, FRED, SEC,
-and FDIC, real tastytrade broker data (futures and equity option chains,
-futures-curve rich/cheap and calendar-spread carry analysis), charts, and
-maps — plus dates, macros, struct inheritance, hash tables, `catch-error`
-error handling, a debugger (breakpoints, a debug hook), and an optional PyQt6 GUI. **Requires `numpy`**, unlike every other dependency mentioned in
-this document (PyQt6, matplotlib, pandas, tastytrade), which are all
-optional, feature-specific extras — numpy backs the vector datatype itself
-(see "Vectors", below), so it's needed for even the plainest console/
-batch-mode use of the interpreter.
+A Lisp for investment analysis: getting data (prices, option chains, and
+accounts from Schwab and tastytrade; economic and financial data from FRED,
+the SEC, the FDIC, the BLS, the BEA, the Census Bureau, and Alpha Vantage;
+any web API, CSV files, and SQLite), working with it as tables and vectors,
+and modeling it: regression, simulated prices and portfolios, option
+prices, the volatility smile, rates and mortgages, charts, and maps. It is
+a whole Lisp too, with macros, structs, hash tables, error handling, and a
+debugger, and it runs in a console, a small GUI, or a Jupyter notebook.
+**Requires `numpy`**; everything else (PyQt6, matplotlib, pandas, the
+tastytrade package) is needed only for the features that use it. The code
+is meant to be read: "Investment analysis: where things are" is a map of
+it, and "How the code is organized" says which file has what.
 
 For a guide to the economic and financial data by topic — which agency
 publishes what, and which function gets it — see
@@ -21,14 +20,16 @@ publishes what, and which function gets it — see
 This document aims to cover **every builtin and special form** the
 interpreter provides: what its arguments mean, what it returns, and any
 non-obvious behavior or error conditions. For a quicker orientation, read
-"Running it", "Syntax", and "Special forms and standard macros" first, then treat "Built-in
-functions" as a reference to search rather than read start to end.
+"Running it", "Investment analysis: where things are", "Syntax", and
+"Special forms and standard macros" first, then treat "Built-in functions"
+as a reference to search rather than read start to end.
 
 <!-- This list is made from the headings below: after adding or renaming a section, run
      python3 tools/make_contents.py -->
 ## Contents
 
 - [Running it](#running-it)
+- [Investment analysis: where things are](#investment-analysis-where-things-are)
 - [Syntax](#syntax)
 - [Special forms and standard macros](#special-forms-and-standard-macros)
   - [Defining variables and procedures](#defining-variables-and-procedures)
@@ -206,6 +207,59 @@ Jupyter alike — loads these Lisp files before doing anything else:
   a notebook in any directory, and so does a library that loads another.
   To use your own directories, set `LISP_PATH` before starting Jupyter or
   the interpreter, e.g. `export LISP_PATH=~/models:~/models/common`.
+
+## Investment analysis: where things are
+
+The investment functions, in the order an analysis uses them. Each name is
+a section of this document.
+
+1. **Data.** "Schwab (your accounts)": prices, quotes, your positions and
+   orders. "tastytrade (real broker data)": option chains, futures curves,
+   and SOFR rates. "FRED (Federal Reserve Bank of St. Louis) data, and CSV
+   loading", "SEC financial statements", "FDIC bank data", "BLS data",
+   "BEA data", "Census data", and "Alpha Vantage (dividends)". Anything else
+   on the web: "Downloading data from the web". Files: "SQLite", and
+   `load-csv`. Each gives a **table** (see "Tables"), so they all work the
+   same way after that.
+2. **Tables and numbers.** "Tables", "Vectors", "Vector math and
+   statistics" (`vector-drawdowns` is there), "Stratification tables",
+   "Displaying tables", "Charting", "Maps", and "Saving variables".
+3. **Dates.** "Dates", "Trading days (the NYSE's calendar)", "Monthly time
+   series" (daily data made monthly, and several series lined up), and "Day
+   counts and cash flows" (`npv`, `irr`, `yield`, `duration`, ...).
+4. **Simulated prices.** "Simulating investment prices": an investment's
+   returns, with its dividends, and paths of its price made from its own
+   history; `bootstrap-days` shows which days a path copied. "Portfolios":
+   several investments together, their covariance and correlation, a
+   portfolio's value, and Markowitz's best weights.
+5. **Options.** "Option prices": Black-Scholes, implied volatility, the
+   Greeks, and American options (`binomial-tree` shows the tree). "Implied
+   volatility smiles": options out of line with the rest of their chain.
+   "Checking option prices against simulated paths": options out of line
+   with the underlying's history.
+6. **Rates and mortgages.** The SOFR term structure and its two-factor
+   model (`sofr-*`, under "tastytrade (real broker data)"), futures curves
+   (`futures-curve-fit`), and `lib/oas_monte_carlo.lsp`, `lib/column_engine.lsp`,
+   `lib/template.lsp`, and `lib/prepayment_model.lsp`, for mortgage pools and
+   their tranches.
+7. **Models.** "Regression models" (linear, logistic, spline, and least
+   absolute deviation), "Linear programming", and `lib/solver.lsp`.
+
+**Built in, or loaded.** Everything above is built in, and there whenever
+the interpreter is, except the libraries in `lib/`, which are loaded with
+`(load "name.lsp")`: `vol_smile.lsp`, `option_check.lsp`,
+`oas_monte_carlo.lsp`, `solver.lsp`, `column_engine.lsp`, `template.lsp`,
+`prepayment_model.lsp`, and `model_utils.lsp`. The rule: what has to be
+fast, or talks to the world outside, is a builtin, written in Python; a
+model made of those is a library, written in Lisp, to be read and changed.
+
+**Examples.** `examples/` has a program for most of this, run from that
+directory with `python3 ../lisp_interpreter.py name.lsp`:
+`investment_paths_example.lsp` (simulated prices, an option on them, and
+dividends), `vol_smile_example.lsp`, `option_chain_example.lsp`,
+`fred_example.lsp`, `sec_example.lsp`, `fdic_example.lsp`,
+`census_bls_example.lsp`, `bea_example.lsp`, `prepayment_demo.lsp`,
+`oas_monte_carlo_example.lsp`, and `mortgage_amortization_example.lsp`.
 
 ## Syntax
 
@@ -9426,6 +9480,8 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 |---|---|
 | `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
 | `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, and a KenKen solver (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
+| `notebooks/` | Jupyter notebooks that use the interpreter (on the `morris_lisp` kernel) |
+| `scratch/` | Experiments: not part of the interpreter, and not tested |
 | `tools/` | `make_contents.py`, which rebuilds this manual's Contents from its headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 
 `load` finds files in `lib/` and `examples/` from anywhere (see "Where
