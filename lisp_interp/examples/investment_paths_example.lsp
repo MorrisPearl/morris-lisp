@@ -27,10 +27,11 @@
 ; The ten years of prices Schwab gives, as a table of daily log returns.
 (define prices (schwab-price-history creds "BRK/A"))
 (define history (daily-returns prices))
+(define volatility (* (sqrt 252) (vector-stdev (table-column history "log-return"))))   ; a year's
 (display (format "\nBRK/A: {} daily returns, {:.1%} a year on average, volatility {:.1%} a year\n"
                  (table-row-count history)
                  (average-yearly-return history)
-                 (* (sqrt 252) (vector-stdev (table-column history "log-return")))))
+                 volatility))
 
 ; Take that average out, and put in the return we expect: 8% a year.
 (define returns (adjust-returns history 0.08))
@@ -53,3 +54,23 @@
                  (vector-mean year-returns) (vector-mean (> 0 year-returns))))
 (plot-histogram year-returns :bins 30 :x-format "{:+.0%}" :title "BRK/A, a year from now"
                 :x-label "change from today's price")
+
+; --- 4. An option ----------------------------------------------------------------
+; What is a one-year call on it, struck at today's price, worth? Each path
+; pays the final price less the strike, or nothing; option-value discounts
+; those payments and averages them. For that to be a fair value, though, the
+; paths must grow at the interest rate -- 4% here, continuously compounded --
+; and not at the 8% we expect, so the returns are adjusted to e^0.04 - 1.
+; (Blocks of one day, so that the volatility is the history's, and the value
+; can be compared with Black-Scholes. Longer blocks keep what the history did
+; over several days, which for BRK/A is lower volatility, and a cheaper call.)
+(load "implied_vol.lsp")
+(define rate 0.04)
+(define fair-returns (adjust-returns history (- (exp rate) 1)))
+(define fair-paths
+  (map (lambda (i) (bootstrap-path fair-returns start-price 252 1 :seed (+ 1000 i))) (iota 5000)))
+(define (call-pays path) (max 0 (- (vector-ref path 251) start-price)))
+(define call (option-value fair-paths call-pays rate 1.0))
+(display (format "\nA one-year call on BRK/A, struck at today's price:\n  from 5000 paths: {:,.0f} +/- {:,.0f}\n  Black-Scholes, with the history's volatility: {:,.0f}\n"
+                 (first call) (second call)
+                 (bsm-price "call" start-price start-price 1.0 rate volatility)))

@@ -47,7 +47,7 @@ HOW THE CODE IS ORGANIZED
     lisp_tastytrade.py    tastytrade-*                     (downloads from tastytrade)
     lisp_schwab.py        schwab-*  (your Schwab accounts: positions, quotes, prices, orders)
     lisp_alpha_vantage.py alpha-vantage-dividends  (a stock's dividends, from Alpha Vantage)
-    lisp_investment_paths.py  daily-returns, adjust-returns, bootstrap-path: simulated prices
+    lisp_investment_paths.py  daily-returns, adjust-returns, bootstrap-path, option-value: simulated prices
     lisp_sofr.py          sofr-* interest-rate modeling    (sofr-calibration-data
                                                             downloads from tastytrade)
     lisp_gui.py           the PyQt6 window
@@ -99,7 +99,8 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
     with standard errors, p-values, AUC, and lift tables
   - linear programming (the simplex method)
   - simulated prices: a block bootstrap of an investment's own daily returns, with
-    its dividends (daily-returns, adjust-returns, bootstrap-path)
+    its dividends (daily-returns, adjust-returns, bootstrap-path), and what an option on
+    one is worth (option-value)
   - day counts (30/360, ACT/360, ACT/365, ACT/ACT), npv, irr, xnpv, xirr,
     yield, duration, convexity, and the level payment on a loan
   - XY charts, and saving them as PNG/PDF/SVG

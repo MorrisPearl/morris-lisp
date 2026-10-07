@@ -7659,13 +7659,15 @@ past, by a **block bootstrap**. Tomorrow is likely to be something like
 the days in the investment's history, so a future is built by copying pieces of
 the past, end to end. Each piece is a *block* of consecutive days, rather
 than one day at a time, so that a stretch of wild days (or calm ones)
-stays together, as it does in life. Three functions, one after another:
+stays together, as it does in life. Three functions, one after another,
+and a fourth to use the paths for an option:
 
 1. `daily-returns` makes a table of returns from prices (and dividends).
 2. `adjust-returns` takes out those returns' average and puts in the
    return you expect.
 3. `bootstrap-path` makes one path of future prices from them. Call it
    once for each path you want.
+4. `option-value` is what an option is worth, from a list of paths.
 
 **The returns are log returns**, ln(today's price / yesterday's), which
 add up: the price after a run of days is the starting price times *e* to
@@ -7772,6 +7774,72 @@ needs a Schwab sign-in, and `examples/investment_paths_example.lsp` has it all:
 (define year-ends (list->vector (map (lambda (path) (vector-ref path 251)) paths)))
 (vector-quantile (vector-div year-ends start-price) #(0.05 0.5 0.95))   ; the 5th, 50th, and 95th percentiles
 ```
+
+#### `(option-value paths payoff rate years)`
+What an option is worth, estimated from simulated paths of its
+investment's price. `paths` is a list of paths, vectors of prices, such as
+`bootstrap-path` makes. `payoff` is a procedure of one argument, a path,
+that returns what the option pays at the end of it: for a call, the final
+price less the strike, or 0 if that's less. The value is the payoffs'
+present values averaged, each discounted for `years` at `rate`, the
+interest rate, continuously compounded (0.04 for 4%, as `bsm-price` in
+`lib/implied_vol.lsp` takes it).
+
+It returns a list of two numbers: the value, and its **standard error**,
+which says how far chance may have put the value from the one these paths
+are a sample of. The value is probably within two standard errors of it;
+four times as many paths halve the error.
+
+The procedure is given the whole path, so an option that depends on how the
+price got there is as easy as one that depends only on where it ended.
+And what's paid doesn't have to be an option's: anything paid after a
+path of prices is valued the same way.
+
+```lisp
+(define returns (list (cons "log-return" (vector 0.01 -0.02 0.015 0.0 0.005 -0.01 0.02))))
+(define rate 0.04)
+(define fair-returns (adjust-returns returns (- (exp rate) 1)))     ; see below
+(define paths (map (lambda (i) (bootstrap-path fair-returns 100 252 1 :seed i)) (iota 2000)))
+(define (call-pays path) (max 0 (- (vector-ref path 251) 100)))     ; a call struck at 100, a year out
+(define (show-value v) (format "{:.2f} +/- {:.2f}" (first v) (second v)))
+(show-value (option-value paths call-pays rate 1))                  ; => "10.00 +/- 0.33"
+(show-value (option-value paths (lambda (path) (max 0 (- (vector-mean path) 100))) rate 1))   ; => "5.77 +/- 0.18"
+(show-value (option-value paths (lambda (path) (if (< (vector-min path) 90) 0 (call-pays path))) rate 1))   ; => "8.25 +/- 0.33"
+```
+The second is an Asian call, paid on the average price along the way, and
+the third a call that is worth nothing if the price ever falls below 90.
+
+**For a fair value, the paths must grow at the interest rate.** A price
+that grows at 8% when money earns 4% makes calls look worth more, and puts
+less, than anyone would pay: that is what the option pays on average if
+the investment does earn 8%, not what it costs to be paid in every case.
+(In a test on ten years of BRK/A, a call valued with 8% growth came out
+26% higher.)
+
+- Make the paths from `(adjust-returns returns (- (exp rate) 1))`: the
+  annual return that grows a price at the continuously compounded `rate`.
+- For an investment that pays dividends, with a continuous yield `q`: use
+  returns from `daily-returns` *without* `:dividends`, and the annual
+  return `(- (exp (- rate q)) 1)`. A path made from returns with dividends
+  is the investment with its dividends reinvested, not the price the
+  option is written on.
+- A path has a price for each trading day, so `years` is its days divided
+  by the days in a year, as `adjust-returns` takes them (252): `years` of 1
+  for 252 days.
+
+**Block size changes the answer.** Paths of blocks of one day average a
+price a year out of just what `adjust-returns` set, and agree with
+Black-Scholes. Longer blocks keep what the history did over several days:
+if it often fell and then recovered, as it did in March 2020, so do the
+paths, and over a year they spread less than a day's spread would suggest.
+In ten years of BRK/A (to October 2026), a year's at-the-money call came
+out at 73,073 (+/- 736) with blocks of 1 day, 68,090 (+/- 678) with blocks
+of 10, and 65,471 (+/- 634) with blocks of 21; Black-Scholes, with the
+history's volatility, gave 72,350. The paths' volatility over the year was
+19.1%, 18.1%, and 17.5%. (The average price a year out is also a little
+low with longer blocks, 0.3% to 0.4%.) What comes out is the value if the
+future is like this history, which is not the market's price: the market's
+is from the volatility it expects.
 
 ### Input / output
 
@@ -8836,7 +8904,7 @@ The Python files:
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
 | `lisp_alpha_vantage.py` | `alpha-vantage-dividends`: a stock's dividends from Alpha Vantage, through `lisp_http.py` |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders`, ...: your Schwab accounts |
-| `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `bootstrap-path`: simulated prices of an investment |
+| `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `bootstrap-path`, `option-value`: simulated prices of an investment, and what an option on it is worth |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |

@@ -8,6 +8,8 @@ investment's own daily returns.
                      expected annual return
   (bootstrap-path returns start-price days block-size [:seed n])
                      one simulated path of future prices
+  (option-value paths payoff rate years)
+                     what an option is worth, from many paths
 
 The idea: tomorrow's price is probably like the days in the investment's own
 history, so build a future by copying pieces of the past. Each piece is a
@@ -31,6 +33,14 @@ with longer blocks it's close to right.
 THE PATHS wrap: a block that runs off the end of the history carries on
 from its start, so every day is as likely as any other to be in a block.
 
+OPTION VALUES: the value of an option (or anything else paid after the
+prices of a path) is estimated by working out what each path pays, taking
+its present value, and averaging them. For that to be the option's fair
+value, and not just what it pays on average if the investment earns what
+you expect, the paths must grow at the interest rate (less the dividend
+yield, for an investment that pays one): make them from returns that
+adjust-returns has given the interest rate as the annual return.
+
 RANDOM NUMBERS: with :seed, bootstrap-path uses its own generator (as
 vectors-shuffle does), so the same seed gives the same path every time --
 pass a different seed for each path, or all the paths are the same. Without
@@ -43,7 +53,9 @@ import random
 
 import numpy as np
 
-from lisp_core import LispDate, LispError, LispVector, keyword_options
+from lisp_core import (
+    LispDate, LispError, LispVector, Pair, _lisp_scalar, apply_proc, keyword_options, list_to_pairs, pairs_to_list,
+)
 from lisp_tables import find_column, make_table_value, table_columns
 from lisp_vector_math import floats_of, is_number, to_vector
 
@@ -182,8 +194,45 @@ def bootstrap_path(returns, start_price, days, block_size, *options):
     return to_vector(start_price * np.exp(np.cumsum(chosen)))
 
 
+# ---------------------------------------------------------------------------
+# Option values
+# ---------------------------------------------------------------------------
+
+def option_value(paths, payoff, rate, years):
+    """(option-value paths payoff rate years) -- what an option is worth, from
+    simulated paths of the price: a list of two numbers, the value and its
+    standard error (how far chance may have put it from the true value
+    that these paths are a sample of). paths is a list of paths, vectors of
+    prices, such as bootstrap-path makes. payoff is a procedure of one
+    argument, a path, that returns what the option pays at the end of it
+    (for a call, the final price less the strike, or 0 if that's less). The
+    value is the payoffs' present values averaged: each is discounted for
+    `years` at the interest rate `rate`, continuously compounded."""
+    who = "option-value"
+    if not isinstance(paths, Pair) or not all(isinstance(p, LispVector) for p in pairs_to_list(paths)):
+        raise LispError("%s: paths must be a list of vectors of prices, such as a list of bootstrap-path's" % who)
+    paths = pairs_to_list(paths)
+    if len(paths) < 2:
+        raise LispError("%s: it takes at least two paths to estimate a value and its error" % who)
+    if not is_number(rate):
+        raise LispError("%s: the interest rate must be a number, 0.04 for 4%%, not %s" % (who, rate))
+    if not is_number(years) or years <= 0:
+        raise LispError("%s: years must be a number above 0, not %s" % (who, years))
+
+    payoffs = []
+    for path in paths:
+        paid = _lisp_scalar(apply_proc(payoff, [path]))
+        if not is_number(paid) or not math.isfinite(paid):
+            raise LispError("%s: the payoff procedure must return a number, not %s" % (who, paid))
+        payoffs.append(paid)
+    present_values = math.exp(-rate * years) * np.array(payoffs, dtype=np.float64)
+    standard_error = present_values.std(ddof=1) / math.sqrt(len(present_values))
+    return list_to_pairs([float(present_values.mean()), float(standard_error)])
+
+
 BUILTINS = {
     "daily-returns": daily_returns,
     "adjust-returns": adjust_returns,
     "bootstrap-path": bootstrap_path,
+    "option-value": option_value,
 }

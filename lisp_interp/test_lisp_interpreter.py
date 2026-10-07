@@ -5694,6 +5694,63 @@ class TestInvestmentPaths(LispTestCase):
         self.assertLispError('(bootstrap-path (list (cons "log-return" (vector 0.01 nan))) 100 7 1)', "not missing or infinite")
         self.assertLispError('(bootstrap-path (list (cons "log-return" (vector))) 100 7 1)', "there are no returns")
 
+    # -- option-value -------------------------------------------------------
+
+    def make_paths(self, count=3000, rate=0.04, block=1):
+        """`paths`, in the Lisp environment: paths of a year growing at the interest rate."""
+        self.a_year_of_returns()
+        self.run_lisp("(define paths (map (lambda (i) (bootstrap-path (adjust-returns history (- (exp %s) 1)) 100 252 %d :seed i))"
+                      "                   (iota %d)))" % (rate, block, count))
+
+    def final_prices(self):
+        return self.numbers("(list->vector (map (lambda (path) (vector-ref path 251)) paths))")
+
+    def value_and_error(self, src):
+        """The two numbers in an (option-value ...)'s answer."""
+        value, error = lisp_core.pairs_to_list(self.run_lisp(src))
+        return float(value), float(error)
+
+    def test_a_payoff_is_discounted_for_the_years_at_the_interest_rate(self):
+        self.make_paths(count=10)
+        value, error = self.value_and_error("(option-value paths (lambda (path) 5) 0.04 2)")
+        self.assertAlmostEqual(value, 5 * math.exp(-0.08), places=9)
+        self.assertAlmostEqual(error, 0.0, places=9)
+
+    def test_the_value_is_the_discounted_average_payoff_and_its_error_the_standard_error(self):
+        self.make_paths(count=500)
+        finals = np.array(self.final_prices())
+        calls = np.maximum(finals - 100, 0) * math.exp(-0.05 * 1.5)
+        value, error = self.value_and_error(
+            "(option-value paths (lambda (path) (max 0 (- (vector-ref path 251) 100))) 0.05 1.5)")
+        self.assertAlmostEqual(value, calls.mean(), places=5)
+        self.assertAlmostEqual(error, calls.std(ddof=1) / math.sqrt(500), places=5)
+
+    def test_a_payoff_can_depend_on_the_whole_path(self):
+        self.make_paths(count=200)
+        value, _ = self.value_and_error("(option-value paths (lambda (path) (max 0 (- (vector-mean path) 100))) 0 1)")
+        by_hand = self.numbers("(list->vector (map (lambda (path) (max 0 (- (vector-mean path) 100))) paths))")
+        self.assertAlmostEqual(value, float(np.mean(by_hand)), places=5)
+
+    def test_paths_growing_at_the_interest_rate_are_worth_todays_price(self):
+        # what an investment is worth is what it costs now, when it grows at the interest rate: the
+        # average discounted final price is the start price (to within a few of its own standard errors)
+        self.make_paths()
+        value, error = self.value_and_error("(option-value paths (lambda (path) (vector-ref path 251)) 0.04 1)")
+        self.assertAlmostEqual(value, 100, delta=3 * error)
+        self.assertLess(error, 0.5)
+
+    def test_what_option_value_wont_take(self):
+        self.make_paths(count=5)
+        payoff = "(lambda (path) 1)"
+        self.assertLispError("(option-value 5 %s 0.04 1)" % payoff, "paths must be a list of vectors")
+        self.assertLispError("(option-value (list 1 2) %s 0.04 1)" % payoff, "paths must be a list of vectors")
+        self.assertLispError("(option-value (list (car paths)) %s 0.04 1)" % payoff, "at least two paths")
+        self.assertLispError("(option-value paths %s \"4%%\" 1)" % payoff, "interest rate must be a number")
+        self.assertLispError("(option-value paths %s 0.04 0)" % payoff, "years must be a number above 0")
+        self.assertLispError("(option-value paths 5 0.04 1)", "not a procedure")
+        self.assertLispError("(option-value paths (lambda (path) \"x\") 0.04 1)", "must return a number")
+        self.assertLispError("(option-value paths (lambda (path) nan) 0.04 1)", "must return a number")
+
 
 class TestLinearProgramming(LispTestCase):
     """lp-read-file and lp-solve (lisp_simplex.py, using simplex/simplex_solver.py)."""
