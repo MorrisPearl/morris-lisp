@@ -56,6 +56,7 @@ sys.path.insert(0, HERE)
 import lisp_alpha_vantage  # noqa: E402
 import lisp_calendar  # noqa: E402
 import lisp_investment_paths  # noqa: E402
+import lisp_options  # noqa: E402
 import lisp_builtins  # noqa: E402  (these need the sys.path line above)
 import lisp_core     # noqa: E402
 import lisp_charts  # noqa: E402
@@ -5522,6 +5523,16 @@ class TestVolSmile(LispTestCase):
         super().setUp()
         self.run_lisp('(load "vol_smile.lsp")')
 
+    def test_dividends_present_value_counts_those_after_the_date_and_before_each_expiration(self):
+        self.run_lisp("""(define dividends (list (cons "ex-date" (vector (date 2026 1 10) (date 2026 3 10) (date 2026 6 10)))
+                                                (cons "amount" (vector 1.0 2.0 4.0))))""")
+        values = self.run_lisp("(dividends-present-value (vector (date 2026 2 1) (date 2026 5 1) (date 2026 12 1)) 0.05 "
+                               "dividends (date 2026 2 1))").items
+        march = 2.0 * math.exp(-0.05 * 37 / 365)                 # (the one in January is before the date)
+        june = 4.0 * math.exp(-0.05 * 129 / 365)
+        np.testing.assert_allclose(np.array(values, dtype=float), [0.0, march, march + june], rtol=1e-6)
+        self.assertShows("(dividends-present-value (vector (date 2026 5 1)) 0.05 '() (date 2026 2 1))", "#(0.0)")
+
     def test_black_price_and_implied_volatility(self):
         self.assertAlmostEqual(self.run_lisp("(vector-ref (black-price #(1) #(100) #(100) #(1) #(1) #(0.2)) 0)"),
                                7.965567, places=4)
@@ -6104,14 +6115,15 @@ class TestOptionCheck(LispTestCase):
             [("log-return", lisp_vector_math.to_vector(values))])
 
     def make_chain(self, start, planted=None, dividend=None, trading_days=(25, 60, 120), name="chain", priced_at=None,
-                   vol_shift=None, vol_scale=1.0):
+                   vol_shift=None, vol_scale=1.0, american=False):
         """A chain, as `chain`, of options on 100 at these numbers of trading days after start, priced as
         paths of this history say they should be (Black's formula, with the volatility the paths have in
         calendar time) -- times a number, for the options in `planted`, {(expiration number, type, strike):
         number}. dividend, a (date, amount), is paid before the expirations after it. priced_at is the price of
         the underlying when the options were priced, if it isn't the 100 the chain says it is. vol_shift is
         {expiration number: volatility added to every option's of that expiration}; vol_scale, a number
-        every option's volatility is multiplied by."""
+        every option's volatility is multiplied by. american prices them as options that can be exercised
+        early (by lisp_options' binomial tree)."""
         rows = []
         for number, trading in enumerate(trading_days):
             expiration = lisp_calendar.trading_days_after(start, trading)
@@ -6121,11 +6133,15 @@ class TestOptionCheck(LispTestCase):
             discount = math.exp(-self.RATE * T)
             present_value = 0.0
             if dividend and dividend[0] <= expiration:
-                present_value = dividend[1] * math.exp(-self.RATE * (dividend[0] - datetime.date.today()).days / 365)
+                present_value = dividend[1] * math.exp(-self.RATE * (dividend[0] - start).days / 365)
             forward = ((priced_at or self.SPOT) - present_value) / discount
             for strike in range(80, 125, 5):
                 for kind in ("Call", "Put"):
-                    price = TestVolSmile.black(kind == "Call", forward, strike, T, discount, vol)
+                    if american:
+                        price = lisp_options.tree_price(kind == "Call", self.SPOT, strike, T, self.RATE, vol, 0.0,
+                                                        np.zeros(0), np.zeros(0), 200, True)
+                    else:
+                        price = TestVolSmile.black(kind == "Call", forward, strike, T, discount, vol)
                     rows.append(("X%d%s%d" % (number, kind[0], strike), kind, float(strike), expiration, calendar_days,
                                  price * (planted or {}).get((number, kind, strike), 1.0)))
         columns = {
@@ -6286,6 +6302,43 @@ class TestOptionCheck(LispTestCase):
         self.assertEqual(sum(int(x) for x in self.column("options", "by-expiration")),
                          int(self.run_lisp("(table-row-count checked)")))
 
+    def test_a_dividend_after_the_start_date_counts_though_today_is_after_it(self):
+        # the chain is priced as of October 5, 2026, and the dividend, the last year's, comes again on October 6
+        last_year = datetime.date(2025, 10, 6)
+        self.make_chain(self.START, dividend=(datetime.date(2026, 10, 6), 2.0))
+        self.env[lisp_core.Symbol("actual")] = lisp_tables.make_table_value([
+            ("ex-date", lisp_core.LispVector([lisp_core.LispDate(last_year.year, last_year.month, last_year.day)])),
+            ("amount", lisp_vector_math.to_vector(np.array([2.0])))])
+        self.run_lisp(self.CHECK % ":dividends actual")
+        self.assertLess(max(abs(float(x)) for x in self.column("iv-residual")), 0.01)
+
+    def test_with_early_exercise_in_the_money_options_can_be_checked_too(self):
+        self.make_chain(self.START, american=True)                # (prices of options that can be exercised early)
+        self.run_lisp(self.CHECK % ":out-of-the-money-only #f")
+        self.assertGreater(max(abs(float(x)) for x in self.column("iv-residual")), 0.01)   # the in-the-money puts
+        self.run_lisp(self.CHECK % ":out-of-the-money-only #f :early-exercise #t")
+        residuals = [abs(float(x)) for x in self.column("iv-residual")]
+        self.assertLess(max(residuals), 0.01)
+        self.assertEqual({str(x) for x in self.column("signal")}, {""})
+        premiums = {str(symbol): float(premium) for symbol, premium
+                    in zip(self.column("symbol"), self.column("early-exercise"))}
+        self.assertGreater(premiums["X2P110"], 0.3)              # a put in the money: worth exercising early
+        self.assertLess(max(premium for symbol, premium in premiums.items() if "C" in symbol), 1e-6)  # calls: never
+
+    def test_with_early_exercise_the_bid_and_ask_are_the_market_s_and_the_value_includes_it(self):
+        self.make_chain(self.START, american=True)
+        self.run_lisp(self.CHECK % ":out-of-the-money-only #f :early-exercise #t :expected-return (- (exp 0.04) 1)")
+        market = {str(symbol): (float(bid), float(ask)) for symbol, bid, ask
+                  in zip(*[list(self.run_lisp('(table-column chain "%s")' % name).items) for name in ("symbol", "bid", "ask")])}
+        for symbol, bid, ask, price, error, expected in zip(*[self.column(name) for name in
+                                                              ("symbol", "bid", "ask", "model-price", "standard-error",
+                                                               "expected-value")]):
+            self.assertAlmostEqual(float(bid), market[str(symbol)][0], places=4)
+            self.assertAlmostEqual(float(ask), market[str(symbol)][1], places=4)
+            self.assertAlmostEqual(float(expected), float(price), places=4)
+            mid = (float(bid) + float(ask)) / 2                    # the value is the market's, to the paths' noise
+            self.assertLess(abs(float(price) - mid), 3 * float(error) + 0.01 * mid)
+
     def test_the_time_to_expiration_is_counted_from_the_start_date(self):
         # a chain priced as of Monday, October 5, 2026, whose own days-to-expiration were counted from some day
         # long after that: the check counts from the start date, so it isn't thrown off
@@ -6437,10 +6490,11 @@ class TestOptionCheck(LispTestCase):
                                          ("prices", "creds.json", "XYZ")])
         self.assertEqual({str(x) for x in self.column("symbol")[:4]}, {"X1C105", "X1C110", "X2P90", "X2P95"})
         self.run_lisp('(define checked (check-option-prices "creds.json" "XYZ" :paths 2000 :block-size 1 :seed 7 '
-                      ':expected-return 0.08 :match-volatility #t))')
+                      ':expected-return 0.08 :match-volatility #t :early-exercise #t))')
         names = [str(x) for x in lisp_core.pairs_to_list(self.run_lisp("(table-column-names checked)"))]
         self.assertIn("expected-value", names)
         self.assertIn("volatility-scale", names)
+        self.assertIn("early-exercise", names)
 
     def test_showing_the_check(self):
         self.make_chain(self.START, planted=self.PLANTED)

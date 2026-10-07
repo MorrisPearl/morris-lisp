@@ -53,7 +53,12 @@
 ; that, for finding the options that are out of line with the rest of their
 ; expiration.) And an option on a stock can be
 ; exercised early, which the paths' values leave out, so by default only
-; the out-of-the-money options are used, as in vol_smile.lsp.
+; the out-of-the-money options are used, as in vol_smile.lsp. Or, with
+; :early-exercise #t, what the right to exercise early is worth (from a
+; binomial tree, american-price, at the option's own implied volatility)
+; is taken off its bid and ask before they are compared with the paths'
+; European values, and added to the value after: then an in-the-money
+; option can be checked too.
 ;
 ; Usage:
 ;   (load "option_check.lsp")
@@ -68,12 +73,45 @@ expiration."
   (list->vector (map (lambda (expiration) (trading-days-between start-date expiration))
                      (vector->list (table-column chain "expiration-date")))))
 
-(define (option-check--dividend-list schedule)
-  "A dividend schedule (as dividend-schedule makes it) as the list of
-(ex-dividend-date amount) that with-smile-columns takes."
+(define (option-check--tree-dividends schedule start-date)
+  "A dividend schedule (as dividend-schedule makes it) as the table of time,
+in years from start-date, and amount that american-price takes; '() for
+none."
   (if (null? schedule)
       '()
-      (map list (vector->list (table-column schedule "ex-date")) (vector->list (table-column schedule "amount")))))
+      (make-table "time" (/ (days-between start-date (table-column schedule "ex-date")) 365.0)
+                  "amount" (table-column schedule "amount"))))
+
+(define (option-check--without-early-exercise options schedule start-date rate)
+  "The options as if they could be exercised only when they expire: what
+the right to exercise early is worth, the American price less the European
+one, both by binomial tree (american-price, 100 steps) at the option's own
+implied volatility, is in a column early-exercise, and is taken off the
+bid, ask, and mid; then the implied volatilities are found again."
+  (with-columns (type underlying-price strike T iv-mid bid ask mid) options
+    (let* ((dividends (option-check--tree-dividends schedule start-date))
+           (premium (- (american-price type underlying-price strike T rate iv-mid :dividends dividends :steps 100)
+                       (american-price type underlying-price strike T rate iv-mid :dividends dividends :steps 100
+                                       :early-exercise #f))))
+      (with-smile-columns (make-table-from-columns options (list (cons "early-exercise" premium)
+                                                                 (cons "bid" (- bid premium))
+                                                                 (cons "ask" (- ask premium))
+                                                                 (cons "mid" (- mid premium))))
+                          rate schedule start-date))))
+
+(define (option-check--with-early-exercise checked)
+  "The checked options with the right to exercise early added back: to the
+bid and ask, which are then the market's again, to model-price, which is
+then the paths' value of the option that can be exercised early, and to
+expected-value, if there is one."
+  (let* ((premium (table-column checked "early-exercise"))
+         (prices (list (cons "bid" (+ (table-column checked "bid") premium))
+                       (cons "ask" (+ (table-column checked "ask") premium))
+                       (cons "model-price" (+ (table-column checked "model-price") premium)))))
+    (make-table-from-columns checked
+                             (if (member "expected-value" (table-column-names checked))
+                                 (cons (cons "expected-value" (+ (table-column checked "expected-value") premium)) prices)
+                                 prices))))
 
 (define (option-check--require-fitting-prices options tolerance)
   "Stop with an error if the underlying's price doesn't fit the options'
@@ -151,9 +189,9 @@ options pay on average (option-payoffs) over paths that grow at the interest
 rate, and real-payoffs the same over paths with the underlying's expected
 return, or '() for no expected return."
   (let ((with-payoffs (make-table-from-columns options payoffs))
-        (columns (if (null? real-payoffs)
-                     option-check-columns
-                     (append option-check-columns option-check-expected-columns))))
+        (columns (append option-check-columns
+                         (if (member "early-exercise" (table-column-names options)) '("early-exercise") '())
+                         (if (null? real-payoffs) '() option-check-expected-columns))))
     (with-columns (payoff payoff-error paths-paid type forward strike T discount bid ask iv-mid) with-payoffs
       (let* ((model-price (* discount payoff))
              (standard-error (* discount payoff-error))
@@ -201,7 +239,7 @@ procedure from a scale to the options compared (option-check--compare)."
                                                (paths 5000) (block-size 10) (seed 1) (max-vol-spread 0.02)
                                                (out-of-the-money-only #t) (min-paths-paid 50) (standard-errors 2)
                                                (forward-tolerance 0.002) (expected-return '())
-                                               (match-volatility #f))
+                                               (match-volatility #f) (early-exercise #f))
   "Check an option chain's prices against values from simulated paths.
 chain is a table as tastytrade-option-chain makes; returns is the
 underlying's table of returns, as daily-returns makes it (with its
@@ -226,6 +264,11 @@ volatility by the number that makes the middle iv-residual 0 (adds the
 column volatility-scale, which has it). expected-return is the underlying's
 expected annual return, dividends included, 0.08 for 8%: with it, the
 columns expected-value, favors, and expected-profit are added.
+early-exercise #t takes what the right to exercise early is worth off the
+options' prices before comparing them with the paths' European values, and
+adds it to the values after (the column early-exercise has it): for
+checking in-the-money options too (out-of-the-money-only #f). The
+implied volatilities are then of the prices without it.
 
 The result is a table, the options furthest out of line first, with these
 columns added to the chain's own: model-price, the value from the paths;
@@ -253,7 +296,10 @@ values: they are not adjusted for risk."
            (schedule (if (null? dividends)
                          '()
                          (dividend-schedule dividends start-date last-day :repeat-last-year #t)))
-           (all-options (with-smile-columns ahead rate (option-check--dividend-list schedule)))
+           (as-quoted (with-smile-columns ahead rate schedule start-date))
+           (all-options (if early-exercise
+                            (option-check--without-early-exercise as-quoted schedule start-date rate)
+                            as-quoted))
            (options (liquid-options all-options max-vol-spread out-of-the-money-only)))
       (option-check--require-fitting-prices all-options forward-tolerance)
       (when (= (table-row-count options) 0)
@@ -266,8 +312,9 @@ values: they are not adjusted for risk."
                                                    min-paths-paid standard-errors)))
              (scale (if match-volatility (option-check--fit-scale compared-at 1.0 5) 1.0))
              (real-payoffs (if (null? expected-return) '() (payoffs-at expected-return scale)))
-             (checked (option-check--compare options (payoffs-at risk-neutral scale) real-payoffs
-                                             min-paths-paid standard-errors)))
+             (compared (option-check--compare options (payoffs-at risk-neutral scale) real-payoffs
+                                              min-paths-paid standard-errors))
+             (checked (if early-exercise (option-check--with-early-exercise compared) compared)))
         (if match-volatility
             (table-add-column checked "volatility-scale" scale)
             checked)))))
@@ -276,7 +323,7 @@ values: they are not adjusted for risk."
                                                (rate 0.04) (paths 5000) (block-size 10) (seed 1)
                                                (max-vol-spread 0.02) (out-of-the-money-only #t)
                                                (min-paths-paid 50) (standard-errors 2) (forward-tolerance 0.002)
-                                               (expected-return '()) (match-volatility #f))
+                                               (expected-return '()) (match-volatility #f) (early-exercise #f))
   "Get an underlying's option chain (from tastytrade; months ahead, with
 the strikes nearest the price), its prices (from Schwab) and dividends
 (from Alpha Vantage), make paths, value every option from them, and check
@@ -290,7 +337,7 @@ takes the other arguments, and gives the result."
                         :max-vol-spread max-vol-spread :out-of-the-money-only out-of-the-money-only
                         :min-paths-paid min-paths-paid :standard-errors standard-errors
                         :forward-tolerance forward-tolerance :expected-return expected-return
-                        :match-volatility match-volatility)))
+                        :match-volatility match-volatility :early-exercise early-exercise)))
 
 ; ---------------------------------------------------------------------------
 ; Showing the results
@@ -300,7 +347,7 @@ takes the other arguments, and gives the result."
   '(("strike" ",.2f") ("bid" ",.2f") ("ask" ",.2f") ("iv-bid" ".1%") ("iv-mid" ".1%") ("iv-ask" ".1%")
     ("model-price" ",.3f") ("standard-error" ",.3f") ("paths-paid" ",.0f") ("model-iv" ".1%")
     ("iv-residual" "+.1%") ("iv-vs-expiration" "+.1%") ("median-iv-residual" "+.1%") ("edge" ",.3f")
-    ("expected-value" ",.3f") ("expected-profit" ",.3f") ("volatility-scale" ".3f")))
+    ("expected-value" ",.3f") ("expected-profit" ",.3f") ("volatility-scale" ".3f") ("early-exercise" ",.3f")))
 
 (define (option-check-expirations checked)
   "A table with a row for each expiration: how many options were checked,

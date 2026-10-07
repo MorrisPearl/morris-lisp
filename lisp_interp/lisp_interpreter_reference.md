@@ -7790,10 +7790,11 @@ same for every option, and `K*sqrt(T)` is `K` times a number, so each
 expiration's fit is a parabola, `Y = a + b K + c K^2`; fit to all the
 expirations at once (at least three), all five terms can be used.
 
-#### `(fit-vol-smiles chain [:rate r :dividends list :max-vol-spread w :out-of-the-money-only flag :by-expiration flag :terms names])`
+#### `(fit-vol-smiles chain [:rate r :dividends table :max-vol-spread w :out-of-the-money-only flag :by-expiration flag :terms names])`
 Fits the model. `:rate` (default `0.04`) is the interest rate; set it to
-the current rate for the options' horizon. `:dividends` is a list of
-`(ex-dividend-date amount)`, `'()` by default. `:max-vol-spread` (default
+the current rate for the options' horizon. `:dividends` is a table of
+`ex-date` and `amount` columns, as `alpha-vantage-dividends` and
+`dividend-schedule` make; `'()`, none, by default. `:max-vol-spread` (default
 `0.02`, 2 volatility points) is the widest spread an option can have and
 be used. `:by-expiration` `#t` (the default) fits each expiration
 separately, with the terms `("K" "K^2")` unless `:terms` gives others;
@@ -8199,6 +8200,7 @@ other settings on one chain. Its options:
 | `:forward-tolerance` | 0.002 | see below |
 | `:match-volatility` | `#f` | `#t` multiplies the paths' volatility by the one number that makes the middle `iv-residual` 0: the market's overall level of volatility, in place of the history's (see below). The number is in the `volatility-scale` column, and `show-option-check` says it |
 | `:expected-return` | none | the underlying's expected annual return, dividends included, 0.08 for 8%. It adds what each option is worth if the underlying does earn that: the last three columns below (see below) |
+| `:early-exercise` | `#f` | `#t` allows for the right to exercise early: what it is worth (the American price less the European one, by `american-price`'s binomial tree at the option's own implied volatility) is taken off the bid, ask, and mid before they are compared with the paths' European values, and added to `model-price` after. Then in-the-money options can be checked too: give `:out-of-the-money-only #f` as well |
 
 An option also has to be liquid, as `vol_smile.lsp` has it: traded today,
 with open interest and a bid.
@@ -8220,6 +8222,7 @@ The result has the chain's own columns, and these:
 | `expected-value` | with `:expected-return`: the present value, at the interest rate, of what the option pays on average if the underlying earns that return |
 | `favors` | with `:expected-return`: `"buying"` if `expected-value` is above the ask (by `:standard-errors` of its own error), `"selling"` if it is below the bid, `""` if neither |
 | `expected-profit` | with `:expected-return`: how far: `expected-value` less the ask, or the bid less `expected-value` (0 for neither) |
+| `early-exercise` | with `:early-exercise`: what the right to exercise early is worth. The implied volatilities are then of the prices without it, and `model-price` and `expected-value` have it in them |
 
 #### `(show-option-check checked [:count n])`
 Shows the middle `iv-residual` of each expiration, the `count` (10) options
@@ -8310,6 +8313,13 @@ the market's prices.
   options that are more leveraged. A positive `expected-profit` is an
   expected value, and only worth having if you want the risk that comes with
   it.
+- **Early exercise.** An option on a stock can be exercised before it
+  expires, and the paths' values leave that out. It is worth little for an
+  out-of-the-money option (and nothing for a call on a stock that pays no
+  dividends), which is why only those are used by default. With
+  `:early-exercise #t` it is worked out for each option, and in-the-money
+  ones can be checked too. A put deep in the money may still be left out:
+  its spread, in volatility, is wide.
 - **An in-the-money option, or one the paths rarely pay on, says little**,
   which is why they're left out unless asked for.
 - **Noise.** `standard-error` is the paths' own, and it makes a

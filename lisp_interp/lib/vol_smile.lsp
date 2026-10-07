@@ -57,25 +57,29 @@
 ; T, F, K, and Y for each option
 ; ---------------------------------------------------------------------------
 
-(define (dividends-present-value expirations rate dividends)
-  "For each expiration date, the present value of the dividends paid
-before it. dividends is a list of (ex-dividend-date amount)."
+(define (dividends-present-value expirations rate dividends as-of)
+  "For each expiration date, the present value on the date as-of of the
+dividends after as-of and on or before the expiration. dividends is a table
+of ex-date and amount columns, as alpha-vantage-dividends and
+dividend-schedule make, or '() for none."
   (let ((total (make-vector (vector-length expirations) 0.0)))
-    (dolist (dividend dividends)
-      (let* ((ex-date (first dividend))
-             (amount (second dividend))
-             (years (/ (days-between (today) ex-date) 365)))
-        (when (> years 0)
-          (incf total (* (>= expirations ex-date) amount (exp (* (- rate) years)))))))
+    (unless (null? dividends)
+      (dolist (dividend (table-rows dividends))
+        (let* ((ex-date (row-ref dividend "ex-date"))
+               (years (/ (days-between as-of ex-date) 365)))
+          (when (> years 0)
+            (incf total (* (>= expirations ex-date) (row-ref dividend "amount") (exp (* (- rate) years))))))))
     total))
 
-(define (with-smile-columns chain rate dividends)
+(define (with-smile-columns chain rate dividends as-of)
   "The chain with each option's T, discount factor, forward, K, implied
-volatilities at the bid, mid, and ask, and Y added as columns."
+volatilities at the bid, mid, and ask, and Y added as columns. The
+chain's prices are from the date as-of, and its days-to-expiration counted
+from then."
   (with-columns (days-to-expiration underlying-price expiration-date strike type mid bid ask) chain
     (let* ((T (/ days-to-expiration 365))
            (discount (exp (* (- rate) T)))
-           (forward (/ (- underlying-price (dividends-present-value expiration-date rate dividends))
+           (forward (/ (- underlying-price (dividends-present-value expiration-date rate dividends as-of))
                        discount))
            (call? (= type "Call"))
            (iv (lambda (price) (black-implied-vol call? price forward strike T discount)))
@@ -216,8 +220,9 @@ few of them."
 (define (fit-vol-smiles chain &key (rate 0.04) (dividends '()) (max-vol-spread 0.02)
                                    (out-of-the-money-only #t) (by-expiration #t) (terms '()))
   "Fit the volatility model to an option chain, as tastytrade-option-chain
-returns it. rate is the interest rate, 0.045 for 4.5%; dividends a list
-of (ex-dividend-date amount); max-vol-spread the widest spread, in
+returns it, with today's prices. rate is the interest rate, 0.045 for 4.5%;
+dividends a table of ex-date and amount columns, as alpha-vantage-dividends
+and dividend-schedule make; max-vol-spread the widest spread, in
 volatility, an option can have and be used (0.02: 2 points). by-expiration
 #t fits each expiration separately, with the terms (\"K\" \"K^2\") unless
 others are given; #f fits all the expirations at once, with all five
@@ -226,7 +231,7 @@ options as the fit has coefficients isn't fit."
   (let* ((terms (cond ((not (null? terms)) terms)
                       (by-expiration '("K" "K^2"))
                       (else smile-terms)))
-         (all-options (with-smile-columns chain rate dividends))
+         (all-options (with-smile-columns chain rate dividends (today)))
          (options (liquid-options all-options max-vol-spread out-of-the-money-only))
          (enough (* 2 (+ 1 (length terms))))
          (expirations (sort (vector->list (vector-unique (table-column all-options "expiration-date")))))

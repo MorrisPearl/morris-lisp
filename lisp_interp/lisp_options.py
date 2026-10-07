@@ -285,6 +285,8 @@ def dividends_option(options, who):
 def tree_price(call, spot, strike, time, rate, vol, q, dividend_times, dividend_amounts, steps, early):
     """One option's price, by a binomial tree of `steps` steps; early says
     whether it can be exercised before it expires (American) or not."""
+    if math.isnan(vol) or math.isnan(spot):
+        return math.nan                                 # (no volatility to price it with)
     if time <= 0:
         return max(spot - strike, 0.0) if call else max(strike - spot, 0.0)
     if vol <= 0:
