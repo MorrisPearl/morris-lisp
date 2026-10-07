@@ -48,46 +48,10 @@
 ;   (show-vol-smiles fit)
 ;   (plot-vol-smile fit (date 2026 11 20))
 
+; Black's formula and implied volatility from it (black-price,
+; black-implied-vol) are built in: see lisp_options.py.
+
 (define smile-terms '("T" "sqrt(T)" "K" "K*sqrt(T)" "K^2"))
-
-; ---------------------------------------------------------------------------
-; Black's formula, and implied volatility from it
-; ---------------------------------------------------------------------------
-; These work on vectors -- one element per option -- so a whole chain is
-; priced at once. call? is a vector of 1 for each call and 0 for each put.
-
-(define (normal-cdf x)
-  (* 0.5 (+ 1.0 (erf (/ x (sqrt 2.0))))))
-
-(define (black-price call? forward strike T discount vol)
-  "The price of a European option by Black's formula:
-discount * (F N(d1) - K N(d2)) for a call, discount * (K N(-d2) - F N(-d1))
-for a put, with d1 = log(F/K) / (vol sqrt(T)) + vol sqrt(T) / 2 and
-d2 = d1 - vol sqrt(T)."
-  (let* ((spread (* vol (sqrt T)))
-         (d1 (+ (/ (log (/ forward strike)) spread) (/ spread 2)))
-         (d2 (- d1 spread))
-         (call-price (* discount (- (* forward (normal-cdf d1)) (* strike (normal-cdf d2)))))
-         (put-price (* discount (- (* strike (normal-cdf (- d2))) (* forward (normal-cdf (- d1)))))))
-    (vector-where call? call-price put-price)))
-
-(define (black-implied-vol call? price forward strike T discount)
-  "The volatility at which Black's formula gives price, for each option,
-found by bisection: start with the range 0.1% to 500%, and halve it 50
-times, each time keeping the half the answer is in -- the price rises with
-volatility, so the answer is below the middle if the middle's price is too
-high. NaN where no volatility gives the price (it's below what the option
-is worth at expiration, say), or the price is missing."
-  (let ((low (make-vector (vector-length price) 0.001))
-        (high (make-vector (vector-length price) 5.0)))
-    (loop repeat 50
-          do (let* ((middle (/ (+ low high) 2))
-                    (too-high (> (black-price call? forward strike T discount middle) price)))
-               (set! high (vector-where too-high middle high))
-               (set! low (vector-where too-high low middle))))
-    (let ((answer (/ (+ low high) 2)))
-      ; An answer at either end of the range means no volatility fits.
-      (vector-where (vector-and (> answer 0.0011) (< answer 4.999)) answer nan))))
 
 ; ---------------------------------------------------------------------------
 ; T, F, K, and Y for each option

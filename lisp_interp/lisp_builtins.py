@@ -49,6 +49,7 @@ import lisp_fred
 import lisp_http
 import lisp_investment_paths
 import lisp_maps
+import lisp_options
 import lisp_regex
 import lisp_regression
 import lisp_save
@@ -1858,6 +1859,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_simplex.BUILTINS)
     env.update(lisp_investment_paths.BUILTINS)
     env.update(lisp_finance.BUILTINS)
+    env.update(lisp_options.BUILTINS)
     env.update(lisp_clock.BUILTINS)
     env.update(lisp_calendar.BUILTINS)
 

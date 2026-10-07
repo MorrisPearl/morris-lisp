@@ -108,6 +108,7 @@ functions" as a reference to search rather than read start to end.
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Schwab (your accounts)](#schwab-your-accounts)
   - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
+  - [Option prices](#option-prices)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
   - [Simulating investment prices](#simulating-investment-prices)
   - [Checking option prices against simulated paths](#checking-option-prices-against-simulated-paths)
@@ -1691,8 +1692,8 @@ e raised to the power `x`, via `math.exp`; always a float.
 
 #### `(erf x)`
 The error function, via `math.erf` — what a standard normal CDF is built
-from: `N(x) = 0.5 * (1 + erf(x / sqrt(2)))`. See `implied_vol.lsp`. For a
-vector, of each element.
+from: `N(x) = 0.5 * (1 + erf(x / sqrt(2)))`, which is `normal-cdf`, under
+"Option prices". For a vector, of each element.
 
 ```lisp
 (erf 0)                        ; => 0.0
@@ -7644,6 +7645,116 @@ table with no rows.
 
 `daily-returns` takes this table as its `:dividends`: see "Simulating investment prices".
 
+### Option prices
+
+(In `lisp_options.py`.) Black-Scholes-Merton for European options on a
+stock, Black's formula for them on a forward price, implied volatility, the
+Greeks, and American options by a binomial tree.
+
+Every argument can be a number or a vector, with an element for each
+option, so a whole option chain is priced at once, and the answer is then a
+vector. `type` is `"call"` or `"put"`, in any case (tastytrade's `"Call"`
+works), or `#t` or 1 for a call and `#f` or 0 for a put. `time` and `T` are
+in years (30 days is 30/365.0), `rate` is the interest rate, continuously
+compounded (0.04 for 4%), and `vol` is a year's volatility (0.2 for 20%).
+
+#### `(bsm-price type spot strike time rate vol [:dividend-yield q])`
+The Black-Scholes-Merton price of a European option on a stock at `spot`
+that pays a continuous dividend yield `q` (0 unless given). For dividends
+that are known amounts on known dates, see `american-price`, or Black's
+formula on the forward.
+
+```lisp
+(format "{:.4f}" (bsm-price "call" 100 100 1 0.05 0.2))         ; => "10.4506"
+(format "{:.4f}" (bsm-price "put" 100 100 1 0.05 0.2))          ; => "5.5735"
+(vector-round (bsm-price (vector "call" "put") 100 #(95 105) 0.5 0.04 0.25) 4)   ; => #(10.7854 8.7008)
+```
+
+#### `(implied-vol price type spot strike time rate [:dividend-yield q])`
+The volatility at which `bsm-price` gives `price`. It is found by
+bisection: the range 0.1% to 500% is halved 50 times, each time keeping
+the half the answer is in, since the price rises with volatility. `nan`
+where no volatility gives the price, such as a price below what the option
+would pay now.
+
+```lisp
+(format "{:.4f}" (implied-vol 10.4506 "call" 100 100 1 0.05))    ; => "0.2000"
+```
+
+#### `(bsm-delta ...)`, `(bsm-gamma ...)`, `(bsm-vega ...)`, `(bsm-theta ...)`, `(bsm-rho ...)`
+The Greeks, with `bsm-price`'s arguments: how much the price changes.
+
+| Greek | For |
+|---|---|
+| delta | a change of 1 in the stock's price |
+| gamma | how much delta changes, for a change of 1 in the stock's price |
+| vega | a change of 1 point (0.01) in volatility, as tastytrade has it |
+| theta | a calendar day passing (1/365 of a year); negative, as an option loses value as it nears expiration |
+| rho | a change of 1 point (0.01) in the interest rate |
+
+```lisp
+(format "{:.4f}" (bsm-delta "call" 100 100 1 0.05 0.2))     ; => "0.6368"
+(format "{:.4f}" (bsm-gamma "call" 100 100 1 0.05 0.2))     ; => "0.0188"
+(format "{:.4f}" (bsm-vega "call" 100 100 1 0.05 0.2))      ; => "0.3752"
+(format "{:.4f}" (bsm-theta "call" 100 100 1 0.05 0.2))     ; => "-0.0176"
+(format "{:.4f}" (bsm-rho "call" 100 100 1 0.05 0.2))       ; => "0.5323"
+```
+
+#### `(black-price type forward strike T discount vol)`, `(black-implied-vol type price forward strike T discount)`
+Black's formula, from the forward price `F` and the discount factor:
+`discount * (F N(d1) - K N(d2))` for a call and `discount * (K N(-d2) -
+F N(-d1))` for a put, with `d1 = log(F/K) / (vol sqrt(T)) + vol sqrt(T) /
+2` and `d2 = d1 - vol sqrt(T)`. It is the same formula as `bsm-price`,
+since `F = spot e^((rate - q) T)` and `discount = e^(-rate T)`; and for a
+stock that pays known dividends, `F` is its price less their present value,
+grown at the interest rate. `black-implied-vol` finds the volatility as
+`implied-vol` does.
+
+```lisp
+(format "{:.4f}" (black-price "call" 105.13 100 1 0.9512 0.2))   ; => "10.4520"
+```
+
+#### `(normal-cdf x)`
+The chance that a standard normal number is below `x`: `0.5 (1 + erf(x /
+sqrt 2))`.
+
+#### `(american-price type spot strike time rate vol [:dividend-yield q] [:dividends table] [:steps n] [:early-exercise #f])`
+The price of an option that can be exercised before it expires, by a
+binomial tree (Cox, Ross, and Rubinstein's). In each of `:steps` steps (200
+unless given) the price goes up by a factor `u = e^(vol sqrt(dt))` or down
+by `1/u`, with the chance of going up that makes the stock grow at the
+interest rate, less `q`. Working back from expiration, the option is worth,
+at each point, the larger of what it would pay if exercised then and what
+keeping it is worth.
+
+- `:dividends` is a table of `time` (in years from now) and `amount`
+  columns, for dividends that are known amounts on known dates. The tree is
+  of the price less the present value of the dividends still to come before
+  expiration, and an option exercised early gets the whole price: the usual
+  way to handle them ("escrowed dividends"). A dividend after the option
+  expires counts for nothing.
+- `:early-exercise #f` prices the European option with the same tree. The
+  difference between the two is what the right to exercise early is worth,
+  without the tree's own small error (about 0.01 on these examples): a
+  tree's price is close to the formula's, not the same.
+- An American call on a stock that pays no dividends is never worth
+  exercising early, so it is worth what the European one is. An American put
+  can be, and so can a call just before a dividend.
+
+```lisp
+(format "{:.4f}" (american-price "put" 100 100 1 0.05 0.2))                     ; => "6.0864"
+(format "{:.4f}" (american-price "put" 100 100 1 0.05 0.2 :early-exercise #f))  ; => "5.5635"
+(define dividend (make-table "time" #(0.5) "amount" #(5.0)))
+(format "{:.4f}" (american-price "call" 100 100 1 0.05 0.2 :dividends dividend))                     ; => "7.9168"
+(format "{:.4f}" (american-price "call" 100 100 1 0.05 0.2 :dividends dividend :early-exercise #f))  ; => "7.5802"
+```
+
+#### `(american-implied-vol price type spot strike time rate [american-price's options])`
+The volatility at which `american-price` gives `price`, by bisection, as
+`implied-vol` finds it; `nan` where none does. It prices a tree 50 times
+for each option, so it takes a moment for a chain: fewer `:steps` make it
+faster.
+
 ### Implied volatility smiles: finding options out of line
 
 `lib/vol_smile.lsp` fits a model of implied volatility to an option chain
@@ -7703,13 +7814,8 @@ the fit, and every option marked rich or cheap, largest `edge` first.
 Charts one expiration's implied volatilities against strike: at the bid,
 at the ask, and the fit's.
 
-`black-price` and `black-implied-vol`, which the model uses, are there to
-use as well. Each argument can be a vector, one element per option, so a
-whole chain is priced at once; `call?` is a vector of 1 for each call and
-0 for each put:
-
-- **`(black-price call? forward strike T discount vol)`**: Black's formula.
-- **`(black-implied-vol call? price forward strike T discount)`**: the volatility at which Black's formula gives `price`, found by bisection; `nan` where none does.
+The model uses `black-price` and `black-implied-vol`, which are built in:
+see "Option prices".
 
 ```lisp
 (load "vol_smile.lsp")
@@ -7918,8 +8024,8 @@ investment's price. `paths` is a list of paths, vectors of prices, such as
 that returns what the option pays at the end of it: for a call, the final
 price less the strike, or 0 if that's less. The value is the payoffs'
 present values averaged, each discounted for `years` at `rate`, the
-interest rate, continuously compounded (0.04 for 4%, as `bsm-price` in
-`lib/implied_vol.lsp` takes it).
+interest rate, continuously compounded (0.04 for 4%, as `bsm-price`
+takes it).
 
 It returns a list of two numbers: the value, and its **standard error**,
 which says how far chance may have put the value from the one these paths
@@ -9233,7 +9339,7 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 
 | Directory | What's in it |
 |---|---|
-| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `implied_vol.lsp`, `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
+| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
 | `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, and a KenKen solver (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `tools/` | `make_contents.py`, which rebuilds this manual's Contents from its headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 
@@ -9257,6 +9363,7 @@ The Python files:
 | `lisp_save.py` | `save-variables` (with its macro in `macros_init.lsp`) and `load-variables`: variables in a JSON file |
 | `lisp_simplex.py` | `lp-read-file`, `lp-solve`: linear programming (uses `simplex/`) |
 | `lisp_clock.py` | The clock: `current-time`, `today`, `time-add`, `sleep`, `sleep-until`, ... |
+| `lisp_options.py` | `bsm-price`, `implied-vol`, the Greeks (`bsm-delta`, ...), `black-price`, `american-price`, ...: option prices |
 | `lisp_finance.py` | Day counts (`day-count`, `year-fraction`) and cash-flow math: `npv`, `irr`, `xnpv`, `xirr`, `payment`, `present-value`, `yield`, `duration`, `convexity`, ... |
 | `lisp_charts.py` | `plot-xy`, `plot-xy-regression`, `plot-xy-full`, `save-chart` |
 | `lisp_plot_chart.py` | `plot-chart`, `plot-histogram`, `plot-panels`: charts of several series, with bars, areas, a secondary axis, reference lines, and panels |

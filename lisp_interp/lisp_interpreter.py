@@ -30,6 +30,7 @@ HOW THE CODE IS ORGANIZED
     lisp_regression.py    linear-, logistic-, and spline-regression, model-report, ...
     lisp_simplex.py       lp-read-file, lp-solve: linear programming (uses simplex/)
     lisp_finance.py       day counts, npv, irr, yield, duration, convexity, payment
+    lisp_options.py       bsm-price, implied-vol, the Greeks, black-price, american-price (option prices)
     lisp_clock.py         current-time, time-add, sleep, sleep-until
     lisp_charts.py        plot-xy, plot-xy-regression, plot-xy-full, save-chart
     lisp_plot_chart.py    plot-chart, plot-histogram, plot-panels
@@ -104,6 +105,8 @@ WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md)
     its dividends (daily-returns, adjust-returns, dividend-schedule, bootstrap-path),
     and what options on one are worth (option-value, option-payoffs, and lib/option_check.lsp, which
     checks a chain's prices against them); the NYSE's trading days
+  - option prices: Black-Scholes-Merton, Black's formula, implied volatility,
+    the Greeks, and American options by binomial tree
   - day counts (30/360, ACT/360, ACT/365, ACT/ACT), npv, irr, xnpv, xirr,
     yield, duration, convexity, and the level payment on a loan
   - XY charts, and saving them as PNG/PDF/SVG

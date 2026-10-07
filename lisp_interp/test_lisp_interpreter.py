@@ -4648,8 +4648,7 @@ class TestMoreListAndStringFunctions(LispTestCase):
 
 
 class TestSolverLibrary(LispTestCase):
-    """lib/solver.lsp: Ridders' method and Nelder-Mead; and implied_vol.lsp,
-    which uses Ridders."""
+    """lib/solver.lsp: Ridders' method and Nelder-Mead."""
 
     def setUp(self):
         super().setUp()
@@ -4670,7 +4669,6 @@ class TestSolverLibrary(LispTestCase):
         self.assertLess(value, 1e-12)
 
     def test_implied_volatility_round_trip(self):
-        self.run_lisp('(load "%s")' % os.path.join(LIB, "implied_vol.lsp"))
         self.run_lisp('(define price (bsm-price "call" 100 105 0.5 0.04 0.25))')
         self.assertAlmostEqual(self.run_lisp('(implied-vol price "call" 100 105 0.5 0.04)'), 0.25, places=8)
 
@@ -5373,6 +5371,102 @@ class TestLadRegression(LispTestCase):
         self.run_lisp("(define m (linear-regression #(1 2 3) #(1 3 2)))")
         self.assertShows("(model-residuals m #(1 2 3) #(1 3 2))", "#(-0.5 1.0 -0.5)")
         self.assertLispError("(model-residuals m (list #(1 2) #(3 4)) #(1 2))", "model has 1 predictor(s), but 2 given")
+
+
+class TestOptionPrices(LispTestCase):
+    """lisp_options.py: Black-Scholes-Merton, Black's formula, implied volatility, the Greeks, and
+    American options by binomial tree."""
+
+    def price(self, src):
+        return float(self.run_lisp(src))
+
+    def test_black_scholes_prices_the_textbook_option(self):
+        # S = K = 100, a year, 5%, 20% volatility: the call is 10.4506 and the put 5.5735
+        self.assertAlmostEqual(self.price('(bsm-price "call" 100 100 1 0.05 0.2)'), 10.450584, places=5)
+        self.assertAlmostEqual(self.price('(bsm-price "put" 100 100 1 0.05 0.2)'), 5.573526, places=5)
+        self.assertAlmostEqual(self.price('(bsm-price "Call" 100 100 1 0.05 0.2)'), 10.450584, places=5)    # any case
+        self.assertAlmostEqual(self.price('(bsm-price #t 100 100 1 0.05 0.2)'), 10.450584, places=5)
+        self.assertAlmostEqual(self.price("(normal-cdf 0)"), 0.5, places=12)
+        self.assertAlmostEqual(self.price("(normal-cdf 1.96)"), 0.9750021, places=6)
+
+    def test_put_call_parity_holds_with_a_dividend_yield(self):
+        call = self.price('(bsm-price "call" 100 110 0.75 0.04 0.3 :dividend-yield 0.02)')
+        put = self.price('(bsm-price "put" 100 110 0.75 0.04 0.3 :dividend-yield 0.02)')
+        self.assertAlmostEqual(call - put, 100 * math.exp(-0.02 * 0.75) - 110 * math.exp(-0.04 * 0.75), places=8)
+
+    def test_black_s_formula_is_bsm_on_the_forward(self):
+        forward, discount = 100 * math.exp(0.04 * 0.5), math.exp(-0.04 * 0.5)
+        self.assertAlmostEqual(self.price('(black-price "put" %r 95 0.5 %r 0.25)' % (forward, discount)),
+                               self.price('(bsm-price "put" 100 95 0.5 0.04 0.25)'), places=10)
+
+    def test_vectors_price_many_options_at_once(self):
+        prices = self.run_lisp('(bsm-price (vector "Call" "Put") 100 #(95 105) 0.5 0.04 0.25)')
+        self.assertEqual(len(prices.items), 2)
+        self.assertAlmostEqual(float(prices.items[1]), self.price('(bsm-price "put" 100 105 0.5 0.04 0.25)'), places=4)
+        self.assertLispError('(bsm-price "call" 100 #(95 105 110) 0.5 0.04 #(0.2 0.3))', "the same length")
+
+    def test_implied_volatility_gives_back_the_volatility(self):
+        self.assertAlmostEqual(self.price('(implied-vol (bsm-price "put" 100 90 0.25 0.03 0.4) "put" 100 90 0.25 0.03)'),
+                               0.4, places=9)
+        vols = self.run_lisp("(black-implied-vol #(1 0) (black-price #(1 0) 100 #(110 95) 0.25 0.99 #(0.25 0.4)) "
+                             "100 #(110 95) 0.25 0.99)")
+        np.testing.assert_allclose(np.array(vols.items, dtype=float), [0.25, 0.4], atol=1e-6)
+        self.assertShows('(implied-vol 1.0 "call" 100 90 0.5 0.0)', "nan")      # below what it pays now: no volatility
+
+    def test_the_greeks_are_the_derivatives_of_the_price(self):
+        h = 1e-4
+
+        def bsm(kind, spot=100.0, time=0.5, rate=0.04, vol=0.25):
+            return self.price('(bsm-price "%s" %r 105 %r %r %r :dividend-yield 0.01)' % (kind, spot, time, rate, vol))
+        for kind in ("call", "put"):
+            greek = lambda name: self.price('(bsm-%s "%s" 100 105 0.5 0.04 0.25 :dividend-yield 0.01)' % (name, kind))
+            with self.subTest(kind=kind):
+                self.assertAlmostEqual(greek("delta"), (bsm(kind, spot=100 + h) - bsm(kind, spot=100 - h)) / (2 * h), places=6)
+                self.assertAlmostEqual(greek("gamma"), (bsm(kind, spot=100 + h) - 2 * bsm(kind) + bsm(kind, spot=100 - h)) / h ** 2,
+                                       places=3)
+                self.assertAlmostEqual(greek("vega"), (bsm(kind, vol=0.25 + h) - bsm(kind, vol=0.25 - h)) / (2 * h) / 100,
+                                       places=6)          # for a volatility point
+                self.assertAlmostEqual(greek("theta"), -(bsm(kind, time=0.5 + h) - bsm(kind, time=0.5 - h)) / (2 * h) / 365,
+                                       places=6)          # for a day
+                self.assertAlmostEqual(greek("rho"), (bsm(kind, rate=0.04 + h) - bsm(kind, rate=0.04 - h)) / (2 * h) / 100,
+                                       places=6)          # for a point of interest
+
+    def test_an_american_put_is_worth_more_than_a_european_one(self):
+        american = self.price('(american-price "put" 100 100 1 0.05 0.2)')
+        self.assertAlmostEqual(american, 6.09, delta=0.01)                     # the textbook value
+        european = self.price('(american-price "put" 100 100 1 0.05 0.2 :early-exercise #f)')
+        self.assertAlmostEqual(european, self.price('(bsm-price "put" 100 100 1 0.05 0.2)'), delta=0.015)   # the tree's error
+        self.assertGreater(american - european, 0.4)
+
+    def test_an_american_call_without_dividends_is_never_exercised_early(self):
+        self.assertAlmostEqual(self.price('(american-price "call" 100 100 1 0.05 0.2)'),
+                               self.price('(american-price "call" 100 100 1 0.05 0.2 :early-exercise #f)'), places=10)
+
+    def test_a_dividend_can_make_it_worth_exercising_a_call_early(self):
+        dividends = '(make-table "time" #(0.5) "amount" #(5.0))'
+        american = self.price('(american-price "call" 100 100 1 0.05 0.2 :dividends %s)' % dividends)
+        european = self.price('(american-price "call" 100 100 1 0.05 0.2 :dividends %s :early-exercise #f)' % dividends)
+        self.assertGreater(american - european, 0.2)
+        # the European one is Black's formula on the price less the dividend's present value
+        forward = (100 - 5 * math.exp(-0.05 * 0.5)) * math.exp(0.05)
+        self.assertAlmostEqual(european, self.price('(black-price "call" %r 100 1 %r 0.2)' % (forward, math.exp(-0.05))),
+                               delta=0.02)
+        later = self.price('(american-price "call" 100 100 0.4 0.05 0.2 :dividends %s)' % dividends)
+        self.assertAlmostEqual(later, self.price('(bsm-price "call" 100 100 0.4 0.05 0.2)'), delta=0.02)   # (it's after expiring)
+
+    def test_american_implied_volatility_gives_back_the_volatility(self):
+        self.assertAlmostEqual(self.price('(american-implied-vol (american-price "put" 100 110 0.5 0.04 0.3 :steps 100) '
+                                          '"put" 100 110 0.5 0.04 :steps 100)'), 0.3, places=7)
+
+    def test_what_the_option_functions_wont_take(self):
+        self.assertLispError('(bsm-price "straddle" 100 100 1 0.05 0.2)', 'an option type is "call" or "put"')
+        self.assertLispError('(bsm-price "call" "100" 100 1 0.05 0.2)', "spot must be a number or a vector")
+        self.assertLispError('(bsm-price "call" 100 100 1 0.05 0.2 :dividend-yield "2%")', ":dividend-yield must be a number")
+        self.assertLispError('(bsm-delta "call" 100 100 0 0.05 0.2)', "the time and the volatility must be above 0")
+        self.assertLispError('(american-price "put" 100 100 1 0.05 0.2 :steps 0)', ":steps must be a whole number")
+        self.assertLispError('(american-price "put" 100 100 1 0.9 0.01 :steps 2)', "too few")
+        self.assertLispError('(american-price "put" 100 100 1 0.05 0.2 :dividends (make-table "when" #(0.5) "amount" #(1.0)))',
+                             "no column named 'time'")
 
 
 class TestVolSmile(LispTestCase):
@@ -6805,15 +6899,15 @@ class TestLoadPath(LispTestCase):
         self.assertIn("ridders", self.show("(defined-functions)"))
 
     def test_a_library_can_load_another_from_anywhere(self):
-        # implied_vol.lsp does (load "solver.lsp"); it must work from any directory.
+        # option_check.lsp does (load "vol_smile.lsp"); it must work from any directory.
         with mock.patch.dict(os.environ, {"LISP_PATH": ""}):
             cwd = os.getcwd()
             os.chdir(self.dir)
             try:
-                self.run_lisp('(load "implied_vol.lsp")')
+                self.run_lisp('(load "option_check.lsp")')
             finally:
                 os.chdir(cwd)
-        self.assertIn("implied-vol", self.show("(defined-functions)"))
+        self.assertIn("fit-vol-smiles", self.show("(defined-functions)"))
 
     def test_a_missing_file_says_where_it_looked(self):
         with mock.patch.dict(os.environ, {"LISP_PATH": self.dir}):

@@ -64,7 +64,6 @@
 ; (Blocks of one day, so that the volatility is the history's, and the value
 ; can be compared with Black-Scholes. Longer blocks keep what the history did
 ; over several days, which for BRK/A is lower volatility, and a cheaper call.)
-(load "implied_vol.lsp")
 (define rate 0.04)
 (define fair-returns (adjust-returns history (- (exp rate) 1)))
 (define fair-paths
