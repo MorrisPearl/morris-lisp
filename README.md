@@ -34,7 +34,8 @@ whose path is their first argument. Keep it out of the repository.
 - `lisp_interp/examples/` -- programs that use it, such as
   `investment_paths_example.lsp` and `vol_smile_example.lsp`.
 
-The tests: `cd lisp_interp; python3 -m pytest -q test_lisp_interpreter.py`.
+The tests, in `lisp_interp/tests/`: `cd lisp_interp; python3 -m unittest discover -s tests`
+(or `python3 -m pytest -q tests`).
 
 ## The rest of this repository
 

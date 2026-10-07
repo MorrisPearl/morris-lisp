@@ -9530,7 +9530,7 @@ The Python files:
 | `lisp_gui.py` | The PyQt6 window |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |
 | `lisp_jupyter_debug.py` | The debug REPL in Jupyter, made with ipywidgets |
-| `test_lisp_interpreter.py` | The test suite: `python3 -m unittest test_lisp_interpreter` |
+| `tests/` | The tests, a file for each part (see "Running the tests"): `python3 -m unittest discover -s tests` |
 
 Some Lisp files are loaded into every new environment at startup:
 `macros_init.lsp` and `loop.lsp`, the standard macros (see "Standard
@@ -9544,47 +9544,50 @@ every new environment.
 
 ## Running the tests
 
-`test_lisp_interpreter.py`, in `lisp_interp/`, is the test suite. It has
-about 800 tests covering:
+The tests are in `lisp_interp/tests/`, a file for each part of the
+interpreter, about 1,100 of them:
 
-- the language itself: the reader, special forms, tail calls, macros,
-  structs, and error reports;
-- every family of builtins, from numbers and strings to tables,
-  regression, and SQLite;
-- the Lisp libraries: `macros_init.lsp`, `loop.lsp`, `template.lsp`,
-  `column_engine.lsp`, and the others;
-- the command line, the REPL, and the offline example scripts;
-- **this reference manual**: every ` ```lisp ` example with a `; =>`
-  result is run, and the test fails if the interpreter no longer returns
-  that value. So when you change how something behaves, the test suite
-  tells you which documented examples need updating.
+| File | What it tests |
+|---|---|
+| `test_language.py` | the reader, special forms, tail calls, macros, structs, errors, the standard macros and `loop`, and loading files |
+| `test_builtins.py` | numbers, lists, strings, regular expressions, `format`, hash tables, vectors and vector math, dates, the clock, trading days, and monthly time series |
+| `test_tables.py` | tables, displaying them, stratification, CSV files, SQLite, and saving variables |
+| `test_charts.py` | charts and maps |
+| `test_data_sources.py` | the data sources, each against a stand-in for its web API |
+| `test_models.py` | regression, linear programming, the solver, day counts and cash flows, and the template and column-engine libraries |
+| `test_investments.py` | option prices, futures curves, the volatility smile, simulated prices, option chains checked against them, and portfolios |
+| `test_debugging.py` | tracing, stack traces, breakpoints, and the debug REPL, in the console and in Jupyter |
+| `test_programs.py` | the command line, the GUI's error report, the chess and KenKen programs, and the example scripts |
+| `test_reference_doc.py` | **this reference manual**: every ` ```lisp ` example with a `; =>` result is run, and the test fails if the interpreter no longer returns that value. So when you change how something behaves, the tests say which documented examples need updating |
 
-It needs nothing beyond what the interpreter itself needs (numpy). It
-never uses the network, your credentials, or any file outside a temporary
-directory, so it's safe to run at any time. The whole suite takes about 45
-seconds. Run it after changing the interpreter, a builtin, a `.lsp`
+`support.py` has what they all use: the interpreter's modules, and
+`LispTestCase`, which gives each test a fresh global environment.
+
+They need nothing beyond what the interpreter itself needs (numpy). They
+never use the network, your credentials, or any file outside a temporary
+directory, so they're safe to run at any time. All of them take about 75
+seconds. Run them after changing the interpreter, a builtin, a `.lsp`
 library, or this manual.
 
-**Running it.** From the `lisp_interp` directory:
+**Running them.** From the `lisp_interp` directory:
 
 ```bash
-python3 -m unittest test_lisp_interpreter
+python3 -m unittest discover -s tests
 ```
 
 It prints a dot for each test that passes, then `OK`, or a report of each
-test that failed. Other ways to run it:
+test that failed. Other ways to run them:
 
 | Command (in `lisp_interp/`) | What it runs |
 |---|---|
-| `python3 -m unittest test_lisp_interpreter` | every test |
-| `python3 -m unittest -v test_lisp_interpreter` | every test, printing each test's name and result |
-| `python3 -m unittest test_lisp_interpreter.TestFormat` | one group of tests (a test class) |
-| `python3 -m unittest test_lisp_interpreter.TestFormat.test_decimals_and_commas` | one test |
-| `python3 -m unittest -k Format test_lisp_interpreter` | every test whose group or name contains `Format` (upper/lower case matters) |
-| `python3 test_lisp_interpreter.py` | every test; this form works from any directory, e.g. `python3 lisp_interp/test_lisp_interpreter.py` |
-| `python3 -m pytest test_lisp_interpreter.py` | every test, using pytest instead, if it's installed; add `-k format` to pick tests (upper/lower case doesn't matter) |
+| `python3 -m unittest discover -s tests` | every test |
+| `python3 -m unittest discover -s tests -v` | every test, printing each test's name and result |
+| `python3 tests/test_builtins.py` | one file's tests |
+| `python3 tests/test_builtins.py TestFormat` | one group of tests (a test class) |
+| `python3 tests/test_builtins.py TestFormat.test_decimals_and_commas` | one test |
+| `python3 -m pytest -q tests` | every test, using pytest instead, if it's installed; add `-k format` to pick tests (upper/lower case doesn't matter) |
 
-To see the names of the groups, run `grep -n "^class Test" test_lisp_interpreter.py`.
+To see the names of the groups, run `grep -n "^class Test" tests/*.py`.
 Each group's docstring says what it covers.
 
 **The slow examples.** Two example scripts take a while
@@ -9593,7 +9596,7 @@ Each group's docstring says what it covers.
 set the `LISP_TEST_SLOW` environment variable:
 
 ```bash
-LISP_TEST_SLOW=1 python3 -m unittest test_lisp_interpreter
+LISP_TEST_SLOW=1 python3 -m unittest discover -s tests
 ```
 
 **What isn't tested.** Anything that needs the network or an account:
@@ -9689,7 +9692,7 @@ A builtin that works on a whole vector should use numpy on the vector's
 Python loop — that's what keeps it fast on millions of values.
 
 **4. Document and test it** — add an entry to this reference, in the
-section where it belongs, and a test to `test_lisp_interpreter.py`. Any
+section where it belongs, and a test to the file in `tests/` for that part. Any
 `; =>` example you put in a ` ```lisp ` block here is checked by the test
 suite, so the documentation can't drift out of date. Then run the tests
 (see "Running the tests", above).
