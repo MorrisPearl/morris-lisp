@@ -74,3 +74,31 @@
 (display (format "\nA one-year call on BRK/A, struck at today's price:\n  from 5000 paths: {:,.0f} +/- {:,.0f}\n  Black-Scholes, with the history's volatility: {:,.0f}\n"
                  (first call) (second call)
                  (bsm-price "call" start-price start-price 1.0 rate volatility)))
+
+; --- 5. An option on an investment that pays dividends ----------------------------
+; SPY pays a dividend every three months. Its returns are total returns, with
+; the dividends in them, as in section 1; and the schedule takes each dividend
+; off the price on its ex-date, in every path. Here the schedule supposes that
+; the last year's dividends go on, on the same dates and in the same amounts,
+; as far as the path goes: three months of trading days, 63 of them. The days
+; are counted with the NYSE's calendar. An option that ended before the next
+; ex-date wouldn't have a dividend taken off.
+(define spy-days 63)
+(define spy-last-date (vector-ref (table-column spy-prices "date") (- (table-row-count spy-prices) 1)))
+(define spy-start-price (vector-ref (table-column spy-prices "close") (- (table-row-count spy-prices) 1)))
+(define spy-returns (adjust-returns (daily-returns spy-prices :dividends spy-dividends) (- (exp rate) 1)))
+(define spy-schedule (dividend-schedule spy-dividends spy-last-date spy-days :repeat-last-year #t))
+(display (format "\nSPY's dividends in the next {} trading days, after {}:\n" spy-days spy-last-date))
+(display-table spy-schedule)
+
+(define (spy-call-value schedule)           ; a call struck at today's price, with this schedule
+  (let ((paths (map (lambda (i) (bootstrap-path spy-returns spy-start-price spy-days 1
+                                                :seed (+ 1000 i) :dividends schedule))
+                    (iota 5000))))
+    (option-value paths (lambda (path) (max 0 (- (vector-ref path (- spy-days 1)) spy-start-price)))
+                  rate (/ spy-days 252.0))))
+(define with-dividends (spy-call-value spy-schedule))
+(define without-dividends (spy-call-value '()))
+(display (format "A 3-month SPY call at {:,.2f}: {:.2f} +/- {:.2f} with the dividends, {:.2f} +/- {:.2f} without\n"
+                 spy-start-price (first with-dividends) (second with-dividends)
+                 (first without-dividends) (second without-dividends)))

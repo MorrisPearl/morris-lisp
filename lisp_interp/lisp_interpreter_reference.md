@@ -90,6 +90,7 @@ functions" as a reference to search rather than read start to end.
   - [Structs](#structs-1)
   - [Dates](#dates)
   - [The clock](#the-clock)
+  - [Trading days (the NYSE's calendar)](#trading-days-the-nyses-calendar)
   - [Day counts and cash flows](#day-counts-and-cash-flows)
   - [Regression models](#regression-models)
   - [Linear programming](#linear-programming)
@@ -4196,6 +4197,77 @@ sleeps until the top of the next hour:
 For every day at 9:30 am, use `(sleep-until (next-time 9 30))` instead;
 for "an hour after this check finished", `(sleep (* 60 60))`.
 
+### Trading days (the NYSE's calendar)
+
+(In `lisp_calendar.py`.) Which days the stock market is open, and counting
+them. A **trading day** is a Monday through Friday that isn't a holiday of
+the New York Stock Exchange. The NYSE publishes its holidays for the next
+few years (https://www.nyse.com/trade/hours-calendars), but they follow
+rules, so these functions work them out for any year:
+
+- New Year's Day (January 1), Juneteenth (June 19, a holiday since 2022),
+  Independence Day (July 4), and Christmas (December 25). One that falls on
+  a Saturday is kept on the Friday before, and one on a Sunday on the
+  Monday after. The exception is New Year's Day on a Saturday, which isn't
+  kept at all: the market is open the Friday before.
+- Martin Luther King Jr. Day (since 1998), the third Monday of January;
+  Washington's Birthday, the third Monday of February; Memorial Day, the
+  last Monday of May; Labor Day, the first Monday of September; and
+  Thanksgiving, the fourth Thursday of November.
+- Good Friday, the Friday before Easter.
+
+A day the market closes early, such as the day after Thanksgiving, is a
+trading day. Closings that weren't planned, for a funeral, a storm, or
+September 11, 2001, are not known.
+
+#### `(trading-day? date)`
+`#t` if the market is open that day.
+
+```lisp
+(trading-day? (date 2026 10 7))      ; => #t
+(trading-day? (date 2026 10 10))     ; => #f
+(trading-day? (date 2026 11 26))     ; => #f
+```
+
+#### `(next-trading-day date)`
+The date, if the market is open that day, and if not the first day after
+it that it is.
+
+```lisp
+(next-trading-day (date 2026 11 14))     ; => 2026-11-16
+(next-trading-day (date 2026 11 26))     ; => 2026-11-27
+```
+
+#### `(add-trading-days date n)`
+The date `n` trading days after `date` (before it, if `n` is negative).
+With `n` of 0, it is the date itself, a trading day or not.
+
+```lisp
+(add-trading-days (date 2026 11 20) 1)     ; => 2026-11-23
+(add-trading-days (date 2026 11 20) 4)     ; => 2026-11-27
+(add-trading-days (date 2026 11 30) -2)    ; => 2026-11-25
+```
+
+#### `(trading-days-between start end)`
+How many trading days there are after `start`, up to and including `end`:
+1 from a Friday to the Monday after it. Negative if `end` is before
+`start`.
+
+```lisp
+(trading-days-between (date 2026 11 20) (date 2026 11 23))    ; => 1
+(trading-days-between (date 2026 11 20) (date 2026 11 30))    ; => 5
+(trading-days-between (date 2025 12 31) (date 2026 12 31))    ; => 251
+```
+
+#### `(nyse-holidays year)`
+A vector of the dates in a year when the market is closed on a weekday.
+For 2026 through 2028 they are the ones the NYSE publishes.
+
+```lisp
+(nyse-holidays 2028)
+; => #(2028-01-17 2028-02-21 2028-04-14 2028-05-29 2028-06-19 2028-07-04 2028-09-04 2028-11-23 2028-12-25)
+```
+
 ### Day counts and cash flows
 
 (In `lisp_finance.py`.) How long a period is under a day count basis, and
@@ -7659,15 +7731,17 @@ past, by a **block bootstrap**. Tomorrow is likely to be something like
 the days in the investment's history, so a future is built by copying pieces of
 the past, end to end. Each piece is a *block* of consecutive days, rather
 than one day at a time, so that a stretch of wild days (or calm ones)
-stays together, as it does in life. Three functions, one after another,
-and a fourth to use the paths for an option:
+stays together, as it does in life. These functions work one after
+another:
 
 1. `daily-returns` makes a table of returns from prices (and dividends).
 2. `adjust-returns` takes out those returns' average and puts in the
    return you expect.
-3. `bootstrap-path` makes one path of future prices from them. Call it
+3. `dividend-schedule`, for an investment that pays dividends, lists the
+   ones to come in the days of a path.
+4. `bootstrap-path` makes one path of future prices from them. Call it
    once for each path you want.
-4. `option-value` is what an option is worth, from a list of paths.
+5. `option-value` is what an option is worth, from a list of paths.
 
 **The returns are log returns**, ln(today's price / yesterday's), which
 add up: the price after a run of days is the starting price times *e* to
@@ -7727,7 +7801,41 @@ it).
 (format "{:.6f}" (expt 1.08 (/ 1.0 252)))                                           ; => "1.000305"
 ```
 
-#### `(bootstrap-path returns start-price days block-size [:seed n])`
+#### `(dividend-schedule dividends start-date days [:repeat-last-year #t])`
+The dividends an investment will pay in the `days` trading days of a path
+that starts the day after `start-date` (the date of the path's start
+price): a table of `ex-date`, `day` (the ex-date's number among those
+trading days, 1 for the first), and `amount`, in order, ready for
+`bootstrap-path`'s `:dividends`. `dividends` is a table of `ex-date` and
+`amount` columns, as `alpha-vantage-dividends` makes. The days are
+counted with the NYSE's calendar, "Trading days".
+
+- By default the schedule has the dividends of the table that come after
+  `start-date`, up to the path's last day: the ones announced, if the table
+  has any. (One on `start-date` is in the start price already.)
+- **`:repeat-last-year #t`** supposes that the dividends of the year up to
+  `start-date` go on, every year after, **on the same dates and in the same
+  amounts**. A date the market is closed, such as a Saturday, is the next
+  day it's open. (February 29 is February 28 in a year that isn't a leap
+  year.) It is the way to look ahead for an investment that pays about the
+  same dividends on about the same dates, as most do. The table's dividends
+  after `start-date` aren't used with it.
+
+A dividend that comes after the path's last day isn't in the schedule, so
+an option that ends before an ex-date doesn't have its dividend taken off.
+
+```lisp
+(define actual (list (cons "ex-date" (vector (date 2025 11 14) (date 2026 2 13) (date 2026 5 15) (date 2026 8 14)))
+                     (cons "amount" (vector 0.50 0.50 0.52 0.52))))
+(define schedule (dividend-schedule actual (date 2026 10 5) 252 :repeat-last-year #t))
+(table-column schedule "ex-date")     ; => #(2026-11-16 2027-02-16 2027-05-17 2027-08-16)
+(table-column schedule "day")         ; => #(30 91 154 216)
+(table-column schedule "amount")      ; => #(0.5 0.5 0.52 0.52)
+```
+(The four dates of a year later are Saturdays; and the Monday after the
+second, February 15, 2027, is Washington's Birthday.)
+
+#### `(bootstrap-path returns start-price days block-size [:seed n] [:dividends schedule])`
 One path of future prices, as a vector of `days` prices: the first is the
 day after `start-price`'s. `returns` is a table with a `log-return`
 column, such as `adjust-returns` makes. The path is made of blocks of
@@ -7750,6 +7858,14 @@ becomes with those returns.
   for the path numbered `i`, or every path is the same one. Without
   `:seed`, the shared generator is used, so one `(random-seed 42)` before
   you make all the paths makes them the same each time.
+- **`:dividends`** is a schedule, as `dividend-schedule` makes, of the
+  dividends the investment pays: when one comes, the price falls by its
+  amount, in every path, whatever the price has done (to 0 at the lowest,
+  and a price of 0 stays there). A dividend after the path's last day
+  does nothing. The returns for such a path are **total returns**, dividends
+  included, as `daily-returns` gives with `:dividends`, so that all of the
+  investment's return, dividends too, grows at the rate `adjust-returns`
+  was given.
 - A path can't have a day more extreme than the days of the history it
   is made from, so the longer a history (that is still like the future)
   the better.
@@ -7760,6 +7876,11 @@ becomes with those returns.
 (vector-round (bootstrap-path returns 100 5 2 :seed 1) 2)            ; => #(98.02 99.5 100.0 101.01 102.02)
 (equal? (bootstrap-path returns 100 5 2 :seed 1)
         (bootstrap-path returns 100 5 2 :seed 1))                    ; => #t
+
+; two dividends, 1.50 on the 2nd day and 3.00 on the 5th, with returns that are 0:
+(define flat (list (cons "log-return" (vector 0.0 0.0))))
+(define dividends (list (cons "day" (vector 2 5)) (cons "amount" (vector 1.5 3.0))))
+(bootstrap-path flat 100 6 1 :dividends dividends)                   ; => #(100.0 98.5 98.5 98.5 95.5 95.5)
 ```
 
 A thousand paths of an investment's next year, and where they end up. This
@@ -7819,20 +7940,15 @@ the investment does earn 8%, not what it costs to be paid in every case.
 - Make the paths from `(adjust-returns returns (- (exp rate) 1))`: the
   annual return that grows a price at the continuously compounded `rate`.
 - **Dividends take money out of the price, so the paths must lose it
-  too.** When the dividends before the option expires are known, in
-  amounts and ex-dates, start the paths from the price less their present
-  value (each discounted from its ex-date to today), and make the returns
-  *with* `:dividends`, so that all of the investment's return, dividends
-  included, grows at the interest rate. The option is paid on the price at
-  the end, after every one of those dividends has been paid, and every
-  path has lost the same dollar amounts, whatever the price did. A
-  dividend after the option expires doesn't matter, and isn't counted.
-  `dividends-present-value`, in `lib/vol_smile.lsp`, works the present
-  value out (it counts the dividends before an expiration date, and no
-  others). This is for an option paid on the final price, a call or a put.
-  For one that depends on how the price got there, these paths are the
-  price less the present value of the dividends still to come, not the
-  price itself.
+  too.** When the investment pays dividends, make the returns *with*
+  `:dividends` (they are then total returns, which `adjust-returns` makes
+  grow at the interest rate, as above), and give `bootstrap-path` a
+  schedule of the dividends to come. The price of every path then falls by
+  the same dollar amounts on the same days, which is what known dividends
+  do, and what an option on the price is paid on. A dividend after the
+  option expires is not counted, because the schedule stops at the path's
+  last day. For dividends not yet declared, `dividend-schedule` can suppose
+  that the last year's go on, on the same dates and in the same amounts.
 - **A yield, instead.** When dividends are small, regular, and spread
   through the year, as an index's are, or their dates aren't known, a
   continuous yield `q` is simpler: use returns *without* `:dividends`, and
@@ -7848,11 +7964,16 @@ the investment does earn 8%, not what it costs to be paid in every case.
   yield takes off a dividend that never comes.
 
 ```lisp
-(load "vol_smile.lsp")
-(define dividends (list (list (date 2026 11 20) 0.50) (list (date 2027 2 19) 0.50)))   ; ex-date, amount
-(define expiry (date 2027 3 19))
-(define present-value (vector-ref (dividends-present-value (vector expiry) rate dividends) 0))
-(define paths (map (lambda (i) (bootstrap-path fair-returns (- spot present-value) days 1 :seed i)) (iota 5000)))
+; a 3-month (63 trading days) call on an investment that pays dividends, struck at today's price
+(define actual-dividends (alpha-vantage-dividends creds "SPY"))
+(define prices (schwab-price-history creds "SPY"))
+(define fair-returns (adjust-returns (daily-returns prices :dividends actual-dividends) (- (exp rate) 1)))
+(define last-day (vector-ref (table-column prices "date") (- (table-row-count prices) 1)))
+(define schedule (dividend-schedule actual-dividends last-day 63 :repeat-last-year #t))
+(define start-price (vector-ref (table-column prices "close") (- (table-row-count prices) 1)))
+(define paths (map (lambda (i) (bootstrap-path fair-returns start-price 63 1 :seed i :dividends schedule))
+                   (iota 5000)))
+(option-value paths (lambda (path) (max 0 (- (vector-ref path 62) start-price))) rate (/ 63 252.0))
 ```
 
 - A path has a price for each trading day, so `years` is its days divided
@@ -8936,7 +9057,8 @@ The Python files:
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
 | `lisp_alpha_vantage.py` | `alpha-vantage-dividends`: a stock's dividends from Alpha Vantage, through `lisp_http.py` |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders`, ...: your Schwab accounts |
-| `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `bootstrap-path`, `option-value`: simulated prices of an investment, and what an option on it is worth |
+| `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `option-value`: simulated prices of an investment, and what an option on it is worth |
+| `lisp_calendar.py` | `trading-day?`, `add-trading-days`, `trading-days-between`, `nyse-holidays`, ...: the NYSE's trading days |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |

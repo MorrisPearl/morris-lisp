@@ -37,6 +37,7 @@ from lisp_core import (
 import lisp_alpha_vantage
 import lisp_bea
 import lisp_bls
+import lisp_calendar
 import lisp_census
 import lisp_charts
 import lisp_clock
@@ -1858,6 +1859,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_investment_paths.BUILTINS)
     env.update(lisp_finance.BUILTINS)
     env.update(lisp_clock.BUILTINS)
+    env.update(lisp_calendar.BUILTINS)
 
     # Builtins that belong to this environment.
     env.update(make_output_builtins(out, markdown, html))

@@ -6,7 +6,9 @@ investment's own daily returns.
   (adjust-returns returns annual-return [:days-per-year n])
                      the returns, with their average changed to give an
                      expected annual return
-  (bootstrap-path returns start-price days block-size [:seed n])
+  (dividend-schedule dividends start-date days [:repeat-last-year #t])
+                     the dividends an investment will pay in the days of a path
+  (bootstrap-path returns start-price days block-size [:seed n] [:dividends schedule])
                      one simulated path of future prices
   (option-value paths payoff rate years)
                      what an option is worth, from many paths
@@ -30,6 +32,18 @@ those) come out at (1 + annual return) ^ (1 / days per year) - 1. So the
 expected price a year out is the right one when a block is a single day;
 with longer blocks it's close to right.
 
+THE DIVIDENDS in a path are known amounts on known days, the same in every
+path, however the price has done: when one comes, the price falls by its
+amount (to 0, at the lowest). dividend-schedule makes the list of them from
+a table of actual dividends, counting the days with the NYSE's calendar
+(lisp_calendar.py). :repeat-last-year #t makes it from the last year of
+actual dividends, which are supposed to go on, on the same dates (or, for a
+date the market is closed, the next day it's open) and in the same
+amounts. The returns for such a path are total returns, dividends
+included, as daily-returns gives with :dividends, so that all of an
+investment's return, dividends too, grows at the rate adjust-returns is
+given.
+
 THE PATHS wrap: a block that runs off the end of the history carries on
 from its start, so every day is as likely as any other to be in a block.
 
@@ -39,8 +53,7 @@ its present value, and averaging them. For that to be the option's fair
 value, and not just what it pays on average if the investment earns what
 you expect, the paths must grow at the interest rate: make them from
 returns that adjust-returns has given the interest rate as the annual
-return. Dividends that are known are taken off the start price, as their
-present value; see option-value in the manual.
+return. The dividends must come out of the price, as above.
 
 RANDOM NUMBERS: with :seed, bootstrap-path uses its own generator (as
 vectors-shuffle does), so the same seed gives the same path every time --
@@ -49,14 +62,17 @@ pass a different seed for each path, or all the paths are the same. Without
 which (random-seed n) makes reproducible.
 """
 
+import datetime
 import math
 import random
 
 import numpy as np
 
 from lisp_core import (
-    LispDate, LispError, LispVector, Pair, _lisp_scalar, apply_proc, keyword_options, list_to_pairs, pairs_to_list,
+    LispDate, LispError, LispVector, Pair, _lisp_scalar, apply_proc, is_true, keyword_options, list_to_pairs,
+    pairs_to_list,
 )
+import lisp_calendar
 from lisp_tables import find_column, make_table_value, table_columns
 from lisp_vector_math import floats_of, is_number, to_vector
 
@@ -103,16 +119,23 @@ def day_numbers_of(dates, who, what):
     return np.array([d.date.toordinal() for d in dates.items], dtype=np.int64)
 
 
-def dividends_by_day(dividends, day_numbers, who):
-    """What each of the prices' days pays in dividends, as an array. A
-    dividend counts on its ex-date, or if there's no price that day, the
-    next day there is one. One before the first price or after the last
-    isn't counted: there's no return for it to be part of."""
+def ex_days_and_amounts(dividends, who):
+    """The ex-dates (as day numbers) and the amounts of a table of dividends,
+    with ex-date and amount columns, as arrays."""
     columns = table_columns(dividends, who)
     ex_days = day_numbers_of(find_column(columns, "ex-date", who), who, "the dividends' ex-dates")
     amounts = floats_of(find_column(columns, "amount", who), who)
     if not np.all(amounts >= 0):
         raise LispError("%s: every dividend amount must be a number, 0 or more" % who)
+    return ex_days, amounts
+
+
+def dividends_by_day(dividends, day_numbers, who):
+    """What each of the prices' days pays in dividends, as an array. A
+    dividend counts on its ex-date, or if there's no price that day, the
+    next day there is one. One before the first price or after the last
+    isn't counted: there's no return for it to be part of."""
+    ex_days, amounts = ex_days_and_amounts(dividends, who)
     paid = np.zeros(len(day_numbers))
     first_days_on_or_after = np.searchsorted(day_numbers, ex_days, side="left")
     for day, amount in zip(first_days_on_or_after, amounts):
@@ -156,6 +179,68 @@ def adjust_returns(returns, annual_return, *options):
 
 
 # ---------------------------------------------------------------------------
+# The dividends to come
+# ---------------------------------------------------------------------------
+
+def years_later(day, years):
+    """The same date, years later (February 29 is February 28 in a year that
+    isn't a leap year)."""
+    try:
+        return day.replace(year=day.year + years)
+    except ValueError:
+        return day.replace(year=day.year + years, day=28)
+
+
+def last_years_dividends_to_come(dividends, start, last_day):
+    """The dividends of the year up to start, as (ex-date, amount), repeated
+    each year after it, as far as last_day."""
+    one_year_before = years_later(start, -1)
+    last_year = [(day, amount) for day, amount in dividends if one_year_before < day <= start]
+    coming = []
+    years_ahead = 1
+    while last_year and years_later(min(day for day, _ in last_year), years_ahead) <= last_day:
+        coming += [(years_later(day, years_ahead), amount) for day, amount in last_year]
+        years_ahead += 1
+    return coming
+
+
+def dividend_schedule(dividends, start_date, days, *options):
+    """(dividend-schedule dividends start-date days [:repeat-last-year #t]) --
+    the dividends an investment will pay in the `days` trading days of a
+    path that starts the day after start-date: a table of ex-date, day (the
+    ex-date's number among those trading days, 1 for the first), and
+    amount, in order. dividends is a table of ex-date and amount columns, as
+    alpha-vantage-dividends makes. The schedule has the dividends in it
+    that come after start-date, up to the path's last day -- or, with
+    :repeat-last-year, the dividends of the year up to start-date, which
+    are supposed to go on every year, on the same dates and in the same
+    amounts. An ex-date on a day the market is closed is the next day it's
+    open."""
+    who = "dividend-schedule"
+    options = keyword_options(options, ["repeat-last-year"], who)
+    if not isinstance(start_date, LispDate):
+        raise LispError("%s: the start date must be a date, not %s" % (who, start_date))
+    days = whole_number(days, "days", who, 1)
+    ex_days, amounts = ex_days_and_amounts(dividends, who)
+    paid = [(datetime.date.fromordinal(int(day)), float(amount)) for day, amount in zip(ex_days, amounts)]
+    start = start_date.date
+    last_day = lisp_calendar.trading_days_after(start, days)
+    if is_true(options.get("repeat-last-year", False)):
+        paid = last_years_dividends_to_come(paid, start, last_day)
+
+    rows = []
+    for ex_date, amount in sorted(paid):
+        ex_date = lisp_calendar.first_trading_day_from(ex_date)
+        if start < ex_date <= last_day:
+            rows.append((ex_date, lisp_calendar.count_trading_days(start, ex_date), amount))
+    return make_table_value([
+        ("ex-date", LispVector([LispDate(d.year, d.month, d.day) for d, _, _ in rows])),
+        ("day", to_vector(np.array([day for _, day, _ in rows], dtype=np.int64))),
+        ("amount", to_vector(np.array([amount for _, _, amount in rows], dtype=np.float64))),
+    ])
+
+
+# ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
@@ -165,17 +250,64 @@ def whole_number(value, name, who, at_least):
     return value
 
 
+def schedule_days_and_amounts(schedule, who):
+    """The days and the amounts of a dividend schedule, a table of day and
+    amount columns, as a list of (day, amount) in order of day; empty for no
+    schedule."""
+    if schedule is None:
+        return []
+    columns = table_columns(schedule, who)
+    if "day" not in [name for name, _ in columns] and "ex-date" in [name for name, _ in columns]:
+        raise LispError("%s: :dividends is a schedule, a table of day and amount columns, as dividend-schedule "
+                        "makes from a table of dividends" % who)
+    days = floats_of(find_column(columns, "day", who), who)
+    amounts = floats_of(find_column(columns, "amount", who), who)
+    if not np.all(days >= 1) or not np.all(days == np.round(days)):
+        raise LispError("%s: every day of the dividend schedule must be a whole number, 1 or more" % who)
+    if not np.all(amounts >= 0):
+        raise LispError("%s: every dividend amount must be a number, 0 or more" % who)
+    in_order = np.argsort(days, kind="stable")
+    return [(int(days[i]), float(amounts[i])) for i in in_order]
+
+
+def prices_with_dividends(start_price, growth, schedule):
+    """The prices of a path, an array with a price for each of `growth`'s
+    days: start_price grown by `growth` (the running total of the log
+    returns), less each dividend of the schedule, a list of (day, amount) in
+    order, on its day. A dividend takes the price down by its amount, to 0
+    at the lowest; and a price of 0 stays there. A dividend after the last
+    day is left out."""
+    prices = np.empty(len(growth))
+    price = start_price             # the price after the last dividend (or at the start),
+    growth_then = 0.0               # the growth that was in it,
+    first = 0                       # and the first day since
+    for day, amount in schedule:
+        if day > len(growth):
+            break
+        last = day - 1
+        prices[first:last + 1] = price * np.exp(growth[first:last + 1] - growth_then)
+        price = max(prices[last] - amount, 0.0)
+        prices[last] = price
+        growth_then = growth[last]
+        first = last + 1
+    prices[first:] = price * np.exp(growth[first:] - growth_then)
+    return prices
+
+
 def bootstrap_path(returns, start_price, days, block_size, *options):
-    """(bootstrap-path returns start-price days block-size [:seed n]) -- one
-    simulated path of prices, as a vector of `days` prices: the first is the
-    day after start-price's. returns is a table with a log-return column.
-    Blocks of block-size consecutive returns, each beginning at a random day
-    of the history, are put end to end until there are `days` of them (the
-    last block is cut short if it has to be), and the prices are what
-    start-price becomes with those returns."""
+    """(bootstrap-path returns start-price days block-size [:seed n]
+    [:dividends schedule]) -- one simulated path of prices, as a vector of
+    `days` prices: the first is the day after start-price's. returns is a
+    table with a log-return column. Blocks of block-size consecutive
+    returns, each beginning at a random day of the history, are put end to
+    end until there are `days` of them (the last block is cut short if it
+    has to be), and the prices are what start-price becomes with those
+    returns. :dividends is a schedule, as dividend-schedule makes, of
+    dividends that take their amounts off the price on their days."""
     who = "bootstrap-path"
-    options = keyword_options(options, ["seed"], who)
+    options = keyword_options(options, ["seed", "dividends"], who)
     seed = options.get("seed")
+    schedule = schedule_days_and_amounts(options.get("dividends"), who)
     log_returns = log_returns_of(returns, who)
     if not is_number(start_price) or start_price <= 0:
         raise LispError("%s: the start price must be a number above 0, not %s" % (who, start_price))
@@ -192,7 +324,7 @@ def bootstrap_path(returns, start_price, days, block_size, *options):
     # each block's days in a row, from where it starts; % wraps them around the end of the history
     block_days = (starts[:, None] + np.arange(block_size)) % len(log_returns)
     chosen = log_returns[block_days.ravel()[:days]]
-    return to_vector(start_price * np.exp(np.cumsum(chosen)))
+    return to_vector(prices_with_dividends(start_price, np.cumsum(chosen), schedule))
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +366,7 @@ def option_value(paths, payoff, rate, years):
 BUILTINS = {
     "daily-returns": daily_returns,
     "adjust-returns": adjust_returns,
+    "dividend-schedule": dividend_schedule,
     "bootstrap-path": bootstrap_path,
     "option-value": option_value,
 }

@@ -5504,6 +5504,101 @@ class TestVolSmile(LispTestCase):
         self.assertLispError('(fit-vol-smiles chain :terms (list "K^3"))', "there's no term K^3")
 
 
+class TestTradingCalendar(LispTestCase):
+    """lisp_calendar.py: the NYSE's trading days."""
+
+    def holidays(self, year):
+        return self.show("(nyse-holidays %d)" % year)
+
+    def vector_of(self, *dates):
+        return "#(" + " ".join(dates) + ")"
+
+    def test_the_holidays_the_nyse_publishes_for_2026_through_2028(self):
+        # from https://www.nyse.com/trade/hours-calendars, read on 2026-10-07
+        self.assertEqual(self.holidays(2026), self.vector_of(
+            "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
+            "2026-09-07", "2026-11-26", "2026-12-25"))
+        self.assertEqual(self.holidays(2027), self.vector_of(
+            "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31", "2027-06-18", "2027-07-05",
+            "2027-09-06", "2027-11-25", "2027-12-24"))
+        self.assertEqual(self.holidays(2028), self.vector_of(              # (January 1 is a Saturday: not kept)
+            "2028-01-17", "2028-02-21", "2028-04-14", "2028-05-29", "2028-06-19", "2028-07-04", "2028-09-04",
+            "2028-11-23", "2028-12-25"))
+
+    def test_holidays_of_other_years(self):
+        self.assertEqual(self.holidays(2021), self.vector_of(              # no Juneteenth yet
+            "2021-01-01", "2021-01-18", "2021-02-15", "2021-04-02", "2021-05-31", "2021-07-05", "2021-09-06",
+            "2021-11-25", "2021-12-24"))
+        self.assertEqual(self.holidays(2022), self.vector_of(
+            "2022-01-17", "2022-02-21", "2022-04-15", "2022-05-30", "2022-06-20", "2022-07-04", "2022-09-05",
+            "2022-11-24", "2022-12-26"))
+        self.assertEqual(self.holidays(2023), self.vector_of(              # January 1 is a Sunday: the 2nd
+            "2023-01-02", "2023-01-16", "2023-02-20", "2023-04-07", "2023-05-29", "2023-06-19", "2023-07-04",
+            "2023-09-04", "2023-11-23", "2023-12-25"))
+        self.assertEqual(self.show("(vector-length (nyse-holidays 1997))"), "8")      # no Martin Luther King Jr. Day yet
+
+    def test_easter_is_right_for_good_friday(self):
+        for year, good_friday in ((2000, "2000-04-21"), (2019, "2019-04-19"), (2024, "2024-03-29"),
+                                  (2025, "2025-04-18"), (2038, "2038-04-23")):
+            with self.subTest(year=year):
+                self.assertIn(good_friday, self.holidays(year))
+
+    def test_trading_days(self):
+        for day, answer in (("(date 2026 10 7)", "#t"),                  # an ordinary Wednesday
+                            ("(date 2026 10 10)", "#f"),                 # a Saturday
+                            ("(date 2026 10 11)", "#f"),                 # a Sunday
+                            ("(date 2026 11 26)", "#f"),                 # Thanksgiving
+                            ("(date 2026 11 27)", "#t"),                 # the day after, closing early
+                            ("(date 2026 7 3)", "#f"),                   # July 4 is a Saturday
+                            ("(date 2027 12 31)", "#t")):                # January 1, 2028 is a Saturday, not kept
+            self.assertShows("(trading-day? %s)" % day, answer)
+
+    def test_the_next_trading_day(self):
+        self.assertShows("(next-trading-day (date 2026 10 7))", "2026-10-07")
+        self.assertShows("(next-trading-day (date 2026 11 14))", "2026-11-16")          # a Saturday
+        self.assertShows("(next-trading-day (date 2026 11 26))", "2026-11-27")          # Thanksgiving
+        self.assertShows("(next-trading-day (date 2027 2 13))", "2027-02-16")           # a Saturday, then a holiday
+
+    def test_adding_trading_days(self):
+        for start, n, answer in (((2026, 11, 20), 1, "2026-11-23"),       # a Friday: the Monday
+                                 ((2026, 11, 20), 3, "2026-11-25"),
+                                 ((2026, 11, 20), 4, "2026-11-27"),       # over Thanksgiving
+                                 ((2026, 11, 30), -1, "2026-11-27"),
+                                 ((2026, 11, 30), -2, "2026-11-25"),
+                                 ((2026, 11, 21), 1, "2026-11-23"),       # from a Saturday
+                                 ((2026, 11, 21), -1, "2026-11-20"),
+                                 ((2026, 11, 21), 0, "2026-11-21")):      # (itself, trading day or not)
+            with self.subTest(start=start, n=n):
+                self.assertShows("(add-trading-days (date %d %d %d) %d)" % (start + (n,)), answer)
+
+    def test_counting_trading_days(self):
+        self.assertShows("(trading-days-between (date 2026 11 20) (date 2026 11 23))", "1")    # Friday to Monday
+        self.assertShows("(trading-days-between (date 2026 11 20) (date 2026 11 30))", "5")    # over Thanksgiving
+        self.assertShows("(trading-days-between (date 2026 11 20) (date 2026 11 20))", "0")
+        self.assertShows("(trading-days-between (date 2026 11 23) (date 2026 11 20))", "-1")
+        self.assertShows("(trading-days-between (date 2026 11 21) (date 2026 11 22))", "0")    # a weekend
+        self.assertShows("(trading-days-between (date 2025 12 31) (date 2026 12 31))", "251")  # 261 weekdays less 10 holidays
+
+    def test_adding_and_counting_agree(self):
+        # (counting back from a day the market is closed isn't the opposite of counting forward: the
+        # trading days "after" a Saturday don't include that Saturday's own Friday)
+        for start, counts in (("(date 2026 10 5)", (-300, -7, -1, 1, 5, 252, 700)),
+                              ("(date 2026 11 21)", (1, 5, 252, 700)),         # a Saturday
+                              ("(date 2027 12 24)", (1, 5, 252, 700))):        # Christmas, kept on a Friday
+            for n in counts:
+                with self.subTest(start=start, n=n):
+                    self.assertShows("(trading-days-between %s (add-trading-days %s %d))" % (start, start, n), str(n))
+
+    def test_what_the_calendar_wont_take(self):
+        self.assertLispError("(trading-day? 5)", "not a date")
+        self.assertLispError('(next-trading-day "2026-10-07")', "not a date")
+        self.assertLispError("(add-trading-days (date 2026 10 7) 2.5)", "whole number")
+        self.assertLispError("(add-trading-days (date 2026 10 7) #t)", "whole number")
+        self.assertLispError("(trading-days-between (date 2026 10 7) 3)", "not a date")
+        self.assertLispError("(nyse-holidays 2026.0)", "the year must be a whole number")
+        self.assertLispError("(nyse-holidays 0)", "the year must be a whole number")
+
+
 class TestInvestmentPaths(LispTestCase):
     """lisp_investment_paths.py: daily-returns, adjust-returns, and bootstrap-path."""
 
@@ -5750,6 +5845,138 @@ class TestInvestmentPaths(LispTestCase):
         self.assertLispError("(option-value paths 5 0.04 1)", "not a procedure")
         self.assertLispError("(option-value paths (lambda (path) \"x\") 0.04 1)", "must return a number")
         self.assertLispError("(option-value paths (lambda (path) nan) 0.04 1)", "must return a number")
+
+    # -- dividend-schedule and bootstrap-path's :dividends --------------------
+
+    ACTUAL = """(define actual (list (cons "ex-date" (vector (date 2025 6 20) (date 2025 11 14) (date 2026 2 13)
+                                                         (date 2026 5 15) (date 2026 8 14)))
+                                    (cons "amount" (vector 0.40 0.50 0.50 0.52 0.52))))"""
+
+    def schedule_rows(self, src):
+        """A dividend schedule's rows, as (ex-date, day, amount)."""
+        columns = lisp_tables.table_columns(self.run_lisp(src), "test")
+        dates, days, amounts = [list(vector.items) for _, vector in columns]
+        return [(str(d), int(day), round(float(a), 4)) for d, day, a in zip(dates, days, amounts)]
+
+    def test_a_schedule_has_the_known_dividends_after_the_start_up_to_the_last_day(self):
+        self.run_lisp(self.ACTUAL)
+        self.assertShows("(table-column-names (dividend-schedule actual (date 2026 1 2) 100))", '("ex-date" "day" "amount")')
+        self.assertEqual(self.schedule_rows("(dividend-schedule actual (date 2026 1 2) 100)"),
+                         [("2026-02-13", 29, 0.5), ("2026-05-15", 92, 0.52)])      # (2026-08-14 is after day 100)
+        self.assertEqual(self.schedule_rows("(dividend-schedule actual (date 2026 2 13) 100)"),
+                         [("2026-05-15", 63, 0.52)])                              # not the one that day: it's in the price
+
+    def test_a_schedule_can_repeat_the_last_years_dividends_on_the_same_dates(self):
+        self.run_lisp(self.ACTUAL)
+        # the last year, to October 5, 2026, had four: next year's are on a Saturday (the 14th, the 13th, the
+        # 15th, and the 14th), so the next day the market is open: the Monday -- or, the Monday being
+        # Washington's Birthday, the Tuesday
+        self.assertEqual(self.schedule_rows("(dividend-schedule actual (date 2026 10 5) 252 :repeat-last-year #t)"),
+                         [("2026-11-16", 30, 0.5), ("2027-02-16", 91, 0.5),
+                          ("2027-05-17", 154, 0.52), ("2027-08-16", 216, 0.52)])
+        self.assertEqual(self.schedule_rows("(dividend-schedule actual (date 2026 10 5) 252 :repeat-last-year #f)"),
+                         [])                                                      # nothing is known after October 5
+
+    def test_repeating_goes_on_for_as_many_years_as_the_path_lasts(self):
+        self.run_lisp("""(define yearly (list (cons "ex-date" (vector (date 2026 3 2))) (cons "amount" (vector 1.0))))""")
+        rows = self.schedule_rows("(dividend-schedule yearly (date 2026 10 5) 800 :repeat-last-year #t)")
+        self.assertEqual([row[0] for row in rows], ["2027-03-02", "2028-03-02", "2029-03-02"])
+        self.assertEqual(self.schedule_rows("(dividend-schedule yearly (date 2026 10 5) 100 :repeat-last-year #t)"), [])
+
+    def test_a_dividend_on_the_start_date_is_in_the_price_but_comes_again_next_year(self):
+        self.run_lisp("""(define on-start (list (cons "ex-date" (vector (date 2026 10 5))) (cons "amount" (vector 1.0))))""")
+        self.assertEqual(self.schedule_rows("(dividend-schedule on-start (date 2026 10 5) 300)"), [])
+        self.assertEqual(self.schedule_rows("(dividend-schedule on-start (date 2026 10 5) 300 :repeat-last-year #t)"),
+                         [("2027-10-05", 251, 1.0)])
+
+    def test_a_dividend_on_the_29th_of_february_comes_on_the_28th_in_other_years(self):
+        self.run_lisp("""(define leap (list (cons "ex-date" (vector (date 2028 2 29))) (cons "amount" (vector 1.0))))""")
+        self.assertEqual(self.schedule_rows("(dividend-schedule leap (date 2028 6 1) 252 :repeat-last-year #t)"),
+                         [("2029-02-28", 186, 1.0)])
+
+    def test_a_known_ex_date_the_market_is_closed_is_the_next_day_it_is_open(self):
+        self.run_lisp("""(define odd (list (cons "ex-date" (vector (date 2026 11 26))) (cons "amount" (vector 1.0))))""")
+        self.assertEqual(self.schedule_rows("(dividend-schedule odd (date 2026 11 20) 10)"), [("2026-11-27", 4, 1.0)])
+
+    def test_a_schedule_without_dividends_is_a_table_without_rows(self):
+        self.run_lisp(self.ACTUAL)
+        self.assertShows("(table-row-count (dividend-schedule actual (date 2024 1 2) 100 :repeat-last-year #t))", "0")
+        self.assertShows("(length (table-column-names (dividend-schedule actual (date 2024 1 2) 100)))", "3")
+
+    def test_what_dividend_schedule_wont_take(self):
+        self.run_lisp(self.ACTUAL)
+        self.assertLispError("(dividend-schedule actual 5 100)", "the start date must be a date")
+        self.assertLispError("(dividend-schedule actual (date 2026 1 2) 0)", "days must be a whole number")
+        self.assertLispError('(dividend-schedule (table-drop-columns actual "amount") (date 2026 1 2) 100)',
+                             "no column named 'amount'")
+        self.assertLispError('(dividend-schedule (list (cons "ex-date" (vector (date 2026 1 5))) (cons "amount" (vector -1.0)))'
+                             " (date 2026 1 2) 100)", "0 or more")
+        self.assertLispError("(dividend-schedule actual (date 2026 1 2) 100 :repeat #t)", ":repeat isn't an option")
+
+    def schedule(self, days_and_amounts):
+        """A dividend schedule, as `schedule` in the Lisp environment."""
+        self.env[lisp_core.Symbol("schedule")] = lisp_tables.make_table_value([
+            ("day", lisp_vector_math.to_vector(np.array([d for d, _ in days_and_amounts]))),
+            ("amount", lisp_vector_math.to_vector(np.array([a for _, a in days_and_amounts], dtype=np.float64)))])
+
+    def test_a_dividend_takes_its_amount_off_the_price_on_its_day(self):
+        self.make_returns("flat", [0.0, 0.0, 0.0])
+        self.schedule([(2, 1.5), (2, 0.5), (5, 3.0)])                # (two on day 2)
+        self.assertNumbers("(bootstrap-path flat 100 8 1 :dividends schedule)", [100, 98, 98, 98, 95, 95, 95, 95])
+
+    def test_the_price_grows_between_dividends_and_a_dividend_is_taken_off_what_it_has_grown_to(self):
+        self.make_returns("steady", [0.01, 0.01])
+        self.schedule([(3, 2.0), (6, 1.0)])
+        price, expected = 100.0, []
+        for day in range(1, 9):
+            price *= math.exp(0.01)
+            price -= {3: 2.0, 6: 1.0}.get(day, 0.0)
+            expected.append(price)
+        self.assertNumbers("(bootstrap-path steady 100 8 2 :dividends schedule)", expected, places=3)
+
+    def test_the_schedule_may_be_out_of_order_and_go_on_past_the_path(self):
+        self.make_returns("flat", [0.0, 0.0, 0.0])
+        self.schedule([(5, 3.0), (2, 2.0), (50, 40.0)])
+        self.assertNumbers("(bootstrap-path flat 100 6 1 :dividends schedule)", [100, 98, 98, 98, 95, 95])
+
+    def test_the_price_stops_at_0(self):
+        self.make_returns("flat", [0.0, 0.0, 0.0])
+        self.schedule([(2, 500.0), (4, 1.0)])
+        self.assertNumbers("(bootstrap-path flat 100 5 1 :dividends schedule)", [100, 0, 0, 0, 0])
+
+    def test_no_dividends_in_the_schedule_is_no_change(self):
+        self.a_year_of_returns()
+        self.run_lisp(self.ACTUAL + "(define none (dividend-schedule actual (date 2024 1 2) 100))")
+        plain = self.show("(bootstrap-path history 100 100 5 :seed 3)")
+        self.assertEqual(self.show("(bootstrap-path history 100 100 5 :seed 3 :dividends none)"), plain)
+        self.assertEqual(self.show("(bootstrap-path history 100 100 5 :seed 3 :dividends '())"), plain)
+
+    def test_dividends_that_are_the_same_in_every_path_leave_the_expected_price_less_what_they_grow_to(self):
+        # growing at the interest rate every day, as the returns are, the average price the last day is the
+        # start price grown, less each dividend grown from its day on: S g^T - sum of D g^(T - t)
+        self.a_year_of_returns()
+        self.run_lisp("(define fair (adjust-returns history (- (exp 0.04) 1)))")
+        self.schedule([(60, 1.0), (150, 2.0)])
+        growth = math.exp(0.04 / 252)
+        expected = 100 * growth ** 252 - 1.0 * growth ** (252 - 60) - 2.0 * growth ** (252 - 150)
+        finals = self.run_lisp("""(vector-mean (list->vector
+            (map (lambda (i) (vector-ref (bootstrap-path fair 100 252 1 :seed i :dividends schedule) 251))
+                 (iota 4000))))""")
+        self.assertAlmostEqual(finals, expected, delta=0.8)               # (about 3 standard errors)
+        self.assertGreater(abs(100 * growth ** 252 - expected), 2.9)      # (without them it would be 3 off)
+
+    def test_what_a_schedule_must_be(self):
+        self.make_returns("flat", [0.0, 0.0, 0.0])
+        self.run_lisp(self.ACTUAL)
+        self.assertLispError("(bootstrap-path flat 100 5 1 :dividends actual)", "as dividend-schedule makes")
+        self.schedule([(0, 1.0)])
+        self.assertLispError("(bootstrap-path flat 100 5 1 :dividends schedule)", "must be a whole number, 1 or more")
+        self.make_returns("flat", [0.0, 0.0, 0.0])
+        self.run_lisp("""(define fraction (list (cons "day" (vector 1.5)) (cons "amount" (vector 1.0))))""")
+        self.assertLispError("(bootstrap-path flat 100 5 1 :dividends fraction)", "must be a whole number, 1 or more")
+        self.schedule([(2, -1.0)])
+        self.assertLispError("(bootstrap-path flat 100 5 1 :dividends schedule)", "0 or more")
+        self.assertLispError("(bootstrap-path flat 100 5 1 :dividends 5)", "not a table")
 
 
 class TestLinearProgramming(LispTestCase):
