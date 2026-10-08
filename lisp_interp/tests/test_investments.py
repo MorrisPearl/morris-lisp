@@ -90,6 +90,29 @@ class TestOptionPrices(LispTestCase):
         self.assertAlmostEqual(self.price('(american-implied-vol (american-price "put" 100 110 0.5 0.04 0.3 :steps 100) '
                                           '"put" 100 110 0.5 0.04 :steps 100)'), 0.3, places=7)
 
+    def test_the_option_methods_example_agrees_when_the_history_is_normal(self):
+        """examples/option_methods_example.lsp, with a made-up history of normally distributed returns in
+        place of Schwab's prices: then the paths are the formula's model too, so all three methods agree --
+        the tree with the formula, and the paths with it within their standard error."""
+        returns = np.random.default_rng(11).normal(0.0, 0.2 / math.sqrt(252), 2500)
+        closes = 100.0 * np.exp(np.concatenate([[0.0], np.cumsum(returns)]))
+        start = datetime.date(2016, 10, 7)
+        dates = [start + datetime.timedelta(days=i) for i in range(len(closes))]
+        prices = lisp_tables.make_table_value([
+            ("date", lisp_core.LispVector([lisp_core.LispDate(d.year, d.month, d.day) for d in dates])),
+            ("close", lisp_vector_math.to_vector(closes))])
+        self.env[lisp_core.Symbol("schwab-price-history")] = lambda creds, symbol: prices
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("no-credentials-needed.json")
+        lisp_core.run_file(os.path.join(EXAMPLES, "option_methods_example.lsp"), self.env)
+
+        def column(name):
+            return [float(x) for x in self.run_lisp('(table-column compared "%s")' % name).items]
+
+        for formula, tree, apart in zip(column("black-scholes"), column("tree"), column("standard-errors-apart")):
+            self.assertAlmostEqual(tree / formula, 1.0, delta=0.01)
+            self.assertLess(abs(apart), 3)
+        self.assertIn("1 month, put 10% below", self.printed())
+
     def test_the_binomial_tree_shows_how_american_price_is_found(self):
         tree = dict(lisp_tables.table_columns(self.run_lisp('(binomial-tree "put" 100 100 1 0.05 0.2 :steps 3)'), "t"))
         self.assertEqual(sorted(tree), ["early", "exercise", "hold", "price", "step", "time", "ups", "value"])

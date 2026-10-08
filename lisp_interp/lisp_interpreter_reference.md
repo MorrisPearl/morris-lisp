@@ -259,7 +259,8 @@ model made of those is a library, written in Lisp, to be read and changed.
 **Examples.** `examples/` has a program for most of this, run from that
 directory with `python3 ../lisp_interpreter.py name.lsp`:
 `investment_paths_example.lsp` (simulated prices, an option on them, and
-dividends), `vol_smile_example.lsp`, `option_chain_example.lsp`,
+dividends), `option_methods_example.lsp` (an option valued by Black-Scholes,
+a binomial tree, and simulated paths), `vol_smile_example.lsp`, `option_chain_example.lsp`,
 `fred_example.lsp`, `sec_example.lsp`, `fdic_example.lsp`,
 `census_bls_example.lsp`, `bea_example.lsp`, `prepayment_demo.lsp`,
 `oas_monte_carlo_example.lsp`, and `mortgage_amortization_example.lsp`.
@@ -8132,6 +8133,26 @@ history's volatility, gave 72,350. The paths' volatility over the year was
 low with longer blocks, 0.3% to 0.4%.) What comes out is the value if the
 future is like this history, which is not the market's price: the market's
 is from the volatility it expects.
+
+**Paths with blocks of a day agree with Black-Scholes only at the money, or
+far out.** The paths have the history's own returns, and those aren't
+normally distributed: their tails are fat. Over a year, many days add up to
+something close to normal, and the paths' values agree with the formula's;
+an option a month away and well out of the money is worth more on the
+paths. On October 8, 2026, for BRK/A, with 20,000 paths at the history's
+19.0% volatility and an interest rate of 4%:
+
+```
+option                      black-scholes    tree  monte-carlo  standard-error  standard-errors-apart
+1 year, call at the money          72,504  72,432       72,719             733                   +0.3
+1 year, put 20% below               4,775   4,782        5,063             141                   +2.0
+1 month, call at the money         17,887  17,866       17,658             181                   -1.3
+1 month, put 10% below                351     350          481              28                   +4.6
+```
+
+The tree (`american-price` with `:early-exercise #f`) is the formula's own
+model, made of steps, so it agrees with the formula, but for having only so
+many steps. `examples/option_methods_example.lsp` makes this table.
 
 #### `(option-payoffs paths days strikes calls)`
 What many European options pay, on average, over a list of paths: a table
