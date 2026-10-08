@@ -460,6 +460,66 @@ class TestDestructuringBind(LispTestCase):
         self.assertIn("(destructuring--end %rest-", expansion)
 
 
+class TestLazyLoad(LispTestCase):
+    """lazy-load, from macros_init.lsp, and lib/autoloads.lsp, which uses it for the libraries."""
+
+    def write_library(self, directory, text):
+        path = os.path.join(directory, "lib1.lsp")
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def test_the_first_call_loads_the_file_and_calls_what_it_defines(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self.write_library(d, """
+              (set! loads (+ loads 1))
+              (define (twice x &key (by 2)) (* x by))
+              (define (thrice x) (* 3 x))""")
+            self.run_lisp("(define loads 0)")
+            self.assertShows('(lazy-load "%s" twice thrice)' % path, "(twice thrice)")
+            self.assertShows("loads", "0")                       # not loaded yet
+            self.assertShows("(twice 5 :by 3)", "15")             # keyword arguments too
+            self.assertShows("(list (thrice 5) (twice 1) loads)", "(15 2 1)")   # loaded once, for both
+
+    def test_a_stub_says_what_it_will_load(self):
+        self.run_lisp('(lazy-load "solver.lsp" ridders)')
+        self.run_lisp("(pretty-print-function ridders)")
+        self.assertIn('"Loads solver.lsp, which defines ridders, and calls it."', self.printed())
+
+    def test_a_file_that_doesn_t_define_the_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self.write_library(d, "(define (something-else) 1)")
+            self.run_lisp('(lazy-load "%s" missing)' % path)
+            self.assertLispError("(missing 1)", "lazy-load: %s didn't define missing" % path)
+
+    def test_what_lazy_load_won_t_take(self):
+        self.assertLispError('(lazy-load "solver.lsp")', "expected (lazy-load file name...), with at least one name")
+        self.assertLispError('(lazy-load "solver.lsp" ridders 5)', "expected the names of functions, not 5")
+        self.assertLispError('(lazy-load "solver.lsp" :ridders)', "expected the names of functions, not :ridders")
+
+    def test_the_autoloads_name_functions_their_libraries_define(self):
+        with open(os.path.join(HERE, "lib", "autoloads.lsp")) as f:
+            forms = [form for form in lisp_core.parse(f.read())
+                     if isinstance(form, lisp_core.Pair) and form.car == lisp_core.Symbol("lazy-load")]
+        self.assertGreater(len(forms), 5)
+        builtins = lisp_builtins.make_global_env(output=lambda text: None)
+        seen = set()
+        for form in forms:
+            file, names = form.cdr.car, lisp_core.pairs_to_list(form.cdr.cdr)
+            env = lisp_builtins.make_global_env(output=lambda text: None)
+            lisp_core.seval(next(iter(lisp_core.parse('(load "%s")' % file))), env)
+            for name in names:
+                self.assertFalse(name in builtins, "%s would hide a builtin" % name)
+                self.assertFalse(name in seen, "%s is in two lazy-loads" % name)
+                seen.add(name)
+                value = env.get(name)                   # a procedure, or a struct's accessor (a Python function)
+                self.assertTrue(isinstance(value, lisp_core.Procedure) or
+                                (callable(value) and not isinstance(value, lisp_core.Macro)),
+                                "%s doesn't define a function %s" % (file, name))
+        self.run_lisp('(load "autoloads.lsp")')
+        self.assertAlmostEqual(self.run_lisp("(ridders (lambda (x) (- (* x x) 2)) 0 2)"), math.sqrt(2), places=8)
+
+
 class TestMacroExpansionCache(LispTestCase):
     """A macro call is expanded once, the first time it's evaluated, and the
     expansion is remembered for that call."""

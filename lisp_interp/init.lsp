@@ -1,4 +1,7 @@
 ;
+; The libraries' functions, callable without loading them first (see lib/autoloads.lsp)
+(load "autoloads.lsp")
+;
 ( define api-key "/Users/morris/credentials.json" )
 ( define creds   "/Users/morris/credentials.json" )
 ;

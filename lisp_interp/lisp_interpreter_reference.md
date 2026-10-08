@@ -38,6 +38,7 @@ as a reference to search rather than read start to end.
     - [push, pop, incf, decf](#push-pop-incf-decf)
     - [lambda](#lambda)
     - [begin](#begin)
+    - [lazy-load](#lazy-load)
   - [Variadic parameters](#variadic-parameters)
   - [Keyword arguments](#keyword-arguments)
   - [Local variables](#local-variables)
@@ -262,9 +263,11 @@ a section of this document.
 the interpreter is, except the libraries in `lib/`, which are loaded with
 `(load "name.lsp")`: `vol_smile.lsp`, `option_check.lsp`, `option_methods.lsp`,
 `oas_monte_carlo.lsp`, `solver.lsp`, `column_engine.lsp`, `template.lsp`,
-`prepayment_model.lsp`, and `model_utils.lsp`. The rule: what has to be
-fast, or talks to the world outside, is a builtin, written in Python; a
-model made of those is a library, written in Lisp, to be read and changed.
+`prepayment_model.lsp`, and `model_utils.lsp`. (Their functions can be
+called without loading them, too, once `lib/autoloads.lsp` is loaded, as
+`init.lsp` does: see `lazy-load`.) The rule: what has to be fast, or talks
+to the world outside, is a builtin, written in Python; a model made of
+those is a library, written in Lisp, to be read and changed.
 
 **Examples.** `examples/` has a program for most of this, run from that
 directory with `python3 ../lisp_interpreter.py name.lsp`:
@@ -318,8 +321,8 @@ written in Lisp in `macros_init.lsp` and `loop.lsp`, which every new
 environment loads at startup (see "Running it", above). You use both the
 same way, so they're described together here, grouped by what they're for.
 For the curious, the macros are `let`, `let*`, `destructuring-bind`,
-`dolist`, `while`, `do`, `loop`, `when`, `unless`, `case`, `assert`,
-`with-sqlite`, `with-columns`, `pretty-print-function`, and
+`lazy-load`, `dolist`, `while`, `do`, `loop`, `when`, `unless`, `case`,
+`assert`, `with-sqlite`, `with-columns`, `pretty-print-function`, and
 `pretty-print-macro`; everything else here is a special form.
 
 What they have in common: a form receives its argument *expressions*
@@ -424,6 +427,30 @@ Evaluates each expression in order, returning the value of the last one (or
 ```lisp
 (begin (display "a") (display "b") 42)   ; prints ab, => 42
 ```
+
+#### lazy-load
+#### `(lazy-load file name...)`
+A macro that makes each `name` a function that, the first time it's
+called, loads `file` (as `load` does) and then calls the function of that
+name the file defined, with the same arguments. So a library's functions
+can be called without loading it first, and the file isn't read until one
+of them is. (Emacs Lisp calls this `autoload`.) It returns the names.
+
+```lisp
+(lazy-load "solver.lsp" ridders nelder-mead)
+(ridders (lambda (x) (- (* x x) 2)) 0 2)    ; loads solver.lsp, then calls its ridders
+```
+
+Each name is first a stand-in, a *stub*, which the file's own definition
+replaces when it's loaded: the stubs of all the names at once, since the
+file defines them all, so the file is loaded once. A stub that the file
+doesn't replace is an error (`lazy-load: solver.lsp didn't define ...`),
+not a loop. It works for functions, not for a file's macros or variables:
+a macro is needed before the code that uses it runs, and a variable isn't
+called. `lib/autoloads.lsp` has the lazy-loads for the libraries that come
+with the interpreter, and `init.lsp` loads it, so that `(option-methods
+creds "KO")` works without a `load`. `macros_init.lsp` shows what a stub
+looks like.
 
 ### Variadic parameters
 

@@ -17,6 +17,7 @@
 ;   (push item variable), (pop variable), (incf variable [n]), (decf variable [n])
 ;   (case key-expr ((key...) body...)... [(else body...)])
 ;   (destructuring-bind pattern expression body...)
+;   (lazy-load file name...)
 ;   (save-variables path name... [:leave-out-procedures #t])
 ;   (pretty-print-function name), (pretty-print-macro name)
 ;
@@ -738,6 +739,55 @@ one of names (unless allow-other-keys)."
     `(let* ((,whole ,expression)
             ,@(destructuring--bindings pattern whole))
        ,@body)))
+
+; (lazy-load file name...)
+; Makes each name a function that, the first time it's called, loads file,
+; and then calls the function of that name that the file defined, with the
+; same arguments, and returns what it does. So a library's functions can be
+; called without loading it first, and it isn't loaded until one of them
+; is. (Emacs Lisp calls this autoload.) It returns the names.
+;
+;   (lazy-load "solver.lsp" ridders nelder-mead)
+;   (ridders (lambda (x) (- (* x x) 2)) 0 2)     ; loads solver.lsp, then calls ridders
+;
+; Each name is defined as a stand-in, a "stub", which the file's own
+; definition replaces when it's loaded -- the stubs of all the names at
+; once, since the file defines them all. A stub looks up its name again
+; after the load, so it finds the file's function there:
+;
+;   (define (ridders . %arguments-2)
+;     "Loads solver.lsp, which defines ridders, and calls it."
+;     (let ((%stub-1 ridders))
+;       (load "solver.lsp")
+;       (when (eq? ridders %stub-1)
+;         (error "lazy-load:" "solver.lsp" "didn't define" 'ridders))
+;       (apply ridders %arguments-2)))
+;
+; It works for functions, and not for a file's macros or variables: a
+; macro is needed before the code that uses it is evaluated, and a
+; variable isn't called. lib/autoloads.lsp has the lazy-loads for the
+; libraries that come with the interpreter.
+
+(define (lazy-load--stub file name)
+  "The definition of the stub for name, which loads file and calls the name's new function."
+  (unless (and (symbol? name) (not (keyword? name)))
+    (error "lazy-load: expected the names of functions, not" name))
+  (let ((stub (gensym "stub"))
+        (arguments (gensym "arguments")))
+    `(define ,(cons name arguments)               ; (name . arguments): every argument, as a list
+       ,(format "Loads {}, which defines {}, and calls it." file name)
+       (let ((,stub ,name))
+         (load ,file)
+         (when (eq? ,name ,stub)
+           (error "lazy-load:" ,file "didn't define" ',name))
+         (apply ,name ,arguments)))))
+
+(defmacro lazy-load (file . names)
+  (when (null? names)
+    (error "lazy-load: expected (lazy-load file name...), with at least one name"))
+  `(begin
+     ,@(map (lambda (name) (lazy-load--stub file name)) names)
+     ',names))
 
 ; (save-variables path name... [:leave-out-procedures #t])
 ; Saves each named variable's value -- numbers, strings, lists, vectors,
