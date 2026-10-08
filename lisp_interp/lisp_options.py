@@ -7,6 +7,7 @@ binomial tree.
   (implied-vol price type spot strike time rate [:dividend-yield q])
   (bsm-delta ...), (bsm-gamma ...), (bsm-vega ...), (bsm-theta ...), (bsm-rho ...)
                                                       the Greeks, with bsm-price's arguments
+  (bsm-probability-in-the-money ...)                  the chance it ends in the money, with bsm-price's arguments
   (black-price type forward strike T discount vol)    Black's formula, from a forward price
   (black-implied-vol type price forward strike T discount)
   (american-price type spot strike time rate vol [:dividend-yield q] [:dividends table]
@@ -14,6 +15,9 @@ binomial tree.
   (american-implied-vol price type spot strike time rate [the same options])
   (binomial-tree type spot strike time rate vol [american-price's options])
                                                       every node of the tree american-price uses
+  (binomial-probability-in-the-money type spot strike time rate vol [:dividend-yield q]
+                                     [:dividends table] [:steps n])
+                                                      the chance, in that tree, it ends in the money
 
 ARGUMENTS: each can be a number or a vector, with an element for each
 option, so a whole chain is priced at once, and the answer is then a
@@ -38,6 +42,14 @@ stock's price; gamma, how much delta changes for that; vega, for a change
 of 1 point (0.01) in volatility; theta, for a calendar day passing (1/365
 of a year); and rho, for a change of 1 point (0.01) in the interest rate.
 They are the formulas' derivatives.
+
+THE CHANCE OF ENDING IN THE MONEY, in a model, is that of the stock's
+price at expiration being above the strike, for a call, or below it, for a
+put. It is a "risk-neutral" chance: in a model that grows the stock at the
+interest rate, as the formula and the tree do, not at what it is expected
+to earn. In the formula it is N(d2) for a call and N(-d2) for a put; in the
+tree, the chances of its last step's prices that are in the money, added
+up.
 
 AMERICAN OPTIONS can be exercised before they expire. Their price is found
 with a binomial tree (Cox, Ross, and Rubinstein's): in each of `steps`
@@ -227,8 +239,9 @@ def implied_vol(price, kind, spot, strike, time, rate, *options):
 
 
 def bsm_greek(name, formula):
-    """A bsm- function for one of the Greeks: formula is given the options'
-    arrays and returns the Greek's for each."""
+    """A bsm- function for one of the Greeks (or the chance of ending in the
+    money): formula is given the options' arrays, with d1 and d2, and
+    returns the Greek's for each."""
     who = "bsm-" + name
 
     def greek(kind, spot, strike, time, rate, vol, *options):
@@ -266,6 +279,10 @@ def rho(call, s, k, t, r, v, q, d1, d2):
                     -k * t * np.exp(-r * t) * normal_cdf_array(-d2)) * 0.01    # for a point of interest rate
 
 
+def probability_in_the_money(call, s, k, t, r, v, q, d1, d2):
+    return np.where(call, normal_cdf_array(d2), normal_cdf_array(-d2))
+
+
 # ---------------------------------------------------------------------------
 # American options: a binomial tree
 # ---------------------------------------------------------------------------
@@ -296,26 +313,9 @@ def tree_price(call, spot, strike, time, rate, vol, q, dividend_times, dividend_
         return math.nan                                 # (no volatility to price it with)
     if time <= 0:
         return max(spot - strike, 0.0) if call else max(strike - spot, 0.0)
-    if vol <= 0:
-        raise LispError("american-price: the volatility must be above 0")
-    dt = time / steps
-    up = math.exp(vol * math.sqrt(dt))
-    chance_up = (math.exp((rate - q) * dt) - 1 / up) / (up - 1 / up)
-    if not 0 < chance_up < 1:
-        raise LispError("american-price: %d steps are too few for this volatility and rate -- give more :steps" % steps)
+    dt, up, chance_up = tree_steps(time, rate, vol, q, steps, "american-price")
     step_discount = math.exp(-rate * dt)
-
-    before_expiration = (dividend_times > 0) & (dividend_times <= time)
-    times, amounts = dividend_times[before_expiration], dividend_amounts[before_expiration]
-
-    def dividends_to_come(t):
-        """The present value, at time t, of the dividends after t."""
-        later = times > t
-        return float(np.sum(amounts[later] * np.exp(-rate * (times[later] - t))))
-
-    start = spot - dividends_to_come(0.0)           # the price less the dividends to come, which the tree moves
-    if start <= 0:
-        raise LispError("american-price: the dividends are worth more than the price")
+    start, dividends_to_come = escrowed_dividends(spot, time, rate, dividend_times, dividend_amounts, "american-price")
 
     def prices_at(step):
         """The stock's price at each node of a step, most ups first."""
@@ -341,8 +341,67 @@ def tree_price(call, spot, strike, time, rate, vol, q, dividend_times, dividend_
     return float(values[0])
 
 
-def american_arrays(kind, spot, strike, time, rate, vol, options, who, vol_name="vol"):
-    options = keyword_options(options, ["dividend-yield", "dividends", "steps", "early-exercise"], who)
+def tree_steps(time, rate, vol, q, steps, who):
+    """A binomial tree's step (in years), the factor its price goes up by in
+    a step, and the chance it goes up: the one that makes the stock grow at
+    the interest rate, less q."""
+    if vol <= 0:
+        raise LispError("%s: the volatility must be above 0" % who)
+    dt = time / steps
+    up = math.exp(vol * math.sqrt(dt))
+    chance_up = (math.exp((rate - q) * dt) - 1 / up) / (up - 1 / up)
+    if not 0 < chance_up < 1:
+        raise LispError("%s: %d steps are too few for this volatility and rate -- give more :steps" % (who, steps))
+    return dt, up, chance_up
+
+
+def escrowed_dividends(spot, time, rate, dividend_times, dividend_amounts, who):
+    """The price the tree moves -- spot less the present value of the
+    dividends to come before expiration (time) -- and a function of a time
+    t that gives the present value, at t, of those still to come after it."""
+    before_expiration = (dividend_times > 0) & (dividend_times <= time)
+    times, amounts = dividend_times[before_expiration], dividend_amounts[before_expiration]
+
+    def dividends_to_come(t):
+        later = times > t
+        return float(np.sum(amounts[later] * np.exp(-rate * (times[later] - t))))
+
+    start = spot - dividends_to_come(0.0)
+    if start <= 0:
+        raise LispError("%s: the dividends are worth more than the price" % who)
+    return start, dividends_to_come
+
+
+def node_chances(step, chance_up):
+    """The chance of getting to each node of a tree's step `step`, most ups
+    first: for the node with `downs` of the steps down, the binomial
+    distribution's (step choose downs) x chance_up^(step - downs) x
+    (1 - chance_up)^downs -- worked out with logarithms (lgamma), so that a
+    tree of many steps doesn't make numbers too small for a float."""
+    downs = np.arange(step + 1)
+    log_ways = np.array([math.lgamma(step + 1) - math.lgamma(d + 1) - math.lgamma(step - d + 1) for d in downs])
+    return np.exp(log_ways + (step - downs) * math.log(chance_up) + downs * math.log(1 - chance_up))
+
+
+def tree_probability_in_the_money(call, spot, strike, time, rate, vol, q, dividend_times, dividend_amounts, steps,
+                                  who):
+    """The chance, in the tree tree_price uses, that an option ends in the
+    money: the chances of the last step's prices that are in the money,
+    added up."""
+    if math.isnan(vol) or math.isnan(spot):
+        return math.nan
+    if time <= 0:
+        return float(spot > strike if call else spot < strike)
+    dt, up, chance_up = tree_steps(time, rate, vol, q, steps, who)
+    start, _ = escrowed_dividends(spot, time, rate, dividend_times, dividend_amounts, who)
+    prices = start * up ** (steps - 2.0 * np.arange(steps + 1))   # most ups first; the dividends have all been paid
+    in_the_money = prices > strike if call else prices < strike
+    return float(np.sum(node_chances(steps, chance_up)[in_the_money]))
+
+
+def american_arrays(kind, spot, strike, time, rate, vol, options, who, vol_name="vol",
+                    keywords=("dividend-yield", "dividends", "steps", "early-exercise")):
+    options = keyword_options(options, list(keywords), who)
     arrays = side_by_side(who, calls_argument(kind, who), numbers_argument(spot, "spot", who),
                           numbers_argument(strike, "strike", who), numbers_argument(time, "time", who),
                           numbers_argument(rate, "rate", who), numbers_argument(vol, vol_name, who))
@@ -385,6 +444,20 @@ def american_implied_vol(price, kind, spot, strike, time, rate, *options):
     return answer(np.array(found), [price, kind, spot, strike, time, rate])
 
 
+def binomial_probability_in_the_money(kind, spot, strike, time, rate, vol, *options):
+    """(binomial-probability-in-the-money type spot strike time rate vol
+    [:dividend-yield q] [:dividends table] [:steps n]) -- the chance that an
+    option ends in the money, in the tree american-price uses: the chances
+    of its last step's prices that are in the money, added up. (It doesn't
+    depend on whether the option can be exercised early.)"""
+    who = "binomial-probability-in-the-money"
+    arrays, q, (times, amounts), steps, _ = american_arrays(kind, spot, strike, time, rate, vol, options, who,
+                                                            keywords=("dividend-yield", "dividends", "steps"))
+    chances = [tree_probability_in_the_money(c, s, k, t, r, v, q, times, amounts, steps, who)
+               for c, s, k, t, r, v in zip(*arrays)]
+    return answer(np.array(chances), [kind, spot, strike, time, rate, vol])
+
+
 def binomial_tree(kind, spot, strike, time, rate, vol, *options):
     """(binomial-tree type spot strike time rate vol [:dividend-yield q]
     [:dividends table] [:steps n] [:early-exercise #f]) -- every node of the
@@ -393,8 +466,9 @@ def binomial_tree(kind, spot, strike, time, rate, vol, *options):
     of its steps were up), time (in years), price (the stock's), hold (what
     keeping the option is worth there; NaN at expiration), exercise (what
     exercising it there pays), value (the option's value there: the larger
-    of the two, if it can be exercised early), and early (1 where
-    exercising before expiration is worth more than keeping it). The first
+    of the two, if it can be exercised early), early (1 where exercising
+    before expiration is worth more than keeping it), and chance (the
+    chance of getting to the node: those of a step add up to 1). The first
     row's value is the option's price."""
     who = "binomial-tree"
     if any(isinstance(a, LispVector) for a in (kind, spot, strike, time, rate, vol)):
@@ -408,10 +482,13 @@ def binomial_tree(kind, spot, strike, time, rate, vol, *options):
     nodes.sort(key=lambda n: n[0])                      # the first step first (each step's nodes, most ups first)
     columns = list(zip(*nodes))
     early_rows = [int(step < steps and exercise > 0 and exercise > hold) for step, _, _, _, hold, exercise, _ in nodes]
+    _, _, chance_up = tree_steps(arrays[3][0], arrays[4][0], arrays[5][0], q, steps, who)
+    chances = [node_chances(step, chance_up)[step - ups] for step, ups, _, _, _, _, _ in nodes]
     return make_table_value([("step", to_vector(np.array(columns[0]))), ("ups", to_vector(np.array(columns[1]))),
                              ("time", to_vector(np.array(columns[2]))), ("price", to_vector(np.array(columns[3]))),
                              ("hold", to_vector(np.array(columns[4]))), ("exercise", to_vector(np.array(columns[5]))),
-                             ("value", to_vector(np.array(columns[6]))), ("early", to_vector(np.array(early_rows)))])
+                             ("value", to_vector(np.array(columns[6]))), ("early", to_vector(np.array(early_rows))),
+                             ("chance", to_vector(np.array(chances)))])
 
 
 BUILTINS = {
@@ -425,7 +502,9 @@ BUILTINS = {
     "bsm-vega": bsm_greek("vega", vega),
     "bsm-theta": bsm_greek("theta", theta),
     "bsm-rho": bsm_greek("rho", rho),
+    "bsm-probability-in-the-money": bsm_greek("probability-in-the-money", probability_in_the_money),
     "american-price": american_price,
     "american-implied-vol": american_implied_vol,
     "binomial-tree": binomial_tree,
+    "binomial-probability-in-the-money": binomial_probability_in_the_money,
 }

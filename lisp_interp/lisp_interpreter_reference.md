@@ -7606,7 +7606,8 @@ table with no rows.
 
 (In `lisp_options.py`.) Black-Scholes-Merton for European options on a
 stock, Black's formula for them on a forward price, implied volatility, the
-Greeks, and American options by a binomial tree.
+Greeks, the chance of ending in the money, and American options by a
+binomial tree.
 
 Every argument can be a number or a vector, with an element for each
 option, so a whole option chain is priced at once, and the answer is then a
@@ -7655,6 +7656,23 @@ The Greeks, with `bsm-price`'s arguments: how much the price changes.
 (format "{:.4f}" (bsm-vega "call" 100 100 1 0.05 0.2))      ; => "0.3752"
 (format "{:.4f}" (bsm-theta "call" 100 100 1 0.05 0.2))     ; => "-0.0176"
 (format "{:.4f}" (bsm-rho "call" 100 100 1 0.05 0.2))       ; => "0.5323"
+```
+
+#### `(bsm-probability-in-the-money type spot strike time rate vol [:dividend-yield q])`
+The chance that the option ends in the money (the stock's price at
+expiration above the strike, for a call, or below it, for a put) in the
+Black-Scholes model: N(d2) for a call and N(-d2) for a put, where
+d2 = (ln(spot / strike) + (rate - q - vol²/2) time) / (vol √time). It is a
+*risk-neutral* chance: one in a model where the stock grows at the
+interest rate (less q), not at what it is expected to earn. So it isn't a
+forecast of how likely the option is to pay off; it's a step in the
+formula, and what an option that pays 1 if it ends in the money would cost,
+before discounting.
+
+```lisp
+(format "{:.4f}" (bsm-probability-in-the-money "call" 100 100 1 0.05 0.2))   ; => "0.5596"
+(format "{:.4f}" (bsm-probability-in-the-money "put" 100 100 1 0.05 0.2))    ; => "0.4404"
+(vector-round (bsm-probability-in-the-money (vector "call" "put") 100 #(95 105) 0.5 0.04 0.25) 4)   ; => #(0.6236 0.5992)
 ```
 
 #### `(black-price type forward strike T discount vol)`, `(black-implied-vol type price forward strike T discount)`
@@ -7728,6 +7746,7 @@ read. Its columns:
 | `exercise` | what exercising it there pays |
 | `value` | the option's value there: the larger of `hold` and `exercise`, if it can be exercised early |
 | `early` | 1 where exercising before expiration is worth more than keeping the option |
+| `chance` | the chance of getting to the node: (its step choose `ups`) × *q*^`ups` × (1 − *q*)^downs, where *q* is the tree's chance of going up. Those of a step add up to 1 |
 
 The first row's `value` is the option's price.
 
@@ -7736,9 +7755,35 @@ The first row's `value` is the option's price.
 (display-table tree)
 (vector-round (table-column tree "value") 4)   ; => #(6.4996 2.1954 11.8691 0.0 4.893 20.6213 0.0 0.0 10.9053 29.2778)
 (table-column tree "early")                    ; => #(0 0 0 0 0 1 0 0 0 0)
+(vector-round (table-column tree "chance") 4)  ; => #(1.0 0.5438 0.4562 0.2957 0.4962 0.2081 0.1608 0.4047 0.3395 0.095)
 ```
 After two steps down, at a price of 79.38, exercising the put pays
 20.62, and keeping it is worth 18.97: it's exercised early.
+
+#### `(binomial-probability-in-the-money type spot strike time rate vol [:dividend-yield q] [:dividends table] [:steps n])`
+The chance that the option ends in the money in the tree `american-price`
+uses (200 steps, unless `:steps` says): the `chance`s of the last step's
+prices that are in the money, added up. It doesn't depend on whether the
+option can be exercised early. Like `bsm-probability-in-the-money`, it is
+a risk-neutral chance.
+
+The tree's last step has only `steps` + 1 prices, so the chance jumps as
+the strike passes each of them: it is near the formula's only to within the
+chance of one of those prices, a few percent with 200 steps, and it gets
+closer much more slowly than the tree's price does (a payoff changes
+smoothly with the price at expiration; whether it is in the money doesn't).
+With an even number of steps, one of the last prices is the stock's
+price today, so for an option struck there, neither the call nor the put
+is in the money at that price:
+
+```lisp
+(format "{:.4f}" (binomial-probability-in-the-money "put" 100 100 1 0.05 0.2 :steps 3))   ; => "0.4345"
+(format "{:.4f}" (binomial-probability-in-the-money "call" 100 100 1 0.05 0.2))           ; => "0.5317"
+(format "{:.4f}" (binomial-probability-in-the-money "call" 100 100 1 0.05 0.2 :steps 201)) ; => "0.5597"
+```
+(The 3-step put is in the money at the last two prices, 89.09 and 70.72:
+0.3395 + 0.095 of the `chance` column above. The formula's call is
+0.5596.)
 
 ### Implied volatility smiles: finding options out of line
 
@@ -8156,7 +8201,8 @@ option                      black-scholes    tree  monte-carlo  standard-error  
 The tree (`american-price` with `:early-exercise #f`) is the formula's own
 model, made of steps, so it agrees with the formula, but for having only so
 many steps. `examples/option_methods_example.lsp` values a stock's listed
-options all three ways, next to their bids and asks. For BRK/B's, at the
+options all three ways, next to their bids and asks, and gives the chance
+that each ends in the money by each. For BRK/B's, at the
 close of October 7, with the stock at 506.20, a call struck at 515 and
 expiring in 6 trading days was worth 2.83 by the formula and 2.53 (± 0.05)
 on the paths. Both were well above the market's
@@ -9773,7 +9819,7 @@ The Python files:
 | `lisp_save.py` | `save-variables` (with its macro in `macros_init.lsp`) and `load-variables`: variables in a JSON file |
 | `lisp_simplex.py` | `lp-read-file`, `lp-solve`: linear programming (uses `simplex/`) |
 | `lisp_clock.py` | The clock: `current-time`, `today`, `time-add`, `sleep`, `sleep-until`, ... |
-| `lisp_options.py` | `bsm-price`, `implied-vol`, the Greeks (`bsm-delta`, ...), `black-price`, `american-price`, ...: option prices |
+| `lisp_options.py` | `bsm-price`, `implied-vol`, the Greeks (`bsm-delta`, ...), `bsm-probability-in-the-money`, `black-price`, `american-price`, `binomial-tree`, `binomial-probability-in-the-money`, ...: option prices |
 | `lisp_finance.py` | Day counts (`day-count`, `year-fraction`) and cash-flow math: `npv`, `irr`, `xnpv`, `xirr`, `payment`, `present-value`, `yield`, `duration`, `convexity`, ... |
 | `lisp_charts.py` | The `plot-` builtins and `save-chart` (the charts themselves are in `lisp_plot_chart.py` and `lisp_maps.py`) |
 | `lisp_plot_chart.py` | `plot-chart`, `plot-histogram`, `plot-panels`: charts of several series, with bars, areas, a secondary axis, reference lines, and panels |

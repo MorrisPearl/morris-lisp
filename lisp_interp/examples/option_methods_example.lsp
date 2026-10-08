@@ -31,6 +31,9 @@
 ; expects, not the history's (market-vol is the volatility of each
 ; option's price, by the formula), and it is different for each strike.
 ;
+; A second table has the chance that each option ends in the money, by
+; each method: the formula's, the tree's, and how many of the paths do.
+;
 ; A stock's dividends are taken off its price on their ex-dates: the last
 ; year's are supposed to go on, as dividend-schedule has it. The formula
 ; takes their present value off today's price; the tree does the same
@@ -158,6 +161,23 @@
 (define monte-carlo (* discount (table-column paid "payoff")))
 (define monte-carlo-error (* discount (table-column paid "payoff-error")))
 
+; The chance each option ends in the money, by each method: the formula's
+; (N(d2) for a call, N(-d2) for a put), the tree's (the chances of its last
+; step's prices that are in the money, added up), and how many of the paths
+; end in the money (option-payoffs' paths-paid: those it pays something
+; on), and what share of them. These are chances in models that grow the
+; price at the interest rate, not at what the stock is expected to earn
+; ("risk-neutral"). The tree's last step has only 201 prices, a few percent
+; apart, so its chance jumps as the strike passes each of them, and can be
+; a few points from the formula's, though its price is close to the
+; formula's: an option's payoff changes smoothly with the price at
+; expiration, but whether it is in the money doesn't.
+(define black-scholes-chance
+  (bsm-probability-in-the-money types (table-column options "ex-dividend-price") option-strikes T rate volatility))
+(define tree-chance
+  (binomial-probability-in-the-money types spot option-strikes T rate volatility :dividends tree-dividends))
+(define paths-in-the-money (table-column paid "paths-paid"))
+
 ; --- 5. Side by side --------------------------------------------------------------
 (define compared
   (make-table "expiration-date" (table-column options "expiration-date")
@@ -170,14 +190,28 @@
               "tree" tree
               "monte-carlo" monte-carlo
               "mc-error" monte-carlo-error
-              "market-vol" (table-column options "market-vol")))
+              "market-vol" (table-column options "market-vol")
+              "bs-probability" black-scholes-chance
+              "tree-probability" tree-chance
+              "paths-in-the-money" paths-in-the-money
+              "paths-probability" (/ paths-in-the-money path-count)))
 
 (display (format "{} at {:,.2f}. Its volatility over the last ten years: {:.1%}. An interest rate of {:.0%}.\n"
                  symbol spot volatility rate))
 (display (format "{} options, valued from {:,} paths; days are trading days to expiration.\n\n"
                  (table-row-count compared) path-count))
-(display-table compared '(("strike" ",.2f") ("bid" ",.2f") ("ask" ",.2f") ("black-scholes" ",.2f") ("tree" ",.2f")
-                          ("monte-carlo" ",.2f") ("mc-error" ",.2f") ("market-vol" ".1%"))
+(define the-option '("expiration-date" "type" "strike" "days"))
+(display-table (table-select compared (append the-option '("bid" "ask" "black-scholes" "tree" "monte-carlo" "mc-error"
+                                                           "market-vol")))
+               '(("strike" ",.2f") ("bid" ",.2f") ("ask" ",.2f") ("black-scholes" ",.2f") ("tree" ",.2f")
+                 ("monte-carlo" ",.2f") ("mc-error" ",.2f") ("market-vol" ".1%"))
+               :max-rows (table-row-count compared))
+
+(display "\nThe chance that each ends in the money, by each method (growing at the interest rate):\n")
+(display-table (table-select compared (append the-option '("bs-probability" "tree-probability" "paths-in-the-money"
+                                                           "paths-probability")))
+               '(("strike" ",.2f") ("bs-probability" ".1%") ("tree-probability" ".1%") ("paths-in-the-money" ",d")
+                 ("paths-probability" ".1%"))
                :max-rows (table-row-count compared))
 
 ; How often each method's value is between the bid and the ask, below the

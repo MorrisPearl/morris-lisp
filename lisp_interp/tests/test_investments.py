@@ -92,7 +92,7 @@ class TestOptionPrices(LispTestCase):
 
     def test_the_binomial_tree_shows_how_american_price_is_found(self):
         tree = dict(lisp_tables.table_columns(self.run_lisp('(binomial-tree "put" 100 100 1 0.05 0.2 :steps 3)'), "t"))
-        self.assertEqual(sorted(tree), ["early", "exercise", "hold", "price", "step", "time", "ups", "value"])
+        self.assertEqual(sorted(tree), ["chance", "early", "exercise", "hold", "price", "step", "time", "ups", "value"])
         self.assertEqual(len(tree["step"].items), 10)                       # 1 + 2 + 3 + 4 nodes
         self.assertAlmostEqual(float(tree["value"].items[0]), self.price('(american-price "put" 100 100 1 0.05 0.2 :steps 3)'),
                                places=5)
@@ -105,6 +105,50 @@ class TestOptionPrices(LispTestCase):
         self.assertEqual(len(calls["step"].items), 21)                      # 5 steps unless asked
         self.assertEqual(sum(int(e) for e in calls["early"].items), 0)      # never, for a call without dividends
         self.assertLispError('(binomial-tree "put" #(100 110) 100 1 0.05 0.2)', "one option at a time")
+
+    def test_the_formula_s_chance_of_ending_in_the_money_is_n_of_d2(self):
+        def n_of_d2(call, spot, strike, time, rate, vol, q=0.0):
+            d2 = (math.log(spot / strike) + (rate - q - vol * vol / 2) * time) / (vol * math.sqrt(time))
+            return 0.5 * (1 + math.erf((d2 if call else -d2) / math.sqrt(2)))
+
+        self.assertAlmostEqual(self.price('(bsm-probability-in-the-money "call" 100 100 1 0.05 0.2)'),
+                               n_of_d2(True, 100, 100, 1, 0.05, 0.2), places=10)
+        self.assertAlmostEqual(self.price('(bsm-probability-in-the-money "put" 90 100 0.25 0.03 0.4 :dividend-yield 0.02)'),
+                               n_of_d2(False, 90, 100, 0.25, 0.03, 0.4, 0.02), places=10)
+        both = [float(x) for x in self.run_lisp('(bsm-probability-in-the-money (vector "call" "put") 100 #(105 105) '
+                                                '0.5 0.04 0.25)').items]
+        self.assertAlmostEqual(sum(both), 1.0, places=6)                 # a call or a put at the same strike: one or the other
+        self.assertLispError('(bsm-probability-in-the-money "call" 100 100 0 0.05 0.2)',
+                             "the time and the volatility must be above 0")
+
+    def test_the_tree_s_chance_of_ending_in_the_money_adds_up_its_last_prices_chances(self):
+        for kind, strike, steps, dividends in (("put", 100, 3, "'()"), ("call", 95, 7, "'()"),
+                                               ("call", 105, 6, '(make-table "time" #(0.4) "amount" #(3.0))')):
+            tree = dict(lisp_tables.table_columns(self.run_lisp(
+                '(binomial-tree "%s" 100 %d 1 0.05 0.2 :steps %d :dividends %s)' % (kind, strike, steps, dividends)), "t"))
+            last = [(float(p), float(c)) for st, p, c in zip(tree["step"].items, tree["price"].items, tree["chance"].items)
+                    if int(st) == steps]
+            self.assertAlmostEqual(sum(c for _, c in last), 1.0, places=6)
+            in_the_money = sum(c for p, c in last if (p > strike if kind == "call" else p < strike))
+            self.assertAlmostEqual(self.price('(binomial-probability-in-the-money "%s" 100 %d 1 0.05 0.2 :steps %d '
+                                              ':dividends %s)' % (kind, strike, steps, dividends)),
+                                   in_the_money, places=6)
+        # each node's chance, by the binomial distribution, with the tree's chance of going up
+        dt = 1 / 3
+        up = math.exp(0.2 * math.sqrt(dt))
+        q = (math.exp(0.05 * dt) - 1 / up) / (up - 1 / up)
+        chances = [float(c) for c in dict(lisp_tables.table_columns(
+            self.run_lisp('(binomial-tree "put" 100 100 1 0.05 0.2 :steps 3)'), "t"))["chance"].items]
+        expected = [math.comb(step, ups) * q ** ups * (1 - q) ** (step - ups)
+                    for step in range(4) for ups in range(step, -1, -1)]
+        self.assertTrue(np.allclose(chances, expected, atol=1e-6))
+        # with many steps it comes near the formula's -- an odd number, so that no last price is the strike
+        self.assertAlmostEqual(self.price('(binomial-probability-in-the-money "call" 100 100 1 0.05 0.2 :steps 2001)'),
+                               self.price('(bsm-probability-in-the-money "call" 100 100 1 0.05 0.2)'), delta=0.002)
+        self.assertAlmostEqual(self.price('(binomial-probability-in-the-money "put" 100 90 0.5 0.04 0.3 :steps 3000)'),
+                               self.price('(bsm-probability-in-the-money "put" 100 90 0.5 0.04 0.3)'), delta=0.005)
+        self.assertLispError('(binomial-probability-in-the-money "put" 100 100 1 0.05 0.2 :early-exercise #f)',
+                             ":early-exercise isn't an option")
 
     def test_what_the_option_functions_wont_take(self):
         self.assertLispError('(bsm-price "straddle" 100 100 1 0.05 0.2)', 'an option type is "call" or "put"')
@@ -1383,6 +1427,13 @@ class TestOptionCheck(LispTestCase):
                 if str(kind) == "Call":
                     self.assertLess(abs(tree - formula), 0.01 * formula + 0.005)
                 self.assertLess(abs(paths - formula), 4 * error + 0.005)
+            # the chances of ending in the money: the paths' within their own error of the formula's, and the
+            # tree's within the chance of one of its last prices
+            for formula, tree, paths, share in zip(compared["bs-probability"], compared["tree-probability"],
+                                                   compared["paths-in-the-money"], compared["paths-probability"]):
+                self.assertAlmostEqual(share, paths / 20000, places=6)
+                self.assertLess(abs(share - formula), 4 * math.sqrt(formula * (1 - formula) / 20000) + 0.001)
+                self.assertLess(abs(tree - formula), 0.06)
             volatility = self.run_lisp("volatility")
             for bid, market_vol in zip(compared["bid"], compared["market-vol"]):
                 if bid > 0.05:                           # (an option worth next to nothing says little about it)
