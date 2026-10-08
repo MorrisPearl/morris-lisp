@@ -3,7 +3,7 @@
 ; Financial statements from the SEC: the income statement, balance sheet,
 ; and cash flow statement of any company that files with it, from the
 ; numbers tagged in its 10-Ks and 10-Qs, put in a standard form -- see
-; "SEC financial statements" in the reference manual.
+; "SEC financial statements" in the library manual.
 ;
 ; It needs a credentials file with a "sec_user_agent" entry -- a name and
 ; email address, which the SEC asks every request to carry, such as

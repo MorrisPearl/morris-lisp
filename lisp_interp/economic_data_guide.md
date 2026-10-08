@@ -11,8 +11,8 @@ Lisp interpreter but doesn't know which government agency publishes what.
   sorts out numbers that sound alike: two inflation rates, two counts of
   jobs, three kinds of income.
 
-Every function is described fully in the reference manual,
-[lisp_interpreter_reference.md](lisp_interpreter_reference.md).
+Every function is described fully in the library manual,
+[lisp_library_reference.md](lisp_library_reference.md).
 
 1. [Setting up](#1-setting-up)
 2. [Where to find it](#2-where-to-find-it)
@@ -157,7 +157,7 @@ out, as [section 6](#6-putting-sources-together) shows.
 | The Federal Reserve's balance sheet | `(fred-table creds "WALCL")` | Federal Reserve, via FRED |
 | Banks' loans to businesses | `(fred-table creds "BUSLOANS")` | Federal Reserve, via FRED |
 | Exchange rates: dollars per euro, and the dollar against all currencies | `(fred-table creds "DEXUSEU")`, `(fred-table creds "DTWEXBGS")` | Federal Reserve, via FRED |
-| The Treasury's whole yield curve, each day | `http-get-csv`, from the Treasury's site (see the manual's [Downloading data from the web](lisp_interpreter_reference.md#downloading-data-from-the-web)) | Treasury |
+| The Treasury's whole yield curve, each day | `http-get-csv`, from the Treasury's site (see the library manual's [Downloading data from the web](lisp_library_reference.md#downloading-data-from-the-web)) | Treasury |
 
 ### Housing
 
@@ -281,8 +281,8 @@ Function: `fred-table`.
 
 **Treasury** and **New York Fed.** The Treasury publishes the daily yield
 curve; the New York Fed publishes SOFR. FRED has both. To get them
-straight from the source, see the manual's
-[Downloading data from the web](lisp_interpreter_reference.md#downloading-data-from-the-web)
+straight from the source, see the library manual's
+[Downloading data from the web](lisp_library_reference.md#downloading-data-from-the-web)
 (`http-get-csv`, `http-get-json`).
 
 **SEC** (Securities and Exchange Commission). It publishes every public
@@ -519,21 +519,21 @@ borders drawn over it:
 
 ## 7. Every data function
 
-| Functions | What they give | From | In the manual |
+| Functions | What they give | From | In the library manual |
 |---|---|---|---|
-| `bls-series`, `bls-series-info`, `bls-names`, `bls-local-area` | Prices, jobs, and pay, by date | BLS | [BLS data](lisp_interpreter_reference.md#bls-data) |
-| `bea-series`, `bea-names`, `bea-nipa`, `bea-nipa-lines` | The national accounts, by date | BEA | [BEA data](lisp_interpreter_reference.md#bea-data) |
-| `bea-regional`, `bea-regional-lines` | The regional accounts, by place | BEA | [BEA data](lisp_interpreter_reference.md#bea-data) |
-| `bea-get`, `bea-datasets`, `bea-parameters`, `bea-parameter-values` | Anything else the BEA has | BEA | [BEA data](lisp_interpreter_reference.md#bea-data) |
-| `census-profile` | A standard profile of any place | Census | [Census data](lisp_interpreter_reference.md#census-data) |
-| `census-get`, `census-variables`, `census-geographies`, `census-datasets` | Any Census dataset | Census | [Census data](lisp_interpreter_reference.md#census-data) |
-| `census-shapes`, `plot-map` | Outlines of places, and maps of them | Census | [Maps](lisp_interpreter_reference.md#maps) |
-| `fred-table` (and `fred-series`, an older form that gives a pair of vectors) | Any FRED series, by date | FRED | [FRED](lisp_interpreter_reference.md#fred-federal-reserve-bank-of-st-louis-data-and-csv-loading) |
-| `http-get-json`, `http-get-csv`, `http-get-text` | Anything at a web address | any website | [Downloading data from the web](lisp_interpreter_reference.md#downloading-data-from-the-web) |
-| `sec-income-statement`, `sec-balance-sheet`, `sec-cash-flow-statement`, `sec-financials`, `sec-facts`, `sec-concepts`, `sec-company` | Companies' financial statements | SEC | [SEC financial statements](lisp_interpreter_reference.md#sec-financial-statements) |
-| `fdic-find-bank`, `fdic-balance-sheet`, `fdic-income-statement`, `fdic-ratios`, `fdic-financials`, `fdic-get`, `fdic-fields` | Banks' financial reports | FDIC | [FDIC bank data](lisp_interpreter_reference.md#fdic-bank-data) |
-| `tastytrade-quotes`, `tastytrade-option-chain`, `tastytrade-futures-curve`, `tastytrade-get`, `sofr-calibration-data` | Market prices, option chains, futures curves | tastytrade | [tastytrade](lisp_interpreter_reference.md#tastytrade-real-broker-data) |
-| `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders` | Your accounts' holdings; quotes; years of daily prices | Schwab | [Schwab](lisp_interpreter_reference.md#schwab-your-accounts) |
+| `bls-series`, `bls-series-info`, `bls-names`, `bls-local-area` | Prices, jobs, and pay, by date | BLS | [BLS data](lisp_library_reference.md#bls-data) |
+| `bea-series`, `bea-names`, `bea-nipa`, `bea-nipa-lines` | The national accounts, by date | BEA | [BEA data](lisp_library_reference.md#bea-data) |
+| `bea-regional`, `bea-regional-lines` | The regional accounts, by place | BEA | [BEA data](lisp_library_reference.md#bea-data) |
+| `bea-get`, `bea-datasets`, `bea-parameters`, `bea-parameter-values` | Anything else the BEA has | BEA | [BEA data](lisp_library_reference.md#bea-data) |
+| `census-profile` | A standard profile of any place | Census | [Census data](lisp_library_reference.md#census-data) |
+| `census-get`, `census-variables`, `census-geographies`, `census-datasets` | Any Census dataset | Census | [Census data](lisp_library_reference.md#census-data) |
+| `census-shapes`, `plot-map` | Outlines of places, and maps of them | Census | [Maps](lisp_library_reference.md#maps) |
+| `fred-table` | Any FRED series, by date | FRED | [FRED](lisp_library_reference.md#fred-federal-reserve-bank-of-st-louis-data) |
+| `http-get-json`, `http-get-csv`, `http-get-text` | Anything at a web address | any website | [Downloading data from the web](lisp_library_reference.md#downloading-data-from-the-web) |
+| `sec-income-statement`, `sec-balance-sheet`, `sec-cash-flow-statement`, `sec-financials`, `sec-facts`, `sec-concepts`, `sec-company` | Companies' financial statements | SEC | [SEC financial statements](lisp_library_reference.md#sec-financial-statements) |
+| `fdic-find-bank`, `fdic-balance-sheet`, `fdic-income-statement`, `fdic-ratios`, `fdic-financials`, `fdic-get`, `fdic-fields` | Banks' financial reports | FDIC | [FDIC bank data](lisp_library_reference.md#fdic-bank-data) |
+| `tastytrade-quotes`, `tastytrade-option-chain`, `tastytrade-futures-curve`, `tastytrade-get`, `sofr-calibration-data` | Market prices, option chains, futures curves | tastytrade | [tastytrade](lisp_library_reference.md#tastytrade-real-broker-data) |
+| `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders` | Your accounts' holdings; quotes; years of daily prices | Schwab | [Schwab](lisp_library_reference.md#schwab-your-accounts) |
 
 Example programs in [`examples/`](examples/) show each source at work:
 

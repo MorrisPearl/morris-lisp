@@ -3,7 +3,7 @@
 ; The national and regional accounts from the Bureau of Economic Analysis:
 ; GDP and its parts, personal income and saving, the PCE price index, and
 ; income and GDP for every state and county. See "BEA data" in the
-; reference manual.
+; library manual (lisp_library_reference.md).
 ;
 ; It needs your credentials file, with a "bea_api_key" entry; creds is set
 ; to its path in init.lsp. Run it from the examples directory:

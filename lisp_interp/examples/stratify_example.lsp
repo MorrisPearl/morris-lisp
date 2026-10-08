@@ -5,7 +5,7 @@
 ; 5.0 to 6.0, ...; ten buckets of loan age; one row per state) and, in each
 ; row, the loans' count, total balance, share of the pool, and
 ; balance-weighted averages. See "Stratification tables" in
-; lisp_interpreter_reference.md.
+; lisp_library_reference.md.
 ;
 ; The pool here is 5,000 made-up loans, so it runs anywhere. To use real
 ; data, load the table from SQLite instead, e.g.

@@ -2,7 +2,7 @@
 ;
 ; Simulating an investment's future prices from its own past: copy blocks of
 ; consecutive days from its history, end to end, until there's a year of
-; them -- see "Simulating investment prices" in the reference manual.
+; them -- see "Simulating investment prices" in the library manual.
 ;
 ; It needs a Schwab sign-in for the prices ((schwab-login creds); it lasts
 ; a week), and an "alpha_vantage_api_key" entry in the credentials file for
@@ -109,7 +109,7 @@
 ; was, from the day before and how big its move was -- a fall counts for
 ; more than a rise -- and makes paths that start at today's volatility, and
 ; go back toward the history's (see "Starting paths from today's
-; volatility" in the reference manual).
+; volatility" in the library manual).
 (define spy-model (volatility-model spy-returns))
 (display "\nSPY's volatility model:\n")
 (display-table (table-select spy-model '("next-day-volatility" "long-run-volatility" "half-life"

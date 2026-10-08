@@ -1,7 +1,7 @@
 ; linear_programming_example.lsp
 ;
 ; Linear programming with lp-read-file and lp-solve (see "Linear
-; programming" in lisp_interpreter_reference.md).
+; programming" in lisp_library_reference.md).
 ;
 ; The problem, in linear_programming_example.txt: invest $100 million in
 ; four mortgage pools, earning as much yield as possible, within limits on

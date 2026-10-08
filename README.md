@@ -25,10 +25,14 @@ whose path is their first argument. Keep it out of the repository.
 
 ## Where to read
 
-- `lisp_interp/lisp_interpreter_reference.md` -- the manual: every function,
-  with examples that the tests run. Its chapter "Investment analysis: where
-  things are" is a map, and "How the code is organized" says which file has
-  what.
+- The manuals, with every function and examples that the tests run:
+  - `lisp_interp/lisp_interpreter_reference.md` -- the language: its syntax,
+    special forms and macros, and the general builtins (lists, strings,
+    vectors and statistics, tables, dates, charts, input and output, the
+    debugger). "How the code is organized" says which file has what.
+  - `lisp_interp/lisp_library_reference.md` -- the library: getting data,
+    statistical models, dates and cash flows, and investments. Its first
+    chapter, "Where things are", is a map.
 - `lisp_interp/economic_data_guide.md` -- which agency publishes what data,
   and which function gets it.
 - `lisp_interp/examples/` -- programs that use it, such as

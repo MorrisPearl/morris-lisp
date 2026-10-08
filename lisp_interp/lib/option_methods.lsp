@@ -15,7 +15,7 @@
 ;
 ; All three use the history's volatility (the daily log returns' spread,
 ; for a year of 252 trading days), count time in trading days, and grow the
-; price at the interest rate (see "What risk-neutral means" in the reference
+; price at the interest rate (see "What risk-neutral means" in the library
 ; manual). The formula and the tree are the same model, so they agree, but
 ; for the tree's having only so many steps and its allowing for early
 ; exercise -- worth little for these options, which are all out of the

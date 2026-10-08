@@ -67,7 +67,7 @@
 ;
 ;   {{name:spec}}
 ;     The same, but laid out by a format spec -- the same specs `format`
-;     and `format-value` take (see "Formatting strings" in
+;     and `format-value` take (see "Formatting numbers and text" in
 ;     lisp_interpreter_reference.md). Everything after the colon is the
 ;     spec, exactly as written:
 ;

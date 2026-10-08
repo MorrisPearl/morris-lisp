@@ -65,6 +65,7 @@ INTERPRETER = os.path.join(HERE, "lisp_interpreter.py")
 LIB = os.path.join(HERE, "lib")                 # the Lisp libraries that come with the interpreter
 EXAMPLES = os.path.join(HERE, "examples")
 REFERENCE_DOC = os.path.join(HERE, "lisp_interpreter_reference.md")
+LIBRARY_DOC = os.path.join(HERE, "lisp_library_reference.md")
 
 
 # ---------------------------------------------------------------------------

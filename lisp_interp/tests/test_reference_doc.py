@@ -1,5 +1,5 @@
-"""The manual's own examples: every `expr ; => value` in lisp_interpreter_reference.md
-must still be what the interpreter gives.
+"""The manuals' own examples: every `expr ; => value` in lisp_interpreter_reference.md (the
+language) and lisp_library_reference.md (the library) must still be what the interpreter gives.
 support.py says how to run them."""
 
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
@@ -94,9 +94,12 @@ class TestReferenceDocExamples(unittest.TestCase):
             "a doc example opened the debug REPL"))
         patcher.start()
         self.addCleanup(patcher.stop)
-        with open(REFERENCE_DOC, encoding="utf-8") as f:
-            blocks = re.findall(r"```lisp\n(.*?)```", f.read(), re.S)
-        self.assertGreater(len(blocks), 100, "found no lisp code blocks in the reference doc")
+        blocks = []                 # (the manual's name, the block)
+        for doc in (REFERENCE_DOC, LIBRARY_DOC):
+            with open(doc, encoding="utf-8") as f:
+                found = re.findall(r"```lisp\n(.*?)```", f.read(), re.S)
+            self.assertGreater(len(found), 50, "found few lisp code blocks in " + os.path.basename(doc))
+            blocks += [(os.path.basename(doc), block) for block in found]
 
         use_alarm = hasattr(signal, "SIGALRM")
         verified, failures = 0, []
@@ -113,7 +116,7 @@ class TestReferenceDocExamples(unittest.TestCase):
         if use_alarm:
             signal.signal(signal.SIGALRM, on_alarm)
 
-        for bi, block in enumerate(blocks):
+        for bi, (doc, block) in enumerate(blocks):
             if any(word in block for word in _RISKY_BLOCK_WORDS):
                 continue
             env = lisp_builtins.make_global_env(output=lambda s: None)
@@ -136,8 +139,8 @@ class TestReferenceDocExamples(unittest.TestCase):
                             # an example whose setup lives in an earlier block, or one
                             # that documents an error, has nothing to compare here
                             if documented is not None and "unbound symbol" not in str(e):
-                                failures.append("block %d: %s  raised %s: %s"
-                                                % (bi, text.replace("\n", " ")[:80], type(e).__name__, e))
+                                failures.append("%s, block %d: %s  raised %s: %s"
+                                                % (doc, bi, text.replace("\n", " ")[:80], type(e).__name__, e))
                             stop = True
                             break
                         if documented is None or documented.startswith(_ILLUSTRATIVE_PREFIXES) \
@@ -147,13 +150,13 @@ class TestReferenceDocExamples(unittest.TestCase):
                                 or _doc_value_matches(lisp_core.to_display_string(value), documented)):
                             verified += 1
                         else:
-                            failures.append("block %d: %s\n      doc says: %s\n      got:      %s"
-                                            % (bi, text.replace("\n", " ")[:80], documented,
+                            failures.append("%s, block %d: %s\n      doc says: %s\n      got:      %s"
+                                            % (doc, bi, text.replace("\n", " ")[:80], documented,
                                                lisp_core.to_string(value)))
                     if stop:
                         break
             except TimeoutError:
-                failures.append("block %d timed out" % bi)
+                failures.append("%s, block %d timed out" % (doc, bi))
             finally:
                 if use_alarm:
                     signal.alarm(0)

@@ -3,7 +3,7 @@
 ; Bank financial data from the FDIC: every insured bank's quarterly Call
 ; Report -- balance sheet, income, loans, deposits, capital -- and the
 ; ratios the FDIC works out from them, back to 1984. See "FDIC bank data"
-; in the reference manual.
+; in the library manual (lisp_library_reference.md).
 ;
 ; It needs your credentials file, with an "fdic_api_key" entry; creds is
 ; set to its path in init.lsp. Run it from the examples directory:

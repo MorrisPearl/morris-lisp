@@ -3,7 +3,7 @@
 ; Maps: the Census Bureau's outlines of states, counties, census tracts,
 ; and ZIP code areas (census-shapes), drawn with an equal-area projection
 ; (plot-map) -- each place colored by a value, a symbol on each sized by a
-; value, or both. See "Maps" in the reference manual.
+; value, or both. See "Maps" in the library manual.
 ;
 ; The outlines need no key; the data here comes from the Census and the
 ; BEA, so it needs your credentials file ("us_census_api_key" and

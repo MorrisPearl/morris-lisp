@@ -2,7 +2,7 @@
 ;
 ; Economic data from FRED, the Federal Reserve Bank of St. Louis.
 ; fred-table downloads one series or several, by ID, as a table with a row
-; for each date -- see "FRED" in the reference manual. It needs a free FRED
+; for each date -- see "FRED" in the library manual. It needs a free FRED
 ; API key (https://fred.stlouisfed.org/docs/api/api_key.html), as the
 ; "fred_api_key" entry of the credentials file. creds is set to its path in
 ; init.lsp. Run it from the examples directory:

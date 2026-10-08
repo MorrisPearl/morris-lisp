@@ -1,7 +1,9 @@
-"""Rebuild the "## Contents" list at the top of lisp_interpreter_reference.md
-from its headings: every ## and ### heading, plus each form's short ####
-heading in "Special forms and standard macros". The links are to GitHub's
-anchors for the headings. Run it after adding or renaming a section:
+"""Rebuild the "## Contents" list at the top of each manual --
+lisp_interpreter_reference.md (the language) and lisp_library_reference.md
+(the library) -- from its headings: every ## and ### heading, plus each
+form's short #### heading in "Special forms and standard macros". The links
+are to GitHub's anchors for the headings. Run it after adding or renaming a
+section:
 
     python3 tools/make_contents.py
 """
@@ -9,7 +11,8 @@ anchors for the headings. Run it after adding or renaming a section:
 import os
 import re
 
-MANUAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lisp_interpreter_reference.md")
+HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+MANUALS = [os.path.join(HERE, "lisp_interpreter_reference.md"), os.path.join(HERE, "lisp_library_reference.md")]
 
 
 def anchor_of(title):
@@ -49,12 +52,14 @@ def contents(lines):
 
 
 def main():
-    with open(MANUAL) as f:
-        lines = f.read().split("\n")
-    start, end = lines.index("## Contents"), lines.index("## Running it")
-    lines[start:end] = ["## Contents", ""] + contents(lines) + [""]
-    with open(MANUAL, "w") as f:
-        f.write("\n".join(lines))
+    for manual in MANUALS:
+        with open(manual) as f:
+            lines = f.read().split("\n")
+        start = lines.index("## Contents")
+        end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("## "))   # the next chapter
+        lines[start:end] = ["## Contents", ""] + contents(lines) + [""]
+        with open(manual, "w") as f:
+            f.write("\n".join(lines))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 ;
 ; plot-chart: several series on one chart, each with its own X values, drawn
 ; as symbols, lines, or bars (grouped or stacked). See "plot-chart" in the
-; reference manual. The data here is made up, so it needs no network.
+; language manual. The data here is made up, so it needs no network.
 ;
 ; In Jupyter or the GUI each chart is drawn; at the console each prints a
 ; summary (save-chart writes the last one to a file). Run it from the

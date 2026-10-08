@@ -3,7 +3,7 @@
 ; Demographic and economic data from the US Census Bureau (population,
 ; income, poverty, education, housing ... for every state, county, and
 ; neighborhood) and from the Bureau of Labor Statistics (prices, jobs, and
-; pay). See "Census data" and "BLS data" in the reference manual.
+; pay). See "Census data" and "BLS data" in the library manual.
 ;
 ; It needs your credentials file, with "us_census_api_key" and
 ; "bureau_of_labor_statistics_api_key" entries; creds is set to its path in

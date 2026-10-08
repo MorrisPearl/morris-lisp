@@ -168,12 +168,13 @@ train/test evaluation, and charting.
 
 Prepayment models typically include macro covariates like the mortgage
 rate and HPI alongside pool characteristics. `lisp_interpreter.py` already
-has `fred-series` built in, which *is* usable right now — FRED itself only
+has `fred-table` built in, which *is* usable right now — FRED itself only
 needs a free API key (https://fred.stlouisfed.org/docs/api/api_key.html),
-not a GSE account:
+not a GSE account. It goes in the credentials file, as `"fred_api_key"`
+(see "FRED" in lisp_library_reference.md):
 
 ```lisp
-(define rates (fred-series "MORTGAGE30US" "YOUR_FRED_API_KEY"))
-(define dates (car rates))
-(define values (cdr rates))
+(define rates (fred-table creds "MORTGAGE30US"))
+(define dates (table-column rates "date"))
+(define values (table-column rates "MORTGAGE30US"))
 ```
