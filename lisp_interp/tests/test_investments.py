@@ -1391,36 +1391,29 @@ class TestOptionCheck(LispTestCase):
         self.assertIn("volatility-scale", names)
         self.assertIn("early-exercise", names)
 
-    def test_the_option_methods_example_on_a_made_up_chain(self):
-        """examples/option_methods_example.lsp, with a made-up chain in place of tastytrade's, priced as the
-        formula says at the history's volatility, and the made-up history's prices in place of Schwab's:
-        first with no dividends, then with one. The history's returns are normally distributed, so the
-        paths are the formula's model too, and the three methods agree -- with each other, and with the
-        made-up prices."""
+    def test_option_methods_on_a_made_up_chain(self):
+        """lib/option_methods.lsp, on a made-up chain priced as the formula says at the history's volatility,
+        with the made-up history: first with no dividends, then with one. The history's returns are normally
+        distributed, so the paths are the formula's model too, and the three methods agree -- with each other,
+        and with the made-up prices."""
+        self.run_lisp('(load "option_methods.lsp")')
         today = datetime.date.today()
-        prices = self.made_up_prices(today)
-        self.env[lisp_core.Symbol("schwab-price-history")] = lambda creds, symbol: prices
-        self.env[lisp_core.Symbol("tastytrade-option-chain")] = lambda creds, symbol, months, strikes: (
-            self.env[lisp_core.Symbol("chain")])
-        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("no-credentials-needed.json")
         a_year_ago = lisp_calendar.trading_days_after(today, 30) - datetime.timedelta(days=365)
         for paid in ([], [(a_year_ago, 1.0)]):          # (last year's dividend, supposed to come again)
-            dividends = lisp_tables.make_table_value([
+            self.env[lisp_core.Symbol("dividends")] = lisp_tables.make_table_value([
                 ("ex-date", lisp_core.LispVector([lisp_core.LispDate(d.year, d.month, d.day) for d, _ in paid])),
                 ("amount", lisp_vector_math.to_vector(np.array([a for _, a in paid], dtype=np.float64)))])
-            self.env[lisp_core.Symbol("alpha-vantage-dividends")] = lambda creds, symbol: dividends
-            self.env[lisp_core.Symbol("dividends")] = dividends
             schedule = self.run_lisp("(dividend-schedule dividends (today) 200 :repeat-last-year #t)")
             coming = list(dict(lisp_tables.table_columns(schedule, "test"))["ex-date"].items)
             self.make_chain(today, dividend=(coming[0].date, 1.0) if coming else None)
-            lisp_core.run_file(os.path.join(EXAMPLES, "option_methods_example.lsp"), self.env)
+            self.run_lisp('(define compared (option-methods-for-chain chain returns :symbol "XYZ" :dividends dividends))')
 
-            compared = {name: list(vector.items) for name, vector in
-                        lisp_tables.table_columns(self.run_lisp("compared"), "test")}
-            self.assertGreater(len(compared["strike"]), 10)
+            options = {name: list(vector.items) for name, vector in
+                       lisp_tables.table_columns(self.run_lisp("(option-values-options compared)"), "test")}
+            self.assertGreater(len(options["strike"]), 10)
             for kind, strike, formula, tree, paths, error in zip(
-                    compared["type"], compared["strike"], compared["black-scholes"], compared["tree"],
-                    compared["monte-carlo"], compared["mc-error"]):
+                    options["type"], options["strike"], options["black-scholes"], options["tree"],
+                    options["monte-carlo"], options["mc-error"]):
                 self.assertTrue(strike >= 100 if str(kind) == "Call" else strike <= 100)   # out of the money
                 # (to within half a cent, as well, for the made-up options worth next to nothing)
                 self.assertGreater(tree, 0.99 * formula - 0.005)         # (more, for a put that can be exercised early)
@@ -1429,16 +1422,62 @@ class TestOptionCheck(LispTestCase):
                 self.assertLess(abs(paths - formula), 4 * error + 0.005)
             # the chances of ending in the money: the paths' within their own error of the formula's, and the
             # tree's within the chance of one of its last prices
-            for formula, tree, paths, share in zip(compared["bs-probability"], compared["tree-probability"],
-                                                   compared["paths-in-the-money"], compared["paths-probability"]):
+            for formula, tree, paths, share in zip(options["bs-probability"], options["tree-probability"],
+                                                   options["paths-in-the-money"], options["paths-probability"]):
                 self.assertAlmostEqual(share, paths / 20000, places=6)
                 self.assertLess(abs(share - formula), 4 * math.sqrt(formula * (1 - formula) / 20000) + 0.001)
                 self.assertLess(abs(tree - formula), 0.06)
-            volatility = self.run_lisp("volatility")
-            for bid, market_vol in zip(compared["bid"], compared["market-vol"]):
+            volatility = self.run_lisp("(option-values-volatility compared)")
+            self.assertAlmostEqual(volatility, self.volatility, delta=0.0005)
+            for bid, market_vol in zip(options["bid"], options["market-vol"]):
                 if bid > 0.05:                           # (an option worth next to nothing says little about it)
                     self.assertAlmostEqual(market_vol, volatility, delta=0.005)
-            self.assertIn("between-bid-and-ask", self.printed())
+            # the made-up market prices them at the formula's value, give or take 1.5%: between the bid and ask
+            summary = dict(lisp_tables.table_columns(self.run_lisp("(option-methods-summary compared)"), "test"))
+            self.assertEqual(int(summary["between-bid-and-ask"].items[0]), len(options["strike"]))
+
+        self.run_lisp("(show-option-methods compared)")
+        shown = self.printed()
+        self.assertIn("XYZ at 100.00. Its volatility over the last ten years: ", shown)
+        self.assertIn("The chance that each ends in the money, by each method", shown)
+        self.assertIn("between-bid-and-ask", shown)
+        self.assertLispError("(option-methods-for-chain chain returns :max-vol-spread -1)",
+                             "no option of  is liquid enough to compare")
+
+    def test_option_methods_counts_the_values_outside_the_bid_and_ask(self):
+        # the made-up chain, with two calls priced 30% above the formula's value and two puts 30% below
+        self.run_lisp('(load "option_methods.lsp")')
+        self.make_chain(datetime.date.today(), planted=self.PLANTED)
+        self.run_lisp("(define compared (option-methods-for-chain chain returns :paths 2000))")
+        options = self.run_lisp("(table-row-count (option-values-options compared))")
+        summary = dict(lisp_tables.table_columns(self.run_lisp("(option-methods-summary compared)"), "test"))
+        self.assertEqual([str(m) for m in summary["method"].items], ["black-scholes", "tree", "monte-carlo"])
+        self.assertEqual([int(summary[column].items[0]) for column in
+                          ("between-bid-and-ask", "below-the-bid", "above-the-ask")], [options - 4, 2, 2])
+
+    def test_the_option_methods_example_takes_the_symbol_from_the_command_line(self):
+        """examples/option_methods_example.lsp, with the made-up chain, prices, and no dividends in place of
+        tastytrade's, Schwab's, and Alpha Vantage's."""
+        today = datetime.date.today()
+        self.make_chain(today)
+        prices = self.made_up_prices(today)
+        asked = []
+        self.env[lisp_core.Symbol("tastytrade-option-chain")] = lambda creds, symbol, months, strikes: (
+            asked.append(str(symbol)) or self.env[lisp_core.Symbol("chain")])
+        self.env[lisp_core.Symbol("schwab-price-history")] = lambda creds, symbol: asked.append(str(symbol)) or prices
+        self.env[lisp_core.Symbol("alpha-vantage-dividends")] = lambda creds, symbol: (
+            asked.append(str(symbol)) or lisp_tables.make_table_value([
+                ("ex-date", lisp_core.LispVector([])), ("amount", lisp_vector_math.to_vector(np.array([], dtype=np.float64)))]))
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("no-credentials-needed.json")
+        try:
+            for words, symbol in (([], "BRK/B"), (["XYZ"], "XYZ")):
+                lisp_builtins.set_command_line_arguments(words)
+                asked.clear()
+                lisp_core.run_file(os.path.join(EXAMPLES, "option_methods_example.lsp"), self.env)
+                self.assertEqual(asked, [symbol] * 3)
+                self.assertIn("%s at 100.00." % symbol, self.printed())
+        finally:
+            lisp_builtins.set_command_line_arguments([])
 
     def test_showing_the_check(self):
         self.make_chain(self.START, planted=self.PLANTED)

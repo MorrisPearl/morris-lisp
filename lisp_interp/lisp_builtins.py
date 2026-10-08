@@ -1795,6 +1795,35 @@ def make_introspection_builtins(env, out):
 
 
 # ---------------------------------------------------------------------------
+# The command line
+# ---------------------------------------------------------------------------
+
+# The words after a script's name on the command line: for
+#   python3 lisp_interpreter.py option_methods_example.lsp KO 6
+# they are ["KO", "6"]. lisp_interpreter.py's main sets them; in the GUI and
+# Jupyter there are none.
+command_line_words = []
+
+
+def set_command_line_arguments(words):
+    command_line_words[:] = list(words)
+
+
+def command_line_arguments():
+    """(command-line-arguments) -- the words after the script's name on the
+    command line, as a list of strings: ("KO" "6") for
+    `python3 lisp_interpreter.py file.lsp KO 6`. '() if there are none, and in
+    the GUI and Jupyter. A number is a string too: string->number makes it
+    one."""
+    return list_to_pairs([LispString(word) for word in command_line_words])
+
+
+COMMAND_LINE_BUILTINS = {
+    "command-line-arguments": command_line_arguments,
+}
+
+
+# ---------------------------------------------------------------------------
 # The global environment
 # ---------------------------------------------------------------------------
 
@@ -1838,6 +1867,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_regex.BUILTINS)
     env.update(VECTOR_BUILTINS)
     env.update(DATE_BUILTINS)
+    env.update(COMMAND_LINE_BUILTINS)
     env.update(lisp_vector_math.BUILTINS)
     env.update(lisp_tables.BUILTINS)
     env.update(lisp_stratify.BUILTINS)

@@ -115,6 +115,7 @@ as a reference to search rather than read start to end.
   - [Simulating investment prices](#simulating-investment-prices)
   - [Starting paths from today's volatility](#starting-paths-from-todays-volatility)
   - [Checking option prices against simulated paths](#checking-option-prices-against-simulated-paths)
+  - [Valuing options three ways](#valuing-options-three-ways)
   - [Portfolios](#portfolios)
   - [Input / output](#input--output)
   - [Saving variables](#saving-variables)
@@ -142,6 +143,12 @@ as a reference to search rather than read start to end.
 - **A filename argument** — `python3 lisp_interpreter.py script.lsp` runs
   that file in batch mode (no GUI). `save-chart` still works in this mode
   as long as matplotlib is installed (PyQt6 is not required for it).
+  - **Words after the file name** — `python3 lisp_interpreter.py script.lsp
+    KO 6` gives the script the words `"KO"` and `"6"`: `(command-line-arguments)`
+    returns `("KO" "6")`. `destructuring-bind` can name them, with defaults
+    for any left off: `(destructuring-bind (&optional (symbol "BRK/B"))
+    (command-line-arguments) ...)`, as `examples/option_methods_example.lsp`
+    does. They're strings; `string->number` makes a number of one.
   - **Argument just "-"** — `python3 lisp_interpreter.py -` runs
   interactively with no GUI. `save-chart` still works in this mode
   as long as matplotlib is installed (PyQt6 is not required for it).
@@ -240,7 +247,9 @@ a section of this document.
    Greeks, and American options (`binomial-tree` shows the tree). "Implied
    volatility smiles": options out of line with the rest of their chain.
    "Checking option prices against simulated paths": options out of line
-   with the underlying's history.
+   with the underlying's history. "Valuing options three ways": a stock's
+   options by Black-Scholes, a binomial tree, and simulated paths, next to
+   their bids and asks.
 6. **Rates and mortgages.** The SOFR term structure and its two-factor
    model (`sofr-*`, under "tastytrade (real broker data)"), futures curves
    (`futures-curve-fit`), and `lib/oas_monte_carlo.lsp`, `lib/column_engine.lsp`,
@@ -251,7 +260,7 @@ a section of this document.
 
 **Built in, or loaded.** Everything above is built in, and there whenever
 the interpreter is, except the libraries in `lib/`, which are loaded with
-`(load "name.lsp")`: `vol_smile.lsp`, `option_check.lsp`,
+`(load "name.lsp")`: `vol_smile.lsp`, `option_check.lsp`, `option_methods.lsp`,
 `oas_monte_carlo.lsp`, `solver.lsp`, `column_engine.lsp`, `template.lsp`,
 `prepayment_model.lsp`, and `model_utils.lsp`. The rule: what has to be
 fast, or talks to the world outside, is a builtin, written in Python; a
@@ -262,7 +271,7 @@ directory with `python3 ../lisp_interpreter.py name.lsp`:
 `investment_paths_example.lsp` (simulated prices, an option on them, and
 dividends), `option_methods_example.lsp` (a stock's listed options valued
 by Black-Scholes, a binomial tree, and simulated paths, next to their bids
-and asks), `vol_smile_example.lsp`, `option_chain_example.lsp`,
+and asks: give it the stock's symbol), `vol_smile_example.lsp`, `option_chain_example.lsp`,
 `fred_example.lsp`, `sec_example.lsp`, `fdic_example.lsp`,
 `census_bls_example.lsp`, `bea_example.lsp`, `prepayment_demo.lsp`,
 `oas_monte_carlo_example.lsp`, and `mortgage_amortization_example.lsp`.
@@ -8234,9 +8243,9 @@ option                      black-scholes    tree  monte-carlo  standard-error  
 
 The tree (`american-price` with `:early-exercise #f`) is the formula's own
 model, made of steps, so it agrees with the formula, but for having only so
-many steps. `examples/option_methods_example.lsp` values a stock's listed
-options all three ways, next to their bids and asks, and gives the chance
-that each ends in the money by each. For BRK/B's, at the
+many steps. `lib/option_methods.lsp` values a stock's listed options all
+three ways, next to their bids and asks, and gives the chance that each
+ends in the money by each: see "Valuing options three ways". For BRK/B's, at the
 close of October 7, with the stock at 506.20, a call struck at 515 and
 expiring in 6 trading days was worth 2.83 by the formula and 2.53 (± 0.05)
 on the paths. Both were well above the market's
@@ -8672,6 +8681,85 @@ the market's prices.
   More `:paths` make it smaller (four times as many, half), but not the
   history's differences from the future.
 
+### Valuing options three ways
+
+`lib/option_methods.lsp` values the options listed on a stock three ways
+-- Black-Scholes (`bsm-price`), a binomial tree (`american-price`), and
+Monte Carlo paths copied from the stock's own history (`bootstrap-path`
+and `option-payoffs`) -- next to the market's bids and asks, with the
+chance each ends in the money by each (`bsm-probability-in-the-money`,
+`binomial-probability-in-the-money`, and how many of the paths do). All
+three use the history's volatility, count time in trading days, and grow
+the price at the interest rate, so the differences between them are the
+models' own: see "Paths with blocks of a day agree with Black-Scholes only
+over long times", under `option-value`. The library's own comment says
+more.
+
+```lisp
+(load "option_methods.lsp")
+(define compared (option-methods creds "BRK/B"))       ; while the market is open
+(show-option-methods compared)
+(option-values-options compared)                        ; the table, to filter, sort, or chart
+```
+
+`examples/option_methods_example.lsp` does this for the symbol it's given
+on the command line: `python3 ../lisp_interpreter.py
+option_methods_example.lsp KO`.
+
+#### `(option-methods creds symbol [options])`
+Gets a stock's option chain (from tastytrade), its prices (from Schwab),
+and its dividends (from Alpha Vantage), and values its liquid options three
+ways. `:months` (3) is how many months ahead to look for expirations, and
+`:strikes` (10) how many strikes nearest the price to keep in each; the
+other options are `option-methods-for-chain`'s. If the market is closed,
+it says so: the bids and asks are then the last close's, and the stock's
+price may be from later.
+
+#### `(option-methods-for-chain chain returns [options])`
+The same, from a chain and returns you already have: `chain` as
+`tastytrade-option-chain` makes it, and `returns` the stock's, as
+`daily-returns` makes them (with its dividends, if it pays any). The
+result is an `option-values` struct, with the slots `symbol`, `price` (the
+stock's), `volatility` (the history's, for a year), `rate`, `paths`, and
+`options`, a table with a row for each option compared. Its options:
+
+| Option | Default | What it does |
+|---|---|---|
+| `:symbol` | `""` | the stock's, for `show-option-methods` to show |
+| `:dividends` | none | the stock's actual dividends, as `alpha-vantage-dividends` makes them; the last year's are supposed to go on (`dividend-schedule`) |
+| `:start-date` | today | the date of the chain's prices: the trading days to each expiration are counted from it (not counting it) |
+| `:rate` | 0.04 | the interest rate, continuously compounded |
+| `:max-vol-spread` | 0.02 | an option whose bid and ask are further apart than this, in volatility, isn't compared |
+| `:paths` | 20000 | how many paths |
+| `:seed` | 1000 | the paths' seeds are this one and the next ones |
+
+The options compared are the liquid ones out of the money: traded today,
+with open interest and a bid, a spread no wider than `:max-vol-spread`,
+and calls struck at or above the stock's price and puts at or below it
+(early exercise is worth little for those, and the formula and the paths
+leave it out). The `options` table's columns:
+
+| Column | What it holds |
+|---|---|
+| `expiration-date`, `type`, `strike`, `bid`, `ask` | the option's, from the chain |
+| `days` | the trading days to expiration |
+| `black-scholes`, `tree`, `monte-carlo` | each method's value. The tree allows for early exercise, as the listed options do |
+| `mc-error` | the standard error of `monte-carlo` |
+| `market-vol` | the volatility of the option's mid, by the formula |
+| `bs-probability`, `tree-probability` | the formula's and the tree's chance that the option ends in the money |
+| `paths-in-the-money`, `paths-probability` | how many of the paths it ends in the money on, and what share of them |
+
+#### `(show-option-methods compared)`
+Shows the stock's price and volatility, each option's value by each method
+next to its bid and ask, the chance that each ends in the money by each,
+the market's volatility (the middle of the options' `market-vol`), and
+`option-methods-summary`.
+
+#### `(option-methods-summary compared)`
+A table with a row for each method, and how many of the options its value
+is between the bid and the ask for, below the bid for (the market prices
+the option higher), and above the ask for (the market prices it lower).
+
 ### Portfolios
 
 (In `lisp_portfolio.py`.) Several investments together: their returns
@@ -8806,6 +8894,15 @@ up, paths of a year that grow at the interest rate, and the value of a
 ```
 
 ### Input / output
+
+#### `(command-line-arguments)`
+The words after the script's name on the command line, as a list of
+strings: `("KO" "6")` for `python3 lisp_interpreter.py script.lsp KO 6`
+(see "Running it"). `'()` if there are none, and in the GUI and Jupyter.
+
+```lisp
+(command-line-arguments)        ; => ()
+```
 
 #### `(display x)`
 Writes `x`'s display form (strings unquoted, e.g. `hello` not `"hello"`) to
@@ -9827,7 +9924,7 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 
 | Directory | What's in it |
 |---|---|
-| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
+| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `option_methods.lsp` (a stock's options valued three ways), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
 | `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, and a KenKen solver (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `notebooks/` | Jupyter notebooks that use the interpreter (on the `morris_lisp` kernel) |
 | `scratch/` | Experiments: not part of the interpreter, and not tested |

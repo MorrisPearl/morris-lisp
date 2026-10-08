@@ -24,6 +24,17 @@ class TestCommandLine(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "hello 3\n")
 
+    def test_a_script_gets_the_words_after_its_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "words.lsp")
+            with open(path, "w") as f:
+                f.write("(print (command-line-arguments))")
+            self.assertEqual(run_cli(path, "KO", "6").stdout, '("KO" "6")\n')
+            self.assertEqual(run_cli(path).stdout, "()\n")
+            self.assertEqual(run_cli("-v", path, "--verbose").stdout.splitlines()[-1], '("--verbose")')
+        r = run_cli("-", "KO", stdin="(command-line-arguments)\n")
+        self.assertIn('("KO")', r.stdout)
+
     def test_a_script_error_gives_a_nonzero_exit_and_names_the_error(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "bad.lsp")

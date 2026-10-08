@@ -6,6 +6,7 @@ tastytrade market data.
 HOW TO RUN IT
     python3 lisp_interpreter.py              open the GUI (needs PyQt6 + matplotlib)
     python3 lisp_interpreter.py file.lsp     run a file
+    python3 lisp_interpreter.py file.lsp KO  run a file, giving it words: (command-line-arguments) is ("KO")
     python3 lisp_interpreter.py -            the console REPL
 Put -v, -vv, -vvv, or --verbose=N before the file name to trace procedure
 calls as they happen (see (verbose n) in lisp_interpreter_reference.md).
@@ -126,7 +127,7 @@ from lisp_core import (
     LispAbort, LispError, Pair, Symbol, VERBOSE_CALLS, format_error_report,
     format_lisp_traceback, parse, run_file, seval, set_verbose_level, to_string,
 )
-from lisp_builtins import load_init_file, make_global_env
+from lisp_builtins import load_init_file, make_global_env, set_command_line_arguments
 
 
 def repl(env):
@@ -222,6 +223,7 @@ def main():
         launch_gui_or_repl()
         return
 
+    set_command_line_arguments(args[1:])        # the words after the script's name (or "-")
     env = make_global_env()
     load_init_file(env)
     if args[0] == "-":
