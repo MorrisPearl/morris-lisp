@@ -90,29 +90,6 @@ class TestOptionPrices(LispTestCase):
         self.assertAlmostEqual(self.price('(american-implied-vol (american-price "put" 100 110 0.5 0.04 0.3 :steps 100) '
                                           '"put" 100 110 0.5 0.04 :steps 100)'), 0.3, places=7)
 
-    def test_the_option_methods_example_agrees_when_the_history_is_normal(self):
-        """examples/option_methods_example.lsp, with a made-up history of normally distributed returns in
-        place of Schwab's prices: then the paths are the formula's model too, so all three methods agree --
-        the tree with the formula, and the paths with it within their standard error."""
-        returns = np.random.default_rng(11).normal(0.0, 0.2 / math.sqrt(252), 2500)
-        closes = 100.0 * np.exp(np.concatenate([[0.0], np.cumsum(returns)]))
-        start = datetime.date(2016, 10, 7)
-        dates = [start + datetime.timedelta(days=i) for i in range(len(closes))]
-        prices = lisp_tables.make_table_value([
-            ("date", lisp_core.LispVector([lisp_core.LispDate(d.year, d.month, d.day) for d in dates])),
-            ("close", lisp_vector_math.to_vector(closes))])
-        self.env[lisp_core.Symbol("schwab-price-history")] = lambda creds, symbol: prices
-        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("no-credentials-needed.json")
-        lisp_core.run_file(os.path.join(EXAMPLES, "option_methods_example.lsp"), self.env)
-
-        def column(name):
-            return [float(x) for x in self.run_lisp('(table-column compared "%s")' % name).items]
-
-        for formula, tree, apart in zip(column("black-scholes"), column("tree"), column("standard-errors-apart")):
-            self.assertAlmostEqual(tree / formula, 1.0, delta=0.01)
-            self.assertLess(abs(apart), 3)
-        self.assertIn("1 month, put 10% below", self.printed())
-
     def test_the_binomial_tree_shows_how_american_price_is_found(self):
         tree = dict(lisp_tables.table_columns(self.run_lisp('(binomial-tree "put" 100 100 1 0.05 0.2 :steps 3)'), "t"))
         self.assertEqual(sorted(tree), ["early", "exercise", "hold", "price", "step", "time", "ups", "value"])
@@ -1330,9 +1307,9 @@ class TestOptionCheck(LispTestCase):
 
     # -- check-option-prices and show-option-check --------------------------------
 
-    def test_check_option_prices_gets_the_chain_the_prices_and_the_dividends(self):
-        today = datetime.date.today()
-        self.make_chain(today, planted=self.PLANTED)
+    def made_up_prices(self, today):
+        """The prices of the made-up history (setUp's returns), as schwab-price-history gives them: a
+        table of date and close, oldest first, ending at 100 on the last trading day up to today."""
         dates, price, closes = [], 100.0, []
         values = np.random.default_rng(5).normal(0.0, 0.2 / math.sqrt(252), 2500)
         day = lisp_calendar.trading_days_after(today, 0)
@@ -1343,8 +1320,13 @@ class TestOptionCheck(LispTestCase):
             closes.append(price)
             price *= math.exp(-value)
             day = lisp_calendar.trading_days_after(day, -1)
-        prices = lisp_tables.make_table_value([("date", lisp_core.LispVector(dates[::-1])),
-                                               ("close", lisp_vector_math.to_vector(np.array(closes[::-1])))])
+        return lisp_tables.make_table_value([("date", lisp_core.LispVector(dates[::-1])),
+                                             ("close", lisp_vector_math.to_vector(np.array(closes[::-1])))])
+
+    def test_check_option_prices_gets_the_chain_the_prices_and_the_dividends(self):
+        today = datetime.date.today()
+        self.make_chain(today, planted=self.PLANTED)
+        prices = self.made_up_prices(today)
         asked = []
         self.env[lisp_core.Symbol("tastytrade-option-chain")] = lambda creds, symbol, months, strikes: (
             asked.append(("chain", str(creds), str(symbol), months, strikes)) or self.env[lisp_core.Symbol("chain")])
@@ -1364,6 +1346,48 @@ class TestOptionCheck(LispTestCase):
         self.assertIn("expected-value", names)
         self.assertIn("volatility-scale", names)
         self.assertIn("early-exercise", names)
+
+    def test_the_option_methods_example_on_a_made_up_chain(self):
+        """examples/option_methods_example.lsp, with a made-up chain in place of tastytrade's, priced as the
+        formula says at the history's volatility, and the made-up history's prices in place of Schwab's:
+        first with no dividends, then with one. The history's returns are normally distributed, so the
+        paths are the formula's model too, and the three methods agree -- with each other, and with the
+        made-up prices."""
+        today = datetime.date.today()
+        prices = self.made_up_prices(today)
+        self.env[lisp_core.Symbol("schwab-price-history")] = lambda creds, symbol: prices
+        self.env[lisp_core.Symbol("tastytrade-option-chain")] = lambda creds, symbol, months, strikes: (
+            self.env[lisp_core.Symbol("chain")])
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("no-credentials-needed.json")
+        a_year_ago = lisp_calendar.trading_days_after(today, 30) - datetime.timedelta(days=365)
+        for paid in ([], [(a_year_ago, 1.0)]):          # (last year's dividend, supposed to come again)
+            dividends = lisp_tables.make_table_value([
+                ("ex-date", lisp_core.LispVector([lisp_core.LispDate(d.year, d.month, d.day) for d, _ in paid])),
+                ("amount", lisp_vector_math.to_vector(np.array([a for _, a in paid], dtype=np.float64)))])
+            self.env[lisp_core.Symbol("alpha-vantage-dividends")] = lambda creds, symbol: dividends
+            self.env[lisp_core.Symbol("dividends")] = dividends
+            schedule = self.run_lisp("(dividend-schedule dividends (today) 200 :repeat-last-year #t)")
+            coming = list(dict(lisp_tables.table_columns(schedule, "test"))["ex-date"].items)
+            self.make_chain(today, dividend=(coming[0].date, 1.0) if coming else None)
+            lisp_core.run_file(os.path.join(EXAMPLES, "option_methods_example.lsp"), self.env)
+
+            compared = {name: list(vector.items) for name, vector in
+                        lisp_tables.table_columns(self.run_lisp("compared"), "test")}
+            self.assertGreater(len(compared["strike"]), 10)
+            for kind, strike, formula, tree, paths, error in zip(
+                    compared["type"], compared["strike"], compared["black-scholes"], compared["tree"],
+                    compared["monte-carlo"], compared["mc-error"]):
+                self.assertTrue(strike >= 100 if str(kind) == "Call" else strike <= 100)   # out of the money
+                # (to within half a cent, as well, for the made-up options worth next to nothing)
+                self.assertGreater(tree, 0.99 * formula - 0.005)         # (more, for a put that can be exercised early)
+                if str(kind) == "Call":
+                    self.assertLess(abs(tree - formula), 0.01 * formula + 0.005)
+                self.assertLess(abs(paths - formula), 4 * error + 0.005)
+            volatility = self.run_lisp("volatility")
+            for bid, market_vol in zip(compared["bid"], compared["market-vol"]):
+                if bid > 0.05:                           # (an option worth next to nothing says little about it)
+                    self.assertAlmostEqual(market_vol, volatility, delta=0.005)
+            self.assertIn("between-bid-and-ask", self.printed())
 
     def test_showing_the_check(self):
         self.make_chain(self.START, planted=self.PLANTED)

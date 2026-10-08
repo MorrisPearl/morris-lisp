@@ -259,8 +259,9 @@ model made of those is a library, written in Lisp, to be read and changed.
 **Examples.** `examples/` has a program for most of this, run from that
 directory with `python3 ../lisp_interpreter.py name.lsp`:
 `investment_paths_example.lsp` (simulated prices, an option on them, and
-dividends), `option_methods_example.lsp` (an option valued by Black-Scholes,
-a binomial tree, and simulated paths), `vol_smile_example.lsp`, `option_chain_example.lsp`,
+dividends), `option_methods_example.lsp` (a stock's listed options valued
+by Black-Scholes, a binomial tree, and simulated paths, next to their bids
+and asks), `vol_smile_example.lsp`, `option_chain_example.lsp`,
 `fred_example.lsp`, `sec_example.lsp`, `fdic_example.lsp`,
 `census_bls_example.lsp`, `bea_example.lsp`, `prepayment_demo.lsp`,
 `oas_monte_carlo_example.lsp`, and `mortgage_amortization_example.lsp`.
@@ -8134,13 +8135,15 @@ low with longer blocks, 0.3% to 0.4%.) What comes out is the value if the
 future is like this history, which is not the market's price: the market's
 is from the volatility it expects.
 
-**Paths with blocks of a day agree with Black-Scholes only at the money, or
-far out.** The paths have the history's own returns, and those aren't
-normally distributed: their tails are fat. Over a year, many days add up to
-something close to normal, and the paths' values agree with the formula's;
-an option a month away and well out of the money is worth more on the
-paths. On October 8, 2026, for BRK/A, with 20,000 paths at the history's
-19.0% volatility and an interest rate of 4%:
+**Paths with blocks of a day agree with Black-Scholes only over long
+times.** The paths have the history's own returns, and those aren't
+normally distributed: they have fat tails, which means more days of big
+moves than a normal distribution would have, and more quiet days too, for
+the same volatility. So over a few days or weeks, the paths value an option
+near the money lower than the formula does, and one far out of the money
+higher. Over a year, many days add up to something close to normal, and the
+two agree. On October 8, 2026, for BRK/A, with 20,000 paths at the
+history's 19.0% volatility and an interest rate of 4%:
 
 ```
 option                      black-scholes    tree  monte-carlo  standard-error  standard-errors-apart
@@ -8152,7 +8155,12 @@ option                      black-scholes    tree  monte-carlo  standard-error  
 
 The tree (`american-price` with `:early-exercise #f`) is the formula's own
 model, made of steps, so it agrees with the formula, but for having only so
-many steps. `examples/option_methods_example.lsp` makes this table.
+many steps. `examples/option_methods_example.lsp` values a stock's listed
+options all three ways, next to their bids and asks. For BRK/B's, at the
+close of October 7, with the stock at 506.20, a call struck at 515 and
+expiring in 6 trading days was worth 2.83 by the formula and 2.53 (± 0.05)
+on the paths. Both were well above the market's
+ask, 1.01: the market expected less volatility than the history had.
 
 #### `(option-payoffs paths days strikes calls)`
 What many European options pay, on average, over a list of paths: a table
