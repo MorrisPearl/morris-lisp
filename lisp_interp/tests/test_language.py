@@ -399,6 +399,67 @@ class TestMacros(LispTestCase):
         self.assertIn("my-mac", self.show("(defined-macros)"))
 
 
+class TestDestructuringBind(LispTestCase):
+    """destructuring-bind, from macros_init.lsp: a list's parts bound to the variables of a pattern."""
+
+    def test_the_variables_take_the_list_s_shape(self):
+        self.assertShows("(destructuring-bind (a b c) '(1 2 3) (list c b a))", "(3 2 1)")
+        self.assertShows("(destructuring-bind ((a b) (c (d))) '((1 2) (3 (4))) (list a b c d))", "(1 2 3 4)")
+        self.assertShows("(destructuring-bind (a b . more) '(1 2 3 4) (list a b more))", "(1 2 (3 4))")
+        self.assertShows("(destructuring-bind (a . more) '(1) (list a more))", "(1 ())")
+        self.assertShows("(destructuring-bind (a) '(1))", "()")                    # no body
+        self.assertShows("(destructuring-bind (a) '(1) (define b 2) (+ a b))", "3")
+
+    def test_optional_elements_have_defaults_that_can_use_the_variables_before_them(self):
+        self.assertShows("(destructuring-bind (a &optional (b (* a 2) b-given) c) '(5) (list a b b-given c))",
+                         "(5 10 #f ())")
+        self.assertShows("(destructuring-bind (a &optional (b (* a 2) b-given) c) '(5 6 7) (list a b b-given c))",
+                         "(5 6 #t 7)")
+        self.assertShows("(destructuring-bind (&optional ((x y) '(1 2))) '() (list x y))", "(1 2)")
+        self.assertShows("(destructuring-bind (&optional ((x y) '(1 2))) '((3 4)) (list x y))", "(3 4)")
+
+    def test_rest_body_and_keys(self):
+        self.assertShows("(destructuring-bind (a &rest r) '(1 2 3) (list a r))", "(1 (2 3))")
+        self.assertShows("(destructuring-bind (name &body forms) '(f (x) (y)) (list name forms))", "(f ((x) (y)))")
+        self.assertShows("(destructuring-bind (&key x (y 9 y-given)) '(:x 2) (list x y y-given))", "(2 9 #f)")
+        self.assertShows("(destructuring-bind (&key x (y 9 y-given)) '(:y 3 :x 2) (list x y y-given))", "(2 3 #t)")
+        self.assertShows("(destructuring-bind (a &rest r &key x) '(1 :x 2) (list a r x))", "(1 (:x 2) 2)")
+        self.assertShows("(destructuring-bind (&key x &allow-other-keys) '(:z 1 :x 2) x)", "2")
+        self.assertShows("(destructuring-bind (&key x) '(:x 1 :x 2) x)", "1")       # the first, if it's there twice
+        self.assertShows("(destructuring-bind (a &aux (b (+ a 1)) c) '(1) (list a b c))", "(1 2 ())")
+        self.assertShows("(destructuring-bind (&whole w a (&whole inner b)) '(1 (2)) (list w a inner b))",
+                         "((1 (2)) 1 (2) 2)")
+
+    def test_the_expression_is_evaluated_once_and_defaults_only_when_needed(self):
+        self.run_lisp("(define count 0) (define (counted x) (set! count (+ count 1)) x)")
+        self.assertShows("(destructuring-bind (a b) (counted '(1 2)) (list a b count))", "(1 2 1)")
+        self.assertShows("(destructuring-bind (a &optional (b (counted 0))) '(1 2) (list b count))", "(2 1)")
+        self.assertShows("(destructuring-bind (&key (b (counted 0))) '() (list b count))", "(0 2)")
+
+    def test_a_list_that_doesn_t_fit(self):
+        self.assertLispError("(destructuring-bind (a b c) '(1 2) a)",
+                             "destructuring-bind: (1 2) doesn't fit the pattern (a b c): it has too few elements")
+        self.assertLispError("(destructuring-bind (a b) '(1 2 3) a)", "(1 2 3) doesn't fit the pattern (a b): it has too many")
+        self.assertLispError("(destructuring-bind (a b) 5 a)", "5 doesn't fit the pattern (a b): it isn't a list")
+        self.assertLispError("(destructuring-bind (a (b c)) '(1 2) a)", "2 doesn't fit the pattern (b c): it isn't a list")
+        self.assertLispError("(destructuring-bind (&key x) '(:y 1) x)", ":y isn't one of the pattern's keys")
+        self.assertLispError("(destructuring-bind (&key x) '(:x) x)", "keyword arguments must be :name value pairs")
+        self.assertLispError("(destructuring-bind (a &optional b) '(1 2 3) a)", "it has too many elements")
+
+    def test_a_pattern_that_isn_t_one(self):
+        self.assertLispError("(destructuring-bind (a &optional b &optional c) '(1) a)", "&optional can't be there")
+        self.assertLispError("(destructuring-bind (a &key x &rest r) '(1) a)", "&rest can't be there")
+        self.assertLispError("(destructuring-bind (a :b) '(1 2) a)", "a pattern's variables must be names, not :b")
+        self.assertLispError("(destructuring-bind (a &rest) '(1 2) a)", "expected a variable after &rest")
+        self.assertLispError("(destructuring-bind (&key 5) '() 1)", "a key's variable must be a name")
+
+    def test_it_expands_to_a_let_star(self):
+        expansion = lisp_core.to_string(self.run_lisp("(macroexpand-1 '(destructuring-bind (a b) x (+ a b)))"))
+        self.assertTrue(expansion.startswith("(let* ((%list-"), expansion)
+        self.assertIn("(a (destructuring--next %rest-", expansion)
+        self.assertIn("(destructuring--end %rest-", expansion)
+
+
 class TestMacroExpansionCache(LispTestCase):
     """A macro call is expanded once, the first time it's evaluated, and the
     expansion is remembered for that call."""

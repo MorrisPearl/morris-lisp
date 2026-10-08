@@ -16,6 +16,7 @@
 ;   (unless test body...)
 ;   (push item variable), (pop variable), (incf variable [n]), (decf variable [n])
 ;   (case key-expr ((key...) body...)... [(else body...)])
+;   (destructuring-bind pattern expression body...)
 ;   (save-variables path name... [:leave-out-procedures #t])
 ;   (pretty-print-function name), (pretty-print-macro name)
 ;
@@ -511,6 +512,232 @@ the last clause, the only place an else clause is allowed."
   (let ((key-var (gensym "case-key")))
     `(let ((,key-var ,key-expr))
        (cond ,@(case--cond-clauses key-var clauses)))))
+
+; (destructuring-bind pattern expression body...)
+; Evaluates expression, which gives a list, binds the variables in pattern
+; to its parts, and evaluates the body forms with them, as Common Lisp's
+; destructuring-bind does. The pattern has the list's shape:
+;
+;   (destructuring-bind (name (low high) &optional (step 1) &key (label name))
+;       '("range" (0 10) 2 :label "R")
+;     (list name low high step label))           ; => ("range" 0 10 2 "R")
+;
+; A pattern can have, in this order:
+;   variables      one for each element, or a pattern of its own, for an
+;                  element that is a list: (a (b c) d)
+;   &optional      then variables for elements that may be missing: x,
+;                  (x default), or (x default supplied-p) -- supplied-p is
+;                  bound to #t if the element is there and #f if not. The
+;                  default is '() unless given, and can use the variables
+;                  before it. x can be a pattern: ((low high) '(0 1)).
+;   &rest x, or &body x, or a dot: (a b . x)
+;                  x is bound to the rest of the list
+;   &key           then keyword arguments, from :name value pairs in the
+;                  rest of the list: x, (x default), or (x default
+;                  supplied-p), for :x. Any other key is an error, unless
+;                  &allow-other-keys comes after them.
+;   &aux           then more variables, not from the list: x, or (x value)
+; and it can start with &whole x, for x to be bound to the whole list.
+;
+; It is an error if the list has fewer elements than the variables before
+; &optional, or more than the pattern has room for (and there's no &rest).
+;
+; It expands to a let*, with a variable for what's left of the list as it
+; goes, and a check wherever the list might not fit. The example above
+; becomes (with %list-1, %rest-2, ... from gensym):
+;
+;   (let* ((%list-1 '("range" (0 10) 2 :label "R"))
+;          (%rest-2 %list-1)
+;          (name (destructuring--next %rest-2 '(name (low high) ...) %list-1))
+;          (%rest-2 (cdr %rest-2))
+;          (%part-3 (destructuring--next %rest-2 '(name (low high) ...) %list-1))
+;          (%rest-4 %part-3)
+;          (low (destructuring--next %rest-4 '(low high) %part-3))
+;          (%rest-4 (cdr %rest-4))
+;          (high (destructuring--next %rest-4 '(low high) %part-3))
+;          (%rest-4 (cdr %rest-4))
+;          (%end-5 (destructuring--end %rest-4 '(low high) %part-3))
+;          (%rest-2 (cdr %rest-2))
+;          (%supplied-6 (pair? %rest-2))
+;          (step (if %supplied-6 (car %rest-2) 1))
+;          (%rest-2 (if %supplied-6 (cdr %rest-2) %rest-2))
+;          (%keys-7 (destructuring--check-keys %rest-2 '(name (low high) ...) %list-1 '("label") #f))
+;          (%supplied-8 (destructuring--has-key? %rest-2 "label"))
+;          (label (if %supplied-8 (destructuring--key-value %rest-2 "label") name)))
+;     (list name low high step label))
+;
+; (Let* binds a name again by making a new scope inside the last, so
+; %rest-2 is a new variable each time, holding less of the list.)
+
+(define destructuring--markers '(&optional &rest &body &key &allow-other-keys &aux &whole))
+
+(define (destructuring--marker? x)
+  "Whether x is one of the words that start a part of a pattern, such as &optional."
+  (and (symbol? x) (member x destructuring--markers)))
+
+(define (destructuring--error message shape whole)
+  (error (string-append "destructuring-bind: " (to-string whole) " doesn't fit the pattern " (to-string shape)
+                        ": " message)))
+
+; What the expansion calls, as it takes the list apart:
+
+(define (destructuring--next rest shape whole)
+  "The next element of the list: the first of rest, what's left of it."
+  (cond ((pair? rest) (car rest))
+        ((null? rest) (destructuring--error "it has too few elements" shape whole))
+        (else (destructuring--error "it isn't a list" shape whole))))
+
+(define (destructuring--end rest shape whole)
+  "Check that nothing is left of the list."
+  (unless (null? rest)
+    (destructuring--error (if (pair? rest) "it has too many elements" "it isn't a list") shape whole)))
+
+(define (destructuring--key-names rest)
+  "The names of the keys in rest, a list of :name value pairs: (\"x\" \"y\") for (:x 1 :y 2);
+#f if rest isn't such a list."
+  (cond ((null? rest) '())
+        ((and (pair? rest) (keyword? (car rest)) (pair? (cdr rest)))
+         (let ((more (destructuring--key-names (cddr rest))))
+           (and more (cons (substring (symbol->string (car rest)) 1) more))))
+        (else #f)))
+
+(define (destructuring--check-keys rest shape whole names allow-other-keys)
+  "Check that rest is a list of :name value pairs, with no name that isn't
+one of names (unless allow-other-keys)."
+  (let ((given (destructuring--key-names rest)))
+    (unless given
+      (destructuring--error "its keyword arguments must be :name value pairs" shape whole))
+    (unless allow-other-keys
+      (dolist (name given)
+        (unless (member name names)
+          (destructuring--error (string-append ":" name " isn't one of the pattern's keys") shape whole))))))
+
+(define (destructuring--has-key? rest name)
+  "Whether rest, a list of :name value pairs, has the key :name."
+  (and (pair? rest)
+       (or (equal? (symbol->string (car rest)) (string-append ":" name))
+           (destructuring--has-key? (cddr rest) name))))
+
+(define (destructuring--key-value rest name)
+  "The value of the key :name in rest, a list of :name value pairs (the first, if it's there twice)."
+  (if (equal? (symbol->string (car rest)) (string-append ":" name))
+      (cadr rest)
+      (destructuring--key-value (cddr rest) name)))
+
+; What makes the expansion: each returns a list of let* bindings.
+
+(define (destructuring--bindings pattern whole)
+  "The bindings for pattern's variables, from the list in the variable whole."
+  (let ((rest (gensym "rest")))
+    (if (and (pair? pattern) (eq? (car pattern) '&whole))
+        (begin
+          (unless (pair? (cdr pattern))
+            (error "destructuring-bind: expected a variable after &whole in" pattern))
+          `(,@(destructuring--variable (cadr pattern) whole)
+            (,rest ,whole)
+            ,@(destructuring--required (cddr pattern) rest pattern whole)))
+        `((,rest ,whole) ,@(destructuring--required pattern rest pattern whole)))))
+
+(define (destructuring--variable target value)
+  "The bindings for target -- a variable, or a pattern of its own -- to the value of the code value."
+  (cond ((and (symbol? target) (not (keyword? target)) (not (destructuring--marker? target)))
+         `((,target ,value)))
+        ((pair? target)
+         (let ((part (gensym "part")))
+           `((,part ,value) ,@(destructuring--bindings target part))))
+        (else (error "destructuring-bind: a pattern's variables must be names, not" target))))
+
+(define (destructuring--end-check rest shape whole)
+  `((,(gensym "end") (destructuring--end ,rest ',shape ,whole))))
+
+(define (destructuring--required pattern rest shape whole)
+  "The bindings for a pattern's variables before any &optional."
+  (cond ((null? pattern) (destructuring--end-check rest shape whole))
+        ((not (pair? pattern)) (destructuring--variable pattern rest))           ; (a b . more)
+        ((eq? (car pattern) '&optional) (destructuring--optional (cdr pattern) rest shape whole))
+        ((destructuring--marker? (car pattern)) (destructuring--after-optional pattern rest shape whole))
+        (else `(,@(destructuring--variable (car pattern) `(destructuring--next ,rest ',shape ,whole))
+                (,rest (cdr ,rest))
+                ,@(destructuring--required (cdr pattern) rest shape whole)))))
+
+(define (destructuring--optional pattern rest shape whole)
+  "The bindings for the variables after &optional."
+  (if (or (not (pair? pattern)) (destructuring--marker? (car pattern)))
+      (destructuring--after-optional pattern rest shape whole)
+      (let* ((spec (car pattern))                 ; x, or (x [default [supplied-p]]), where x can be a pattern
+             (target (if (pair? spec) (car spec) spec))
+             (default (if (and (pair? spec) (pair? (cdr spec))) (cadr spec) ''()))
+             (supplied (if (and (pair? spec) (pair? (cdr spec)) (pair? (cddr spec))) (caddr spec) (gensym "supplied"))))
+        `((,supplied (pair? ,rest))
+          ,@(destructuring--variable target `(if ,supplied (car ,rest) ,default))
+          (,rest (if ,supplied (cdr ,rest) ,rest))
+          ,@(destructuring--optional (cdr pattern) rest shape whole)))))
+
+(define (destructuring--after-optional pattern rest shape whole)
+  "The bindings for the rest of a pattern, from &rest, &body, &key, &aux, a dot, or its end."
+  (cond ((null? pattern) (destructuring--end-check rest shape whole))
+        ((not (pair? pattern)) (destructuring--variable pattern rest))
+        ((member (car pattern) '(&rest &body))
+         (unless (pair? (cdr pattern))
+           (error "destructuring-bind: expected a variable after" (car pattern) "in" shape))
+         `(,@(destructuring--variable (cadr pattern) rest)
+           ,@(destructuring--after-rest (cddr pattern) rest shape whole)))
+        ((eq? (car pattern) '&key) (destructuring--keys (cdr pattern) rest shape whole))
+        ((eq? (car pattern) '&aux)
+         `(,@(destructuring--end-check rest shape whole) ,@(destructuring--aux (cdr pattern) shape)))
+        (else (error "destructuring-bind:" (car pattern) "can't be there in the pattern" shape))))
+
+(define (destructuring--after-rest pattern rest shape whole)
+  "The bindings for what comes after &rest x: &key, &aux, or nothing."
+  (cond ((null? pattern) '())
+        ((eq? (car pattern) '&key) (destructuring--keys (cdr pattern) rest shape whole))
+        ((eq? (car pattern) '&aux) (destructuring--aux (cdr pattern) shape))
+        (else (error "destructuring-bind:" (car pattern) "can't be there in the pattern" shape))))
+
+(define (destructuring--key-specs pattern)
+  "The &key specs at the start of pattern: up to the next marker, or the end."
+  (if (or (null? pattern) (destructuring--marker? (car pattern)))
+      '()
+      (cons (car pattern) (destructuring--key-specs (cdr pattern)))))
+
+(define (destructuring--key spec rest)
+  "The bindings for one &key spec: x, (x default), or (x default supplied-p)."
+  (let* ((variable (if (pair? spec) (car spec) spec))
+         (default (if (and (pair? spec) (pair? (cdr spec))) (cadr spec) ''()))
+         (supplied (if (and (pair? spec) (pair? (cdr spec)) (pair? (cddr spec))) (caddr spec) (gensym "supplied")))
+         (name (if (and (symbol? variable) (not (keyword? variable))) (symbol->string variable) #f)))
+    (unless name
+      (error "destructuring-bind: a key's variable must be a name, not" variable))
+    `((,supplied (destructuring--has-key? ,rest ,name))
+      (,variable (if ,supplied (destructuring--key-value ,rest ,name) ,default)))))
+
+(define (destructuring--keys pattern rest shape whole)
+  "The bindings for the variables after &key, then any &aux."
+  (let* ((specs (destructuring--key-specs pattern))
+         (after (list-tail pattern (length specs)))
+         (allow-other-keys (and (pair? after) (eq? (car after) '&allow-other-keys)))
+         (after (if allow-other-keys (cdr after) after))
+         (names (map (lambda (spec) (symbol->string (if (pair? spec) (car spec) spec))) specs)))
+    `((,(gensym "keys") (destructuring--check-keys ,rest ',shape ,whole ',names ,allow-other-keys))
+      ,@(apply append (map (lambda (spec) (destructuring--key spec rest)) specs))
+      ,@(cond ((null? after) '())
+              ((eq? (car after) '&aux) (destructuring--aux (cdr after) shape))
+              (else (error "destructuring-bind:" (car after) "can't be there in the pattern" shape))))))
+
+(define (destructuring--aux pattern shape)
+  "The bindings for the variables after &aux: x, or (x value)."
+  (map (lambda (spec)
+         (cond ((pair? spec) (list (car spec) (if (pair? (cdr spec)) (cadr spec) ''())))
+               ((destructuring--marker? spec)
+                (error "destructuring-bind:" spec "can't be there in the pattern" shape))
+               (else (list spec ''()))))
+       pattern))
+
+(defmacro destructuring-bind (pattern expression . body)
+  (let ((whole (gensym "list")))
+    `(let* ((,whole ,expression)
+            ,@(destructuring--bindings pattern whole))
+       ,@body)))
 
 ; (save-variables path name... [:leave-out-procedures #t])
 ; Saves each named variable's value -- numbers, strings, lists, vectors,

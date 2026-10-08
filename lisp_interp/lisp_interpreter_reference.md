@@ -43,6 +43,7 @@ as a reference to search rather than read start to end.
   - [Local variables](#local-variables)
     - [let](#let)
     - [let*](#let-1)
+    - [destructuring-bind](#destructuring-bind)
     - [with-columns](#with-columns)
   - [Choosing](#choosing)
     - [if](#if)
@@ -307,10 +308,10 @@ into the evaluator (`lisp_core.py`); the rest are **standard macros**,
 written in Lisp in `macros_init.lsp` and `loop.lsp`, which every new
 environment loads at startup (see "Running it", above). You use both the
 same way, so they're described together here, grouped by what they're for.
-For the curious, the macros are `let`, `let*`, `dolist`, `while`, `do`,
-`loop`, `when`, `unless`, `case`, `assert`, `with-sqlite`, `with-columns`,
-`pretty-print-function`, and `pretty-print-macro`; everything else here is
-a special form.
+For the curious, the macros are `let`, `let*`, `destructuring-bind`,
+`dolist`, `while`, `do`, `loop`, `when`, `unless`, `case`, `assert`,
+`with-sqlite`, `with-columns`, `pretty-print-function`, and
+`pretty-print-macro`; everything else here is a special form.
 
 What they have in common: a form receives its argument *expressions*
 unevaluated, and decides what to evaluate and when — which is what
@@ -477,7 +478,8 @@ procedure, not a separate mechanism.
 ### Local variables
 
 `let` and `let*` give names to values for the length of a body — the
-names exist only inside it.
+names exist only inside it. `destructuring-bind` names the parts of a
+list.
 
 #### let
 #### `(let ((name val)...) body...)`
@@ -501,6 +503,38 @@ the same form.
 ```lisp
 (let* ((a 1) (b (+ a 1))) (list a b))   ; => (1 2) -- b's val sees a
 ```
+
+#### destructuring-bind
+#### `(destructuring-bind pattern expression body...)`
+Evaluates `expression`, which gives a list, binds the variables in
+`pattern` to its parts, and runs `body...` with them, as Common Lisp's
+`destructuring-bind` does. The pattern has the shape of the list, and can
+have, in this order:
+
+| Part | What it binds |
+|---|---|
+| variables | one for each element, or a pattern of its own for an element that is a list: `(a (b c) d)` |
+| `&optional` | then elements that may be missing: `x`, `(x default)`, or `(x default supplied-p)`. A missing one gets `default` (`'()` unless given), which can use the variables before it, and `supplied-p` is `#t` if it was there, `#f` if not. `x` can be a pattern |
+| `&rest x`, `&body x`, or a dot, `(a b . x)` | `x` gets the rest of the list |
+| `&key` | then keyword arguments, from `:name value` pairs in the rest of the list: `x`, `(x default)`, or `(x default supplied-p)`, for `:x`. Another key is an error, unless `&allow-other-keys` follows |
+| `&aux` | then more variables, not from the list: `x`, or `(x value)` |
+
+It can also start with `&whole x`, for `x` to get the whole list. A list
+with too few elements, or more than the pattern has room for, or a key it
+doesn't have, is an error that shows the list and the pattern.
+
+```lisp
+(destructuring-bind (a (b c) . more) '(1 (2 3) 4 5) (list a b c more))   ; => (1 2 3 (4 5))
+(destructuring-bind (name &optional (count 1)) '("BRK/B") (list name count))   ; => ("BRK/B" 1)
+(destructuring-bind (symbol &key (rate 0.04) (months 3)) '("KO" :months 6)
+  (list symbol rate months))                                     ; => ("KO" 0.04 6)
+(destructuring-bind (a b) '(1 2 3) a)   ; raises LispError: destructuring-bind: (1 2 3) doesn't fit the pattern (a b): it has too many elements
+```
+
+It expands to a `let*`, with a variable for what is left of the list as it
+goes and a check wherever the list might not fit: `(macroexpand-1
+'(destructuring-bind (a b) x (+ a b)))` shows it, and `macros_init.lsp`
+explains it.
 
 #### with-columns
 #### `(with-columns (column...) table body...)`
