@@ -54,8 +54,13 @@ class LispModel:
         self.floor, self.ceiling = floor, ceiling   # a logistic model's curve goes from floor to ceiling
 
     def between_0_and_1(self):
-        """Whether a logistic model's curve goes from 0 to 1: it gives a probability."""
+        """Whether a logistic model's curve goes from 0 to 1."""
         return (self.floor, self.ceiling) == (0.0, 1.0)
+
+    def is_probability(self):
+        """Whether a logistic model gives a probability: its floor and ceiling
+        are between 0 and 1."""
+        return self.kind == "logistic" and 0 <= self.floor and self.ceiling <= 1
 
     def predict(self, xs):
         """xs: a list of numbers, one per predictor, in the same order the
@@ -204,15 +209,22 @@ def fit_linear(columns, ys, weights=None):
     return model
 
 
-def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
-    """Fit p = sigmoid(intercept + sum(coef[i] * x[i])) by maximum likelihood,
-    using Newton-Raphson. Each y must be between 0 and 1 (a 0/1 label or a
-    probability). `weights` works as in fit_linear: each observation's
-    log-likelihood is multiplied by its weight. (That's unrelated to
-    `irls_weight` below, which is part of the Newton-Raphson method itself.)
+def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, max_iterations=50, tolerance=1e-8):
+    """Fit p = floor + (ceiling - floor) * sigmoid(intercept + sum(coef[i] *
+    x[i])) by maximum likelihood: the curve from 0 to 1, unless the floor
+    and ceiling, both between 0 and 1, say otherwise. Each y must be between
+    0 and 1 (a 0/1 label or a probability), and the likelihood is that of y
+    having probability p. `weights` works as in fit_linear: each
+    observation's log-likelihood is multiplied by its weight. (That's
+    unrelated to `irls_weight` below, which is part of the method itself.)
 
-    Each iteration's gradient and Hessian are built with numpy, so large
-    data is fast; this loop is where nearly all the fitting time goes."""
+    The coefficients are found by Fisher scoring, a kind of Newton-Raphson:
+    each step solves for the change that would reach the maximum if the
+    log-likelihood were a parabola there. With a floor of 0 and a ceiling of
+    1 it's Newton-Raphson exactly (also called iteratively reweighted least
+    squares, IRLS). Each iteration's gradient and information matrix are
+    built with numpy, so large data is fast; this loop is where nearly all
+    the fitting time goes."""
     k = len(columns)
     n = len(ys)
     if n == 0:
@@ -234,6 +246,22 @@ def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
     X = np.column_stack([np.ones(n)] + [np.asarray(col, dtype=np.float64) for col in std_columns])
     w = np.asarray(weights, dtype=np.float64)
     y_arr = np.asarray(ys, dtype=np.float64)
+    span = ceiling - floor
+
+    def probability_and_irls_weight(beta):
+        """Each row's probability, and how much its log-likelihood's slope
+        changes with the coefficients -- the information it carries -- per
+        unit of `w`: dp/dz squared over p (1 - p), z being the row's
+        intercept + sum(coef[i] * x[i]). Also the factor (dp/dz) / (p (1 -
+        p)) that turns y - p into the slope. With a floor of 0 and a ceiling
+        of 1, dp/dz = p (1 - p), so the factor is exactly 1."""
+        s = _sigmoid_vec(X @ beta)
+        prob = floor + span * s
+        if (floor, ceiling) == (0.0, 1.0):
+            factor = np.ones(n)
+        else:
+            factor = span * s * (1.0 - s) / np.maximum(prob * (1.0 - prob), eps)
+        return prob, factor, factor * span * s * (1.0 - s)
 
     beta = np.zeros(p)
     converged = False
@@ -242,25 +270,24 @@ def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
 
     for iteration in range(1, max_iterations + 1):
         iterations_used = iteration
-        prob = _sigmoid_vec(X @ beta)             # n
-        error = prob - y_arr                      # n
-        irls_weight = w * prob * (1.0 - prob)      # n -- IRLS's OWN per-observation
-                                                    # weight, unrelated to the case weight `w`
-        gradient = X.T @ (w * error)               # p
-        hessian = (X.T * irls_weight) @ X          # p x p
+        prob, factor, irls_weight = probability_and_irls_weight(beta)     # n each
+        if (floor, ceiling) == (0.0, 1.0):
+            irls_weight = prob * (1.0 - prob)
+        gradient = X.T @ (w * (y_arr - prob) * factor)                   # p
+        information = (X.T * (w * irls_weight)) @ X                       # p x p
         log_likelihood = float((w * (
             y_arr * np.log(np.maximum(prob, eps)) + (1.0 - y_arr) * np.log(np.maximum(1.0 - prob, eps))
         )).sum())
 
         try:
-            delta = solve_linear_system(hessian.tolist(), gradient.tolist())
+            delta = solve_linear_system(information.tolist(), gradient.tolist())
         except LispError:
             raise LispError(
                 "logistic-regression: fitting failed to converge -- this "
                 "usually means the data is perfectly (or almost perfectly) "
                 "separable by one of the predictors, which sends the "
                 "coefficients toward infinity; try more/noisier data")
-        beta = beta - np.array(delta)
+        beta = beta + np.array(delta)
         if max(abs(d) for d in delta) < tolerance:
             converged = True
             break
@@ -280,9 +307,11 @@ def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
     # they say how much each row matters relative to the others, not how
     # many copies of it there are -- otherwise weighting by loan balance
     # (in dollars) would make the standard errors absurdly small.
-    prob = _sigmoid_vec(X @ beta)
+    prob, factor, irls_weight = probability_and_irls_weight(beta)
+    if (floor, ceiling) == (0.0, 1.0):
+        irls_weight = prob * (1.0 - prob)
     relative_w = w * (n / total_weight)
-    information = (X.T * (relative_w * prob * (1.0 - prob))) @ X
+    information = (X.T * (relative_w * irls_weight)) @ X
     try:
         covariance = np.linalg.inv(information)
         std_errors = np.sqrt(np.diag(_original_scale_covariance(covariance, means, scales)))
@@ -299,7 +328,7 @@ def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
         "test": "z",
         "auc": weighted_auc(prob, y_arr, w),
     }
-    return LispModel("logistic", coefficients, intercept, stats)
+    return LispModel("logistic", coefficients, intercept, stats, floor=floor, ceiling=ceiling)
 
 
 def fit_logistic_between(columns, ys, weights, floor, ceiling, who):
@@ -308,19 +337,32 @@ def fit_logistic_between(columns, ys, weights, floor, ceiling, who):
         y = floor + (ceiling - floor) * sigmoid(intercept + sum(coef[i] * x[i]))
 
     a curve in the shape of an S that flattens out at the floor on one side
-    and the ceiling on the other. The ys are rescaled to (y - floor) /
-    (ceiling - floor), which go from 0 to 1, and fit by fit_logistic. With no
-    floor and ceiling (None), they're 0 and 1, and every y must be between
-    them, as a probability is. With them, a y below the floor, or above the
-    ceiling, is taken to be at it (clipped): data scatters about the levels a
-    curve flattens out at, so some of it is beyond them. The model's stats
-    say how many were. `who` is the function to name in an error message."""
-    if floor is None:
+    and the ceiling on the other. There are three cases:
+
+    - No floor and ceiling (None): they're 0 and 1, and every y must be
+      between them, as a probability is.
+    - A floor and ceiling between 0 and 1: the model is still of a
+      probability -- one that can't go below the floor, or above the
+      ceiling -- and every y must be between 0 and 1, a 0/1 label or a
+      probability. fit_logistic fits it by maximum likelihood, as it is. A y
+      beyond the floor or ceiling is just one that happened to be.
+    - A floor or ceiling outside 0 and 1: y isn't a probability, but a
+      number that flattens out at the floor and the ceiling. It's rescaled
+      to (y - floor) / (ceiling - floor), which goes from 0 to 1, and that
+      is fit as a probability would be. A y below the floor, or above the
+      ceiling, is taken to be at it (clipped): data scatters about the
+      levels a curve flattens out at, so some of it is beyond them. The
+      model's stats say how many were.
+
+    `who` is the function to name in an error message."""
+    if floor is None or (0 <= floor and ceiling <= 1):
         for y in ys:
             if not 0 <= y <= 1:
-                raise LispError("%s: every y must be between 0 and 1, as a probability is (got %r) -- "
-                                "or give the curve a :floor and :ceiling" % (who, y))
-        return fit_logistic(columns, ys, weights)
+                raise LispError("%s: every y must be between 0 and 1, as a probability is (got %r) -- or give the "
+                                "curve a :floor or :ceiling outside 0 and 1, for a number that isn't one" % (who, y))
+        if floor is None:
+            return fit_logistic(columns, ys, weights)
+        return fit_logistic(columns, ys, weights, floor, ceiling)
     rescaled = [(y - floor) / (ceiling - floor) for y in ys]
     model = fit_logistic(columns, [min(max(r, 0.0), 1.0) for r in rescaled], weights)
     model.floor, model.ceiling = floor, ceiling
@@ -698,11 +740,11 @@ def _is_model(x):
 
 
 def _is_probabilistic(model):
-    """True for models whose .predict() returns a probability in [0,1]: a
-    logistic or spline-logistic model whose curve goes from 0 to 1. (One with
-    another floor and ceiling predicts a number between them.)"""
+    """True for models whose .predict() returns a probability: a logistic or
+    spline-logistic model whose floor and ceiling are between 0 and 1. (One
+    with a floor or ceiling outside them predicts a number between them.)"""
     inner = model.inner_model if isinstance(model, LispSplineModel) else model
-    return inner.kind == "logistic" and inner.between_0_and_1()
+    return inner.is_probability()
 
 
 def model_predict(model, x_arg):
@@ -789,8 +831,8 @@ def model_report(model):
         lines = ["Logistic model:  p(%s) = sigmoid(%.6g + %s)" % (y_name, model.intercept, terms)]
     else:
         lines = ["Logistic model, between %.6g and %.6g:  %s = %.6g + %.6g * sigmoid(%.6g + %s)"
-                 % (model.floor, model.ceiling, y_name, model.floor, model.ceiling - model.floor,
-                    model.intercept, terms)]
+                 % (model.floor, model.ceiling, ("p(%s)" if model.is_probability() else "%s") % y_name,
+                    model.floor, model.ceiling - model.floor, model.intercept, terms)]
     lines.extend(coefficient_table_lines(model, names))
     lines.extend(fit_statistics_lines(model))
     return LispString("\n".join(lines))
@@ -810,7 +852,9 @@ def fit_statistics_lines(model):
                                                    "converged" if stats["converged"] else "did NOT converge"),
                 "  n                = %d" % stats["n"]]
     between = []
-    if not model.between_0_and_1():
+    if model.is_probability() and not model.between_0_and_1():
+        between = ["  floor, ceiling   = %.6g, %.6g  (the probability is between them)" % (model.floor, model.ceiling)]
+    elif not model.is_probability():
         between = ["  floor, ceiling   = %.6g, %.6g  (%d y below the floor, and %d above the ceiling, taken as at them)"
                    % (model.floor, model.ceiling, stats.get("below_floor", 0), stats.get("above_ceiling", 0)),
                    "  (the measures below are of y rescaled to (y - floor) / (ceiling - floor))"]

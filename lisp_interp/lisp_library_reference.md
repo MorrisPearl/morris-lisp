@@ -2627,24 +2627,39 @@ the data can prevent convergence and raises a descriptive error rather
 than diverging silently.
 
 **A floor and a ceiling.** A logistic curve is an S that flattens out at 0
-on one side and at 1 on the other. For data that flattens out at other
-levels -- a share of loans prepaying that rises from about 3% to about 48%,
+on one side and at 1 on the other. For a curve that flattens out at other
+levels -- a chance of prepaying that rises from about 3% to about 48%,
 say -- give them as `:floor` and `:ceiling`, and the model is
 
 ```
 y = floor + (ceiling - floor) * sigmoid(intercept + sum(coefficients[i] * x[i]))
 ```
 
-It is fit by rescaling `y` to `(y - floor) / (ceiling - floor)`, which goes
-from 0 to 1, and fitting that as above. Data scatters about the levels a
-curve flattens out at, so some of it is beyond them: a `y` below the floor
-is taken to be at the floor, and one above the ceiling at the ceiling
-(`model-report` says how many were). One of the two can be left out: it is
-0 or 1, as usual. The floor and ceiling are yours to choose, from what you
-know of the data -- not its smallest and largest values, which are often
-the points out of line. `model-predict` gives a number between the floor
-and the ceiling, and `model-evaluate` treats it as any other number
-(R-squared, RMSE, MAE), not as a probability.
+One of the two can be left out: it is 0 or 1, as usual. The floor and
+ceiling are yours to choose, from what you know of the data -- not its
+smallest and largest values, which are often the points out of line. How
+the model is fit depends on whether they are between 0 and 1:
+
+- **Between 0 and 1, it is a probability** -- one that can't go below the
+  floor or above the ceiling -- and every `y` must be between 0 and 1: 0s
+  and 1s (did each loan prepay?) or shares (what share of a pool did?).
+  It is fit by maximum likelihood, as it is, with `p` the curve above; the
+  method (Fisher scoring) is the Newton-Raphson below, with a floor of 0
+  and a ceiling of 1. A `y` beyond the floor or ceiling is just one that
+  happened to be. `model-evaluate` treats the prediction as a probability
+  (log-likelihood, AUC).
+- **Outside 0 and 1, it is a number, not a probability**: a price, a
+  percentage, a count, that rises in an S from the floor to the ceiling.
+  `y` is rescaled to `(y - floor) / (ceiling - floor)`, which goes from 0
+  to 1, and that is fit as a probability would be. Data scatters about the
+  levels a curve flattens out at, so some of it is beyond them: a `y` below
+  the floor is taken to be at the floor, and one above the ceiling at the
+  ceiling (`model-report` says how many were). `model-evaluate` treats the
+  prediction as any other number (R-squared, RMSE, MAE).
+
+A probability that can't go below the floor, or above the ceiling, also
+limits what a point far from the curve can cost the fit: with them, a
+plain logistic curve is pulled much less by points out of line.
 
 ```lisp
 (define x (- (/ (vector-range 41) 8.0) 2))
@@ -2652,6 +2667,8 @@ and the ceiling, and `model-evaluate` treats it as any other number
 (define m (logistic-regression x y :floor 0.03 :ceiling 0.48))
 (vector-round (vector (model-intercept m) (model-slope m)) 6)   ; => #(-3.0 3.0)
 (format "{:.3f}" (model-predict m 10))                          ; => "0.480"
+(define percent (logistic-regression x (* 100 y) :floor 3 :ceiling 48))   ; the same, in percent
+(format "{:.1f}" (model-predict percent 10))                     ; => "48.0"
 ```
 
 **How the coefficients are found.** Fitting maximizes the (weighted)
@@ -2760,9 +2777,9 @@ expanded basis.
 #### `(spline-logistic x y [max-knots weights] [:floor f :ceiling c])`
 A spline model with a logistic link: `spline-regression`'s expansion of
 each predictor, from the same `max-knots`, fit as `logistic-regression`
-fits. Every `y` must be between 0 and 1, unless `:floor` and `:ceiling` are
-given, as for `logistic-regression`. The prediction stays between 0 and 1
-(or the floor and the ceiling), but thanks to the hinges it doesn't have
+fits, with the same `:floor` and `:ceiling` (and the same rules for `y`).
+The prediction stays between 0 and 1 (or the floor and the ceiling), but
+thanks to the hinges it doesn't have
 to rise (or fall) all the way across, as a plain `logistic-regression`'s
 does. Returns a model of kind `"spline-logistic"`. (This was
 `spline-regression` with `logistic?` `#t`.)
@@ -2900,9 +2917,10 @@ held-out data it wasn't fit on — and returns a string report. `x`/`y`
 follow the same shape rules as the fitting functions; the number of
 predictor vectors in `x` must match the model's own predictor count. For a
 non-probabilistic model (`"linear"`/`"lad"`/`"spline"`/`"spline-lad"`, and a
-logistic one with a `:floor` and `:ceiling`): reports R-squared, RMSE,
-and MAE against this new data. For a probabilistic model
-(`"logistic"`/`"spline-logistic"`, from 0 to 1): reports log-likelihood, McFadden's
+logistic one with a `:floor` or `:ceiling` outside 0 and 1): reports
+R-squared, RMSE, and MAE against this new data. For a probabilistic model
+(`"logistic"`/`"spline-logistic"`, with its floor and ceiling, if any,
+between 0 and 1): reports log-likelihood, McFadden's
 pseudo-R-squared (against an intercept-only model fit fresh on this new
 data), AUC (see `model-report`), and classification accuracy at a 0.5
 threshold — though for a rare outcome, such as a monthly payoff,

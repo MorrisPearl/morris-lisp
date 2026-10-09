@@ -31,8 +31,10 @@
 ;
 ; The plain logistic curve can't flatten out at 0.48, as the data does: its
 ; curve goes from 0 to 1. With a floor of 0.03 and a ceiling of 0.48, it
-; has the data's shape. But a logistic fit, like a least-squares one, is
-; pulled by the months out of line, where spline-lad isn't.
+; has the data's shape, and follows it closely: a probability that can't go
+; below 0.03 or above 0.48 makes a month far from the curve cost the fit
+; only so much. The spline-logistic, freer to bend, is still pulled at its
+; ends.
 
 ; --- The data ------------------------------------------------------------------
 (random-seed 7)                                          ; the same made-up data every time

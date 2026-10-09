@@ -408,7 +408,8 @@ class TestSplineLad(LispTestCase):
 
 class TestLogisticFloorAndCeiling(LispTestCase):
     """logistic-regression and spline-logistic with :floor and :ceiling: a curve from the floor to the
-    ceiling, in place of from 0 to 1."""
+    ceiling, in place of from 0 to 1. Between 0 and 1, it's a probability, fit as one; outside them, a
+    number, fit by rescaling it."""
 
     CURVE = """(define x (- (/ (vector-range 41) 8.0) 2))
                (define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))
@@ -422,25 +423,69 @@ class TestLogisticFloorAndCeiling(LispTestCase):
         self.assertAlmostEqual(self.run_lisp("(model-predict m -10)"), 0.03, places=6)
         self.assertShows("m", "#<logistic-model slope=3 intercept=-3 floor=0.03 ceiling=0.48>")
         report = self.show("(model-report m)")
-        self.assertIn("Logistic model, between 0.03 and 0.48:  y = 0.03 + 0.45 * sigmoid(-3 + 3*x1)", report)
-        self.assertIn("(0 y below the floor, and 0 above the ceiling, taken as at them)", report)
-        evaluation = self.show("(model-evaluate m x y)")             # a number between them, not a probability
+        self.assertIn("Logistic model, between 0.03 and 0.48:  p(y) = 0.03 + 0.45 * sigmoid(-3 + 3*x1)", report)
+        self.assertIn("floor, ceiling   = 0.03, 0.48  (the probability is between them)", report)
+        self.assertIn("AUC", self.show("(model-evaluate m x y)"))   # a probability, between 0.03 and 0.48
+        self.assertShows("(model-kind (logistic-regression x y))", '"logistic"')
+
+    def test_a_floor_and_ceiling_of_0_and_1_are_the_usual_fit(self):
+        self.run_lisp(self.CURVE + "(define usual (logistic-regression x y))"
+                                   "(define given (logistic-regression x y :floor 0 :ceiling 1))")
+        self.assertEqual(self.show("(model-coefficients given)"), self.show("(model-coefficients usual)"))
+        self.assertEqual(self.show("(model-report given)"), self.show("(model-report usual)"))
+
+    def test_the_probability_of_a_0_or_1_outcome_between_a_floor_and_ceiling(self):
+        # 20,000 loans, each prepaid or not, with a chance from 3% to 48%: the fit finds that curve, where
+        # rescaling 0 and 1 between the floor and ceiling (and clipping them back) would just fit 0s and 1s
+        rng = np.random.default_rng(1)
+        x = rng.uniform(-2, 3, 20000)
+        chance = 0.03 + 0.45 / (1 + np.exp(-3 * (x - 1)))
+        self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(x)
+        self.env[lisp_core.Symbol("prepaid")] = lisp_vector_math.to_vector((rng.uniform(size=len(x)) < chance) * 1.0)
+        self.run_lisp("(define m (logistic-regression x prepaid :floor 0.03 :ceiling 0.48))")
+        self.assertAlmostEqual(self.run_lisp("(model-slope m)"), 3.0, delta=0.3)
+        for v in (-2, 0, 1, 2, 3):
+            self.assertAlmostEqual(self.run_lisp("(model-predict m %s)" % v),
+                                   0.03 + 0.45 / (1 + math.exp(-3 * (v - 1))), delta=0.01, msg=v)
+        self.assertGreater(self.run_lisp("(model-predict (logistic-regression x prepaid) 3)"), 0.55)  # (it overshoots)
+        # and it's the most likely curve: moving the intercept or slope either way makes the outcomes less likely
+        outcomes = np.array(self.run_lisp("prepaid").items, dtype=np.float64)
+        model = self.run_lisp("m")
+
+        def log_likelihood(intercept, slope):
+            p = 0.03 + 0.45 / (1 + np.exp(-(intercept + slope * x)))
+            return float((outcomes * np.log(p) + (1 - outcomes) * np.log(1 - p)).sum())
+
+        best = log_likelihood(model.intercept, model.coefficients[0])
+        for d_intercept, d_slope in ((0.02, 0), (-0.02, 0), (0, 0.02), (0, -0.02)):
+            self.assertLess(log_likelihood(model.intercept + d_intercept, model.coefficients[0] + d_slope), best)
+
+    def test_a_number_that_isn_t_a_probability_is_rescaled(self):
+        # in percent: from 3 to 48, rescaled to (y - 3) / 45
+        self.run_lisp(self.CURVE + """
+          (define percent (* 100 y))
+          (define m (logistic-regression x percent :floor 3 :ceiling 48))""")
+        self.assertAlmostEqual(self.run_lisp("(model-slope m)"), 3.0, places=5)
+        self.assertAlmostEqual(self.run_lisp("(model-predict m 1)"), 25.5, places=5)
+        report = self.show("(model-report m)")
+        self.assertIn("Logistic model, between 3 and 48:  y = 3 + 45 * sigmoid(-3 + 3*x1)", report)
+        self.assertIn("(the measures below are of y rescaled to (y - floor) / (ceiling - floor))", report)
+        evaluation = self.show("(model-evaluate m x percent)")      # a number between them, not a probability
         self.assertIn("R-squared = 1", evaluation)
         self.assertNotIn("AUC", evaluation)
-        self.assertShows("(model-kind (logistic-regression x y))", '"logistic"')     # from 0 to 1, as before
-        self.assertIn("AUC", self.show("(model-evaluate (logistic-regression x y) x y)"))
 
-    def test_a_y_beyond_the_floor_or_ceiling_is_taken_as_at_it(self):
+    def test_a_number_beyond_the_floor_or_ceiling_is_taken_as_at_it(self):
         self.run_lisp(self.CURVE + """
-          (vector-set! y 0 0.01) (vector-set! y 1 0.0)                  ; below the floor
-          (vector-set! y 39 0.5) (vector-set! y 40 0.6)                 ; above the ceiling
-          (define m (logistic-regression x y :floor 0.03 :ceiling 0.48))
-          (define clipped (vector-map (lambda (v) (min 0.48 (max 0.03 v))) y))
-          (define by-hand (logistic-regression x clipped :floor 0.03 :ceiling 0.48))""")
+          (define percent (* 100 y))
+          (vector-set! percent 0 1) (vector-set! percent 1 0)            ; below the floor
+          (vector-set! percent 39 50) (vector-set! percent 40 60)        ; above the ceiling
+          (define m (logistic-regression x percent :floor 3 :ceiling 48))
+          (define clipped (vector-map (lambda (v) (min 48 (max 3 v))) percent))
+          (define by-hand (logistic-regression x clipped :floor 3 :ceiling 48))""")
         self.assertIn("(2 y below the floor, and 2 above the ceiling, taken as at them)", self.show("(model-report m)"))
         for v in (-2, 0, 1, 2.5):            # (to the fit's own tolerance)
             self.assertAlmostEqual(self.run_lisp("(model-predict m %s)" % v),
-                                   self.run_lisp("(model-predict by-hand %s)" % v), places=7)
+                                   self.run_lisp("(model-predict by-hand %s)" % v), places=5)
 
     def test_one_of_them_can_be_left_out_and_weights_still_come_first(self):
         self.run_lisp(self.CURVE + """
@@ -455,7 +500,8 @@ class TestLogisticFloorAndCeiling(LispTestCase):
     def test_what_the_options_won_t_take(self):
         self.run_lisp(self.CURVE)
         self.assertLispError("(logistic-regression x (* 3 y))", "every y must be between 0 and 1, as a probability is")
-        self.assertLispError("(logistic-regression x (* 3 y))", "or give the curve a :floor and :ceiling")
+        self.assertLispError("(logistic-regression x (* 3 y) :ceiling 0.9)",
+                             "or give the curve a :floor or :ceiling outside 0 and 1, for a number that isn't one")
         self.assertLispError("(logistic-regression x y :floor 0.5 :ceiling 0.4)",
                              "the :floor (0.5) must be below the :ceiling (0.4)")
         self.assertLispError('(logistic-regression x y :floor "low")', ":floor must be a number")

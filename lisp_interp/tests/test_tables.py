@@ -582,10 +582,11 @@ class TestSaveVariables(LispTestCase):
           (define spline (spline-regression (list x kind) y (list 1 'categorical)))
           (define lad-spline (spline-lad (list x kind) y (list 1 'categorical)))
           (define between (logistic-regression (list x) y :floor 5 :ceiling 80))
+          (define capped (logistic-regression (list x) (cons "default" #(0 0 1 0 1 0 1 1)) :ceiling 0.9))
           (define spline-between (spline-logistic (list x kind) y (list 1 'categorical) :floor 5 :ceiling 80))""")
-        self.run_lisp("(save-variables path linear lad logistic spline lad-spline between spline-between)")
+        self.run_lisp("(save-variables path linear lad logistic spline lad-spline between spline-between capped)")
         self.run_lisp("(load-variables path)", env=self.later)
-        for model in ("linear", "lad", "logistic", "between"):
+        for model in ("linear", "lad", "logistic", "between", "capped"):
             for src in ("(model-predict %s (list 45))" % model, "(model-report %s)" % model):
                 self.assertEqual(self.run_lisp(src, env=self.later), self.run_lisp(src), src)
         for model in ("spline", "lad-spline", "spline-between"):
