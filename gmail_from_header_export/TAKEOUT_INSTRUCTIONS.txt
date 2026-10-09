@@ -77,27 +77,24 @@ PART 2 — DOWNLOAD IT
     The files can be very large (many gigabytes), so make sure your
     laptop is plugged in and has enough free space, and be patient.
 
-11. In Finder, click "Downloads" in the left column. If the download is
-    a file ending in .zip, double-click it to open it (Safari may have
-    already done this for you). This creates a folder called "Takeout".
-    Do this for every .zip file if there are several.
-
-12. Inside, open the folders: Takeout, then Mail. You should see a file
-    ending in .mbox, probably named
-    "All mail Including Spam and Trash.mbox".
+11. In Finder, click "Downloads" in the left column. You should see one
+    or more files ending in .zip, with names like
+    takeout-20261008T000000Z-001.zip. You do NOT need to open them —
+    the program reads them as they are. (If Safari has already opened
+    them into a folder called "Takeout", that is fine too.)
     Leave Finder open on this folder.
 
 ------------------------------------------------------------
 PART 3 — GET THE PROGRAM
 ------------------------------------------------------------
-13. Open Terminal (hold Command, press Space, type Terminal, press
+12. Open Terminal (hold Command, press Space, type Terminal, press
     Return). A window opens with a blinking cursor.
 
-14. Type this (or copy and paste it) and press Return:
+13. Type this (or copy and paste it) and press Return:
 
     cd ~/Downloads
 
-15. Then copy and paste this whole line and press Return:
+14. Then copy and paste this whole line and press Return:
 
     curl -O https://raw.githubusercontent.com/MorrisPearl/morris-lisp/main/gmail_from_header_export/mbox_senders.py
 
@@ -107,17 +104,17 @@ PART 3 — GET THE PROGRAM
 ------------------------------------------------------------
 PART 4 — RUN THE PROGRAM
 ------------------------------------------------------------
-16. In the Terminal window, type this, including the space at the end,
+15. In the Terminal window, type this, including the space at the end,
     but DO NOT press Return yet:
 
     python3 mbox_senders.py
 
-17. Now, in Finder, click on the .mbox file and drag it into the
+16. Now, in Finder, click on the .zip file and drag it into the
     Terminal window, then let go of the mouse button. Terminal fills in
-    the file's location for you. (If you have several .mbox files, drag
+    the file's location for you. (If you have several .zip files, drag
     each one in the same way.)
 
-18. Press Return.
+17. Press Return.
 
     - FIRST TIME ONLY: a box may pop up saying "The 'python3' command
       requires the command line developer tools". Click "Install",
@@ -125,7 +122,7 @@ PART 4 — RUN THE PROGRAM
       several minutes). Then go back to Terminal, press the Up-arrow
       key to bring back the line you typed, and press Return again.
 
-19. The program prints progress lines like:
+18. The program prints progress lines like:
 
       50,000 messages read (16% of this file), 33,828 unique senders so far
 
@@ -133,20 +130,20 @@ PART 4 — RUN THE PROGRAM
     close Terminal or let your laptop go to sleep. A very large mailbox
     can take 30 minutes or more.
 
-20. When it finishes, a file called senders.csv has been created in the
-    same folder as the .mbox file (the "Mail" folder from step 12).
+19. When it finishes, a file called senders.csv has been created in the
+    same folder as the .zip file (your Downloads folder).
 
 ------------------------------------------------------------
 PART 5 — PUT THE LIST IN GOOGLE SHEETS
 ------------------------------------------------------------
-21. In your browser go to sheets.google.com and click "Blank".
+20. In your browser go to sheets.google.com and click "Blank".
 
-22. Click "File", then "Import", then the "Upload" tab.
+21. Click "File", then "Import", then the "Upload" tab.
 
-23. Drag senders.csv from Finder into the box (or click "Browse" and
+22. Drag senders.csv from Finder into the box (or click "Browse" and
     pick it).
 
-24. Choose "Replace spreadsheet" and click "Import data".
+23. Choose "Replace spreadsheet" and click "Import data".
 
 The sheet has four columns: First Name, Last Name, Email Address, and
 the original "From" text (this last column is there so you can check
@@ -156,17 +153,19 @@ are at the top.
 ------------------------------------------------------------
 PART 6 — DELETE THE BIG FILES
 ------------------------------------------------------------
-25. Your complete email is sitting on your Mac. Once the list is in
-    Google Sheets, drag the "Takeout" folder and the .zip file(s) from
-    your Downloads folder to the Trash, then right-click the Trash icon
-    in the Dock and choose "Empty Trash".
+24. Your complete email is sitting on your Mac. Once the list is in
+    Google Sheets, drag the .zip file(s) (and the "Takeout" folder, if
+    there is one) from your Downloads folder to the Trash, then
+    right-click the Trash icon in the Dock and choose "Empty Trash".
 
 ------------------------------------------------------------
 IF SOMETHING GOES WRONG
 ------------------------------------------------------------
-- "No such file or directory": the .mbox file's location wasn't filled
-  in properly. Try step 16-17 again, and make sure there is a space
+- "No such file or directory": the .zip file's location wasn't filled
+  in properly. Try steps 15 and 16 again, and make sure there is a space
   between "mbox_senders.py" and the dragged-in file.
+- "No .mbox files were found": you may have dragged in the wrong file.
+  Drag in the .zip file that Google sent.
 - Terminal seems frozen: it is probably still working. Progress lines
   appear every 50,000 messages.
 - If you see any other error, take a screenshot (press

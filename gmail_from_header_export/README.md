@@ -44,19 +44,32 @@ alternative with no daily limit is Google Takeout; see the next section.
 ## Alternative for very large mailboxes: Google Takeout + Python
 
 Google Takeout (takeout.google.com) can export a whole mailbox as `.mbox`
-files. [`mbox_senders.py`](mbox_senders.py) (Python 3, standard library only)
-reads the `From:` headers from them and writes `senders.csv` with the same four
-columns, one row per unique sender, newest first, with the same skip-non-people
-list and name splitting as `Code.gs`. It skips messages labeled Spam or
-Trash (use `--include-spam-trash` to keep them).
+files packed in `.zip` files. [`mbox_senders.py`](mbox_senders.py) (Python 3,
+standard library only) reads the `From:` headers from them and writes
+`senders.csv` with the same four columns, one row per unique sender, newest
+first, with the same skip-non-people list and name splitting as `Code.gs`. It
+skips messages labeled Spam or Trash (use `--include-spam-trash` to keep
+them). It accepts the Takeout `.zip` files as they are, or `.mbox` files:
 
-    python3 mbox_senders.py "All mail Including Spam and Trash.mbox"
+    python3 mbox_senders.py takeout-20261008T000000Z-001.zip
 
 It reads only the header lines, at roughly 40 MB/s: a test file of 300,000
-messages (726 MB) took 20 seconds. Step-by-step instructions for a
-non-technical Mac user are in [`TAKEOUT_INSTRUCTIONS.txt`](TAKEOUT_INSTRUCTIONS.txt).
-The downloaded `.mbox` holds the full text of every message, so it should be
-processed on the owner's own computer and then deleted.
+messages (726 MB) took 20 seconds. There are two ways to run it, each with
+step-by-step instructions for a non-technical user:
+
+- **In Google Colab, no download** --
+  [`COLAB_INSTRUCTIONS.txt`](COLAB_INSTRUCTIONS.txt). Takeout saves the export
+  into the user's Google Drive, and the notebook
+  [`senders_from_takeout.ipynb`](senders_from_takeout.ipynb) ([open in
+  Colab](https://colab.research.google.com/github/MorrisPearl/morris-lisp/blob/main/gmail_from_header_export/senders_from_takeout.ipynb))
+  runs the script on Google's computers against the zips in Drive and writes
+  `senders.csv` back to Drive. The mailbox never leaves the Google account.
+  Needs enough free Drive space for a copy of the mailbox, and Colab enabled
+  by the Workspace admin.
+- **On a Mac** -- [`TAKEOUT_INSTRUCTIONS.txt`](TAKEOUT_INSTRUCTIONS.txt).
+  Download the export and run the script in Terminal. The downloaded export
+  holds the full text of every message, so it should stay on the owner's own
+  computer and be deleted afterwards.
 
 ## Setup (one time, per person)
 

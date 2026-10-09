@@ -1,0 +1,158 @@
+HOW TO MAKE A LIST OF EVERYONE WHO EMAILS YOU
+USING GOOGLE TAKEOUT AND GOOGLE COLAB (nothing to download or install)
+
+WHAT THIS DOES
+Google lets you save a complete copy of your email into your own Google
+Drive (this is called "Google Takeout"). Then a small program, running on
+Google's computers through a free tool called "Google Colab", reads who
+each message is from and writes a spreadsheet file with one row per
+person: first name, last name, and email address.
+
+Nothing is downloaded to your laptop, and your email never leaves your
+Google account. All you do is click buttons in your web browser.
+
+HOW LONG IT TAKES
+- Google preparing the copy of your email: anywhere from a few minutes to
+  a day or more. You can do other things while you wait; Google will send
+  you an email when it is done.
+- Running the program in Colab: usually 10 to 30 minutes.
+
+BEFORE YOU START — CHECK YOUR GOOGLE DRIVE SPACE
+The copy of your email takes up room in your Google Drive, about as much
+as your mailbox itself (it can be many gigabytes). Go to drive.google.com
+and look at the storage figure at the bottom of the left-hand column. If
+you are close to your limit, tell Morris before you start. You will
+delete the copy when you are finished (Part 6).
+
+------------------------------------------------------------
+PART 1 — ASK GOOGLE TO SAVE YOUR EMAIL INTO YOUR DRIVE
+------------------------------------------------------------
+1. Open your web browser and go to:
+
+   takeout.google.com
+
+   Sign in with your work Google account if asked.
+
+2. Near the top, click "Deselect all". (Otherwise it will try to
+   copy everything Google has about you.)
+
+3. Scroll down to "Mail" and tick the box next to it.
+
+4. If you see a button that says "All Mail data included", you can leave
+   it as it is. (Optional: click it to untick "Spam" and "Trash" so the
+   copy is smaller. The program skips those anyway.)
+
+5. Scroll all the way down and click "Next step".
+
+6. Choose these settings (the wording may be slightly different):
+      - Destination:  "Add to Drive"
+      - Frequency:    "Export once"
+      - File type:    ".zip"
+      - File size:    the biggest one offered (for example 50 GB)
+
+7. Click "Create export". Google may ask you to type your password
+   again.
+
+   If you do not see "Mail", "Add to Drive", or "Create export", or
+   Google says the feature is turned off, your organization's Google
+   administrator has disabled Takeout. Tell Morris.
+
+------------------------------------------------------------
+PART 2 — WAIT FOR GOOGLE
+------------------------------------------------------------
+8. Google will email you when the copy is ready. This can take from a
+   few minutes to a day or more.
+
+9. When the email arrives, go to drive.google.com. In "My Drive" you
+   should see a new folder called "Takeout". Open it. Inside are one or
+   more files ending in .zip. Do not open them or move them — the
+   program reads them where they are.
+
+------------------------------------------------------------
+PART 3 — OPEN THE PROGRAM IN COLAB
+------------------------------------------------------------
+10. Click this link (or copy it and paste it into the address bar at the
+    top of your browser, then press Return):
+
+    https://colab.research.google.com/github/MorrisPearl/morris-lisp/blob/main/gmail_from_header_export/senders_from_takeout.ipynb
+
+11. Look at the top right of the page. Make sure you are signed in with
+    your work Google account (if you see a "Sign in" button, click it).
+
+    If Google says Colab is not available for your account, your
+    administrator needs to turn on "Colab" for your organization. Tell
+    Morris.
+
+------------------------------------------------------------
+PART 4 — RUN IT, ONE BOX AT A TIME
+------------------------------------------------------------
+The page is made of text and grey boxes. Each grey box has a round play
+button (a circle with a triangle) at its left edge. You click the play
+buttons one at a time, from the top of the page to the bottom. After you
+click one, wait for it to finish — a green check mark appears next to
+it — before clicking the next one.
+
+12. STEP 1 box ("Connect to your Google Drive"): click its play button.
+    - A message may say "This notebook was not authored by Google".
+      Click "Run anyway".
+    - A pop-up asks permission to access your Google Drive. Click
+      "Connect to Google Drive", choose your work account, then click
+      "Continue" or "Allow".
+
+13. STEP 2 box ("Find the Takeout export"): click its play button. It
+    should print the names and sizes of your .zip files. If instead it
+    says it could not find any, see "If something goes wrong" below.
+
+14. STEP 3 box ("Get the program"): click its play button. It should
+    print "Got mbox_senders.py".
+
+15. STEP 4 box ("Make the list"): click its play button. This is the
+    long one. Progress lines appear as it goes, like:
+
+      50,000 messages read (16% of this file), 33,828 unique senders so far
+
+    Keep this browser tab open, keep your laptop awake and plugged in,
+    and wait until you see a line starting with "Wrote". This can take
+    30 minutes or more for a very large mailbox.
+
+16. STEP 5 box ("Take a look"): click its play button. It shows a small
+    table of the first 20 people on the list.
+
+------------------------------------------------------------
+PART 5 — PUT THE LIST IN GOOGLE SHEETS
+------------------------------------------------------------
+17. Go to drive.google.com. In "My Drive" (not inside the Takeout
+    folder) you will find a file called senders.csv.
+
+18. Right-click senders.csv, choose "Open with", then "Google Sheets".
+
+The sheet has four columns: First Name, Last Name, Email Address, and the
+original "From" text (this last column is there so you can check that
+the names and addresses were split correctly). The newest senders are at
+the top.
+
+------------------------------------------------------------
+PART 6 — DELETE THE COPY OF YOUR EMAIL
+------------------------------------------------------------
+19. The "Takeout" folder in your Drive holds a complete copy of all your
+    email. Once the list is safely in Google Sheets, in Google Drive
+    right-click the "Takeout" folder, choose "Remove" (or "Move to
+    trash"), then click "Trash" on the left side of Drive and click
+    "Empty trash".
+
+------------------------------------------------------------
+IF SOMETHING GOES WRONG
+------------------------------------------------------------
+- Step 2 says it could not find any .zip files: the Takeout copy may not
+  be finished yet (wait for Google's email), or it may have been sent
+  somewhere other than Google Drive. Look for a "Takeout" folder in
+  drive.google.com.
+- Step 4 stops or says "disconnected": the Colab page lost its
+  connection (often because the laptop went to sleep or the tab was
+  closed). Just start again at the STEP 1 box and click the play buttons
+  in order again. It starts over, so it takes the same time again.
+- Colab says you have reached a usage limit: wait a few hours and try
+  again.
+- If you see any other error, take a screenshot (on a Mac press
+  Command+Shift+4, then click and drag over the part of the screen to
+  capture) and send it to Morris.
