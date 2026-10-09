@@ -1,0 +1,175 @@
+HOW TO MAKE A LIST OF EVERYONE WHO EMAILS YOU, USING GOOGLE TAKEOUT
+(Instructions for Mac laptops)
+
+WHAT THIS DOES
+Google lets you download a complete copy of your email (this is called
+"Google Takeout"). A small program then reads who each message is from
+and makes a spreadsheet file with one row per person: first name, last
+name, and email address. Everything happens on your own Mac — your email
+is not sent to anyone.
+
+HOW LONG IT TAKES
+- Google preparing your download: anywhere from a few minutes to a day
+  or more. You can do other things while you wait; Google will send you
+  an email when it is ready.
+- Running the program on your Mac: usually 5 to 30 minutes.
+
+IMPORTANT — PRIVACY
+The file you download contains the full text of ALL of your email and
+all attachments. Do not email it, upload it anywhere, or share it. You
+will delete it at the end (Part 6).
+
+------------------------------------------------------------
+A FEW MAC BASICS YOU'LL USE BELOW
+------------------------------------------------------------
+- Copy:  hold Command (the ⌘ key next to the space bar) and press C
+- Paste: hold Command and press V
+- To open Terminal (a window where you type commands): hold Command and
+  press the Space bar, type the word Terminal, and press Return.
+- Finder is the smiling blue face icon at the left end of the row of
+  icons at the bottom of your screen. It shows your files and folders.
+
+------------------------------------------------------------
+PART 1 — ASK GOOGLE FOR YOUR EMAIL
+------------------------------------------------------------
+1. Open your web browser (Safari or Chrome) and go to:
+
+   takeout.google.com
+
+   Sign in with your work Google account if asked.
+
+2. Near the top, click "Deselect all". (Otherwise it will try to
+   download everything Google has about you.)
+
+3. Scroll down to "Mail" and tick the box next to it.
+
+4. If you see a button that says "All Mail data included", you can leave
+   it as it is. (Optional: click it to untick "Spam" and "Trash" so the
+   download is smaller. The program skips those anyway.)
+
+5. Scroll all the way down and click "Next step".
+
+6. Choose these settings (the wording may be slightly different):
+      - Destination:  "Send download link via email"
+      - Frequency:    "Export once"
+      - File type:    ".zip"
+      - File size:    the biggest one offered (for example 50 GB)
+
+7. Click "Create export". Google may ask you to type your password
+   again.
+
+8. Now wait. Google will email you when the download is ready. Google
+   keeps the finished download on its own computers for about a week, so
+   you do not need to hurry — but do not forget about it.
+
+   If you do not see "Mail" or "Create export", or Google says the
+   feature is turned off, your organization's Google administrator has
+   disabled Takeout. Tell Morris — there is another way to do this.
+
+------------------------------------------------------------
+PART 2 — DOWNLOAD IT
+------------------------------------------------------------
+9. When the email arrives, open it and click "Download your files".
+   Sign in again if asked.
+
+10. Click the download button. The file goes to your "Downloads" folder.
+    A large mailbox may come as more than one file — download each one.
+    The files can be very large (many gigabytes), so make sure your
+    laptop is plugged in and has enough free space, and be patient.
+
+11. In Finder, click "Downloads" in the left column. If the download is
+    a file ending in .zip, double-click it to open it (Safari may have
+    already done this for you). This creates a folder called "Takeout".
+    Do this for every .zip file if there are several.
+
+12. Inside, open the folders: Takeout, then Mail. You should see a file
+    ending in .mbox, probably named
+    "All mail Including Spam and Trash.mbox".
+    Leave Finder open on this folder.
+
+------------------------------------------------------------
+PART 3 — GET THE PROGRAM
+------------------------------------------------------------
+13. Open Terminal (hold Command, press Space, type Terminal, press
+    Return). A window opens with a blinking cursor.
+
+14. Type this (or copy and paste it) and press Return:
+
+    cd ~/Downloads
+
+15. Then copy and paste this whole line and press Return:
+
+    curl -O https://raw.githubusercontent.com/MorrisPearl/morris-lisp/main/gmail_from_header_export/mbox_senders.py
+
+    You should see a short progress table, and a file called
+    mbox_senders.py now exists in your Downloads folder.
+
+------------------------------------------------------------
+PART 4 — RUN THE PROGRAM
+------------------------------------------------------------
+16. In the Terminal window, type this, including the space at the end,
+    but DO NOT press Return yet:
+
+    python3 mbox_senders.py
+
+17. Now, in Finder, click on the .mbox file and drag it into the
+    Terminal window, then let go of the mouse button. Terminal fills in
+    the file's location for you. (If you have several .mbox files, drag
+    each one in the same way.)
+
+18. Press Return.
+
+    - FIRST TIME ONLY: a box may pop up saying "The 'python3' command
+      requires the command line developer tools". Click "Install",
+      agree to the terms, and wait for it to finish (this can take
+      several minutes). Then go back to Terminal, press the Up-arrow
+      key to bring back the line you typed, and press Return again.
+
+19. The program prints progress lines like:
+
+      50,000 messages read (16% of this file), 33,828 unique senders so far
+
+    Let it run until it prints a line starting with "Wrote". Do not
+    close Terminal or let your laptop go to sleep. A very large mailbox
+    can take 30 minutes or more.
+
+20. When it finishes, a file called senders.csv has been created in the
+    same folder as the .mbox file (the "Mail" folder from step 12).
+
+------------------------------------------------------------
+PART 5 — PUT THE LIST IN GOOGLE SHEETS
+------------------------------------------------------------
+21. In your browser go to sheets.google.com and click "Blank".
+
+22. Click "File", then "Import", then the "Upload" tab.
+
+23. Drag senders.csv from Finder into the box (or click "Browse" and
+    pick it).
+
+24. Choose "Replace spreadsheet" and click "Import data".
+
+The sheet has four columns: First Name, Last Name, Email Address, and
+the original "From" text (this last column is there so you can check
+that the names and addresses were split correctly). The newest senders
+are at the top.
+
+------------------------------------------------------------
+PART 6 — DELETE THE BIG FILES
+------------------------------------------------------------
+25. Your complete email is sitting on your Mac. Once the list is in
+    Google Sheets, drag the "Takeout" folder and the .zip file(s) from
+    your Downloads folder to the Trash, then right-click the Trash icon
+    in the Dock and choose "Empty Trash".
+
+------------------------------------------------------------
+IF SOMETHING GOES WRONG
+------------------------------------------------------------
+- "No such file or directory": the .mbox file's location wasn't filled
+  in properly. Try step 16-17 again, and make sure there is a space
+  between "mbox_senders.py" and the dragged-in file.
+- Terminal seems frozen: it is probably still working. Progress lines
+  appear every 50,000 messages.
+- If you see any other error, take a screenshot (press
+  Command+Shift+4, then click and drag over the part of the screen to
+  capture) and send it to Morris. Please send only the screenshot —
+  not the email files.

@@ -38,11 +38,25 @@ These come from [Apps Script's quota page](https://developers.google.com/apps-sc
 
 Google doesn't say whether the Gmail limit counts messages or calls. If it
 counts messages, a mailbox of 300,000 messages needs about 6 days on
-Workspace (the job simply waits out each day's limit and continues). If it
-takes far longer than you expect, the alternative that has no daily limit
-is Google Takeout: export the mailbox as an `.mbox` file and read the
-`From:` headers with a Python script (the `mailbox` module in the standard
-library does this).
+Workspace (the job simply waits out each day's limit and continues). The
+alternative with no daily limit is Google Takeout; see the next section.
+
+## Alternative for very large mailboxes: Google Takeout + Python
+
+Google Takeout (takeout.google.com) can export a whole mailbox as `.mbox`
+files. [`mbox_senders.py`](mbox_senders.py) (Python 3, standard library only)
+reads the `From:` headers from them and writes `senders.csv` with the same four
+columns, one row per unique sender, newest first, with the same skip-non-people
+list and name splitting as `Code.gs`. It skips messages labeled Spam or
+Trash (use `--include-spam-trash` to keep them).
+
+    python3 mbox_senders.py "All mail Including Spam and Trash.mbox"
+
+It reads only the header lines, at roughly 40 MB/s: a test file of 300,000
+messages (726 MB) took 20 seconds. Step-by-step instructions for a
+non-technical Mac user are in [`TAKEOUT_INSTRUCTIONS.txt`](TAKEOUT_INSTRUCTIONS.txt).
+The downloaded `.mbox` holds the full text of every message, so it should be
+processed on the owner's own computer and then deleted.
 
 ## Setup (one time, per person)
 
