@@ -44,6 +44,7 @@ publishes what, and which function gets it -- see
   - [Day counts and cash flows](#day-counts-and-cash-flows)
 - [Statistical models](#statistical-models)
   - [Regression models](#regression-models)
+  - [How good is a model? The measures, explained](#how-good-is-a-model-the-measures-explained)
   - [Linear programming](#linear-programming)
   - [Stratification tables](#stratification-tables)
 - [Investments](#investments)
@@ -2641,11 +2642,13 @@ the 95% intervals they give held the true coefficient 92% to 97% of the
 time. With `p` points or fewer, the fit is exact and the standard errors
 are `nan`.
 
-For measures of fit, `model-report` gives the sum of the absolute
-residuals; a pseudo-R-squared, 1 − that sum / the sum of `|y − the median
-of y|` (Koenker and Machado's R1, which, like R-squared, is 0 for a fit no
-better than a constant and 1 for a perfect one); the number of steps; and
-`n`.
+For measures of fit, `model-report` gives the MAE, the average size of a
+miss; a pseudo-R-squared, 1 − the MAE / the MAE of predicting the median of
+`y` for every row (Koenker and Machado's R1, which, like R-squared, is 0
+for a fit no better than that and 1 for a perfect one); the number of
+steps; and `n`. Each measure is beside what a perfect model would get and
+what predicting the median for every row would (see "How good is a
+model?", below).
 
 ```lisp
 (define month #(1 2 3 4 5 6 7 8 9 10 11 12))
@@ -2658,8 +2661,8 @@ Least absolute deviation model:  y = 3.78571 + 0.714286*x1
   term        coefficient     std error    t value    p value
   intercept       3.78571      0.612654      6.179   0.000104
   x1             0.714286     0.0832433      8.581   6.34e-06
-  sum |residuals|  = 23.7857
-  pseudo R-squared = 0.46549  (1 - sum |residuals| / the same about the median of y)
+  MAE              = 1.98214    (perfect: 0; predicting the median of y for every row: 3.70833)
+  pseudo R-squared = 0.46549    (perfect: 1; predicting the median of y for every row: 0)
   iterations       = 2 (converged)
   n                = 12
 ```
@@ -2691,8 +2694,9 @@ coefficient only about 80% of the time, but with 200, 94% of the time.
 
 `model-report` gives the quantile, how many points are below the fit, on
 it, and above it (with `n` points, at most `quantile * n` below it, and at
-least that many below or on it), the sum of the losses, and a
-pseudo-R-squared, as for LAD.
+least that many below or on it), the average loss, and a
+pseudo-R-squared, as for LAD -- each beside a perfect model's, and that of
+predicting the quantile of `y` for every row.
 
 ```lisp
 (define x (vector-range 400))
@@ -2756,10 +2760,14 @@ plain logistic curve is pulled much less by points out of line.
 with the curve fit for it. For a probability only: every `y` must be
 between 0 and 1. It's found by trying every 0.05 from 0 to 1, fitting the
 curve for each, then every 0.01 near the best, and every 0.002 near the
-best of those. `model-report` gives each fitted one, and how far it could
-move, either way, before the data is clearly less likely: its
-log-likelihood lower by 1.92, which for 0s and 1s makes the range roughly
-a 95% confidence interval (for shares, a rough guide). A ceiling is only
+best of those. `model-report` gives each fitted one, and its 95% range:
+how far it could move, either way, before the data is clearly less likely
+-- its log-likelihood lower by 1.92, which for 0s and 1s makes the range
+roughly a 95% confidence interval. (That's in the units of the average
+weight; and for shares, which scatter less than 0s and 1s, it's 1.92
+times how much less, which narrows the range accordingly -- a "quasi-
+likelihood" ratio. It doesn't allow for `:groups`, and it's found to the
+nearest 0.002.) A ceiling is only
 well fitted where there is data on the curve's flat top: with none, the
 range runs up to 1. A spline can level off by itself, at its knots, so a
 `spline-logistic`'s fitted ceiling is only loosely set. `model-floor` and
@@ -2824,17 +2832,23 @@ for a large dataset.
 (display (model-report m))
 ```
 
-**Standard errors for shares.** The plain standard errors take each row's
-`y` to be a 0 or a 1 -- one loan, prepaying or not -- which scatters about
-its chance `p` by `p (1 - p)`. A share -- the part of a pool that prepaid
-in a month -- is an average over many loans, and scatters far less, so for
-shares the plain standard errors are too large. With `:groups` (see "Rows
-that come in groups", above), they come from the actual scatter instead.
-For a `spline-logistic` model of the pools' CPRs in
-`examples/synthetic_mbs_pools.csv`, the plain standard errors are 10 to 25
-times those with each row its own group (`:groups (vector-range n)`), and
-2 to 10 times those with each pool's months a group (`:groups pool-id`),
-which allow for a pool's months being alike, too.
+**Shares.** When `y` is all 0s and 1s -- did each loan prepay? -- the
+standard errors are the usual ones for logistic regression, which take
+each `y` to scatter about its chance `p` by `p (1 - p)`, as a 0 or a 1
+does. A share -- the part of a pool that prepaid in a month -- is an
+average over many loans, and scatters far less, so those would be much too
+large. So when any `y` is between 0 and 1, the standard errors come from
+how much `y` actually scatters about the fit (the "sandwich" of "Rows that
+come in groups", above, with each row its own group), and `model-report`
+says so. For a `spline-logistic` model of the pools' CPRs in
+`examples/synthetic_mbs_pools.csv`, the usual ones would be 10 to 25 times
+too large. Pools' months are alike, too: with each pool's months a group
+(`:groups pool-id`), the standard errors are 2 to 4 times larger again.
+
+The measures of fit are also different for shares: `model-report` gives
+R-squared, RMSE, and MAE, as for least squares, and a perfect model's
+log-likelihood, pseudo-R-squared, and AUC are short of 0, 1, and 1 (see
+"How good is a model?", below).
 
 #### `(spline-regression x y [max-knots weights] [:smooth #t :groups g])`
 A simple, dependency-free way to let a model bend instead of insisting on a
@@ -3001,14 +3015,18 @@ by balance in dollars doesn't make the model look vastly more certain
 than its row count justifies — the weights say how much each row counts
 relative to the others, not how many copies of it there are.
 
-Measures of fit: for a linear model, R-squared and `n`. For a LAD model,
-see `lad-regression`. For a logistic
-model, the log-likelihood, McFadden's pseudo-R-squared, the **AUC** (area
-under the ROC curve: the chance that a randomly chosen row with y = 1 gets
-a higher prediction than a randomly chosen row with y = 0; 0.5 is no
-better than guessing, 1.0 is perfect ranking), the number of Newton-Raphson
-iterations and whether it converged, and `n`. For a model fit with
-`:groups`, the number of groups too.
+Then the measures of fit, each beside two others: what a **perfect**
+model would get -- one that predicted every `y` exactly -- and what a model
+would get that **predicts the same for every row**: the average of `y`,
+say, as a model with no predictors would. Where the model's value is,
+between those two, says how good it is. "How good is a model?", below,
+explains each measure. For a linear model: R-squared, RMSE, and MAE. For a
+LAD or quantile model, see `lad-regression` and `quantile-regression`. For
+a logistic model: the log-likelihood, McFadden's pseudo-R-squared, and the
+AUC -- with R-squared, RMSE, and MAE first, if `y` is shares (see
+`logistic-regression`) -- and the number of Newton-Raphson iterations and
+whether it converged. Then `n`, and for a model fit with `:groups`, the
+number of groups.
 
 For a spline model: its predictors, each with its knot locations (or
 categories and baseline value) — flagging a purely linear predictor with 3
@@ -3027,7 +3045,9 @@ Linear model:  y = -0.7 + 10.3*x1
   term        coefficient     std error    t value    p value
   intercept          -0.7      0.834666    -0.8387      0.463
   x1                 10.3      0.251661      40.93   3.21e-05
-  R-squared        = 0.998212
+  R-squared        = 0.998212   (perfect: 1; predicting the average of y for every row: 0)
+  RMSE             = 0.616441   (perfect: 0; predicting the average of y for every row: 14.5794)
+  MAE              = 0.48       (perfect: 0; predicting the median of y for every row: 12.4)
   n                = 5
 ```
 
@@ -3081,13 +3101,33 @@ non-probabilistic model (`"linear"`/`"lad"`/`"quantile"`/`"spline"`/`"spline-lad
 logistic one with a `:floor` or `:ceiling` outside 0 and 1): reports
 R-squared, RMSE, and MAE against this new data. For a probabilistic model
 (`"logistic"`/`"spline-logistic"`, with its floor and ceiling, if any,
-between 0 and 1): reports log-likelihood, McFadden's
-pseudo-R-squared (against an intercept-only model fit fresh on this new
-data), AUC (see `model-report`), and classification accuracy at a 0.5
-threshold — though for a rare outcome, such as a monthly payoff,
-accuracy says little (predicting "no payoff" for every row is usually
-99% accurate), and AUC or `model-lift-table` are more useful. Works
-uniformly across every model kind, including spline models.
+between 0 and 1): reports log-likelihood, McFadden's pseudo-R-squared, and
+AUC -- after R-squared, RMSE, and MAE, if `y` is shares -- and, if `y` is
+all 0s and 1s, accuracy: how often a prediction of 0.5 or more went with a
+1, and one under 0.5 with a 0. As in `model-report`, each is beside a
+perfect model's and that of predicting the same for every row -- here, the
+average (or median) of *this* data's `y`; for accuracy, the commoner of 0
+and 1. For a rare outcome, such as a monthly payoff, accuracy says little:
+predicting "no payoff" for every row is usually 99% accurate, and the
+report shows that beside it. "How good is a model?", below, explains each
+measure. Works uniformly across every model kind, including spline
+models.
+
+```lisp
+(define age #(1 2 3 4 5 6 7 8 9 10))
+(define paid #(0 0 1 0 0 1 0 1 1 1))
+(display (model-evaluate (logistic-regression age paid) age paid))
+```
+prints:
+```
+Evaluation on 10 held-out observation(s):
+  log-likelihood   = -4.94158   (perfect: 0; predicting the average of y for every row: -6.93147)
+  pseudo R-squared = 0.287081   (perfect: 1; predicting the average of y for every row: 0)
+  AUC              = 0.84       (perfect: 1; predicting the same for every row: 0.5)
+  accuracy         = 0.8        (perfect: 1; predicting the commoner outcome for every row: 0.5; a prediction of 0.5 or more counts as a 1)
+```
+(Here it's evaluated on the data it was fit to, to keep the example short;
+held-out data is the fair test.)
 
 ```lisp
 (define n-train (floor (* (vector-length x) 0.7)))
@@ -3323,6 +3363,154 @@ sensitive to sharp, narrow features but can suggest closely-spaced knots.
 `x`/`y` don't need to be pre-sorted. Because `window` is measured in
 distinct-`x` steps, size it relative to how many distinct `x` values the
 data actually has, not the row count.
+
+### How good is a model? The measures, explained
+
+Every measure of a model compares its predictions with what actually
+happened. A number by itself says little: is an RMSE of 0.046 good? So
+`model-report` and `model-evaluate` put two others beside each:
+
+- **perfect**: what a model would get that predicted every row exactly.
+- **predicting the same for every row**: what a model would get that
+  knows nothing about the predictors and predicts one number for every
+  row -- the average of `y`, say (or whichever one number does best on
+  that measure).
+
+A model is worth something to the extent that it's closer to perfect than
+to predicting the same for every row. Here is the report of a
+`spline-logistic` model of the monthly CPRs of 600 pools
+(`examples/synthetic_mbs_pools.csv`; the predictors are the rate
+incentive, the loan age, and whether the loans were refinancings):
+
+```
+  R-squared        = 0.811845   (perfect: 1; predicting the average of y for every row: 0)
+  RMSE             = 0.0461904  (perfect: 0; predicting the average of y for every row: 0.106486)
+  MAE              = 0.0287087  (perfect: 0; predicting the median of y for every row: 0.078044)
+  log-likelihood   = -13302.8   (perfect: -13116; predicting the average of y for every row: -14355.8)
+  pseudo R-squared = 0.0733469  (perfect: 0.0863629; predicting the average of y for every row: 0)
+  AUC              = 0.693018   (perfect: 0.706028; predicting the same for every row: 0.5)
+```
+
+The pseudo R-squared of 0.073 looks dreadful next to the R-squared of 0.81.
+But a perfect model would get only 0.086, so this one gets 85% of the
+way there. Without the "perfect" beside it, it would be easy to throw out
+a good model.
+
+In what follows, a **residual** (or error, or miss) is one row's actual
+`y` minus the model's prediction for it: positive when the model
+predicted too little.
+
+**Measures of a number** -- a price, a CPR, a spread:
+
+- **RMSE**, the root mean squared error: the typical size of a miss, in
+  `y`'s own units. Square each residual, average them, and take the
+  square root. An RMSE of 0.046 for CPRs means the predictions are
+  typically about 4.6 percentage points off. Squaring makes big misses
+  count far more than small ones: one miss of 10 counts as much as a
+  hundred misses of 1. Predicting the average for every row gives the
+  standard deviation of `y`.
+- **MAE**, the mean absolute error: the average size of a miss, ignoring
+  whether it was too high or too low. Big misses count only by their
+  size. If the RMSE is much larger than the MAE, a few rows are missed
+  by a lot. Predicting the median of `y` for every row does best on MAE,
+  so that's the comparison.
+- **R-squared**: the share of the variation in `y` the model accounts
+  for. It's 1 − (the RMSE / the RMSE of predicting the average)²: 0.81
+  means the model's squared misses are 19% of what they'd be predicting
+  the average for every row. 1 is perfect; 0 is no better than the
+  average. On data the model wasn't fit to, it can be below 0: worse
+  than the average.
+- **pseudo R-squared, for LAD and quantile models**: the same idea, with
+  what that model makes smallest -- the MAE for LAD, the average loss for
+  a quantile model -- in place of squared misses.
+- **average loss, for a quantile model**: a quantile fit is meant to
+  have some of the points above it -- 10% for the 0.9 quantile -- so a
+  miss above isn't simply bad. A point above the fit costs `quantile`
+  times its distance, and one below it `1 − quantile` times its distance;
+  this is the average cost. Predicting the quantile of `y` for every row
+  is the comparison.
+
+**Measures of a probability** -- the chance a loan prepays, or the share
+of a pool that does:
+
+- **log-likelihood**: how likely the model found what actually happened.
+  For each row it takes the log of the chance the model gave the
+  outcome: for a loan that prepaid, log(p); for one that didn't, log(1 −
+  p). Then it adds them up. A model that said 2% for a loan that then
+  prepaid loses log(0.02) = −3.9 on that row; one that said 50% loses
+  only −0.7. It's always 0 or less, and closer to 0 is better. The sum
+  grows with the number of rows, so it means little by itself; compare
+  it with the two beside it. For shares, a row with share `y` counts as
+  `y` of a prepayment and `1 − y` of none.
+- **log-loss** (in `cross-validate`): minus the log-likelihood divided by
+  the number of rows -- the same, per row, so it can be compared across
+  data of different sizes. Lower is better.
+- **pseudo R-squared** (McFadden's): how far the log-likelihood has come
+  from predicting the average chance for every row toward perfect, as R-
+  squared does for squared misses. For 0s and 1s, perfect is 1. Even
+  good models of rare events score low on it -- 0.2 to 0.4 is considered
+  very good -- because no model can say which loans will prepay this
+  month, only which are likelier to.
+- **AUC** (the area under the ROC curve): how well the model *ranks*
+  rows. Pick, at random, one loan that prepaid and one that didn't: the
+  AUC is the chance the model gave the one that prepaid the higher
+  chance. 0.5 is a coin toss, and is what predicting the same for every
+  row gets; 1 is perfect ranking. It says nothing about whether the
+  chances are the right *size*: doubling every prediction leaves it the
+  same. For shares, each row is that share of a prepayment and the rest
+  of none, so even perfect is short of 1.
+- **accuracy** (in `model-evaluate`, for 0s and 1s): how often a
+  prediction of 0.5 or more went with a 1, and one under 0.5 with a 0.
+  For something rare, it's nearly useless: if 1% of loans prepay, a
+  model that says "no" for every loan is 99% accurate, and knows
+  nothing. The report puts that beside it ("predicting the commoner
+  outcome for every row").
+
+**Why perfect is short of 1 for shares.** A 0 or a 1 is an outcome a model
+can be sure of: say 100% for a loan that prepays, and the row loses
+nothing. A share of 0.1 isn't: even predicting exactly 0.1, the model
+gives a 90% chance to "not prepaid" for that part of the pool, and the
+log-likelihood can't reach 0. So with shares, judge the log-likelihood,
+pseudo R-squared, and AUC against the perfect ones beside them, and look
+at R-squared, RMSE, and MAE, which mean the same for shares as for any
+number.
+
+**The lift table** (`model-lift-table`) shows two things at once. It sorts
+the rows by their prediction, highest first, and splits them into tenths.
+For each tenth, compare `mean_predicted` with `mean_actual`: if they're
+close all the way down, the predictions are the right size (the model is
+"calibrated"). And `lift` -- each tenth's actual average divided by the
+overall average -- should fall steadily from the top: the model puts the
+rows that really prepay faster at the top. For the pool model above:
+
+| bin | mean_predicted | mean_actual | lift |
+|---|---|---|---|
+| 1 | 0.343 | 0.340 | 2.10 |
+| 2 | 0.287 | 0.300 | 1.86 |
+| 5 | 0.137 | 0.123 | 0.76 |
+| 10 | 0.046 | 0.057 | 0.35 |
+
+The highest tenth prepaid at 2.1 times the average, the lowest at a third
+of it, and each tenth's prediction is within a couple of percentage points
+of what happened.
+
+**Standard errors, and t, z, and p values** (the coefficient table) are
+about the coefficients, not the predictions. A coefficient's standard
+error is how much it would vary if the model were fit to another sample
+of the same kind of data. Its t value (or z value) is the coefficient
+divided by its standard error: how many standard errors it is from 0. Its
+p value is the chance of a t value at least that far from 0 if the
+predictor in fact had no effect. Under 0.05 is the usual sign that the
+predictor matters. They assume each row is new information: when rows
+come in groups that are alike, they're too small, and `:groups` fixes
+that (see "Rows that come in groups", above).
+
+**Fit to its own data, or new data?** Every measure in `model-report` is
+of the data the model was fit to, which flatters it: a model that bends
+to every point looks perfect there, and predicts new data badly. The
+honest numbers are from data the model hasn't seen: `model-evaluate` on
+rows held out, or `cross-validate`, which does that for every row. When
+choosing between models, compare those.
 
 ### Linear programming
 

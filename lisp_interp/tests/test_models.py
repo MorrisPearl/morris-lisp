@@ -332,7 +332,7 @@ class TestLadRegression(LispTestCase):
         near, far = report(60), report(600)
         self.assertIn("Least absolute deviation model:  cpr = ", near)
         self.assertIn("month", near)
-        self.assertIn("sum |residuals|", near)
+        self.assertIn("MAE              = ", near)
         self.assertIn("iterations       = ", near)
         std_error_lines = [line for line in near.splitlines() if line.startswith(("  intercept", "  month"))]
         self.assertEqual(std_error_lines,
@@ -553,8 +553,8 @@ class TestFittingTheFloorAndCeiling(LispTestCase):
         low, high = model.stats["fitted"]["ceiling"]
         self.assertTrue(low <= 0.48 <= high)
         report = self.show("(model-report m)")
-        self.assertRegex(report, r"floor            = 0\.0\d+  \(fitted; from 0\.0\d* to 0\.0\d* is within 1\.92")
-        self.assertRegex(report, r"ceiling          = 0\.4\d*  \(fitted; from ")
+        self.assertRegex(report, r"floor            = 0\.0\d+  \(fitted; its 95% range is 0\.0\d* to 0\.0\d*\)")
+        self.assertRegex(report, r"ceiling          = 0\.4\d*  \(fitted; its 95% range is ")
         # it's the most likely of the floors and ceilings near it
         best = model.stats["log_likelihood"]
         for floor, ceiling in ((model.floor + 0.004, model.ceiling), (model.floor, model.ceiling - 0.004),
@@ -919,6 +919,123 @@ class TestClusteredStandardErrors(LispTestCase):
         self.assertLispError("(quantile-regression x y 0.5 :group #(1 1 2 2 3 3))", ":group isn't an option")
 
 
+class TestMeasuresOfFit(LispTestCase):
+    """measures_of_fit: each measure beside a perfect model's and that of a model predicting the same for every
+    row; and, for shares, standard errors from the scatter of y."""
+
+    def test_least_squares_lad_and_quantile_measures_by_hand(self):
+        import lisp_regression
+        rng = np.random.default_rng(13)
+        y, predicted, w = rng.normal(size=30), rng.normal(size=30), rng.uniform(0.5, 2, 30)
+        share = w / w.sum()
+        rows = {row[0]: row[1:] for row in lisp_regression.measures_of_fit(predicted, y, w, "least squares")}
+        mean = (share * y).sum()
+        median = lisp_regression.weighted_median(y, share)
+        self.assertAlmostEqual(rows["RMSE"][0], math.sqrt((share * (y - predicted) ** 2).sum()), places=12)
+        self.assertEqual(rows["RMSE"][1:3], [0.0, math.sqrt((share * (y - mean) ** 2).sum())])
+        self.assertAlmostEqual(rows["R-squared"][0], 1 - rows["RMSE"][0] ** 2 / rows["RMSE"][2] ** 2, places=12)
+        self.assertEqual(rows["R-squared"][1:3], [1.0, 0.0])
+        self.assertAlmostEqual(rows["MAE"][2], (share * np.abs(y - median)).sum(), places=12)
+        # the median is the best one prediction for MAE: nudging it either way does worse
+        for nudge in (-0.01, 0.01):
+            self.assertGreater((share * np.abs(y - median - nudge)).sum(), rows["MAE"][2])
+        rows = {row[0]: row[1:] for row in lisp_regression.measures_of_fit(predicted, y, w, "quantile", 0.8)}
+        q = lisp_regression.weighted_quantile(y, share, 0.8)
+        self.assertAlmostEqual(rows["average loss"][2],
+                               (share * lisp_regression.check_loss(y - q, 0.8)).sum(), places=12)
+        self.assertEqual(rows["average loss"][3], "the 0.8 quantile of y")
+
+    def test_for_0s_and_1s_perfect_is_0_and_1_and_for_shares_it_is_less(self):
+        import lisp_regression
+        rng = np.random.default_rng(14)
+        chance = rng.uniform(0.05, 0.4, 200)
+        ones = (rng.uniform(size=200) < chance).astype(float)
+        rows = {row[0]: row[1:] for row in lisp_regression.measures_of_fit(chance, ones, np.ones(200), "probability")}
+        self.assertEqual(list(rows), ["log-likelihood", "pseudo R-squared", "AUC"])
+        self.assertEqual([rows[name][1] for name in rows], [0.0, 1.0, 1.0])
+        mean = ones.mean()
+        self.assertAlmostEqual(rows["log-likelihood"][2], (ones * math.log(mean) + (1 - ones) * math.log(1 - mean)).sum())
+        shares = np.clip(chance + rng.normal(scale=0.02, size=200), 0, 1)
+        rows = {row[0]: row[1:] for row in lisp_regression.measures_of_fit(chance, shares, np.ones(200), "probability")}
+        self.assertEqual(list(rows), ["R-squared", "RMSE", "MAE", "log-likelihood", "pseudo R-squared", "AUC"])
+        perfect = lisp_regression.log_likelihood_of_shares(shares, shares, np.ones(200))
+        self.assertAlmostEqual(rows["log-likelihood"][1], perfect, places=6)     # predicting each share exactly
+        self.assertLess(perfect, 0)
+        self.assertLess(rows["pseudo R-squared"][1], 1)
+        self.assertLess(rows["AUC"][1], 1)
+        self.assertAlmostEqual(rows["AUC"][1], lisp_regression.weighted_auc(shares, shares, np.ones(200)))
+        self.assertLess(rows["log-likelihood"][0], perfect)            # no prediction does better than perfect
+
+    def test_shares_get_standard_errors_from_their_scatter(self):
+        import lisp_regression
+        rng = np.random.default_rng(15)
+        x = rng.normal(size=300)
+        chance = 1 / (1 + np.exp(-(-1.5 + 0.8 * x)))
+        shares = np.clip(chance + rng.normal(scale=0.01, size=300), 0, 1)       # shares scatter far less than 0s and 1s
+        model = lisp_regression.fit_logistic([x.tolist()], shares.tolist())
+        robust = lisp_regression.fit_logistic([x.tolist()], shares.tolist(), groups=np.arange(300))
+        self.assertEqual(model.stats["std_errors"], robust.stats["std_errors"])
+        self.assertFalse(model.stats["y_is_0_or_1"])
+        X = np.column_stack([np.ones(300), x])
+        p = 1 / (1 + np.exp(-(X @ np.array([model.intercept] + model.coefficients))))
+        as_if_0_or_1 = np.sqrt(np.diag(np.linalg.inv((X.T * (p * (1 - p))) @ X)))
+        self.assertLess(model.stats["std_errors"][1], as_if_0_or_1[1] / 5)
+        # 0s and 1s keep the usual ones
+        ones = (rng.uniform(size=300) < chance).astype(float)
+        model = lisp_regression.fit_logistic([x.tolist()], ones.tolist())
+        p = 1 / (1 + np.exp(-(X @ np.array([model.intercept] + model.coefficients))))
+        np.testing.assert_allclose(model.stats["std_errors"], np.sqrt(np.diag(np.linalg.inv((X.T * (p * (1 - p))) @ X))),
+                                   rtol=1e-5)
+        self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(x)
+        self.env[lisp_core.Symbol("shares")] = lisp_vector_math.to_vector(shares)
+        self.assertIn("standard errors  = from the scatter of y about the fit, since y isn't all 0s and 1s",
+                      self.show("(model-report (logistic-regression x shares))"))
+        self.assertNotIn("standard errors  =", self.show("(model-report (logistic-regression x shares :groups "
+                                                          "(vector-map (lambda (v) (floor (/ v 3))) (vector-range 300))))"))
+
+    def test_a_fitted_floor_s_range_for_shares_allows_for_their_scatter(self):
+        """The range's ends are within 1.92 times the dispersion of the best log-likelihood, and a step past
+        them isn't (unless it's at 0 or 1, or the other bound)."""
+        import lisp_regression
+        rng = np.random.default_rng(16)
+        x = rng.normal(size=400)
+        shares = np.clip(0.05 + 0.4 / (1 + np.exp(-2 * x)) + rng.normal(scale=0.03, size=400), 0, 1)
+        model = lisp_regression.fit_logistic_bounds([x.tolist()], shares.tolist(), None, "fit", 0.45, "test")
+        enough = model.stats["log_likelihood"] - 1.92 * model.stats["dispersion"]
+        self.assertLess(model.stats["dispersion"], 0.1)
+        low, high = model.stats["fitted"]["floor"]
+        self.assertTrue(low <= 0.05 <= high and high - low < 0.03)
+
+        def at(floor):
+            return lisp_regression.fit_logistic([x.tolist()], shares.tolist(), None, floor, 0.45).stats["log_likelihood"]
+
+        for end, beyond in ((low, low - 0.002), (high, high + 0.002)):
+            self.assertGreaterEqual(at(end), enough)
+            self.assertLess(at(round(beyond, 6)), enough)
+
+    def test_model_evaluate_and_the_reports(self):
+        self.run_lisp("""(define x #(1 2 3 4 5 6 7 8 9 10))
+                         (define paid #(0 0 0 0 1 0 1 1 1 1))
+                         (define share #(0.1 0.12 0.2 0.25 0.3 0.4 0.42 0.5 0.55 0.6))""")
+        evaluation = self.show("(model-evaluate (logistic-regression x paid) x paid)")
+        self.assertIn("accuracy         = 0.8        (perfect: 1; predicting the commoner outcome for every row: 0.5;",
+                      evaluation)
+        self.assertIn("AUC              = 0.96       (perfect: 1; predicting the same for every row: 0.5)", evaluation)
+        # something rare: predicting "no" for every row is right 90% of the time
+        self.assertIn("predicting the commoner outcome for every row: 0.9;",
+                      self.show("(model-evaluate (logistic-regression x paid) x #(0 0 0 0 0 0 0 0 0 1))"))
+        evaluation = self.show("(model-evaluate (logistic-regression x share) x share)")
+        self.assertNotIn("accuracy", evaluation)
+        self.assertIn("R-squared        = ", evaluation)
+        self.assertIn("RMSE             = ", self.show("(model-report (linear-regression x share))"))
+        # a model saved before there were these measures still reports
+        import lisp_regression
+        data = lisp_regression.model_data(self.run_lisp("(linear-regression x share)"))
+        del data["stats"]["measures"]
+        self.env[lisp_core.Symbol("old")] = lisp_regression.model_from_data(data)
+        self.assertIn("saved by an older version", self.show("(model-report old)"))
+
+
 class TestSplineLad(LispTestCase):
     """spline-lad: a piecewise-linear spline fit by least absolute deviation, as
     spline-regression fits one by least squares."""
@@ -961,7 +1078,7 @@ class TestSplineLad(LispTestCase):
         report = self.show("(model-report m)")
         self.assertIn("Piecewise-linear spline model, fit by least absolute deviation, predicting spend:", report)
         self.assertIn("kind: categorical -- categories own, rent (baseline own)", report)
-        self.assertIn("sum |residuals|", report)
+        self.assertIn("MAE              = 21.1       (perfect: 0; predicting the median of y for every row: 45.7)", report)
         terms = [str(t) for t in self.run_lisp('(table-column (model-coefficient-table m) "term")').items]
         self.assertEqual(terms[:2], ["intercept", "income"])
         self.assertEqual(terms[-1], "kind = rent")
@@ -1042,7 +1159,7 @@ class TestLogisticFloorAndCeiling(LispTestCase):
         self.assertIn("Logistic model, between 3 and 48:  y = 3 + 45 * sigmoid(-3 + 3*x1)", report)
         self.assertIn("(the measures below are of y rescaled to (y - floor) / (ceiling - floor))", report)
         evaluation = self.show("(model-evaluate m x percent)")      # a number between them, not a probability
-        self.assertIn("R-squared = 1", evaluation)
+        self.assertIn("R-squared        = 1          (perfect: 1;", evaluation)
         self.assertNotIn("AUC", evaluation)
 
     def test_a_number_beyond_the_floor_or_ceiling_is_taken_as_at_it(self):

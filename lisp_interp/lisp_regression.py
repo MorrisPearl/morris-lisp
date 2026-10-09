@@ -194,9 +194,6 @@ def fit_linear(columns, ys, weights=None, groups=None):
     model = LispModel("linear", coefficients, intercept, {})
     X_orig = np.column_stack([np.asarray(col, dtype=np.float64) for col in columns])
     predictions = intercept + X_orig @ np.asarray(coefficients, dtype=np.float64)
-    total_weight = float(w.sum())
-    mean_y = float((w * y_arr).sum()) / total_weight
-    ss_total = float((w * (y_arr - mean_y) ** 2).sum())
     ss_residual = float((w * (y_arr - predictions) ** 2).sum())
 
     # Standard errors: the residual variance times (X'WX)^-1, with n - p
@@ -218,8 +215,10 @@ def fit_linear(columns, ys, weights=None, groups=None):
     else:
         std_errors = np.full(p, np.nan)
 
+    measures = measures_of_fit(predictions, y_arr, w, "least squares")
     model.stats = {
-        "r_squared": (1 - ss_residual / ss_total) if ss_total > 0 else float("nan"),
+        "r_squared": measure(measures, "R-squared"),
+        "measures": measures,                   # see measures_of_fit
         "n": n,
         "std_errors": std_errors.tolist(),      # intercept first, then each coefficient
         "test": "t",
@@ -329,44 +328,63 @@ def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, groups=None,
 
     coefficients, intercept = _unstandardize_coefficients(float(beta[0]), beta[1:].tolist(), means, scales)
 
-    # McFadden's pseudo R-squared, comparing against an intercept-only model.
-    total_weight = float(w.sum())
-    mean_y = min(max(float((w * y_arr).sum()) / total_weight, eps), 1 - eps)
-    null_log_likelihood = float((w * (
-        y_arr * math.log(mean_y) + (1.0 - y_arr) * math.log(1 - mean_y)
-    )).sum())
-    pseudo_r_squared = (1 - log_likelihood / null_log_likelihood) if null_log_likelihood != 0 else float("nan")
+    prob, factor, irls_weight = probability_and_irls_weight(beta)
+    if (floor, ceiling) == (0.0, 1.0):
+        irls_weight = prob * (1.0 - prob)
+    measures = measures_of_fit(prob, y_arr, w, "probability")
+    shares = not is_all_0_or_1(y_arr)
 
     # Standard errors from the inverse of the information matrix at the
     # fitted coefficients. The weights are first rescaled to average 1, so
     # they say how much each row matters relative to the others, not how
     # many copies of it there are -- otherwise weighting by loan balance
     # (in dollars) would make the standard errors absurdly small.
-    # With groups, the sandwich of clustered_covariance, each row's score
-    # being the slope of its log-likelihood: weight * (y - p) * factor * x.
-    prob, factor, irls_weight = probability_and_irls_weight(beta)
-    if (floor, ceiling) == (0.0, 1.0):
-        irls_weight = prob * (1.0 - prob)
+    #
+    # That takes each y to be a 0 or a 1, whose scatter about its chance p
+    # is p (1 - p). A share -- the part of a pool that prepaid -- is an
+    # average over many loans, and scatters far less, so for shares the
+    # standard errors come from the scatter of y about the fit instead: the
+    # sandwich of clustered_covariance, with each row its own group. With
+    # groups, it's that sandwich with the groups, for 0s and 1s too. Each
+    # row's score is the slope of its log-likelihood: weight * (y - p) *
+    # factor * x.
+    total_weight = float(w.sum())
     relative_w = w * (n / total_weight)
+    # (A fit that didn't converge can have no information left: then they're
+    # nan, quietly.)
     information = (X.T * (relative_w * irls_weight)) @ X
     try:
-        covariance = np.linalg.inv(information)
-        if groups is not None:
-            covariance = clustered_covariance(covariance, X * (relative_w * (y_arr - prob) * factor)[:, None], groups)
-        variances = np.diag(_original_scale_covariance(covariance, means, scales))
-        std_errors = np.sqrt(np.where(variances >= 0, variances, np.nan))
+        with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+            covariance = np.linalg.inv(information)
+            if groups is not None or shares:
+                covariance = clustered_covariance(covariance, X * (relative_w * (y_arr - prob) * factor)[:, None],
+                                                  groups if groups is not None else np.arange(n))
+            variances = np.diag(_original_scale_covariance(covariance, means, scales))
+            std_errors = np.sqrt(np.where(variances >= 0, variances, np.nan))
     except np.linalg.LinAlgError:
         std_errors = np.full(p, np.nan)
 
+    # How much y scatters about the fit, compared with 0s and 1s, in the
+    # units of the weights: for 0s and 1s, the average weight; for shares,
+    # also how much less they scatter -- the average of (y - p)^2 / (p (1 -
+    # p)) -- which fit_logistic_bounds needs.
+    if shares and n > p:
+        dispersion = float((w * (y_arr - prob) ** 2 / np.maximum(prob * (1 - prob), eps)).sum()) / (n - p)
+    else:
+        dispersion = total_weight / n
+
     stats = {
-        "log_likelihood": log_likelihood,
-        "pseudo_r_squared": pseudo_r_squared,
+        "log_likelihood": measure(measures, "log-likelihood"),
+        "pseudo_r_squared": measure(measures, "pseudo R-squared"),
+        "measures": measures,                   # see measures_of_fit
+        "y_is_0_or_1": not shares,
+        "dispersion": dispersion,
         "iterations": iterations_used,
         "converged": converged,
         "n": n,
         "std_errors": std_errors.tolist(),      # intercept first, then each coefficient
         "test": "z",
-        "auc": weighted_auc(prob, y_arr, w),
+        "auc": measure(measures, "AUC"),
     }
     if groups is not None:
         stats["groups"] = int(groups.max()) + 1
@@ -390,8 +408,11 @@ def fit_logistic_bounds(columns, ys, weights, floor, ceiling, who, groups=None):
     of them. Then, for each one fitted, how far it can move either way
     (holding the other where it was fitted) before the fit is clearly
     worse -- its log-likelihood lower by 3.84 / 2, which for 0/1 outcomes
-    makes the range roughly a 95% confidence interval (for shares, only a
-    rough guide). The model's stats["fitted"] has those ranges."""
+    makes the range roughly a 95% confidence interval. That's in units of
+    the average weight, and for shares, which scatter less than 0s and 1s,
+    times how much less (the model's stats["dispersion"]): a quasi-
+    likelihood ratio. It doesn't allow for groups. The model's
+    stats["fitted"] has those ranges."""
     for y in ys:
         if not 0 <= y <= 1:
             raise LispError("%s: fitting a floor or ceiling is for a probability: every y must be between 0 and 1 "
@@ -431,12 +452,13 @@ def fit_logistic_bounds(columns, ys, weights, floor, ceiling, who, groups=None):
             raise LispError("%s: the floor must be at least %s below the ceiling" % (who, BOUND_GAP))
         best = max(pairs, key=lambda pair: log_likelihood_at(*pair))
     best_floor, best_ceiling = best
+    model = fit_logistic(columns, ys, weights, best_floor, best_ceiling, groups)
     best_log_likelihood = log_likelihood_at(best_floor, best_ceiling)
 
     def likelihood_range(at, value, lowest, highest):
         """How far a fitted value can move either way, before the log-likelihood is clearly lower."""
         step = BOUND_STEPS[-1]
-        enough = best_log_likelihood - CHI_SQUARED_95 / 2
+        enough = best_log_likelihood - CHI_SQUARED_95 / 2 * model.stats["dispersion"]
         low = value
         while low - step >= lowest - 1e-12 and at(low - step) >= enough:
             low = round(low - step, 6)
@@ -452,7 +474,6 @@ def fit_logistic_bounds(columns, ys, weights, floor, ceiling, who, groups=None):
     if fit_ceiling:
         fitted["ceiling"] = likelihood_range(lambda c: log_likelihood_at(best_floor, c), best_ceiling,
                                              best_floor + BOUND_GAP, 1.0)
-    model = fit_logistic(columns, ys, weights, best_floor, best_ceiling, groups)
     model.stats["fitted"] = fitted
     return model
 
@@ -736,6 +757,7 @@ def fit_quantile(columns, ys, quantile, weights=None, groups=None, max_iteration
     below, above = int((residuals < -on_fit_tolerance).sum()), int((residuals > on_fit_tolerance).sum())
     stats = {
         "quantile": quantile,
+        "measures": measures_of_fit(X @ beta, y, w, "lad" if kind == "lad" else "quantile", quantile),
         "loss": total,                          # the sum of check_loss
         "sum_abs_deviations": float((w * np.abs(residuals)).sum()),
         "pseudo_r_squared": pseudo_r_squared,
@@ -897,6 +919,114 @@ def weighted_auc(scores, ys, weights):
         return float("nan")
     wins = (positive_per_score * (negatives_below + 0.5 * negative_per_score)).sum()
     return float(wins / (total_positive * total_negative))
+
+
+# ---------------------------------------------------------------------------
+# Measures of fit, each beside what a perfect model would get, and a model
+# that predicts the same for every row
+# ---------------------------------------------------------------------------
+
+def is_all_0_or_1(ys):
+    """Whether every y is 0 or 1 -- an outcome, such as whether a loan
+    prepaid -- rather than some being shares between them."""
+    return bool(np.all((ys == 0) | (ys == 1)))
+
+
+def _x_log_x(v):
+    """v * log(v), taking 0 * log(0) to be 0, as its limit is."""
+    return np.where(v > 0, v * np.log(np.maximum(v, 1e-300)), 0.0)
+
+
+def log_likelihood_of_shares(predictions, ys, weights):
+    """sum(weight * (y log p + (1 - y) log(1 - p))): how likely the
+    predicted chances p made the outcomes y (or, for shares, the
+    quasi-likelihood used just as if they were)."""
+    p = np.clip(predictions, 1e-12, 1 - 1e-12)
+    return float((weights * (ys * np.log(p) + (1 - ys) * np.log(1 - p))).sum())
+
+
+def measures_of_fit(predictions, ys, weights, kind, quantile=0.5):
+    """How close the predictions are to y, as a list of measures, each a
+    list [name, value, perfect, same, what]: the model's value; a perfect
+    model's -- one that predicted every y exactly; and that of a model
+    that predicts the same for every row -- `what`, such as "the average
+    of y" -- as a model with no predictors would. Where the model's value
+    is, between those two, says how good it is. Each row counts by its
+    weight. The kinds of model, and their measures:
+
+      "least squares"  R-squared, RMSE, MAE
+      "lad"            MAE, pseudo R-squared (1 - the MAE / the same model's)
+      "quantile"       average loss, pseudo R-squared (the same, with losses)
+      "probability"    log-likelihood, pseudo R-squared (McFadden's), AUC;
+                       and, when y isn't all 0s and 1s -- shares -- first
+                       R-squared, RMSE, and MAE, as for least squares
+
+    For 0s and 1s, a perfect model's log-likelihood is 0 and its pseudo
+    R-squared and AUC are 1. For shares they're not: a share of 0.1 isn't
+    an outcome a chance can be sure of, as it can be of a 0 or a 1, so even
+    predicting it exactly leaves the log-likelihood below 0 (y log y + (1 -
+    y) log(1 - y), for that row), and its pseudo R-squared and AUC below 1."""
+    w = weights / weights.sum()                 # each row's share of the weight
+    residuals = ys - predictions
+    mean_y = float((w * ys).sum())
+    rows = []
+
+    def mae_and_same():
+        """The model's MAE, and that of predicting the median of y."""
+        return float((w * np.abs(residuals)).sum()), float((w * np.abs(ys - weighted_median(ys, w))).sum())
+
+    def least_squares_rows():
+        ss_total = float((w * (ys - mean_y) ** 2).sum())
+        ss_residual = float((w * residuals ** 2).sum())
+        mae, mae_same = mae_and_same()
+        return [["R-squared", (1 - ss_residual / ss_total) if ss_total > 0 else float("nan"), 1.0, 0.0,
+                 "the average of y"],
+                ["RMSE", math.sqrt(ss_residual), 0.0, math.sqrt(ss_total), "the average of y"],
+                ["MAE", mae, 0.0, mae_same, "the median of y"]]
+
+    if kind == "least squares":
+        rows = least_squares_rows()
+    elif kind == "lad":
+        mae, mae_same = mae_and_same()
+        rows = [["MAE", mae, 0.0, mae_same, "the median of y"],
+                ["pseudo R-squared", (1 - mae / mae_same) if mae_same > 0 else float("nan"), 1.0, 0.0,
+                 "the median of y"]]
+    elif kind == "quantile":
+        quantile_y = weighted_quantile(ys, w, quantile)
+        loss, loss_same = float((w * check_loss(residuals, quantile)).sum()), \
+            float((w * check_loss(ys - quantile_y, quantile)).sum())
+        what = "the %.6g quantile of y" % quantile
+        rows = [["average loss", loss, 0.0, loss_same, what],
+                ["pseudo R-squared", (1 - loss / loss_same) if loss_same > 0 else float("nan"), 1.0, 0.0, what]]
+    else:
+        shares = not is_all_0_or_1(ys)
+        if shares:
+            rows = least_squares_rows()
+        log_likelihood = log_likelihood_of_shares(predictions, ys, weights)
+        same = log_likelihood_of_shares(np.full(len(ys), mean_y), ys, weights)
+        perfect = float((weights * (_x_log_x(ys) + _x_log_x(1 - ys))).sum()) if shares else 0.0
+
+        def pseudo_r_squared(value):
+            return (1 - value / same) if same != 0 else float("nan")
+
+        rows += [["log-likelihood", log_likelihood, perfect, same, "the average of y"],
+                 ["pseudo R-squared", pseudo_r_squared(log_likelihood), pseudo_r_squared(perfect), 0.0,
+                  "the average of y"],
+                 ["AUC", weighted_auc(predictions, ys, weights),
+                  weighted_auc(ys, ys, weights) if shares else 1.0, 0.5, "the same"]]
+    return rows
+
+
+def measure(rows, name):
+    """One measure's value, from measures_of_fit's rows."""
+    return next(row[1] for row in rows if row[0] == name)
+
+
+def measure_lines(rows):
+    """measures_of_fit's rows as report lines, such as
+      R-squared        = 0.81  (perfect: 1; predicting the average of y for every row: 0)"""
+    return ["  %-16s = %-10.6g (perfect: %.6g; predicting %s for every row: %.6g)"
+            % (name, value, perfect, what, same) for name, value, perfect, same, what in rows]
 
 
 def _coerce_predictors(x_arg):
@@ -1174,39 +1304,41 @@ def model_report(model):
 
 
 def fit_statistics_lines(model):
-    """The measures of fit at the end of model-report, for a LispModel, and
-    the number of groups its standard errors allow for, if it has them."""
+    """The measures of fit at the end of model-report, for a LispModel, each
+    beside a perfect model's and that of a model predicting the same for
+    every row (measures_of_fit); then the number of iterations, n, and the
+    number of groups the standard errors allow for, if it has them."""
     stats = model.stats
-    groups = ["  groups           = %d  (the standard errors allow for rows in the same group being alike)"
-              % stats["groups"]] if "groups" in stats else []
+    if "measures" in stats:
+        measures = measure_lines(stats["measures"])
+    else:                                   # a model saved before there were measures_of_fit
+        measures = ["  (saved by an older version, without its measures of fit: fit it again to see them)"]
+    iterations = "  iterations       = %d (%s)" % (stats.get("iterations", 0), "converged" if stats.get("converged", True)
+                                                   else "did NOT converge")
+    end = ["  n                = %d" % stats["n"]]
+    if "groups" in stats:
+        end.append("  groups           = %d  (the standard errors allow for rows in the same group being alike)"
+                   % stats["groups"])
+
     if model.kind == "linear":
-        return ["  R-squared        = %.6g" % stats["r_squared"],
-                "  n                = %d" % stats["n"]] + groups
+        return measures + end
+    if model.kind == "lad":
+        return measures + [iterations] + end
     if model.kind == "quantile":
         below, on, above = stats["below_on_above"]
-        return ["  quantile         = %.6g" % stats["quantile"],
-                "  points           = %d below the fit, %d on it, %d above it" % (below, on, above),
-                "  sum of the losses = %.6g  (a point above the fit costs %.6g of its distance, below it %.6g)"
-                % (stats["loss"], stats["quantile"], 1 - stats["quantile"]),
-                "  pseudo R-squared = %.6g  (1 - the sum / the same about the quantile of y)" % stats["pseudo_r_squared"],
-                "  iterations       = %d (%s)" % (stats["iterations"],
-                                                   "converged" if stats["converged"] else "did NOT converge"),
-                "  n                = %d" % stats["n"]] + groups
-    if model.kind == "lad":
-        return ["  sum |residuals|  = %.6g" % stats["sum_abs_deviations"],
-                "  pseudo R-squared = %.6g  (1 - sum |residuals| / the same about the median of y)"
-                % stats["pseudo_r_squared"],
-                "  iterations       = %d (%s)" % (stats["iterations"],
-                                                   "converged" if stats["converged"] else "did NOT converge"),
-                "  n                = %d" % stats["n"]] + groups
+        quantile = stats["quantile"]
+        return ["  quantile         = %.6g  (a point above the fit costs %.6g of its distance, below it %.6g)"
+                % (quantile, quantile, 1 - quantile),
+                "  points           = %d below the fit, %d on it, %d above it" % (below, on, above)] + \
+            measures + [iterations] + end
+
     between = []
     fitted = stats.get("fitted", {})
     if fitted:
         for name, value in (("floor", model.floor), ("ceiling", model.ceiling)):
             if name in fitted:
                 low, high = fitted[name]
-                between.append("  %-16s = %.6g  (fitted; from %.6g to %.6g is within 1.92 of the best log-likelihood)"
-                               % (name, value, low, high))
+                between.append("  %-16s = %.6g  (fitted; its 95%% range is %.6g to %.6g)" % (name, value, low, high))
             else:
                 between.append("  %-16s = %.6g" % (name, value))
     elif model.is_probability() and not model.between_0_and_1():
@@ -1215,16 +1347,13 @@ def fit_statistics_lines(model):
         between = ["  floor, ceiling   = %.6g, %.6g  (%d y below the floor, and %d above the ceiling, taken as at them)"
                    % (model.floor, model.ceiling, stats.get("below_floor", 0), stats.get("above_ceiling", 0)),
                    "  (the measures below are of y rescaled to (y - floor) / (ceiling - floor))"]
-    return between + [
-            "  log-likelihood   = %.6g" % stats["log_likelihood"],
-            "  pseudo R-squared = %.6g  (McFadden's)" % stats["pseudo_r_squared"],
-            "  AUC              = %.6g" % stats["auc"],
-            "  iterations       = %d (%s)" % (stats["iterations"], "converged" if stats["converged"] else
-                                               "did NOT converge: a coefficient is growing without end -- the curve "
-                                               "comes ever closer to some of the points by getting steeper. Its "
-                                               "predictions are near that limit, but its coefficients and standard "
-                                               "errors mean little"),
-            "  n                = %d" % stats["n"]] + groups
+    if not stats.get("converged", True):
+        iterations = ("  iterations       = %d (did NOT converge: a coefficient is growing without end -- the curve "
+                      "comes ever closer to some of the points by getting steeper. Its predictions are near that "
+                      "limit, but its coefficients and standard errors mean little)" % stats["iterations"])
+    if not stats.get("y_is_0_or_1", True) and "groups" not in stats:
+        end.append("  standard errors  = from the scatter of y about the fit, since y isn't all 0s and 1s")
+    return between + measures + [iterations] + end
 
 
 def model_coefficient_table(model):
@@ -1272,31 +1401,27 @@ def evaluation_data(model, x_arg, y_arg, name):
 
 def model_evaluate(model, x_arg, y_arg):
     """(model-evaluate m x y) -- how well a fitted model predicts other data
-    (typically data held out from fitting), as a text report: R-squared,
-    RMSE, and MAE for a linear model; log-likelihood, pseudo R-squared,
-    AUC, and accuracy for a logistic one."""
+    (typically data held out from fitting), as a text report: the measures
+    of measures_of_fit, each beside a perfect model's and that of a model
+    predicting the same for every row (from this data: its average, say) --
+    R-squared, RMSE, and MAE for a model of a number; log-likelihood,
+    pseudo R-squared, and AUC for one of a probability (with R-squared,
+    RMSE, and MAE first, if y is shares, not 0s and 1s); and, for 0s and
+    1s, accuracy."""
     predictions, ys = evaluation_data(model, x_arg, y_arg, "model-evaluate")
     n = len(ys)
+    probability = _is_probabilistic(model)
     lines = ["Evaluation on %d held-out observation(s):" % n]
-    if not _is_probabilistic(model):
-        residuals = ys - predictions
-        ss_total = float(((ys - ys.mean()) ** 2).sum())
-        ss_residual = float((residuals ** 2).sum())
-        lines.append("  R-squared = %.6g" % ((1 - ss_residual / ss_total) if ss_total > 0 else float("nan")))
-        lines.append("  RMSE      = %.6g" % math.sqrt(ss_residual / n))
-        lines.append("  MAE       = %.6g" % float(np.abs(residuals).mean()))
-    else:
-        eps = 1e-12
-        p = np.clip(predictions, eps, 1 - eps)
-        log_likelihood = float((ys * np.log(p) + (1 - ys) * np.log(1 - p)).sum())
-        mean_y = min(max(float(ys.mean()), eps), 1 - eps)
-        null_log_likelihood = float((ys * math.log(mean_y) + (1 - ys) * math.log(1 - mean_y)).sum())
-        pseudo_r_squared = (1 - log_likelihood / null_log_likelihood) if null_log_likelihood != 0 else float("nan")
+    lines += measure_lines(measures_of_fit(predictions, ys, np.ones(n), "probability" if probability
+                                           else "least squares"))
+    if probability and is_all_0_or_1(ys):
+        # How often a prediction of 0.5 or more went with a 1, and one of less
+        # with a 0 -- beside always predicting the commoner of the two, which,
+        # for something rare, is right nearly all the time.
         accuracy = float(((predictions >= 0.5) == (ys >= 0.5)).mean())
-        lines.append("  log-likelihood   = %.6g" % log_likelihood)
-        lines.append("  pseudo R-squared = %.6g  (McFadden's)" % pseudo_r_squared)
-        lines.append("  AUC              = %.6g" % weighted_auc(predictions, ys, np.ones(n)))
-        lines.append("  accuracy         = %.6g  (at a 0.5 threshold)" % accuracy)
+        commoner = max(float(ys.mean()), 1 - float(ys.mean()))
+        lines.append("  %-16s = %-10.6g (perfect: 1; predicting the commoner outcome for every row: %.6g; "
+                     "a prediction of 0.5 or more counts as a 1)" % ("accuracy", accuracy, commoner))
     return LispString("\n".join(lines))
 
 
