@@ -265,6 +265,11 @@ def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, max_iteratio
             factor = span * s * (1.0 - s) / np.maximum(prob * (1.0 - prob), eps)
         return prob, factor, factor * span * s * (1.0 - s)
 
+    def log_likelihood_of(prob):
+        return float((w * (
+            y_arr * np.log(np.maximum(prob, eps)) + (1.0 - y_arr) * np.log(np.maximum(1.0 - prob, eps))
+        )).sum())
+
     beta = np.zeros(p)
     converged = False
     iterations_used = 0
@@ -277,19 +282,27 @@ def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, max_iteratio
             irls_weight = prob * (1.0 - prob)
         gradient = X.T @ (w * (y_arr - prob) * factor)                   # p
         information = (X.T * (w * irls_weight)) @ X                       # p x p
-        log_likelihood = float((w * (
-            y_arr * np.log(np.maximum(prob, eps)) + (1.0 - y_arr) * np.log(np.maximum(1.0 - prob, eps))
-        )).sum())
+        log_likelihood = log_likelihood_of(prob)
 
         try:
-            delta = solve_linear_system(information.tolist(), gradient.tolist())
+            delta = np.array(solve_linear_system(information.tolist(), gradient.tolist()))
         except LispError:
-            raise LispError(
-                "logistic-regression: fitting failed to converge -- this "
-                "usually means the data is perfectly (or almost perfectly) "
-                "separable by one of the predictors, which sends the "
-                "coefficients toward infinity; try more/noisier data")
-        beta = beta + np.array(delta)
+            # The information is gone: the curve has become so steep, or so
+            # flat, at the points that it can't tell the coefficients apart.
+            # That happens when the most likely curve has a coefficient of
+            # infinity -- data perfectly separated into 0s and 1s by a
+            # predictor, or a spline's piece where every point is at or past
+            # the floor or ceiling, which it can come ever closer to by
+            # getting steeper. Stop here; it hasn't converged.
+            break
+        # A step that goes too far -- the log-likelihood isn't a parabola,
+        # far from its top -- and makes the data less likely is halved, until
+        # it doesn't (step halving).
+        for _ in range(30):
+            if log_likelihood_of(probability_and_irls_weight(beta + delta)[0]) >= log_likelihood - 1e-10 * abs(log_likelihood):
+                break
+            delta = delta / 2
+        beta = beta + delta
         if max(abs(d) for d in delta) < tolerance:
             converged = True
             break
@@ -315,8 +328,8 @@ def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, max_iteratio
     relative_w = w * (n / total_weight)
     information = (X.T * (relative_w * irls_weight)) @ X
     try:
-        covariance = np.linalg.inv(information)
-        std_errors = np.sqrt(np.diag(_original_scale_covariance(covariance, means, scales)))
+        variances = np.diag(_original_scale_covariance(np.linalg.inv(information), means, scales))
+        std_errors = np.sqrt(np.where(variances >= 0, variances, np.nan))
     except np.linalg.LinAlgError:
         std_errors = np.full(p, np.nan)
 
@@ -1087,8 +1100,11 @@ def fit_statistics_lines(model):
             "  log-likelihood   = %.6g" % stats["log_likelihood"],
             "  pseudo R-squared = %.6g  (McFadden's)" % stats["pseudo_r_squared"],
             "  AUC              = %.6g" % stats["auc"],
-            "  iterations       = %d (%s)" % (stats["iterations"],
-                                               "converged" if stats["converged"] else "did NOT converge"),
+            "  iterations       = %d (%s)" % (stats["iterations"], "converged" if stats["converged"] else
+                                               "did NOT converge: a coefficient is growing without end -- the curve "
+                                               "comes ever closer to some of the points by getting steeper. Its "
+                                               "predictions are near that limit, but its coefficients and standard "
+                                               "errors mean little"),
             "  n                = %d" % stats["n"]]
 
 

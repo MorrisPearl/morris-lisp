@@ -181,6 +181,13 @@ class TestRegression(LispTestCase):
         hi = self.run_lisp("(model-predict m 8)")
         self.assertTrue(0.0 < lo < hi < 1.0)
 
+    def test_a_logistic_fit_whose_best_coefficient_is_infinite_stops_and_says_so(self):
+        # x separates the 0s from the 1s perfectly: the steeper the curve, the likelier the data, without end
+        self.run_lisp("(define m (logistic-regression #(1 2 3 4 5 6 7 8) #(0 0 0 0 1 1 1 1)))")
+        self.assertIn("did NOT converge: a coefficient is growing without end", self.show("(model-report m)"))
+        self.assertLess(self.run_lisp("(model-predict m 1)"), 0.01)
+        self.assertGreater(self.run_lisp("(model-predict m 8)"), 0.99)
+
     def test_logistic_rejects_y_outside_zero_one(self):
         with self.assertRaises(lisp_core.LispError):
             self.run_lisp("(logistic-regression #(1 2 3 4) #(0 1 2 1))")

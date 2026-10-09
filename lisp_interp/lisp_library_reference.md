@@ -115,8 +115,9 @@ by Black-Scholes, a binomial tree, and simulated paths, next to their bids
 and asks: give it the stock's symbol), `vol_smile_example.lsp`, `option_chain_example.lsp`,
 `fred_example.lsp`, `sec_example.lsp`, `fdic_example.lsp`,
 `census_bls_example.lsp`, `bea_example.lsp`, `prepayment_demo.lsp`,
-`regression_kinds_example.lsp` (six kinds of regression on the same data,
-charted, and logistic ones with a floor and ceiling),
+`regression_kinds_example.lsp` (the kinds of regression on the same data,
+charted -- with a floor and ceiling, a quantile band, a smooth spline --
+and cross-validated),
 `oas_monte_carlo_example.lsp`, and `mortgage_amortization_example.lsp`.
 
 ## Getting data
@@ -2668,9 +2669,9 @@ x[i]))`, via Newton-Raphson (up to 50 iterations, or until convergence).
 `x`/`y`/`weights` as `linear-regression`'s above (including `x`/`y`
 accepting `(name . vector)` pairs); every value in `y` must be in `[0, 1]`
 (a 0/1 label, or a probability) — values outside that range raise an
-error. Returns a model of kind `"logistic"`. Near-perfect separability in
-the data can prevent convergence and raises a descriptive error rather
-than diverging silently.
+error. Returns a model of kind `"logistic"`. When the most likely curve
+has a coefficient of infinity -- see below -- the fit stops, and
+`model-report` says it did NOT converge.
 
 **A floor and a ceiling.** A logistic curve is an S that flattens out at 0
 on one side and at 1 on the other. For a curve that flattens out at other
@@ -2758,12 +2759,17 @@ from all-zero coefficients, each iteration computes this objective's
 gradient and Hessian at the current coefficients, solves for the step that
 would exactly reach the maximum if the objective were quadratic right there
 (via the very same linear-system solver `linear-regression` uses for its
-one-shot solve), and takes that step; this repeats until a step is smaller
-than `1e-8`, or 50 iterations pass without converging. If the data is
-(nearly) perfectly separable by a predictor, the TRUE maximum sends that
-coefficient toward infinity and the Hessian toward singular — caught and
-reported as a descriptive error, rather than looping forever or silently
-returning a runaway or meaningless answer. Each iteration's gradient/
+one-shot solve), and takes that step -- or half of it, or a quarter, if
+the whole step would make the data less likely (far from the top, the
+objective isn't a parabola); this repeats until a step is smaller than
+`1e-8`, or 50 iterations pass without converging. Sometimes the TRUE
+maximum has a coefficient of infinity: when a predictor separates the 0s
+from the 1s perfectly, or when every point of a spline's piece is at or
+beyond the floor or ceiling, which the curve can come ever closer to by
+getting steeper there. Then the Hessian becomes singular, the fit stops
+where it is, and `model-report` says it did NOT converge: its predictions
+are near the limit the curve was heading for, but its coefficients and
+standard errors mean little. Each iteration's gradient/
 Hessian (the same O(n · p²) shape as `linear-regression`'s normal
 equations, above) is likewise built with numpy matrix operations, not a
 Python-level loop — and since this whole computation repeats up to 50
@@ -2910,8 +2916,10 @@ the LAD spline goes through the V's other points exactly.)
 The four spline fits -- `spline-regression`, `spline-lad`,
 `spline-quantile`, and `spline-logistic` -- expand the predictors the same
 way: the knots depend only on `x` and `max-knots`, never on `y` or on how
-the fit is made. `examples/regression_kinds_example.lsp` fits all six kinds
-of regression to the same made-up data and charts them, one above another.
+the fit is made. `examples/regression_kinds_example.lsp` fits the kinds of
+regression to the same made-up data and charts them, one above another --
+with a floor and ceiling, a quantile band, and a smooth spline too -- and
+cross-validates each.
 
 #### `(model-report m)`
 Returns a multi-line string describing a fitted model: its equation, a

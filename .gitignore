@@ -13,6 +13,7 @@ lisp_interp/Untitled*.ipynb
 	
 lisp_interp/**/prepayment_incentive_curve.png
 lisp_interp/**/regression_kinds.png
+lisp_interp/**/regression_more.png
 lisp_interp/**/synthetic_mbs_pools.csv
 lisp_interp/**/mortgage_amortization_example.csv
 lisp_interp/**/sofr_floating_rate_example.csv
