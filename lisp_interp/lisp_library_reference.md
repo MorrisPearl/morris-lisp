@@ -116,7 +116,7 @@ and asks: give it the stock's symbol), `vol_smile_example.lsp`, `option_chain_ex
 `fred_example.lsp`, `sec_example.lsp`, `fdic_example.lsp`,
 `census_bls_example.lsp`, `bea_example.lsp`, `prepayment_demo.lsp`,
 `regression_kinds_example.lsp` (six kinds of regression on the same data,
-charted),
+charted, and logistic ones with a floor and ceiling),
 `oas_monte_carlo_example.lsp`, and `mortgage_amortization_example.lsp`.
 
 ## Getting data
@@ -2429,6 +2429,14 @@ correlation -- see "Vector math and statistics", in the
 
 ### Regression models
 
+Six kinds, one function each:
+
+| | A straight line (or plane) | A line that bends at knots |
+|---|---|---|
+| Least squares | `linear-regression` | `spline-regression` |
+| Least absolute deviation | `lad-regression` | `spline-lad` |
+| Logistic | `logistic-regression` | `spline-logistic` |
+
 `linear-regression`/`lad-regression`/`logistic-regression` fit a flat model
 of the form `y = intercept + sum(coefficients[i] * x[i])` (linear, by least
 squares or by least absolute deviation) or `p = sigmoid(intercept +
@@ -2437,15 +2445,16 @@ sum(coefficients[i] * x[i]))` (logistic), where
 one. `spline-regression` fits a *spline* model: internally it expands each
 predictor into an extra set of features (piecewise-linear "hinge"
 functions, or category-indicator columns — see below), then fits an
-ordinary/logistic regression on that expanded basis (`spline-lad` fits it
-by least absolute deviation instead) — so a spline model's
+ordinary regression on that expanded basis (`spline-lad` fits it by least
+absolute deviation instead, and `spline-logistic` by logistic regression)
+— so a spline model's
 coefficients apply to the expanded basis, not the original predictors, and
 `model-coefficients`/`model-intercept`/`model-slope` refuse to operate on
 one (use `model-report`/`model-predict` instead, which work on every model
 kind). `model-kind` reports which flavor you have: `"linear"`, `"lad"`,
 `"logistic"`, `"spline"`, `"spline-lad"`, or `"spline-logistic"`.
 
-All of `linear-regression`, `lad-regression`, `logistic-regression`, `spline-regression`, `spline-lad`,
+All of `linear-regression`, `lad-regression`, `logistic-regression`, `spline-regression`, `spline-lad`, `spline-logistic`,
 `model-predict`, and `model-evaluate` accept **either a single vector of X
 values (one predictor) or a Lisp list of several vectors** — `(list x1 x2
 ...)` — for multiple predictors. Every predictor vector and the Y vector
@@ -2454,9 +2463,8 @@ fitting (for numerical stability) and converted back to the original scale
 afterward, so this is transparent to you; date values anywhere a number is
 expected are silently converted to their ordinal day count.
 
-**Weighted fitting.** `linear-regression`, `lad-regression`,
-`logistic-regression`, and `spline-regression` all take an optional
-trailing `weights` vector: one
+**Weighted fitting.** All six take an optional `weights` vector, after
+`x` and `y` (and after `max-knots`, for the spline ones): one
 non-negative number per observation, the same length as `y`. Omit it (or
 pass `'()`) to weight every observation equally, exactly the original
 behavior. Fitting still minimizes a sum of squared errors (or maximizes a
@@ -2608,7 +2616,7 @@ Least absolute deviation model:  y = 3.78571 + 0.714286*x1
 Least squares, pulled up by month 9, gives a slope of 1.03 with a standard
 error of 0.50.
 
-#### `(logistic-regression x y [weights])`
+#### `(logistic-regression x y [weights] [:floor f :ceiling c])`
 Maximum-likelihood fit of `p = sigmoid(intercept + sum(coefficients[i] *
 x[i]))`, via Newton-Raphson (up to 50 iterations, or until convergence).
 `x`/`y`/`weights` as `linear-regression`'s above (including `x`/`y`
@@ -2617,6 +2625,34 @@ accepting `(name . vector)` pairs); every value in `y` must be in `[0, 1]`
 error. Returns a model of kind `"logistic"`. Near-perfect separability in
 the data can prevent convergence and raises a descriptive error rather
 than diverging silently.
+
+**A floor and a ceiling.** A logistic curve is an S that flattens out at 0
+on one side and at 1 on the other. For data that flattens out at other
+levels -- a share of loans prepaying that rises from about 3% to about 48%,
+say -- give them as `:floor` and `:ceiling`, and the model is
+
+```
+y = floor + (ceiling - floor) * sigmoid(intercept + sum(coefficients[i] * x[i]))
+```
+
+It is fit by rescaling `y` to `(y - floor) / (ceiling - floor)`, which goes
+from 0 to 1, and fitting that as above. Data scatters about the levels a
+curve flattens out at, so some of it is beyond them: a `y` below the floor
+is taken to be at the floor, and one above the ceiling at the ceiling
+(`model-report` says how many were). One of the two can be left out: it is
+0 or 1, as usual. The floor and ceiling are yours to choose, from what you
+know of the data -- not its smallest and largest values, which are often
+the points out of line. `model-predict` gives a number between the floor
+and the ceiling, and `model-evaluate` treats it as any other number
+(R-squared, RMSE, MAE), not as a probability.
+
+```lisp
+(define x (- (/ (vector-range 41) 8.0) 2))
+(define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))   ; 3% to 48%
+(define m (logistic-regression x y :floor 0.03 :ceiling 0.48))
+(vector-round (vector (model-intercept m) (model-slope m)) 6)   ; => #(-3.0 3.0)
+(format "{:.3f}" (model-predict m 10))                          ; => "0.480"
+```
 
 **How the coefficients are found.** Fitting maximizes the (weighted)
 log-likelihood of the data —
@@ -2655,31 +2691,32 @@ for a large dataset.
 (display (model-report m))
 ```
 
-#### `(spline-regression x y [max-knots logistic? weights])`
+#### `(spline-regression x y [max-knots weights])`
 A simple, dependency-free way to let a model bend instead of insisting on a
 straight line. For each predictor `x`, a handful of "knot" locations are
 chosen (automatically, at quantiles of `x`'s own values, or exactly where
 you specify), and the model gets one extra *hinge* feature `max(0, x -
 knot)` per knot alongside the plain linear term — or, for a predictor
 marked `'categorical`, one 0/1 indicator column per non-baseline distinct
-value instead of hinges. Fitting then just reuses `linear-regression`'s or
-`logistic-regression`'s own fitting code on this expanded feature set.
-Returns a model of kind `"spline"` (or `"spline-logistic"`). `x`/`y` accept
+value instead of hinges. Fitting then just reuses `linear-regression`'s own
+fitting code on this expanded feature set (`spline-lad` and
+`spline-logistic`, below, reuse `lad-regression`'s and
+`logistic-regression`'s). Returns a model of kind `"spline"`. `x`/`y` accept
 the same shapes `linear-regression`/`logistic-regression` do — including a
 list of `(name . vector)` pairs for `x` and a `(name . vector)` pair for
 `y` — and `model-report` (below) uses those names the same way.
 
 **How the coefficients are found.** There's no separate spline-fitting
 algorithm — `spline-regression` isn't a different way of minimizing
-anything, it's a different set of *columns* to feed into one of the two
+anything, it's a different set of *columns* to feed into one of the
 algorithms already described above. Every knot's hinge column and every
 category's 0/1 indicator column (see the table below) is computed first;
-those expanded columns are then handed to `fit_linear` (`logistic?` `#f`)
-or `fit_logistic` (`logistic?` `#t`) exactly as if you had built those
-columns yourself and called `linear-regression`/`logistic-regression`
-directly on them — same objective, same closed-form-or-Newton-Raphson
-solve, same optional `weights`, just applied to `x`'s expansion instead of
-`x` itself.
+those expanded columns are then handed to `fit_linear` exactly as if you
+had built those columns yourself and called `linear-regression` directly
+on them — same objective, same closed-form solve, same optional `weights`,
+just applied to `x`'s expansion instead of `x` itself. (`spline-lad` and
+`spline-logistic` hand the same columns to `fit_lad` and to the logistic
+fit.)
 
 `max-knots` (default `3`) controls how *every* predictor is expanded:
 
@@ -2707,16 +2744,10 @@ values up front and rejects an unseen category at `model-predict` time,
 where plain linear accepts (and silently extrapolates/interpolates)
 anything numeric.
 
-`logistic?` (default `#f`) — if true, `y` must be in `[0, 1]`, and the
-expanded basis is fit with logistic regression instead of OLS, so the
-resulting `[0, 1]`-valued prediction, thanks to the non-linear basis,
-doesn't have to be monotonic in `x` the way a plain `logistic-regression`
-fit would be.
-
 `weights` (optional, default: every observation weighted equally) — the
-same per-observation weight vector `linear-regression`/`logistic-regression`
-take (see "Weighted fitting", above); passed straight through to whichever
-fit runs on the expanded basis.
+same per-observation weight vector `linear-regression` takes (see
+"Weighted fitting", above); passed straight through to the fit on the
+expanded basis.
 
 ```lisp
 (define home-type (vector 0 1 0 1 1))          ; 0=own, 1=rent
@@ -2724,6 +2755,23 @@ fit runs on the expanded basis.
                               (list 2 'categorical)))
 (display (model-report m))
 (model-predict m (list 50000 0))                ; predict for "own", income=50000
+```
+
+#### `(spline-logistic x y [max-knots weights] [:floor f :ceiling c])`
+A spline model with a logistic link: `spline-regression`'s expansion of
+each predictor, from the same `max-knots`, fit as `logistic-regression`
+fits. Every `y` must be between 0 and 1, unless `:floor` and `:ceiling` are
+given, as for `logistic-regression`. The prediction stays between 0 and 1
+(or the floor and the ceiling), but thanks to the hinges it doesn't have
+to rise (or fall) all the way across, as a plain `logistic-regression`'s
+does. Returns a model of kind `"spline-logistic"`. (This was
+`spline-regression` with `logistic?` `#t`.)
+
+```lisp
+(define x (- (/ (vector-range 41) 8.0) 2))
+(define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))   ; 3% to 48%
+(define s (spline-logistic x y 2 :floor 0.03 :ceiling 0.48))
+(format "{:.3f}" (model-predict s 1))                          ; => "0.255"
 ```
 
 #### `(spline-lad x y [max-knots weights])`
@@ -2747,9 +2795,8 @@ fit.
 the LAD spline goes through the V's other points exactly.)
 
 The three spline fits -- `spline-regression`, `spline-lad`, and
-`spline-regression` with `logistic?` -- expand the predictors the same
-way: the knots depend only on `x` and `max-knots`, never on `y` or on how
-the fit is made. `examples/regression_kinds_example.lsp` fits all six kinds
+`spline-logistic` -- expand the predictors the same way: the knots depend
+only on `x` and `max-knots`, never on `y` or on how the fit is made. `examples/regression_kinds_example.lsp` fits all six kinds
 of regression to the same made-up data and charts them, one above another.
 
 #### `(model-report m)`
@@ -2852,9 +2899,10 @@ Evaluates a fitted model's prediction quality against data — typically
 held-out data it wasn't fit on — and returns a string report. `x`/`y`
 follow the same shape rules as the fitting functions; the number of
 predictor vectors in `x` must match the model's own predictor count. For a
-non-probabilistic model (`"linear"`/`"lad"`/`"spline"`): reports R-squared, RMSE,
+non-probabilistic model (`"linear"`/`"lad"`/`"spline"`/`"spline-lad"`, and a
+logistic one with a `:floor` and `:ceiling`): reports R-squared, RMSE,
 and MAE against this new data. For a probabilistic model
-(`"logistic"`/`"spline-logistic"`): reports log-likelihood, McFadden's
+(`"logistic"`/`"spline-logistic"`, from 0 to 1): reports log-likelihood, McFadden's
 pseudo-R-squared (against an intercept-only model fit fresh on this new
 data), AUC (see `model-report`), and classification accuracy at a 0.5
 threshold — though for a rare outcome, such as a monthly payoff,

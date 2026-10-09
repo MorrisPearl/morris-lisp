@@ -406,6 +406,83 @@ class TestSplineLad(LispTestCase):
                              "spline-lad: the knot-spec list must have one entry per predictor (2), got 1")
 
 
+class TestLogisticFloorAndCeiling(LispTestCase):
+    """logistic-regression and spline-logistic with :floor and :ceiling: a curve from the floor to the
+    ceiling, in place of from 0 to 1."""
+
+    CURVE = """(define x (- (/ (vector-range 41) 8.0) 2))
+               (define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))
+            """          # 0.03 + 0.45 * sigmoid(-3 + 3x): from 3% to 48%
+
+    def test_a_floor_and_ceiling_find_the_curve_the_data_was_made_from(self):
+        self.run_lisp(self.CURVE + "(define m (logistic-regression x y :floor 0.03 :ceiling 0.48))")
+        self.assertAlmostEqual(self.run_lisp("(model-intercept m)"), -3.0, places=5)
+        self.assertAlmostEqual(self.run_lisp("(model-slope m)"), 3.0, places=5)
+        self.assertAlmostEqual(self.run_lisp("(model-predict m 10)"), 0.48, places=6)
+        self.assertAlmostEqual(self.run_lisp("(model-predict m -10)"), 0.03, places=6)
+        self.assertShows("m", "#<logistic-model slope=3 intercept=-3 floor=0.03 ceiling=0.48>")
+        report = self.show("(model-report m)")
+        self.assertIn("Logistic model, between 0.03 and 0.48:  y = 0.03 + 0.45 * sigmoid(-3 + 3*x1)", report)
+        self.assertIn("(0 y below the floor, and 0 above the ceiling, taken as at them)", report)
+        evaluation = self.show("(model-evaluate m x y)")             # a number between them, not a probability
+        self.assertIn("R-squared = 1", evaluation)
+        self.assertNotIn("AUC", evaluation)
+        self.assertShows("(model-kind (logistic-regression x y))", '"logistic"')     # from 0 to 1, as before
+        self.assertIn("AUC", self.show("(model-evaluate (logistic-regression x y) x y)"))
+
+    def test_a_y_beyond_the_floor_or_ceiling_is_taken_as_at_it(self):
+        self.run_lisp(self.CURVE + """
+          (vector-set! y 0 0.01) (vector-set! y 1 0.0)                  ; below the floor
+          (vector-set! y 39 0.5) (vector-set! y 40 0.6)                 ; above the ceiling
+          (define m (logistic-regression x y :floor 0.03 :ceiling 0.48))
+          (define clipped (vector-map (lambda (v) (min 0.48 (max 0.03 v))) y))
+          (define by-hand (logistic-regression x clipped :floor 0.03 :ceiling 0.48))""")
+        self.assertIn("(2 y below the floor, and 2 above the ceiling, taken as at them)", self.show("(model-report m)"))
+        for v in (-2, 0, 1, 2.5):            # (to the fit's own tolerance)
+            self.assertAlmostEqual(self.run_lisp("(model-predict m %s)" % v),
+                                   self.run_lisp("(model-predict by-hand %s)" % v), places=7)
+
+    def test_one_of_them_can_be_left_out_and_weights_still_come_first(self):
+        self.run_lisp(self.CURVE + """
+          (define m (logistic-regression x y :ceiling 0.5))
+          (define weights (vector-map (lambda (v) (if (> v 2.9) 0 1)) x))   ; the last point left out
+          (define weighted (logistic-regression x y weights :floor 0.03 :ceiling 0.48))
+          (define without (logistic-regression (vector-take x 40) (vector-take y 40) :floor 0.03 :ceiling 0.48))""")
+        self.assertIn("Logistic model, between 0 and 0.5:", self.show("(model-report m)"))
+        self.assertAlmostEqual(self.run_lisp("(model-predict weighted 0.5)"),
+                               self.run_lisp("(model-predict without 0.5)"), places=9)
+
+    def test_what_the_options_won_t_take(self):
+        self.run_lisp(self.CURVE)
+        self.assertLispError("(logistic-regression x (* 3 y))", "every y must be between 0 and 1, as a probability is")
+        self.assertLispError("(logistic-regression x (* 3 y))", "or give the curve a :floor and :ceiling")
+        self.assertLispError("(logistic-regression x y :floor 0.5 :ceiling 0.4)",
+                             "the :floor (0.5) must be below the :ceiling (0.4)")
+        self.assertLispError('(logistic-regression x y :floor "low")', ":floor must be a number")
+        self.assertLispError("(logistic-regression x y :cap 0.5)", ":cap")
+        self.assertLispError("(logistic-regression x y '() '() :floor 0.1)",
+                             "expected at most 1 argument(s) after x and y, before the keyword options, not 2")
+
+    def test_spline_logistic_is_logistic_regression_on_the_hinges(self):
+        self.run_lisp(self.CURVE + """
+          (define hinge (vector-map (lambda (v) (max 0 (- v 1.5))) x))
+          (define spline (spline-logistic x y (list 1.5) :floor 0.03 :ceiling 0.48))
+          (define by-hand (logistic-regression (list x hinge) y :floor 0.03 :ceiling 0.48))
+          (define plain (spline-logistic x (* 2 y) (list 1.5)))""")       # (2y is between 0 and 0.96)
+        for v in (-2, 0, 1.5, 2, 3):
+            self.assertAlmostEqual(self.run_lisp("(model-predict spline %s)" % v),
+                                   self.run_lisp("(model-predict by-hand (list %s %s))" % (v, max(0, v - 1.5))),
+                                   places=9)
+        self.assertShows("(model-kind spline)", '"spline-logistic"')
+        self.assertShows("(model-kind plain)", '"spline-logistic"')
+        self.assertIn("Piecewise-linear spline model, with a logistic link between 0.03 and 0.48, predicting y:",
+                      self.show("(model-report spline)"))
+        self.assertIn("Piecewise-linear spline model, with a logistic link, predicting y:",
+                      self.show("(model-report plain)"))
+        self.assertLispError("(spline-logistic x (* 3 y) (list 1.5))", "spline-logistic: every y must be between 0 and 1")
+        self.assertLispError("(spline-regression x y 3 #t)", "spline-logistic fits a spline with a logistic link")
+
+
 class TestLinearProgramming(LispTestCase):
     """lp-read-file and lp-solve (lisp_simplex.py, using simplex/simplex_solver.py)."""
 

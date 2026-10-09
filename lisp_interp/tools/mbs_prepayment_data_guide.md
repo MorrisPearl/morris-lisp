@@ -161,7 +161,7 @@ built from an approximate (not official) historical mortgage-rate path.
 **This is for testing your modeling pipeline, not for drawing real
 conclusions.** `prepayment_demo.lsp` shows a complete workflow against it:
 loading the CSV, `suggest-knots` for the refinance-incentive curve,
-`spline-regression` with a logistic link and a categorical predictor,
+`spline-logistic` with a categorical predictor,
 train/test evaluation, and charting.
 
 ## Also useful once you have real data: FRED for macro covariates

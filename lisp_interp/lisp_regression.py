@@ -1,7 +1,13 @@
-"""Regression models for the Lisp interpreter: linear, least absolute
-deviation (LAD), logistic, and piecewise-linear spline regression (fit by
-least squares, LAD, or with a logistic link), with one or more predictors,
-plus model-report / model-predict / model-evaluate and friends.
+"""Regression models for the Lisp interpreter, with one or more predictors:
+
+                   a straight line (or plane)   a line that bends at knots
+  least squares    linear-regression            spline-regression
+  least absolute   lad-regression               spline-lad
+    deviation
+  logistic         logistic-regression          spline-logistic
+
+plus model-report / model-predict / model-evaluate and friends. A logistic
+model's curve goes from 0 to 1, unless :floor and :ceiling say otherwise.
 
 The fitting math (fit_linear, fit_lad, fit_logistic) uses numpy matrix
 operations, so fitting millions of rows isn't slowed down by a Python-level
@@ -16,8 +22,8 @@ import math
 import numpy as np
 
 from lisp_core import (
-    LispDate, LispError, LispString, LispVector, NIL, Pair, Symbol,
-    list_to_pairs, numeric_value, pairs_to_list, to_display_string,
+    Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, Symbol,
+    keyword_options, list_to_pairs, numeric_value, pairs_to_list, to_display_string,
 )
 from lisp_vector_math import to_vector
 
@@ -29,11 +35,13 @@ from lisp_vector_math import to_vector
 class LispModel:
     """A fitted linear model, y = intercept + sum(coefficients[i] * x[i]) --
     fit by least squares ("linear") or least absolute deviation ("lad") -- or
-    logistic model, p = sigmoid(intercept + sum(coefficients[i] * x[i])).
-    `coefficients` has one entry per predictor; `stats` holds the fit
-    statistics model-report shows."""
+    logistic model, y = floor + (ceiling - floor) * sigmoid(intercept +
+    sum(coefficients[i] * x[i])), whose floor and ceiling are 0 and 1 unless
+    it was fit with others (fit_logistic_between). `coefficients` has one
+    entry per predictor; `stats` holds the fit statistics model-report shows."""
 
-    def __init__(self, kind, coefficients, intercept, stats, predictor_names=None, y_name=None):
+    def __init__(self, kind, coefficients, intercept, stats, predictor_names=None, y_name=None,
+                 floor=0.0, ceiling=1.0):
         self.kind = kind                    # "linear", "lad", or "logistic"
         self.coefficients = coefficients    # list of floats, one per predictor
         self.intercept = intercept
@@ -43,19 +51,26 @@ class LispModel:
         # pairs; model-report uses them in place of x1/x2/.../y. None if unnamed.
         self.predictor_names = predictor_names   # list of str, one per predictor, or None
         self.y_name = y_name                     # str, or None
+        self.floor, self.ceiling = floor, ceiling   # a logistic model's curve goes from floor to ceiling
+
+    def between_0_and_1(self):
+        """Whether a logistic model's curve goes from 0 to 1: it gives a probability."""
+        return (self.floor, self.ceiling) == (0.0, 1.0)
 
     def predict(self, xs):
         """xs: a list of numbers, one per predictor, in the same order the
         model was fit with."""
         z = self.intercept + sum(c * x for c, x in zip(self.coefficients, xs))
-        return sigmoid(z) if self.kind == "logistic" else z
+        return self.floor + (self.ceiling - self.floor) * sigmoid(z) if self.kind == "logistic" else z
 
     def __repr__(self):
+        between = "" if self.kind != "logistic" or self.between_0_and_1() else \
+            " floor=%.6g ceiling=%.6g" % (self.floor, self.ceiling)
         if len(self.coefficients) == 1:
-            return "#<%s-model slope=%.6g intercept=%.6g>" % (
-                self.kind, self.coefficients[0], self.intercept)
+            return "#<%s-model slope=%.6g intercept=%.6g%s>" % (
+                self.kind, self.coefficients[0], self.intercept, between)
         coeffs = ", ".join("%.6g" % c for c in self.coefficients)
-        return "#<%s-model coefficients=(%s) intercept=%.6g>" % (self.kind, coeffs, self.intercept)
+        return "#<%s-model coefficients=(%s) intercept=%.6g%s>" % (self.kind, coeffs, self.intercept, between)
 
 
 def sigmoid(z):
@@ -285,6 +300,59 @@ def fit_logistic(columns, ys, weights=None, max_iterations=50, tolerance=1e-8):
         "auc": weighted_auc(prob, y_arr, w),
     }
     return LispModel("logistic", coefficients, intercept, stats)
+
+
+def fit_logistic_between(columns, ys, weights, floor, ceiling, who):
+    """A logistic model of y between a floor and a ceiling:
+
+        y = floor + (ceiling - floor) * sigmoid(intercept + sum(coef[i] * x[i]))
+
+    a curve in the shape of an S that flattens out at the floor on one side
+    and the ceiling on the other. The ys are rescaled to (y - floor) /
+    (ceiling - floor), which go from 0 to 1, and fit by fit_logistic. With no
+    floor and ceiling (None), they're 0 and 1, and every y must be between
+    them, as a probability is. With them, a y below the floor, or above the
+    ceiling, is taken to be at it (clipped): data scatters about the levels a
+    curve flattens out at, so some of it is beyond them. The model's stats
+    say how many were. `who` is the function to name in an error message."""
+    if floor is None:
+        for y in ys:
+            if not 0 <= y <= 1:
+                raise LispError("%s: every y must be between 0 and 1, as a probability is (got %r) -- "
+                                "or give the curve a :floor and :ceiling" % (who, y))
+        return fit_logistic(columns, ys, weights)
+    rescaled = [(y - floor) / (ceiling - floor) for y in ys]
+    model = fit_logistic(columns, [min(max(r, 0.0), 1.0) for r in rescaled], weights)
+    model.floor, model.ceiling = floor, ceiling
+    model.stats["below_floor"] = sum(1 for r in rescaled if r < 0)
+    model.stats["above_ceiling"] = sum(1 for r in rescaled if r > 1)
+    return model
+
+
+def floor_and_ceiling(options, who):
+    """The :floor and :ceiling options, as numbers -- 0 and 1 for one that
+    isn't given -- or (None, None) if neither is."""
+    if options.get("floor") is None and options.get("ceiling") is None:
+        return None, None
+    floor = options.get("floor") if options.get("floor") is not None else 0.0
+    ceiling = options.get("ceiling") if options.get("ceiling") is not None else 1.0
+    for name, value in (("floor", floor), ("ceiling", ceiling)):
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+            raise LispError("%s: :%s must be a number, not %s" % (who, name, to_display_string(value)))
+    if not floor < ceiling:
+        raise LispError("%s: the :floor (%s) must be below the :ceiling (%s)" % (who, floor, ceiling))
+    return float(floor), float(ceiling)
+
+
+def positional_and_keywords(arguments, most_positional, keywords, who):
+    """A builtin's optional arguments, split into the positional ones, before
+    the first keyword (at most most_positional of them), and the keyword
+    options after it, as a dict."""
+    first_keyword = next((i for i, a in enumerate(arguments) if isinstance(a, Keyword)), len(arguments))
+    if first_keyword > most_positional:
+        raise LispError("%s: expected at most %d argument(s) after x and y, before the keyword options, not %d"
+                        % (who, most_positional, first_keyword))
+    return list(arguments[:first_keyword]), keyword_options(arguments[first_keyword:], keywords, who)
 
 
 # ---------------------------------------------------------------------------
@@ -609,12 +677,17 @@ def lad_regression_fn(x_arg, y_arg, weight_vec=None):
     return model
 
 
-def logistic_regression_fn(x_arg, y_arg, weight_vec=None):
-    y_vec, y_name = _coerce_y(y_arg, "logistic-regression")
+def logistic_regression_fn(x_arg, y_arg, *arguments):
+    """(logistic-regression x y [weights] [:floor f :ceiling c]) -- a logistic
+    model: see fit_logistic_between."""
+    who = "logistic-regression"
+    positional, options = positional_and_keywords(arguments, 1, ["floor", "ceiling"], who)
+    floor, ceiling = floor_and_ceiling(options, who)
+    y_vec, y_name = _coerce_y(y_arg, who)
     columns, names = _predictor_columns(x_arg, len(y_vec.items))
     ys = [numeric_value(v) for v in y_vec.items.tolist()]
-    weights = _optional_weights(weight_vec, len(ys), "logistic-regression")
-    model = fit_logistic(columns, ys, weights)
+    weights = _optional_weights(positional[0] if positional else None, len(ys), who)
+    model = fit_logistic_between(columns, ys, weights, floor, ceiling, who)
     model.predictor_names = names
     model.y_name = y_name
     return model
@@ -625,9 +698,11 @@ def _is_model(x):
 
 
 def _is_probabilistic(model):
-    """True for models whose .predict() returns a probability in [0,1]
-    (logistic, or a spline model fit with a logistic link)."""
-    return model.kind in ("logistic", "spline-logistic")
+    """True for models whose .predict() returns a probability in [0,1]: a
+    logistic or spline-logistic model whose curve goes from 0 to 1. (One with
+    another floor and ceiling predicts a number between them.)"""
+    inner = model.inner_model if isinstance(model, LispSplineModel) else model
+    return inner.kind == "logistic" and inner.between_0_and_1()
 
 
 def model_predict(model, x_arg):
@@ -710,8 +785,12 @@ def model_report(model):
         lines = ["Linear model:  %s = %.6g + %s" % (y_name, model.intercept, terms)]
     elif model.kind == "lad":
         lines = ["Least absolute deviation model:  %s = %.6g + %s" % (y_name, model.intercept, terms)]
-    else:
+    elif model.between_0_and_1():
         lines = ["Logistic model:  p(%s) = sigmoid(%.6g + %s)" % (y_name, model.intercept, terms)]
+    else:
+        lines = ["Logistic model, between %.6g and %.6g:  %s = %.6g + %.6g * sigmoid(%.6g + %s)"
+                 % (model.floor, model.ceiling, y_name, model.floor, model.ceiling - model.floor,
+                    model.intercept, terms)]
     lines.extend(coefficient_table_lines(model, names))
     lines.extend(fit_statistics_lines(model))
     return LispString("\n".join(lines))
@@ -730,7 +809,13 @@ def fit_statistics_lines(model):
                 "  iterations       = %d (%s)" % (stats["iterations"],
                                                    "converged" if stats["converged"] else "did NOT converge"),
                 "  n                = %d" % stats["n"]]
-    return ["  log-likelihood   = %.6g" % stats["log_likelihood"],
+    between = []
+    if not model.between_0_and_1():
+        between = ["  floor, ceiling   = %.6g, %.6g  (%d y below the floor, and %d above the ceiling, taken as at them)"
+                   % (model.floor, model.ceiling, stats.get("below_floor", 0), stats.get("above_ceiling", 0)),
+                   "  (the measures below are of y rescaled to (y - floor) / (ceiling - floor))"]
+    return between + [
+            "  log-likelihood   = %.6g" % stats["log_likelihood"],
             "  pseudo R-squared = %.6g  (McFadden's)" % stats["pseudo_r_squared"],
             "  AUC              = %.6g" % stats["auc"],
             "  iterations       = %d (%s)" % (stats["iterations"],
@@ -764,7 +849,7 @@ def predict_all(model, columns):
         return predict_all(model.inner_model, _spline_expand_columns(columns, model.predictor_specs))
     X = np.column_stack([np.asarray(col, dtype=np.float64) for col in columns])
     z = model.intercept + X @ np.asarray(model.coefficients, dtype=np.float64)
-    return _sigmoid_vec(z) if model.kind == "logistic" else z
+    return model.floor + (model.ceiling - model.floor) * _sigmoid_vec(z) if model.kind == "logistic" else z
 
 
 def evaluation_data(model, x_arg, y_arg, name):
@@ -874,8 +959,8 @@ def model_lift_table(model, x_arg, y_arg, n_bins=10, weight_vec=None):
 # it's expanded into 0/1 indicator columns -- one per non-baseline value --
 # rather than hinge features, since hinges/knots don't mean anything for a
 # handful of discrete codes. Fitting the expanded basis is then just an
-# ordinary (or logistic) regression -- reusing fit_linear/fit_logistic
-# exactly as they are.
+# ordinary least-squares, LAD, or logistic regression -- reusing fit_linear,
+# fit_lad, or fit_logistic_between exactly as they are.
 
 class _PredictorSpec:
     """How one predictor is expanded into features: either a set of
@@ -1077,6 +1162,8 @@ def model_data(model):
     else:
         data = {"kind": model.kind, "coefficients": [float(c) for c in model.coefficients],
                 "intercept": float(model.intercept), "stats": dict(model.stats)}
+        if model.kind == "logistic" and not model.between_0_and_1():
+            data["floor"], data["ceiling"] = model.floor, model.ceiling
     if model.predictor_names is not None:
         data["predictor-names"] = list(model.predictor_names)
     if model.y_name is not None:
@@ -1091,7 +1178,8 @@ def model_from_data(data):
         specs = [_PredictorSpec(spec["mode"], spec["knots"], spec["categories"], spec.get("n-distinct"))
                  for spec in data["predictor-specs"]]
         return LispSplineModel(model_from_data(data["inner-model"]), specs, data["k"], names, data.get("y-name"))
-    return LispModel(data["kind"], data["coefficients"], data["intercept"], data["stats"], names, data.get("y-name"))
+    return LispModel(data["kind"], data["coefficients"], data["intercept"], data["stats"], names, data.get("y-name"),
+                     data.get("floor", 0.0), data.get("ceiling", 1.0))
 
 
 def _spline_feature_labels(specs, names):
@@ -1114,8 +1202,11 @@ def _spline_report_lines(model):
     names = model.predictor_names or ["x%d" % (i + 1) for i in range(model.k)]
     y_name = model.y_name or "y"
     lines = []
-    if model.kind == "spline-logistic":
+    if model.kind == "spline-logistic" and model.inner_model.between_0_and_1():
         lines.append("Piecewise-linear spline model, with a logistic link, predicting %s:" % y_name)
+    elif model.kind == "spline-logistic":
+        lines.append("Piecewise-linear spline model, with a logistic link between %.6g and %.6g, predicting %s:"
+                     % (model.inner_model.floor, model.inner_model.ceiling, y_name))
     elif model.kind == "spline-lad":
         lines.append("Piecewise-linear spline model, fit by least absolute deviation, predicting %s:" % y_name)
     else:
@@ -1159,20 +1250,33 @@ def fit_spline(x_arg, y_arg, max_knots, weight_vec, fit, who):
     return LispSplineModel(fit(expanded_columns, ys, weights), predictor_specs, len(columns), names, y_name)
 
 
-def spline_regression_fn(x_arg, y_arg, max_knots=3, logistic=False, weight_vec=None):
-    """(spline-regression x y [max-knots logistic? weights]) -- fit a
-    piecewise-linear spline model by least squares. x and y are as for
-    linear-regression. max-knots says how to expand each predictor (see
-    _resolve_all_predictor_specs). With logistic? #t, y must be between 0
-    and 1 and a logistic model is fitted, giving a probability."""
-    who = "spline-regression"
-    if logistic:
-        for y in _coerce_y(y_arg, who)[0].items.tolist():
-            if not 0 <= numeric_value(y) <= 1:
-                raise LispError(
-                    "spline-regression: with logistic #t, dependent-variable values "
-                    "must all be between 0 and 1 (got %r)" % (y,))
-    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit_logistic if logistic else fit_linear, who)
+def spline_regression_fn(x_arg, y_arg, max_knots=3, weight_vec=None):
+    """(spline-regression x y [max-knots weights]) -- fit a piecewise-linear
+    spline model by least squares. x and y are as for linear-regression.
+    max-knots says how to expand each predictor (see
+    _resolve_all_predictor_specs)."""
+    if isinstance(weight_vec, bool):
+        raise LispError("spline-regression: it has no logistic? argument now: "
+                        "spline-logistic fits a spline with a logistic link")
+    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit_linear, "spline-regression")
+
+
+def spline_logistic_fn(x_arg, y_arg, *arguments):
+    """(spline-logistic x y [max-knots weights] [:floor f :ceiling c]) -- fit a
+    piecewise-linear spline model with a logistic link: spline-regression's
+    expansion of the predictors, fit as logistic-regression fits (see
+    fit_logistic_between), so the curve can bend, and stays between the
+    floor and the ceiling (0 and 1, unless they're given)."""
+    who = "spline-logistic"
+    positional, options = positional_and_keywords(arguments, 2, ["floor", "ceiling"], who)
+    floor, ceiling = floor_and_ceiling(options, who)
+    max_knots = positional[0] if positional else 3
+    weight_vec = positional[1] if len(positional) > 1 else None
+
+    def fit(columns, ys, weights):
+        return fit_logistic_between(columns, ys, weights, floor, ceiling, who)
+
+    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit, who)
 
 
 def spline_lad_fn(x_arg, y_arg, max_knots=3, weight_vec=None):
@@ -1282,6 +1386,7 @@ BUILTINS = {
     "logistic-regression": logistic_regression_fn,
     "spline-regression": spline_regression_fn,
     "spline-lad": spline_lad_fn,
+    "spline-logistic": spline_logistic_fn,
     "suggest-knots": suggest_knots_fn,
     "model-report": model_report,
     "model-predict": model_predict,

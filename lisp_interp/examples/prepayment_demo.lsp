@@ -37,10 +37,9 @@
 
 ; --- fit: incentive (spline, suggested knots), wala (spline, 3 knots),
 ;     purpose (categorical), logistic link since CPR is in [0,1] ---
-(define m (spline-regression (list train-incentive train-wala train-purpose)
-                              train-cpr
-                              (list suggested 3 (quote categorical))
-                              #t))
+(define m (spline-logistic (list train-incentive train-wala train-purpose)
+                            train-cpr
+                            (list suggested 3 (quote categorical))))
 (display (model-report m)) (newline)
 
 (display "Held-out evaluation:") (newline)

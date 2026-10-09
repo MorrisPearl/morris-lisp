@@ -580,13 +580,15 @@ class TestSaveVariables(LispTestCase):
           (define lad (lad-regression (list x) y))
           (define logistic (logistic-regression (list x) (cons "default" #(0 0 1 0 1 0 1 1))))
           (define spline (spline-regression (list x kind) y (list 1 'categorical)))
-          (define lad-spline (spline-lad (list x kind) y (list 1 'categorical)))""")
-        self.run_lisp("(save-variables path linear lad logistic spline lad-spline)")
+          (define lad-spline (spline-lad (list x kind) y (list 1 'categorical)))
+          (define between (logistic-regression (list x) y :floor 5 :ceiling 80))
+          (define spline-between (spline-logistic (list x kind) y (list 1 'categorical) :floor 5 :ceiling 80))""")
+        self.run_lisp("(save-variables path linear lad logistic spline lad-spline between spline-between)")
         self.run_lisp("(load-variables path)", env=self.later)
-        for model in ("linear", "lad", "logistic"):
+        for model in ("linear", "lad", "logistic", "between"):
             for src in ("(model-predict %s (list 45))" % model, "(model-report %s)" % model):
                 self.assertEqual(self.run_lisp(src, env=self.later), self.run_lisp(src), src)
-        for model in ("spline", "lad-spline"):
+        for model in ("spline", "lad-spline", "spline-between"):
             for src in ('(model-predict %s (list 45 "rent"))' % model, "(model-report %s)" % model,
                         "(model-kind %s)" % model):
                 self.assertEqual(self.run_lisp(src, env=self.later), self.run_lisp(src), src)

@@ -7,8 +7,10 @@
 ;   logistic-regression  an S-curve, between 0 and 1
 ;   spline-regression    a line that bends at knots, by least squares
 ;   spline-lad           a line that bends at knots, by least absolute deviation
-;   spline-regression with logistic? #t
-;                        a curve that bends at knots, between 0 and 1
+;   spline-logistic      a curve that bends at knots, between 0 and 1
+;
+; and then the two logistic ones again, with a :floor and :ceiling: the
+; levels the data flattens out at, by eye, in place of 0 and 1.
 ;
 ; The data: the share of mortgages in a pool that prepaid in a month, by
 ; how far the rate they pay is above today's rate (the "incentive", in
@@ -17,15 +19,20 @@
 ; out of line -- a pool sold off, and a month the data was wrong -- to show
 ; what least squares and least absolute deviation make of them.
 ;
-; The three spline models use the same knots: 3 for each, placed at the
-; quartiles of the incentive, as spline-regression and spline-lad both
-; place them from the predictor alone. They differ only in how the bending
-; line is fit.
+; The spline models use the same knots: 3 for each, placed at the
+; quartiles of the incentive, as spline-regression, spline-lad, and
+; spline-logistic all place them, from the predictor alone. They differ
+; only in how the bending line is fit.
 ;
 ; It needs no network. Run it from the examples directory:
 ;   python3 ../lisp_interpreter.py regression_kinds_example.lsp
 ; It saves the charts in regression_kinds.png; in a notebook or the GUI,
 ; they're drawn too.
+;
+; The plain logistic curve can't flatten out at 0.48, as the data does: its
+; curve goes from 0 to 1. With a floor of 0.03 and a ceiling of 0.48, it
+; has the data's shape. But a logistic fit, like a least-squares one, is
+; pulled by the months out of line, where spline-lad isn't.
 
 ; --- The data ------------------------------------------------------------------
 (random-seed 7)                                          ; the same made-up data every time
@@ -44,7 +51,11 @@
         (cons "logistic-regression" (logistic-regression incentive prepaid))
         (cons "spline-regression" (spline-regression incentive prepaid knots))
         (cons "spline-lad" (spline-lad incentive prepaid knots))
-        (cons "spline-regression, logistic" (spline-regression incentive prepaid knots #t))))
+        (cons "spline-logistic" (spline-logistic incentive prepaid knots))
+        (cons "logistic-regression, floor 0.03 and ceiling 0.48"
+              (logistic-regression incentive prepaid :floor 0.03 :ceiling 0.48))
+        (cons "spline-logistic, floor 0.03 and ceiling 0.48"
+              (spline-logistic incentive prepaid knots :floor 0.03 :ceiling 0.48))))
 
 ; --- One chart each, the same points, and each model's curve ------------------------
 (define grid (- (/ (vector-range 201) 40.0) 2))         ; -2 to 3 points, finely
@@ -54,8 +65,8 @@
               (list (model-kind (cdr entry)) grid (curve (cdr entry)) :line #t))
         :title (car entry) :y-label "share prepaid" :y-min -0.1 :y-max 0.7))
 (plot-panels (map panel models)
-             :title "Six kinds of regression, on the same data"
-             :x-label "rate incentive (percentage points)" :legend #f :height 16)
+             :title "Six kinds of regression on the same data, and two with a floor and ceiling"
+             :x-label "rate incentive (percentage points)" :legend #f :height 21)
 (save-chart "regression_kinds.png")
 
 ; --- How well each fits, by two measures ---------------------------------------------
