@@ -348,6 +348,101 @@ class TestLadRegression(LispTestCase):
         self.assertLispError("(model-residuals m (list #(1 2) #(3 4)) #(1 2))", "model has 1 predictor(s), but 2 given")
 
 
+class TestQuantileRegression(LispTestCase):
+    """quantile-regression and spline-quantile: the fit with a given share of the points below it, by
+    lad-regression's algorithm, generalized."""
+
+    def test_the_fit_is_the_best_of_all_the_fits_through_p_points(self):
+        """As for LAD: some best fit goes through p of the points, so the best of all of those is the answer."""
+        import lisp_regression
+        rng = np.random.default_rng(2)
+        for trial in range(120):
+            quantile = (0.1, 0.25, 0.75, 0.9)[trial % 4]
+            n, k = int(rng.integers(4, 13)), int(rng.integers(1, 3))
+            columns = rng.normal(size=(k, n)) * 10
+            X = np.column_stack([np.ones(n), columns.T])
+            if np.linalg.matrix_rank(X) < k + 1:
+                continue
+            y = X @ rng.normal(size=k + 1) + rng.standard_t(2, size=n)
+            w = rng.uniform(0.5, 3, n) if trial % 2 else np.ones(n)
+            model = lisp_regression.fit_quantile(columns.tolist(), y.tolist(), quantile, w.tolist())
+
+            def loss(residuals):
+                return float((w * np.where(residuals >= 0, quantile * residuals, (quantile - 1) * residuals)).sum())
+
+            best = min(loss(y - X @ np.linalg.solve(X[list(rows)], y[list(rows)]))
+                       for rows in itertools.combinations(range(n), k + 1)
+                       if abs(np.linalg.det(X[list(rows)])) > 1e-9)
+            with self.subTest(trial=trial, quantile=quantile):
+                self.assertTrue(model.stats["converged"])
+                self.assertAlmostEqual(model.stats["loss"] / best, 1.0, places=9)
+
+    def test_about_the_quantile_s_share_of_the_points_is_below_the_fit(self):
+        # with n points, those below the fit are at most quantile * n, and those below or on it at least that
+        rng = np.random.default_rng(4)
+        x = rng.uniform(0, 10, 300)
+        self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(x)
+        self.env[lisp_core.Symbol("y")] = lisp_vector_math.to_vector(1 + 2 * x + rng.standard_t(3, size=300))
+        for quantile in (0.1, 0.5, 0.9):
+            self.run_lisp("(define m (quantile-regression x y %s))" % quantile)
+            below, on, above = self.run_lisp("m").stats["below_on_above"]
+            self.assertLessEqual(below, quantile * 300)
+            self.assertGreaterEqual(below + on, quantile * 300)
+            self.assertIn("%d below the fit, %d on it, %d above it" % (below, on, above), self.show("(model-report m)"))
+
+    def test_the_lines_above_and_below_and_the_median_is_lad(self):
+        # y = x/2, plus noise spread evenly from -10 to 10: the 90th percentile is 8 above the line, the 10th 8 below
+        rng = np.random.default_rng(3)
+        x = np.arange(400.0)
+        self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(x)
+        self.env[lisp_core.Symbol("y")] = lisp_vector_math.to_vector(x / 2 + rng.uniform(-10, 10, 400))
+        self.assertAlmostEqual(self.run_lisp("(model-intercept (quantile-regression x y 0.9))"), 8, delta=1.5)
+        self.assertAlmostEqual(self.run_lisp("(model-intercept (quantile-regression x y 0.1))"), -8, delta=1.5)
+        self.assertAlmostEqual(self.run_lisp("(model-slope (quantile-regression x y 0.9))"), 0.5, delta=0.01)
+        self.assertEqual(self.show("(model-coefficients (quantile-regression x y 0.5))"),
+                         self.show("(model-coefficients (lad-regression x y))"))
+        self.assertShows("(model-kind (quantile-regression x y 0.9))", '"quantile"')
+        self.assertIn("Quantile regression model, for the 0.9 quantile:  y = ",
+                      self.show("(model-report (quantile-regression x y 0.9))"))
+
+    def test_standard_errors_ignore_how_far_out_an_outlier_is(self):
+        rng = np.random.default_rng(6)
+        x = np.arange(40.0)
+        y = 1 + 2 * x + rng.normal(size=40)
+        for far in (200.0, 6000.0):                     # far above the line (where it's 75), and farther
+            y[37] = far
+            self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(x)
+            self.env[lisp_core.Symbol("y")] = lisp_vector_math.to_vector(y)
+            errors = list(self.run_lisp(
+                '(table-column (model-coefficient-table (quantile-regression x y 0.75)) "std_error")').items)
+            if far == 200.0:
+                near = errors
+        np.testing.assert_allclose(errors, near, rtol=1e-12)
+
+    def test_spline_quantile_is_quantile_regression_on_the_hinges(self):
+        self.run_lisp("""
+          (random-seed 5)
+          (define x (vector-range 60))
+          (define y (+ (vector-map (lambda (v) (abs (- v 30))) x)
+                       (list->vector (map (lambda (i) (* 6 (- (random-float) 0.5))) (iota 60)))))
+          (define hinge (vector-map (lambda (v) (max 0 (- v 30))) x))
+          (define spline (spline-quantile x y 0.8 (list 30)))
+          (define by-hand (quantile-regression (list x hinge) y 0.8))""")
+        for v in (0, 15, 30, 45, 59):
+            self.assertAlmostEqual(self.run_lisp("(model-predict spline %d)" % v),
+                                   self.run_lisp("(model-predict by-hand (list %d %d))" % (v, max(0, v - 30))),
+                                   places=9)
+        self.assertShows("(model-kind spline)", '"spline-quantile"')
+        self.assertIn("Piecewise-linear spline model, fit to the 0.8 quantile, predicting y:",
+                      self.show("(model-report spline)"))
+
+    def test_what_it_won_t_take(self):
+        for quantile in ("0", "1", "1.5", '"0.9"', "'median"):
+            self.assertLispError("(quantile-regression #(1 2 3 4) #(1 3 2 4) %s)" % quantile,
+                                 "the quantile must be a number between 0 and 1")
+        self.assertLispError("(spline-quantile #(1 2 3 4) #(1 3 2 4) 2)", "spline-quantile: the quantile must be")
+
+
 class TestSplineLad(LispTestCase):
     """spline-lad: a piecewise-linear spline fit by least absolute deviation, as
     spline-regression fits one by least squares."""

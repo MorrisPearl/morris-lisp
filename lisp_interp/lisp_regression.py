@@ -4,6 +4,7 @@
   least squares    linear-regression            spline-regression
   least absolute   lad-regression               spline-lad
     deviation
+  a quantile       quantile-regression          spline-quantile
   logistic         logistic-regression          spline-logistic
 
 plus model-report / model-predict / model-evaluate and friends. A logistic
@@ -401,24 +402,44 @@ def positional_and_keywords(arguments, most_positional, keywords, who):
 # Least absolute deviation (LAD) regression
 # ---------------------------------------------------------------------------
 
-def weighted_median(values, weights):
-    """The value t that makes sum(weights[i] * |values[i] - t|) smallest: the
-    first value, in sorted order, at which half the total weight is reached.
-    `values` and `weights` are numpy arrays."""
+def weighted_quantile(values, weights, levels):
+    """The value t that makes sum(weights[i] * check(levels[i], values[i] - t))
+    smallest, where check(q, r) is q * r for r above 0 and (1 - q) * |r| for
+    r below: a point above t costs q per unit, one below it 1 - q. levels
+    are the quantile each value is weighed for (one number, for all of them).
+    The answer is the first value, in sorted order, at which the weight
+    added up from the smallest reaches sum(weights * levels): there, moving t
+    either way no longer lowers the sum. With every level 0.5, it's the
+    weighted median. `values`, `weights`, and `levels` are numpy arrays (or
+    levels a number)."""
     order = np.argsort(values, kind="stable")
     cumulative = np.cumsum(weights[order])
-    return float(values[order[np.searchsorted(cumulative, cumulative[-1] / 2.0)]])
+    return float(values[order[np.searchsorted(cumulative, float(np.sum(weights * levels)))]])
 
 
-def fit_lad(columns, ys, weights=None, max_iterations=1000):
-    """Least absolute deviation fit of y = intercept + sum(coef[i] * x[i]):
-    the one that makes sum(weight[i] * |y[i] - prediction[i]|) smallest,
-    rather than the sum of squares. A point far from the others pulls a
-    least-squares fit toward it by the square of its distance, but a LAD fit
-    only in proportion to it -- so a few outliers barely move it. With no
-    predictors, it would be the median of y, as least squares would be the
-    mean. `columns`, `ys`, and `weights` are as for fit_linear. Returns a
-    LispModel.
+def weighted_median(values, weights):
+    """The value t that makes sum(weights[i] * |values[i] - t|) smallest."""
+    return weighted_quantile(values, weights, 0.5)
+
+
+def check_loss(residuals, quantile):
+    """Each residual's cost for a quantile fit: quantile * r above the fit,
+    (1 - quantile) * |r| below it. For the median (0.5), half of |r|."""
+    return np.where(residuals >= 0, quantile * residuals, (quantile - 1) * residuals)
+
+
+def fit_quantile(columns, ys, quantile, weights=None, max_iterations=1000, kind="quantile", who="quantile-regression"):
+    """Quantile regression: the fit of y = intercept + sum(coef[i] * x[i])
+    with `quantile` of the points below it (0.9: 90% below, 10% above). It
+    makes sum(weight[i] * check(y[i] - prediction[i])) smallest, where a
+    point above the fit costs quantile times its distance and one below it
+    1 - quantile times its distance (check_loss). For the median (0.5) the
+    two are alike, and the fit is the least absolute deviation one
+    (fit_lad): a point far from the others pulls a least-squares fit toward
+    it by the square of its distance, but this only in proportion to it --
+    so a few outliers barely move it. With no predictors, it would be the
+    quantile of y. `columns`, `ys`, and `weights` are as for fit_linear.
+    Returns a LispModel of the given kind.
 
     There's no formula for it, as there is for least squares, but one fact
     makes it easy to find: some best fit goes exactly through p of the
@@ -429,25 +450,30 @@ def fit_lad(columns, ys, weights=None, max_iterations=1000):
        fit.
     2. Hold the fit at p - 1 of the points it goes through, and swing it
        (for a line: rotate it about one point). As it swings by an amount t,
-       point i's residual changes by t * a[i], so the sum of absolute
-       deviations is sum(weight[i] * |a[i]| * |residual[i] / a[i] - t|),
-       which is smallest when t is a weighted median of the
-       residual[i] / a[i] -- where the fit reaches another of the points.
+       point i's residual changes by t * a[i], so the sum is
+       sum(weight[i] * |a[i]| * check(residual[i] / a[i] - t)) -- with the
+       quantile turned around (1 - quantile) for a point whose a[i] is
+       below 0 -- which is smallest when t is a weighted quantile of the
+       residual[i] / a[i] (weighted_quantile), where the fit reaches
+       another of the points.
     3. Try that for every set of p - 1 points the fit goes through, and take
        the swing that lowers the sum the most. Repeat until no swing lowers
-       it: then no fit is better, since the sum of absolute deviations has
-       no local minimum that isn't the minimum.
+       it: then no fit is better, since the sum has no local minimum that
+       isn't the minimum.
 
     Each step is exact, and it usually takes only a few. Fitting is done on
     standardized predictors, as in fit_linear."""
     k = len(columns)
     n = len(ys)
     p = k + 1
+    if not 0 < quantile < 1:
+        raise LispError("%s: the quantile must be between 0 and 1, 0.9 for the 90th percentile, not %s"
+                        % (who, quantile))
     if n < p:
-        raise LispError("lad-regression: %d observation(s) is too few to fit %d coefficients" % (n, p))
+        raise LispError("%s: %d observation(s) is too few to fit %d coefficients" % (who, n, p))
     for col in columns:
         if len(col) != n:
-            raise LispError("lad-regression: all vectors must be the same length")
+            raise LispError("%s: all vectors must be the same length" % who)
     if weights is None:
         weights = [1.0] * n
 
@@ -456,8 +482,8 @@ def fit_lad(columns, ys, weights=None, max_iterations=1000):
     w = np.asarray(weights, dtype=np.float64)
     y = np.asarray(ys, dtype=np.float64)
 
-    def sum_abs_deviations(beta):
-        return float((w * np.abs(y - X @ beta)).sum())
+    def loss(beta):
+        return float((w * check_loss(y - X @ beta, quantile)).sum())
 
     # 1. The fit through the p points closest to the least-squares fit (taking
     #    a point only if it isn't in line with the ones already taken).
@@ -472,7 +498,7 @@ def fit_lad(columns, ys, weights=None, max_iterations=1000):
         raise LispError(
             "regression: the predictors are collinear or there isn't enough data to fit this model")
     beta = np.linalg.solve(X[through], y[through])
-    total = sum_abs_deviations(beta)
+    total = loss(beta)
 
     # 2 and 3. Swing the fit about each p - 1 of the points it goes through.
     on_fit_tolerance = 1e-9 * float(np.abs(y).max())
@@ -490,9 +516,10 @@ def fit_lad(columns, ys, weights=None, max_iterations=1000):
             direction = np.linalg.svd(pivot_rows)[2][-1]    # keeps the pivots' predictions fixed
             a = X @ direction                               # how each prediction changes per unit of swing
             moves = np.abs(a) > 1e-12 * np.abs(a).max()     # the points whose residuals change
-            t = weighted_median(residuals[moves] / a[moves], w[moves] * np.abs(a[moves]))
+            levels = np.where(a[moves] > 0, quantile, 1 - quantile)
+            t = weighted_quantile(residuals[moves] / a[moves], w[moves] * np.abs(a[moves]), levels)
             candidate = beta + t * direction
-            candidate_total = sum_abs_deviations(candidate)
+            candidate_total = loss(candidate)
             if candidate_total < best_total * (1 - 1e-12):
                 best_total, best_beta = candidate_total, candidate
         if best_beta is None:
@@ -505,46 +532,99 @@ def fit_lad(columns, ys, weights=None, max_iterations=1000):
     coefficients, intercept = _unstandardize_coefficients(float(beta[0]), beta[1:].tolist(), means, scales)
     residuals = y - X @ beta
 
-    # How good the fit is, as R-squared says for least squares: 1 - the sum of
-    # absolute deviations / that sum about the median of y (a fit with no
-    # predictors). Koenker and Machado's R1.
-    total_about_median = float((w * np.abs(y - weighted_median(y, w))).sum())
-    pseudo_r_squared = (1 - total / total_about_median) if total_about_median > 0 else float("nan")
+    # How good the fit is, as R-squared says for least squares: 1 - the sum
+    # / that sum about the quantile of y (a fit with no predictors). Koenker
+    # and Machado's R1.
+    total_without = float((w * check_loss(y - weighted_quantile(y, w, quantile), quantile)).sum())
+    pseudo_r_squared = (1 - total / total_without) if total_without > 0 else float("nan")
 
-    # Standard errors. The coefficients' covariance is (sparsity^2 / 4) *
-    # A^-1 B A^-1, with A = X'WX and B = X'W^2X -- just (X'X)^-1 without
-    # weights -- where the sparsity is 1 / the density of the errors at their
-    # median: how closely the residuals crowd around 0. It's estimated as for
-    # normally distributed errors, sigma * sqrt(2 pi), but with sigma found
-    # from the median absolute residual (times 1.4826, which makes it the
-    # standard deviation for normal errors), so that outliers don't inflate
-    # it. The p residuals the fit makes exactly 0 are left out of that
-    # median. (Simulations with as few as 6 points, and with normal,
-    # heavy-tailed, or contaminated errors, give 95% intervals that hold the
-    # true coefficient 94% to 97% of the time.) Scaling every weight alike
-    # doesn't change them.
+    # Standard errors. The coefficients' covariance is quantile * (1 -
+    # quantile) * sparsity^2 * A^-1 B A^-1, with A = X'WX and B = X'W^2X --
+    # just (X'X)^-1 without weights -- where the sparsity is 1 / the density
+    # of the errors at the quantile: how thinly the residuals are spread
+    # there. It's estimated two ways, and the larger is used:
+    #   - as for normally distributed errors: sigma / the normal density at
+    #     the quantile (sigma * sqrt(2 pi), for the median), with sigma found
+    #     from the median distance of the residuals from their own median
+    #     (times 1.4826, which makes it the standard deviation for normal
+    #     errors), so that outliers don't inflate it. The p residuals the fit
+    #     makes exactly 0 are left out.
+    #   - from the residuals themselves (Siddiqui's): how far apart their
+    #     quantile - h and quantile + h are, divided by 2h, h being Hall and
+    #     Sheather's bandwidth (sparsity_bandwidth), kept away from the most
+    #     extreme residuals.
+    # The first is better with few points, the second with heavy-tailed
+    # errors, far from the median. (Simulations with normal, heavy-tailed,
+    # or contaminated errors, for the 0.5, 0.75, and 0.9 quantiles, give 95%
+    # intervals that hold the true coefficient 94% to 97% of the time with
+    # 200 points; with 30, 92% to 97%, but 80% to 83% for the 0.9 quantile
+    # with heavy-tailed errors; with 8, 75% to 93%, the least far from the
+    # median, where only a point or two is beyond the fit.) Scaling every
+    # weight alike doesn't change them.
     degrees_of_freedom = n - p
-    off_fit = np.abs(residuals)[np.abs(residuals) > on_fit_tolerance]
+    off_fit = residuals[np.abs(residuals) > on_fit_tolerance]
     if degrees_of_freedom > 0 and len(off_fit) > 0:
-        sigma = 1.4826 * float(np.median(off_fit))
-        sparsity = math.sqrt(2 * math.pi) * sigma
+        sigma = 1.4826 * float(np.median(np.abs(off_fit - np.median(off_fit))))
+        z = _normal_quantile(quantile)
+        as_if_normal = sigma * math.sqrt(2 * math.pi) * math.exp(z * z / 2)
+        h = sparsity_bandwidth(quantile, n)
+        from_residuals = (weighted_quantile(residuals, w, quantile + h) -
+                          weighted_quantile(residuals, w, quantile - h)) / (2 * h) if h > 0 else 0.0
+        sparsity = max(as_if_normal, from_residuals)
         A_inverse = np.linalg.inv((X.T * w) @ X)
-        covariance = 0.25 * sparsity ** 2 * (A_inverse @ ((X.T * w ** 2) @ X) @ A_inverse)
+        covariance = quantile * (1 - quantile) * sparsity ** 2 * (A_inverse @ ((X.T * w ** 2) @ X) @ A_inverse)
         std_errors = np.sqrt(np.diag(_original_scale_covariance(covariance, means, scales)))
     else:
         std_errors = np.full(p, np.nan)
 
+    below, above = int((residuals < -on_fit_tolerance).sum()), int((residuals > on_fit_tolerance).sum())
     stats = {
-        "sum_abs_deviations": total,
+        "quantile": quantile,
+        "loss": total,                          # the sum of check_loss
+        "sum_abs_deviations": float((w * np.abs(residuals)).sum()),
         "pseudo_r_squared": pseudo_r_squared,
         "iterations": iterations,
         "converged": converged,
         "n": n,
+        "below_on_above": [below, n - below - above, above],    # how many points are below the fit, on it, above it
         "std_errors": std_errors.tolist(),      # intercept first, then each coefficient
         "test": "t",
         "degrees_of_freedom": degrees_of_freedom,
     }
-    return LispModel("lad", coefficients, intercept, stats)
+    return LispModel(kind, coefficients, intercept, stats)
+
+
+def sparsity_bandwidth(quantile, n):
+    """Hall and Sheather's bandwidth, h, for estimating the sparsity at a
+    quantile from n residuals (as Koenker's quantreg does, for a 95%
+    interval) -- made smaller, if it has to be, so that quantile - h and
+    quantile + h stay two points in from each end of the residuals, and
+    one far-out point can't decide it. 0 if there isn't room for that."""
+    z = _normal_quantile(quantile)
+    density = math.exp(-z * z / 2) / math.sqrt(2 * math.pi)
+    h = n ** (-1 / 3) * 1.96 ** (2 / 3) * (1.5 * density ** 2 / (2 * z * z + 1)) ** (1 / 3)
+    return max(0.0, min(h, quantile - 2 / n, 1 - 2 / n - quantile))
+
+
+def _normal_quantile(q):
+    """The z with N(z) = q, the standard normal distribution's quantile, by
+    bisection of math.erf (to well within a millionth)."""
+    low, high = -10.0, 10.0
+    for _ in range(80):
+        middle = (low + high) / 2
+        if 0.5 * (1 + math.erf(middle / math.sqrt(2))) < q:
+            low = middle
+        else:
+            high = middle
+    return (low + high) / 2
+
+
+def fit_lad(columns, ys, weights=None):
+    """Least absolute deviation fit of y = intercept + sum(coef[i] * x[i]):
+    the one that makes sum(weight[i] * |y[i] - prediction[i]|) smallest,
+    rather than the sum of squares -- the quantile fit for the median
+    (fit_quantile). Returns a LispModel of kind "lad"."""
+    return fit_quantile(columns, ys, 0.5, weights, kind="lad", who="lad-regression")
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +799,27 @@ def lad_regression_fn(x_arg, y_arg, weight_vec=None):
     return model
 
 
+def quantile_regression_fn(x_arg, y_arg, quantile, weight_vec=None):
+    """(quantile-regression x y quantile [weights]) -- the fit with `quantile`
+    of the points below it: see fit_quantile."""
+    who = "quantile-regression"
+    y_vec, y_name = _coerce_y(y_arg, who)
+    columns, names = _predictor_columns(x_arg, len(y_vec.items))
+    ys = [numeric_value(v) for v in y_vec.items.tolist()]
+    weights = _optional_weights(weight_vec, len(ys), who)
+    model = fit_quantile(columns, ys, _quantile_argument(quantile, who), weights)
+    model.predictor_names = names
+    model.y_name = y_name
+    return model
+
+
+def _quantile_argument(quantile, who):
+    if not isinstance(quantile, (int, float)) or isinstance(quantile, bool) or not 0 < quantile < 1:
+        raise LispError("%s: the quantile must be a number between 0 and 1, 0.9 for the 90th percentile, not %s"
+                        % (who, to_display_string(quantile)))
+    return float(quantile)
+
+
 def logistic_regression_fn(x_arg, y_arg, *arguments):
     """(logistic-regression x y [weights] [:floor f :ceiling c]) -- a logistic
     model: see fit_logistic_between."""
@@ -827,6 +928,9 @@ def model_report(model):
         lines = ["Linear model:  %s = %.6g + %s" % (y_name, model.intercept, terms)]
     elif model.kind == "lad":
         lines = ["Least absolute deviation model:  %s = %.6g + %s" % (y_name, model.intercept, terms)]
+    elif model.kind == "quantile":
+        lines = ["Quantile regression model, for the %.6g quantile:  %s = %.6g + %s"
+                 % (model.stats["quantile"], y_name, model.intercept, terms)]
     elif model.between_0_and_1():
         lines = ["Logistic model:  p(%s) = sigmoid(%.6g + %s)" % (y_name, model.intercept, terms)]
     else:
@@ -843,6 +947,16 @@ def fit_statistics_lines(model):
     stats = model.stats
     if model.kind == "linear":
         return ["  R-squared        = %.6g" % stats["r_squared"],
+                "  n                = %d" % stats["n"]]
+    if model.kind == "quantile":
+        below, on, above = stats["below_on_above"]
+        return ["  quantile         = %.6g" % stats["quantile"],
+                "  points           = %d below the fit, %d on it, %d above it" % (below, on, above),
+                "  sum of the losses = %.6g  (a point above the fit costs %.6g of its distance, below it %.6g)"
+                % (stats["loss"], stats["quantile"], 1 - stats["quantile"]),
+                "  pseudo R-squared = %.6g  (1 - the sum / the same about the quantile of y)" % stats["pseudo_r_squared"],
+                "  iterations       = %d (%s)" % (stats["iterations"],
+                                                   "converged" if stats["converged"] else "did NOT converge"),
                 "  n                = %d" % stats["n"]]
     if model.kind == "lad":
         return ["  sum |residuals|  = %.6g" % stats["sum_abs_deviations"],
@@ -1167,7 +1281,8 @@ class LispSplineModel:
     knots, and/or 0/1 indicators for categories -- which lets the fitted
     curve bend. See _resolve_predictor_spec and _spline_expand_columns."""
 
-    KINDS = {"linear": "spline", "lad": "spline-lad", "logistic": "spline-logistic"}   # by the inner model's kind
+    KINDS = {"linear": "spline", "lad": "spline-lad", "quantile": "spline-quantile",
+             "logistic": "spline-logistic"}             # by the inner model's kind
 
     def __init__(self, inner_model, predictor_specs, k, predictor_names=None, y_name=None):
         self.inner_model = inner_model          # a LispModel fit on the expanded basis
@@ -1253,6 +1368,9 @@ def _spline_report_lines(model):
                      % (model.inner_model.floor, model.inner_model.ceiling, y_name))
     elif model.kind == "spline-lad":
         lines.append("Piecewise-linear spline model, fit by least absolute deviation, predicting %s:" % y_name)
+    elif model.kind == "spline-quantile":
+        lines.append("Piecewise-linear spline model, fit to the %.6g quantile, predicting %s:"
+                     % (model.inner_model.stats["quantile"], y_name))
     else:
         lines.append("Piecewise-linear spline model, predicting %s:" % y_name)
     lines.append("  predictors = %d" % model.k)
@@ -1319,6 +1437,20 @@ def spline_logistic_fn(x_arg, y_arg, *arguments):
 
     def fit(columns, ys, weights):
         return fit_logistic_between(columns, ys, weights, floor, ceiling, who)
+
+    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit, who)
+
+
+def spline_quantile_fn(x_arg, y_arg, quantile, max_knots=3, weight_vec=None):
+    """(spline-quantile x y quantile [max-knots weights]) -- fit a
+    piecewise-linear spline model to a quantile: spline-regression's
+    expansion of the predictors, fit as quantile-regression fits, so the
+    curve can bend, with `quantile` of the points below it."""
+    who = "spline-quantile"
+    quantile = _quantile_argument(quantile, who)
+
+    def fit(columns, ys, weights):
+        return fit_quantile(columns, ys, quantile, weights, who=who)
 
     return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit, who)
 
@@ -1427,9 +1559,11 @@ def model_intercept(m):
 BUILTINS = {
     "linear-regression": linear_regression_fn,
     "lad-regression": lad_regression_fn,
+    "quantile-regression": quantile_regression_fn,
     "logistic-regression": logistic_regression_fn,
     "spline-regression": spline_regression_fn,
     "spline-lad": spline_lad_fn,
+    "spline-quantile": spline_quantile_fn,
     "spline-logistic": spline_logistic_fn,
     "suggest-knots": suggest_knots_fn,
     "model-report": model_report,

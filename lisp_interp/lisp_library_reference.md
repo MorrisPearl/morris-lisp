@@ -2429,12 +2429,13 @@ correlation -- see "Vector math and statistics", in the
 
 ### Regression models
 
-Six kinds, one function each:
+Eight kinds, one function each:
 
 | | A straight line (or plane) | A line that bends at knots |
 |---|---|---|
 | Least squares | `linear-regression` | `spline-regression` |
 | Least absolute deviation | `lad-regression` | `spline-lad` |
+| A quantile (the 90th percentile, say) | `quantile-regression` | `spline-quantile` |
 | Logistic | `logistic-regression` | `spline-logistic` |
 
 `linear-regression`/`lad-regression`/`logistic-regression` fit a flat model
@@ -2452,9 +2453,10 @@ coefficients apply to the expanded basis, not the original predictors, and
 `model-coefficients`/`model-intercept`/`model-slope` refuse to operate on
 one (use `model-report`/`model-predict` instead, which work on every model
 kind). `model-kind` reports which flavor you have: `"linear"`, `"lad"`,
-`"logistic"`, `"spline"`, `"spline-lad"`, or `"spline-logistic"`.
+`"quantile"`, `"logistic"`, `"spline"`, `"spline-lad"`, `"spline-quantile"`,
+or `"spline-logistic"`.
 
-All of `linear-regression`, `lad-regression`, `logistic-regression`, `spline-regression`, `spline-lad`, `spline-logistic`,
+All of the eight,
 `model-predict`, and `model-evaluate` accept **either a single vector of X
 values (one predictor) or a Lisp list of several vectors** — `(list x1 x2
 ...)` — for multiple predictors. Every predictor vector and the Y vector
@@ -2463,8 +2465,9 @@ fitting (for numerical stability) and converted back to the original scale
 afterward, so this is transparent to you; date values anywhere a number is
 expected are silently converted to their ordinal day count.
 
-**Weighted fitting.** All six take an optional `weights` vector, after
-`x` and `y` (and after `max-knots`, for the spline ones): one
+**Weighted fitting.** All eight take an optional `weights` vector, after
+`x` and `y` (and after the quantile and `max-knots`, for the ones that take
+them): one
 non-negative number per observation, the same length as `y`. Omit it (or
 pass `'()`) to weight every observation equally, exactly the original
 behavior. Fitting still minimizes a sum of squared errors (or maximizes a
@@ -2584,12 +2587,15 @@ of steps.)
 
 **Standard errors** in `model-report` come from the usual large-sample
 formula for LAD, which depends on how closely the errors crowd around 0.
-That's estimated from the median absolute residual, so that the outliers
-don't inflate it: moving an outlier further out doesn't change the
-standard errors at all. In simulations with as few as 6 points, and with
-normal, heavy-tailed, or contaminated errors, the 95% intervals they give
-held the true coefficient 94% to 97% of the time. With `p` points or fewer,
-the fit is exact and the standard errors are `nan`.
+That's estimated two ways -- as for normal errors, from the median
+absolute residual, and from the residuals themselves, from how far apart
+their quantiles just above and below the middle are -- and the larger is
+used. Neither depends on the most extreme residuals, so moving an outlier
+further out doesn't change the standard errors at all. In simulations with
+as few as 8 points, and with normal, heavy-tailed, or contaminated errors,
+the 95% intervals they give held the true coefficient 92% to 97% of the
+time. With `p` points or fewer, the fit is exact and the standard errors
+are `nan`.
 
 For measures of fit, `model-report` gives the sum of the absolute
 residuals; a pseudo-R-squared, 1 − that sum / the sum of `|y − the median
@@ -2606,8 +2612,8 @@ prints:
 ```
 Least absolute deviation model:  y = 3.78571 + 0.714286*x1
   term        coefficient     std error    t value    p value
-  intercept       3.78571       0.57181      6.621   5.92e-05
-  x1             0.714286     0.0776937      9.194   3.42e-06
+  intercept       3.78571      0.612654      6.179   0.000104
+  x1             0.714286     0.0832433      8.581   6.34e-06
   sum |residuals|  = 23.7857
   pseudo R-squared = 0.46549  (1 - sum |residuals| / the same about the median of y)
   iterations       = 2 (converged)
@@ -2615,6 +2621,46 @@ Least absolute deviation model:  y = 3.78571 + 0.714286*x1
 ```
 Least squares, pulled up by month 9, gives a slope of 1.03 with a standard
 error of 0.50.
+
+#### `(quantile-regression x y quantile [weights])`
+The fit with `quantile` of the points below it: `0.9` for the line that 90%
+of the points are under, the 90th percentile of `y` at each `x`. Least
+squares fits the average; quantile regression fits a percentile, so two
+of them -- the 10th and the 90th, say -- make a band around the data, which
+can widen or narrow as `x` changes. For risk, that's often the question:
+not what prepayment speeds are on average at a 2-point incentive, but how
+fast they are in the fastest tenth of pools. `quantile` is a number between
+0 and 1; `0.5` gives the median, `lad-regression`'s fit. `x`, `y`, and
+`weights` are as for `linear-regression`; the model's kind is `"quantile"`.
+
+It makes the sum of the residuals' *losses* smallest, where a point above
+the fit costs `quantile` times its distance and one below it `1 -
+quantile` times its distance: for `0.9`, being above the fit costs nine
+times as much as being below, so the fit settles where 90% of the points
+are below it. It's found by `lad-regression`'s method, with a weighted
+quantile in place of the weighted median at each swing; for the median it
+is exactly that. Like LAD, it is barely moved by a point far out. Its
+standard errors are found as LAD's are, for the quantile; far from the
+median they need more points to be right -- with 30 points and
+heavy-tailed errors, the 90th percentile's 95% intervals held the true
+coefficient only about 80% of the time, but with 200, 94% of the time.
+
+`model-report` gives the quantile, how many points are below the fit, on
+it, and above it (with `n` points, at most `quantile * n` below it, and at
+least that many below or on it), the sum of the losses, and a
+pseudo-R-squared, as for LAD.
+
+```lisp
+(define x (vector-range 400))
+(random-seed 3)
+(define y (+ (/ x 2) (list->vector (map (lambda (i) (* 20 (- (random-float) 0.5))) (iota 400)))))  ; noise from -10 to 10
+(define upper (quantile-regression x y 0.9))
+(define lower (quantile-regression x y 0.1))
+(list (format "{:.1f}" (model-intercept upper)) (format "{:.1f}" (model-intercept lower)))   ; => ("8.3" "-8.7")
+```
+(The noise is spread evenly from -10 to 10, so the 90th percentile is 8
+above the line `y = x / 2`, and the 10th, 8 below it: these 400 points
+give about that.)
 
 #### `(logistic-regression x y [weights] [:floor f :ceiling c])`
 Maximum-likelihood fit of `p = sigmoid(intercept + sum(coefficients[i] *
@@ -2791,6 +2837,13 @@ does. Returns a model of kind `"spline-logistic"`. (This was
 (format "{:.3f}" (model-predict s 1))                          ; => "0.255"
 ```
 
+#### `(spline-quantile x y quantile [max-knots weights])`
+A spline model fit to a quantile: `spline-regression`'s expansion of each
+predictor, from the same `max-knots`, fit as `quantile-regression` fits, so
+the curve can bend, with `quantile` of the points below it. The model's
+kind is `"spline-quantile"`. Two of them, at the 10th and 90th
+percentiles, make a band that can bend with the data.
+
 #### `(spline-lad x y [max-knots weights])`
 A spline model fit by **least absolute deviation**: `spline-regression`'s
 expansion of each predictor -- the same hinges at knots, or 0/1 columns for
@@ -2811,9 +2864,10 @@ fit.
 (The least-squares spline's right arm is pulled up toward the outlier;
 the LAD spline goes through the V's other points exactly.)
 
-The three spline fits -- `spline-regression`, `spline-lad`, and
-`spline-logistic` -- expand the predictors the same way: the knots depend
-only on `x` and `max-knots`, never on `y` or on how the fit is made. `examples/regression_kinds_example.lsp` fits all six kinds
+The four spline fits -- `spline-regression`, `spline-lad`,
+`spline-quantile`, and `spline-logistic` -- expand the predictors the same
+way: the knots depend only on `x` and `max-knots`, never on `y` or on how
+the fit is made. `examples/regression_kinds_example.lsp` fits all six kinds
 of regression to the same made-up data and charts them, one above another.
 
 #### `(model-report m)`
@@ -2916,7 +2970,7 @@ Evaluates a fitted model's prediction quality against data — typically
 held-out data it wasn't fit on — and returns a string report. `x`/`y`
 follow the same shape rules as the fitting functions; the number of
 predictor vectors in `x` must match the model's own predictor count. For a
-non-probabilistic model (`"linear"`/`"lad"`/`"spline"`/`"spline-lad"`, and a
+non-probabilistic model (`"linear"`/`"lad"`/`"quantile"`/`"spline"`/`"spline-lad"`/`"spline-quantile"`, and a
 logistic one with a `:floor` or `:ceiling` outside 0 and 1): reports
 R-squared, RMSE, and MAE against this new data. For a probabilistic model
 (`"logistic"`/`"spline-logistic"`, with its floor and ceiling, if any,
@@ -2964,8 +3018,9 @@ not for a spline model.
 ```
 
 #### `(model-kind m)`
-Returns `"linear"`, `"lad"`, `"logistic"`, `"spline"`, `"spline-lad"`, or
-`"spline-logistic"`. Works on any model.
+Returns `"linear"`, `"lad"`, `"quantile"`, `"logistic"`, `"spline"`,
+`"spline-lad"`, `"spline-quantile"`, or `"spline-logistic"`. Works on any
+model.
 
 ```lisp
 (model-kind m)                 ; => "linear"

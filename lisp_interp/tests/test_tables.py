@@ -583,13 +583,16 @@ class TestSaveVariables(LispTestCase):
           (define lad-spline (spline-lad (list x kind) y (list 1 'categorical)))
           (define between (logistic-regression (list x) y :floor 5 :ceiling 80))
           (define capped (logistic-regression (list x) (cons "default" #(0 0 1 0 1 0 1 1)) :ceiling 0.9))
+          (define upper (quantile-regression (list x) y 0.75))
+          (define spline-upper (spline-quantile (list x kind) y 0.75 (list 1 'categorical)))
           (define spline-between (spline-logistic (list x kind) y (list 1 'categorical) :floor 5 :ceiling 80))""")
-        self.run_lisp("(save-variables path linear lad logistic spline lad-spline between spline-between capped)")
+        self.run_lisp("(save-variables path linear lad logistic spline lad-spline between spline-between capped "
+                      "upper spline-upper)")
         self.run_lisp("(load-variables path)", env=self.later)
-        for model in ("linear", "lad", "logistic", "between", "capped"):
+        for model in ("linear", "lad", "logistic", "between", "capped", "upper"):
             for src in ("(model-predict %s (list 45))" % model, "(model-report %s)" % model):
                 self.assertEqual(self.run_lisp(src, env=self.later), self.run_lisp(src), src)
-        for model in ("spline", "lad-spline", "spline-between"):
+        for model in ("spline", "lad-spline", "spline-between", "spline-upper"):
             for src in ('(model-predict %s (list 45 "rent"))' % model, "(model-report %s)" % model,
                         "(model-kind %s)" % model):
                 self.assertEqual(self.run_lisp(src, env=self.later), self.run_lisp(src), src)
