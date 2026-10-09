@@ -3031,6 +3031,44 @@ uniformly across every model kind, including spline models.
 (display (model-evaluate m (vector-drop x n-train) (vector-drop y n-train)))
 ```
 
+#### `(cross-validate fit x y [:folds 5 :seed 1])`
+How well the models `fit` makes predict data they *weren't* fit to. `fit`
+is a procedure of `x` and `y` that returns a model -- `(lambda (x y)
+(spline-lad x y 3))`, say. The rows are shuffled (by `:seed`, so it comes
+out the same every time) and dealt into `:folds` groups; for each group, a
+model is fit to all the other rows and predicts this group's `y`. The
+result is a table with a row for each fold and a last row, `"all"`, for
+every row, each predicted by the model fit without it:
+
+| Column | What it holds |
+|---|---|
+| `fold` | `"1"`, `"2"`, ..., and `"all"` |
+| `rows` | how many rows were predicted |
+| `rmse` | the root mean squared error |
+| `mae` | the mean absolute error |
+| `log-loss` | for a model of a probability: the mean of −(y log p + (1 − y) log(1 − p)), how unlikely it found what happened |
+| `quantile-loss` | for a quantile model: the mean of the loss it makes smallest, at its quantile |
+
+The lower, the better it predicts. That's the fair way to choose among
+models, or numbers of knots: a model always fits the data it was fit to
+better the more freely it can bend -- more knots, more predictors -- but
+past some point it bends to the noise, and predicts new data worse.
+Measured on its own data, that never shows; measured this way, it does.
+`x` and `y` can be in any shape the fitting functions take, names and all.
+
+```lisp
+(random-seed 2)
+(define x (vector-range 60))
+(define y (+ (/ x 2) (list->vector (map (lambda (i) (* 20 (- (random-float) 0.5))) (iota 60)))))   ; a line, and noise
+(define (overall measure table) (vector-ref (table-column table measure) (- (table-row-count table) 1)))
+(define line (cross-validate (lambda (x y) (linear-regression x y)) x y))
+(define wiggly (cross-validate (lambda (x y) (spline-regression x y 12)) x y))
+(list (format "{:.2f}" (overall "rmse" line)) (format "{:.2f}" (overall "rmse" wiggly)))   ; => ("5.84" "6.41")
+```
+(The 12-knot spline fits these 60 points more closely than the line does,
+but predicts the ones it hasn't seen less well: the data is a line, and
+noise.)
+
 #### `(model-residuals m x y)`
 The residuals, `y` minus the model's prediction, for each row of `x` and
 `y`, as a vector. `x` and `y` are as for `model-evaluate`. Works on any

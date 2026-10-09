@@ -19,12 +19,13 @@ file; lisp_builtins.make_global_env() adds them to every environment.
 
 import itertools
 import math
+import random
 
 import numpy as np
 
 from lisp_core import (
     Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, Symbol,
-    is_true, keyword_options, list_to_pairs, numeric_value, pairs_to_list, to_display_string,
+    apply_proc, is_true, keyword_options, list_to_pairs, numeric_value, pairs_to_list, to_display_string,
 )
 from lisp_vector_math import to_vector
 
@@ -1717,6 +1718,95 @@ def suggest_knots_fn(x_vec, y_vec, window, n):
 # The Lisp-callable builtins defined in this file
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Cross-validation: how well a model predicts data it wasn't fit to
+# ---------------------------------------------------------------------------
+
+def _some_rows(value, rows):
+    """x or y (a vector, a (name . vector) pair, or a list of either) with
+    only the given rows of each vector, in the same shape."""
+    if isinstance(value, LispVector):
+        return LispVector(value.items[rows])
+    if isinstance(value, Pair) and isinstance(value.cdr, LispVector):
+        return Pair(value.car, LispVector(value.cdr.items[rows]))
+    if isinstance(value, Pair):
+        return list_to_pairs([_some_rows(item, rows) for item in pairs_to_list(value)])
+    raise LispError("cross-validate: x and y must be vectors, (name . vector) pairs, or lists of them")
+
+
+def cross_validate(fit, x_arg, y_arg, *options):
+    """(cross-validate fit x y [:folds 5 :seed 1]) -- how well the models
+    that `fit` makes predict data they weren't fit to. fit is a procedure of
+    x and y that returns a model -- (lambda (x y) (spline-lad x y 3)), say.
+    The rows are shuffled (by the seed, so the same each time) and dealt
+    into `folds` groups; for each group, a model is fit to the other rows,
+    and its predictions of this group's y are measured. The result is a
+    table with a row for each fold, and a last row, "all", for every row's
+    prediction from the model fit without it:
+      fold        1, 2, ..., and "all"
+      rows        how many rows were predicted
+      rmse        the root mean squared error
+      mae         the mean absolute error
+      log-loss    for a model of a probability: the mean of -log of the
+                  chance it gave what happened (y log p + (1 - y) log(1 - p))
+      quantile-loss  for a quantile model: the mean of check_loss, at its quantile
+    The lower, the better the model predicts. A model that fits its own data
+    closely, by bending to every point, may predict new data worse: this
+    shows it, where the fit to the data it was fit to can't."""
+    who = "cross-validate"
+    options = keyword_options(options, ["folds", "seed"], who)
+    y_vec, _ = _coerce_y(y_arg, who)
+    n = len(y_vec.items)
+    folds = options.get("folds", 5)
+    if not isinstance(folds, int) or isinstance(folds, bool) or not 2 <= folds <= n:
+        raise LispError("%s: :folds must be a whole number from 2 to the number of rows (%d), not %s"
+                        % (who, n, to_display_string(folds)))
+    seed = options.get("seed", 1)
+    order = list(range(n))
+    random.Random(seed).shuffle(order)
+    fold_of = np.empty(n, dtype=np.int64)
+    for position, row in enumerate(order):
+        fold_of[row] = position % folds             # dealt out like cards
+
+    predictions = np.empty(n)
+    ys = np.empty(n)
+    probability = quantile = None
+    for fold in range(folds):
+        held_out = np.flatnonzero(fold_of == fold)
+        kept = np.flatnonzero(fold_of != fold)
+        try:
+            model = apply_proc(fit, [_some_rows(x_arg, kept), _some_rows(y_arg, kept)])
+            if not _is_model(model):
+                raise LispError("%s: the fitting procedure must return a model, not %s"
+                                % (who, to_display_string(model)))
+            predicted, actual = evaluation_data(model, _some_rows(x_arg, held_out), _some_rows(y_arg, held_out), who)
+        except LispError as e:       # (say which fold)
+            message = str(e)[len(who) + 2:] if str(e).startswith(who + ": ") else str(e)
+            raise LispError("%s: fold %d: %s" % (who, fold + 1, message))
+        predictions[held_out], ys[held_out] = predicted, actual
+        inner = model.inner_model if isinstance(model, LispSplineModel) else model
+        probability = _is_probabilistic(model)
+        quantile = inner.stats["quantile"] if inner.kind == "quantile" else None
+
+    def measures(rows):
+        error = ys[rows] - predictions[rows]
+        row = [len(rows), math.sqrt(float(np.mean(error ** 2))), float(np.mean(np.abs(error)))]
+        if probability:
+            p = np.clip(predictions[rows], 1e-12, 1 - 1e-12)
+            row.append(-float(np.mean(ys[rows] * np.log(p) + (1 - ys[rows]) * np.log(1 - p))))
+        if quantile is not None:
+            row.append(float(np.mean(check_loss(error, quantile))))
+        return row
+
+    table = [[str(fold + 1)] + measures(np.flatnonzero(fold_of == fold)) for fold in range(folds)]
+    table.append(["all"] + measures(np.arange(n)))
+    names = ["fold", "rows", "rmse", "mae"] + (["log-loss"] if probability else []) + \
+        (["quantile-loss"] if quantile is not None else [])
+    columns = [("fold", LispVector([LispString(row[0]) for row in table]))]
+    columns += [(name, to_vector(np.array([row[i] for row in table]))) for i, name in enumerate(names) if i > 0]
+    return list_to_pairs([Pair(LispString(name), vector) for name, vector in columns])
+
+
 def model_floor_or_ceiling(which):
     """model-floor or model-ceiling: a logistic model's floor or ceiling."""
     who = "model-" + which
@@ -1754,6 +1844,7 @@ BUILTINS = {
     "model-residuals": model_residuals,
     "model-coefficient-table": model_coefficient_table,
     "model-lift-table": model_lift_table,
+    "cross-validate": cross_validate,
     "model-slope": model_slope,
     "model-coefficients": model_coefficients,
     "model-intercept": model_intercept,

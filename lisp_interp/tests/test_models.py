@@ -594,6 +594,86 @@ class TestFittingTheFloorAndCeiling(LispTestCase):
                              "to fit the floor or ceiling, the other must be between 0 and 1")
 
 
+class TestCrossValidate(LispTestCase):
+    """cross-validate: each fold's rows predicted by a model fit to the other rows."""
+
+    def noisy_line(self, n=60):
+        rng = np.random.default_rng(7)
+        x = np.arange(float(n))
+        self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(x)
+        self.env[lisp_core.Symbol("y")] = lisp_vector_math.to_vector(x / 2 + rng.uniform(-10, 10, n))
+
+    def test_each_row_is_predicted_by_a_model_fit_without_it(self):
+        import random
+        import lisp_regression
+        self.noisy_line()
+        table = dict(lisp_tables.table_columns(self.run_lisp(
+            "(cross-validate (lambda (x y) (linear-regression x y)) x y :folds 4 :seed 3)"), "t"))
+        self.assertEqual([str(f) for f in table["fold"].items], ["1", "2", "3", "4", "all"])
+        self.assertEqual([int(r) for r in table["rows"].items], [15, 15, 15, 15, 60])
+        # the same, by hand: the rows shuffled by the seed and dealt into 4 folds
+        x = np.array(self.run_lisp("x").items, dtype=np.float64)
+        y = np.array(self.run_lisp("y").items, dtype=np.float64)
+        order = list(range(60))
+        random.Random(3).shuffle(order)
+        fold_of = np.empty(60, dtype=int)
+        for position, row in enumerate(order):
+            fold_of[row] = position % 4
+        predictions = np.empty(60)
+        for fold in range(4):
+            kept, held = fold_of != fold, fold_of == fold
+            model = lisp_regression.fit_linear([x[kept].tolist()], y[kept].tolist())
+            predictions[held] = model.intercept + model.coefficients[0] * x[held]
+        for fold in range(4):
+            held = fold_of == fold
+            self.assertAlmostEqual(float(table["rmse"].items[fold]),
+                                   math.sqrt(np.mean((y[held] - predictions[held]) ** 2)), places=4)
+        self.assertAlmostEqual(float(table["mae"].items[4]), np.mean(np.abs(y - predictions)), places=4)
+
+    def test_a_model_that_bends_to_every_point_predicts_new_ones_worse(self):
+        self.noisy_line()
+        self.run_lisp("""(define (all-of table name) (vector-ref (table-column table name) (- (table-row-count table) 1)))
+                         (define line (cross-validate (lambda (x y) (linear-regression x y)) x y))
+                         (define wiggly (cross-validate (lambda (x y) (spline-regression x y 15)) x y))""")
+        in_sample = [float(np.sqrt(np.mean(np.array(self.run_lisp("(model-residuals %s x y)" % m).items) ** 2)))
+                     for m in ("(linear-regression x y)", "(spline-regression x y 15)")]
+        self.assertLess(in_sample[1], in_sample[0])                      # it fits its own data better
+        self.assertGreater(self.run_lisp('(all-of wiggly "rmse")'), self.run_lisp('(all-of line "rmse")'))   # but not new data
+
+    def test_the_measures_for_probabilities_and_quantiles(self):
+        self.noisy_line()
+        self.run_lisp("(define share (/ x 60.0))")
+        names = lambda src: [str(n) for n in lisp_core.pairs_to_list(self.run_lisp("(table-column-names %s)" % src))]
+        self.assertEqual(names("(cross-validate (lambda (x y) (logistic-regression x y)) x share)"),
+                         ["fold", "rows", "rmse", "mae", "log-loss"])
+        self.assertEqual(names("(cross-validate (lambda (x y) (spline-quantile x y 0.9 2)) x y)"),
+                         ["fold", "rows", "rmse", "mae", "quantile-loss"])
+        self.assertEqual(names("(cross-validate (lambda (x y) (logistic-regression x y :floor 0 :ceiling 60)) x y)"),
+                         ["fold", "rows", "rmse", "mae"])                 # (a number, not a probability)
+
+    def test_names_and_categories_go_through_and_mistakes(self):
+        self.run_lisp("""(define x (list (cons "income" (vector-range 40))))
+                         (define y (cons "spend" (+ 3 (* 0.5 (vector-range 40)))))
+                         (define names '())
+                         (define (fit x y) (let ((m (linear-regression x y)))
+                                             (set! names (cons (car (car x)) names)) m))""")
+        self.run_lisp("(cross-validate fit x y :folds 2)")
+        self.assertShows("names", '("income" "income")')           # each fold's x keeps its names
+        self.run_lisp("""(define both (list (cons "income" (vector-range 40))
+                                            (cons "kind" (list->vector (map (lambda (i) (if (even? i) "own" "rent"))
+                                                                            (iota 40))))))""")
+        self.run_lisp("(cross-validate (lambda (x y) (spline-regression x y (list 0 'categorical))) both y :folds 4)")
+        self.assertLispError("(cross-validate fit x y :folds 1)",
+                             ":folds must be a whole number from 2 to the number of rows (40)")
+        self.assertLispError("(cross-validate (lambda (x y) 5) x y)", "the fitting procedure must return a model, not 5")
+        self.run_lisp("""(define rare (list (cons "kind" (list->vector (map (lambda (i) (if (= i 0) "lease" "own"))
+                                                                           (iota 10))))))
+                         (define y10 (vector-range 10))""")
+        # a category one fold has and the others don't: the model fit without it can't predict it
+        self.assertLispError("(cross-validate (lambda (x y) (spline-regression x y 'categorical)) rare y10 :folds 10)",
+                             "cross-validate: fold")
+
+
 class TestSplineLad(LispTestCase):
     """spline-lad: a piecewise-linear spline fit by least absolute deviation, as
     spline-regression fits one by least squares."""
