@@ -115,6 +115,8 @@ by Black-Scholes, a binomial tree, and simulated paths, next to their bids
 and asks: give it the stock's symbol), `vol_smile_example.lsp`, `option_chain_example.lsp`,
 `fred_example.lsp`, `sec_example.lsp`, `fdic_example.lsp`,
 `census_bls_example.lsp`, `bea_example.lsp`, `prepayment_demo.lsp`,
+`regression_kinds_example.lsp` (six kinds of regression on the same data,
+charted),
 `oas_monte_carlo_example.lsp`, and `mortgage_amortization_example.lsp`.
 
 ## Getting data
@@ -2743,6 +2745,12 @@ fit.
 ```
 (The least-squares spline's right arm is pulled up toward the outlier;
 the LAD spline goes through the V's other points exactly.)
+
+The three spline fits -- `spline-regression`, `spline-lad`, and
+`spline-regression` with `logistic?` -- expand the predictors the same
+way: the knots depend only on `x` and `max-knots`, never on `y` or on how
+the fit is made. `examples/regression_kinds_example.lsp` fits all six kinds
+of regression to the same made-up data and charts them, one above another.
 
 #### `(model-report m)`
 Returns a multi-line string describing a fitted model: its equation, a

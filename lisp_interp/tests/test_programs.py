@@ -454,6 +454,7 @@ class TestExampleScripts(unittest.TestCase):
         "trace_example.lsp",
         "metaprogramming_example.lsp",
         "prepayment_demo.lsp",
+        "regression_kinds_example.lsp",
         "linear_programming_example.lsp",
         "debugging_example.lsp",
         "stratify_example.lsp",

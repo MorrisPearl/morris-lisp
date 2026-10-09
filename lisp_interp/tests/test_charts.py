@@ -281,6 +281,16 @@ class TestPlotChart(LispTestCase):
         self.assertEqual((self.fig.axes, self.fig.get_suptitle()), ([ax], ""))
         self.assertEqual(ax.get_subplotspec().get_geometry(), (1, 1, 0, 0))
 
+    def test_the_figure_s_title_is_above_the_top_panel_s(self):
+        # six panels with titles, on a tall figure, where matplotlib's own layout overlaps the two titles
+        panel = '(list (list (list "a" #(1 2 3) #(1 2 3))) :title "a panel")'
+        top = self.drawn('(plot-panels (list %s) :title "All of them" :height 16)' % " ".join([panel] * 6))
+        self.fig.set_size_inches(8, 16)
+        lisp_charts.draw_chart_on_axes(self.fig, top, self.specs[-1])       # (laid out for this size)
+        renderer = self.fig.canvas.get_renderer()
+        figure_title = self.fig._suptitle.get_window_extent(renderer)
+        self.assertGreaterEqual(figure_title.y0, top.title.get_window_extent(renderer).y1)
+
     def test_panel_mistakes_and_summary(self):
         self.assertLispError('(plot-panels (list (list (list (list "a" #(1) #(1))) :x-min 0)))', ":x-min isn't an option")
         self.assertLispError('(plot-panels (list (list (list (list "a" #(1) #(1))))) :heights (list 1 2))',

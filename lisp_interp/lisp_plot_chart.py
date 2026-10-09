@@ -577,7 +577,12 @@ def draw(fig, ax, spec):
         dates_across = spec["x_kind"] == "date" and not spec["horizontal"]
     if dates_across:
         fig.autofmt_xdate()                         # slanted, so they don't run together
-    fig.tight_layout()                              # room for slanted labels
+    if spec["kind"] == "panels" and spec["title"]:
+        # tight_layout leaves no room for the figure's title, above the panels'
+        # own: so it lays the panels out below the top half inch
+        fig.tight_layout(rect=(0, 0, 1, 1 - 0.5 / fig.get_figheight()))
+    else:
+        fig.tight_layout()                          # room for slanted labels
 
 
 def draw_panels(fig, ax, spec):
