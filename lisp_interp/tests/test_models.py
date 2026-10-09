@@ -681,6 +681,244 @@ class TestCrossValidate(LispTestCase):
                              "cross-validate: fold")
 
 
+class TestCrossValidateGroupsAndTimes(LispTestCase):
+    """cross-validate's :groups -- a group's rows all in one fold -- and :times -- a fit to the earlier
+    rows, predicting the latest times'."""
+
+    def test_each_group_is_held_out_whole_and_the_folds_are_about_the_same_size(self):
+        # 23 loans with from 1 to 30 months each; x is the row number, so the fit can record which rows it got
+        rng = np.random.default_rng(8)
+        sizes = rng.integers(1, 31, 23)
+        loan = np.repeat(np.arange(23), sizes)
+        n = len(loan)
+        self.env[lisp_core.Symbol("loan")] = lisp_core.LispVector(["loan %d" % i for i in loan])
+        self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(np.arange(float(n)))
+        self.env[lisp_core.Symbol("y")] = lisp_vector_math.to_vector(rng.normal(size=n))
+        self.run_lisp("""(define fit-to '())
+                         (define (fit x y) (set! fit-to (cons x fit-to)) (linear-regression x y))
+                         (define t (cross-validate fit x y :groups loan :folds 4))""")
+        table = dict(lisp_tables.table_columns(self.run_lisp("t"), "t"))
+        self.assertEqual(list(table), ["fold", "rows", "groups", "rmse", "mae"])
+        rows = [int(r) for r in table["rows"].items]
+        self.assertEqual(rows[-1], n)
+        self.assertEqual(sum(rows[:-1]), n)
+        self.assertLessEqual(max(rows[:-1]) - min(rows[:-1]), sizes.max())
+        self.assertEqual(int(table["groups"].items[-1]), 23)
+        held_out_groups = []
+        for kept in lisp_core.pairs_to_list(self.run_lisp("fit-to")):
+            held_out = sorted(set(range(n)) - set(int(v) for v in kept.items))
+            groups = set(loan[held_out])
+            held_out_groups.append(groups)
+            self.assertEqual(sorted(held_out), sorted(np.flatnonzero(np.isin(loan, list(groups)))))   # whole groups
+        self.assertEqual(sorted(len(g) for g in held_out_groups), sorted(int(g) for g in table["groups"].items[:-1]))
+        self.assertEqual(set().union(*held_out_groups), set(range(23)))
+
+    def test_with_every_row_its_own_group_it_is_as_without_groups(self):
+        rng = np.random.default_rng(9)
+        self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(rng.normal(size=50))
+        self.env[lisp_core.Symbol("y")] = lisp_vector_math.to_vector(rng.normal(size=50))
+        plain = dict(lisp_tables.table_columns(self.run_lisp(
+            "(cross-validate (lambda (x y) (linear-regression x y)) x y :seed 4)"), "t"))
+        grouped = dict(lisp_tables.table_columns(self.run_lisp(
+            "(cross-validate (lambda (x y) (linear-regression x y)) x y :seed 4 :groups (vector-range 50))"), "t"))
+        for name in ("rows", "rmse", "mae"):
+            self.assertEqual(list(plain[name].items), list(grouped[name].items))
+
+    def test_grouped_cross_validation_shows_what_row_by_row_hides(self):
+        """40 loans of 24 months: a loan's speed is twice its coupon, plus the loan's own habit, plus noise. A
+        spline with 20 knots in the coupon can learn each loan's habit from its other months -- row by row,
+        that looks like a better model than the line; with each loan's months kept together, it isn't."""
+        rng = np.random.default_rng(4)
+        loan = np.repeat(np.arange(40), 24)
+        coupon = rng.uniform(3, 7, 40)[loan]
+        speed = 2 * coupon + rng.uniform(-3, 3, 40)[loan] + rng.uniform(-2, 2, len(loan))
+        self.env[lisp_core.Symbol("loan")] = lisp_vector_math.to_vector(loan)
+        self.env[lisp_core.Symbol("coupon")] = lisp_vector_math.to_vector(coupon)
+        self.env[lisp_core.Symbol("speed")] = lisp_vector_math.to_vector(speed)
+        self.run_lisp("""(define (overall table) (vector-ref (table-column table "rmse") (- (table-row-count table) 1)))
+                         (define (line x y) (linear-regression x y))
+                         (define (wiggly x y) (spline-regression x y 20))""")
+        self.assertLess(self.run_lisp("(overall (cross-validate wiggly coupon speed))"),
+                        self.run_lisp("(overall (cross-validate line coupon speed))"))
+        self.assertGreater(self.run_lisp("(overall (cross-validate wiggly coupon speed :groups loan))"),
+                           self.run_lisp("(overall (cross-validate line coupon speed :groups loan))"))
+
+    def test_the_latest_times_are_predicted_by_a_fit_to_the_earlier_ones(self):
+        import lisp_regression
+        rng = np.random.default_rng(10)
+        month = np.tile([202410, 202411, 202412, 202501, 202502, 202503], 15)
+        x = rng.normal(size=90)
+        y = 1 + x + (month > 202500) + rng.normal(size=90)          # the model changes in 2025
+        self.env[lisp_core.Symbol("month")] = lisp_vector_math.to_vector(month)
+        self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(x)
+        self.env[lisp_core.Symbol("y")] = lisp_vector_math.to_vector(y)
+        table = dict(lisp_tables.table_columns(self.run_lisp(
+            "(cross-validate (lambda (x y) (linear-regression x y)) x y :times month :last 2)"), "t"))
+        self.assertEqual(list(table), ["time", "rows", "rmse", "mae"])
+        self.assertEqual([str(t) for t in table["time"].items], ["202502", "202503", "all"])
+        self.assertEqual([int(r) for r in table["rows"].items], [15, 15, 30])
+        x32, y32 = np.array(self.run_lisp("x").items, dtype=np.float64), np.array(self.run_lisp("y").items, dtype=np.float64)
+        earlier = month < 202502
+        model = lisp_regression.fit_linear([x32[earlier].tolist()], y32[earlier].tolist())
+        for i, m in enumerate((202502, 202503)):
+            error = y32[month == m] - (model.intercept + model.coefficients[0] * x32[month == m])
+            self.assertAlmostEqual(float(table["rmse"].items[i]), math.sqrt(np.mean(error ** 2)), places=4)
+        # with :last 1 (the default), only March; strings and dates work as months do
+        self.assertShows("""(table-column (cross-validate (lambda (x y) (linear-regression x y)) x y
+                                            :times (map (lambda (m) (format "{}" m)) (vector->list month))) "time")""",
+                         '#("202503" "all")')
+        self.assertShows("""(table-column (cross-validate (lambda (x y) (linear-regression x y)) x y
+                                            :times (vector-map (lambda (m) (date (floor (/ m 100)) (mod m 100) 1)) month)
+                                            :last 3) "rows")""", "#(15 15 15 45)")
+
+    def test_mistakes(self):
+        self.run_lisp("""(define x (vector-range 12)) (define y (* 2 x))
+                         (define (fit x y) (linear-regression x y))
+                         (define loan #(1 1 1 2 2 2 3 3 3 4 4 4))""")
+        self.assertLispError("(cross-validate fit x y :groups loan)",
+                             ":folds must be a whole number from 2 to the number of groups (4), not 5")
+        self.assertLispError("(cross-validate fit x y :groups #(1 2 3))", ":groups must have a value for each row (12), not 3")
+        self.assertLispError("(cross-validate fit x y :groups 7)", ":groups must be a vector or a list")
+        self.assertLispError("(cross-validate fit x y :groups (list 1 2 3 4 5 6 7 8 9 10 11 '()))",
+                             "each of the :groups must be a number, a string, or a date, not ()")
+        self.assertLispError("(cross-validate fit x y :times loan :folds 3)", ":folds is for dealing rows into folds")
+        self.assertLispError("(cross-validate fit x y :times loan :groups loan)", ":groups is for dealing rows into folds")
+        self.assertLispError("(cross-validate fit x y :last 2)", ":last goes with :times")
+        self.assertLispError("(cross-validate fit x y :times loan :last 4)",
+                             ":last must be a whole number from 1 to one less than the number of times (4), not 4")
+        self.assertLispError('(cross-validate fit x y :times (list 1 1 1 2 2 2 3 3 3 "4" "4" "4"))',
+                             "the :times must be all numbers, all strings, or all dates, not a mix")
+        self.assertLispError("(cross-validate (lambda (x y) (spline-regression x y 'categorical)) x y :times loan)",
+                             "cross-validate: the fit to the rows before 4: ")
+
+
+class TestClusteredStandardErrors(LispTestCase):
+    """:groups on the fitting functions: standard errors that allow for rows in the same group being alike,
+    checked against the sandwich formula worked out here, on the original scale."""
+
+    def grouped_data(self):
+        """18 groups of from 2 to 9 rows, with weights; x and the noise each have a part shared by a group."""
+        rng = np.random.default_rng(11)
+        groups = np.repeat(np.arange(18), rng.integers(2, 10, 18))
+        n = len(groups)
+        x = rng.normal(size=18)[groups] + rng.normal(size=n)
+        z = rng.normal(size=n)
+        noise = rng.normal(size=18)[groups] + rng.normal(size=n)
+        w = rng.uniform(0.5, 2, n)
+        return groups, n, x, z, noise, w
+
+    def sandwich(self, X, scores, groups, bread):
+        G = groups.max() + 1
+        sums = np.zeros((G, X.shape[1]))
+        np.add.at(sums, groups, scores)
+        return G / (G - 1) * bread @ (sums.T @ sums) @ bread
+
+    def test_least_squares(self):
+        import lisp_regression
+        groups, n, x, z, noise, w = self.grouped_data()
+        y = 1 + 2 * x - z + noise
+        model = lisp_regression.fit_linear([x.tolist(), z.tolist()], y.tolist(), w.tolist(), groups)
+        plain = lisp_regression.fit_linear([x.tolist(), z.tolist()], y.tolist(), w.tolist())
+        self.assertEqual(model.coefficients, plain.coefficients)          # it doesn't change the fit
+        X = np.column_stack([np.ones(n), x, z])
+        residuals = y - X @ np.array([model.intercept] + model.coefficients)
+        covariance = self.sandwich(X, X * (w * residuals)[:, None], groups, np.linalg.inv((X.T * w) @ X))
+        np.testing.assert_allclose(model.stats["std_errors"], np.sqrt(np.diag(covariance) * (n - 1) / (n - 3)),
+                                   rtol=1e-6)
+        self.assertEqual((model.stats["groups"], model.stats["degrees_of_freedom"]), (18, 17))
+
+    def test_logistic_with_and_without_a_floor_and_ceiling(self):
+        import lisp_regression
+        groups, n, x, z, noise, w = self.grouped_data()
+        y = (noise + x > 0.3).astype(float)
+        X = np.column_stack([np.ones(n), x, z])
+        for floor, ceiling in ((0.0, 1.0), (0.05, 0.9)):
+            model = lisp_regression.fit_logistic([x.tolist(), z.tolist()], y.tolist(), w.tolist(), floor, ceiling,
+                                                 groups)
+            s = 1 / (1 + np.exp(-(X @ np.array([model.intercept] + model.coefficients))))
+            p = floor + (ceiling - floor) * s
+            dp_dz = (ceiling - floor) * s * (1 - s)
+            relative_w = w * n / w.sum()
+            information = (X.T * (relative_w * dp_dz ** 2 / (p * (1 - p)))) @ X
+            scores = X * (relative_w * (y - p) * dp_dz / (p * (1 - p)))[:, None]
+            covariance = self.sandwich(X, scores, groups, np.linalg.inv(information))
+            with self.subTest(floor=floor, ceiling=ceiling):
+                np.testing.assert_allclose(model.stats["std_errors"], np.sqrt(np.diag(covariance)), rtol=1e-5)
+                self.assertEqual(model.stats["groups"], 18)
+
+    def test_a_quantile(self):
+        """The plain covariance is quantile (1 - quantile) sparsity^2 A^-1 B A^-1, so the sparsity can be had
+        from it; the clustered one is sparsity^2 A^-1 meat A^-1."""
+        import lisp_regression
+        groups, n, x, z, noise, w = self.grouped_data()
+        y = 1 + 2 * x - z + noise
+        X = np.column_stack([np.ones(n), x, z])
+        A_inverse = np.linalg.inv((X.T * w) @ X)
+        for quantile in (0.5, 0.8):
+            plain = lisp_regression.fit_quantile([x.tolist(), z.tolist()], y.tolist(), quantile, w.tolist())
+            model = lisp_regression.fit_quantile([x.tolist(), z.tolist()], y.tolist(), quantile, w.tolist(), groups)
+            self.assertEqual(model.coefficients, plain.coefficients)
+            sparsity_squared = plain.stats["std_errors"][1] ** 2 / (
+                quantile * (1 - quantile) * (A_inverse @ ((X.T * w ** 2) @ X) @ A_inverse)[1, 1])
+            residuals = y - X @ np.array([model.intercept] + model.coefficients)
+            on_fit = np.abs(residuals) <= 1e-9 * np.abs(y).max()
+            pull = np.where(on_fit, 0.0, np.where(residuals > 0, quantile, quantile - 1))
+            self.assertEqual(int(on_fit.sum()), 3)                          # the fit goes through 3 points
+            covariance = sparsity_squared * self.sandwich(X, X * (w * pull)[:, None], groups, A_inverse)
+            with self.subTest(quantile=quantile):
+                np.testing.assert_allclose(model.stats["std_errors"], np.sqrt(np.diag(covariance)), rtol=1e-5)
+                self.assertEqual(model.stats["degrees_of_freedom"], 17)
+
+    def test_copies_of_a_row_are_not_new_information(self):
+        """Each of 30 rows copied 8 times: the plain standard errors shrink by about the square root of 8, as
+        if there were 240 rows; the clustered ones, each row's copies a group, are those of the 30 rows,
+        each its own group -- the 'robust' standard errors -- but for (n - 1) / (n - p)."""
+        rng = np.random.default_rng(12)
+        x = rng.normal(size=30)
+        self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(x)
+        self.env[lisp_core.Symbol("y")] = lisp_vector_math.to_vector(1 + x + rng.normal(size=30) * (1 + np.abs(x)))
+        self.run_lisp("""(define (copies v) (list->vector (apply append (map (lambda (e) (list e e e e e e e e))
+                                                                              (vector->list v)))))
+                         (define row (copies (vector-range 30)))
+                         (define (slope-error m) (vector-ref (table-column (model-coefficient-table m) "std_error") 1))""")
+        once = self.run_lisp("(slope-error (linear-regression x y))")
+        copied = self.run_lisp("(slope-error (linear-regression (copies x) (copies y)))")
+        self.assertAlmostEqual(once / copied, math.sqrt(8), delta=0.1)
+        robust = self.run_lisp("(slope-error (linear-regression x y '() :groups (vector-range 30)))")
+        clustered = self.run_lisp("(slope-error (linear-regression (copies x) (copies y) :groups row))")
+        self.assertAlmostEqual(clustered / robust, math.sqrt((239 / 238) / (29 / 28)), places=9)
+
+    def test_every_kind_takes_groups(self):
+        groups, n, x, z, noise, w = self.grouped_data()
+        self.env[lisp_core.Symbol("loan")] = lisp_vector_math.to_vector(groups)
+        self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(np.sort(x))
+        self.env[lisp_core.Symbol("y")] = lisp_vector_math.to_vector(1 + np.sort(x) + noise)
+        self.env[lisp_core.Symbol("w")] = lisp_vector_math.to_vector(w)
+        self.run_lisp("(define share (/ (- y (vector-min y)) (- (vector-max y) (vector-min y))))")
+        for call in ("(linear-regression x y :groups loan)", "(linear-regression x y w :groups loan)",
+                     "(lad-regression x y :groups loan)", "(quantile-regression x y 0.75 w :groups loan)",
+                     "(logistic-regression x share :groups loan)",
+                     "(logistic-regression x share w :floor 'fit :groups loan)",
+                     "(spline-regression x y 2 w :groups loan)", "(spline-lad x y :groups loan :smooth #t)",
+                     "(spline-quantile x y 0.25 :groups loan)", "(spline-logistic x share 2 :groups loan)"):
+            with self.subTest(call=call):
+                self.run_lisp("(define m %s)" % call)
+                inner = getattr(self.run_lisp("m"), "inner_model", self.run_lisp("m"))
+                self.assertEqual(inner.stats["groups"], 18)
+                self.assertIn("groups           = 18  (the standard errors allow for rows in the same group being "
+                              "alike)", self.show("(model-report m)"))
+        self.assertNotIn("groups", self.show("(model-report (linear-regression x y))"))
+
+    def test_mistakes(self):
+        self.run_lisp("(define x (vector-range 6)) (define y #(1 3 2 5 4 6))")
+        self.assertLispError("(linear-regression x y :groups #(1 1 2))", ":groups must have a value for each row (6), not 3")
+        self.assertLispError("(lad-regression x y :groups #(1 1 1 1 1 1))", "lad-regression: :groups must have at least 2 groups")
+        self.assertLispError("(spline-regression x y 1 :groups (vector 1 1 2 2 3 nan))",
+                             "spline-regression: each of the :groups must be a number, a string, or a date, not nan")
+        self.assertLispError("(linear-regression x y '() '())", "linear-regression: expected at most 1 argument(s)")
+        self.assertLispError("(quantile-regression x y 0.5 :group #(1 1 2 2 3 3))", ":group isn't an option")
+
+
 class TestSplineLad(LispTestCase):
     """spline-lad: a piecewise-linear spline fit by least absolute deviation, as
     spline-regression fits one by least squares."""

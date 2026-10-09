@@ -2490,7 +2490,49 @@ it:
 (define m (linear-regression bucket-rate bucket-cpr bucket-balance))
 ```
 
-#### `(linear-regression x y [weights])`
+**Rows that come in groups.** Often the rows aren't each new information.
+Twenty-four months of one loan are 24 rows, but one borrower, one house,
+one set of habits: if the loan pays faster than the model says one month,
+it probably does the next month too. The fit is still fine, but the
+standard errors, which take every row to be new information, come out too
+small -- the model looks surer than it is. All eight take `:groups`, after
+the other arguments: a vector or list with a value for each row -- a
+number, a string, or a date, such as the loan's ID -- and rows with the
+same value are a group. The fit is the same, but the standard errors
+allow for a group's rows being alike ("clustered" standard errors), by
+taking each *group* to be new information, not each row. `model-report`
+says how many groups there were.
+
+```lisp
+(random-seed 4)
+(define loan (vector-map (lambda (i) (floor (/ i 24))) (vector-range 960)))    ; 40 loans, 24 months of each
+(define (for-each-loan make)                                                  ; one value for each loan, on each of its rows
+  (let ((value (list->vector (map (lambda (i) (make)) (iota 40)))))
+    (vector-map (lambda (l) (vector-ref value l)) loan)))
+(define coupon (for-each-loan (lambda () (+ 3 (* 4 (random-float))))))           ; 3% to 7%
+(define habit (for-each-loan (lambda () (* 6 (- (random-float) 0.5)))))          ; how much faster or slower it pays
+(define speed (+ (* 2 coupon) habit (vector-map (lambda (l) (* 4 (- (random-float) 0.5))) loan)))
+(define (slope-error m) (format "{:.3f}" (vector-ref (table-column (model-coefficient-table m) "std_error") 1)))
+(slope-error (linear-regression coupon speed))                  ; => "0.056"
+(slope-error (linear-regression coupon speed :groups loan))     ; => "0.221"
+```
+
+The slope's standard error is four times as large: there are 40 loans'
+worth of information about coupons, not 960 rows' worth. They're found by
+the "sandwich" formula (`clustered_covariance` in `lisp_regression.py`
+explains it), with the small-sample corrections Stata uses: `G / (G - 1)`,
+`G` being the number of groups, and for least squares also `(n - 1) / (n -
+p)`. The t values of the least-squares, LAD, and quantile kinds then have `G
+- 1` degrees of freedom. The standard errors need a good many groups.
+In simulations with 20 to 50 groups of 12 rows each, their 95% intervals
+held the true coefficient 90% to 95% of the time, where the plain ones
+held it only 60% to 76% of the time. With fewer groups they're less to be
+trusted. With every row its own group -- `:groups (vector-range n)` --
+they're the "robust" standard errors, which allow for the errors being
+larger for some rows than others. `cross-validate` takes `:groups` too, to
+keep each group's rows together.
+
+#### `(linear-regression x y [weights] [:groups g])`
 Ordinary (or weighted) least-squares fit of `y = intercept +
 sum(coefficients[i] * x[i])`. `x` is a vector, a list of vectors for
 multiple predictors, **or a list of `(name . vector)` pairs** — exactly
@@ -2498,7 +2540,8 @@ multiple predictors, **or a list of `(name . vector)` pairs** — exactly
 fed straight in with no manual name-stripping; `y` is a vector, or
 likewise a `(name . vector)` pair, the same length as each predictor
 vector; `weights` is the optional per-observation weight vector described
-above. When `x`/`y` carry names this way, `model-report` (below) uses them
+above; `:groups`, for standard errors that allow for rows in the same group
+being alike, is described above too. When `x`/`y` carry names this way, `model-report` (below) uses them
 in place of the generic `x1`/`x2`/`y` placeholders. Returns a model of
 kind `"linear"`. Raises an error if `x`/`y`/`weights` lengths mismatch, a
 predictor has zero variance, the predictors are collinear, or a weight is
@@ -2544,7 +2587,7 @@ the bottleneck.
 (display (model-report m))
 ```
 
-#### `(lad-regression x y [weights])`
+#### `(lad-regression x y [weights] [:groups g])`
 A **least absolute deviation** fit of `y = intercept +
 sum(coefficients[i] * x[i])`: the one that makes the sum of the absolute
 residuals, `sum(weight[i] * |y[i] - prediction[i]|)`, smallest, rather than
@@ -2623,7 +2666,7 @@ Least absolute deviation model:  y = 3.78571 + 0.714286*x1
 Least squares, pulled up by month 9, gives a slope of 1.03 with a standard
 error of 0.50.
 
-#### `(quantile-regression x y quantile [weights])`
+#### `(quantile-regression x y quantile [weights] [:groups g])`
 The fit with `quantile` of the points below it: `0.9` for the line that 90%
 of the points are under, the 90th percentile of `y` at each `x`. Least
 squares fits the average; quantile regression fits a percentile, so two
@@ -2663,7 +2706,7 @@ pseudo-R-squared, as for LAD.
 above the line `y = x / 2`, and the 10th, 8 below it: these 400 points
 give about that.)
 
-#### `(logistic-regression x y [weights] [:floor f :ceiling c])`
+#### `(logistic-regression x y [weights] [:floor f :ceiling c :groups g])`
 Maximum-likelihood fit of `p = sigmoid(intercept + sum(coefficients[i] *
 x[i]))`, via Newton-Raphson (up to 50 iterations, or until convergence).
 `x`/`y`/`weights` as `linear-regression`'s above (including `x`/`y`
@@ -2781,7 +2824,19 @@ for a large dataset.
 (display (model-report m))
 ```
 
-#### `(spline-regression x y [max-knots weights] [:smooth #t])`
+**Standard errors for shares.** The plain standard errors take each row's
+`y` to be a 0 or a 1 -- one loan, prepaying or not -- which scatters about
+its chance `p` by `p (1 - p)`. A share -- the part of a pool that prepaid
+in a month -- is an average over many loans, and scatters far less, so for
+shares the plain standard errors are too large. With `:groups` (see "Rows
+that come in groups", above), they come from the actual scatter instead.
+For a `spline-logistic` model of the pools' CPRs in
+`examples/synthetic_mbs_pools.csv`, the plain standard errors are 10 to 25
+times those with each row its own group (`:groups (vector-range n)`), and
+2 to 10 times those with each pool's months a group (`:groups pool-id`),
+which allow for a pool's months being alike, too.
+
+#### `(spline-regression x y [max-knots weights] [:smooth #t :groups g])`
 A simple, dependency-free way to let a model bend instead of insisting on a
 straight line. For each predictor `x`, a handful of "knot" locations are
 chosen (automatically, at quantiles of `x`'s own values, or exactly where
@@ -2869,7 +2924,7 @@ functions take `:smooth`, and a categorical predictor stays categorical.
 (model-predict m (list 50000 0))                ; predict for "own", income=50000
 ```
 
-#### `(spline-logistic x y [max-knots weights] [:floor f :ceiling c :smooth #t])`
+#### `(spline-logistic x y [max-knots weights] [:floor f :ceiling c :smooth #t :groups g])`
 A spline model with a logistic link: `spline-regression`'s expansion of
 each predictor, from the same `max-knots`, fit as `logistic-regression`
 fits, with the same `:floor` and `:ceiling` (and the same rules for `y`).
@@ -2886,14 +2941,14 @@ does. Returns a model of kind `"spline-logistic"`. (This was
 (format "{:.3f}" (model-predict s 1))                          ; => "0.255"
 ```
 
-#### `(spline-quantile x y quantile [max-knots weights] [:smooth #t])`
+#### `(spline-quantile x y quantile [max-knots weights] [:smooth #t :groups g])`
 A spline model fit to a quantile: `spline-regression`'s expansion of each
 predictor, from the same `max-knots`, fit as `quantile-regression` fits, so
 the curve can bend, with `quantile` of the points below it. The model's
 kind is `"spline-quantile"`. Two of them, at the 10th and 90th
 percentiles, make a band that can bend with the data.
 
-#### `(spline-lad x y [max-knots weights] [:smooth #t])`
+#### `(spline-lad x y [max-knots weights] [:smooth #t :groups g])`
 A spline model fit by **least absolute deviation**: `spline-regression`'s
 expansion of each predictor -- the same hinges at knots, or 0/1 columns for
 categories, from the same `max-knots` -- fit as `lad-regression` fits,
@@ -2938,8 +2993,8 @@ predictor:
 | `p value` | the chance of a coefficient at least this far from 0 if the true value were 0 — a small p value (say under 0.05) means the predictor genuinely matters |
 
 A linear model uses the t distribution with n − p degrees of freedom (p
-counting the intercept); a logistic model uses the normal distribution
-(z). **With weights**, a linear model's standard errors don't depend on
+counting the intercept), or, with `:groups`, one fewer than the number of
+groups; a logistic model uses the normal distribution (z). **With weights**, a linear model's standard errors don't depend on
 the weights' scale, only their relative sizes. For a logistic model, the
 weights are rescaled to average 1 for the standard errors, so weighting
 by balance in dollars doesn't make the model look vastly more certain
@@ -2952,7 +3007,8 @@ model, the log-likelihood, McFadden's pseudo-R-squared, the **AUC** (area
 under the ROC curve: the chance that a randomly chosen row with y = 1 gets
 a higher prediction than a randomly chosen row with y = 0; 0.5 is no
 better than guessing, 1.0 is perfect ranking), the number of Newton-Raphson
-iterations and whether it converged, and `n`.
+iterations and whether it converged, and `n`. For a model fit with
+`:groups`, the number of groups too.
 
 For a spline model: its predictors, each with its knot locations (or
 categories and baseline value) — flagging a purely linear predictor with 3
@@ -3039,19 +3095,22 @@ uniformly across every model kind, including spline models.
 (display (model-evaluate m (vector-drop x n-train) (vector-drop y n-train)))
 ```
 
-#### `(cross-validate fit x y [:folds 5 :seed 1])`
+#### `(cross-validate fit x y [:folds 5 :seed 1 :groups g])`, `(cross-validate fit x y :times t [:last 1])`
 How well the models `fit` makes predict data they *weren't* fit to. `fit`
 is a procedure of `x` and `y` that returns a model -- `(lambda (x y)
 (spline-lad x y 3))`, say. The rows are shuffled (by `:seed`, so it comes
 out the same every time) and dealt into `:folds` groups; for each group, a
 model is fit to all the other rows and predicts this group's `y`. The
 result is a table with a row for each fold and a last row, `"all"`, for
-every row, each predicted by the model fit without it:
+every row, each predicted by the model fit without it. With `:groups`, each
+group's rows stay together, in one fold; with `:times`, the model is fit to
+the earlier rows and predicts the latest ones (both below).
 
 | Column | What it holds |
 |---|---|
-| `fold` | `"1"`, `"2"`, ..., and `"all"` |
+| `fold` | `"1"`, `"2"`, ..., and `"all"` -- or, with `:times`, `time`: each of the latest times, and `"all"` |
 | `rows` | how many rows were predicted |
+| `groups` | with `:groups`, how many groups they're in |
 | `rmse` | the root mean squared error |
 | `mae` | the mean absolute error |
 | `log-loss` | for a model of a probability: the mean of −(y log p + (1 − y) log(1 − p)), how unlikely it found what happened |
@@ -3076,6 +3135,75 @@ Measured on its own data, that never shows; measured this way, it does.
 (The 12-knot spline fits these 60 points more closely than the line does,
 but predicts the ones it hasn't seen less well: the data is a line, and
 noise.)
+
+**Rows in groups.** When the rows come in groups whose rows are alike --
+the months of a loan -- dealing them out one by one isn't a fair test.
+Each loan's other months are among the rows the model is fit to, so it is
+predicting more months of loans it has seen, which is easier than
+predicting new loans. A model that can bend to fit each loan -- many knots
+-- looks better than it is. With `:groups` -- a value for each row, a
+loan's ID, say, as the fitting functions take it (see "Rows that come in
+groups", above) -- the groups are shuffled and dealt out instead of the
+rows: each, in turn, to the fold with the fewest rows so far. A group's
+rows are all in one fold, so the folds come out about the same size, but
+not exactly. (Without `:groups`, every row is its own group, which deals
+the rows out one by one.) Don't give `:groups` to the fitting procedure:
+it gets only some of the rows, and the groups change the standard errors,
+not the predictions.
+
+```lisp
+(random-seed 4)
+(define loan (vector-map (lambda (i) (floor (/ i 24))) (vector-range 960)))    ; 40 loans, 24 months of each
+(define (for-each-loan make)                                                  ; one value for each loan, on each of its rows
+  (let ((value (list->vector (map (lambda (i) (make)) (iota 40)))))
+    (vector-map (lambda (l) (vector-ref value l)) loan)))
+(define coupon (for-each-loan (lambda () (+ 3 (* 4 (random-float))))))           ; 3% to 7%
+(define habit (for-each-loan (lambda () (* 6 (- (random-float) 0.5)))))          ; how much faster or slower it pays
+(define speed (+ (* 2 coupon) habit (vector-map (lambda (l) (* 4 (- (random-float) 0.5))) loan)))
+(define (overall table) (format "{:.2f}" (vector-ref (table-column table "rmse") (- (table-row-count table) 1))))
+(define (line x y) (linear-regression x y))
+(define (wiggly x y) (spline-regression x y 20))
+(list (overall (cross-validate line coupon speed)) (overall (cross-validate wiggly coupon speed)))   ; => ("2.08" "1.73")
+(list (overall (cross-validate line coupon speed :groups loan))
+      (overall (cross-validate wiggly coupon speed :groups loan)))                                  ; => ("2.13" "3.59")
+(table-column (cross-validate line coupon speed :groups loan :folds 3) "rows")                     ; => #(336 312 312 960)
+```
+
+A loan's speed here is twice its coupon, plus the loan's own habit, plus
+noise; there are 40 coupons, one for each loan. Dealt out row by row, a
+spline with 20 knots predicts better than the line: with knots between
+the coupons, it learns each loan's habit from the loan's other months.
+With each loan's months kept together, it predicts new loans far worse.
+
+**The latest times.** `:times` gives each row's time -- a month, as a
+number such as `202506` or `18`, a string such as `"2025-06"`, or a date
+-- and the model is fit once, to every row before the latest `:last` times
+(1, unless given), and predicts the rows of those times: the test of a
+model that will be used on the months to come. The table has a row for
+each of the latest times, in a `time` column in place of `fold`, and
+`"all"`. Folds mix all the months, so they can't show a model that
+predicts the months it was fit among well but the next ones badly,
+because rates, the economy, or lenders' rules have changed; this can.
+`:folds`, `:seed`, and `:groups` don't go with `:times`.
+
+```lisp
+(random-seed 4)
+(define loan (vector-map (lambda (i) (floor (/ i 24))) (vector-range 960)))    ; as above
+(define (for-each-loan make)
+  (let ((value (list->vector (map (lambda (i) (make)) (iota 40)))))
+    (vector-map (lambda (l) (vector-ref value l)) loan)))
+(define coupon (for-each-loan (lambda () (+ 3 (* 4 (random-float))))))
+(define habit (for-each-loan (lambda () (* 6 (- (random-float) 0.5)))))
+(define speed (+ (* 2 coupon) habit (vector-map (lambda (l) (* 4 (- (random-float) 0.5))) loan)))
+(define (overall table) (format "{:.2f}" (vector-ref (table-column table "rmse") (- (table-row-count table) 1))))
+(define (line x y) (linear-regression x y))
+(define month (vector-map (lambda (i) (+ 1 (mod i 24))) (vector-range 960)))      ; months 1 to 24, for each loan
+(define faster (+ speed (vector-map (lambda (m) (if (> m 21) 3 0)) month)))     ; in the last 3, every loan pays faster
+(overall (cross-validate line coupon faster :groups loan))                      ; => "2.36"
+(define latest (cross-validate line coupon faster :times month :last 3))
+(table-column latest "time")                                                   ; => #("22" "23" "24" "all")
+(overall latest)                                                               ; => "3.62"
+```
 
 #### `(model-residuals m x y)`
 The residuals, `y` minus the model's prediction, for each row of `x` and
