@@ -443,6 +443,87 @@ class TestQuantileRegression(LispTestCase):
         self.assertLispError("(spline-quantile #(1 2 3 4) #(1 3 2 4) 2)", "spline-quantile: the quantile must be")
 
 
+class TestSmoothSplines(LispTestCase):
+    """:smooth #t on the spline functions: a restricted cubic spline, smooth through its knots and
+    straight beyond the first and last."""
+
+    SETUP = """(define x (- (/ (vector-range 41) 8.0) 2))
+               (define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))
+               (define smooth (spline-regression x y (list -1 0 1 2) :smooth #t))
+               (define straight (spline-regression x y (list -1 0 1 2)))
+            """
+
+    def predict(self, model, v):
+        return self.run_lisp("(model-predict %s %r)" % (model, v))
+
+    def slopes_at(self, model, v, h=1e-4):
+        """The model's slope just left of v and just right of it."""
+        return ((self.predict(model, v) - self.predict(model, v - h)) / h,
+                (self.predict(model, v + h) - self.predict(model, v)) / h)
+
+    def test_the_terms_are_the_restricted_cubic_spline_s(self):
+        import lisp_regression
+        knots = [-1.0, 0.0, 1.0, 2.0]
+
+        def plus(u):
+            return max(u, 0.0) ** 3
+
+        for v in (-3, -0.5, 0.25, 1.5, 2.5, 7):
+            expected = [(plus(v - t) - plus(v - 1) * (2 - t) / (2 - 1) + plus(v - 2) * (1 - t) / (2 - 1)) / 3 ** 2
+                        for t in (-1.0, 0.0)]
+            self.assertTrue(np.allclose(lisp_regression.restricted_cubic_terms(v, knots), expected), msg=v)
+
+    def test_it_is_smooth_at_the_knots_where_the_straight_pieces_have_corners(self):
+        self.run_lisp(self.SETUP)
+        for knot in (-1, 0, 1, 2):
+            left, right = self.slopes_at("smooth", knot)
+            self.assertAlmostEqual(left, right, delta=1e-3, msg=knot)
+        corners = [abs(left - right) for left, right in (self.slopes_at("straight", knot) for knot in (-1, 0, 1, 2))]
+        self.assertGreater(max(corners), 0.05)
+
+    def test_it_is_a_straight_line_beyond_the_first_and_last_knots(self):
+        self.run_lisp(self.SETUP)
+        for a, b, c in ((-6, -4, -2), (3, 5, 7)):
+            ya, yb, yc = (self.predict("smooth", v) for v in (a, b, c))
+            self.assertAlmostEqual(yb - ya, yc - yb, places=9)                 # equal steps: a straight line
+        left, right = self.slopes_at("smooth", 1.5)
+        self.assertAlmostEqual(left, right, delta=1e-3)
+        self.assertNotAlmostEqual(self.predict("smooth", 1) - self.predict("smooth", 0),
+                                  self.predict("smooth", 2) - self.predict("smooth", 1), places=3)   # (curved between)
+
+    def test_it_is_the_fit_on_the_curved_terms_for_every_kind(self):
+        import lisp_regression
+        self.run_lisp(self.SETUP)
+        x = np.array(self.run_lisp("x").items, dtype=np.float64)
+        terms = np.array([lisp_regression.restricted_cubic_terms(v, [-1.0, 0.0, 1.0, 2.0]) for v in x])
+        self.env[lisp_core.Symbol("curve1")] = lisp_vector_math.to_vector(terms[:, 0])
+        self.env[lisp_core.Symbol("curve2")] = lisp_vector_math.to_vector(terms[:, 1])
+        for spline, by_hand in (("(spline-regression x y (list -1 0 1 2) :smooth #t)", "(linear-regression (list x curve1 curve2) y)"),
+                                ("(spline-lad x y (list -1 0 1 2) '() :smooth #t)", "(lad-regression (list x curve1 curve2) y)"),
+                                ("(spline-quantile x y 0.8 (list -1 0 1 2) :smooth #t)",
+                                 "(quantile-regression (list x curve1 curve2) y 0.8)"),
+                                ("(spline-logistic x y (list -1 0 1 2) :floor 0.03 :ceiling 0.48 :smooth #t)",
+                                 "(logistic-regression (list x curve1 curve2) y :floor 0.03 :ceiling 0.48)")):
+            self.run_lisp("(define spline %s) (define by-hand %s)" % (spline, by_hand))
+            for i in (0, 13, 26, 40):
+                v, t1, t2 = float(x[i]), float(terms[i, 0]), float(terms[i, 1])
+                self.assertAlmostEqual(self.run_lisp("(model-predict spline %r)" % v),       # (the hand-made columns
+                                       self.run_lisp("(model-predict by-hand (list %r %r %r))" % (v, t1, t2)),
+                                       places=5, msg=spline)                                # are stored as float32)
+
+    def test_the_report_and_what_it_won_t_take(self):
+        self.run_lisp(self.SETUP)
+        report = self.show("(model-report smooth)")
+        self.assertIn("Smooth (restricted cubic) spline model, predicting y:", report)
+        self.assertIn("x1: knots -1, 0, 1, 2, smooth", report)
+        self.assertShows('(table-column (model-coefficient-table smooth) "term")',
+                         '#("intercept" "x1" "x1 (curve at knot -1)" "x1 (curve at knot 0)")')
+        self.assertLispError("(spline-regression x y (list 0 1) :smooth #t)",
+                             "a smooth spline needs at least 3 knots, and x1 has 2")
+        self.assertShows("(model-kind (spline-regression x y 0 :smooth #t))", '"spline"')    # no knots: a straight line
+        self.assertLispError("(spline-regression x y 3 '() :curvy #t)", ":curvy")
+
+
 class TestSplineLad(LispTestCase):
     """spline-lad: a piecewise-linear spline fit by least absolute deviation, as
     spline-regression fits one by least squares."""

@@ -2754,7 +2754,7 @@ for a large dataset.
 (display (model-report m))
 ```
 
-#### `(spline-regression x y [max-knots weights])`
+#### `(spline-regression x y [max-knots weights] [:smooth #t])`
 A simple, dependency-free way to let a model bend instead of insisting on a
 straight line. For each predictor `x`, a handful of "knot" locations are
 chosen (automatically, at quantiles of `x`'s own values, or exactly where
@@ -2812,6 +2812,28 @@ same per-observation weight vector `linear-regression` takes (see
 "Weighted fitting", above); passed straight through to the fit on the
 expanded basis.
 
+**Smooth splines.** The hinges make a curve of straight pieces, with a
+corner at each knot, and its last piece goes on as far as you predict.
+`:smooth #t` makes a *restricted cubic spline* (a "natural" spline)
+instead: cubic pieces that join smoothly at the knots, with no corners, and
+a straight line below the first knot and above the last. That's often
+truer to the data -- a prepayment curve bends; it doesn't turn corners --
+and safer beyond it, since a straight line goes on as it was going, where
+a cubic might turn anywhere. It works the same way: in place of a hinge at
+each knot, a predictor gets one curved term for each knot but the last two
+(see `restricted_cubic_terms` in `lisp_regression.py` for the formula),
+and the same fit runs on them. So it takes at least 3 knots, and with `k`
+knots it has `k - 1` coefficients for the predictor, where the hinges have
+`k + 1`: with the same knots, it bends less freely. All four spline
+functions take `:smooth`, and a categorical predictor stays categorical.
+
+```lisp
+(define x (- (/ (vector-range 41) 8.0) 2))
+(define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))   ; an S
+(define smooth (spline-regression x y (list -1 0 1 2) :smooth #t))
+(table-column (model-coefficient-table smooth) "term")   ; => #("intercept" "x1" "x1 (curve at knot -1)" "x1 (curve at knot 0)")
+```
+
 ```lisp
 (define home-type (vector 0 1 0 1 1))          ; 0=own, 1=rent
 (define m (spline-regression (list income home-type) happiness
@@ -2820,7 +2842,7 @@ expanded basis.
 (model-predict m (list 50000 0))                ; predict for "own", income=50000
 ```
 
-#### `(spline-logistic x y [max-knots weights] [:floor f :ceiling c])`
+#### `(spline-logistic x y [max-knots weights] [:floor f :ceiling c :smooth #t])`
 A spline model with a logistic link: `spline-regression`'s expansion of
 each predictor, from the same `max-knots`, fit as `logistic-regression`
 fits, with the same `:floor` and `:ceiling` (and the same rules for `y`).
@@ -2837,14 +2859,14 @@ does. Returns a model of kind `"spline-logistic"`. (This was
 (format "{:.3f}" (model-predict s 1))                          ; => "0.255"
 ```
 
-#### `(spline-quantile x y quantile [max-knots weights])`
+#### `(spline-quantile x y quantile [max-knots weights] [:smooth #t])`
 A spline model fit to a quantile: `spline-regression`'s expansion of each
 predictor, from the same `max-knots`, fit as `quantile-regression` fits, so
 the curve can bend, with `quantile` of the points below it. The model's
 kind is `"spline-quantile"`. Two of them, at the 10th and 90th
 percentiles, make a band that can bend with the data.
 
-#### `(spline-lad x y [max-knots weights])`
+#### `(spline-lad x y [max-knots weights] [:smooth #t])`
 A spline model fit by **least absolute deviation**: `spline-regression`'s
 expansion of each predictor -- the same hinges at knots, or 0/1 columns for
 categories, from the same `max-knots` -- fit as `lad-regression` fits,

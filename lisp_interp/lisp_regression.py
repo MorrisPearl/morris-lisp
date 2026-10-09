@@ -24,7 +24,7 @@ import numpy as np
 
 from lisp_core import (
     Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, Symbol,
-    keyword_options, list_to_pairs, numeric_value, pairs_to_list, to_display_string,
+    is_true, keyword_options, list_to_pairs, numeric_value, pairs_to_list, to_display_string,
 )
 from lisp_vector_math import to_vector
 
@@ -1121,10 +1121,11 @@ def model_lift_table(model, x_arg, y_arg, n_bins=10, weight_vec=None):
 # fit_lad, or fit_logistic_between exactly as they are.
 
 class _PredictorSpec:
-    """How one predictor is expanded into features: either a set of
-    hinge-function knots (mode "spline"), or a set of categories to
-    dummy-encode (mode "categorical", one 0/1 indicator column per
-    non-baseline category)."""
+    """How one predictor is expanded into features: a set of knots, for
+    hinge functions (mode "spline") or for a restricted cubic spline's
+    curved terms (mode "smooth"), or a set of categories to dummy-encode
+    (mode "categorical", one 0/1 indicator column per non-baseline
+    category)."""
 
     def __init__(self, mode, knots=None, categories=None, n_distinct=None):
         self.mode = mode
@@ -1133,7 +1134,11 @@ class _PredictorSpec:
         self.n_distinct = n_distinct
 
     def n_features(self):
-        return len(self.knots) + 1 if self.mode == "spline" else len(self.categories) - 1
+        if self.mode == "spline":
+            return len(self.knots) + 1          # the predictor, and a hinge at each knot
+        if self.mode == "smooth":
+            return len(self.knots) - 1          # the predictor, and a curved term for each knot but the last two
+        return len(self.categories) - 1
 
 
 def _choose_knots(column, n_knots):
@@ -1165,7 +1170,7 @@ def _dedupe_preserve_order(items):
     return result
 
 
-def _resolve_predictor_spec(spec, column, name, who):
+def _resolve_predictor_spec(spec, column, name, who, smooth=False):
     """Turn one raw per-predictor argument into a _PredictorSpec:
       - the symbol 'categorical  -> dummy-encode the distinct values seen
       - a Lisp list of numbers   -> use exactly those knot locations
@@ -1197,11 +1202,15 @@ def _resolve_predictor_spec(spec, column, name, who):
             "knots aren't meaningful there (and can make the fit singular). "
             "Use a knot count of 0 (stay linear) or mark it 'categorical "
             "instead." % (who, name, n_distinct))
-
+    if smooth and knots:
+        if len(knots) < 3:
+            raise LispError("%s: a smooth spline needs at least 3 knots, and %s has %d -- give it more, or 0 for a "
+                            "straight line" % (who, name, len(knots)))
+        return _PredictorSpec("smooth", knots=knots, n_distinct=n_distinct)
     return _PredictorSpec("spline", knots=knots, n_distinct=n_distinct)
 
 
-def _resolve_all_predictor_specs(max_knots, columns, names=None, who="spline-regression"):
+def _resolve_all_predictor_specs(max_knots, columns, names=None, who="spline-regression", smooth=False):
     """Turn the `max-knots` argument into one _PredictorSpec per predictor.
     `max_knots` is either one setting for every predictor -- a knot count or
     'categorical -- or a list with one setting per predictor, each a knot
@@ -1209,7 +1218,9 @@ def _resolve_all_predictor_specs(max_knots, columns, names=None, who="spline-reg
     predictor, a flat list of numbers means those knot locations.
 
     `names` (optional): the predictors' names, for error messages and the
-    report; `who`, the function to name in an error message."""
+    report; `who`, the function to name in an error message. smooth: a
+    predictor with knots gets a restricted cubic spline's curved terms
+    (restricted_cubic_terms) in place of hinges."""
     k = len(columns)
     if names is None:
         names = ["x%d" % (i + 1) for i in range(k)]
@@ -1222,15 +1233,15 @@ def _resolve_all_predictor_specs(max_knots, columns, names=None, who="spline-reg
         all_knot_values = items and all(is_knot_value(v) for v in items)
         if k == 1 and all_knot_values:
             # A flat list of numbers/dates with one predictor: explicit knots.
-            return [_resolve_predictor_spec(list_to_pairs(items), columns[0], names[0], who)]
+            return [_resolve_predictor_spec(list_to_pairs(items), columns[0], names[0], who, smooth)]
         if len(items) != k:
             raise LispError(
                 "%s: the knot-spec list must have one entry per "
                 "predictor (%d), got %d" % (who, k, len(items)))
-        return [_resolve_predictor_spec(spec, col, name, who)
+        return [_resolve_predictor_spec(spec, col, name, who, smooth)
                 for spec, col, name in zip(items, columns, names)]
 
-    return [_resolve_predictor_spec(max_knots, col, name, who)
+    return [_resolve_predictor_spec(max_knots, col, name, who, smooth)
             for col, name in zip(columns, names)]
 
 
@@ -1250,10 +1261,36 @@ def _spline_expand_value(v, spec, name):
                 "seen while fitting (%s)" % (
                     name, v, ", ".join(_category_text(c) for c in spec.categories)))
         return [1.0 if v == cat else 0.0 for cat in spec.categories[1:]]
+    if spec.mode == "smooth":
+        return [v] + restricted_cubic_terms(v, spec.knots)
     row = [v]
     for t in spec.knots:
         row.append(max(0.0, v - t))
     return row
+
+
+def restricted_cubic_terms(v, knots):
+    """The curved terms of a restricted cubic spline (a "natural" spline) at
+    v, for its knots t1 < t2 < ... < tk, k being at least 3: one for each
+    knot but the last two,
+
+        term_j(v) = ( (v - tj)+^3
+                      - (v - t(k-1))+^3 * (tk - tj) / (tk - t(k-1))
+                      + (v - tk)+^3 * (t(k-1) - tj) / (tk - t(k-1)) ) / (tk - t1)^2
+
+    where (u)+ is u if it's above 0, and 0 if not. With the predictor
+    itself, these make a curve of cubic pieces that join smoothly at the
+    knots -- with no corners, as hinges have -- and is a straight line below
+    the first knot and above the last: past tk, the parts of each term that
+    are squared and cubed in v cancel, leaving a straight line. (Stone and
+    Koo's, as Harrell gives it; dividing by (tk - t1)^2 keeps the terms in
+    the predictor's own units.)"""
+    def cube(u):
+        return u ** 3 if u > 0 else 0.0
+    last, before_last = knots[-1], knots[-2]
+    return [(cube(v - t) - cube(v - before_last) * (last - t) / (last - before_last)
+             + cube(v - last) * (before_last - t) / (last - before_last)) / (last - knots[0]) ** 2
+            for t in knots[:-2]]
 
 
 def _spline_expand_row(values, specs, names=None):
@@ -1297,7 +1334,7 @@ class LispSplineModel:
         return self.inner_model.predict(_spline_expand_row(values, self.predictor_specs, self.predictor_names))
 
     def __repr__(self):
-        total_knots = sum(len(s.knots) for s in self.predictor_specs if s.mode == "spline")
+        total_knots = sum(len(s.knots) for s in self.predictor_specs if s.mode in ("spline", "smooth"))
         n_categorical = sum(1 for s in self.predictor_specs if s.mode == "categorical")
         if n_categorical:
             return "#<%s-model predictors=%d knots=%d categorical=%d>" % (
@@ -1350,6 +1387,10 @@ def _spline_feature_labels(specs, names):
         if spec.mode == "categorical":
             for cat in spec.categories[1:]:
                 labels.append("%s = %s" % (name, _category_text(cat)))
+        elif spec.mode == "smooth":
+            labels.append(name)
+            for t in spec.knots[:-2]:
+                labels.append("%s (curve at knot %.6g)" % (name, t))
         else:
             labels.append(name)
             for t in spec.knots:
@@ -1361,18 +1402,20 @@ def _spline_report_lines(model):
     names = model.predictor_names or ["x%d" % (i + 1) for i in range(model.k)]
     y_name = model.y_name or "y"
     lines = []
+    shape = ("Smooth (restricted cubic)" if any(spec.mode == "smooth" for spec in model.predictor_specs)
+             else "Piecewise-linear")
     if model.kind == "spline-logistic" and model.inner_model.between_0_and_1():
-        lines.append("Piecewise-linear spline model, with a logistic link, predicting %s:" % y_name)
+        lines.append("%s spline model, with a logistic link, predicting %s:" % (shape, y_name))
     elif model.kind == "spline-logistic":
-        lines.append("Piecewise-linear spline model, with a logistic link between %.6g and %.6g, predicting %s:"
-                     % (model.inner_model.floor, model.inner_model.ceiling, y_name))
+        lines.append("%s spline model, with a logistic link between %.6g and %.6g, predicting %s:"
+                     % (shape, model.inner_model.floor, model.inner_model.ceiling, y_name))
     elif model.kind == "spline-lad":
-        lines.append("Piecewise-linear spline model, fit by least absolute deviation, predicting %s:" % y_name)
+        lines.append("%s spline model, fit by least absolute deviation, predicting %s:" % (shape, y_name))
     elif model.kind == "spline-quantile":
-        lines.append("Piecewise-linear spline model, fit to the %.6g quantile, predicting %s:"
-                     % (model.inner_model.stats["quantile"], y_name))
+        lines.append("%s spline model, fit to the %.6g quantile, predicting %s:"
+                     % (shape, model.inner_model.stats["quantile"], y_name))
     else:
-        lines.append("Piecewise-linear spline model, predicting %s:" % y_name)
+        lines.append("%s spline model, predicting %s:" % (shape, y_name))
     lines.append("  predictors = %d" % model.k)
     for name, spec in zip(names, model.predictor_specs):
         if spec.mode == "categorical":
@@ -1384,7 +1427,7 @@ def _spline_report_lines(model):
             hint = ""
             if spec.n_distinct is not None and spec.n_distinct <= 3:
                 hint = "  [only %d distinct value(s) seen -- consider 'categorical]" % spec.n_distinct
-            lines.append("  %s: knots %s%s" % (name, knot_text, hint))
+            lines.append("  %s: knots %s%s%s" % (name, knot_text, ", smooth" if spec.mode == "smooth" else "", hint))
     lines.append("")
     lines.append("Coefficients (on the expanded basis):")
     lines.extend(coefficient_table_lines(model.inner_model, _spline_feature_labels(model.predictor_specs, names)))
@@ -1394,73 +1437,87 @@ def _spline_report_lines(model):
     return lines
 
 
-def fit_spline(x_arg, y_arg, max_knots, weight_vec, fit, who):
-    """A piecewise-linear spline model: each predictor expanded as max-knots
-    says (see _resolve_all_predictor_specs) -- into hinge functions at knots,
-    or 0/1 indicators for categories -- and the expanded columns fit by
-    `fit` (fit_linear, fit_lad, or fit_logistic). x, y, and the weights are
-    as for linear-regression; `who` is the function to name in an error
-    message."""
+def fit_spline(x_arg, y_arg, max_knots, weight_vec, fit, who, smooth=False):
+    """A spline model: each predictor expanded as max-knots says (see
+    _resolve_all_predictor_specs) -- into hinge functions at knots, or a
+    smooth curve's terms, or 0/1 indicators for categories -- and the
+    expanded columns fit by `fit` (fit_linear, fit_lad, fit_quantile, or
+    fit_logistic_between). x, y, and the weights are as for
+    linear-regression; `who` is the function to name in an error message."""
     y_vec, y_name = _coerce_y(y_arg, who)
     columns, names = _predictor_columns(x_arg, len(y_vec.items))
     ys = [numeric_value(v) for v in y_vec.items.tolist()]
     if not ys:
         raise LispError("%s: no data to fit" % who)
     weights = _optional_weights(weight_vec, len(ys), who)
-    predictor_specs = _resolve_all_predictor_specs(max_knots, columns, names, who)
+    predictor_specs = _resolve_all_predictor_specs(max_knots, columns, names, who, smooth)
     expanded_columns = _spline_expand_columns(columns, predictor_specs)
     return LispSplineModel(fit(expanded_columns, ys, weights), predictor_specs, len(columns), names, y_name)
 
 
-def spline_regression_fn(x_arg, y_arg, max_knots=3, weight_vec=None):
-    """(spline-regression x y [max-knots weights]) -- fit a piecewise-linear
+def spline_arguments(arguments, keywords, who):
+    """A spline function's optional arguments: max-knots (3 unless given)
+    and weights, in that order, then its keyword options -- :smooth, and
+    the keywords -- as a dict."""
+    positional, options = positional_and_keywords(arguments, 2, ["smooth"] + keywords, who)
+    if any(isinstance(a, bool) for a in positional):
+        raise LispError("%s: it has no logistic? argument now: spline-logistic fits a spline with a logistic link"
+                        % who)
+    max_knots = positional[0] if positional else 3
+    weight_vec = positional[1] if len(positional) > 1 else None
+    return max_knots, weight_vec, options
+
+
+def spline_regression_fn(x_arg, y_arg, *arguments):
+    """(spline-regression x y [max-knots weights] [:smooth #t]) -- fit a
     spline model by least squares. x and y are as for linear-regression.
     max-knots says how to expand each predictor (see
-    _resolve_all_predictor_specs)."""
-    if isinstance(weight_vec, bool):
-        raise LispError("spline-regression: it has no logistic? argument now: "
-                        "spline-logistic fits a spline with a logistic link")
-    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit_linear, "spline-regression")
+    _resolve_all_predictor_specs); :smooth #t makes the curve smooth
+    (restricted_cubic_terms), in place of straight pieces."""
+    who = "spline-regression"
+    max_knots, weight_vec, options = spline_arguments(arguments, [], who)
+    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit_linear, who, is_true(options.get("smooth", False)))
 
 
 def spline_logistic_fn(x_arg, y_arg, *arguments):
-    """(spline-logistic x y [max-knots weights] [:floor f :ceiling c]) -- fit a
-    piecewise-linear spline model with a logistic link: spline-regression's
+    """(spline-logistic x y [max-knots weights] [:floor f :ceiling c :smooth #t])
+    -- fit a spline model with a logistic link: spline-regression's
     expansion of the predictors, fit as logistic-regression fits (see
     fit_logistic_between), so the curve can bend, and stays between the
     floor and the ceiling (0 and 1, unless they're given)."""
     who = "spline-logistic"
-    positional, options = positional_and_keywords(arguments, 2, ["floor", "ceiling"], who)
+    max_knots, weight_vec, options = spline_arguments(arguments, ["floor", "ceiling"], who)
     floor, ceiling = floor_and_ceiling(options, who)
-    max_knots = positional[0] if positional else 3
-    weight_vec = positional[1] if len(positional) > 1 else None
 
     def fit(columns, ys, weights):
         return fit_logistic_between(columns, ys, weights, floor, ceiling, who)
 
-    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit, who)
+    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit, who, is_true(options.get("smooth", False)))
 
 
-def spline_quantile_fn(x_arg, y_arg, quantile, max_knots=3, weight_vec=None):
-    """(spline-quantile x y quantile [max-knots weights]) -- fit a
-    piecewise-linear spline model to a quantile: spline-regression's
-    expansion of the predictors, fit as quantile-regression fits, so the
-    curve can bend, with `quantile` of the points below it."""
+def spline_quantile_fn(x_arg, y_arg, quantile, *arguments):
+    """(spline-quantile x y quantile [max-knots weights] [:smooth #t]) -- fit
+    a spline model to a quantile: spline-regression's expansion of the
+    predictors, fit as quantile-regression fits, so the curve can bend, with
+    `quantile` of the points below it."""
     who = "spline-quantile"
     quantile = _quantile_argument(quantile, who)
+    max_knots, weight_vec, options = spline_arguments(arguments, [], who)
 
     def fit(columns, ys, weights):
         return fit_quantile(columns, ys, quantile, weights, who=who)
 
-    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit, who)
+    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit, who, is_true(options.get("smooth", False)))
 
 
-def spline_lad_fn(x_arg, y_arg, max_knots=3, weight_vec=None):
-    """(spline-lad x y [max-knots weights]) -- fit a piecewise-linear spline
-    model by least absolute deviation: as spline-regression does, but making
-    the sum of the absolute residuals smallest (fit_lad) rather than the sum
-    of their squares, so a few outliers barely move the curve."""
-    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit_lad, "spline-lad")
+def spline_lad_fn(x_arg, y_arg, *arguments):
+    """(spline-lad x y [max-knots weights] [:smooth #t]) -- fit a spline
+    model by least absolute deviation: as spline-regression does, but
+    making the sum of the absolute residuals smallest (fit_lad) rather than
+    the sum of their squares, so a few outliers barely move the curve."""
+    who = "spline-lad"
+    max_knots, weight_vec, options = spline_arguments(arguments, [], who)
+    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit_lad, who, is_true(options.get("smooth", False)))
 
 
 def suggest_knots_fn(x_vec, y_vec, window, n):
