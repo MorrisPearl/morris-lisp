@@ -332,6 +332,90 @@ def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, max_iteratio
     return LispModel("logistic", coefficients, intercept, stats, floor=floor, ceiling=ceiling)
 
 
+FIT = "fit"                     # a :floor or :ceiling to be fit to the data
+BOUND_STEPS = (0.05, 0.01, 0.002)   # the grids a fitted floor and ceiling are looked for on (fit_logistic_bounds)
+BOUND_GAP = 0.01                # how far apart the floor and the ceiling must be, at least
+CHI_SQUARED_95 = 3.84           # a log-likelihood this much less, times 2, is a clearly worse fit (95%)
+
+
+def fit_logistic_bounds(columns, ys, weights, floor, ceiling, who):
+    """A logistic model of a probability whose floor, or ceiling, or both,
+    are fit to the data too (the other being given, or 0 or 1): the ones
+    that make the data most likely. Every y must be between 0 and 1.
+
+    They're found by trying them on a grid -- every 0.05 from 0 to 1 --
+    fitting the curve for each (fit_logistic) and keeping the most likely;
+    then every 0.01 near the best of those, and every 0.002 near the best
+    of them. Then, for each one fitted, how far it can move either way
+    (holding the other where it was fitted) before the fit is clearly
+    worse -- its log-likelihood lower by 3.84 / 2, which for 0/1 outcomes
+    makes the range roughly a 95% confidence interval (for shares, only a
+    rough guide). The model's stats["fitted"] has those ranges."""
+    for y in ys:
+        if not 0 <= y <= 1:
+            raise LispError("%s: fitting a floor or ceiling is for a probability: every y must be between 0 and 1 "
+                            "(got %r)" % (who, y))
+    fit_floor, fit_ceiling = floor == FIT, ceiling == FIT
+    fixed_floor = 0.0 if fit_floor or floor is None else floor
+    fixed_ceiling = 1.0 if fit_ceiling or ceiling is None else ceiling
+
+    tried = {}
+
+    def log_likelihood_at(f, c):
+        """How likely the data is with this floor and ceiling (-inf if the fit fails)."""
+        key = (round(f, 6), round(c, 6))
+        if key not in tried:
+            try:
+                tried[key] = fit_logistic(columns, ys, weights, f, c).stats["log_likelihood"]
+            except LispError:
+                tried[key] = -math.inf
+        return tried[key]
+
+    def axis(fitted, fixed, best_value, number):
+        """The values a floor or ceiling is tried at, on grid `number`."""
+        step = BOUND_STEPS[number]
+        if not fitted:
+            return [fixed]
+        if best_value is None:
+            low, high = 0.0, 1.0
+        else:
+            low, high = max(0.0, best_value - BOUND_STEPS[number - 1]), min(1.0, best_value + BOUND_STEPS[number - 1])
+        return [round(float(v), 6) for v in np.arange(low, high + step / 2, step)]
+
+    best = (None, None)
+    for number in range(len(BOUND_STEPS)):
+        pairs = [(f, c) for f in axis(fit_floor, fixed_floor, best[0], number)
+                 for c in axis(fit_ceiling, fixed_ceiling, best[1], number) if c - f >= BOUND_GAP - 1e-12]
+        if not pairs:
+            raise LispError("%s: the floor must be at least %s below the ceiling" % (who, BOUND_GAP))
+        best = max(pairs, key=lambda pair: log_likelihood_at(*pair))
+    best_floor, best_ceiling = best
+    best_log_likelihood = log_likelihood_at(best_floor, best_ceiling)
+
+    def likelihood_range(at, value, lowest, highest):
+        """How far a fitted value can move either way, before the log-likelihood is clearly lower."""
+        step = BOUND_STEPS[-1]
+        enough = best_log_likelihood - CHI_SQUARED_95 / 2
+        low = value
+        while low - step >= lowest - 1e-12 and at(low - step) >= enough:
+            low = round(low - step, 6)
+        high = value
+        while high + step <= highest + 1e-12 and at(high + step) >= enough:
+            high = round(high + step, 6)
+        return [low, high]
+
+    fitted = {}
+    if fit_floor:
+        fitted["floor"] = likelihood_range(lambda f: log_likelihood_at(f, best_ceiling), best_floor,
+                                           0.0, best_ceiling - BOUND_GAP)
+    if fit_ceiling:
+        fitted["ceiling"] = likelihood_range(lambda c: log_likelihood_at(best_floor, c), best_ceiling,
+                                             best_floor + BOUND_GAP, 1.0)
+    model = fit_logistic(columns, ys, weights, best_floor, best_ceiling)
+    model.stats["fitted"] = fitted
+    return model
+
+
 def fit_logistic_between(columns, ys, weights, floor, ceiling, who):
     """A logistic model of y between a floor and a ceiling:
 
@@ -355,7 +439,10 @@ def fit_logistic_between(columns, ys, weights, floor, ceiling, who):
       levels a curve flattens out at, so some of it is beyond them. The
       model's stats say how many were.
 
+    A floor or ceiling of FIT is fit to the data (fit_logistic_bounds).
     `who` is the function to name in an error message."""
+    if floor == FIT or ceiling == FIT:
+        return fit_logistic_bounds(columns, ys, weights, floor, ceiling, who)
     if floor is None or (0 <= floor and ceiling <= 1):
         for y in ys:
             if not 0 <= y <= 1:
@@ -374,17 +461,31 @@ def fit_logistic_between(columns, ys, weights, floor, ceiling, who):
 
 def floor_and_ceiling(options, who):
     """The :floor and :ceiling options, as numbers -- 0 and 1 for one that
-    isn't given -- or (None, None) if neither is."""
+    isn't given -- or FIT for one given as 'fit; or (None, None) if neither
+    is given."""
     if options.get("floor") is None and options.get("ceiling") is None:
         return None, None
-    floor = options.get("floor") if options.get("floor") is not None else 0.0
-    ceiling = options.get("ceiling") if options.get("ceiling") is not None else 1.0
-    for name, value in (("floor", floor), ("ceiling", ceiling)):
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
-            raise LispError("%s: :%s must be a number, not %s" % (who, name, to_display_string(value)))
-    if not floor < ceiling:
+    bounds = []
+    for name, default in (("floor", 0.0), ("ceiling", 1.0)):
+        value = options.get(name)
+        if value is None:
+            bounds.append(default)
+        elif isinstance(value, Symbol) and str(value) == FIT:
+            bounds.append(FIT)
+        elif not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+            raise LispError("%s: :%s must be a number, or 'fit to fit it to the data, not %s"
+                            % (who, name, to_display_string(value)))
+        else:
+            bounds.append(float(value))
+    floor, ceiling = bounds
+    if FIT in bounds:
+        for name, value in (("floor", floor), ("ceiling", ceiling)):
+            if value != FIT and not 0 <= value <= 1:
+                raise LispError("%s: to fit the floor or ceiling, the other must be between 0 and 1 (the :%s is %s)"
+                                % (who, name, value))
+    elif not floor < ceiling:
         raise LispError("%s: the :floor (%s) must be below the :ceiling (%s)" % (who, floor, ceiling))
-    return float(floor), float(ceiling)
+    return floor, ceiling
 
 
 def positional_and_keywords(arguments, most_positional, keywords, who):
@@ -966,7 +1067,16 @@ def fit_statistics_lines(model):
                                                    "converged" if stats["converged"] else "did NOT converge"),
                 "  n                = %d" % stats["n"]]
     between = []
-    if model.is_probability() and not model.between_0_and_1():
+    fitted = stats.get("fitted", {})
+    if fitted:
+        for name, value in (("floor", model.floor), ("ceiling", model.ceiling)):
+            if name in fitted:
+                low, high = fitted[name]
+                between.append("  %-16s = %.6g  (fitted; from %.6g to %.6g is within 1.92 of the best log-likelihood)"
+                               % (name, value, low, high))
+            else:
+                between.append("  %-16s = %.6g" % (name, value))
+    elif model.is_probability() and not model.between_0_and_1():
         between = ["  floor, ceiling   = %.6g, %.6g  (the probability is between them)" % (model.floor, model.ceiling)]
     elif not model.is_probability():
         between = ["  floor, ceiling   = %.6g, %.6g  (%d y below the floor, and %d above the ceiling, taken as at them)"
@@ -1607,6 +1717,21 @@ def suggest_knots_fn(x_vec, y_vec, window, n):
 # The Lisp-callable builtins defined in this file
 # ---------------------------------------------------------------------------
 
+def model_floor_or_ceiling(which):
+    """model-floor or model-ceiling: a logistic model's floor or ceiling."""
+    who = "model-" + which
+
+    def get(model):
+        inner = model.inner_model if isinstance(model, LispSplineModel) else model
+        if not isinstance(inner, LispModel) or inner.kind != "logistic":
+            raise LispError("%s: only a logistic or spline-logistic model has a %s, not %s"
+                            % (who, which, to_display_string(model)))
+        return inner.floor if which == "floor" else inner.ceiling
+    get.__doc__ = ("(%s m) -- the %s of a logistic or spline-logistic model's curve: 0 or 1, unless it was "
+                   "given, or fit with '%s 'fit." % (who, which, which))
+    return get
+
+
 def model_intercept(m):
     if isinstance(m, LispSplineModel):
         raise LispError("model-intercept: not available for a spline model; use model-report instead")
@@ -1632,6 +1757,8 @@ BUILTINS = {
     "model-slope": model_slope,
     "model-coefficients": model_coefficients,
     "model-intercept": model_intercept,
+    "model-floor": model_floor_or_ceiling("floor"),
+    "model-ceiling": model_floor_or_ceiling("ceiling"),
     "model-kind": lambda m: LispString(m.kind),
     "model?": lambda x: _is_model(x),
     "sigmoid": lambda z: sigmoid(z),

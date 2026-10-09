@@ -2707,6 +2707,27 @@ A probability that can't go below the floor, or above the ceiling, also
 limits what a point far from the curve can cost the fit: with them, a
 plain logistic curve is pulled much less by points out of line.
 
+**Fitting the floor and ceiling.** Give `'fit` for either, or both --
+`:ceiling 'fit` -- and it is the one that makes the data most likely,
+with the curve fit for it. For a probability only: every `y` must be
+between 0 and 1. It's found by trying every 0.05 from 0 to 1, fitting the
+curve for each, then every 0.01 near the best, and every 0.002 near the
+best of those. `model-report` gives each fitted one, and how far it could
+move, either way, before the data is clearly less likely: its
+log-likelihood lower by 1.92, which for 0s and 1s makes the range roughly
+a 95% confidence interval (for shares, a rough guide). A ceiling is only
+well fitted where there is data on the curve's flat top: with none, the
+range runs up to 1. A spline can level off by itself, at its knots, so a
+`spline-logistic`'s fitted ceiling is only loosely set. `model-floor` and
+`model-ceiling` give a model's floor and ceiling.
+
+```lisp
+(define x (- (/ (vector-range 41) 8.0) 2))
+(define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))   ; 3% to 48%
+(define m (logistic-regression x y :floor 'fit :ceiling 'fit))
+(list (model-floor m) (model-ceiling m))                        ; => (0.03 0.48)
+```
+
 ```lisp
 (define x (- (/ (vector-range 41) 8.0) 2))
 (define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))   ; 3% to 48%
@@ -3030,6 +3051,10 @@ the order the predictors were given when fitting. Only valid for
 ```lisp
 (model-coefficients m)         ; => #(10.3)
 ```
+
+#### `(model-floor m)`, `(model-ceiling m)`
+A logistic or spline-logistic model's floor and ceiling: 0 and 1, unless
+they were given, or fit with `'fit`.
 
 #### `(model-intercept m)`
 The model's fitted intercept (a plain number). Like `model-coefficients`,

@@ -524,6 +524,76 @@ class TestSmoothSplines(LispTestCase):
         self.assertLispError("(spline-regression x y 3 '() :curvy #t)", ":curvy")
 
 
+class TestFittingTheFloorAndCeiling(LispTestCase):
+    """:floor 'fit and :ceiling 'fit: the floor and ceiling of a logistic model of a probability, fit to
+    the data."""
+
+    def loans(self, n=5000, floor=0.03, ceiling=0.48):
+        """n made-up loans, each prepaid (1) or not (0), with a chance from floor to ceiling."""
+        rng = np.random.default_rng(1)
+        x = rng.uniform(-2, 3, n)
+        chance = floor + (ceiling - floor) / (1 + np.exp(-3 * (x - 1)))
+        self.env[lisp_core.Symbol("x")] = lisp_vector_math.to_vector(x)
+        self.env[lisp_core.Symbol("prepaid")] = lisp_vector_math.to_vector((rng.uniform(size=n) < chance) * 1.0)
+
+    def test_both_fitted_find_the_chance_s_floor_and_ceiling(self):
+        self.loans()
+        model = self.run_lisp("(define m (logistic-regression x prepaid :floor 'fit :ceiling 'fit)) m")
+        self.assertAlmostEqual(model.floor, 0.03, delta=0.015)
+        self.assertAlmostEqual(model.ceiling, 0.48, delta=0.04)
+        low, high = model.stats["fitted"]["floor"]
+        self.assertTrue(low <= 0.03 <= high)
+        low, high = model.stats["fitted"]["ceiling"]
+        self.assertTrue(low <= 0.48 <= high)
+        report = self.show("(model-report m)")
+        self.assertRegex(report, r"floor            = 0\.0\d+  \(fitted; from 0\.0\d* to 0\.0\d* is within 1\.92")
+        self.assertRegex(report, r"ceiling          = 0\.4\d*  \(fitted; from ")
+        # it's the most likely of the floors and ceilings near it
+        best = model.stats["log_likelihood"]
+        for floor, ceiling in ((model.floor + 0.004, model.ceiling), (model.floor, model.ceiling - 0.004),
+                               (model.floor - 0.004, model.ceiling + 0.004)):
+            other = self.run_lisp("(logistic-regression x prepaid :floor %r :ceiling %r)" % (floor, ceiling))
+            self.assertLessEqual(other.stats["log_likelihood"], best + 1e-9)
+
+    def test_shares_on_the_curve_give_its_floor_and_ceiling(self):
+        self.run_lisp("""(define x (- (/ (vector-range 41) 8.0) 2))
+                         (define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))
+                         (define m (logistic-regression x y :floor 'fit :ceiling 'fit))""")
+        self.assertAlmostEqual(self.run_lisp("(model-floor m)"), 0.03, delta=0.003)
+        self.assertAlmostEqual(self.run_lisp("(model-ceiling m)"), 0.48, delta=0.003)
+        self.assertEqual(self.run_lisp("(model-ceiling (spline-logistic x y 3 :ceiling 0.5))"), 0.5)
+        self.assertEqual(self.run_lisp("(model-floor (logistic-regression x y))"), 0.0)
+        self.assertLispError("(model-floor (linear-regression x y))", "only a logistic or spline-logistic model has a floor")
+
+    def test_with_no_ceiling_in_the_data_it_goes_to_1(self):
+        self.loans(floor=0.0, ceiling=1.0)
+        model = self.run_lisp("(logistic-regression x prepaid :floor 'fit :ceiling 'fit)")
+        self.assertGreaterEqual(model.ceiling, 0.95)
+        self.assertEqual(model.stats["fitted"]["ceiling"][1], 1.0)             # it could be 1
+        self.assertLessEqual(model.floor, 0.02)
+
+    def test_one_fitted_and_the_other_given(self):
+        self.loans()
+        model = self.run_lisp("(define m (logistic-regression x prepaid :floor 0.03 :ceiling 'fit)) m")
+        self.assertEqual(model.floor, 0.03)
+        self.assertAlmostEqual(model.ceiling, 0.48, delta=0.04)
+        self.assertEqual(list(model.stats["fitted"]), ["ceiling"])
+        self.assertIn("  floor            = 0.03\n", self.show("(model-report m)"))
+        # a spline can level off by itself, at its knots, so its ceiling is only loosely set by the data
+        spline = self.run_lisp("(spline-logistic x prepaid 3 :floor 0.03 :ceiling 'fit)")
+        low, high = spline.inner_model.stats["fitted"]["ceiling"]
+        self.assertTrue(low <= spline.inner_model.ceiling <= high)
+        self.assertGreater(high - low, model.stats["fitted"]["ceiling"][1] - model.stats["fitted"]["ceiling"][0])
+
+    def test_what_it_won_t_take(self):
+        self.loans(n=200)
+        self.assertLispError("(logistic-regression x prepaid :ceiling 'guess)", ":ceiling must be a number, or 'fit")
+        self.assertLispError("(logistic-regression x (* 2 prepaid) :ceiling 'fit)",
+                             "fitting a floor or ceiling is for a probability: every y must be between 0 and 1")
+        self.assertLispError("(logistic-regression x prepaid :floor 'fit :ceiling 5)",
+                             "to fit the floor or ceiling, the other must be between 0 and 1")
+
+
 class TestSplineLad(LispTestCase):
     """spline-lad: a piecewise-linear spline fit by least absolute deviation, as
     spline-regression fits one by least squares."""
