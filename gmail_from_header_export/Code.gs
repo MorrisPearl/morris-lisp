@@ -1,24 +1,44 @@
 /**
- * Gmail "From" Header Exporter
+ * Gmail Sender List Exporter
  *
- * Extracts the From header (raw header, plus parsed name and email address)
- * from Gmail messages -- optionally filtered by a Gmail label and a date
- * range -- into a brand-new Google Sheet.
+ * Builds a Google Sheet with one row per unique sender (first name, last
+ * name, email address, and the raw From header) for a whole mailbox.
+ *
+ * A mailbox can hold hundreds of thousands of messages, far more than one
+ * Apps Script run (limit: 6 minutes) can read. So the export is a "job":
+ *   - it reads the mailbox one month at a time, newest month first;
+ *   - after about 4 minutes it saves where it got to and schedules itself
+ *     to run again in a minute (a "time-driven trigger");
+ *   - this repeats until the oldest month is done.
+ * The job keeps running in the background after the dialog is closed.
  *
  * Setup: paste this file as Code.gs and Dialog.html into an Apps Script
  * project bound to a Google Sheet. See README.md for step-by-step
- * instructions. Use the "From Header Export" menu that appears on the
- * bound sheet to run it.
+ * instructions. Use the "Sender Export" menu that appears on the bound
+ * sheet to run it.
  */
 
-// Apps Script kills any run that lasts longer than 6 minutes, and then
-// nothing is saved. We stop a little early instead, so that we can still
-// write out the messages we have already read.
-var TIME_BUDGET_MS = 5 * 60 * 1000;
+// Each run stops reading after this long, leaving time to write the sheet
+// before Apps Script's 6 minute limit cancels the run.
+var CHUNK_BUDGET_MS = 4 * 60 * 1000;
 
 // How many Gmail threads we ask for at a time. Each batch costs two calls to
 // Gmail (one search, one bulk fetch of the messages in those threads).
-var THREADS_PER_BATCH = 200;
+var THREADS_PER_BATCH = 100;
+
+// Wait this long between runs, and this long before trying again after an
+// error. Errors are usually Google's daily quota; the quota resets overnight,
+// so retrying every hour for two days (48 times) will get past it.
+var CONTINUE_DELAY_MS = 60 * 1000;
+var RETRY_DELAY_MS = 60 * 60 * 1000;
+var MAX_CONSECUTIVE_ERRORS = 48;
+
+// Gmail opened in April 2004, so no mail is older than this.
+var GMAIL_LAUNCH_DATE = new Date(2004, 3, 1);
+
+var SHEET_HEADER = ['First Name', 'Last Name', 'Email Address', 'From (raw header)'];
+var EMAIL_COLUMN = 3;  // position of 'Email Address' in SHEET_HEADER
+var JOB_PROPERTY = 'exportJob';
 
 // Senders whose address (the part before the @) is exactly one of these are
 // organizations, not people. Add more here if you see others in your results.
@@ -35,18 +55,24 @@ var NON_PERSON_FRAGMENTS = [
   'mailer-daemon'
 ];
 
+// ---------------------------------------------------------------------------
+// Menu and dialog
+// ---------------------------------------------------------------------------
+
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('From Header Export')
-    .addItem('Export From Headers...', 'showDialog')
+    .createMenu('Sender Export')
+    .addItem('Start export...', 'showDialog')
+    .addItem('Show progress', 'showProgress')
+    .addItem('Stop export', 'stopExport')
     .addToUi();
 }
 
 function showDialog() {
   var html = HtmlService.createHtmlOutputFromFile('Dialog')
-    .setWidth(420)
-    .setHeight(430);
-  SpreadsheetApp.getUi().showModalDialog(html, 'Export Gmail "From" Headers');
+    .setWidth(440)
+    .setHeight(440);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Export Gmail senders');
 }
 
 function getLabelNames() {
@@ -55,114 +81,263 @@ function getLabelNames() {
     .sort();
 }
 
-function runExport(options) {
+function showProgress() {
+  var ui = SpreadsheetApp.getUi();
+  var job = loadJob();
+  ui.alert('Export progress', job ? describeJob(job) : 'No export has been started.', ui.ButtonSet.OK);
+}
+
+function stopExport() {
+  var ui = SpreadsheetApp.getUi();
+  deleteContinuationTriggers();
+  PropertiesService.getUserProperties().deleteProperty(JOB_PROPERTY);
+  ui.alert('Export stopped', 'Whatever was already written stays in the results sheet.', ui.ButtonSet.OK);
+}
+
+// ---------------------------------------------------------------------------
+// Starting and continuing the export job
+// ---------------------------------------------------------------------------
+
+/**
+ * Called by the dialog. Creates the results sheet and the job, runs the
+ * first chunk right away (so you see results and any errors immediately),
+ * and returns { url, message } for the dialog to show.
+ */
+function startExport(options) {
   options = options || {};
-  var scope = options.scope || '__INBOX__';  // '__INBOX__', '__ALL__', or a label name
-  var dedupe = !!options.dedupe;
-  var skipNonPeople = !!options.skipNonPeople;
 
-  // A Gmail search returns every thread that has at least one message in the
-  // date range, and a thread can also hold older or newer messages. So we
-  // check each message's own date as well.
-  var rangeStart = options.startDate ? dateStringToDate(options.startDate, 0) : null;
-  var rangeEnd = options.endDate ? dateStringToDate(options.endDate, 1) : null;  // exclusive
+  var existingJob = loadJob();
+  if (existingJob && !existingJob.done) {
+    throw new Error('An export is already running. Use "Stop export" in the menu first, or wait for it to finish.');
+  }
 
-  var query = buildQuery(scope, options.startDate, options.endDate);
-  var startedAt = Date.now();
+  var scope = options.scope || '__ALL__';  // '__INBOX__', '__ALL__', or a label name
+  var rangeStart = options.startDate ? dateStringToDate(options.startDate, 0) : GMAIL_LAUNCH_DATE;
+  var rangeEnd = options.endDate ? dateStringToDate(options.endDate, 1) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+  if (rangeStart >= rangeEnd) {
+    throw new Error('The "From" date must be before the "To" date.');
+  }
 
-  var rows = [['From (raw header)', 'Name', 'First Name', 'Last Name', 'Email Address', 'Date', 'Subject']];
-  var seenEmails = {};
-  var stoppedEarly = false;
-  var resumeDate = null;  // when we stop early: everything newer than this is done
+  var ss = createResultSheet(scope);
+  saveJob({
+    spreadsheetId: ss.getId(),
+    spreadsheetUrl: ss.getUrl(),
+    scope: scope,
+    skipNonPeople: !!options.skipNonPeople,
+    rangeStartMs: rangeStart.getTime(),
+    windowEndMs: rangeEnd.getTime(),  // we work backward from here toward rangeStartMs
+    threadOffset: 0,                  // how far into the current month's search results we are
+    messagesRead: 0,
+    uniqueSenders: 0,
+    workSeconds: 0,
+    consecutiveErrors: 0,
+    lastError: '',
+    done: false
+  });
 
-  var searchStart = 0;
-  while (true) {
-    if (Date.now() - startedAt > TIME_BUDGET_MS) {
-      stoppedEarly = true;
-      break;
+  continueExport();
+
+  var job = loadJob();
+  return { url: job.spreadsheetUrl, message: describeJob(job) };
+}
+
+/**
+ * Runs one chunk of the job, then schedules the next one (or a retry if
+ * this one failed). This is also the function the time-driven trigger calls.
+ */
+function continueExport() {
+  try {
+    runChunk();
+  } catch (error) {
+    var failedJob = loadJob();
+    if (!failedJob) return;
+    failedJob.lastError = String(error);
+    failedJob.consecutiveErrors += 1;
+    saveJob(failedJob);
+    if (failedJob.consecutiveErrors <= MAX_CONSECUTIVE_ERRORS) {
+      scheduleContinuation(RETRY_DELAY_MS);
     }
+    return;
+  }
 
-    // Gmail returns the threads newest first.
-    var threads = GmailApp.search(query, searchStart, THREADS_PER_BATCH);
-    if (threads.length === 0) break;
+  var job = loadJob();
+  if (job && !job.done) {
+    scheduleContinuation(CONTINUE_DELAY_MS);
+  }
+}
 
-    // One call to Gmail for the whole batch -- much faster than calling
-    // thread.getMessages() separately for every thread.
-    var messagesByThread = GmailApp.getMessagesForThreads(threads);
+/**
+ * Reads Gmail until the time budget is used up or the oldest month is done,
+ * adds the new senders to the results sheet, and saves the job's position.
+ */
+function runChunk() {
+  var job = loadJob();
+  if (!job || job.done) return;
 
-    messagesByThread.forEach(function(messages) {
-      messages.forEach(function(message) {
-        var date = message.getDate();
-        if (rangeStart && date < rangeStart) return;
-        if (rangeEnd && date >= rangeEnd) return;
+  var startedAt = Date.now();
+  var sheet = SpreadsheetApp.openById(job.spreadsheetId).getSheets()[0];
+  var seenEmails = loadSeenEmails(sheet);
+  var newRows = [];
 
-        var rawFrom = message.getFrom();
-        var parsed = parseFromHeader(rawFrom);
+  while (job.windowEndMs > job.rangeStartMs && Date.now() - startedAt < CHUNK_BUDGET_MS) {
+    // The current "month" is the span from windowStart up to windowEnd.
+    var windowEnd = new Date(job.windowEndMs);
+    var windowStart = new Date(Math.max(job.rangeStartMs, monthBefore(windowEnd).getTime()));
 
-        if (skipNonPeople && isNonPersonSender(parsed.email)) return;
+    var query = buildQuery(job.scope, windowStart, windowEnd);
+    var threads = GmailApp.search(query, job.threadOffset, THREADS_PER_BATCH);
 
-        if (dedupe) {
+    if (threads.length > 0) {
+      // One call to Gmail for the whole batch -- much faster than calling
+      // thread.getMessages() separately for every thread.
+      GmailApp.getMessagesForThreads(threads).forEach(function(messages) {
+        messages.forEach(function(message) {
+          // A thread can hold messages from other months; each message is
+          // counted only in the month it was sent.
+          var date = message.getDate();
+          if (date < windowStart || date >= windowEnd) return;
+          job.messagesRead += 1;
+
+          var rawFrom = message.getFrom();
+          var parsed = parseFromHeader(rawFrom);
+          if (!parsed.email) return;
+          if (job.skipNonPeople && isNonPersonSender(parsed.email)) return;
+
           var key = parsed.email.toLowerCase();
           if (seenEmails[key]) return;
           seenEmails[key] = true;
-        }
 
-        var splitName = splitNameIntoParts(parsed.name);
-        rows.push([
-          rawFrom,
-          parsed.name,
-          splitName.firstName,
-          splitName.lastName,
-          parsed.email,
-          date,
-          message.getSubject()
-        ]);
+          var name = splitNameIntoParts(parsed.name);
+          newRows.push([name.firstName, name.lastName, parsed.email, rawFrom]);
+        });
       });
-    });
+    }
 
-    resumeDate = threads[threads.length - 1].getLastMessageDate();
-    searchStart += threads.length;
-    if (threads.length < THREADS_PER_BATCH) break;
+    job.threadOffset += threads.length;
+    if (threads.length < THREADS_PER_BATCH) {
+      // That was the last batch for this month; move on to the one before it.
+      job.windowEndMs = windowStart.getTime();
+      job.threadOffset = 0;
+    }
   }
 
-  var ss = createResultSheet(scope, rows);
+  appendRows(sheet, newRows);
 
-  return {
-    url: ss.getUrl(),
-    count: rows.length - 1,
-    seconds: Math.round((Date.now() - startedAt) / 1000),
-    stoppedEarly: stoppedEarly,
-    resumeDate: stoppedEarly ? Utilities.formatDate(resumeDate, Session.getScriptTimeZone(), 'yyyy-MM-dd') : null
-  };
+  job.uniqueSenders += newRows.length;
+  job.workSeconds += Math.round((Date.now() - startedAt) / 1000);
+  job.done = job.windowEndMs <= job.rangeStartMs;
+  job.consecutiveErrors = 0;
+  job.lastError = '';
+
+  // "Stop export" may have been clicked while this chunk was running.
+  if (!loadJob()) return;
+  saveJob(job);
 }
 
-/** Creates a new spreadsheet holding the rows (the first row is the header). */
-function createResultSheet(scope, rows) {
+function scheduleContinuation(delayMs) {
+  deleteContinuationTriggers();
+  ScriptApp.newTrigger('continueExport').timeBased().after(delayMs).create();
+}
+
+function deleteContinuationTriggers() {
+  ScriptApp.getProjectTriggers().forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === 'continueExport') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Job state (kept between runs in the user's script properties)
+// ---------------------------------------------------------------------------
+
+function loadJob() {
+  var text = PropertiesService.getUserProperties().getProperty(JOB_PROPERTY);
+  return text ? JSON.parse(text) : null;
+}
+
+function saveJob(job) {
+  PropertiesService.getUserProperties().setProperty(JOB_PROPERTY, JSON.stringify(job));
+}
+
+/** A plain-English description of the job, for the dialog and the progress menu. */
+function describeJob(job) {
+  var counts = job.uniqueSenders + ' unique senders found in ' + job.messagesRead +
+    ' messages (' + Math.round(job.workSeconds / 60) + ' minutes of work so far).';
+
+  var text;
+  if (job.done) {
+    text = 'Finished. ' + counts;
+  } else {
+    text = 'Still running. It continues by itself in the background, so you can close this window. ' +
+      'It reads from newest mail to oldest, and is now at about ' +
+      Utilities.formatDate(new Date(job.windowEndMs), Session.getScriptTimeZone(), 'yyyy-MM-dd') + '. ' + counts;
+  }
+
+  if (job.lastError) {
+    text += ' The last run failed with: ' + job.lastError;
+    text += job.consecutiveErrors > MAX_CONSECUTIVE_ERRORS
+      ? ' It has given up.'
+      : ' It will try again in about an hour.';
+  }
+  return text;
+}
+
+// ---------------------------------------------------------------------------
+// The results sheet
+// ---------------------------------------------------------------------------
+
+function createResultSheet(scope) {
   var scopeForName = scope === '__INBOX__' ? 'Inbox' : scope === '__ALL__' ? 'All Mail' : scope;
-  var sheetName = 'Gmail From Headers - ' + scopeForName + ' - ' +
+  var sheetName = 'Gmail Senders - ' + scopeForName + ' - ' +
     Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HHmm');
 
   var ss = SpreadsheetApp.create(sheetName);
   var sheet = ss.getSheets()[0];
-  sheet.setName('From Headers');
-  sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+  sheet.setName('Senders');
+  sheet.getRange(1, 1, 1, SHEET_HEADER.length).setValues([SHEET_HEADER]);
   sheet.setFrozenRows(1);
 
-  // Fixed widths: autoResizeColumns has to measure every cell, which is slow
-  // on thousands of rows.
-  var columnWidths = [250, 160, 110, 110, 220, 150, 400];
+  var columnWidths = [150, 150, 250, 350];
   columnWidths.forEach(function(width, i) { sheet.setColumnWidth(i + 1, width); });
 
   return ss;
 }
 
+/** Returns an object with a key for every email address already in the sheet (lower case). */
+function loadSeenEmails(sheet) {
+  var seen = {};
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return seen;
+
+  sheet.getRange(2, EMAIL_COLUMN, lastRow - 1, 1).getValues().forEach(function(row) {
+    seen[String(row[0]).toLowerCase()] = true;
+  });
+  return seen;
+}
+
+/** Adds rows below the existing ones, making the sheet taller first if needed. */
+function appendRows(sheet, rows) {
+  if (rows.length === 0) return;
+
+  var firstRow = sheet.getLastRow() + 1;
+  var lastRow = firstRow + rows.length - 1;
+  if (lastRow > sheet.getMaxRows()) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), lastRow - sheet.getMaxRows());
+  }
+  sheet.getRange(firstRow, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+// ---------------------------------------------------------------------------
+// Searching and dates
+// ---------------------------------------------------------------------------
+
 /**
- * Builds a Gmail search query from a scope ('__INBOX__', '__ALL__', or a
- * label name) and an optional 'YYYY-MM-DD' start/end date. The end date is
- * treated as inclusive (Gmail's before: operator is exclusive, so we push
- * it one day later).
+ * Builds a Gmail search query for one month. Gmail reads the after:/before:
+ * dates in its own time zone, so we widen the search by a day on each side;
+ * the exact date check happens on each message in runChunk.
  */
-function buildQuery(scope, startDate, endDate) {
+function buildQuery(scope, windowStart, windowEnd) {
   var parts = [];
 
   if (scope === '__ALL__') {
@@ -173,14 +348,24 @@ function buildQuery(scope, startDate, endDate) {
     parts.push('label:"' + scope + '"');
   }
 
-  if (startDate) {
-    parts.push('after:' + dateStringToGmailFormat(startDate, 0));
-  }
-  if (endDate) {
-    parts.push('before:' + dateStringToGmailFormat(endDate, 1));
-  }
+  parts.push('after:' + gmailDate(windowStart, -1));
+  parts.push('before:' + gmailDate(windowEnd, 1));
 
   return parts.join(' ');
+}
+
+/** Formats a date as Gmail's 'YYYY/MM/DD' search format, shifted by dayOffset days. */
+function gmailDate(date, dayOffset) {
+  var d = new Date(date.getTime());
+  d.setDate(d.getDate() + dayOffset);
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy/MM/dd');
+}
+
+/** Returns the date one month earlier. */
+function monthBefore(date) {
+  var d = new Date(date.getTime());
+  d.setMonth(d.getMonth() - 1);
+  return d;
 }
 
 /** Converts a 'YYYY-MM-DD' string to a Date at midnight, shifted by dayOffset days. */
@@ -191,11 +376,9 @@ function dateStringToDate(dateStr, dayOffset) {
   return d;
 }
 
-/** Converts a 'YYYY-MM-DD' string to Gmail's 'YYYY/MM/DD' search format, shifted by dayOffset days. */
-function dateStringToGmailFormat(dateStr, dayOffset) {
-  var d = dateStringToDate(dateStr, dayOffset);
-  return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy/MM/dd');
-}
+// ---------------------------------------------------------------------------
+// Understanding the From header
+// ---------------------------------------------------------------------------
 
 /**
  * Returns true if the email address looks like it belongs to an organization

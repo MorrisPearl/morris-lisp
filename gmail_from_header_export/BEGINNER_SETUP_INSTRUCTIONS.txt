@@ -1,11 +1,13 @@
-HOW TO SET UP THE GMAIL "FROM" HEADER EXPORT TOOL
+HOW TO SET UP THE GMAIL SENDER LIST TOOL
 (Instructions for Mac laptops)
 
 WHAT THIS DOES
 This is a small tool that looks through your Gmail and creates a brand-new
-Google Sheet listing who sent you email — their full "From" info, name,
-first name, last name, and email address. You only need to set it up once.
-It takes about 10 minutes.
+Google Sheet listing everyone who has ever sent you email: their first name,
+last name, and email address, one row per person. You only need to set it
+up once. Setting it up takes about 10 minutes. After that, the tool works
+on its own for as long as it needs (possibly many hours or a few days for a
+very large mailbox) — you do not need to keep your laptop open.
 
 ------------------------------------------------------------
 A FEW MAC BASICS YOU'LL USE BELOW
@@ -98,11 +100,11 @@ PART 5 — ADD THE SECOND FILE
 PART 6 — SAVE
 ------------------------------------------------------------
 16. Press Command+S to save. If it asks you to name the project, you can
-    type anything you like, for example "From Header Export", then
+    type anything you like, for example "Sender Export", then
     click OK.
 
 ------------------------------------------------------------
-PART 7 — RUN THE TOOL
+PART 7 — START THE TOOL
 ------------------------------------------------------------
 17. Switch back to the browser tab with your Google Sheet in it, and
     reload the page (press Command+R, or click the circular arrow
@@ -110,12 +112,11 @@ PART 7 — RUN THE TOOL
 
 18. After it reloads, look at the menu bar near the top of the sheet
     (next to "File", "Edit", "View"...). You should now see a new menu
-    called "From Header Export". Click it, then click
-    "Export From Headers...".
+    called "Sender Export". Click it, then click "Start export...".
 
-19. The FIRST time you run this, Google will ask permission for the
-    tool to read your Gmail and create Sheets. This is expected —
-    click through the prompts:
+19. The FIRST time you do this, Google will ask permission for the
+    tool to read your Gmail, create Sheets, and keep running in the
+    background. This is expected — click through the prompts:
       - Click "Continue" or "Allow"
       - Choose your work Google account if asked
       - You may see a screen that says "Google hasn't verified this
@@ -123,33 +124,46 @@ PART 7 — RUN THE TOOL
         only you are using (it's not published publicly). Click
         "Advanced", then click "Go to [project name] (unsafe)",
         then click "Allow" to finish.
+    After you allow it, click "Start export..." in the menu again.
 
 ------------------------------------------------------------
 PART 8 — USE IT
 ------------------------------------------------------------
 20. A small box will pop up with some choices:
-      - "What to search" — leave as "Inbox" to search your inbox, or
-        choose "All Mail", or pick one of your Gmail labels from the
-        list.
-      - "Date range" — optional. Leave blank to include everything,
-        or pick a "From" and "To" date to narrow it down.
-      - A checkbox for "Only keep one row per unique sender" — check
-        this if you only want each person listed once.
+      - "What to search" — leave as "All Mail" to cover everything, or
+        choose "Inbox only", or pick one of your Gmail labels from
+        the list.
+      - "Date range" — optional. Leave blank to include everything.
       - A checkbox for "Skip senders that are not people" — already
         checked. It leaves out things like info@ and no-reply@.
 
-21. Click the "Create Sheet" button, then wait — for a large inbox this
-    can take a minute or two.
+21. Click the "Start Export" button, and keep the box open for the
+    first few minutes (up to about 5). Then it will show a message
+    saying how far it got, and a link that says "Open the results
+    sheet".
 
-22. When it's done, a link will appear that says "Open the new sheet".
-    Click it — a brand new Google Sheet will open with all the
-    information filled in.
+22. If the message says "Still running", that's normal for a big
+    mailbox. You can close the box, close the tab, even close your
+    laptop. The tool keeps working on its own on Google's computers.
+    The list of people grows in the results sheet as it goes, starting
+    with the newest email and working back.
+
+23. To check on it later, open your original Google Sheet (the one with
+    the "Sender Export" menu), click "Sender Export", then
+    "Show progress". It says how many people it has found so far.
+    When it says "Finished", the list is complete.
+
+    Please do not click "Start export..." a second time while it is
+    still running.
 
 ------------------------------------------------------------
 IF SOMETHING GOES WRONG
 ------------------------------------------------------------
 - The most common mistake is naming the second file something other
   than exactly "Dialog" — double check that in Part 5, step 14.
-- If you see red error text anywhere, take a screenshot (press
+- If "Show progress" mentions an error about "too many times" or
+  "quota", that is Google's daily limit. Do nothing — the tool waits
+  and tries again by itself.
+- If you see red error text anywhere else, take a screenshot (press
   Command+Shift+4, then click and drag over the error to capture it)
   and send it to Morris.

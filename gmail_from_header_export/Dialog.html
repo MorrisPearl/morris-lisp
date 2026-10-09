@@ -10,6 +10,7 @@
     .date-row { display: flex; gap: 10px; }
     .date-row > div { flex: 1; }
     .date-row label { font-weight: normal; font-size: 12px; margin-top: 0; }
+    .note { margin-top: 14px; color: #555; line-height: 1.4; }
     #status { margin-top: 16px; line-height: 1.5; }
     button { margin-top: 18px; padding: 6px 14px; }
     a { word-break: break-all; }
@@ -18,8 +19,8 @@
 <body>
   <label for="scope">What to search:</label>
   <select id="scope">
-    <option value="__INBOX__">Inbox (no label filter)</option>
     <option value="__ALL__">All Mail (every folder except Spam/Trash)</option>
+    <option value="__INBOX__">Inbox only</option>
   </select>
 
   <label>Date range (optional -- leave blank to include all dates):</label>
@@ -35,16 +36,18 @@
   </div>
 
   <label class="checkbox-row">
-    <input type="checkbox" id="dedupe">
-    Only keep one row per unique sender (dedupe by email address)
-  </label>
-
-  <label class="checkbox-row">
     <input type="checkbox" id="skipNonPeople" checked>
     Skip senders that are not people (info@, no-reply@, hello@, support@, ...)
   </label>
 
-  <button id="go">Create Sheet</button>
+  <div class="note">
+    The sheet gets one row per unique sender. A large mailbox takes a long
+    time: the export keeps running by itself in the background, so you can
+    close this box and even this tab. Use <b>Sender Export &gt; Show progress</b>
+    to check on it.
+  </div>
+
+  <button id="go">Start Export</button>
   <div id="status"></div>
 
   <script>
@@ -66,28 +69,25 @@
       var button = document.getElementById('go');
       var status = document.getElementById('status');
       button.disabled = true;
-      status.textContent = 'Scanning Gmail and building the sheet... this can take a bit for large mailboxes.';
+      status.textContent = 'Reading your mail for the first few minutes... please keep this box open until it reports back.';
 
       google.script.run
         .withSuccessHandler(function(result) {
-          var message = 'Done! ' + result.count + ' rows written in ' + result.seconds + ' seconds.';
-          if (result.stoppedEarly) {
-            message = 'Stopped early after ' + result.seconds + ' seconds to stay under Google\'s time limit. ' +
-              result.count + ' rows written, covering your newest mail back to ' + result.resumeDate + '. ' +
-              'To get the older mail, run again with the "To" date set to ' + result.resumeDate + '.';
-          }
-          status.innerHTML = message + '<br><a href="' + result.url + '" target="_blank">Open the new sheet</a>';
-          button.disabled = false;
+          status.textContent = result.message + ' ';
+          var link = document.createElement('a');
+          link.href = result.url;
+          link.target = '_blank';
+          link.textContent = 'Open the results sheet';
+          status.appendChild(link);
         })
         .withFailureHandler(function(err) {
           status.textContent = 'Error: ' + err.message;
           button.disabled = false;
         })
-        .runExport({
+        .startExport({
           scope: document.getElementById('scope').value,
           startDate: document.getElementById('startDate').value,
           endDate: document.getElementById('endDate').value,
-          dedupe: document.getElementById('dedupe').checked,
           skipNonPeople: document.getElementById('skipNonPeople').checked
         });
     });
