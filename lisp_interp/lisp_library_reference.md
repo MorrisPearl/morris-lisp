@@ -95,7 +95,7 @@ The functions for investment analysis, in the order an analysis uses them.
    `lib/template.lsp`, and `lib/prepayment_model.lsp`, for mortgage pools and
    their tranches.
 7. **Models.** "Regression models" (linear, logistic, spline, and least
-   absolute deviation), "Linear programming", and `lib/solver.lsp`.
+   absolute deviation, which a spline can be fit by too), "Linear programming", and `lib/solver.lsp`.
 
 **Built in, or loaded.** Everything above is built in, and there whenever
 the interpreter is, except the libraries in `lib/`, which are loaded with
@@ -2435,14 +2435,15 @@ sum(coefficients[i] * x[i]))` (logistic), where
 one. `spline-regression` fits a *spline* model: internally it expands each
 predictor into an extra set of features (piecewise-linear "hinge"
 functions, or category-indicator columns — see below), then fits an
-ordinary/logistic regression on that expanded basis — so a spline model's
+ordinary/logistic regression on that expanded basis (`spline-lad` fits it
+by least absolute deviation instead) — so a spline model's
 coefficients apply to the expanded basis, not the original predictors, and
 `model-coefficients`/`model-intercept`/`model-slope` refuse to operate on
 one (use `model-report`/`model-predict` instead, which work on every model
 kind). `model-kind` reports which flavor you have: `"linear"`, `"lad"`,
-`"logistic"`, `"spline"`, or `"spline-logistic"`.
+`"logistic"`, `"spline"`, `"spline-lad"`, or `"spline-logistic"`.
 
-All of `linear-regression`, `lad-regression`, `logistic-regression`, `spline-regression`,
+All of `linear-regression`, `lad-regression`, `logistic-regression`, `spline-regression`, `spline-lad`,
 `model-predict`, and `model-evaluate` accept **either a single vector of X
 values (one predictor) or a Lisp list of several vectors** — `(list x1 x2
 ...)` — for multiple predictors. Every predictor vector and the Y vector
@@ -2723,6 +2724,26 @@ fit runs on the expanded basis.
 (model-predict m (list 50000 0))                ; predict for "own", income=50000
 ```
 
+#### `(spline-lad x y [max-knots weights])`
+A spline model fit by **least absolute deviation**: `spline-regression`'s
+expansion of each predictor -- the same hinges at knots, or 0/1 columns for
+categories, from the same `max-knots` -- fit as `lad-regression` fits,
+making the sum of the absolute residuals smallest rather than the sum of
+their squares. So the curve can bend, and a few outliers barely move it.
+`x`, `y`, `max-knots`, and `weights` are as for `spline-regression`; the
+model's kind is `"spline-lad"`, and `model-report` shows LAD's measures of
+fit.
+
+```lisp
+(define xs (vector-range 21))
+(define ys (vector-map (lambda (x) (abs (- x 10))) xs))     ; a V, bending at 10
+(vector-set! ys 18 40)                                      ; and one outlier
+(format "{:.2f}" (model-predict (spline-regression xs ys (list 10)) 20))   ; => "17.02"
+(format "{:.2f}" (model-predict (spline-lad xs ys (list 10)) 20))          ; => "10.00"
+```
+(The least-squares spline's right arm is pulled up toward the outlier;
+the LAD spline goes through the V's other points exactly.)
+
 #### `(model-report m)`
 Returns a multi-line string describing a fitted model: its equation, a
 table of coefficients, and measures of fit. It uses the real predictor and
@@ -2869,7 +2890,7 @@ not for a spline model.
 ```
 
 #### `(model-kind m)`
-Returns `"linear"`, `"lad"`, `"logistic"`, `"spline"`, or
+Returns `"linear"`, `"lad"`, `"logistic"`, `"spline"`, `"spline-lad"`, or
 `"spline-logistic"`. Works on any model.
 
 ```lisp

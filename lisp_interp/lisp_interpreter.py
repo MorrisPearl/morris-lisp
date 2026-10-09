@@ -28,7 +28,7 @@ HOW THE CODE IS ORGANIZED
     lisp_tables.py        tables: filter, sort, group, join, describe
     lisp_stratify.py      stratify, stratify-all: stratification tables
     lisp_time_series.py   month numbers and monthly time series
-    lisp_regression.py    linear-, logistic-, and spline-regression, model-report, ...
+    lisp_regression.py    linear-, lad-, logistic-, and spline-regression, spline-lad, model-report, ...
     lisp_simplex.py       lp-read-file, lp-solve: linear programming (uses simplex/)
     lisp_finance.py       day counts, npv, irr, yield, duration, convexity, payment
     lisp_options.py       bsm-price, implied-vol, the Greeks, black-price, american-price (option prices)

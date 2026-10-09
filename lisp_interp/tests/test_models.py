@@ -348,6 +348,64 @@ class TestLadRegression(LispTestCase):
         self.assertLispError("(model-residuals m (list #(1 2) #(3 4)) #(1 2))", "model has 1 predictor(s), but 2 given")
 
 
+class TestSplineLad(LispTestCase):
+    """spline-lad: a piecewise-linear spline fit by least absolute deviation, as
+    spline-regression fits one by least squares."""
+
+    V = """(define xs (vector-range 21))
+           (define ys (vector-map (lambda (x) (abs (- x 10))) xs))      ; a V, bending at 10
+           (vector-set! ys 18 40)                                       ; and one outlier
+        """
+
+    def test_an_outlier_pulls_a_least_squares_spline_but_not_a_lad_one(self):
+        self.run_lisp(self.V + "(define squares (spline-regression xs ys (list 10)))"
+                               "(define lad (spline-lad xs ys (list 10)))")
+        for x in (0, 5, 10, 15, 20):
+            self.assertAlmostEqual(self.run_lisp("(model-predict lad %d)" % x), abs(x - 10), places=9)
+        self.assertGreater(self.run_lisp("(model-predict squares 20)"), 15)
+        self.assertShows("(model-kind lad)", '"spline-lad"')
+        self.assertShows("(model-kind squares)", '"spline"')
+        residuals = [float(r) for r in self.run_lisp("(model-residuals lad xs ys)").items]
+        self.assertEqual([i for i, r in enumerate(residuals) if abs(r) > 1e-9], [18])
+
+    def test_it_is_lad_regression_on_the_spline_s_hinges(self):
+        # the model is lad-regression of y on x and max(0, x - knot), for each knot
+        self.run_lisp(self.V + """
+          (define hinge-7 (vector-map (lambda (x) (max 0 (- x 7))) xs))
+          (define hinge-13 (vector-map (lambda (x) (max 0 (- x 13))) xs))
+          (define weights (vector-map (lambda (x) (+ 1 (mod x 3))) xs))
+          (define spline (spline-lad xs ys (list 7 13) weights))
+          (define by-hand (lad-regression (list xs hinge-7 hinge-13) ys weights))""")
+        for x in (0, 3.5, 7, 9, 13, 16, 20):
+            self.assertAlmostEqual(self.run_lisp("(model-predict spline %s)" % x),
+                                   self.run_lisp("(model-predict by-hand (list %s %s %s))"
+                                                 % (x, max(0, x - 7), max(0, x - 13))), places=9)
+
+    def test_knot_counts_categories_and_the_report(self):
+        self.run_lisp("""
+          (define x (cons "income" #(10 20 30 40 50 60 70 80 90 100)))
+          (define kind (cons "kind" (vector "own" "rent" "own" "rent" "own" "rent" "own" "rent" "own" "rent")))
+          (define y (cons "spend" #(9 15 33 38 52 58 74 77 300 95)))
+          (define m (spline-lad (list x kind) y (list 2 'categorical)))""")
+        report = self.show("(model-report m)")
+        self.assertIn("Piecewise-linear spline model, fit by least absolute deviation, predicting spend:", report)
+        self.assertIn("kind: categorical -- categories own, rent (baseline own)", report)
+        self.assertIn("sum |residuals|", report)
+        terms = [str(t) for t in self.run_lisp('(table-column (model-coefficient-table m) "term")').items]
+        self.assertEqual(terms[:2], ["intercept", "income"])
+        self.assertEqual(terms[-1], "kind = rent")
+        self.assertEqual(len(terms), 5)                          # and two knots for income
+        self.run_lisp('(model-evaluate m (list x kind) y)')
+        self.assertLispError('(model-predict m (list 45 "lease"))', "kind value 'lease' was not one of the categories")
+
+    def test_errors_name_spline_lad(self):
+        self.assertLispError("(spline-lad #(1 2 3) #(1 2))", "all vectors must be the same length")
+        self.assertLispError("(spline-lad #(1 2 1 2 1) #(1 2 3 4 5) 1)", "spline-lad: x1 has only 2 distinct value(s)")
+        self.assertLispError("(spline-lad #(1 2 3 4 5) #(1 2 3 4 5) -1)", "spline-lad: knot counts must not be negative")
+        self.assertLispError("(spline-lad (list #(1 2 3 4 5) #(5 1 4 2 3)) #(1 2 3 4 5) (list 1))",
+                             "spline-lad: the knot-spec list must have one entry per predictor (2), got 1")
+
+
 class TestLinearProgramming(LispTestCase):
     """lp-read-file and lp-solve (lisp_simplex.py, using simplex/simplex_solver.py)."""
 

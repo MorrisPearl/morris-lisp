@@ -579,14 +579,17 @@ class TestSaveVariables(LispTestCase):
           (define linear (linear-regression (list x) y))
           (define lad (lad-regression (list x) y))
           (define logistic (logistic-regression (list x) (cons "default" #(0 0 1 0 1 0 1 1))))
-          (define spline (spline-regression (list x kind) y (list 1 'categorical)))""")
-        self.run_lisp("(save-variables path linear lad logistic spline)")
+          (define spline (spline-regression (list x kind) y (list 1 'categorical)))
+          (define lad-spline (spline-lad (list x kind) y (list 1 'categorical)))""")
+        self.run_lisp("(save-variables path linear lad logistic spline lad-spline)")
         self.run_lisp("(load-variables path)", env=self.later)
         for model in ("linear", "lad", "logistic"):
             for src in ("(model-predict %s (list 45))" % model, "(model-report %s)" % model):
                 self.assertEqual(self.run_lisp(src, env=self.later), self.run_lisp(src), src)
-        for src in ('(model-predict spline (list 45 "rent"))', "(model-report spline)"):
-            self.assertEqual(self.run_lisp(src, env=self.later), self.run_lisp(src), src)
+        for model in ("spline", "lad-spline"):
+            for src in ('(model-predict %s (list 45 "rent"))' % model, "(model-report %s)" % model,
+                        "(model-kind %s)" % model):
+                self.assertEqual(self.run_lisp(src, env=self.later), self.run_lisp(src), src)
         self.assertIn("kind: categorical -- categories own, rent (baseline own)", self.run_lisp("(model-report spline)"))
 
     def test_what_cant_be_saved(self):

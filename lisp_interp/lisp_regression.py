@@ -1,7 +1,7 @@
 """Regression models for the Lisp interpreter: linear, least absolute
-deviation (LAD), logistic, and piecewise-linear spline regression, with one
-or more predictors, plus model-report / model-predict / model-evaluate and
-friends.
+deviation (LAD), logistic, and piecewise-linear spline regression (fit by
+least squares, LAD, or with a logistic link), with one or more predictors,
+plus model-report / model-predict / model-evaluate and friends.
 
 The fitting math (fit_linear, fit_lad, fit_logistic) uses numpy matrix
 operations, so fitting millions of rows isn't slowed down by a Python-level
@@ -922,7 +922,7 @@ def _dedupe_preserve_order(items):
     return result
 
 
-def _resolve_predictor_spec(spec, column, name):
+def _resolve_predictor_spec(spec, column, name, who):
     """Turn one raw per-predictor argument into a _PredictorSpec:
       - the symbol 'categorical  -> dummy-encode the distinct values seen
       - a Lisp list of numbers   -> use exactly those knot locations
@@ -933,8 +933,8 @@ def _resolve_predictor_spec(spec, column, name):
         categories = sorted(set(column))
         if len(categories) < 2:
             raise LispError(
-                "spline-regression: %s marked categorical, but only %d distinct "
-                "value(s) were found (need at least 2)" % (name, len(categories)))
+                "%s: %s marked categorical, but only %d distinct "
+                "value(s) were found (need at least 2)" % (who, name, len(categories)))
         return _PredictorSpec("categorical", categories=categories, n_distinct=n_distinct)
 
     if isinstance(spec, Pair) or spec is NIL:
@@ -942,7 +942,7 @@ def _resolve_predictor_spec(spec, column, name):
     else:
         count = int(spec)
         if count < 0:
-            raise LispError("spline-regression: knot counts must not be negative")
+            raise LispError("%s: knot counts must not be negative" % who)
         knots = _choose_knots(column, count)
 
     if knots and n_distinct <= 3:
@@ -950,15 +950,15 @@ def _resolve_predictor_spec(spec, column, name):
         # duplicate another column, making the fit fail with a confusing
         # "collinear" error -- so say what to do instead, up front.
         raise LispError(
-            "spline-regression: %s has only %d distinct value(s), so hinge "
+            "%s: %s has only %d distinct value(s), so hinge "
             "knots aren't meaningful there (and can make the fit singular). "
             "Use a knot count of 0 (stay linear) or mark it 'categorical "
-            "instead." % (name, n_distinct))
+            "instead." % (who, name, n_distinct))
 
     return _PredictorSpec("spline", knots=knots, n_distinct=n_distinct)
 
 
-def _resolve_all_predictor_specs(max_knots, columns, names=None):
+def _resolve_all_predictor_specs(max_knots, columns, names=None, who="spline-regression"):
     """Turn the `max-knots` argument into one _PredictorSpec per predictor.
     `max_knots` is either one setting for every predictor -- a knot count or
     'categorical -- or a list with one setting per predictor, each a knot
@@ -966,7 +966,7 @@ def _resolve_all_predictor_specs(max_knots, columns, names=None):
     predictor, a flat list of numbers means those knot locations.
 
     `names` (optional): the predictors' names, for error messages and the
-    report."""
+    report; `who`, the function to name in an error message."""
     k = len(columns)
     if names is None:
         names = ["x%d" % (i + 1) for i in range(k)]
@@ -979,15 +979,15 @@ def _resolve_all_predictor_specs(max_knots, columns, names=None):
         all_knot_values = items and all(is_knot_value(v) for v in items)
         if k == 1 and all_knot_values:
             # A flat list of numbers/dates with one predictor: explicit knots.
-            return [_resolve_predictor_spec(list_to_pairs(items), columns[0], names[0])]
+            return [_resolve_predictor_spec(list_to_pairs(items), columns[0], names[0], who)]
         if len(items) != k:
             raise LispError(
-                "spline-regression: the knot-spec list must have one entry per "
-                "predictor (%d), got %d" % (k, len(items)))
-        return [_resolve_predictor_spec(spec, col, name)
+                "%s: the knot-spec list must have one entry per "
+                "predictor (%d), got %d" % (who, k, len(items)))
+        return [_resolve_predictor_spec(spec, col, name, who)
                 for spec, col, name in zip(items, columns, names)]
 
-    return [_resolve_predictor_spec(max_knots, col, name)
+    return [_resolve_predictor_spec(max_knots, col, name, who)
             for col, name in zip(columns, names)]
 
 
@@ -1003,7 +1003,7 @@ def _spline_expand_value(v, spec, name):
     if spec.mode == "categorical":
         if v not in spec.categories:
             raise LispError(
-                "spline-regression: %s value %r was not one of the categories "
+                "spline model: %s value %r was not one of the categories "
                 "seen while fitting (%s)" % (
                     name, v, ", ".join(_category_text(c) for c in spec.categories)))
         return [1.0 if v == cat else 0.0 for cat in spec.categories[1:]]
@@ -1013,12 +1013,13 @@ def _spline_expand_value(v, spec, name):
     return row
 
 
-def _spline_expand_row(values, specs):
+def _spline_expand_row(values, specs, names=None):
     """values: one value per original predictor. Returns the expanded
-    feature row (hinge features and/or 0/1 category indicators)."""
+    feature row (hinge features and/or 0/1 category indicators). names, the
+    predictors' names, if they have them, are for error messages."""
     row = []
     for i, (v, spec) in enumerate(zip(values, specs)):
-        row.extend(_spline_expand_value(v, spec, "x%d" % (i + 1)))
+        row.extend(_spline_expand_value(v, spec, names[i] if names else "x%d" % (i + 1)))
     return row
 
 
@@ -1032,22 +1033,24 @@ def _spline_expand_columns(columns, specs):
 
 
 class LispSplineModel:
-    """A piecewise-linear spline model: an ordinary linear or logistic
+    """A piecewise-linear spline model: an ordinary linear, LAD, or logistic
     regression fitted to an expanded set of features -- hinge functions at
     knots, and/or 0/1 indicators for categories -- which lets the fitted
     curve bend. See _resolve_predictor_spec and _spline_expand_columns."""
+
+    KINDS = {"linear": "spline", "lad": "spline-lad", "logistic": "spline-logistic"}   # by the inner model's kind
 
     def __init__(self, inner_model, predictor_specs, k, predictor_names=None, y_name=None):
         self.inner_model = inner_model          # a LispModel fit on the expanded basis
         self.predictor_specs = predictor_specs  # list of k _PredictorSpec
         self.k = k                              # number of original predictors
-        self.kind = "spline-logistic" if inner_model.kind == "logistic" else "spline"
+        self.kind = self.KINDS[inner_model.kind]
         # Names as in LispModel; None if unnamed.
         self.predictor_names = predictor_names   # list of str, one per ORIGINAL predictor, or None
         self.y_name = y_name                     # str, or None
 
     def predict(self, values):
-        return self.inner_model.predict(_spline_expand_row(values, self.predictor_specs))
+        return self.inner_model.predict(_spline_expand_row(values, self.predictor_specs, self.predictor_names))
 
     def __repr__(self):
         total_knots = sum(len(s.knots) for s in self.predictor_specs if s.mode == "spline")
@@ -1113,6 +1116,8 @@ def _spline_report_lines(model):
     lines = []
     if model.kind == "spline-logistic":
         lines.append("Piecewise-linear spline model, with a logistic link, predicting %s:" % y_name)
+    elif model.kind == "spline-lad":
+        lines.append("Piecewise-linear spline model, fit by least absolute deviation, predicting %s:" % y_name)
     else:
         lines.append("Piecewise-linear spline model, predicting %s:" % y_name)
     lines.append("  predictors = %d" % model.k)
@@ -1136,33 +1141,46 @@ def _spline_report_lines(model):
     return lines
 
 
-def spline_regression_fn(x_arg, y_arg, max_knots=3, logistic=False, weight_vec=None):
-    """(spline-regression x y [max-knots logistic? weights]) -- fit a
-    piecewise-linear spline model. x and y are as for linear-regression.
-    max-knots says how to expand each predictor (see
-    _resolve_all_predictor_specs). With logistic? #t, y must be between 0
-    and 1 and a logistic model is fitted, giving a probability."""
-    y_vec, y_name = _coerce_y(y_arg, "spline-regression")
+def fit_spline(x_arg, y_arg, max_knots, weight_vec, fit, who):
+    """A piecewise-linear spline model: each predictor expanded as max-knots
+    says (see _resolve_all_predictor_specs) -- into hinge functions at knots,
+    or 0/1 indicators for categories -- and the expanded columns fit by
+    `fit` (fit_linear, fit_lad, or fit_logistic). x, y, and the weights are
+    as for linear-regression; `who` is the function to name in an error
+    message."""
+    y_vec, y_name = _coerce_y(y_arg, who)
     columns, names = _predictor_columns(x_arg, len(y_vec.items))
     ys = [numeric_value(v) for v in y_vec.items.tolist()]
-    k = len(columns)
-    n = len(ys)
-    if n == 0:
-        raise LispError("spline-regression: no data to fit")
+    if not ys:
+        raise LispError("%s: no data to fit" % who)
+    weights = _optional_weights(weight_vec, len(ys), who)
+    predictor_specs = _resolve_all_predictor_specs(max_knots, columns, names, who)
+    expanded_columns = _spline_expand_columns(columns, predictor_specs)
+    return LispSplineModel(fit(expanded_columns, ys, weights), predictor_specs, len(columns), names, y_name)
+
+
+def spline_regression_fn(x_arg, y_arg, max_knots=3, logistic=False, weight_vec=None):
+    """(spline-regression x y [max-knots logistic? weights]) -- fit a
+    piecewise-linear spline model by least squares. x and y are as for
+    linear-regression. max-knots says how to expand each predictor (see
+    _resolve_all_predictor_specs). With logistic? #t, y must be between 0
+    and 1 and a logistic model is fitted, giving a probability."""
+    who = "spline-regression"
     if logistic:
-        for y in ys:
-            if y < 0 or y > 1:
+        for y in _coerce_y(y_arg, who)[0].items.tolist():
+            if not 0 <= numeric_value(y) <= 1:
                 raise LispError(
                     "spline-regression: with logistic #t, dependent-variable values "
                     "must all be between 0 and 1 (got %r)" % (y,))
-    weights = _optional_weights(weight_vec, n, "spline-regression")
+    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit_logistic if logistic else fit_linear, who)
 
-    predictor_specs = _resolve_all_predictor_specs(max_knots, columns, names)
-    expanded_columns = _spline_expand_columns(columns, predictor_specs)
 
-    inner_model = (fit_logistic(expanded_columns, ys, weights) if logistic
-                   else fit_linear(expanded_columns, ys, weights))
-    return LispSplineModel(inner_model, predictor_specs, k, names, y_name)
+def spline_lad_fn(x_arg, y_arg, max_knots=3, weight_vec=None):
+    """(spline-lad x y [max-knots weights]) -- fit a piecewise-linear spline
+    model by least absolute deviation: as spline-regression does, but making
+    the sum of the absolute residuals smallest (fit_lad) rather than the sum
+    of their squares, so a few outliers barely move the curve."""
+    return fit_spline(x_arg, y_arg, max_knots, weight_vec, fit_lad, "spline-lad")
 
 
 def suggest_knots_fn(x_vec, y_vec, window, n):
@@ -1263,6 +1281,7 @@ BUILTINS = {
     "lad-regression": lad_regression_fn,
     "logistic-regression": logistic_regression_fn,
     "spline-regression": spline_regression_fn,
+    "spline-lad": spline_lad_fn,
     "suggest-knots": suggest_knots_fn,
     "model-report": model_report,
     "model-predict": model_predict,

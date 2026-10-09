@@ -5423,7 +5423,7 @@ The Python files:
 | `lisp_stratify.py` | Stratification tables: `stratify`, `stratify-all` |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
 | `lisp_debug.py` | `break`, `unbreak`, `set-debug-hook!`, `abort`, `locals`, `break-on-error`, ...: the debugging functions (the machinery is in `lisp_core.py`) |
-| `lisp_regression.py` | `linear-regression`, `lad-regression`, `logistic-regression`, `spline-regression`, `model-report`, ... |
+| `lisp_regression.py` | `linear-regression`, `lad-regression`, `logistic-regression`, `spline-regression`, `spline-lad`, `model-report`, ... |
 | `lisp_save.py` | `save-variables` (with its macro in `macros_init.lsp`) and `load-variables`: variables in a JSON file |
 | `lisp_simplex.py` | `lp-read-file`, `lp-solve`: linear programming (uses `simplex/`) |
 | `lisp_clock.py` | The clock: `current-time`, `today`, `time-add`, `sleep`, `sleep-until`, ... |
