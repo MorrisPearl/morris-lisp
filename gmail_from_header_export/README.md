@@ -54,8 +54,12 @@ using their own login, and it only ever touches their own mailbox.
   every date. The To date is inclusive.
 - Optionally check "Only keep one row per unique sender" to get one row
   per distinct email address instead of one row per message.
-- Click **Create Sheet**. For large mailboxes/labels this can take a
-  little while (it processes messages in batches of 100 threads).
+- "Skip senders that are not people" is checked by default. It leaves out
+  addresses like info@, hello@, support@, no-reply@, and similar. The list
+  is `NON_PERSON_NAMES` and `NON_PERSON_FRAGMENTS` at the top of `Code.gs`;
+  edit them to taste.
+- Click **Create Sheet**. It fetches the messages 200 threads at a time
+  and shows how many seconds the run took.
 - When it finishes, a link to the newly created Google Sheet appears --
   click it to open the results.
 
@@ -63,9 +67,13 @@ using their own login, and it only ever touches their own mailbox.
 
 - The script only reads mail; it never sends, deletes, or modifies
   anything in Gmail.
-- Very large inboxes (many thousands of messages) may hit Apps Script's
-  execution time limit (6 minutes on personal accounts, 30 minutes on
-  Google Workspace). Filtering to a specific label keeps runs fast.
+- Apps Script cancels any run longer than 6 minutes, and a cancelled run
+  saves nothing. So the script stops itself after 5 minutes, writes the
+  sheet with what it has (newest mail first), and tells you the date to use
+  as the "To" date to pick up the older mail in a second run.
+- A Gmail thread can contain messages outside your date range, and
+  messages you sent yourself. Messages outside the date range are skipped;
+  your own messages are not.
 - From-header parsing handles the common forms (`Name <email@x.com>`,
   `"Quoted Name" <email@x.com>`, bare `email@x.com`); a handful of
   unusual headers may parse with an empty name or email -- the raw

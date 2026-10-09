@@ -2,14 +2,38 @@
  * Gmail "From" Header Exporter
  *
  * Extracts the From header (raw header, plus parsed name and email address)
- * from Gmail messages -- optionally filtered by a Gmail label -- into a
- * brand-new Google Sheet.
+ * from Gmail messages -- optionally filtered by a Gmail label and a date
+ * range -- into a brand-new Google Sheet.
  *
  * Setup: paste this file as Code.gs and Dialog.html into an Apps Script
  * project bound to a Google Sheet. See README.md for step-by-step
  * instructions. Use the "From Header Export" menu that appears on the
  * bound sheet to run it.
  */
+
+// Apps Script kills any run that lasts longer than 6 minutes, and then
+// nothing is saved. We stop a little early instead, so that we can still
+// write out the messages we have already read.
+var TIME_BUDGET_MS = 5 * 60 * 1000;
+
+// How many Gmail threads we ask for at a time. Each batch costs two calls to
+// Gmail (one search, one bulk fetch of the messages in those threads).
+var THREADS_PER_BATCH = 200;
+
+// Senders whose address (the part before the @) is exactly one of these are
+// organizations, not people. Add more here if you see others in your results.
+var NON_PERSON_NAMES = [
+  'info', 'hello', 'hi', 'contact', 'support', 'help', 'admin', 'team',
+  'sales', 'billing', 'orders', 'service', 'updates', 'news', 'newsletter',
+  'notifications', 'notification', 'alerts', 'security', 'accounts',
+  'marketing', 'press', 'events', 'office', 'webmaster', 'postmaster'
+];
+
+// Senders whose address contains any of these anywhere are also skipped.
+var NON_PERSON_FRAGMENTS = [
+  'noreply', 'no-reply', 'no_reply', 'donotreply', 'do-not-reply',
+  'mailer-daemon'
+];
 
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -21,7 +45,7 @@ function onOpen() {
 function showDialog() {
   var html = HtmlService.createHtmlOutputFromFile('Dialog')
     .setWidth(420)
-    .setHeight(340);
+    .setHeight(430);
   SpreadsheetApp.getUi().showModalDialog(html, 'Export Gmail "From" Headers');
 }
 
@@ -35,25 +59,47 @@ function runExport(options) {
   options = options || {};
   var scope = options.scope || '__INBOX__';  // '__INBOX__', '__ALL__', or a label name
   var dedupe = !!options.dedupe;
-  var startDate = options.startDate;  // 'YYYY-MM-DD' or falsy
-  var endDate = options.endDate;      // 'YYYY-MM-DD' or falsy
+  var skipNonPeople = !!options.skipNonPeople;
 
-  var query = buildQuery(scope, startDate, endDate);
+  // A Gmail search returns every thread that has at least one message in the
+  // date range, and a thread can also hold older or newer messages. So we
+  // check each message's own date as well.
+  var rangeStart = options.startDate ? dateStringToDate(options.startDate, 0) : null;
+  var rangeEnd = options.endDate ? dateStringToDate(options.endDate, 1) : null;  // exclusive
+
+  var query = buildQuery(scope, options.startDate, options.endDate);
+  var startedAt = Date.now();
 
   var rows = [['From (raw header)', 'Name', 'First Name', 'Last Name', 'Email Address', 'Date', 'Subject']];
   var seenEmails = {};
+  var stoppedEarly = false;
+  var resumeDate = null;  // when we stop early: everything newer than this is done
 
-  var batchSize = 100;
-  var start = 0;
-  var threads;
+  var searchStart = 0;
+  while (true) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) {
+      stoppedEarly = true;
+      break;
+    }
 
-  do {
-    threads = GmailApp.search(query, start, batchSize);
-    threads.forEach(function(thread) {
-      thread.getMessages().forEach(function(message) {
+    // Gmail returns the threads newest first.
+    var threads = GmailApp.search(query, searchStart, THREADS_PER_BATCH);
+    if (threads.length === 0) break;
+
+    // One call to Gmail for the whole batch -- much faster than calling
+    // thread.getMessages() separately for every thread.
+    var messagesByThread = GmailApp.getMessagesForThreads(threads);
+
+    messagesByThread.forEach(function(messages) {
+      messages.forEach(function(message) {
+        var date = message.getDate();
+        if (rangeStart && date < rangeStart) return;
+        if (rangeEnd && date >= rangeEnd) return;
+
         var rawFrom = message.getFrom();
         var parsed = parseFromHeader(rawFrom);
-        var splitName = splitNameIntoParts(parsed.name);
+
+        if (skipNonPeople && isNonPersonSender(parsed.email)) return;
 
         if (dedupe) {
           var key = parsed.email.toLowerCase();
@@ -61,20 +107,37 @@ function runExport(options) {
           seenEmails[key] = true;
         }
 
+        var splitName = splitNameIntoParts(parsed.name);
         rows.push([
           rawFrom,
           parsed.name,
           splitName.firstName,
           splitName.lastName,
           parsed.email,
-          message.getDate(),
+          date,
           message.getSubject()
         ]);
       });
     });
-    start += batchSize;
-  } while (threads.length === batchSize);
 
+    resumeDate = threads[threads.length - 1].getLastMessageDate();
+    searchStart += threads.length;
+    if (threads.length < THREADS_PER_BATCH) break;
+  }
+
+  var ss = createResultSheet(scope, rows);
+
+  return {
+    url: ss.getUrl(),
+    count: rows.length - 1,
+    seconds: Math.round((Date.now() - startedAt) / 1000),
+    stoppedEarly: stoppedEarly,
+    resumeDate: stoppedEarly ? Utilities.formatDate(resumeDate, Session.getScriptTimeZone(), 'yyyy-MM-dd') : null
+  };
+}
+
+/** Creates a new spreadsheet holding the rows (the first row is the header). */
+function createResultSheet(scope, rows) {
   var scopeForName = scope === '__INBOX__' ? 'Inbox' : scope === '__ALL__' ? 'All Mail' : scope;
   var sheetName = 'Gmail From Headers - ' + scopeForName + ' - ' +
     Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HHmm');
@@ -84,12 +147,13 @@ function runExport(options) {
   sheet.setName('From Headers');
   sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
   sheet.setFrozenRows(1);
-  sheet.autoResizeColumns(1, rows[0].length);
 
-  return {
-    url: ss.getUrl(),
-    count: rows.length - 1
-  };
+  // Fixed widths: autoResizeColumns has to measure every cell, which is slow
+  // on thousands of rows.
+  var columnWidths = [250, 160, 110, 110, 220, 150, 400];
+  columnWidths.forEach(function(width, i) { sheet.setColumnWidth(i + 1, width); });
+
+  return ss;
 }
 
 /**
@@ -119,12 +183,33 @@ function buildQuery(scope, startDate, endDate) {
   return parts.join(' ');
 }
 
-/** Converts a 'YYYY-MM-DD' string to Gmail's 'YYYY/MM/DD' search format, optionally shifted by dayOffset days. */
-function dateStringToGmailFormat(dateStr, dayOffset) {
+/** Converts a 'YYYY-MM-DD' string to a Date at midnight, shifted by dayOffset days. */
+function dateStringToDate(dateStr, dayOffset) {
   var parts = dateStr.split('-').map(Number);
   var d = new Date(parts[0], parts[1] - 1, parts[2]);
   d.setDate(d.getDate() + dayOffset);
+  return d;
+}
+
+/** Converts a 'YYYY-MM-DD' string to Gmail's 'YYYY/MM/DD' search format, shifted by dayOffset days. */
+function dateStringToGmailFormat(dateStr, dayOffset) {
+  var d = dateStringToDate(dateStr, dayOffset);
   return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy/MM/dd');
+}
+
+/**
+ * Returns true if the email address looks like it belongs to an organization
+ * or an automated sender (info@, no-reply@, hello@, ...) rather than a person.
+ * Any "+tag" in the address is ignored, so support+123@ counts as support@.
+ */
+function isNonPersonSender(email) {
+  var localPart = email.split('@')[0].split('+')[0].toLowerCase();
+
+  if (NON_PERSON_NAMES.indexOf(localPart) !== -1) return true;
+
+  return NON_PERSON_FRAGMENTS.some(function(fragment) {
+    return localPart.indexOf(fragment) !== -1;
+  });
 }
 
 /**

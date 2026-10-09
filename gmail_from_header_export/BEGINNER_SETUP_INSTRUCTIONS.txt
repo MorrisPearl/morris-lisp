@@ -135,6 +135,8 @@ PART 8 — USE IT
         or pick a "From" and "To" date to narrow it down.
       - A checkbox for "Only keep one row per unique sender" — check
         this if you only want each person listed once.
+      - A checkbox for "Skip senders that are not people" — already
+        checked. It leaves out things like info@ and no-reply@.
 
 21. Click the "Create Sheet" button, then wait — for a large inbox this
     can take a minute or two.

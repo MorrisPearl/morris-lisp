@@ -39,6 +39,11 @@
     Only keep one row per unique sender (dedupe by email address)
   </label>
 
+  <label class="checkbox-row">
+    <input type="checkbox" id="skipNonPeople" checked>
+    Skip senders that are not people (info@, no-reply@, hello@, support@, ...)
+  </label>
+
   <button id="go">Create Sheet</button>
   <div id="status"></div>
 
@@ -65,8 +70,13 @@
 
       google.script.run
         .withSuccessHandler(function(result) {
-          status.innerHTML = 'Done! ' + result.count + ' rows written.<br><a href="' +
-            result.url + '" target="_blank">Open the new sheet</a>';
+          var message = 'Done! ' + result.count + ' rows written in ' + result.seconds + ' seconds.';
+          if (result.stoppedEarly) {
+            message = 'Stopped early after ' + result.seconds + ' seconds to stay under Google\'s time limit. ' +
+              result.count + ' rows written, covering your newest mail back to ' + result.resumeDate + '. ' +
+              'To get the older mail, run again with the "To" date set to ' + result.resumeDate + '.';
+          }
+          status.innerHTML = message + '<br><a href="' + result.url + '" target="_blank">Open the new sheet</a>';
           button.disabled = false;
         })
         .withFailureHandler(function(err) {
@@ -77,7 +87,8 @@
           scope: document.getElementById('scope').value,
           startDate: document.getElementById('startDate').value,
           endDate: document.getElementById('endDate').value,
-          dedupe: document.getElementById('dedupe').checked
+          dedupe: document.getElementById('dedupe').checked,
+          skipNonPeople: document.getElementById('skipNonPeople').checked
         });
     });
   </script>
