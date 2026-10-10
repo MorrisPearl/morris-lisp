@@ -30,6 +30,31 @@ from lisp_vector_math import factorize, floats_of, is_number, missing_mask, to_v
 # Helpers
 # ---------------------------------------------------------------------------
 
+HIDDEN = "hide"                 # the format that leaves a column out of display-table and google-sheet
+
+
+def format_specs(formats, who):
+    """The formats that display-table and google-sheet take -- a list of
+    (name spec), or (name . spec) -- as a dict from column name to spec. A
+    format for a column the table doesn't have is simply not used, so one
+    list of formats can serve every view of the same data. The spec hide (a
+    symbol, or the string "hide") becomes "hide", like any other spec; and
+    so does no spec: (name) is the same as (name hide)."""
+    specs = {}
+    p = formats
+    while isinstance(p, Pair):
+        entry = p.car
+        if not isinstance(entry, Pair):
+            raise LispError('%s: each format must be (name spec), such as ("balance" ",.2f"), or (name), to leave '
+                            'the column out -- not %s' % (who, _brief(entry)))
+        spec = entry.cdr.car if isinstance(entry.cdr, Pair) else entry.cdr
+        specs[str(entry.car)] = HIDDEN if spec is NIL else str(spec)
+        p = p.cdr
+    if p is not NIL:
+        raise LispError("%s: the formats must be a list, not %s" % (who, _brief(formats)))
+    return specs
+
+
 def table_columns(table, name):
     """A table as a Python list of (column_name, LispVector) pairs, after
     checking it is one: a list of (name . vector), all the same length."""

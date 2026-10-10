@@ -53,6 +53,7 @@ Never put it in a repository.
 | `sec_user_agent` | SEC. There's no key, but the SEC asks every program to send a name and an email address. | — |
 | `client_secret`, `refresh_token` | tastytrade, a brokerage account | see `tasty_api/README.md` |
 | `Schwab_Client_ID`, `Schwab_Client_Secret` | Charles Schwab, a brokerage account: your app's key and secret | https://developer.schwab.com; then sign in once a week with `(schwab-login creds)` |
+| `google_client_id`, `google_client_secret` | Google Sheets (`google-sheet`): your app's client ID and secret | set up once at https://console.cloud.google.com ("Google Sheets", in `lisp_library_reference.md`, says how); then sign in with `(google-login creds)` |
 
 Maps' outlines (`census-shapes`) need no key.
 

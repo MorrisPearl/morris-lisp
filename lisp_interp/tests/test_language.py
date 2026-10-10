@@ -1103,6 +1103,33 @@ class TestMetaprogrammingAndIO(LispTestCase):
         self.assertIn("a", self.printed())
         self.assertIn("c", self.printed())
 
+    def test_a_short_list_of_atoms_is_printed_on_one_line(self):
+        self.run_lisp("(pretty-print '(a (b c) (d (e f) g)))")
+        self.assertEqual(self.printed(), "(a\n (b c)\n (d\n  (e f)\n  g\n )\n)\n")      # (b c) and (e f): no sublists
+        self.out.clear()
+        self.run_lisp("(pretty-print '(1 2 3 4 5 6 7 8))")                                  # 8 atoms: the limit
+        self.run_lisp("(pretty-print '(a . b))")
+        self.run_lisp("(pretty-print #(1 2 3))")
+        self.run_lisp("(pretty-print '())")
+        self.assertEqual(self.printed(), "(1 2 3 4 5 6 7 8)\n(a . b)\n#(1 2 3)\n()\n")
+        self.out.clear()
+        self.run_lisp("(pretty-print '(1 2 3 4 5 6 7 8 9))")                                # one more: spread out
+        self.assertEqual(self.printed(), "(1\n 2\n 3\n 4\n 5\n 6\n 7\n 8\n 9\n)\n")
+        self.out.clear()
+        self.run_lisp("(pretty-print '(a #(1 2) b))")                                       # a vector is a sublist
+        self.assertEqual(self.printed(), "(a\n #(1 2)\n b\n)\n")
+        self.assertEqual(lisp_core.PRETTY_PRINT_ONE_LINE_LIMIT, 8)
+
+    def test_the_other_pretty_printers_do_the_same(self):
+        self.run_lisp("(define (square n) (* n n)) (pretty-print-function square)")
+        self.assertEqual(self.printed(), "(define\n (square n)\n (* n n)\n)\n")
+        self.out.clear()
+        self.run_lisp("(defmacro twice (x) `(begin ,x ,x)) (pretty-print-macro twice)")
+        self.assertEqual(self.printed(), "(defmacro\n twice\n (x)\n (quasiquote\n  (begin\n   (unquote x)\n   (unquote x)\n  )\n )\n)\n")
+        self.out.clear()
+        self.run_lisp("(print-macroexpansion '(unless done (display 1)))")
+        self.assertIn("(display 1)", self.printed())
+
     def test_pretty_print_function_shows_a_user_functions_source(self):
         self.run_lisp("(define (square x) (* x x)) (pretty-print-function square)")
         self.assertIn("square", self.printed())

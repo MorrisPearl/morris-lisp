@@ -419,6 +419,17 @@ class TestDisplayTable(LispTestCase):
         self.run_lisp("(display-table t '((\"strike\" . \",.1f\")))")
         self.assertIn("450.0", self.printed())
 
+    def test_a_column_with_no_spec_is_left_out_as_with_hide(self):
+        for formats in ("'((\"symbol\" hide) (\"iv\" \".1%\"))", "'((\"symbol\") (\"iv\" \".1%\"))",
+                        "'((\"symbol\" ()) (\"iv\" \".1%\"))", "'((\"symbol\" . ()) (\"iv\" \".1%\"))"):
+            with self.subTest(formats=formats):
+                self.out.clear()
+                self.run_lisp("(display-table t %s)" % formats)
+                self.assertEqual(self.printed(),
+                                 "strike     iv  volume\n------  -----  ------\n   450  23.4%   12345\n"
+                                 "   455             67\n")
+        self.assertLispError("(display-table t '(\"symbol\"))", "or (name), to leave the column out")
+
     def test_a_format_for_a_column_the_table_lacks_is_not_used(self):
         self.run_lisp("(display-table (table-select t \"symbol\") '((\"strike\" \",.2f\")))")
         self.assertEqual(self.printed(), "symbol\n------\nSPY C\nSPY|P\n")

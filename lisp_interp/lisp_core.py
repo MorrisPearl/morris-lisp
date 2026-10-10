@@ -1861,11 +1861,16 @@ def to_string(x):
     return str(x)
 
 
+PRETTY_PRINT_ONE_LINE_LIMIT = 8     # a list or vector of this many atoms or fewer is printed on one line
+
+
 def pretty_print_string(expr):
     """A value or expression as a deliberately spread-out, multi-line string:
     each list element on its own line, and each closing parenthesis on its
     own line directly below its opening one. Not meant to be pretty -- it
-    makes a misplaced parenthesis easy to spot.
+    makes a misplaced parenthesis easy to spot. But a list (or vector) with
+    no sublists, and no more than PRETTY_PRINT_ONE_LINE_LIMIT elements, is
+    printed on one line, as (a b c): there is nothing in it to match up.
 
     Also used to show a procedure's or macro's definition (see
     reconstruct_procedure_source), rebuilt from its parsed parameters and
@@ -1881,8 +1886,23 @@ def pretty_print_string(expr):
     def break_line(indent):
         lines.append(' ' * indent)
 
+    def is_short_list_of_atoms(x):
+        """Whether x is a list or vector of at most the limit's elements,
+        none of them a list or vector."""
+        if isinstance(x, LispVector):
+            items = list(x.items)
+        else:
+            items, p = [], x
+            while isinstance(p, Pair):
+                items.append(p.car)
+                p = p.cdr                   # (a dotted list's tail is an atom, too)
+        return (len(items) <= PRETTY_PRINT_ONE_LINE_LIMIT
+                and not any(isinstance(item, (Pair, LispVector)) for item in items))
+
     def write(x):
-        if isinstance(x, Pair):
+        if isinstance(x, (Pair, LispVector)) and is_short_list_of_atoms(x):
+            emit_text(to_string(x))
+        elif isinstance(x, Pair):
             open_col = col()
             emit_text('(')
             p = x

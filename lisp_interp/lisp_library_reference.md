@@ -38,6 +38,7 @@ publishes what, and which function gets it -- see
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Schwab (your accounts)](#schwab-your-accounts)
   - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
+  - [Google Sheets](#google-sheets)
 - [Dates and cash flows](#dates-and-cash-flows)
   - [Monthly time series](#monthly-time-series)
   - [Trading days (the NYSE's calendar)](#trading-days-the-nyses-calendar)
@@ -67,7 +68,8 @@ The functions for investment analysis, in the order an analysis uses them.
    "Census data", and "Alpha Vantage (dividends)". Anything else on the
    web: "Downloading data from the web". Files: "SQLite", and `load-csv`
    (under "Input / output", in the language manual). Each gives a
-   **table**, so they all work the same way after that.
+   **table**, so they all work the same way after that. And the other way:
+   "Google Sheets" sends tables out, to a spreadsheet.
 2. **Tables and numbers.** In the language manual: "Tables", "Vectors",
    "Vector math and statistics" (`vector-drawdowns` is there), "Displaying
    tables", "Charting", and "Saving variables". Here: "Stratification
@@ -2060,6 +2062,129 @@ table with no rows.
 ```
 
 `daily-returns` takes this table as its `:dividends`: see "Simulating investment prices".
+
+### Google Sheets
+
+(In `lisp_google.py`.) Tables, sent out to a new spreadsheet in your own
+Google Drive: one tab for each table, with each column's numbers laid out
+the way `display-table` lays them out. It's the way to hand a result to
+someone who works in a spreadsheet, or to look at many tables at once --
+all of `stratify-all`'s, say.
+
+```lisp
+(define strata (stratify-all loans '(("fico" (equal-count 5)) ("state" each)) '(("rate" weighted-mean)) :weight "balance"))
+(apply google-sheet creds "Loan strata"
+       '(("count" ",d") ("percent" ".1%") ("total balance" ",.0f") ("rate" ".3f"))
+       strata)
+; => "https://docs.google.com/spreadsheets/d/.../edit"
+```
+
+**Setting it up** takes about ten minutes, once. Google asks every program
+that uses a Google account to be registered:
+
+1. In the Google Cloud console (https://console.cloud.google.com), make a
+   project -- "morris-lisp", say -- and, under "APIs & Services", turn on
+   the **Google Sheets API**.
+2. Set up the project's **OAuth consent screen** (now called "Google Auth
+   Platform"): an app name, your email address, the audience "External",
+   and yourself as a test user. For the data access ("scopes"), add
+   `https://www.googleapis.com/auth/drive.file`. That's the one permission
+   the program asks for: to see and change *the files it made itself*, and
+   none of your others.
+3. Under "Credentials", make an **OAuth client ID**, of the type "Desktop
+   app". Google shows its client ID and client secret. (For a desktop app,
+   the secret isn't one in the usual sense, but it stays in the credentials
+   file with the others.)
+4. Put them in the credentials file:
+
+   ```
+   "google_client_id": "....apps.googleusercontent.com",
+   "google_client_secret": "..."
+   ```
+
+5. A project whose consent screen is in "Testing" signs you out after a
+   week. To stay signed in, publish the app ("In production") on the same
+   screen: `drive.file` isn't one of the scopes Google calls "sensitive", so
+   an app that asks only for it, and that only you use, shouldn't need
+   Google's review.
+
+The wording of Google's console changes from time to time; those are the
+four things it asks for.
+
+**Signing in.** `(google-login creds)` opens Google's sign-in page in your
+browser, where you sign in as you would to Gmail and approve the program.
+(Google may say it hasn't verified the app; it's yours, so continue.)
+Google then sends the browser back to a port on your own computer, which
+the program is listening at, with a code in the address; it trades the
+code for the tokens, and the browser shows a page saying you can close it.
+Your password never reaches the program. The tokens are kept in
+`google_tokens.json`, next to the credentials file, readable only by you;
+the access token lasts an hour and is renewed as needed. It works from
+the console, a notebook, or the GUI. If you aren't signed in,
+`google-sheet` says so. (Schwab's sign-in shows its page in a small
+window of its own; Google doesn't allow that, which is why this one uses
+your browser.)
+
+#### `(google-login creds)`
+Sign in, as above. Returns `#t`.
+
+#### `(google-sheet creds title formats table ... [:names names])`
+Makes a new spreadsheet called `title`, in the Drive of whoever signed in,
+with a tab for each `table`, and returns its address, as a string. Nothing
+is shared with anyone: the spreadsheet is yours, to share from Google.
+
+`formats` is a list, in the form `display-table` takes -- `'(("balance"
+",.2f") ("rate" ".3%"))` -- for the columns' number formats, or `'()` for
+none. A column that isn't in the list is written as it is. A column whose
+format is `hide`, or that is *just* `(column-name)`, is left out. So a
+list can say which columns to leave out, with no format for the rest:
+
+```lisp
+(google-sheet creds "Strata" '(("percent" ".1%") ("total balance")) strata)
+```
+
+writes every column of every table but `total balance`, with `percent`
+as a percentage. A format for a column a table doesn't have isn't used,
+so one list can serve all the tables, as for `display-table`.
+
+Each tab has a bold heading row, which stays at the top as you scroll,
+and a row for each row of the table, with the columns as wide as their
+contents. A tab is named for its table's first column -- for a
+`stratify-all` table, the column it was stratified by -- with a number
+added to the second of two tabs with the same name (`state`, `state 2`).
+`:names` gives them instead, a list of strings, one for each table:
+
+```lisp
+(google-sheet creds "Strata" '() by-fico by-state :names '("By FICO" "By state"))
+```
+
+What is written:
+
+- **Numbers are numbers**, not text, so the sheet can add them up. A
+  missing number (NaN) is an empty cell.
+- **Dates are dates**, shown as `2025-06-30`, whatever the format says.
+- **Text is text** -- never a formula: a name that begins with `=` or `+`
+  stays as typed.
+- The formats are display-table's, as a spreadsheet writes them. The ones
+  that can be: `f` (decimals: `".2f"` is `0.00`), `d` (a whole number),
+  `%` (a percentage: `".1%"` is `0.0%`, as for `format`), and `e` (powers
+  of 10), each with `,` for commas (`",.2f"` is `#,##0.00`), `+` to always
+  show the sign, and `.N` for the number of decimals; and `,` alone, which
+  is a whole number with commas. A spec that only lays out text -- `">12"`,
+  `"<20"` -- is ignored, since a sheet has its own column widths. One a
+  spreadsheet has no equivalent of -- `g`, `x`, `b` -- is an error, naming
+  the column. A number format is for a column of numbers; a text column
+  with one is an error too, as it is in `display-table`.
+- The values are the table's, to the digits they are stored in: a number
+  that `display-table` rounds to show is not rounded in the sheet. The
+  format only changes how the sheet shows it.
+
+Everything is checked before the sign-in is used, so a mistake -- a bad
+format, a table that isn't one -- sends nothing to Google. If a request
+fails part way, the error says where the spreadsheet is, and that it isn't
+finished. A spreadsheet holds at most 10,000,000 cells in all; a long table
+is sent in pieces. Google limits how fast a program can make spreadsheets
+-- about 60 changes a minute -- which a few tables don't come near.
 
 ## Dates and cash flows
 

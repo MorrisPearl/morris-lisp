@@ -47,6 +47,7 @@ import lisp_fdic
 import lisp_finance
 import lisp_fred
 import lisp_futures
+import lisp_google
 import lisp_http
 import lisp_investment_paths
 import lisp_maps
@@ -1565,7 +1566,6 @@ def make_output_builtins(out, markdown, html):
 
 
 DISPLAY_TABLE_MAX_ROWS = 20    # display-table's :max-rows, unless it's given
-HIDDEN = "hide"                 # the format that leaves a column out of display-table
 
 
 def make_display_table_builtin(out, show_table):
@@ -1590,12 +1590,12 @@ def make_display_table_builtin(out, show_table):
                             % (_brief(max_rows),))
 
         columns = lisp_tables.table_columns(lisp_tables.table_or_rows(data, "display-table"), "display-table")
-        specs = format_specs(formats)
+        specs = lisp_tables.format_specs(formats, "display-table")
         n_rows = lisp_tables.row_count(columns)
         shown = n_rows if max_rows is False else min(n_rows, max_rows)
         cells = [(name, [cell_text(value, specs.get(name), name) for value in lisp_tables.column_values(v)[:shown]],
                   column_alignment(v))
-                 for name, v in columns if specs.get(name) != HIDDEN]
+                 for name, v in columns if specs.get(name) != lisp_tables.HIDDEN]
         if not cells:
             out.write("(every column is hidden)\n" if columns else "(an empty table)\n")
             return NIL
@@ -1606,22 +1606,6 @@ def make_display_table_builtin(out, show_table):
         return NIL
 
     return {"display-table": display_table}
-
-
-def format_specs(formats):
-    """display-table's formats -- a list of (name spec), or (name . spec) --
-    as a dict from column name to spec. A format for a column the table
-    doesn't have is simply not used, so one list of formats can serve every
-    view of the same data. The spec hide (a symbol, or the string "hide")
-    becomes "hide", like any other spec."""
-    specs = {}
-    for entry in list_items(formats, "display-table"):
-        if not isinstance(entry, Pair):
-            raise LispError('display-table: each format must be (name spec), such as ("balance" ",.2f"), not %s'
-                            % (_brief(entry),))
-        spec = entry.cdr.car if isinstance(entry.cdr, Pair) else entry.cdr
-        specs[str(entry.car)] = str(spec)
-    return specs
 
 
 def cell_text(value, spec, column_name):
@@ -1882,6 +1866,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_bls.BUILTINS)
     env.update(lisp_bea.BUILTINS)
     env.update(lisp_maps.BUILTINS)
+    env.update(lisp_google.BUILTINS)
     env.update(lisp_schwab.BUILTINS)
     env.update(lisp_alpha_vantage.BUILTINS)
     env.update(lisp_http.BUILTINS)

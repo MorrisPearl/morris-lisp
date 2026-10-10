@@ -1346,5 +1346,291 @@ class TestHttp(LispTestCase):
         self.assertLispError('(alpha-vantage-dividends creds "X")', 'no "alpha_vantage_api_key" entry')
 
 
+class TestGoogleSheets(LispTestCase):
+    """lisp_google, with Google played by a fake -- no network, and no browser: a thread plays it, going to the
+    address the sign-in would send it to."""
+
+    def setUp(self):
+        super().setUp()
+        import lisp_google
+        self.google = lisp_google
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        self.credentials = os.path.join(folder, "credentials.json")
+        with open(self.credentials, "w") as f:
+            json.dump({"google_client_id": "app-id", "google_client_secret": "app-secret"}, f)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(self.credentials)
+        self.requests = []                  # (method, url, headers, the body as JSON or form text)
+        self.token_answer = {"access_token": "access-1", "refresh_token": "refresh-1", "expires_in": 3600}
+        patcher = mock.patch.object(lisp_google, "google_request", self.fake_request)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_request(self, method, url, who, headers, body=None):
+        if url == self.google.TOKEN_URL:
+            self.requests.append((method, url, headers, body.decode()))
+            if isinstance(self.token_answer, Exception):
+                raise self.token_answer
+            return self.token_answer
+        self.requests.append((method, url, headers, json.loads(body)))
+        if url == self.google.SHEETS_URL:
+            return {"spreadsheetId": "ID1", "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/ID1/edit",
+                    "sheets": [{"properties": {"sheetId": 100 + i}} for i in range(len(self.requests[-1][3]["sheets"]))]}
+        if self.fail_on and self.fail_on in url:
+            raise lisp_core.LispError("google-sheet: Google says (HTTP 500): oops")
+        return {}
+
+    fail_on = None
+
+    def sign_in(self, code="C0DE", state=None, error=None):
+        """(google-login creds), with a thread that plays the browser: it goes to the address the sign-in
+        is waiting at, with the code (or an error, or another state), as Google would send it."""
+        import threading
+        import urllib.parse
+        import urllib.request
+        opened = []
+
+        def browser(url):
+            opened.append(url)
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            answer = {"error": error} if error else {"code": code, "state": state or query["state"][0]}
+            address = query["redirect_uri"][0] + "/?" + urllib.parse.urlencode(answer)
+            threading.Thread(target=lambda: urllib.request.urlopen(address).read()).start()
+
+        with mock.patch.object(self.google, "open_browser", browser):
+            try:
+                return self.run_lisp("(google-login creds)")
+            finally:
+                self.opened = opened[0]
+
+    def save_a_sign_in(self, access_expires=None):
+        self.google.save_tokens(self.credentials, {"access_token": "access-1", "refresh_token": "refresh-1",
+                                                   "access_expires": time.time() + 3000 if access_expires is None
+                                                   else access_expires})
+
+    def sheet_calls(self):
+        return [r for r in self.requests if r[1] != self.google.TOKEN_URL]
+
+    # --- signing in -----------------------------------------------------------------------------------------
+
+    def test_signing_in(self):
+        import hashlib
+        import urllib.parse
+        self.assertLispError("(google-sheet creds \"T\" '() (make-table \"a\" #(1)))",
+                             "not signed in to Google -- sign in with (google-login creds)")
+        self.assertTrue(self.sign_in())
+        asked = urllib.parse.urlparse(self.opened)
+        query = {k: v[0] for k, v in urllib.parse.parse_qs(asked.query).items()}
+        self.assertEqual(asked.netloc, "accounts.google.com")
+        self.assertEqual((query["client_id"], query["scope"], query["response_type"]),
+                         ("app-id", "https://www.googleapis.com/auth/drive.file", "code"))
+        self.assertEqual((query["access_type"], query["code_challenge_method"]), ("offline", "S256"))
+        self.assertTrue(query["redirect_uri"].startswith("http://127.0.0.1:"))
+        method, url, headers, body = self.requests[0]
+        sent = {k: v[0] for k, v in urllib.parse.parse_qs(body).items()}
+        self.assertEqual((method, url), ("POST", self.google.TOKEN_URL))
+        self.assertEqual((sent["code"], sent["client_secret"], sent["grant_type"]), ("C0DE", "app-secret", "authorization_code"))
+        self.assertEqual(sent["redirect_uri"], query["redirect_uri"])
+        # the code can only be traded by whoever knew the verifier whose hash was sent
+        import base64
+        digest = base64.urlsafe_b64encode(hashlib.sha256(sent["code_verifier"].encode()).digest()).decode().rstrip("=")
+        self.assertEqual(digest, query["code_challenge"])
+        path = self.google.token_file(self.credentials)
+        self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")             # readable only by you
+        self.assertEqual(self.google.load_tokens(self.credentials, "t")["refresh_token"], "refresh-1")
+
+    def test_sign_in_that_goes_wrong(self):
+        with self.assertRaises(lisp_core.LispError) as caught:
+            self.sign_in(error="access_denied")
+        self.assertIn("Google says: access_denied", str(caught.exception))
+        with self.assertRaises(lisp_core.LispError) as caught:
+            self.sign_in(state="not-the-one-we-sent")
+        self.assertIn("wasn't the one asked for", str(caught.exception))
+        self.token_answer = {"access_token": "a", "expires_in": 3600}                # (no refresh token)
+        with self.assertRaises(lisp_core.LispError) as caught:
+            self.sign_in()
+        self.assertIn("didn't send a refresh token", str(caught.exception))
+        self.assertFalse(os.path.exists(self.google.token_file(self.credentials)))
+        with open(self.credentials, "w") as f:
+            json.dump({"google_client_id": "app-id"}, f)
+        self.assertLispError("(google-login creds)", 'no "google_client_secret" entry')
+
+    def test_the_sign_in_gives_up_waiting(self):
+        with mock.patch.object(self.google, "SIGN_IN_WAIT_SECONDS", 0), \
+                mock.patch.object(self.google, "open_browser", lambda url: None):
+            self.assertLispError("(google-login creds)", "no sign-in within 0 minutes")
+
+    def test_tokens_are_renewed(self):
+        self.save_a_sign_in(access_expires=0)                                         # an hour later
+        self.token_answer = {"access_token": "access-2", "expires_in": 3600}
+        self.run_lisp("(google-sheet creds \"T\" '() (make-table \"a\" #(1)))")
+        renewal = self.requests[0]
+        self.assertIn("grant_type=refresh_token", renewal[3])
+        self.assertIn("refresh_token=refresh-1", renewal[3])
+        self.assertEqual(self.sheet_calls()[0][2]["Authorization"], "Bearer access-2")
+        self.assertEqual(self.google.load_tokens(self.credentials, "t")["refresh_token"], "refresh-1")
+        self.save_a_sign_in(access_expires=0)
+        self.token_answer = lisp_core.LispError("google-sheet: Google says (HTTP 400): invalid_grant")
+        self.assertLispError("(google-sheet creds \"T\" '() (make-table \"a\" #(1)))",
+                             "invalid_grant -- sign in again with (google-login creds)")
+
+    # --- the sheet ------------------------------------------------------------------------------------------
+
+    def test_a_tab_for_each_table(self):
+        self.save_a_sign_in()
+        self.run_lisp("""(define loans (make-table "id" (vector "a" "b" "c") "balance" #(125000 98000.5 250000)
+                                                  "rate" #(0.0625 0.0575 0.07) "note" (vector "=1+1" "" "x")))
+                         (define small (make-table "state" (vector "NY" "PA") "count" #(2 5)))
+                         (define url (google-sheet creds "My loans"
+                                       '(("balance" ",.2f") ("rate" ".3%") ("note") ("count" ",d"))
+                                       loans small))""")
+        self.assertShows("url", '"https://docs.google.com/spreadsheets/d/ID1/edit"')
+        create, values, formatting = self.sheet_calls()
+        self.assertEqual(create[2]["Authorization"], "Bearer access-1")
+        self.assertEqual(create[3]["properties"]["title"], "My loans")
+        self.assertEqual([s["properties"]["title"] for s in create[3]["sheets"]], ["id", "state"])    # a tab's first column
+        self.assertEqual(create[3]["sheets"][0]["properties"]["gridProperties"],
+                         {"rowCount": 4, "columnCount": 3, "frozenRowCount": 1})                   # (note is left out)
+        self.assertEqual(values[1], self.google.SHEETS_URL + "/ID1/values:batchUpdate")
+        body = values[3]
+        self.assertEqual(body["valueInputOption"], "RAW")                    # so "=1+1" is text, not a formula
+        self.assertEqual(body["data"][0], {"range": "'id'!A1", "values": [
+            ["id", "balance", "rate"], ["a", 125000, 0.0625], ["b", 98000.5, 0.0575], ["c", 250000, 0.07]]})
+        self.assertEqual(body["data"][1], {"range": "'state'!A1", "values": [["state", "count"], ["NY", 2], ["PA", 5]]})
+        self.assertEqual(formatting[1], self.google.SHEETS_URL + "/ID1:batchUpdate")
+        requests = formatting[3]["requests"]
+        number_formats = [(r["repeatCell"]["range"]["sheetId"], r["repeatCell"]["range"]["startColumnIndex"],
+                           r["repeatCell"]["cell"]["userEnteredFormat"]["numberFormat"])
+                          for r in requests
+                          if "numberFormat" in r.get("repeatCell", {}).get("cell", {}).get("userEnteredFormat", {})]
+        self.assertEqual(number_formats, [(100, 1, {"type": "NUMBER", "pattern": "#,##0.00"}),
+                                          (100, 2, {"type": "PERCENT", "pattern": "0.000%"}),
+                                          (101, 1, {"type": "NUMBER", "pattern": "#,##0"})])
+        bold = [r["repeatCell"]["range"]["sheetId"] for r in requests
+                if "repeatCell" in r and "textFormat" in r["repeatCell"]["cell"]["userEnteredFormat"]]
+        self.assertEqual(bold, [100, 101])
+        self.assertEqual([r["autoResizeDimensions"]["dimensions"]["endIndex"] for r in requests
+                          if "autoResizeDimensions" in r], [3, 2])
+        self.assertNotIn("access-1", json.dumps([r[3] for r in self.sheet_calls()]))          # (only in the headers)
+
+    def test_stratify_all_goes_straight_in(self):
+        self.save_a_sign_in()
+        self.run_lisp("""(define pools (make-table "fico" #(610 650 690 730 770 810) "state" (vector "NY" "NY" "PA" "PA" "NY" "PA")
+                                                    "balance" #(10 20 30 40 50 60) "cpr" #(0.1 0.2 0.1 0.3 0.2 0.1)))
+                         (define strata (stratify-all pools '(("fico" (equal-count 2)) ("state" each))
+                                                      '(("cpr" weighted-mean)) :weight "balance"))
+                         (apply google-sheet creds "Strata" '(("percent" ".1%")) strata)""")
+        create, values, formatting = self.sheet_calls()
+        self.assertEqual([s["properties"]["title"] for s in create[3]["sheets"]], ["fico", "state"])
+        self.assertEqual(values[3]["data"][1]["values"][0][:2], ["state", "count"])
+        self.assertEqual(values[3]["data"][1]["values"][-1][0], "total")
+
+    def test_values_of_every_kind(self):
+        self.save_a_sign_in()
+        self.env[lisp_core.Symbol("t")] = lisp_core.list_to_pairs([
+            lisp_core.Pair(lisp_core.LispString("when"), lisp_core.LispVector([lisp_core.LispDate(2024, 1, 2),
+                                                                                 lisp_core.LispDate(1899, 12, 30), None])),
+            lisp_core.Pair(lisp_core.LispString("share"), lisp_vector_math.to_vector(
+                np.array([0.1, float("nan"), float("inf")], dtype=np.float32))),
+            lisp_core.Pair(lisp_core.LispString("count"), lisp_vector_math.to_vector(np.array([1, 2, 3]))),
+            lisp_core.Pair(lisp_core.LispString("what"), lisp_core.LispVector(["=SUM(A1)", "it's", "+1"]))])
+        self.run_lisp("(google-sheet creds \"T\" '((\"share\" \".2f\")) t)")
+        create, values, formatting = self.sheet_calls()
+        self.assertEqual(values[3]["data"][0]["values"][1:],
+                         [[45293, 0.1, 1, "=SUM(A1)"], [0, "", 2, "it's"], ["", "", 3, "+1"]])    # 0.1, not 0.10000000149
+        formats = {r["repeatCell"]["range"]["startColumnIndex"]: r["repeatCell"]["cell"]["userEnteredFormat"]["numberFormat"]
+                   for r in formatting[3]["requests"]
+                   if "numberFormat" in r.get("repeatCell", {}).get("cell", {}).get("userEnteredFormat", {})}
+        self.assertEqual(formats, {0: {"type": "DATE", "pattern": "yyyy-mm-dd"},          # (a date, whatever the format)
+                                   1: {"type": "NUMBER", "pattern": "0.00"}})
+
+    def test_names_of_tabs(self):
+        self.save_a_sign_in()
+        self.run_lisp("""(define a (make-table "Sales" #(1) "x" #(2)))
+                         (define b (make-table "sales" #(1)))
+                         (define c (make-table "O'Brien" #(1)))
+                         (define empty-one (make-table "n" (vector)))
+                         (google-sheet creds "T" '() a b c empty-one)
+                         (google-sheet creds "T" '() a b :names '("First" "Second"))""")
+        first, second = [call for call in self.sheet_calls() if call[1] == self.google.SHEETS_URL]
+        self.assertEqual([s["properties"]["title"] for s in first[3]["sheets"]], ["Sales", "sales 2", "O'Brien", "n"])
+        self.assertEqual([s["properties"]["title"] for s in second[3]["sheets"]], ["First", "Second"])
+        ranges = [d["range"] for call in self.sheet_calls() if "values:batchUpdate" in call[1] for d in call[3]["data"]]
+        self.assertIn("'O''Brien'!A1", ranges)                                    # a quote in a name, doubled
+        self.assertEqual(first[3]["sheets"][3]["properties"]["gridProperties"]["rowCount"], 2)     # (a table with no rows)
+        self.assertLispError("(google-sheet creds \"T\" '() a b :names '(\"One\"))", ":names has 1 names, for 2 tables")
+        self.assertLispError("(google-sheet creds \"T\" '() a b :names '(\"One\" \"one\"))", "must be different")
+        self.assertLispError("(google-sheet creds \"T\" '() a :wide #t)", ":wide isn't an option")
+
+    def test_formats_and_what_they_leave_out(self):
+        self.save_a_sign_in()
+        self.run_lisp("""(define t (make-table "id" (vector "a") "x" #(1.5) "y" #(2.5) "z" #(3.5)))""")
+        self.run_lisp("""(google-sheet creds "T" '(("id" hide) ("y") ("z" ".1f")) t)""")
+        values = [call for call in self.sheet_calls() if "values:batchUpdate" in call[1]][0][3]
+        self.assertEqual(values["data"][0]["values"], [["x", "z"], [1.5, 3.5]])
+        self.assertEqual(self.sheet_calls()[0][3]["sheets"][0]["properties"]["title"], "id")   # (still named for its first column)
+        self.assertLispError("""(google-sheet creds "T" '(("id") ("x") ("y") ("z")) t)""", "every column")
+
+    def test_number_formats(self):
+        number_format = self.google.number_format
+        for spec, expected in ((",.2f", ("NUMBER", "#,##0.00")), (".0f", ("NUMBER", "0")), ("f", ("NUMBER", "0.000000")),
+                               (".3%", ("PERCENT", "0.000%")), (",.1%", ("PERCENT", "#,##0.0%")), (".0%", ("PERCENT", "0%")),
+                               ("d", ("NUMBER", "0")), (",d", ("NUMBER", "#,##0")), (",", ("NUMBER", "#,##0")),
+                               ("05d", ("NUMBER", "00000")), ("+.2f", ("NUMBER", "+0.00;-0.00")),
+                               (">12.2f", ("NUMBER", "0.00")), ("12,.2f", ("NUMBER", "#,##0.00")),
+                               (".2e", ("SCIENTIFIC", "0.00E+00")), ("n", ("NUMBER", "0"))):
+            with self.subTest(spec=spec):
+                self.assertEqual(number_format(spec, "c"), expected)
+        for spec in (">12", "", "<20", "^8", "s", "10s", ".5s"):
+            with self.subTest(spec=spec):
+                self.assertIsNone(number_format(spec, "c"))                      # only the layout of text
+        for spec in ("g", ".3g", "x", "b", "#x", "_d", "c", "o"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(lisp_core.LispError) as caught:
+                    number_format(spec, "c")
+                self.assertIn("no spreadsheet equivalent", str(caught.exception))
+        for spec, fragment in ((".2", "needs a type"), (".2d", "is a whole number"), ("zz", "isn't a format spec")):
+            with self.subTest(spec=spec):
+                with self.assertRaises(lisp_core.LispError) as caught:
+                    number_format(spec, "c")
+                self.assertIn(fragment, str(caught.exception))
+
+    def test_mistakes_before_anything_is_made(self):
+        self.save_a_sign_in()
+        self.run_lisp("""(define t (make-table "name" (vector "a" "b") "x" #(1 2)))""")
+        self.assertLispError("""(google-sheet creds "T" '(("name" ",.2f")) t)""", 'column name: the format ",.2f" is for numbers')
+        self.assertLispError("""(google-sheet creds "T" '(("x" "g")) t)""", "column x: the format \"g\" has no spreadsheet")
+        self.assertLispError("""(google-sheet creds "T" '())""", "at least one table")
+        self.assertLispError("""(google-sheet creds "" '() t)""", "the title must be a string")
+        self.assertLispError("""(google-sheet creds "T" 5 t)""", "the formats must be a list")
+        self.assertLispError("""(google-sheet creds "T" '("x") t)""", "each format must be (name spec)")
+        self.assertLispError("""(google-sheet creds "T" '() 5)""", "not a table")
+        self.assertEqual(self.requests, [])                                       # nothing was sent to Google
+
+    def test_a_failure_part_way_says_where_the_spreadsheet_is(self):
+        self.save_a_sign_in()
+        self.fail_on = "values:batchUpdate"
+        self.assertLispError("""(google-sheet creds "T" '() (make-table "a" #(1)))""",
+                             "oops -- the spreadsheet was made, at https://docs.google.com/spreadsheets/d/ID1/edit, but isn't finished")
+
+    def test_google_s_errors_are_read(self):
+        message = self.google.google_message
+        self.assertEqual(message('{"error": {"code": 403, "message": "The caller does not have permission", '
+                                 '"status": "PERMISSION_DENIED"}}'), "The caller does not have permission")
+        self.assertEqual(message('{"error": "invalid_grant", "error_description": "Token has been revoked."}'),
+                         "invalid_grant: Token has been revoked.")
+        self.assertEqual(message("<html>Bad   gateway</html>"), "<html>Bad gateway</html>")
+
+    def test_a_long_table_is_sent_in_pieces(self):
+        pieces = self.google.requests_of_ranges
+        tab = lambda rows, columns: (["h"] * columns, [[1] * rows] * columns, [None] * columns)
+        with mock.patch.object(self.google, "CELLS_PER_REQUEST", 100):
+            sent = pieces(["big", "small"], [tab(79, 2), tab(3, 2)])          # 80 rows of 2 cells, then 4 rows of 2
+        self.assertEqual([[(d["range"], len(d["values"])) for d in request] for request in sent],
+                         [[("'big'!A1", 50)], [("'big'!A51", 30), ("'small'!A1", 4)]])
+        for request in sent:
+            self.assertLessEqual(sum(len(d["values"]) * 2 for d in request), 100)
+
+
 if __name__ == "__main__":
     unittest.main()

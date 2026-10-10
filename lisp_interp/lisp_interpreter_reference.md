@@ -4238,7 +4238,9 @@ formats can serve every view of the same data.
 
 **Leaving out a column.** A column whose format is `hide` isn't shown:
 `'(("shape" hide))` leaves out a map's outlines, say, without changing the
-table or making another one.
+table or making another one. So is a column with no format at all: `'(("shape"))`
+is the same as `'(("shape" hide))`, and a list of formats can leave
+columns out by naming them.
 
 **How many rows.** It shows the first 20 rows, and a note if there are
 more. `:max-rows n` shows the first `n` instead, and `:max-rows #f` every
@@ -4663,7 +4665,10 @@ directly — `(pretty-print-function my-func)` — instead of quoting it.
 Verbose, deliberately unattractive printing of any value: every list
 element goes on its own line, and a list's closing parenthesis is printed
 alone, on its own line, directly under the COLUMN of its matching opening
-parenthesis. This is not meant for everyday reading — `display`/`print`
+parenthesis -- except that a list or vector with no sublists, and no more
+than 8 elements, is printed on one line, `(b c)`, since there is nothing in
+it to match up (the limit is `PRETTY_PRINT_ONE_LINE_LIMIT` in
+`lisp_core.py`). This is not meant for everyday reading — `display`/`print`
 already do that — it's meant to make a misplaced or mismatched parenthesis
 impossible to miss: scan straight down any closing paren's column and you
 can see exactly which opening paren it closes. A procedure or macro value
@@ -4678,13 +4683,9 @@ Writes to the current output with a trailing newline. Returns `'()`.
 prints:
 ```
 (a
- (b
-  c
- )
+ (b c)
  (d
-  (e
-   f
-  )
+  (e f)
   g
  )
 )
@@ -4707,13 +4708,8 @@ and doesn't remember your original whitespace/formatting. Raises
 prints:
 ```
 (define
- (square
-  n
- )
- (*
-  n
-  n
- )
+ (square n)
+ (* n n)
 )
 ```
 
@@ -5444,6 +5440,7 @@ The Python files:
 | `lisp_bea.py` | `bea-series`, `bea-nipa`, `bea-regional`, `bea-get`, ...: the national and regional accounts from the Bureau of Economic Analysis |
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
 | `lisp_alpha_vantage.py` | `alpha-vantage-dividends`: a stock's dividends from Alpha Vantage, through `lisp_http.py` |
+| `lisp_google.py` | `google-login`, `google-sheet`: tables sent to a new Google spreadsheet |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders`, ...: your Schwab accounts |
 | `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `bootstrap-days`, `volatility-model`, `volatility-history`, `volatility-forecast`, `option-value`, `option-payoffs`: simulated prices of an investment, with its volatility starting at today's if asked, and what options on it are worth |
 | `lisp_calendar.py` | `trading-day?`, `add-trading-days`, `trading-days-between`, `nyse-holidays`, ...: the NYSE's trading days |
