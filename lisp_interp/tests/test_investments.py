@@ -960,7 +960,7 @@ class TestOptionCheck(LispTestCase):
             [("log-return", lisp_vector_math.to_vector(values))])
 
     def make_chain(self, start, planted=None, dividend=None, trading_days=(25, 60, 120), name="chain", priced_at=None,
-                   vol_shift=None, vol_scale=1.0, american=False):
+                   vol_shift=None, vol_scale=1.0, american=False, trading_years=False):
         """A chain, as `chain`, of options on 100 at these numbers of trading days after start, priced as
         paths of this history say they should be (Black's formula, with the volatility the paths have in
         calendar time) -- times a number, for the options in `planted`, {(expiration number, type, strike):
@@ -968,17 +968,22 @@ class TestOptionCheck(LispTestCase):
         the underlying when the options were priced, if it isn't the 100 the chain says it is. vol_shift is
         {expiration number: volatility added to every option's of that expiration}; vol_scale, a number
         every option's volatility is multiplied by. american prices them as options that can be exercised
-        early (by lisp_options' binomial tree)."""
+        early (by lisp_options' binomial tree). The time to expiration is in calendar days over 365, unless
+        trading_years: trading days over 252, as lib/option_methods.lsp has it -- so that its values and the
+        made-up prices agree to the same few parts in a thousand whichever day the chain starts on, and
+        however many weekends and holidays are before its expirations."""
         rows = []
         for number, trading in enumerate(trading_days):
             expiration = lisp_calendar.trading_days_after(start, trading)
             calendar_days = (expiration - start).days
-            T = calendar_days / 365
+            T = trading / 252 if trading_years else calendar_days / 365
             vol = self.volatility * math.sqrt((trading / 252) / T) * vol_scale + (vol_shift or {}).get(number, 0.0)
             discount = math.exp(-self.RATE * T)
             present_value = 0.0
             if dividend and dividend[0] <= expiration:
-                present_value = dividend[1] * math.exp(-self.RATE * (dividend[0] - start).days / 365)
+                years_to_dividend = (lisp_calendar.count_trading_days(start, dividend[0]) / 252 if trading_years
+                                     else (dividend[0] - start).days / 365)
+                present_value = dividend[1] * math.exp(-self.RATE * years_to_dividend)
             forward = ((priced_at or self.SPOT) - present_value) / discount
             for strike in range(80, 125, 5):
                 for kind in ("Call", "Put"):
@@ -1351,6 +1356,14 @@ class TestOptionCheck(LispTestCase):
 
     # -- check-option-prices and show-option-check --------------------------------
 
+    def start_day(self):
+        """The day the made-up chain is priced as of, and the start-date the library is given (as the variable
+        `start`): the last trading day before today. Always the day before, so these tests mean the same on a
+        weekend, on a holiday, and at night when the market is closed, as in the morning when it isn't open yet."""
+        day = lisp_calendar.trading_days_after(datetime.date.today(), -1)
+        self.env[lisp_core.Symbol("start")] = lisp_core.LispDate(day.year, day.month, day.day)
+        return day
+
     def made_up_prices(self, today):
         """The prices of the made-up history (setUp's returns), as schwab-price-history gives them: a
         table of date and close, oldest first, ending at 100 on the last trading day up to today."""
@@ -1397,16 +1410,17 @@ class TestOptionCheck(LispTestCase):
         distributed, so the paths are the formula's model too, and the three methods agree -- with each other,
         and with the made-up prices."""
         self.run_lisp('(load "option_methods.lsp")')
-        today = datetime.date.today()
-        a_year_ago = lisp_calendar.trading_days_after(today, 30) - datetime.timedelta(days=365)
+        start = self.start_day()
+        a_year_ago = lisp_calendar.trading_days_after(start, 30) - datetime.timedelta(days=365)
         for paid in ([], [(a_year_ago, 1.0)]):          # (last year's dividend, supposed to come again)
             self.env[lisp_core.Symbol("dividends")] = lisp_tables.make_table_value([
                 ("ex-date", lisp_core.LispVector([lisp_core.LispDate(d.year, d.month, d.day) for d, _ in paid])),
                 ("amount", lisp_vector_math.to_vector(np.array([a for _, a in paid], dtype=np.float64)))])
-            schedule = self.run_lisp("(dividend-schedule dividends (today) 200 :repeat-last-year #t)")
+            schedule = self.run_lisp("(dividend-schedule dividends start 200 :repeat-last-year #t)")
             coming = list(dict(lisp_tables.table_columns(schedule, "test"))["ex-date"].items)
-            self.make_chain(today, dividend=(coming[0].date, 1.0) if coming else None)
-            self.run_lisp('(define compared (option-methods-for-chain chain returns :symbol "XYZ" :dividends dividends))')
+            self.make_chain(start, dividend=(coming[0].date, 1.0) if coming else None, trading_years=True)
+            self.run_lisp('(define compared (option-methods-for-chain chain returns :symbol "XYZ" :dividends dividends '
+                          ':start-date start))')
 
             options = {name: list(vector.items) for name, vector in
                        lisp_tables.table_columns(self.run_lisp("(option-values-options compared)"), "test")}
@@ -1441,14 +1455,14 @@ class TestOptionCheck(LispTestCase):
         self.assertIn("XYZ at 100.00. Its volatility over the last ten years: ", shown)
         self.assertIn("The chance that each ends in the money, by each method", shown)
         self.assertIn("between-bid-and-ask", shown)
-        self.assertLispError("(option-methods-for-chain chain returns :max-vol-spread -1)",
+        self.assertLispError("(option-methods-for-chain chain returns :max-vol-spread -1 :start-date start)",
                              "no option of  is liquid enough to compare")
 
     def test_option_methods_counts_the_values_outside_the_bid_and_ask(self):
         # the made-up chain, with two calls priced 30% above the formula's value and two puts 30% below
         self.run_lisp('(load "option_methods.lsp")')
-        self.make_chain(datetime.date.today(), planted=self.PLANTED)
-        self.run_lisp("(define compared (option-methods-for-chain chain returns :paths 2000))")
+        self.make_chain(self.start_day(), planted=self.PLANTED, trading_years=True)
+        self.run_lisp("(define compared (option-methods-for-chain chain returns :paths 2000 :start-date start))")
         options = self.run_lisp("(table-row-count (option-values-options compared))")
         summary = dict(lisp_tables.table_columns(self.run_lisp("(option-methods-summary compared)"), "test"))
         self.assertEqual([str(m) for m in summary["method"].items], ["black-scholes", "tree", "monte-carlo"])
