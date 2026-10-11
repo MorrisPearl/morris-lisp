@@ -171,8 +171,17 @@ string keys (read it with `hash-table-ref`), an array becomes a list,
 ; e.g. (("2026-09-23" 3.87) ("2026-09-22" 3.87) ("2026-09-21" 3.85))
 ```
 
-#### `(http-get-csv url [has-header? cache-hours headers])`
-The CSV file at `url`, as a table, read exactly as `load-csv` reads a file.
+#### `(http-get-csv url [has-header? cache-hours headers] [:text columns])`
+The CSV file at `url`, as a table, read exactly as `load-csv` reads a file:
+`:text` names the columns to keep as strings, as written, such as zip
+codes, which would lose their leading zeros as numbers (see `load-csv`, in
+the language manual).
+
+```lisp
+; Zillow's home values by zip code: the zip is RegionName (RegionID is Zillow's own number)
+(define zips (http-get-csv "https://files.zillowstatic.com/research/public_csvs/zhvi/Zip_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv"
+                           #t 24 :text "RegionName"))
+```
 
 ```lisp
 ; The Treasury's daily par yield curve for 2026 (dates are MM/DD/YYYY, read as dates):

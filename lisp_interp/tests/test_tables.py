@@ -851,6 +851,29 @@ class TestCsvFiles(LispTestCase):
         self.assertShows('(load-csv "%s" #f)' % path, '(("Column1" . #(1 3)) ("Column2" . #(2.0 nan)))')
         self.assertLispError('(load-csv "%s")' % self.write("c.csv", "a\n1,2\n"), "only 1 columns")
 
+    def test_text_columns_are_kept_as_written(self):
+        path = self.write("zip.csv", "RegionID,RegionName,fips,value\n"
+                                     "61148,08701,34029,1.5\n"
+                                     "91982,77494,48157,2.5\n"
+                                     "70000,,00001,3\n")
+        self.run_lisp('(define t (load-csv "%s" :text (list "RegionName" "fips")))' % path)
+        self.assertShows('(table-column t "RegionName")', '#("08701" "77494" ())')     # a blank is '(), as for any text
+        self.assertShows('(table-column t "fips")', '#("34029" "48157" "00001")')
+        self.assertShows('(table-column t "RegionID")', "#(61148 91982 70000)")       # the others as before
+        self.assertShows('(table-column t "value")', "#(1.5 2.5 3.0)")
+        self.assertShows('(table-column (load-csv "%s") "RegionName")' % path, "#(8701.0 77494.0 nan)")   # (lost: 08701)
+        self.assertShows('(table-column (load-csv "%s" #t :text "fips") "fips")' % path,     # one name, and has-header?
+                         '#("34029" "48157" "00001")')
+        no_header = self.write("nh.csv", "0123,4\n")
+        self.assertShows('(load-csv "%s" #f :text "Column1")' % no_header, '(("Column1" . #("0123")) ("Column2" . #(4)))')
+        dates = self.write("d.csv", "when\n2024-01-31\n")
+        self.assertShows('(table-column (load-csv "%s" :text "when") "when")' % dates, '#("2024-01-31")')
+        self.assertLispError('(load-csv "%s" :text "RegionNmae")' % path, ":text names RegionNmae, which isn't a column of")
+        self.assertLispError('(load-csv "%s" :text 5)' % path, ":text must be a column's name, or a list of them")
+        self.assertLispError('(load-csv "%s" :text (list 5))' % path, ":text must be a column's name")
+        self.assertLispError('(load-csv "%s" #t #t :text "fips")' % path, "expected at most 2 argument(s)")
+        self.assertLispError('(load-csv "%s" :txt "fips")' % path, ":txt isn't an option")
+
     def test_write_then_read_back(self):
         path = os.path.join(self.dir, "out.csv")
         self.run_lisp('''(write-columns-csv "%s" (make-table "id" (vector "a" "b")

@@ -4454,7 +4454,7 @@ Undoes `redirect-output`: closes whatever file is currently open (if any)
 and returns to writing to the console/GUI log. Safe to call even if no
 redirect is active.
 
-#### `(load-csv filename [has-header?])`
+#### `(load-csv filename [has-header?] [:text columns])`
 (In `lisp_csv.py`.) Reads a CSV file into a table (see "Tables") — a list
 of `(name . vector)` columns, the same shape `sqlite-query` returns. Every
 column and every row is kept. Each column becomes:
@@ -4469,6 +4469,24 @@ column and every row is kept. Each column becomes:
 `has-header?` (default `#t`): if true, the first row names the columns;
 with `#f`, they're named `Column1`, `Column2`, .... A row with more values
 than there are columns is an error; a row with fewer is padded with blanks.
+
+**Codes that look like numbers.** A zip code, a FIPS code, an account
+number: digits, but not numbers. Read as numbers, `08701` becomes `8701`,
+and the zero can't be put back in general. `:text` names the columns to
+keep as strings, as written, whatever they look like -- one name, or a
+list of them:
+
+```lisp
+(define z (load-csv "zillow_zips.csv" :text '("RegionName")))   ; zips: "08701", not 8701
+(define d (load-csv "no_header.csv" #f :text "Column1"))
+```
+
+A blank is `'()`, as in any column of strings, and a name that isn't one
+of the file's columns is an error (it's probably misspelled). Every other
+column is read as above. (It isn't guessed from the values, such as a
+leading zero: a file of only western states' zips has none, so the same
+column would be numbers from one file and strings from another -- and
+joining numbers to a column of zip strings matches nothing.)
 
 ```lisp
 (define pools (load-csv "synthetic_mbs_pools.csv"))

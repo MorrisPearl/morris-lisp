@@ -7,7 +7,10 @@ A table is a list of (name . vector) columns -- see lisp_tables.py.
 
 import csv
 
-from lisp_core import LispDate, LispError, LispString, LispVector, NIL, Pair, list_to_pairs, pairs_to_list, to_display_string
+from lisp_core import (
+    Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, keyword_options, list_to_pairs, pairs_to_list,
+    to_display_string,
+)
 
 
 def _parse_number(text):
@@ -37,12 +40,16 @@ def _parse_date(text):
         return None
 
 
-def _column_vector(texts):
+def _column_vector(texts, as_text=False):
     """One CSV column (a list of strings) as a vector. If every non-blank
     value is a number, it's a numeric vector, with NaN for blanks. If every
     non-blank value is a date (YYYY-MM-DD or MM/DD/YYYY), it's a vector of dates.
-    Otherwise it's a vector of strings. Blank dates and strings become '()."""
+    Otherwise -- or if as_text, whatever its values look like -- it's a vector
+    of strings, as written (a zip code 08701 stays "08701"). Blank dates and
+    strings become '()."""
     stripped = [t.strip() for t in texts]
+    if as_text:
+        return LispVector([LispString(t) if t != "" else NIL for t in stripped])
     present = [t for t in stripped if t != ""]
     numbers = [_parse_number(t) for t in present]
     if present and all(n is not None for n in numbers):
@@ -55,9 +62,34 @@ def _column_vector(texts):
     return LispVector([LispString(t) if t != "" else NIL for t in stripped])
 
 
-def table_from_csv_rows(rows, has_header, source):
+def csv_arguments(arguments, most_positional, who):
+    """load-csv's or http-get-csv's optional arguments: the positional ones,
+    before the first keyword (at most most_positional of them), as a list;
+    and the names of the :text columns, as a list of strings (none, if
+    :text isn't given). :text is a column's name, or a list of them."""
+    first_keyword = next((i for i, a in enumerate(arguments) if isinstance(a, Keyword)), len(arguments))
+    if first_keyword > most_positional:
+        raise LispError("%s: expected at most %d argument(s) before the keyword options, not %d"
+                        % (who, most_positional + 1, first_keyword + 1))
+    options = keyword_options(arguments[first_keyword:], ["text"], who)
+    names = options.get("text", NIL)
+    if isinstance(names, str):
+        names = [names]
+    elif names is NIL or isinstance(names, Pair):
+        names = pairs_to_list(names)
+    else:
+        raise LispError("%s: :text must be a column's name, or a list of them, not %s" % (who, to_display_string(names)))
+    for name in names:
+        if not isinstance(name, str):
+            raise LispError("%s: :text must be a column's name, or a list of them, not %s"
+                            % (who, to_display_string(name)))
+    return list(arguments[:first_keyword]), [str(name) for name in names]
+
+
+def table_from_csv_rows(rows, has_header, source, text_columns=(), who="load-csv"):
     """A table from the rows of a CSV file (lists of strings). `source`
-    names the file or URL in error messages."""
+    names the file or URL in error messages. The columns named in
+    text_columns are strings, as written, whatever their values look like."""
     if not rows:
         raise LispError("load-csv: %s is empty" % source)
     if has_header:
@@ -69,26 +101,34 @@ def table_from_csv_rows(rows, has_header, source):
         if len(row) > n_columns:
             raise LispError("load-csv: line %d of %s has %d values, but there are only %d columns"
                             % (number, source, len(row), n_columns))
+    missing = [name for name in text_columns if name not in header]
+    if missing:
+        raise LispError("%s: :text names %s, which %s a column of %s"
+                        % (who, ", ".join(missing), "isn't" if len(missing) == 1 else "aren't", source))
     padded = [row + [""] * (n_columns - len(row)) for row in data_rows]
     columns = []
     for c, name in enumerate(header):
-        columns.append(Pair(LispString(name), _column_vector([row[c] for row in padded])))
+        columns.append(Pair(LispString(name), _column_vector([row[c] for row in padded], name in text_columns)))
     return list_to_pairs(columns)
 
 
-def load_csv_fn(filename, has_header=True):
-    """(load-csv filename [has-header?]) -- a CSV file as a table: a list of
-    (name . vector) columns, the same shape sqlite-query returns. A column
-    of numbers becomes a numeric vector (blanks are NaN); a column of dates
-    (YYYY-MM-DD or MM/DD/YYYY) becomes a vector of dates; anything else becomes a
-    vector of strings (blanks are '()). With has-header? #f, the columns
-    are named Column1, Column2, ..."""
+def load_csv_fn(filename, *arguments):
+    """(load-csv filename [has-header?] [:text columns]) -- a CSV file as a
+    table: a list of (name . vector) columns, the same shape sqlite-query
+    returns. A column of numbers becomes a numeric vector (blanks are NaN); a
+    column of dates (YYYY-MM-DD or MM/DD/YYYY) becomes a vector of dates;
+    anything else becomes a vector of strings (blanks are '()). The :text
+    columns -- a name, or a list of names -- are strings as written, whatever
+    they look like: zip codes, say, which would lose their leading zeros as
+    numbers. With has-header? #f, the columns are named Column1, Column2, ..."""
+    positional, text_columns = csv_arguments(arguments, 1, "load-csv")
+    has_header = positional[0] if positional else True
     try:
         with open(str(filename), newline="") as f:
             rows = list(csv.reader(f))
     except OSError as e:
         raise LispError("load-csv: could not open %r: %s" % (str(filename), e))
-    return table_from_csv_rows(rows, has_header is not False, repr(str(filename)))
+    return table_from_csv_rows(rows, has_header is not False, repr(str(filename)), text_columns)
 
 
 def parse_column_pairs(name_value_pairs):

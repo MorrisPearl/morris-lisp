@@ -1225,6 +1225,14 @@ class TestHttp(LispTestCase):
         self.assertShows('(table-column (http-get-csv "%s/data.csv") "date")' % self.base,
                          "#(2024-01-02 2024-01-03)")
 
+    def test_csv_text_columns(self):
+        self.assertShows('(table-column (http-get-csv "%s/data.csv" #t 0 \'() :text "date") "date")' % self.base,
+                         '#("01/02/2024" "01/03/2024")')                   # as written, not as dates
+        self.assertShows('(table-column (http-get-csv "%s/data.csv" :text (list "date")) "date")' % self.base,
+                         '#("01/02/2024" "01/03/2024")')
+        self.assertLispError('(http-get-csv "%s/data.csv" :text "nope")' % self.base,
+                             "http-get-csv: :text names nope, which isn't a column of")
+
     def test_text_and_errors(self):
         self.assertIn("rates", self.show('(http-get-text "%s/data.json")' % self.base))
         self.assertLispError('(http-get-text "%s/missing")' % self.base, "HTTP 404")
