@@ -367,6 +367,11 @@ class TestChessProgram(unittest.TestCase):
     def show(self, src):
         return lisp_core.to_string(self.run_lisp(src))
 
+    def assertLispError(self, src, fragment):
+        with self.assertRaises(lisp_core.LispError, msg="source: %s" % src) as caught:
+            self.run_lisp(src)
+        self.assertIn(fragment, str(caught.exception))
+
     def test_the_number_of_move_sequences_is_right(self):
         """perft: the counts every chess program must get, from positions with
         castling, en passant, promotions, and pins."""
@@ -436,6 +441,474 @@ class TestChessProgram(unittest.TestCase):
         self.assertIn("Black plays ", out)
         self.assertIn("The game: 1.f3 ", out)
         self.assertIn("  1  ♖ ♘ ♗ ♕ ♔ ♗ ♘ ♖", out)
+
+
+    # -- finding only the captures ---------------------------------------------------------------
+
+    SPARSE_POSITIONS = {      # few pieces, with captures to make: quick to search
+        "queens": "4k3/pp3ppp/8/3q4/3P4/2N5/PP3PPP/3QK3 w - -",
+        "rooks and a knight": "2r1k3/pp3ppp/2n5/3p4/3P1B2/2N5/PP3PPP/2R1K3 w - -",
+    }
+    MIDDLEGAMES = {          # all the pieces: a minute or so to search them
+        "Italian game": ["e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3", "d6"],
+        "Sicilian": ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be3", "e5", "Nb3", "Be6"],
+    }
+
+    def test_capture_moves_are_the_candidate_moves_that_capture_or_promote(self):
+        """The faster generator finds what finding every candidate move and keeping the captures and the
+        promotions does, in the same order: on positions with promotions (with a capture, and without),
+        en passant, castling, and check, and on every position of some games of random moves."""
+        self.run_lisp("""
+          (define (by-filtering p)
+            (filter (lambda (m) (or (capture? p m) (move-promotion m))) (candidate-moves p)))
+          (define (same-captures? p) (equal? (capture-moves p) (by-filtering p)))
+          (define (squares-of-captures fen) (sort (map move->squares (capture-moves (fen->position fen)))))""")
+        for fen in ["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+                    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -",
+                    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -",
+                    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq -",
+                    "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ -",
+                    "rnbqkbnr/pppp1ppp/8/3Pp3/8/8/PPP1PPPP/RNBQKBNR w KQkq e6",
+                    "rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3",
+                    "8/P6k/8/8/8/8/p6K/8 w - -", "8/P6k/8/8/8/8/p6K/8 b - -",
+                    "1n2k3/P7/8/8/8/8/8/4K3 w - -", "4k3/8/8/8/8/8/p7/1N2K3 b - -",
+                    "r3k2r/8/8/8/8/8/8/R3K2R w KQkq -", "r3k2r/8/8/8/8/8/8/R3K2R b KQkq -",
+                    "4k3/8/8/8/8/8/4q3/4K3 w - -"]:
+            with self.subTest(fen=fen):
+                self.assertEqual(self.show('(same-captures? (fen->position "%s"))' % fen), "#t")
+        # and these really are the kinds of move being checked
+        self.assertEqual(self.show('(squares-of-captures "8/P6k/8/8/8/8/p6K/8 w - -")'), '("a7a8B" "a7a8N" "a7a8Q" "a7a8R")')
+        self.assertEqual(self.show('(length (capture-moves (fen->position "1n2k3/P7/8/8/8/8/8/4K3 w - -")))'), "8")
+        self.assertEqual(self.show('(squares-of-captures "rnbqkbnr/pppp1ppp/8/3Pp3/8/8/PPP1PPPP/RNBQKBNR w KQkq e6")'), '("d5e6")')
+        self.assertEqual(self.show('(squares-of-captures "r3k2r/8/8/8/8/8/8/R3K2R w KQkq -")'), '("a1a8" "h1h8")')   # not O-O
+        self.assertEqual(self.show('(squares-of-captures "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -")'), "()")
+        self.run_lisp("""
+          (random-seed 11)
+          (define checked 0)
+          (define all-the-same #t)
+          (loop for game from 1 to 12
+                do (let ((position (initial-position)) (ply 0) (moves '()))
+                     (while (and (< ply 60) (begin (set! moves (legal-moves position)) (not (null? moves))))
+                       (unless (same-captures? position) (set! all-the-same #f))
+                       (incf checked)
+                       (set! position (make-move position (list-ref moves (random-int 0 (- (length moves) 1)))))
+                       (incf ply))))""")
+        self.assertEqual(self.show("all-the-same"), "#t")
+        self.assertGreater(self.run_lisp("checked"), 500)
+
+    # -- a key for a position ------------------------------------------------------------------------
+
+    def test_a_position_s_key_is_the_same_for_the_same_position_however_it_was_reached(self):
+        key = lambda src: self.show("(position-key %s)" % src)
+        self.assertEqual(key("""(play-moves (initial-position) '("e4" "e5" "Nf3"))"""),
+                         key("""(play-moves (initial-position) '("Nf3" "e5" "e4"))"""))         # the other way round
+        self.assertNotEqual(key("""(play-moves (initial-position) '("e4" "e5" "Nf3"))"""),
+                            key("""(play-moves (initial-position) '("e4" "e5" "Nc3"))"""))
+        self.assertNotEqual(key('(fen->position "4k3/8/8/8/8/8/8/4K3 w - -")'),
+                            key('(fen->position "4k3/8/8/8/8/8/8/4K3 b - -")'))                  # whose move it is
+        self.assertNotEqual(key('(fen->position "r3k2r/8/8/8/8/8/8/R3K2R w KQkq -")'),
+                            key('(fen->position "r3k2r/8/8/8/8/8/8/R3K2R w Qkq -")'))            # castling
+        # a square skipped by a pawn counts only if a pawn could capture there
+        self.assertEqual(key("""(play-moves (initial-position) '("e4"))"""),
+                         key('(fen->position "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -")'))
+        self.assertNotEqual(key('(fen->position "rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3")'),
+                            key('(fen->position "rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq -")'))
+        self.assertEqual(self.show('(string? (position-key (initial-position)))'), "#t")
+        self.run_lisp('(hash-table-set! (make-hash-table) (position-key (initial-position)) 1)')       # a string can be a key
+
+    # -- remembering what the search of captures found -----------------------------------------------
+
+    def test_a_remembered_entry_answers_only_a_search_it_is_enough_for(self):
+        for entry, alpha, beta, expected in [
+                ("(30 exact)", -100, 100, "(30)"), ("(30 exact)", 50, 80, "(30)"),
+                ("(30 lower)", -100, 20, "(30)"), ("(30 lower)", -100, 30, "(30)"), ("(30 lower)", -100, 31, "#f"),
+                ("(30 upper)", 40, 100, "(30)"), ("(30 upper)", 30, 100, "(30)"), ("(30 upper)", 29, 100, "#f")]:
+            with self.subTest(entry=entry, alpha=alpha, beta=beta):
+                self.assertEqual(self.show("(entry-answer '%s %d %d)" % (entry, alpha, beta)), expected)
+
+    def test_only_the_last_few_moves_are_remembered(self):
+        self.addCleanup(self.run_lisp, "(forget-positions!)")
+        self.run_lisp("(forget-positions!)")
+        self.run_lisp("""(hash-table-set! (first *tables*) "old" '(1 exact))""")
+        self.run_lisp("(remember-a-new-move!)")
+        self.run_lisp("(remember-a-new-move!)")
+        self.assertEqual(self.show("(list (length *tables*) moves-remembered)"), "(3 3)")
+        self.assertEqual(self.show('(remembered-answer "old" -10 10)'), "(1)")          # in the oldest table still
+        self.run_lisp("(remember-a-new-move!)")
+        self.assertEqual(self.show("(length *tables*)"), "3")
+        self.assertEqual(self.show('(remembered-answer "old" -10 10)'), "#f")           # and now it's gone
+        self.run_lisp("""(hash-table-set! (first *tables*) "new" '(2 exact))""")
+        self.run_lisp("(forget-positions!)")
+        self.assertEqual(self.show('(remembered-answer "new" -10 10)'), "#f")
+
+    def test_remembering_changes_no_move_or_value_and_saves_searching(self):
+        """Three searches in a row -- the computer's move, a reply, and its next move -- with and without
+        the table: the same moves and values, and fewer positions searched with it."""
+        self.addCleanup(self.run_lisp, "(set! use-table #t)")
+        self.run_lisp("""
+          (define (three-searches position depth)
+            (set! *positions-searched* 0)
+            (let* ((c1 (choose-move position depth))
+                   (p1 (make-move position (first c1)))
+                   (c2 (choose-move p1 depth))
+                   (p2 (make-move p1 (first c2)))
+                   (c3 (choose-move p2 depth)))
+              (list (map (lambda (c) (list (move->squares (first c)) (second c))) (list c1 c2 c3))
+                    *positions-searched*)))""")
+        positions = [(name, '(fen->position "%s")' % fen, depth) for name, fen in self.SPARSE_POSITIONS.items()
+                     for depth in (2, 3)]
+        positions += [(name, "(play-moves (initial-position) '(%s))" % " ".join('"%s"' % m for m in moves), 2)
+                      for name, moves in self.MIDDLEGAMES.items()]
+        for name, position, depth in positions:
+            with self.subTest(position=name, depth=depth):
+                self.run_lisp("(set! use-table #f)")
+                without = self.run_lisp("(three-searches %s %d)" % (position, depth))
+                self.assertEqual(self.show("(hash-table-count (first *tables*))"), "0")        # nothing was kept
+                self.run_lisp("(set! use-table #t) (forget-positions!)")
+                with_table = self.run_lisp("(three-searches %s %d)" % (position, depth))
+                self.assertEqual(lisp_core.to_string(with_table.car), lisp_core.to_string(without.car))
+                self.assertLess(with_table.cdr.car, without.cdr.car)
+
+    # -- variety -------------------------------------------------------------------------------------
+
+    def test_the_wiggle_is_small_the_same_every_time_and_other_with_other_tastes(self):
+        self.addCleanup(self.run_lisp, "(set-variety! 0)")
+        self.run_lisp("""
+          (random-seed 5)
+          (define boards '())
+          (loop for game from 1 to 3
+                do (let ((position (initial-position)) (ply 0) (moves '()))
+                     (while (and (< ply 40) (begin (set! moves (legal-moves position)) (not (null? moves))))
+                       (set! boards (cons (position-board position) boards))
+                       (set! position (make-move position (list-ref moves (random-int 0 (- (length moves) 1)))))
+                       (incf ply))))
+          (define (wiggles) (map wiggle boards))
+          (set-variety! 0)
+          (define none (wiggles))
+          (set-variety! 3)
+          (define games-tastes (wiggles))
+          (define again (wiggles))
+          (set-variety! 3)
+          (define other-tastes (wiggles))""")
+        # a new game's tastes mean what was remembered, scored with the old ones, is forgotten
+        self.run_lisp("""(hash-table-set! (first *tables*) "kept" '(1 exact))""")
+        self.assertEqual(self.show('(remembered-answer "kept" -10 10)'), "(1)")
+        self.run_lisp("(set-variety! 3)")
+        self.assertEqual(self.show('(remembered-answer "kept" -10 10)'), "#f")
+        self.assertEqual(self.show("(apply + none)"), "0")                       # no variety, no wiggle
+        wiggles = [int(w) for w in lisp_core.pairs_to_list(self.run_lisp("games-tastes"))]
+        self.assertGreater(len(wiggles), 100)
+        self.assertEqual(set(wiggles), {-3, -2, -1, 0, 1, 2, 3})               # all of them, ...
+        self.assertLess(max(wiggles.count(w) for w in set(wiggles)), 2.2 * len(wiggles) / 7)    # ... about evenly
+        self.assertAlmostEqual(sum(wiggles) / len(wiggles), 0, delta=0.4)
+        self.assertEqual(self.show("(equal? games-tastes again)"), "#t")          # the same board, the same wiggle
+        self.assertEqual(self.show("(equal? games-tastes other-tastes)"), "#f")   # another game, other wiggles
+        self.assertEqual(self.show("(integer? (first games-tastes))"), "#t")
+
+    def test_the_score_is_wiggled_by_no_more_than_the_variety(self):
+        self.addCleanup(self.run_lisp, "(set-variety! 0)")
+        self.run_lisp("""
+          (define sample (play-moves (initial-position) '("e4" "e5" "Nf3" "Nc6" "Bc4")))
+          (set-variety! 0)
+          (define score-without (evaluate sample))
+          (set-variety! 4)
+          (define score-with (evaluate sample))""")
+        self.assertLessEqual(abs(self.run_lisp("(- score-with score-without)")), 4)
+
+    def test_variety_varies_the_play_but_never_by_much(self):
+        """Without it the program always plays e4 from the opening; with it, e4 or d4, which are equally
+        good to look 2 moves ahead, depending on the game. And any move it plays is worth at least the best
+        less twice the variety, for every score is within the variety of what it would be without."""
+        self.addCleanup(self.run_lisp, "(set-variety! 0)")
+        self.run_lisp("""
+          (define big (* 2 checkmate-value))
+          (define (plain-values position depth)
+            (map (lambda (move) (cons (move->squares move)
+                                      (- (alpha-beta (make-move position move) (- depth 1) (- big) big))))
+                 (legal-moves position)))
+          (define (choice-in-game position depth seed amount)
+            (random-seed seed)
+            (set-variety! amount)
+            (move->squares (first (choose-move position depth))))
+          (define start-position (initial-position))
+          (define queens (fen->position "%s"))""" % self.SPARSE_POSITIONS["queens"])
+        self.assertEqual(self.show("(choice-in-game start-position 2 1 0)"), '"e2e4"')              # without variety, always this
+        chosen = {str(self.run_lisp("(choice-in-game start-position 2 %d 3)" % seed)) for seed in range(1, 11)}
+        self.assertEqual(chosen, {"e2e4", "d2d4"})
+        self.run_lisp("(set-variety! 0) (define queens-values (plain-values queens 2)) "
+                      "(define queens-best (apply max (map cdr queens-values)))")
+        for seed in range(1, 11):
+            with self.subTest(seed=seed):
+                self.run_lisp("(define queens-pick (choice-in-game queens 2 %d 3))" % seed)
+                self.run_lisp("(set-variety! 0)")
+                self.assertGreaterEqual(self.run_lisp("(cdr (assoc queens-pick queens-values))"),
+                                        self.run_lisp("queens-best") - 6)
+
+    def test_remembering_changes_no_move_with_variety_either(self):
+        """The same tastes give a position the same score every time, so the table is as right with them."""
+        self.addCleanup(self.run_lisp, "(set! use-table #t)")
+        self.addCleanup(self.run_lisp, "(set-variety! 0)")
+        for name, fen in self.SPARSE_POSITIONS.items():
+            for depth in (2, 3):
+                answers = []
+                for table in ("#f", "#t"):
+                    self.run_lisp("(random-seed 8) (set-variety! 3) (set! use-table %s)" % table)
+                    answers.append(self.show('(choose-move (fen->position "%s") %d)' % (fen, depth)))
+                with self.subTest(position=name, depth=depth):
+                    self.assertEqual(answers[0], answers[1])
+
+    # -- the opening book ----------------------------------------------------------------------------
+
+    def test_a_book_has_the_winner_s_moves_under_the_positions_they_were_played_in(self):
+        self.run_lisp("""
+          (define tiny (make-book '((white "e2e4 e7e5 g1f3 b8c6")
+                                    (white "e2e4 c7c5 g1f3")
+                                    (black "d2d4 g8f6 c2c4 e7e6"))))
+          (define (book-squares book position) (sort (map move->squares (hash-table-ref book (position-key position) '()))))
+          (define (after . moves) (play-moves (initial-position) moves))""")
+        # white's moves from the games white won; black's from the game black won
+        self.assertEqual(self.show("(book-squares tiny (initial-position))"), '("e2e4" "e2e4")')       # two games played it
+        self.assertEqual(self.show('(book-squares tiny (after "e4" "e5"))'), '("g1f3")')
+        self.assertEqual(self.show('(book-squares tiny (after "e4" "c5"))'), '("g1f3")')
+        self.assertEqual(self.show('(book-squares tiny (after "e4"))'), "()")        # black lost both: not black's moves
+        self.assertEqual(self.show('(book-squares tiny (after "d4"))'), '("g8f6")')  # black won this one
+        self.assertEqual(self.show('(book-squares tiny (after "d4" "Nf6" "c4"))'), '("e7e6")')
+        self.assertEqual(self.show('(book-squares tiny (after "d4" "Nf6"))'), "()")  # white lost it: not white's
+        self.assertEqual(self.show('(hash-table-count tiny)'), "5")      # the opening; after 1.e4 e5; after 1.e4 c5; after 1.d4; after 1.d4 Nf6 2.c4
+        # the same position the other way round is the same entry
+        self.assertEqual(self.show('(book-squares tiny (after "e4" "e5"))'), self.show('(book-squares tiny (play-moves (initial-position) \'("e4" "e5")))'))
+        # a move that isn't legal is an error, not a book that plays it
+        self.assertLispError('(make-book \'((white "e2e4 e7e5 e1e3")))', "isn't legal here")
+        self.assertLispError('(make-book \'((white "e2e5")))', "isn't legal here")
+        # nor one the pieces can make but that leaves the king in check: 1.e4 f6 2.Qh5+ and Black ignores it
+        self.assertLispError('(make-book \'((white "e2e4 f7f6 d1h5 b8c6")))', "isn't legal here")
+        self.run_lisp('(make-book \'((white "e2e4 f7f6 d1h5 g7g6")))')                 # (g6 blocks the check: that's fine)
+
+    def test_the_book_plays_one_of_the_moves_at_random_and_none_off_the_book(self):
+        self.run_lisp("""
+          (set! *book* (make-book '((white "e2e4 e7e5") (white "e2e4") (white "d2d4") (white "g1f3"))))
+          (random-seed 2)
+          (define book-draws (map (lambda (i) (move->squares (book-move (initial-position)))) (iota 200)))""")
+        self.addCleanup(self.run_lisp, "(set! *book* #f)")
+        draws = [str(d) for d in lisp_core.pairs_to_list(self.run_lisp("book-draws"))]
+        self.assertEqual(set(draws), {"e2e4", "d2d4", "g1f3"})
+        self.assertGreater(draws.count("e2e4"), draws.count("d2d4"))              # two games played it, one played d4
+        self.assertEqual(self.show("""(book-move (play-moves (initial-position) '("a4")))"""), "#f")
+        # a transposition is in the book
+        self.run_lisp("""(set! *book* (make-book '((black "e2e4 e7e5 g1f3 b8c6"))))""")
+        self.assertEqual(self.show("""(move->squares (book-move (play-moves (initial-position) '("Nf3" "e5" "e4"))))"""), '"b8c6"')
+
+    def test_the_book_that_comes_with_the_program(self):
+        """chess_book.lsp: every move is legal where it's played; as many games won by each color; the
+        same number of the winner's moves in each."""
+        self.run_lisp('(load "chess_book.lsp") (define shipped (make-book book-games))')
+        games = lisp_core.pairs_to_list(self.run_lisp("book-games"))
+        winners = [str(g.car) for g in games]
+        self.assertEqual((winners.count("white"), winners.count("black")), (len(games) // 2, len(games) // 2))
+        self.assertGreaterEqual(len(games), 12)
+        moves_by_winner = {len(str(g.cdr.car).split()) for g in games if str(g.car) == "white"}, \
+            {len(str(g.cdr.car).split()) for g in games if str(g.car) == "black"}
+        self.assertEqual(len(moves_by_winner[0]), 1)                               # (white's last move is ply 2n - 1)
+        self.assertEqual(moves_by_winner[1], {min(moves_by_winner[0]) + 1})        # (black's is ply 2n)
+        self.assertGreaterEqual(min(moves_by_winner[0]), 11)
+        # the opening position is in it, with a move for white
+        self.assertGreater(self.run_lisp("(length (hash-table-ref shipped (position-key (initial-position)) '()))"), 3)
+
+    def test_computer_move_uses_the_book_if_asked_to_and_searches_otherwise(self):
+        self.addCleanup(self.run_lisp, "(set! *book* #f)")
+        self.out.clear()
+        self.run_lisp("(set! *book* (make-book '((white \"e2e4\"))))")
+        move = self.run_lisp("(computer-move (initial-position) 1 :book #t)")
+        self.assertEqual(self.show("(move->squares (computer-move (initial-position) 1 :book #t))"), '"e2e4"')
+        self.assertIn("White plays e4   (from the opening book)", "".join(self.out))
+        self.assertEqual(lisp_core.to_string(move), "(35 55)")             # e2 to e4
+        self.out.clear()
+        self.run_lisp("(computer-move (initial-position) 1 :book #f)")                  # not asked to: it looks
+        self.assertIn("looked at", "".join(self.out))
+        self.assertNotIn("opening book", "".join(self.out))
+        self.out.clear()
+        self.run_lisp("""(computer-move (play-moves (initial-position) '("a4")) 1 :book #t)""")      # not in the book: it looks
+        self.assertIn("looked at", "".join(self.out))
+
+    def test_a_game_opens_from_the_book_and_leaves_the_variety_off_afterwards(self):
+        typed = iter(["e4", "quit"])
+        self.out.clear()
+        self.run_lisp("(random-seed 5)")
+        with mock.patch("builtins.input", lambda prompt="": next(typed)):
+            self.run_lisp("(play-chess)")
+        out = "".join(self.out)
+        self.assertIn("Black plays ", out)
+        self.assertIn("(from the opening book)", out)
+        self.assertEqual(self.show("*variety*"), "0")
+        # :book #f and :variety are keywords of play-chess
+        typed = iter(["quit"])
+        self.out.clear()
+        with mock.patch("builtins.input", lambda prompt="": next(typed)):
+            self.run_lisp("(play-chess :human black :book #f :variety 0)")
+        self.assertNotIn("opening book", "".join(self.out))
+
+
+class TestChessBookTool(unittest.TestCase):
+    """tools/make_chess_book.py: reading PGN files, choosing games, and writing the book with chess.lsp's
+    own reading of the moves."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("make_chess_book", os.path.join(HERE, "tools", "make_chess_book.py"))
+        cls.tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.tool)
+
+    WHITE_WINS = ("1. e4 { [%eval 0.2] [%clk 1:59:55] } 1... e5 { [%clk 1:59:50] } 2. Nf3 $1 Nc6 "
+                  "3. Bb5 (3. Bc4 Bc5 (3... Nf6 4. d3)) 3... a6!? 4. Ba4 Nf6 5. O-O Be7 6. Bxc6 dxc6 7. d3 Nd7 "
+                  "8. Nc3 O-O 9. Be3 1-0")
+    BLACK_WINS = ("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. d3 d6 6. c3 g6 7. O-O Bg7 8. Re1 O-O 9. Nbd2 0-1")
+
+    def pgn(self, moves, result="1-0", opening="Ruy Lopez: Closed", white="Alpha, Ann", black="Beta, Bob",
+            elo=(2700, 2650), time_control="40/7200:0+10", url="https://lichess.org/broadcast/test/round-3/AAAA/BBBB"):
+        """One game as PGN text, with the moves as given and result as the tags say."""
+        tags = [("Event", "Test Open"), ("Site", "Somewhere"), ("Date", "2026.01.02"), ("Round", "3.1"),
+                ("White", white), ("Black", black), ("Result", result), ("WhiteElo", elo[0]), ("BlackElo", elo[1]),
+                ("TimeControl", time_control), ("ECO", "C85"), ("Opening", opening), ("GameURL", url)]
+        return "\n".join('[%s "%s"]' % tag for tag in tags) + "\n\n" + moves + "\n"
+
+    def test_the_moves_are_read_from_movetext_with_everything_else_taken_out(self):
+        moves = self.tool.moves_of(
+            "1. e4 { [%eval 0.2] [%clk 1:59:55] } 1... e5 { [%clk 1:59:50] } 2. Nf3 $1 Nc6 "
+            "3. Bb5 (3. Bc4 Bc5 (3... Nf6 4. d3)) 3... a6!? 4. Ba4 Nf6 5. O-O Be7 ; to the end of the line\n"
+            "6. Bxc6 dxc6 7.d3 Nd7 8. Nc3 Rae1 e8=Q+ Qh4xe1# 0-0-0 1-0")
+        self.assertEqual(moves, ["e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Bxc6", "dxc6", "d3",
+                                 "Nd7", "Nc3", "Rae1", "e8=Q+", "Qh4xe1#", "0-0-0"])
+        for result in ("1-0", "0-1", "1/2-1/2", "*"):
+            self.assertEqual(self.tool.moves_of("1. e4 e5 " + result), ["e4", "e5"])
+        for bad in ("1. e4 Zf3", "1. e4 e9", "1. e4 hello", "1. e4 Nf3x"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    self.tool.moves_of(bad)
+
+    def test_games_are_split_and_quick_ones_are_known(self):
+        text = self.pgn(self.WHITE_WINS) + "\n" + self.pgn(self.BLACK_WINS, result="0-1", white="Gamma, Gus")
+        games = list(self.tool.games_in(text))
+        self.assertEqual(len(games), 2)
+        self.assertEqual((games[0][0]["White"], games[1][0]["White"]), ("Alpha, Ann", "Gamma, Gus"))
+        self.assertEqual(games[0][0]["GameURL"], "https://lichess.org/broadcast/test/round-3/AAAA/BBBB")
+        self.assertEqual(self.tool.moves_of(games[1][1]), self.tool.moves_of(self.BLACK_WINS))
+        for time_control, quick in [("600+0", True), ("180+2", True), ("1799+0", True), ("1800+0", False),
+                                    ("5400+30", False), ("40/7200:0+10", False), (None, False), ("", False),
+                                    ("120 minutes for the first 40 moves, followed by 30 minutes", False)]:
+            with self.subTest(time_control=time_control):
+                self.assertEqual(self.tool.is_quick(time_control), quick)
+
+    def test_only_long_decisive_slow_games_of_strong_players_are_candidates(self):
+        long_game = "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 1-0"          # 8 plies: 4 moves
+        texts = [
+            self.pgn(long_game, white="Kept, White"),
+            self.pgn(long_game, result="1/2-1/2", white="Drawn, Game"),
+            self.pgn("1. e4 e5 2. Nf3 1-0", white="Short, Game"),
+            self.pgn(long_game, time_control="600+0", white="Quick, Game"),
+            self.pgn(long_game, elo=(2700, 2599), white="Weak, Opponent"),
+            self.pgn(long_game, result="*", white="Unfinished, Game"),
+            self.pgn(long_game.replace("1-0", "0-1"), result="0-1", white="Kept, Black"),
+        ]
+        found = self.tool.candidates(["\n".join(texts)], min_moves=4, min_rating=2600)
+        self.assertEqual([g.headers["White"] for g in found], ["Kept, White", "Kept, Black"])
+        self.assertEqual([g.winner for g in found], ["white", "black"])
+        self.assertEqual(len(found[0].moves), 8)
+        self.assertEqual(len(self.tool.candidates(["\n".join(texts)], min_moves=5, min_rating=2600)), 0)   # needs 9 plies
+
+    def test_the_openings_and_games_are_chosen_by_the_rules(self):
+        Game = self.tool.Game
+        game = lambda name, opening, winner: Game({"White": name, "Opening": opening}, ["e4"], winner)
+        games = [
+            game("a1", "Sicilian Defense: Najdorf", "white"), game("a2", "Sicilian Defense: Taimanov", "white"),
+            game("a3", "Sicilian Defense: Najdorf", "black"),
+            game("b1", "French Defense: Tarrasch", "white"), game("b2", "French Defense: Winawer", "white"),
+            game("c1", "Italian Game: Classical", "black"), game("c2", "Italian Game: Evans", "white"),
+            game("d1", "Caro-Kann Defense", "white"),
+            game("e1", "English Opening: Symmetrical", "white"), game("e2", "English Opening: Symmetrical", "black"),
+            game("e3", "English Opening: Four Knights", "black"),
+        ]
+        self.assertEqual(self.tool.family(games[0]), "Sicilian Defense")
+        # the English and the Sicilian (3 games each, the English first, alphabetically), then the Italian (2):
+        # both colors have won a game in each; the French and Caro-Kann have not
+        chosen = self.tool.choose(games, openings=3)
+        self.assertEqual([g.headers["White"] for g in chosen], ["e1", "e3", "a1", "a3", "c2", "c1"])
+        # (the English: black's game in another variation than white's, e3 not e2; the Sicilian had no other)
+        self.assertEqual([g.headers["White"] for g in self.tool.choose(games, openings=1)], ["e1", "e3"])
+        self.assertEqual([g.winner for g in chosen], ["white", "black"] * 3)
+        self.assertEqual(self.tool.choose(games[3:5], openings=5), [])          # white won both: no opening qualifies
+        # the same number of games: alphabetical
+        pairs = [game("z1", "Zukertort Opening", "white"), game("z2", "Zukertort Opening", "black"),
+                 game("m1", "Modern Defense", "white"), game("m2", "Modern Defense", "black")]
+        self.assertEqual([g.headers["White"] for g in self.tool.choose(pairs, openings=1)], ["m1", "m2"])
+
+    def test_how_much_of_a_game_is_kept(self):
+        Game = self.tool.Game
+        long_white = Game({}, ["m"] * 60, "white")
+        long_black = Game({}, ["m"] * 60, "black")
+        self.assertEqual(self.tool.plies_to_keep(long_white, 8), 15)             # through white's 8th move
+        self.assertEqual(self.tool.plies_to_keep(long_black, 8), 16)             # through black's
+        self.assertEqual(self.tool.plies_to_keep(Game({}, ["m"] * 10, "white"), 8), 10)
+        self.assertEqual(self.tool.plies_to_keep(long_white, 1), 1)
+        self.assertEqual(self.tool.plies_to_keep(long_black, 1), 2)
+
+    def test_notation_and_comments(self):
+        self.assertEqual(self.tool.standard_notation(["e4", "e5", "Nf3"]), "1.e4 e5 2.Nf3")
+        self.assertEqual(self.tool.surname("Caruana, Fabiano"), "Caruana")
+        self.assertEqual(self.tool.surname("Praggnanandhaa R"), "Praggnanandhaa R")
+        lines = self.tool.wrap_comment("word " * 60, width=40)
+        self.assertGreater(len(lines), 5)
+        self.assertTrue(all(line.startswith("; ") and len(line) <= 40 for line in lines))
+        self.assertEqual(" ".join(line[2:] for line in lines), ("word " * 60).strip())
+        # a | between two words keeps them together, wherever the line would have broken
+        lines = self.tool.wrap_comment("Chess 2026 | Masters and more", width=17)
+        self.assertTrue(any("2026 | Masters" in line for line in lines))
+        self.assertFalse(any(line.endswith("|") or line.startswith("; |") for line in lines))
+
+    def test_the_book_is_written_with_the_squares_the_program_reads_from_the_moves(self):
+        games = self.tool.candidates([self.pgn(self.WHITE_WINS, opening="Ruy Lopez: Delayed Exchange") + "\n" +
+                                      self.pgn(self.BLACK_WINS, result="0-1", opening="Ruy Lopez: Anderssen",
+                                               white="Gamma, Gus", black="Delta, Dee")], min_moves=5, min_rating=2600)
+        chosen = self.tool.choose(games, openings=1)
+        self.assertEqual([g.winner for g in chosen], ["white", "black"])
+        text = self.tool.book_text(chosen, 3, self.tool.engine())
+        # white's 3 moves, and black's 3: the moves before them are there to get to them
+        self.assertIn('    (white "e2e4 e7e5 g1f3 b8c6 f1b5")', text)
+        self.assertIn('    (black "e2e4 e7e5 g1f3 b8c6 f1b5 a7a6")', text)
+        self.assertIn("; 1.e4 e5 2.Nf3 Nc6 3.Bb5", text)                         # the annotations are gone: a6!? is a6
+        self.assertIn("; Ruy Lopez: Delayed Exchange (C85) -- Alpha v Beta, Test Open. White won.", text)
+        self.assertIn("; https://lichess.org/broadcast/test/round-3/AAAA/BBBB", text)
+        self.assertIn("2 games, each won by white or by black", text)
+        # and the program can make a book of it: the winner's 3 moves in each game, in 6 positions
+        env = lisp_builtins.make_global_env(output=lambda s: None)
+        for source in ('(load "chess.lsp")', text, "(define book (make-book book-games))"):
+            for expression in lisp_core.parse(source):
+                lisp_core.seval(expression, env)
+        self.assertEqual(lisp_core.seval(next(iter(lisp_core.parse("(hash-table-count book)"))), env), 6)
+
+    def test_a_game_the_program_cannot_read_to_the_end_stops_the_book(self):
+        """Even past the moves the book keeps: 9. Ke3 isn't a legal move there."""
+        bad = self.BLACK_WINS.replace("9. Nbd2", "9. Ke3 Nbd7 10. Ke5")
+        games = [self.tool.Game(self.tool.games_in(self.pgn(bad, result="0-1"))
+                                .__next__()[0], self.tool.moves_of(bad), "black")]
+        with self.assertRaises(lisp_core.LispError) as caught:
+            self.tool.book_text(games, 3, self.tool.engine())
+        self.assertIn("not a legal move here", str(caught.exception))
+
+    def test_the_script_runs_on_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "games.pgn")
+            with open(path, "w") as f:
+                f.write(self.pgn(self.WHITE_WINS, opening="Ruy Lopez: Delayed Exchange") + "\n" +
+                        self.pgn(self.BLACK_WINS, result="0-1", opening="Ruy Lopez: Anderssen", white="Gamma, Gus"))
+            run = lambda *args: subprocess.run([sys.executable, "-I", os.path.join(HERE, "tools", "make_chess_book.py"),
+                                                path, *args], capture_output=True, text=True, cwd=directory)
+            done = run("--positions", "3", "--min-moves", "5")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn('(white "e2e4 e7e5 g1f3 b8c6 f1b5")', done.stdout)
+            self.assertTrue(done.stdout.rstrip().endswith("))"))
+            nothing = run("--min-moves", "50")
+            self.assertNotEqual(nothing.returncode, 0)
+            self.assertIn("no game qualifies", nothing.stderr)
 
 
 class TestExampleScripts(unittest.TestCase):
@@ -595,6 +1068,12 @@ class TestExampleScripts(unittest.TestCase):
         self.assertIn("White plays Qxf7#", out)
         self.assertIn("White plays Nxc7+", out)
         self.assertIn("White plays Rd8+   (it sees a checkmate;", out)
+        first_moves = out.split("from the book:\n  ")[1].split("\n")[0].split()
+        self.assertEqual(len(first_moves), 10)
+        self.assertTrue(set(first_moves) <= {"e4", "d4", "Nf3"})
+        self.assertIn("  without: e4 e4 e4 e4 e4 e4\n", out)
+        with_variety = out.split("  with:    ")[1].split("\n")[0].split()
+        self.assertEqual(set(with_variety), {"e4", "d4"})
 
     def test_the_kenken_example_solves_its_9_by_9_puzzle(self):
         if "kenken_example.lsp" not in self.results:

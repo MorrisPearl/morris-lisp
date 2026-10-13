@@ -4,7 +4,7 @@
 ; notation, checking its rules against numbers every chess program must
 ; get, and looking ahead to find a checkmate, a fork, and a sacrifice.
 ;
-; Run it from the examples directory (it takes about a minute):
+; Run it from the examples directory (it takes about half a minute):
 ;   python3 ../lisp_interpreter.py chess_example.lsp
 ; To play the program yourself, (load "chess.lsp"), then (play-chess).
 
@@ -63,3 +63,35 @@
 (define back-rank (fen->position "2r3k1/5ppp/8/8/8/8/3R1PPP/3R2K1 w - -"))
 (draw-board back-rank)
 (computer-move back-rank 3)
+
+; ---------------------------------------------------------------------------
+; The opening book, and variety
+; ---------------------------------------------------------------------------
+; Playing white from the opening position, the computer plays a move from its
+; book: one that was played, in a game the side that played it won. Where more
+; than one was, it picks at random, a move more games played more often.
+
+(random-seed 4)
+(display "\nIts first move as white, ten games in a row, from the book:\n")
+(display (format "  {}\n" (string-join (map (lambda (game) (move->text (initial-position) (book-move (initial-position))))
+                                          (iota 10)))))
+
+(display "\nThe book is of positions, not of the moves that led to them, so after 1.Nf3 e5 2.e4\n")
+(display "it plays what it would after 1.e4 e5 2.Nf3 -- Black to move in both:\n")
+(define transposed (play-moves (initial-position) '("Nf3" "e5" "e4")))
+(display (format "  {}\n" (string-join (map (lambda (game) (move->text transposed (book-move transposed))) (iota 6)))))
+
+; Out of the book, it looks ahead. From the opening position, looking 2 moves ahead,
+; e4 and d4 score the same, and without variety it always plays the first it
+; finds, e4. With variety -- each score wiggled by up to 3 hundredths of a
+; pawn, differently in each game -- it plays e4 or d4:
+
+(define (first-move-in-game seed variety)
+  (random-seed seed)
+  (set-variety! variety)
+  (move->text (initial-position) (first (choose-move (initial-position) 2))))
+
+(display "\nLooking ahead, as white, in six different games, without variety and with it:\n")
+(display (format "  without: {}\n" (string-join (map (lambda (seed) (first-move-in-game seed 0)) (iota 6 1)))))
+(display (format "  with:    {}\n" (string-join (map (lambda (seed) (first-move-in-game seed 3)) (iota 6 1)))))
+(set-variety! 0)

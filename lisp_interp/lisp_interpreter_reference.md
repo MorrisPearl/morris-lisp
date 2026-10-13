@@ -5334,7 +5334,30 @@ it is short and explained.
   then, so that the evaluation doesn't judge a position in the middle of
   an exchange, a search of the captures until the position is quiet. The
   evaluation counts material and adds a little for pieces on good squares,
-  worked out with vector arithmetic.
+  worked out with vector arithmetic. Nearly all the positions it looks at
+  are in the search of captures, so that is made quick two ways:
+  `capture-moves` finds only the moves that capture or promote, instead of
+  every move, most of which would be thrown away; and what the search of
+  captures found for a position is remembered, for the last 3 moves. Both
+  change no move the program makes (the tests check it), and together take
+  a quarter to a third off the time.
+- **An opening book**: the first 8 moves, by the winners, of 16 games from
+  the 2026 Candidates, Tata Steel, and Norway Chess tournaments, in
+  `examples/chess_book.lsp`, so that the computer opens as strong players
+  did instead of looking two moves ahead at the opening. It plays one of the
+  moves the games made in the position, at random; the book is of
+  positions, so a transposition is in it too. `tools/make_chess_book.py`
+  made it from the games, which lichess.org broadcasts as PGN files, and
+  can make another: it reads every move of each game it chooses with the
+  chess program's own rules, so there is no move in the book that is not
+  legal.
+- **Variety**: so that the computer doesn't play the same game every time,
+  each position's score gets a wiggle of up to 3 hundredths of a pawn,
+  worked out from the position and from random numbers drawn for the game,
+  so that the same position gets the same wiggle all game long (a new
+  random number each time the position was scored would give it two scores,
+  and the search could not agree with itself). Two moves that look about
+  equally good are then taken in a different order in each game.
 - **The board is drawn** with the chess pieces Unicode has (♔ ♕ ♖ ♗ ♘ ♙,
   ♚ ♛ ♜ ♝ ♞ ♟): in a Jupyter notebook as an HTML table of light and dark
   squares (with `display-html`), and elsewhere as text.
@@ -5345,6 +5368,7 @@ To play it, at the console or in a notebook:
 (load "chess.lsp")
 (play-chess)                     ; you're white; the computer looks 2 moves ahead
 (play-chess :human black :depth 3)
+(play-chess :book #f :variety 0) ; without the opening book or the wiggle: the same game every time
 ```
 
 At depth 2 the computer takes a few seconds a move; at depth 3, which
@@ -5416,10 +5440,10 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 | Directory | What's in it |
 |---|---|
 | `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `option_methods.lsp` (a stock's options valued three ways), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
-| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, and a KenKen solver (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
+| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, with its opening book, `chess_book.lsp`, and a KenKen solver (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `notebooks/` | Jupyter notebooks that use the interpreter (on the `morris_lisp` kernel) |
 | `scratch/` | Experiments: not part of the interpreter, and not tested |
-| `tools/` | `make_contents.py`, which rebuilds both manuals' Contents from their headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
+| `tools/` | `make_contents.py`, which rebuilds both manuals' Contents from their headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; `make_chess_book.py`, which makes the chess program's opening book from PGN files of games; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 
 `load` finds files in `lib/` and `examples/` from anywhere (see "Where
 `load` finds a file", under "Running it").

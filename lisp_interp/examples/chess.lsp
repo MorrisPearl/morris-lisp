@@ -15,12 +15,21 @@
 ; checkmate, and stalemate. It doesn't know the draws by repetition, by the
 ; fifty-move rule, or by too little material.
 ;
+; So as not to play the same game every time, it starts from a small book of
+; openings -- the first moves of games that strong players won, in
+; chess_book.lsp -- and gives each position's score a small wiggle that is
+; different in each game, so that when two moves look about equally good it
+; doesn't always take the same one. And to save time, it remembers what it
+; found in the search of captures, which is most of its work, for the last few
+; moves.
+;
 ; To play it -- at the console or in a Jupyter notebook -- (load
 ; "chess.lsp"), then (play-chess). You are white; (play-chess :human black)
 ; to be black. It looks 2 moves ahead, taking a few seconds a move;
 ; (play-chess :depth 3) has it look 3 ahead, which plays better but takes
-; ten to thirty seconds a move. chess_example.lsp shows it at work on a
-; few positions.
+; ten to thirty seconds a move. (play-chess :book #f :variety 0) plays without
+; the book or the wiggle. chess_example.lsp shows it at work on a few
+; positions.
 
 ; ---------------------------------------------------------------------------
 ; 1. The board
@@ -136,6 +145,39 @@ passant square, or -."
 (define (initial-position)
   (fen->position "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -"))
 
+; A hash table can't have a list or a vector for a key, but it can have a
+; string. position-key makes a string for a position, the same for two
+; positions exactly when they are the same position -- however the game got
+; there. The program remembers positions by it (section 6), and the opening
+; book (section 7) finds them.
+
+(define playable-squares               ; 1 on the 64 squares of the board, 0 on the border
+  (let ((mask (make-vector 120 0)))
+    (dolist (square all-squares)
+      (vector-set! mask square 1))
+    mask))
+
+(define (en-passant-possible? position)
+  "Whether a pawn of the side to move could capture en passant. (Not whether
+it may: a pinned pawn can't.) The square a pawn skipped over only matters
+if one could."
+  (let ((board (position-board position))
+        (side (position-side position))
+        (skipped (position-en-passant position)))
+    (and skipped
+         (let ((beside (- skipped (* 10 side))))          ; the rank the capturing pawn stands on
+           (or (= (vector-ref board (- beside 1)) (* side pawn))
+               (= (vector-ref board (+ beside 1)) (* side pawn)))))))
+
+(define (position-key position)
+  "A string that tells the position: the pieces on the 64 squares, whose
+move it is, the castling moves still allowed, and the en passant square if a
+pawn could use it."
+  (string-append (to-string (vector-select (position-board position) playable-squares))
+                 (if (= (position-side position) white) " w " " b ")
+                 (to-string (position-castling position))
+                 (if (en-passant-possible? position) (to-string (position-en-passant position)) " -")))
+
 ; ---------------------------------------------------------------------------
 ; 2. Drawing the board
 ; ---------------------------------------------------------------------------
@@ -216,42 +258,65 @@ bottom: in a Jupyter notebook, in HTML; elsewhere, as text."
 ; That isn't quite the legal moves: a move that leaves the mover's own king
 ; in check isn't allowed. legal-moves checks each one, by making the move
 ; and seeing whether the king is then attacked.
+;
+; capture-moves finds only the candidate moves that capture or promote, which
+; is all the search of captures (section 6) wants. It is much faster to not
+; look for the others than to find them and throw them away: nearly all the
+; positions a search looks at are in that search of captures.
 
 (define (move-from move) (first move))
 (define (move-to move) (second move))
 (define (move-promotion move) (if (null? (cddr move)) #f (third move)))
 
+(define (last-rank? square)
+  "Whether square is on the first or eighth rank, where a pawn promotes."
+  (or (= (rank-of square) 7) (= (rank-of square) 0)))
+
 (define (candidate-moves position)
   "Every move of the side to move that follows the way each piece moves,
 whether or not it leaves that side's own king in check."
+  (generate-moves position #f))
+
+(define (capture-moves position)
+  "The candidate moves that capture a piece or promote a pawn, and no others,
+in the order candidate-moves has them."
+  (generate-moves position #t))
+
+(define (generate-moves position captures-only)
+  "The candidate moves, or only the ones that capture or promote if
+captures-only is true."
   (let ((board (position-board position))
         (side (position-side position))
         (moves '()))
     (define (add! from to)
       (push (list from to) moves))
     (define (add-pawn-move! from to)
-      (if (or (= (rank-of to) 7) (= (rank-of to) 0))
+      (if (last-rank? to)
           (dolist (piece (list queen knight rook bishop))
             (push (list from to piece) moves))
           (add! from to)))
     (define (steps! from directions)            ; a knight or a king: one step
       (dolist (direction directions)
         (let ((to (+ from direction)))
-          (when (or (= (vector-ref board to) empty) (enemy? (vector-ref board to) side))
+          (when (or (enemy? (vector-ref board to) side)
+                    (and (= (vector-ref board to) empty) (not captures-only)))
             (add! from to)))))
     (define (slides! from directions)           ; a bishop, rook, or queen: any distance
       (dolist (direction directions)
         (let ((to (+ from direction)))
           (while (= (vector-ref board to) empty)
-            (add! from to)
+            (unless captures-only
+              (add! from to))
             (incf to direction))
           (when (enemy? (vector-ref board to) side)
             (add! from to)))))
     (define (pawn-moves! from)
       (let ((ahead (+ from (* 10 side))))
         (when (= (vector-ref board ahead) empty)
-          (add-pawn-move! from ahead)
-          (when (and (= (rank-of from) (if (= side white) 1 6))
+          (when (or (last-rank? ahead) (not captures-only))     ; (a push promotes)
+            (add-pawn-move! from ahead))
+          (when (and (not captures-only)
+                     (= (rank-of from) (if (= side white) 1 6))
                      (= (vector-ref board (+ ahead (* 10 side))) empty))
             (add! from (+ ahead (* 10 side)))))
         (dolist (to (list (- ahead 1) (+ ahead 1)))
@@ -280,7 +345,9 @@ whether or not it leaves that side's own king in check."
               ((= kind bishop) (slides! from diagonals))
               ((= kind rook) (slides! from straights))
               ((= kind queen) (slides! from all-directions))
-              ((= kind king) (steps! from all-directions) (castling-moves! from)))))
+              ((= kind king) (steps! from all-directions)
+                             (unless captures-only
+                               (castling-moves! from))))))
     moves))
 
 (define square-numbers (vector-range 120))       ; #(0 1 2 ... 119)
@@ -540,9 +607,42 @@ sees the board: rank 8 first, rank 1 last."
                  ( 10  20  10   0   0  10  20  10))))
 (define black-king-bonus (flipped white-king-bonus))
 
+; Variety. Without it the program plays the same moves every time: when
+; two moves come out about equally good, it always takes the same one. To
+; vary its play, a position's score gets a small wiggle: a whole number of
+; hundredths of a pawn, from -*variety* to *variety*, worked out from the
+; position and from a set of random numbers, *tastes*, drawn once for each
+; game. So the same position always gets the same wiggle within a game --
+; unlike a new random number each time the position is scored, which would
+; give one position two different scores, and the search no way to agree
+; with itself -- and another game, with other tastes, has other wiggles.
+; *variety* is 0, no wiggle, until set-variety! says otherwise.
+
+(define *variety* 0)
+(define *tastes* (make-vector 120 0))
+
+(define (set-variety! amount)
+  "Wiggle scores by up to amount hundredths of a pawn (0: not at all), with
+tastes drawn now. What the search remembered was scored with other tastes,
+so it is forgotten."
+  (set! *variety* amount)
+  (set! *tastes* (list->vector (map (lambda (square) (random-float)) (iota 120))))
+  (forget-positions!))
+
+(define (wiggle board)
+  "A whole number from -*variety* to *variety*, the same every time for this
+board and these tastes. The board times the tastes, added up, is a number
+that changes a lot when any piece moves; its fractional part picks the wiggle."
+  (if (= *variety* 0)
+      0
+      (let* ((total (vector-sum (* board *tastes*)))
+             (fraction (- total (floor total))))                ; 0 up to, not including, 1
+        (- (floor (* fraction (+ (* 2 *variety*) 1))) *variety*))))
+
 (define (white-advantage board)
   "How much better white stands than black, in hundredths of a pawn."
-  (+ (loop for kind from pawn to queen
+  (+ (wiggle board)
+     (loop for kind from pawn to queen
            sum (* (list-ref piece-values kind)
                   (- (vector-sum (= board kind)) (vector-sum (= board (- kind))))))
      (vector-sum (* center-bonus (- (+ (= board knight) (= board bishop))
@@ -627,7 +727,89 @@ or more."
   (and (in-check? position (position-side position))
        (null? (legal-moves position))))
 
+; ---------------------------------------------------------------------------
+; Remembering what the search of captures found
+; ---------------------------------------------------------------------------
+; Nearly all the positions a search looks at are in the search of captures,
+; and the same ones come up again: in the same search, reached by the same
+; captures in another order, and in the search for the next move, whose lines
+; overlap the last one's. What the search of captures finds for a position
+; doesn't depend on how the position was reached, so it can be remembered
+; and used again, and the position isn't searched again. That saves about a
+; tenth of the time, and changes no move.
+;
+; Positions that still have moves left to look at aren't remembered. In a
+; search of three moves or fewer none of them comes up twice in the same
+; search, and the search for the last move found each of them by looking
+; two moves less far ahead than this one must, so it isn't good enough.
+;
+; What is remembered isn't always a position's value. A search is given a
+; window, alpha to beta, and only finds the value if it's between them; if
+; every move is no better than alpha, it finds only that the value is no
+; more than alpha, and if one is beta or more, only that it's no less. So a
+; position is remembered with its value and which of the three that is:
+;   exact   it is the position's value
+;   lower   the position is worth at least that
+;   upper   the position is worth at most that
+; and answers a later search if it is enough: an exact one always is, a lower
+; one if it's beta or more in the later search, an upper one if it's alpha or less.
+;
+; The search for each move gets a table of its own, and the tables of the
+; last moves-remembered moves are kept: when a search starts, the oldest is
+; dropped. So what is remembered never grows past a few moves' worth.
+
+(define use-table #t)              ; #f to search without remembering, to see what it saves
+(define moves-remembered 3)
+(define *tables* (list (make-hash-table)))      ; the newest first
+
+(define (forget-positions!)
+  (set! *tables* (list (make-hash-table))))
+
+(define (remember-a-new-move!)
+  "Start a table for a new move's search; drop the oldest if there are too many."
+  (set! *tables* (cons (make-hash-table)
+                       (loop for table in *tables*
+                             for count from 1 to (- moves-remembered 1)
+                             collect table))))
+
+(define (entry-answer entry alpha beta)
+  "(list value) if the remembered entry, (value kind), is enough for a search
+with this window; otherwise #f."
+  (let ((value (first entry))
+        (kind (second entry)))
+    (cond ((eq? kind 'exact) (list value))
+          ((and (eq? kind 'lower) (>= value beta)) (list value))
+          ((and (eq? kind 'upper) (<= value alpha)) (list value))
+          (else #f))))
+
+(define (remembered-answer key alpha beta)
+  "(list value), from the newest table that has an enough entry for the
+position with this key; otherwise #f."
+  (let ((answer #f))
+    (dolist (table *tables*)
+      (unless answer
+        (let ((entry (hash-table-ref table key #f)))
+          (when entry
+            (set! answer (entry-answer entry alpha beta))))))
+    answer))
+
 (define (quiescence position alpha beta)
+  "The value of position to the side to move, looking only at captures
+(and promotions): remembered from before, if it is. See quiescence-search."
+  (if (not use-table)
+      (quiescence-search position alpha beta)
+      (let* ((key (position-key position))
+             (answer (remembered-answer key alpha beta)))
+        (if answer
+            (first answer)
+            (let ((value (quiescence-search position alpha beta)))
+              (hash-table-set! (first *tables*) key
+                               (list value (cond ((>= value beta) 'lower)
+                                                 ((<= value alpha) 'upper)
+                                                 (else 'exact))))
+              value)))))
+
+(define (quiescence-search position alpha beta)
   "The value of position to the side to move, looking only at captures
 (and promotions). The side to move needn't capture, so the static
 evaluation is the least it's worth."
@@ -636,9 +818,7 @@ evaluation is the least it's worth."
         (stand-pat (evaluate position)))
     (when (> stand-pat alpha)
       (set! alpha stand-pat))
-    (loop for move in (best-first position (filter (lambda (move) (or (capture? position move)
-                                                                      (move-promotion move)))
-                                                   (candidate-moves position)))
+    (loop for move in (best-first position (capture-moves position))
           while (< alpha beta)
           do (let ((next (make-move position move)))
                (unless (in-check? next side)
@@ -650,6 +830,7 @@ evaluation is the least it's worth."
 (define (choose-move position depth)
   "The best move for the side to move, looking depth moves ahead, and its
 value: a list (move value)."
+  (remember-a-new-move!)
   (let ((best-move #f)
         (best-value (- (* 2 checkmate-value))))
     (dolist (move (best-first position (legal-moves position)))
@@ -661,7 +842,68 @@ value: a list (move value)."
     (list best-move best-value)))
 
 ; ---------------------------------------------------------------------------
-; 7. Playing a game
+; 7. The opening book
+; ---------------------------------------------------------------------------
+; Looking two or three moves ahead can't tell a good opening from a bad one,
+; and would play the same one every game. So the program starts from a book:
+; the first moves of games that strong players won, in chess_book.lsp -- one
+; side's moves in each, the side that won. When the position is in the book,
+; the program plays one of the moves the winners played there; if several
+; games reached the position, one of theirs at random, a move more games
+; made more likely.
+;
+; The book is of positions, not of the moves that led to them, so a game that
+; gets to a position another way is still in the book: 1.Nf3 e5 2.e4 reaches
+; the position that 1.e4 e5 2.Nf3 does. The book is made from the games the
+; first time it's wanted, by playing each one's moves.
+
+(define *book* #f)          ; position-key -> the moves played there, one for each game that played one
+
+(define (move-from-squares position text)
+  "The candidate move that move->squares writes as text, or #f. (Quicker
+than find-move, which writes every legal move in notation to compare them.)"
+  (let ((found (filter (lambda (move) (string=? (move->squares move) text))
+                       (candidate-moves position))))
+    (if (null? found) #f (first found))))
+
+(define (add-game-to-book! book game)
+  "Add a game -- (winner \"squares\" ...), as in chess_book.lsp -- to the
+book: the winner's moves, each under the position it was played in."
+  (let ((winner (if (eq? (first game) 'white) white black))
+        (position (initial-position)))
+    (dolist (text (string-split (second game)))
+      (let ((move (move-from-squares position text)))
+        (unless (and move (legal? position move))
+          (error "the opening book has a move that isn't legal here:" text))
+        (when (= (position-side position) winner)
+          (let ((key (position-key position)))
+            (hash-table-set! book key (cons move (hash-table-ref book key '())))))
+        (set! position (make-move position move))))))
+
+(define (make-book games)
+  "A book from games, each (winner \"squares ...\")."
+  (let ((book (make-hash-table)))
+    (dolist (game games)
+      (add-game-to-book! book game))
+    book))
+
+(define (the-book)
+  "The opening book, made the first time it's wanted from the games in chess_book.lsp."
+  (unless *book*
+    (load "chess_book.lsp")
+    (set! *book* (make-book book-games)))
+  *book*)
+
+(define (book-move position)
+  "A move for the side to move from the opening book: one of the moves
+played in this position, chosen at random. #f if the position isn't in the book."
+  (let ((moves (hash-table-ref (the-book) (position-key position) '())))
+    (if (null? moves)
+        #f
+        (list-ref moves (random-int 0 (- (length moves) 1))))))
+
+; ---------------------------------------------------------------------------
+; 8. Playing a game
 ; ---------------------------------------------------------------------------
 
 (define (side-name side) (if (= side white) "White" "Black"))
@@ -680,17 +922,26 @@ value: a list (move value)."
         ((< value (- (/ checkmate-value 2))) "it sees it will be checkmated")
         (else (format "{:+.2f} pawns for {}" (/ value 100) (side-name side)))))
 
-(define (computer-move position depth)
-  "The computer's move, after saying what it is and how long it took."
-  (set! *positions-searched* 0)
-  (let* ((start (current-time))
-         (choice (choose-move position depth))
-         (move (first choice)))
-    (display (format "{} plays {}   ({}; looked at {} positions in {}s)\n"
-                     (side-name (position-side position)) (move->text position move)
-                     (value->text (second choice) (position-side position))
-                     *positions-searched* (seconds-between start (current-time))))
-    move))
+(define (computer-move position depth &key (book #f))
+  "The computer's move, after saying what it is: from the opening book, if
+:book is true and the position is in it; otherwise looking depth moves ahead,
+and then how long that took."
+  (let ((from-book (and book (book-move position))))
+    (if from-book
+        (begin
+          (display (format "{} plays {}   (from the opening book)\n"
+                           (side-name (position-side position)) (move->text position from-book)))
+          from-book)
+        (begin
+          (set! *positions-searched* 0)
+          (let* ((start (current-time))
+                 (choice (choose-move position depth))
+                 (move (first choice)))
+            (display (format "{} plays {}   ({}; looked at {} positions in {}s)\n"
+                             (side-name (position-side position)) (move->text position move)
+                             (value->text (second choice) (position-side position))
+                             *positions-searched* (seconds-between start (current-time))))
+            move)))))
 
 (define (human-move position)
   "Ask for a move until a legal one is typed; #f to stop the game."
@@ -727,12 +978,21 @@ first-side is the side that made the first of them."
       (set! side (- side)))
     (string-join (reverse words))))
 
-(define (play-chess &key (human white) (depth 2) (position (initial-position)))
+(define (play-chess &key (human white) (depth 2) (position (initial-position)) (book #t) (variety 3))
   "Play a game against the computer: you're white, unless :human is black.
 The computer looks :depth moves ahead (and then at the captures). Type
 your moves in algebraic notation -- e4, Nf3, exd5, O-O, e8=Q -- or by
 their squares, e2e4; moves lists the legal moves, and quit stops. To
-start from some other position, give it as :position."
+start from some other position, give it as :position. The computer begins
+from its opening book, unless :book is #f, and wiggles its scores by up to
+:variety hundredths of a pawn, so that its games differ (0: they don't)."
+  (set-variety! variety)
+  (unwind-protect
+      (play-game human depth position book)
+    (set-variety! 0)))
+
+(define (play-game human depth position book)
+  "The game of play-chess."
   (let ((first-side (position-side position))
         (moves-made '())                ; in notation
         (playing #t))
@@ -749,7 +1009,7 @@ start from some other position, give it as :position."
                  (draw-board position :from-side human))
                (let ((move (if (= (position-side position) human)
                                (human-move position)
-                               (computer-move position depth))))
+                               (computer-move position depth :book book))))
                  (if move
                      (begin
                        (set! moves-made (append moves-made (list (move->text position move))))
