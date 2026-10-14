@@ -30,6 +30,12 @@
   option-values-options option-values-symbol option-values-price option-values-volatility
   option-values-rate option-values-paths)
 
+; Call spreads: the best pair of calls to buy and sell, and the order for it
+(lazy-load "call_spreads.lsp"
+  call-spreads call-spreads-for-chain show-call-spreads call-spread-order show-spread-order
+  spread-search-stock spread-search-stock-price spread-search-expiration spread-search-expected-price
+  spread-search-prices spread-search-spreads)
+
 ; Mortgages: the OAS Monte Carlo, and the prepayment model it uses
 (lazy-load "oas_monte_carlo.lsp"
   oas-model-price oas-solve annualized-realized-vol path-present-value

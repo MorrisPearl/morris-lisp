@@ -880,6 +880,7 @@ class TestSchwab(LispTestCase):
             json.dump({"Schwab_Client_ID": "app-key", "Schwab_Client_Secret": "app-secret"}, f)
         self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(self.credentials)
         self.requests = []
+        self.chain_answer = None            # what the fake sends for a request for a chain
         patcher = mock.patch.object(lisp_schwab, "schwab_request", self.fake_request)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -910,6 +911,8 @@ class TestSchwab(LispTestCase):
         if path == "/marketdata/v1/quotes":
             return 200, {}, {"AAPL": {"quote": {"bidPrice": 229.9, "askPrice": 230.1, "lastPrice": 230.0},
                                       "reference": {"description": "Apple Inc"}}}
+        if path == "/marketdata/v1/chains":
+            return 200, {}, self.chain_answer
         if path == "/marketdata/v1/pricehistory":
             return 200, {}, {"candles": [{"datetime": 1704175200000, "open": 1, "high": 2, "low": 0.5, "close": 1.5,
                                           "volume": 100}]}           # 2024-01-02, 06:00 UTC
@@ -1001,6 +1004,147 @@ class TestSchwab(LispTestCase):
         self.assertEqual((method, json.loads(body)), ("POST", order))
         self.assertShows('(schwab-cancel-order creds "Brokerage" 98765)', "#t")
         self.assertEqual(self.requests[-1][:2], ("DELETE", self.lisp_schwab.API_URL + "/trader/v1/accounts/HASH1/orders/98765"))
+
+
+    # -- the option chain ---------------------------------------------------------------------------
+
+    @staticmethod
+    def contract(kind, strike, bid, ask, expiration="261120", **more):
+        """An option as Schwab's chain has it."""
+        symbol = "XYZ   %s%s%08d" % (expiration, kind[0], strike * 1000)
+        return dict({"putCall": kind.upper(), "symbol": symbol, "description": "XYZ option", "bid": bid, "ask": ask,
+                     "last": bid, "mark": (bid + ask) / 2, "totalVolume": 12, "openInterest": 340, "volatility": 21.5,
+                     "delta": 0.4, "vega": 0.1, "strikePrice": float(strike), "daysToExpiration": 35}, **more)
+
+    def a_chain(self):
+        c = self.contract
+        return {"symbol": "XYZ", "status": "SUCCESS", "underlyingPrice": 101.25, "underlying": {"mark": 101.2},
+                "callExpDateMap": {
+                    "2026-12-18:63": {"100.0": [c("Call", 100, 4.0, 4.2, "261218", daysToExpiration=63)]},
+                    "2026-11-20:35": {"105.0": [c("Call", 105, 1.0, 1.2)], "100.0": [c("Call", 100, 3.1, 3.3)]}},
+                "putExpDateMap": {
+                    "2026-11-20:35": {"100.0": [c("Put", 100, 1.5, 1.7, volatility=-999, delta=-999)]}}}
+
+    def test_the_option_chain_is_a_table_like_tastytrades(self):
+        import lisp_tastytrade
+        import urllib.parse
+        self.sign_in()
+        self.chain_answer = self.a_chain()
+        self.run_lisp('(define chain (schwab-option-chain creds "xyz" :expiration (date 2026 11 20) :type "all" :strikes 3))')
+        method, url, headers, body = self.requests[-1]
+        query = {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlparse(url).query).items()}
+        self.assertEqual(urllib.parse.urlparse(url).path, "/marketdata/v1/chains")
+        self.assertEqual(query, {"symbol": "XYZ", "contractType": "ALL", "strategy": "SINGLE", "includeUnderlyingQuote": "true",
+                                 "fromDate": "2026-11-20", "toDate": "2026-11-20", "strikeCount": "3"})
+        self.assertEqual([str(n) for n in lisp_core.pairs_to_list(self.run_lisp("(table-column-names chain)"))],
+                         lisp_tastytrade.OPTION_CHAIN_COLUMNS)
+        # by expiration, then strike, calls before puts
+        self.assertShows('(table-column chain "symbol")',
+                         '#("XYZ   261120C00100000" "XYZ   261120P00100000" "XYZ   261120C00105000" "XYZ   261218C00100000")')
+        self.assertShows('(table-column chain "type")', '#("Call" "Put" "Call" "Call")')
+        self.assertShows('(table-column chain "strike")', "#(100.0 100.0 105.0 100.0)")
+        self.assertShows('(table-column chain "expiration-date")', "#(2026-11-20 2026-11-20 2026-11-20 2026-12-18)")
+        self.assertShows('(table-column chain "days-to-expiration")', "#(35 35 35 63)")
+        self.assertShows('(table-column chain "underlying")', '#("XYZ" "XYZ" "XYZ" "XYZ")')
+        self.assertShows('(table-column chain "underlying-price")', "#(101.25 101.25 101.25 101.25)")
+        self.assertShows('(table-column chain "bid")', "#(3.1 1.5 1.0 4.0)")
+        self.assertShows('(table-column chain "ask")', "#(3.3 1.7 1.2 4.2)")
+        self.assertShows('(table-column chain "mid")', "#(3.2 1.6 1.1 4.1)")
+        self.assertShows('(table-column chain "volume")', "#(12 12 12 12)")
+        self.assertShows('(table-column chain "open-interest")', "#(340 340 340 340)")
+        self.assertShows('(table-column chain "delivery-month")', "#(() () () ())")
+        # volatility is in percent in Schwab's answer, and -999 means it has none
+        self.assertShows('(table-column chain "implied-volatility")', "#(0.215 nan 0.215 0.215)")
+        self.assertShows('(table-column chain "delta")', "#(0.4 nan 0.4 0.4)")
+        # no :expiration, :type, or :strikes: none is asked for
+        self.run_lisp('(schwab-option-chain creds "XYZ")')
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.requests[-1][1]).query)
+        self.assertEqual(sorted(query), ["contractType", "includeUnderlyingQuote", "strategy", "symbol"])
+        self.assertEqual(query["contractType"], ["ALL"])
+        self.run_lisp('(schwab-option-chain creds "XYZ" :expiration "2026-11-20" :type "call")')
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.requests[-1][1]).query)
+        self.assertEqual((query["contractType"], query["fromDate"]), (["CALL"], ["2026-11-20"]))
+
+    def test_the_option_chain_copes_with_other_forms_of_the_answer(self):
+        self.sign_in()
+        answer = self.a_chain()
+        del answer["underlyingPrice"]                               # the price from the underlying's quote
+        for by_strike in answer["callExpDateMap"].values():
+            for contracts in by_strike.values():
+                for contract in contracts:
+                    contract["bidPrice"], contract["askPrice"] = contract.pop("bid"), contract.pop("ask")   # other names
+                    contract.pop("strikePrice")                                                              # the key's strike
+        self.chain_answer = answer
+        self.run_lisp('(define chain (schwab-option-chain creds "XYZ" :type "CALL"))')
+        self.assertShows('(table-column chain "underlying-price")', "#(101.2 101.2 101.2 101.2)")
+        self.assertShows('(table-column chain "bid")', "#(3.1 1.5 1.0 4.0)")
+        self.assertShows('(table-column chain "strike")', "#(100.0 100.0 105.0 100.0)")
+        self.chain_answer = {"symbol": "XYZ", "status": "SUCCESS", "callExpDateMap": {}, "putExpDateMap": {}}
+        self.assertShows('(table-row-count (schwab-option-chain creds "XYZ"))', "0")          # no options: an empty table
+        self.assertShows('(length (table-column-names (schwab-option-chain creds "XYZ")))', "17")
+
+    def test_the_option_chain_says_what_is_wrong(self):
+        self.sign_in()
+        self.chain_answer = dict(self.a_chain(), status="FAILED")
+        self.assertLispError('(schwab-option-chain creds "XYZ")', "Schwab says the chain's status is FAILED")
+        self.chain_answer = None
+        self.assertLispError('(schwab-option-chain creds "XYZ")', "Schwab sent no chain")
+        self.chain_answer = dict(self.a_chain(), isChainTruncated=True)
+        self.assertLispError('(schwab-option-chain creds "XYZ")', "Schwab cut the chain short")
+        self.chain_answer = dict(self.a_chain(), isChainTruncated=False, numberOfContracts=4)
+        self.assertShows('(table-row-count (schwab-option-chain creds "XYZ"))', "4")
+        self.chain_answer = self.a_chain()
+        del self.chain_answer["callExpDateMap"]["2026-12-18:63"]["100.0"][0]["symbol"]
+        self.assertLispError('(schwab-option-chain creds "XYZ")', "an option with no symbol")
+        self.assertLispError('(schwab-option-chain creds "XYZ" :type "BOTH")', ':type is "CALL", "PUT", or "ALL"')
+        self.assertLispError('(schwab-option-chain creds "XYZ" :strikes 0)', ":strikes must be a whole number")
+        self.assertLispError('(schwab-option-chain creds "XYZ" :expiration "soon")', ":expiration must be a date")
+        self.assertLispError('(schwab-option-chain creds "XYZ" :expirations 1)', "isn't an option")
+
+    # -- an order for a spread ----------------------------------------------------------------------
+
+    def test_a_spread_order_buys_one_option_and_sells_the_other_for_a_net_debit(self):
+        self.run_lisp('(define o (schwab-spread-order "XYZ   261120C00100000" "xyz261120c00105000" 2 2.104))')
+        order = self.lisp_schwab.lisp_to_json(self.run_lisp("o"))
+        self.assertEqual(order, {
+            "session": "NORMAL", "duration": "DAY", "orderType": "NET_DEBIT", "complexOrderStrategyType": "VERTICAL",
+            "price": 2.1, "orderStrategyType": "SINGLE",
+            "orderLegCollection": [
+                {"instruction": "BUY_TO_OPEN", "quantity": 2, "instrument": {"symbol": "XYZ   261120C00100000", "assetType": "OPTION"}},
+                {"instruction": "SELL_TO_OPEN", "quantity": 2, "instrument": {"symbol": "XYZ   261120C00105000", "assetType": "OPTION"}}]})
+        # the symbol is made what Schwab wants: padded to 6 characters (here, with the stock's name 4 long)
+        self.run_lisp('(define p (schwab-spread-order "BRKB261120P00110000" "BRKB  261120P00100000" 1 3 :duration "good_till_cancel"))')
+        order = self.lisp_schwab.lisp_to_json(self.run_lisp("p"))
+        self.assertEqual([leg["instrument"]["symbol"] for leg in order["orderLegCollection"]],
+                         ["BRKB  261120P00110000", "BRKB  261120P00100000"])         # puts: the higher strike is bought
+        self.assertEqual((order["duration"], order["price"]), ("GOOD_TILL_CANCEL", 3.0))
+        # it sends nothing, and can be placed by schwab-place-order as any order
+        self.sign_in()
+        sent = len(self.requests)
+        self.run_lisp('(schwab-spread-order "XYZ   261120C00100000" "XYZ   261120C00105000" 1 2.1)')
+        self.assertEqual(len(self.requests), sent)
+
+    def test_a_spread_order_that_is_not_a_debit_spread_is_refused(self):
+        buy, sell = "XYZ   261120C00100000", "XYZ   261120C00105000"
+        for call, fragment in [
+                ('(schwab-spread-order "%s" "%s" 1 2.1)' % (sell, buy), "would be a credit spread"),
+                ('(schwab-spread-order "XYZ   261120P00100000" "XYZ   261120P00105000" 1 2.1)', "would be a credit spread"),
+                ('(schwab-spread-order "%s" "XYZ   261218C00105000" 1 2.1)' % buy, "same stock, expiration, and type"),
+                ('(schwab-spread-order "%s" "XYZ   261120P00105000" 1 2.1)' % buy, "same stock, expiration, and type"),
+                ('(schwab-spread-order "%s" "ABC   261120C00105000" 1 2.1)' % buy, "same stock, expiration, and type"),
+                ('(schwab-spread-order "%s" "%s" 1 2.1)' % (buy, buy), "the same strike"),
+                ('(schwab-spread-order "%s" "%s" 0 2.1)' % (buy, sell), "whole number of spreads"),
+                ('(schwab-spread-order "%s" "%s" 1.5 2.1)' % (buy, sell), "whole number of spreads"),
+                ('(schwab-spread-order "%s" "%s" 1 0)' % (buy, sell), "net debit must be a number above 0"),
+                ('(schwab-spread-order "%s" "%s" 1 0.004)' % (buy, sell), "net debit must be a number above 0"),
+                ('(schwab-spread-order "%s" "%s" 1 -1)' % (buy, sell), "net debit must be a number above 0"),
+                ('(schwab-spread-order "%s" "%s" 1 "2")' % (buy, sell), "net debit must be a number above 0"),
+                ('(schwab-spread-order "XYZ" "%s" 1 2.1)' % sell, "the option to buy must be an option's symbol"),
+                ('(schwab-spread-order "%s" "XYZ 261120C105" 1 2.1)' % buy, "the option to sell must be an option's symbol"),
+                ('(schwab-spread-order "%s" "%s" 1 2.1 :duration "forever")' % (buy, sell), ":duration is one of"),
+                ('(schwab-spread-order "%s" "%s" 1 2.1 :limit 2)' % (buy, sell), "isn't an option")]:
+            with self.subTest(call=call):
+                self.assertLispError(call, fragment)
 
 
 class TestTastytrade(LispTestCase):

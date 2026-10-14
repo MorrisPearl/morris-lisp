@@ -55,6 +55,7 @@ publishes what, and which function gets it -- see
   - [Starting paths from today's volatility](#starting-paths-from-todays-volatility)
   - [Checking option prices against simulated paths](#checking-option-prices-against-simulated-paths)
   - [Valuing options three ways](#valuing-options-three-ways)
+  - [Call spreads](#call-spreads)
   - [Portfolios](#portfolios)
 
 ## Where things are
@@ -91,7 +92,9 @@ The functions for investment analysis, in the order an analysis uses them.
    "Checking option prices against simulated paths": options out of line
    with the underlying's history. "Valuing options three ways": a stock's
    options by Black-Scholes, a binomial tree, and simulated paths, next to
-   their bids and asks.
+   their bids and asks. "Call spreads": the best pair of a stock's calls to buy
+   and sell, if you expect it at a price on the day they expire, with the
+   order to trade it.
 6. **Rates and mortgages.** The SOFR term structure and its two-factor
    model (`sofr-*`, under "tastytrade (real broker data)"), futures curves
    (`futures-curve-fit`), and `lib/oas_monte_carlo.lsp`, `lib/column_engine.lsp`,
@@ -1899,6 +1902,7 @@ ten `tastytrade-*` builtins; abridged here:
 
 - what's in each account;
 - quotes, and daily price histories for stocks and ETFs;
+- the options listed on a stock, with their bids and asks;
 - orders, for whenever you want them.
 
 It needs an app registered on Schwab's developer site, with its key and
@@ -1993,6 +1997,39 @@ A stock's, ETF's, or index's prices, as a table of `date`, `open`,
 `vector-pct-change` turns closing prices into returns: `(vector-pct-change
 (table-column h "close") 1)`.
 
+#### `(schwab-option-chain creds symbol [:expiration d :type t :strikes n])`
+The options listed on a stock or ETF, as a table with the columns of
+`tastytrade-option-chain`'s -- so whatever takes one takes the other (the
+option libraries below do): `symbol` (the option's, in the form orders
+use), `type` (`"Call"` or `"Put"`), `strike`, `expiration-date`,
+`days-to-expiration`, `delivery-month` (always `'()`), `underlying`,
+`underlying-price`, `bid`, `ask`, `mid`, `last-price`,
+`implied-volatility` (a fraction: 0.215 is 21.5%), `delta`, `vega`,
+`volume`, and `open-interest`. What Schwab doesn't have, as a Greek for an
+option with no volatility, is NaN.
+
+- The bids and asks are live while the market is open, and the last close's
+  after.
+- `:expiration` (a date, or `"YYYY-MM-DD"`) asks for only that
+  expiration's options. Without it you get every expiration Schwab has,
+  which for a big ETF is a lot: ask for the one you want. If Schwab says it
+  cut the chain short (more than it will send at once), this is an error
+  rather than a table with strikes missing: ask for less.
+- `:type` is `"CALL"`, `"PUT"`, or `"ALL"` (the default).
+- `:strikes` asks for only that many strikes nearest the price, in each
+  expiration.
+
+```lisp
+(define chain (schwab-option-chain creds "SPY" :expiration (date 2026 11 20) :type "CALL"))
+(display-table (table-select chain '("strike" "bid" "ask" "volume" "open-interest")) '() :max-rows 10)
+```
+
+The comments in `lisp_schwab.py` list every field Schwab's answer has.
+It was checked against Schwab's real answer for SPY (221 calls for one
+expiration, the same as the number Schwab says it sent). To see the answer
+itself, `(schwab-get creds "/marketdata/v1/chains" '(("symbol" . "SPY")
+("contractType" . "CALL") ("fromDate" . "2026-11-20") ("toDate" . "2026-11-20")))`.
+
 #### `(schwab-orders creds [:account a :days n])`
 The orders entered in the last `n` days (30, unless `:days` says;
 Schwab keeps 60), in all your accounts or just `:account`'s, as a table:
@@ -2011,7 +2048,7 @@ dividends and P/E:
 (schwab-get creds "/marketdata/v1/quotes" '(("symbols" . "AAPL") ("fields" . "quote,fundamental")))
 ```
 
-#### Orders: `schwab-order`, `schwab-preview-order`, `schwab-place-order`, `schwab-cancel-order`
+#### Orders: `schwab-order`, `schwab-spread-order`, `schwab-preview-order`, `schwab-place-order`, `schwab-cancel-order`
 For whenever you want to trade.
 
 - `(schwab-order instruction symbol quantity [:type t :price p :stop-price s :duration d :asset-type a])`
@@ -2024,6 +2061,19 @@ For whenever you want to trade.
     (needs `:stop-price`), or `STOP_LIMIT` (needs both).
   - `:duration` is `DAY` (the default), `GOOD_TILL_CANCEL`, or
     `FILL_OR_KILL`.
+- `(schwab-spread-order buy-symbol sell-symbol quantity net-debit [:duration d])`
+  makes an order for a **vertical spread**: buy one option and sell
+  another of the same stock, expiration, and type, for a net debit -- a
+  limit on what is paid in all, for a share (rounded to a cent). `quantity`
+  is how many spreads, the contracts of each. For calls, the one bought has
+  the lower strike; for puts, the higher; the other way round would be a
+  credit spread, which this refuses to make, and so it does a pair that
+  differ in stock, expiration, or type. The symbols are options' in the form
+  the chain has (the stock's, padded to 6 characters, the expiration as
+  YYMMDD, `C` or `P`, and the strike times 1000 in 8 digits). It sends
+  nothing; it opens new positions (`BUY_TO_OPEN`, `SELL_TO_OPEN`) as a
+  single order (`orderType` `NET_DEBIT`, `complexOrderStrategyType`
+  `VERTICAL`), both legs filling together or not at all.
 - `(schwab-preview-order creds account order)` gives what Schwab makes of
   the order, without placing it: any warnings or reasons it would be
   rejected, and the estimated cost.
@@ -2038,6 +2088,11 @@ For whenever you want to trade.
 (schwab-preview-order creds "IRA" order)               ; check it first
 ; (schwab-place-order creds "IRA" order :confirm #t)   ; then, if you mean it
 ```
+
+`schwab-spread-order`'s form of an order is Schwab's, from its documentation
+of the Trader API, and has not been sent to Schwab by the program's tests,
+which use a stand-in. Preview the first one (it places nothing) before you
+place it.
 
 ### Alpha Vantage (dividends)
 
@@ -5161,6 +5216,159 @@ the market's volatility (the middle of the options' `market-vol`), and
 A table with a row for each method, and how many of the options its value
 is between the bid and the ask for, below the bid for (the market prices
 the option higher), and above the ask for (the market prices it lower).
+
+### Call spreads
+
+(In `lib/call_spreads.lsp`; its functions work without loading it.) Of a
+stock's calls that expire on one day, which pair is the best to **buy the
+one with the lower strike, and sell the one with the higher** -- a *bull
+call spread* -- if you expect the stock to be at a certain price on that
+day? Every pair is ranked by the profit at the price you expect, as a share
+of the most you could lose.
+
+**What a spread is.** A call lets you buy the stock at its strike on the
+expiration day, so at expiration it is worth the stock's price less the
+strike, or nothing, if that's less. Buying the call at the lower strike
+`K1` and selling the one at the higher `K2` costs less than the first alone,
+and gives up what the stock gains beyond `K2`. With the stock at `S` on the
+expiration day, the pair is worth
+
+```
+(S - K1, or 0)  -  (S - K2, or 0)
+```
+
+which is 0 for `S` at or below `K1`, rises dollar for dollar with the stock
+from there, and stops at `K2 - K1` for `S` at or above `K2`. What you pay is
+the spread's **cost**, or net debit: the price of the call you buy, less the
+price you get for the call you sell. The **most you can lose** is the cost,
+if the stock ends at `K1` or below and both calls expire worthless. At the
+price you expect, the **profit** is what the spread is worth there, less the
+cost, and the **ratio** is
+
+```
+profit  /  the most you can lose
+```
+
+For example, with the stock at 108 on the day, and calls whose bids and asks
+are 6.0 and 6.2 at 100, 3.0 and 3.2 at 105, and 1.2 and 1.4 at 110: buying the
+100 and selling the 110 costs 6.2 - 1.2 = 5.0; it is worth 8 at 108, a profit
+of 3.0, a ratio of 0.6 -- 60% of the most you can lose; buying the 100 and
+selling the 105 costs 3.2, is worth 5, a profit of 1.8, a ratio of 0.5625; and
+the 105 and 110 cost 2.0, are worth 3, a profit of 1.0, a ratio of 0.5. The
+first is the best.
+
+```lisp
+(define day (date 2026 11 20))
+(define chain (make-table "symbol" (vector "XYZ   261120C00100000" "XYZ   261120C00105000" "XYZ   261120C00110000")
+                          "type" (vector "Call" "Call" "Call")
+                          "strike" (vector 100.0 105.0 110.0)
+                          "expiration-date" (vector day day day)
+                          "underlying" (vector "XYZ" "XYZ" "XYZ") "underlying-price" (vector 104.0 104.0 104.0)
+                          "bid" (vector 6.0 3.0 1.2) "ask" (vector 6.2 3.2 1.4) "mid" (vector 6.1 3.1 1.3)
+                          "volume" (vector 5 5 5) "open-interest" (vector 10 10 10)))
+(define search (call-spreads-for-chain chain day 108))
+(table-column (spread-search-spreads search) "ratio")      ; => #(0.6 0.5625001 0.5)
+(table-column (spread-search-spreads search) "cost")       ; => #(5.0 3.1999998 2.0)
+```
+
+#### `(call-spreads creds symbol expiration expected-price [:prices p :min-open-interest n :min-volume n :min-cost c])`
+Gets the stock's calls that expire on `expiration` (a date, or
+`"YYYY-MM-DD"`) from Schwab (`schwab-option-chain`) -- live bids and asks
+while the market is open; it says so, and the quotes are the last close's, if
+it is closed -- and ranks every pair: see `call-spreads-for-chain`. Returns a
+`spread-search`.
+
+#### `(call-spreads-for-chain chain expiration expected-price [:prices p :min-open-interest n :min-volume n :min-cost c])`
+The same for a chain you already have: a table as `schwab-option-chain` or
+`tastytrade-option-chain` makes. Returns a `spread-search`, whose accessors
+are `spread-search-stock`, `-stock-price`, `-expiration`, `-expected-price`,
+`-prices`, and `-spreads`: the table of spreads, a row for each pair, the
+best first, with the columns
+
+| Column | What it holds (prices are for a share) |
+|---|---|
+| `long-symbol`, `short-symbol` | the options bought and sold |
+| `long-strike`, `short-strike` | their strikes |
+| `long-price`, `short-price` | what is paid for the first, and got for the second |
+| `cost` | the net: the most that can be lost |
+| `worth` | what the spread is worth at `expected-price` on the day |
+| `profit` | `worth` less `cost` |
+| `ratio` | `profit` as a share of `cost`: 1.5 is 150% |
+| `breakeven` | the stock's price at which the spread is worth its cost |
+| `max-profit` | the most that can be made: the strikes' difference less `cost` |
+
+The options:
+
+- `:prices` is `'bid-ask` (the default: you buy at the ask and sell at the
+  bid, so the cost is the ask of the call bought less the bid of the call
+  sold) or `'mid` (the middle of each's bid and ask, which is what you'd
+  pay if you could trade in the middle). Be careful with `'mid`: thin
+  options have wide, ragged quotes, and their middles can make a pair look
+  far cheaper than it can be traded. (On SPY, after the close, two deep
+  in-the-money calls with open interest of 4 and 8 had middles only 0.38
+  apart for strikes a dollar apart, so a spread worth 1.00 at expiration
+  "cost" 0.38 and came out the best of all; at their asks and bids it is
+  nowhere near.) A higher `:min-open-interest` guards against these.
+- Both calls of a spread must have a bid and an ask above 0, and open
+  interest (the contracts open) of at least `:min-open-interest` (1), and
+  volume of at least `:min-volume` (0). A count the chain doesn't have is
+  taken to be 0.
+- A pair that would pay you to buy it, with a cost of 0 or less -- from
+  quotes that don't agree -- has no most you can lose to divide by, and is
+  left out; so is one that costs less than `:min-cost` (0).
+
+**The ratio favors cheap spreads.** A spread that costs a few cents has a
+huge ratio if the stock gets to the higher strike, but there is almost no
+chance it does: the price you expect is one price, and the stock can end
+anywhere. The ratio ignores how likely things are, commissions, and that the
+call you sold can be exercised before expiration (usually just before an
+ex-dividend date, if it is in the money). `:min-cost` leaves out the very
+cheap; looking at the next few spreads, not only the first, shows how the
+ratio falls off.
+
+#### `(show-call-spreads search [:count n])`
+Shows the best spread in words -- what to buy and sell, what it costs for a
+share and for a contract of 100, what it makes at the expected price, where it
+breaks even, and the most it can make -- and a table of it and the next
+`:count` (10) best.
+
+#### `(call-spread-order search [:row r :contracts c :price p])`
+An order for one of the spreads, as a hash table in Schwab's form, made by
+`schwab-spread-order`: buy the call with the lower strike, sell the one with
+the higher, `:contracts` (1) of each, with a limit on the net debit of `:price`
+-- the spread's `cost`, unless it is given. `:row` picks the spread: 0, the
+best, is the default; 1 the next; and so on. **It sends nothing.** With bids
+and asks, the order at the cost is likely to fill at once: it pays what is
+asked for the call bought, and takes what is bid for the call sold. A lower
+`:price` may fill at a better price, or not at all.
+
+#### `(show-spread-order order)`
+Says in words what a spread order -- as `call-spread-order` or
+`schwab-spread-order` makes it -- would do: a day order to open so many
+spreads, with a limit on the net debit of so much a share (so much for each,
+and in all, at most), and the two options it buys and sells. Read it before
+previewing or placing the order. It sends nothing.
+
+To trade it, look at it, preview it (which places nothing), and then place
+it:
+
+```lisp
+(define search (call-spreads creds "SPY" (date 2026 11 20) 765))
+(show-call-spreads search)
+(define order (call-spread-order search :contracts 2))
+(show-spread-order order)                                        ; the order, in words
+(schwab-preview-order creds "Brokerage" order)                   ; what Schwab makes of it
+; (schwab-place-order creds "Brokerage" order :confirm #t)       ; places it, for real
+```
+
+`examples/call_spread_example.lsp` does the first two lines for a stock, a
+day, and a price from the command line: `python3 ../lisp_interpreter.py
+call_spread_example.lsp SPY 2026-11-20 765`.
+
+The reading of Schwab's chain was checked against its real answer (see
+`schwab-option-chain`). The form of the spread order is from Schwab's
+documentation of the Trader API, and has not been sent to Schwab, even to
+preview: look at `schwab-preview-order`'s answer before placing anything.
 
 ### Portfolios
 

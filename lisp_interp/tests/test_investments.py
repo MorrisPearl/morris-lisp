@@ -1506,6 +1506,356 @@ class TestOptionCheck(LispTestCase):
             self.assertIn(symbol, shown)
 
 
+class TestCallSpreads(LispTestCase):
+    """lib/call_spreads.lsp: of the calls expiring on one day, the pair to buy (the lower strike) and sell (the
+    higher) with the highest profit, at the price expected on the day, as a share of the most that can be lost."""
+
+    DAY = datetime.date(2026, 11, 20)
+    NAN = float("nan")
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('(load "call_spreads.lsp")')
+
+    def make_chain(self, rows, name="chain", stock="XYZ", price=104.0):
+        """A chain table, as schwab-option-chain makes one, from rows: dicts with strike, bid, and ask, and
+        optionally type (Call), expiration (DAY), mid, volume (5), open_interest (10), and symbol."""
+        full = []
+        for row in rows:
+            row = dict({"type": "Call", "expiration": self.DAY, "volume": 5, "open_interest": 10}, **row)
+            row.setdefault("mid", (row["bid"] + row["ask"]) / 2)
+            row.setdefault("symbol", "%-6s%s%s%08d" % (stock, row["expiration"].strftime("%y%m%d"), row["type"][0],
+                                                     round(row["strike"] * 1000)))
+            full.append(row)
+        date = lambda d: lisp_core.LispDate(d.year, d.month, d.day)
+        columns = [("symbol", [lisp_core.LispString(r["symbol"]) for r in full]),
+                   ("type", [lisp_core.LispString(r["type"]) for r in full]),
+                   ("strike", [float(r["strike"]) for r in full]),
+                   ("expiration-date", [date(r["expiration"]) for r in full]),
+                   ("underlying", [lisp_core.LispString(stock)] * len(full)),
+                   ("underlying-price", [price] * len(full)),
+                   ("bid", [r["bid"] for r in full]), ("ask", [r["ask"] for r in full]), ("mid", [r["mid"] for r in full]),
+                   ("volume", [r["volume"] for r in full]), ("open-interest", [r["open_interest"] for r in full])]
+        self.env[lisp_core.Symbol(name)] = lisp_tables.make_table_value(
+            [(heading, lisp_tables.column_vector(values)) for heading, values in columns])
+        return full
+
+    # Calls at 100, 105, 110 (bid, ask: 6.0 6.2; 3.0 3.2; 1.2 1.4), a put, and a December call to leave out
+    BASE = [{"strike": 100, "bid": 6.0, "ask": 6.2}, {"strike": 105, "bid": 3.0, "ask": 3.2},
+            {"strike": 110, "bid": 1.2, "ask": 1.4}]
+    EXTRAS = [{"strike": 102, "bid": 2.0, "ask": 2.2, "type": "Put"},
+              {"strike": 101, "bid": 7.0, "ask": 7.2, "expiration": datetime.date(2026, 12, 18)}]
+
+    def spreads(self, call="(call-spreads-for-chain chain (date 2026 11 20) 108)", rows=None):
+        """The spread-search's table of spreads, as a dict of columns, from the call."""
+        if rows is not None:
+            self.make_chain(rows)
+        self.run_lisp("(define search %s)" % call)
+        table = self.run_lisp("(spread-search-spreads search)")
+        return {str(name): list(vector.items) for name, vector in lisp_tables.table_columns(table, "test")}
+
+    COLUMNS = ["long-symbol", "short-symbol", "long-strike", "short-strike", "long-price", "short-price", "cost",
+               "worth", "profit", "ratio", "breakeven", "max-profit"]
+
+    # -- a case worked out by hand ---------------------------------------------------------------------
+
+    def test_the_best_spread_by_hand(self):
+        """With the stock at 108 on the day:
+             buy 100, sell 105:  pay 6.2 - 3.0 = 3.2;  worth 8 - 3 = 5;   profit 1.8;  ratio 0.5625
+             buy 100, sell 110:  pay 6.2 - 1.2 = 5.0;  worth 8 - 0 = 8;   profit 3.0;  ratio 0.6
+             buy 105, sell 110:  pay 3.2 - 1.2 = 2.0;  worth 3 - 0 = 3;   profit 1.0;  ratio 0.5"""
+        self.make_chain(self.BASE + self.EXTRAS)
+        table = self.spreads()
+        self.assertEqual(list(table), self.COLUMNS)
+        self.assertEqual([(a, b) for a, b in zip(table["long-strike"], table["short-strike"])],
+                         [(100, 110), (100, 105), (105, 110)])                # best first
+        for column, expected in [("cost", [5.0, 3.2, 2.0]), ("worth", [8.0, 5.0, 3.0]), ("profit", [3.0, 1.8, 1.0]),
+                                 ("ratio", [0.6, 0.5625, 0.5]), ("breakeven", [105.0, 103.2, 107.0]),
+                                 ("max-profit", [5.0, 1.8, 3.0]), ("long-price", [6.2, 6.2, 3.2]),
+                                 ("short-price", [1.2, 3.0, 1.2])]:
+            with self.subTest(column=column):
+                np.testing.assert_allclose(table[column], expected, rtol=1e-5)
+        self.assertEqual([str(s) for s in table["long-symbol"]],
+                         ["XYZ   261120C00100000", "XYZ   261120C00100000", "XYZ   261120C00105000"])
+        self.assertEqual([str(s) for s in table["short-symbol"]],
+                         ["XYZ   261120C00110000", "XYZ   261120C00105000", "XYZ   261120C00110000"])
+        # what the search knows of the rest
+        for expression, expected in [("(spread-search-stock search)", '"XYZ"'), ("(spread-search-stock-price search)", "104.0"),
+                                     ("(spread-search-expiration search)", "2026-11-20"),
+                                     ("(spread-search-expected-price search)", "108"), ("(spread-search-prices search)", "bid-ask")]:
+            self.assertShows(expression, expected)
+
+    def test_the_best_spread_depends_on_where_the_stock_is_expected_to_be(self):
+        self.make_chain(self.BASE)
+        for expected, best, ratios in [
+                (95, (100, 105), [-1.0, -1.0, -1.0]),                      # below every strike: all is lost
+                (102, (100, 105), [(2 - 3.2) / 3.2, (2 - 5.0) / 5.0, -1.0]),
+                (200, (105, 110), [1.5, 1.0, 0.5625])]:                      # above them: the whole width is made
+            with self.subTest(expected=expected):
+                table = self.spreads("(call-spreads-for-chain chain (date 2026 11 20) %d)" % expected)
+                self.assertEqual((table["long-strike"][0], table["short-strike"][0]), best)
+                np.testing.assert_allclose(sorted(table["ratio"], reverse=True), sorted(ratios, reverse=True), rtol=1e-5, atol=1e-6)
+                self.assertEqual(table["ratio"], sorted(table["ratio"], reverse=True))
+
+    def test_prices_at_the_middle(self):
+        """Middles of 6.15, 3.05, 1.25: costs of 3.1 (100, 105), 4.9 (100, 110), and 1.8 (105, 110): the ratios are
+        1.9/3.1, 3.1/4.9, and 1.2/1.8, and it is the 105/110 that is best, where with bids and asks it is 100/110."""
+        self.make_chain([dict(r, mid=m) for r, m in zip(self.BASE, (6.15, 3.05, 1.25))])
+        table = self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 :prices 'mid)")
+        self.assertEqual([(a, b) for a, b in zip(table["long-strike"], table["short-strike"])],
+                         [(105, 110), (100, 110), (100, 105)])
+        np.testing.assert_allclose(table["cost"], [1.8, 4.9, 3.1], rtol=1e-5)
+        np.testing.assert_allclose(table["ratio"], [1.2 / 1.8, 3.1 / 4.9, 1.9 / 3.1], rtol=1e-5)
+        self.assertShows("(spread-search-prices search)", "mid")
+        self.assertShows("(table-column (spread-search-spreads (call-spreads-for-chain chain (date 2026 11 20) 108)) \"long-strike\")",
+                         "#(100.0 100.0 105.0)")                                # (the default is bid-ask)
+
+    # -- the same, against a plain calculation, on random chains -------------------------------------------
+
+    def reference(self, rows, expected, prices="bid-ask", min_oi=1, min_volume=0, min_cost=0.0, day=DAY):
+        """Every spread, from the definition, in plain Python: (long symbol, short symbol, long strike, short
+        strike, cost, worth, profit, ratio, breakeven, max-profit)."""
+        f32 = lambda x: float(np.float32(x))
+        usable = lambda r: (r["type"] == "Call" and r["expiration"] == day and r["bid"] > 0 and r["ask"] > 0 and
+                            (0 if r["open_interest"] != r["open_interest"] else r["open_interest"]) >= min_oi and
+                            (0 if r["volume"] != r["volume"] else r["volume"]) >= min_volume)
+        calls = sorted((r for r in rows if usable(r)), key=lambda r: r["strike"])
+        found = []
+        for i, low in enumerate(calls):
+            for high in calls[i + 1:]:
+                if not high["strike"] > low["strike"]:
+                    continue
+                bought = f32(low["ask"] if prices == "bid-ask" else low["mid"])
+                sold = f32(high["bid"] if prices == "bid-ask" else high["mid"])
+                cost = bought - sold
+                if cost <= 0 or cost < min_cost:
+                    continue
+                worth = max(expected - low["strike"], 0) - max(expected - high["strike"], 0)
+                profit = worth - cost
+                found.append((low["symbol"], high["symbol"], low["strike"], high["strike"], cost, worth, profit,
+                              profit / cost, low["strike"] + cost, high["strike"] - low["strike"] - cost))
+        return found
+
+    def random_rows(self, seed, strikes=range(80, 131), extras=True):
+        rng = np.random.default_rng(seed)
+        rows = []
+        for strike in strikes:
+            value = max(104.0 - strike, 0) + 3.0 * math.exp(-abs(strike - 104.0) / 10.0)
+            bid = round(value * (1 - rng.uniform(0, 0.06)), 2)
+            ask = round(value * (1 + rng.uniform(0, 0.06)) + 0.01, 2)
+            rows.append({"strike": strike, "bid": 0.0 if rng.uniform() < 0.05 else bid, "ask": ask,
+                         "volume": self.NAN if rng.uniform() < 0.1 else int(rng.integers(0, 50)),
+                         "open_interest": self.NAN if rng.uniform() < 0.05 else int(rng.integers(0, 3)) * int(rng.integers(0, 500))})
+            if extras and rng.uniform() < 0.2:
+                rows.append({"strike": strike, "bid": bid, "ask": ask, "type": "Put"})
+            if extras and rng.uniform() < 0.2:
+                rows.append({"strike": strike, "bid": bid, "ask": ask, "expiration": datetime.date(2026, 12, 18)})
+        return rows
+
+    def test_it_agrees_with_a_plain_calculation_on_random_chains(self):
+        for seed in range(6):
+            rows = self.random_rows(seed)
+            full = self.make_chain(rows)
+            for expected, options, python in [(104, "", {}), (96.5, "", {}), (118, ":prices 'mid", {"prices": "mid"}),
+                                              (109, ":min-open-interest 100 :min-volume 10", {"min_oi": 100, "min_volume": 10}),
+                                              (113, ":min-open-interest 0 :min-cost 0.555", {"min_oi": 0, "min_cost": 0.555})]:
+                with self.subTest(seed=seed, expected=expected, options=options):
+                    table = self.spreads("(call-spreads-for-chain chain (date 2026 11 20) %s %s)" % (expected, options))
+                    mine = self.reference(full, expected, **python)
+                    self.assertEqual(len(table["ratio"]), len(mine))
+                    self.assertGreater(len(mine), 50)
+                    # the same spreads (by their two options), with the same numbers
+                    by_options = {(a, b): rest for a, b, *rest in mine}
+                    for index in range(len(mine)):
+                        key = (str(table["long-symbol"][index]), str(table["short-symbol"][index]))
+                        rest = by_options[key]
+                        got = [table[c][index] for c in ("long-strike", "short-strike", "cost", "worth", "profit", "ratio", "breakeven", "max-profit")]
+                        np.testing.assert_allclose(got, rest, rtol=2e-4, atol=2e-4)
+                    self.assertEqual(table["ratio"], sorted(table["ratio"], reverse=True))        # best first
+                    np.testing.assert_allclose(table["ratio"][0], max(r[7] for r in mine), rtol=2e-4)
+
+    # -- which calls and pairs count ----------------------------------------------------------------------
+
+    def strikes_in(self, table):
+        return sorted(set(table["long-strike"]) | set(table["short-strike"]))
+
+    def test_only_calls_of_that_day_with_quotes_open_interest_and_volume_count(self):
+        rows = self.BASE + self.EXTRAS + [
+            {"strike": 103, "bid": 0.0, "ask": 4.0},                              # no bid
+            {"strike": 106, "bid": 2.4, "ask": self.NAN},                         # no ask
+            {"strike": 107, "bid": 2.0, "ask": 2.2, "open_interest": 0},          # no open interest
+            {"strike": 108, "bid": 1.6, "ask": 1.8, "volume": 0},                 # none traded
+            {"strike": 109, "bid": 1.3, "ask": 1.5, "open_interest": self.NAN}]   # open interest not known
+        self.make_chain(rows)
+        self.assertEqual(self.strikes_in(self.spreads()), [100, 105, 108, 110])
+        self.assertEqual(self.strikes_in(self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 :min-volume 1)")),
+                         [100, 105, 110])
+        self.assertEqual(self.strikes_in(self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 :min-open-interest 0)")),
+                         [100, 105, 107, 108, 109, 110])                       # (an unknown count is taken to be 0)
+        self.assertEqual(self.strikes_in(self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 :min-open-interest 11)")), [])
+
+    def test_a_pair_that_pays_you_has_no_loss_to_divide_by_and_is_left_out(self):
+        # 105 is worth more than 100 here (the quotes disagree): buying 100 and selling 105 costs -0.2
+        table = self.spreads(rows=[{"strike": 100, "bid": 5.0, "ask": 5.2}, {"strike": 105, "bid": 5.4, "ask": 5.6},
+                                   {"strike": 110, "bid": 3.0, "ask": 3.2}])
+        self.assertEqual([(a, b) for a, b in zip(table["long-strike"], table["short-strike"])], [(100, 110), (105, 110)])
+        np.testing.assert_allclose(table["cost"], [2.2, 2.6], rtol=1e-5)
+        # a cost of exactly 0 is not a loss to divide by either
+        table = self.spreads(rows=[{"strike": 100, "bid": 4.8, "ask": 5.0}, {"strike": 105, "bid": 5.0, "ask": 5.2}])
+        self.assertEqual(len(table["cost"]), 0)
+
+    def test_min_cost_leaves_out_the_cheap_spreads(self):
+        self.make_chain(self.BASE)
+        table = self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 :min-cost 2.5)")
+        np.testing.assert_allclose(table["cost"], [5.0, 3.2], rtol=1e-5)
+        table = self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 :min-cost 5.5)")
+        self.assertEqual(len(table["cost"]), 0)
+
+    def test_two_calls_at_one_strike_make_no_spread(self):
+        table = self.spreads(rows=[{"strike": 100, "bid": 6.0, "ask": 6.2, "symbol": "XYZ   261120C00100000"},
+                                   {"strike": 100, "bid": 5.9, "ask": 6.1, "symbol": "XYZW  261120C00100000"},
+                                   {"strike": 105, "bid": 3.0, "ask": 3.2}])
+        self.assertEqual(sorted(str(s) for s in table["long-symbol"]), ["XYZ   261120C00100000", "XYZW  261120C00100000"])
+        self.assertEqual(set(table["short-strike"]), {105})
+
+    def test_with_fewer_than_two_calls_there_are_no_spreads(self):
+        self.make_chain(self.BASE[:1] + self.EXTRAS)
+        table = self.spreads()
+        self.assertEqual(list(table), self.COLUMNS)
+        self.assertEqual([len(v) for v in table.values()], [0] * 12)
+        self.run_lisp("(show-call-spreads search)")
+        self.assertIn("No pair of its calls makes a spread", self.printed())
+        self.assertIn("0 spreads", self.printed())
+
+    def test_the_expiration_may_be_text_and_a_day_without_calls_is_an_error(self):
+        self.make_chain(self.BASE + self.EXTRAS)
+        self.assertEqual(self.spreads('(call-spreads-for-chain chain "2026-11-20" 108)')["ratio"],
+                         self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108)")["ratio"])
+        self.assertLispError("(call-spreads-for-chain chain (date 2026 11 27) 108)",
+                             "no calls expiring on 2026-11-27; its calls expire on 2026-11-20, 2026-12-18")
+        self.make_chain([{"strike": 100, "bid": 1.0, "ask": 1.2, "type": "Put"}])
+        self.assertLispError("(call-spreads-for-chain chain (date 2026 11 20) 108)", "its calls expire on no day at all")
+        self.make_chain(self.BASE)
+        self.assertLispError("(call-spreads-for-chain chain (date 2026 11 20) 108 :prices 'last)", ":prices is 'bid-ask or 'mid")
+
+    # -- the order ---------------------------------------------------------------------------------------
+
+    def test_the_order_buys_the_lower_strike_and_sells_the_higher_and_sends_nothing(self):
+        self.make_chain(self.BASE)
+        self.run_lisp("(define search (call-spreads-for-chain chain (date 2026 11 20) 108))")
+        import lisp_schwab
+        as_json = lambda src: lisp_schwab.lisp_to_json(self.run_lisp(src))
+        with mock.patch.object(lisp_schwab, "schwab_request",
+                               side_effect=AssertionError("preparing an order must send nothing")):
+            best = as_json("(call-spread-order search)")
+            three = as_json("(call-spread-order search :contracts 3)")
+            second = as_json("(call-spread-order search :row 1 :contracts 2)")
+            third = as_json("(call-spread-order search :row 2)")
+            cheaper = as_json("(call-spread-order search :price 4.85)")
+        legs = lambda order: [(leg["instruction"], leg["instrument"]["symbol"], leg["quantity"]) for leg in order["orderLegCollection"]]
+        self.assertEqual(best, {
+            "session": "NORMAL", "duration": "DAY", "orderType": "NET_DEBIT", "complexOrderStrategyType": "VERTICAL",
+            "price": 5.0, "orderStrategyType": "SINGLE",
+            "orderLegCollection": [
+                {"instruction": "BUY_TO_OPEN", "quantity": 1, "instrument": {"symbol": "XYZ   261120C00100000", "assetType": "OPTION"}},
+                {"instruction": "SELL_TO_OPEN", "quantity": 1, "instrument": {"symbol": "XYZ   261120C00110000", "assetType": "OPTION"}}]})
+        self.assertEqual(legs(three), [("BUY_TO_OPEN", "XYZ   261120C00100000", 3), ("SELL_TO_OPEN", "XYZ   261120C00110000", 3)])
+        self.assertEqual((second["price"], legs(second)),                      # the next best: 100/105, at 3.2 (3.1999998)
+                         (3.2, [("BUY_TO_OPEN", "XYZ   261120C00100000", 2), ("SELL_TO_OPEN", "XYZ   261120C00105000", 2)]))
+        self.assertEqual((third["price"], legs(third)),                      # the last: 105/110, at 2.0 (a different call bought)
+                         (2.0, [("BUY_TO_OPEN", "XYZ   261120C00105000", 1), ("SELL_TO_OPEN", "XYZ   261120C00110000", 1)]))
+        self.assertEqual(cheaper["price"], 4.85)
+        self.assertLispError("(call-spread-order search :row 3)", "there is no row 3: the search found 3 spreads")
+        self.assertLispError("(call-spread-order search :contracts 0)", "whole number of spreads")
+
+    def test_an_order_can_be_read_in_words_before_it_is_sent(self):
+        self.make_chain(self.BASE)
+        self.run_lisp("(define search (call-spreads-for-chain chain (date 2026 11 20) 108))")
+        self.run_lisp("(show-spread-order (call-spread-order search :contracts 3))")
+        shown = self.printed()
+        self.assertIn("This order has not been sent. If it were: a day order to open 3 spreads, with a limit on the net "
+                      "debit of 5.00 a share (500.00 for each, 1,500.00 in all, at most):", shown)
+        self.assertIn("  BUY_TO_OPEN   3 x XYZ   261120C00100000\n", shown)
+        self.assertIn("  SELL_TO_OPEN  3 x XYZ   261120C00110000\n", shown)
+        self.out.clear()
+        self.run_lisp("(show-spread-order (call-spread-order search :row 1 :price 3.1))")
+        self.assertIn("open 1 spread, with a limit on the net debit of 3.10 a share (310.00 for each, 310.00 in all", self.printed())
+        self.out.clear()
+        self.run_lisp("(show-spread-order (schwab-spread-order \"XYZ   261120C00100000\" \"XYZ   261120C00105000\" 2 1.5 "
+                      ":duration \"good_till_cancel\"))")
+        self.assertIn("a good_till_cancel order to open 2 spreads", self.printed())
+
+    # -- getting the chain from Schwab, and saying so ----------------------------------------------------
+
+    def test_it_asks_schwab_for_the_calls_that_expire_that_day(self):
+        self.make_chain(self.BASE)
+        asked = []
+        self.env[lisp_core.Symbol("schwab-option-chain")] = lambda creds, symbol, *options: (
+            asked.append((str(creds), str(symbol), [lisp_core.to_string(o) for o in options])) or self.env[lisp_core.Symbol("chain")])
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("credentials.json")
+        table = self.spreads('(call-spreads creds "XYZ" "2026-11-20" 108 :prices \'mid :min-cost 0.5)')
+        self.assertEqual(asked, [("credentials.json", "XYZ", [":expiration", "2026-11-20", ":type", '"CALL"'])])
+        self.assertEqual(len(table["ratio"]), 3)
+        self.assertShows("(spread-search-prices search)", "mid")                  # its options were passed on
+
+    def test_it_says_when_the_market_is_closed(self):
+        self.make_chain(self.BASE)
+        self.env[lisp_core.Symbol("schwab-option-chain")] = lambda *a: self.env[lisp_core.Symbol("chain")]
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("credentials.json")
+        for moment, closed in [(datetime.datetime(2026, 10, 14, 10, 30), False),       # a Wednesday morning
+                               (datetime.datetime(2026, 10, 14, 9, 29), True), (datetime.datetime(2026, 10, 14, 16, 0), True),
+                               (datetime.datetime(2026, 10, 17, 11, 0), True)]:       # a Saturday
+            with self.subTest(moment=moment):
+                self.out.clear()
+                with mock.patch.object(lisp_clock, "now", lambda moment=moment: moment):
+                    self.run_lisp('(call-spreads creds "XYZ" (date 2026 11 20) 108)')
+                self.assertEqual("The market is closed now: the bids and asks are from its last close." in self.printed(), closed)
+
+    # -- showing them, and the example ---------------------------------------------------------------------
+
+    def test_showing_the_spreads(self):
+        self.make_chain(self.BASE + self.EXTRAS)
+        self.run_lisp("(show-call-spreads (call-spreads-for-chain chain (date 2026 11 20) 108))")
+        shown = self.printed()
+        for text in ["XYZ is at 104.00. Bull call spreads expiring 2026-11-20, if it is at 108.00 then; "
+                     "bought and sold at the ask and bid prices. 3 spreads.",
+                     "The best: buy the 100.00 call, at 6.20, and sell the 110.00 call, at 1.20.",
+                     "It costs 5.00 a share (500.00 for a contract of 100). That is the most you can lose, "
+                     "if XYZ ends at 100.00 or less.",
+                     "With XYZ at 108.00 on 2026-11-20, the spread is worth 8.00 a share, a profit of 3.00 "
+                     "(300.00 a contract): 60% of the most you can lose.",
+                     "It breaks even with XYZ at 105.00; the most it can make is 5.00 a share, with XYZ at 110.00 or more.",
+                     "The best 3, by the ratio of profit to the most that can be lost",
+                     "(define order (call-spread-order search :contracts 1))", "(show-spread-order order)",
+                     "(schwab-preview-order creds \"your account\" order)", "(schwab-place-order creds \"your account\" order :confirm #t)"]:
+            self.assertIn(text, shown)
+        self.assertIn(" 100.00        110.00        6.20         1.20  5.00   8.00    3.00    60%     105.00        5.00", shown)
+        self.assertNotIn("XYZ   2611", shown)                                    # (the symbols are not in the table)
+        self.out.clear()
+        self.run_lisp("(show-call-spreads (call-spreads-for-chain chain (date 2026 11 20) 108 :prices 'mid) :count 1)")
+        self.assertIn("middle prices", self.printed())
+        self.assertIn("The best 1, by", self.printed())
+
+    def test_the_example_takes_the_stock_the_day_and_the_price_from_the_command_line(self):
+        self.make_chain(self.BASE)
+        asked = []
+        self.env[lisp_core.Symbol("schwab-option-chain")] = lambda creds, symbol, *options: (
+            asked.append((str(symbol), lisp_core.to_string(options[1]))) or self.env[lisp_core.Symbol("chain")])
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("no-credentials-needed.json")
+        try:
+            lisp_builtins.set_command_line_arguments(["XYZ", "2026-11-20", "108"])
+            lisp_core.run_file(os.path.join(EXAMPLES, "call_spread_example.lsp"), self.env)
+            self.assertEqual(asked, [("XYZ", "2026-11-20")])
+            self.assertIn("The best: buy the 100.00 call, at 6.20, and sell the 110.00 call, at 1.20.", self.printed())
+            self.assertNotIn("schwab-place-order creds \"your account\" order :confirm #f", self.printed())
+            lisp_builtins.set_command_line_arguments(["XYZ"])
+            with self.assertRaises(lisp_core.LispError) as caught:
+                lisp_core.run_file(os.path.join(EXAMPLES, "call_spread_example.lsp"), self.env)
+            self.assertIn("Give the stock, the expiration day, and the price you expect", str(caught.exception))
+        finally:
+            lisp_builtins.set_command_line_arguments([])
+
+
 class TestPortfolio(LispTestCase):
     """lisp_portfolio.py: several investments' returns, paths of them, a portfolio's value, covariance, and
     mean-variance weights."""

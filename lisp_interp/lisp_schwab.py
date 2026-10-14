@@ -17,11 +17,15 @@ a week later; then (schwab-login creds) again.
   (schwab-quotes creds symbols)              quotes
   (schwab-price-history creds symbol [:start-date :end-date :frequency])
                                              daily (or weekly or monthly) prices
+  (schwab-option-chain creds symbol [:expiration d :type t :strikes n])
+                                             the options listed on a stock: bids, asks, volume
   (schwab-orders creds [:account a :days n]) the orders of the last n days
   (schwab-get creds path [parameters])       any of the API's other requests
 Orders:
   (schwab-order instruction symbol quantity [:type :price :stop-price :duration :asset-type])
                                              an order, to preview or place
+  (schwab-spread-order buy-symbol sell-symbol quantity net-debit [:duration d])
+                                             an order for a vertical spread: two options, for a net debit
   (schwab-preview-order creds account order) what Schwab would make of it; nothing is placed
   (schwab-place-order creds account order :confirm #t)
   (schwab-cancel-order creds account order-id)
@@ -45,6 +49,7 @@ import datetime
 import importlib.util
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -58,6 +63,7 @@ from lisp_core import (
 from lisp_data_common import credential, text_list
 from lisp_http import json_to_lisp
 from lisp_tables import table_from_tuples
+from lisp_tastytrade import OPTION_CHAIN_COLUMNS
 
 API_URL = "https://api.schwabapi.com"
 AUTHORIZE_URL = API_URL + "/v1/oauth/authorize"
@@ -505,6 +511,109 @@ def schwab_quotes(credentials_path, symbols):
     return table_from_tuples(rows, ["symbol", "description"] + [name for name, _ in QUOTE_FIELDS])
 
 
+def first_number(answer, *names):
+    """The first of these fields of Schwab's answer that is a number, or NaN."""
+    for name in names:
+        value = answer.get(name)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value
+    return float("nan")
+
+
+def known(value):
+    """value, or NaN if it is one Schwab fills in when it has none: -999."""
+    return float("nan") if value == -999 else value
+
+
+def chain_row(kind, expiration_key, strike_key, contract, underlying, underlying_price):
+    """One option's row of the chain table, in OPTION_CHAIN_COLUMNS' order."""
+    day_text, _, days_text = expiration_key.partition(":")
+    day = datetime.date.fromisoformat(day_text)
+    bid, ask = first_number(contract, "bid", "bidPrice"), first_number(contract, "ask", "askPrice")
+    strike = first_number(contract, "strikePrice")
+    return (LispString(contract["symbol"]), LispString(kind),
+            float(strike if strike == strike else strike_key),
+            LispDate(day.year, day.month, day.day),
+            int(days_text) if days_text.isdigit() else number(contract.get("daysToExpiration")),
+            None, LispString(underlying), underlying_price, bid, ask, (bid + ask) / 2,
+            first_number(contract, "last", "lastPrice"),
+            known(first_number(contract, "volatility")) / 100,            # (Schwab gives it in percent)
+            known(first_number(contract, "delta")), known(first_number(contract, "vega")),
+            first_number(contract, "totalVolume"), first_number(contract, "openInterest"))
+
+
+def chain_table(answer, who):
+    """The table of the options in Schwab's answer to a request for a chain."""
+    if not isinstance(answer, dict):
+        raise LispError("%s: Schwab sent no chain" % who)
+    if answer.get("status") not in (None, "SUCCESS"):
+        raise LispError("%s: Schwab says the chain's status is %s" % (who, answer.get("status")))
+    if answer.get("isChainTruncated") is True:
+        raise LispError("%s: Schwab cut the chain short -- it has more than it will send at once. Ask for less: "
+                        "one :expiration, or only some :strikes" % who)
+    underlying = str(answer.get("symbol", ""))
+    quote = answer.get("underlying") or {}
+    price = first_number(answer, "underlyingPrice")
+    if price != price:
+        price = first_number(quote, "mark", "last", "lastPrice")
+    rows = []
+    for kind, field in (("Call", "callExpDateMap"), ("Put", "putExpDateMap")):
+        for expiration_key, by_strike in (answer.get(field) or {}).items():
+            for strike_key, contracts in by_strike.items():
+                for contract in contracts:
+                    if not contract.get("symbol"):
+                        raise LispError("%s: Schwab's chain has an option with no symbol" % who)
+                    rows.append(chain_row(kind, expiration_key, strike_key, contract, underlying, price))
+    rows.sort(key=lambda row: (row[3].date, row[2], row[1]))
+    return table_from_tuples(rows, OPTION_CHAIN_COLUMNS)
+
+
+def schwab_option_chain(credentials_path, symbol, *options):
+    """(schwab-option-chain creds symbol [:expiration d :type t :strikes n]) --
+    the options listed on a stock or ETF, as a table with the columns of
+    tastytrade-option-chain's -- so what takes one takes the other: symbol (the
+    option's, in the form orders use), type ("Call" or "Put"), strike,
+    expiration-date, days-to-expiration, delivery-month (always '()),
+    underlying, underlying-price, bid, ask, mid, last-price,
+    implied-volatility, delta, vega, volume, and open-interest. The bids and
+    asks are live while the market is open, and the last close's after.
+    :expiration (a date, or "YYYY-MM-DD") asks for only that expiration's;
+    without it, every expiration Schwab has, which can be a lot. :type is
+    "CALL", "PUT", or "ALL" (the default). :strikes asks for only that many
+    strikes nearest the price, in each expiration."""
+    # Schwab's answer (to /marketdata/v1/chains) has assetMainType, assetSubType, symbol, status,
+    # strategy, interval, isDelayed, isIndex, isChainTruncated, numberOfContracts, daysToExpiration,
+    # interestRate (percent), dividendYield, underlyingPrice, volatility, ethOptionEligible,
+    # hasBinaryOptions, underlying (a quote: bid, ask, last, mark, ...), and callExpDateMap and
+    # putExpDateMap: {"2026-11-20:35": {"700.0": [contract]}}, each contract with ask, askSize, bid,
+    # bidSize, bidAskSize, breakEven, closePrice, daysToExpiration, deliverableNote, delta,
+    # description, exchangeName, exerciseType, expirationDate, expirationType, extrinsicValue, gamma,
+    # high52Week, highPrice, inTheMoney, intrinsicValue, last, lastSize, lastTradingDay, low52Week,
+    # lowPrice, mark, markChange, markPercentChange, mini, multiplier, netChange, nonStandard,
+    # openInterest, openPrice, optionDeliverablesList, optionRoot, pennyPilot, percentChange,
+    # putCall, quoteTimeInLong, rho, settlementType, ssid, strikePrice, symbol,
+    # theoreticalOptionValue, theoreticalVolatility, theta, timeValue, totalVolume,
+    # tradeTimeInLong, and vega. Its volatility is in percent. -999 stands for a Greek or
+    # volatility it doesn't have. The table has the most useful; (schwab-get creds
+    # "/marketdata/v1/chains" '(("symbol" . "SPY") ("contractType" . "CALL"))) has the rest.
+    who = "schwab-option-chain"
+    options = keyword_options(options, ["expiration", "type", "strikes"], who)
+    kind = str(options.get("type", "ALL")).upper()
+    if kind not in ("CALL", "PUT", "ALL"):
+        raise LispError('%s: :type is "CALL", "PUT", or "ALL", not %s' % (who, kind))
+    params = {"symbol": str(symbol).strip().upper(), "contractType": kind, "strategy": "SINGLE",
+              "includeUnderlyingQuote": "true"}
+    if "expiration" in options:
+        day = date_argument(options["expiration"], who, ":expiration").isoformat()
+        params["fromDate"] = params["toDate"] = day
+    if "strikes" in options:
+        strikes = options["strikes"]
+        if not isinstance(strikes, int) or isinstance(strikes, bool) or strikes < 1:
+            raise LispError("%s: :strikes must be a whole number, 1 or more" % who)
+        params["strikeCount"] = str(strikes)
+    return chain_table(api_get(credentials_path, "/marketdata/v1/chains", who, params), who)
+
+
 def milliseconds(value, who, what):
     """A date (or "YYYY-MM-DD") as the milliseconds since 1970 Schwab takes."""
     day = date_argument(value, who, what)
@@ -645,6 +754,66 @@ def schwab_order(instruction, symbol, quantity, *options):
     return json_to_lisp(order)
 
 
+OPTION_SYMBOL = re.compile(r"^([A-Z][A-Z0-9.]{0,5}) *(\d{6})([CP])(\d{8})$")
+
+
+def option_symbol_parts(symbol, who, what):
+    """An option's symbol -- the stock's, padded with spaces to 6 characters;
+    the expiration as YYMMDD; C or P; the strike times 1000, in 8 digits --
+    as (stock, expiration, C or P, strike, the symbol as Schwab wants it)."""
+    match = OPTION_SYMBOL.match(str(symbol).strip().upper())
+    if not match:
+        raise LispError('%s: %s must be an option\'s symbol, such as "SPY   261218C00700000" (the stock\'s, '
+                        'padded with spaces to 6 characters; the expiration as YYMMDD; C or P; the strike times '
+                        '1000 in 8 digits), not %s' % (who, what, to_display(symbol)))
+    stock, expiration, kind, strike = match.groups()
+    return stock, expiration, kind, int(strike) / 1000, stock.ljust(6) + expiration + kind + strike
+
+
+def to_display(value):
+    return value if isinstance(value, str) else repr(value)
+
+
+def schwab_spread_order(buy_symbol, sell_symbol, quantity, net_debit, *options):
+    """(schwab-spread-order buy-symbol sell-symbol quantity net-debit
+    [:duration d]) -- an order, as a hash table in Schwab's form, to open a
+    vertical spread: buy one option and sell another of the same stock,
+    expiration, and type, for a net debit, a limit on what is paid in all, a
+    share. quantity is how many spreads (contracts of each). It sends nothing:
+    give it to schwab-preview-order or schwab-place-order. For calls, the one
+    bought has the lower strike; for puts, the higher -- the other way round
+    would be a credit spread, which is not made here. :duration is DAY (the
+    default), GOOD_TILL_CANCEL, or FILL_OR_KILL. The net debit is rounded to a
+    cent."""
+    who = "schwab-spread-order"
+    options = keyword_options(options, ["duration"], who)
+    duration = str(options.get("duration", "DAY")).upper()
+    if duration not in DURATIONS:
+        raise LispError("%s: :duration is one of %s" % (who, ", ".join(DURATIONS)))
+    bought = option_symbol_parts(buy_symbol, who, "the option to buy")
+    sold = option_symbol_parts(sell_symbol, who, "the option to sell")
+    if bought[:3] != sold[:3]:
+        raise LispError("%s: the two options must be of the same stock, expiration, and type (calls or puts): "
+                        "%s and %s are not" % (who, bought[4], sold[4]))
+    if bought[3] == sold[3]:
+        raise LispError("%s: the two options have the same strike" % who)
+    if (bought[3] < sold[3]) != (bought[2] == "C"):
+        raise LispError("%s: buying the %s at %g and selling the %s at %g would be a credit spread: for a debit "
+                        "spread, a call bought has the lower strike, and a put the higher"
+                        % (who, "call" if bought[2] == "C" else "put", bought[3],
+                           "call" if bought[2] == "C" else "put", sold[3]))
+    if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1:
+        raise LispError("%s: the quantity is a whole number of spreads, 1 or more" % who)
+    if not isinstance(net_debit, (int, float)) or isinstance(net_debit, bool) or round(net_debit, 2) <= 0:
+        raise LispError("%s: the net debit must be a number above 0 (to the cent)" % who)
+    leg = lambda instruction, parts: {"instruction": instruction, "quantity": quantity,
+                                      "instrument": {"symbol": parts[4], "assetType": "OPTION"}}
+    return json_to_lisp({"session": "NORMAL", "duration": duration, "orderType": "NET_DEBIT",
+                         "complexOrderStrategyType": "VERTICAL", "price": round(float(net_debit), 2),
+                         "orderStrategyType": "SINGLE",
+                         "orderLegCollection": [leg("BUY_TO_OPEN", bought), leg("SELL_TO_OPEN", sold)]})
+
+
 def lisp_to_json(value):
     """Lisp data as JSON's: a hash table as an object, a list or vector as
     an array."""
@@ -727,7 +896,9 @@ BUILTINS = {
     "schwab-price-history": schwab_price_history,
     "schwab-orders": schwab_orders,
     "schwab-get": schwab_get,
+    "schwab-option-chain": schwab_option_chain,
     "schwab-order": schwab_order,
+    "schwab-spread-order": schwab_spread_order,
     "schwab-preview-order": schwab_preview_order,
     "schwab-place-order": schwab_place_order,
     "schwab-cancel-order": schwab_cancel_order,
