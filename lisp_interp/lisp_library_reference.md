@@ -5313,8 +5313,10 @@ The options:
   nowhere near.) A higher `:min-open-interest` guards against these.
 - Both calls of a spread must have a bid and an ask above 0, and open
   interest (the contracts open) of at least `:min-open-interest` (1), and
-  volume of at least `:min-volume` (0). A count the chain doesn't have is
-  taken to be 0.
+  volume of at least `:min-volume` (1: the option has traded at least once
+  today). A count the chain doesn't have is taken to be 0. Volume is the
+  trades so far today, so it is 0 for every option before the market opens
+  (and the search finds nothing, and says why): give `:min-volume 0` then.
 - A pair that would pay you to buy it, with a cost of 0 or less -- from
   quotes that don't agree -- has no most you can lose to divide by, and is
   left out; so is one that costs less than `:min-cost` (0).

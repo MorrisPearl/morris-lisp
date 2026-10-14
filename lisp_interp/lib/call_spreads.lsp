@@ -38,7 +38,9 @@
 ;
 ; Which calls count. Both must have a bid and an ask above 0, and open
 ; interest of at least :min-open-interest (1; the number of contracts that
-; are open) and volume of at least :min-volume (0). A pair that would pay
+; are open) and volume of at least :min-volume (1: the option has traded at
+; least once today). Volume counts today's trades, so it is 0 for every option
+; before the market opens: give :min-volume 0 then. A pair that would pay
 ; you to buy it (a cost of 0 or less, from quotes that don't agree) has no
 ; most you can lose and is left out, as is one that costs less than
 ; :min-cost (0). Spreads that cost almost nothing have huge ratios if the
@@ -124,7 +126,7 @@ those sold, their strikes, and their prices."
                        (string-join (map date->string (vector->list days)) ", "))))))
 
 (define (call-spreads-for-chain chain expiration expected-price
-                                &key (prices 'bid-ask) (min-open-interest 1) (min-volume 0) (min-cost 0))
+                                &key (prices 'bid-ask) (min-open-interest 1) (min-volume 1) (min-cost 0))
   "Every pair of the chain's calls that expire on expiration (a date, or
 YYYY-MM-DD text), bought at the lower strike and sold at the higher, as a
 spread-search (see the top of this file): its table of spreads has a row for
@@ -186,7 +188,7 @@ calls count: see the top of this file."
                        "ratio" #t)))))))
 
 (define (call-spreads creds symbol expiration expected-price
-                      &key (prices 'bid-ask) (min-open-interest 1) (min-volume 0) (min-cost 0))
+                      &key (prices 'bid-ask) (min-open-interest 1) (min-volume 1) (min-cost 0))
   "Get the stock's calls expiring on expiration (a date, or YYYY-MM-DD text)
 from Schwab -- the bids and asks are live while the market is open, and say so
 if it is closed -- and rank the call spreads: see call-spreads-for-chain, which
@@ -276,7 +278,7 @@ and the next count best."
                      (if (eq? (spread-search-prices search) 'mid) "middle" "ask and bid") rows))
     (cond
       ((= rows 0)
-       (display "No pair of its calls makes a spread: there are no two with a bid and an ask, open interest, and a net cost above 0.\n"))
+       (display "No pair of its calls makes a spread: there are no two with a bid and an ask, open interest, volume today, and a net cost above 0.\n(Volume counts today's trades, and is 0 before the market opens: give :min-volume 0 then.)\n"))
       (else
         (display (call-spreads--best-in-words search))
         (display (format "\n\nThe best {}, by the ratio of profit to the most that can be lost (prices are for a share):\n"

@@ -1612,7 +1612,7 @@ class TestCallSpreads(LispTestCase):
 
     # -- the same, against a plain calculation, on random chains -------------------------------------------
 
-    def reference(self, rows, expected, prices="bid-ask", min_oi=1, min_volume=0, min_cost=0.0, day=DAY):
+    def reference(self, rows, expected, prices="bid-ask", min_oi=1, min_volume=1, min_cost=0.0, day=DAY):
         """Every spread, from the definition, in plain Python: (long symbol, short symbol, long strike, short
         strike, cost, worth, profit, ratio, breakeven, max-profit)."""
         f32 = lambda x: float(np.float32(x))
@@ -1684,15 +1684,18 @@ class TestCallSpreads(LispTestCase):
             {"strike": 103, "bid": 0.0, "ask": 4.0},                              # no bid
             {"strike": 106, "bid": 2.4, "ask": self.NAN},                         # no ask
             {"strike": 107, "bid": 2.0, "ask": 2.2, "open_interest": 0},          # no open interest
-            {"strike": 108, "bid": 1.6, "ask": 1.8, "volume": 0},                 # none traded
-            {"strike": 109, "bid": 1.3, "ask": 1.5, "open_interest": self.NAN}]   # open interest not known
+            {"strike": 108, "bid": 1.6, "ask": 1.8, "volume": 0},                 # none traded today
+            {"strike": 109, "bid": 1.3, "ask": 1.5, "open_interest": self.NAN},   # open interest not known
+            {"strike": 112, "bid": 0.9, "ask": 1.1, "volume": self.NAN}]          # volume not known
         self.make_chain(rows)
-        self.assertEqual(self.strikes_in(self.spreads()), [100, 105, 108, 110])
-        self.assertEqual(self.strikes_in(self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 :min-volume 1)")),
-                         [100, 105, 110])
-        self.assertEqual(self.strikes_in(self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 :min-open-interest 0)")),
-                         [100, 105, 107, 108, 109, 110])                       # (an unknown count is taken to be 0)
-        self.assertEqual(self.strikes_in(self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 :min-open-interest 11)")), [])
+        each = lambda options: self.strikes_in(self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 %s)" % options))
+        self.assertEqual(each(""), [100, 105, 110])                                # by default, it has traded today
+        self.assertEqual(each(":min-volume 1"), [100, 105, 110])
+        self.assertEqual(each(":min-volume 0"), [100, 105, 108, 110, 112])         # (an unknown count is taken to be 0)
+        self.assertEqual(each(":min-volume 6"), [])                                # (the others traded 5 times)
+        self.assertEqual(each(":min-open-interest 0"), [100, 105, 107, 109, 110])
+        self.assertEqual(each(":min-open-interest 0 :min-volume 0"), [100, 105, 107, 108, 109, 110, 112])
+        self.assertEqual(each(":min-open-interest 11"), [])
 
     def test_a_pair_that_pays_you_has_no_loss_to_divide_by_and_is_left_out(self):
         # 105 is worth more than 100 here (the quotes disagree): buying 100 and selling 105 costs -0.2
@@ -1725,6 +1728,8 @@ class TestCallSpreads(LispTestCase):
         self.assertEqual([len(v) for v in table.values()], [0] * 12)
         self.run_lisp("(show-call-spreads search)")
         self.assertIn("No pair of its calls makes a spread", self.printed())
+        self.assertIn("volume today", self.printed())
+        self.assertIn("give :min-volume 0 then", self.printed())
         self.assertIn("0 spreads", self.printed())
 
     def test_the_expiration_may_be_text_and_a_day_without_calls_is_an_error(self):
@@ -1797,6 +1802,17 @@ class TestCallSpreads(LispTestCase):
         self.assertEqual(asked, [("credentials.json", "XYZ", [":expiration", "2026-11-20", ":type", '"CALL"'])])
         self.assertEqual(len(table["ratio"]), 3)
         self.assertShows("(spread-search-prices search)", "mid")                  # its options were passed on
+
+    def test_it_takes_only_options_that_have_traded_today_unless_told_otherwise(self):
+        """Before the market opens no option has traded today: the volume of each is 0."""
+        self.make_chain(self.BASE + [{"strike": 108, "bid": 1.6, "ask": 1.8, "volume": 0}])
+        self.env[lisp_core.Symbol("schwab-option-chain")] = lambda *a: self.env[lisp_core.Symbol("chain")]
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("credentials.json")
+        for options, strikes in [("", [100, 105, 110]), (":min-volume 1", [100, 105, 110]),
+                                 (":min-volume 0", [100, 105, 108, 110])]:
+            with self.subTest(options=options):
+                table = self.spreads('(call-spreads creds "XYZ" (date 2026 11 20) 108 %s)' % options)
+                self.assertEqual(self.strikes_in(table), strikes)
 
     def test_it_says_when_the_market_is_closed(self):
         self.make_chain(self.BASE)
