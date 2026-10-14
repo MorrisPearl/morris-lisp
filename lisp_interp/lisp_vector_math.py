@@ -25,7 +25,7 @@ import operator
 import numpy as np
 
 from lisp_core import (
-    LispDate, LispError, LispVector, NIL, _brief, _lisp_scalar, is_true, numeric_value, to_string,
+    LispDate, LispError, LispVector, NIL, _brief, _lisp_scalar, is_true, list_to_pairs, numeric_value, to_string,
 )
 
 
@@ -385,6 +385,56 @@ def vector_select(v, mask):
     return LispVector(v.items[keep])
 
 
+def positions_of(indices, name, size=None):
+    """A vector of positions as a numpy array of integers. Each must be 0 or more, and less than `size`
+    if that is given."""
+    require_vector(indices, name)
+    values = indices.items
+    if values.dtype == object or not np.all(np.isfinite(values.astype(np.float64))) \
+            or not np.all(values == np.floor(values)):
+        raise LispError("%s: the positions must be whole numbers" % name)
+    values = values.astype(np.int64)
+    if len(values) and values.min() < 0:
+        raise LispError("%s: a position is %d: positions count from 0 (vector-positions gives -1 for an item "
+                        "it didn't find: take those out first)" % (name, values.min()))
+    if size is not None and len(values) and values.max() >= size:
+        raise LispError("%s: there is no position %d in a vector of %d" % (name, values.max(), size))
+    return values
+
+
+def vector_gather(v, indices):
+    """(vector-gather v positions) -- the elements of v at those positions (counting from 0), in that order:
+    a position can come up more than once."""
+    require_vector(v, "vector-gather")
+    return LispVector(v.items[positions_of(indices, "vector-gather", len(v.items))])
+
+
+def vector_positions(v, items):
+    """(vector-positions v items) -- for each element of items, where in v it is (the first place, counting
+    from 0), or -1 if it isn't there."""
+    require_vector(v, "vector-positions")
+    require_vector(items, "vector-positions")
+    first = {}
+    for place, value in enumerate(v.items.tolist()):
+        first.setdefault(value, place)
+    return to_vector(np.array([first.get(value, -1) for value in items.items.tolist()], dtype=np.int64))
+
+
+def vector_grid(rows, columns):
+    """(vector-grid rows columns) -- every pair (i j) of a row number from 0 to rows - 1 and a column number
+    from 0 to columns - 1, as a list of two vectors, the i's and the j's: i changes slowest."""
+    for count in (rows, columns):
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise LispError("vector-grid: the numbers of rows and columns are whole numbers, 0 or more")
+    if rows * columns > MOST_GRID_PAIRS:
+        raise LispError("vector-grid: %d by %d is more than %d pairs" % (rows, columns, MOST_GRID_PAIRS))
+    return list_to_pairs([to_vector(np.repeat(np.arange(rows), columns)),
+                          to_vector(np.tile(np.arange(columns), rows))])
+
+
+MOST_GRID_PAIRS = 50_000_000
+
+
 def vector_nan_p(v):
     """(vector-nan? v) -- a mask: 1 where v's element is missing (NaN, or
     '() in a vector of strings or dates)."""
@@ -432,6 +482,9 @@ COMPARISON_BUILTINS = {
     "vector-not": lambda m: to_vector(~truth_of(m, "vector-not")),
     "vector-where": vector_where,
     "vector-select": vector_select,
+    "vector-gather": vector_gather,
+    "vector-positions": vector_positions,
+    "vector-grid": vector_grid,
     "vector-nan?": vector_nan_p,
     "vector-fill-nan": vector_fill_nan,
     "vector-fill-forward": vector_fill_forward,

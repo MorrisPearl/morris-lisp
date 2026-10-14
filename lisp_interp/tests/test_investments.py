@@ -1506,39 +1506,13 @@ class TestOptionCheck(LispTestCase):
             self.assertIn(symbol, shown)
 
 
-class TestCallSpreads(LispTestCase):
+class TestCallSpreads(OptionChainTestCase):
     """lib/call_spreads.lsp: of the calls expiring on one day, the pair to buy (the lower strike) and sell (the
     higher) with the highest profit, at the price expected on the day, as a share of the most that can be lost."""
-
-    DAY = datetime.date(2026, 11, 20)
-    NAN = float("nan")
 
     def setUp(self):
         super().setUp()
         self.run_lisp('(load "call_spreads.lsp")')
-
-    def make_chain(self, rows, name="chain", stock="XYZ", price=104.0):
-        """A chain table, as schwab-option-chain makes one, from rows: dicts with strike, bid, and ask, and
-        optionally type (Call), expiration (DAY), mid, volume (5), open_interest (10), and symbol."""
-        full = []
-        for row in rows:
-            row = dict({"type": "Call", "expiration": self.DAY, "volume": 5, "open_interest": 10}, **row)
-            row.setdefault("mid", (row["bid"] + row["ask"]) / 2)
-            row.setdefault("symbol", "%-6s%s%s%08d" % (stock, row["expiration"].strftime("%y%m%d"), row["type"][0],
-                                                     round(row["strike"] * 1000)))
-            full.append(row)
-        date = lambda d: lisp_core.LispDate(d.year, d.month, d.day)
-        columns = [("symbol", [lisp_core.LispString(r["symbol"]) for r in full]),
-                   ("type", [lisp_core.LispString(r["type"]) for r in full]),
-                   ("strike", [float(r["strike"]) for r in full]),
-                   ("expiration-date", [date(r["expiration"]) for r in full]),
-                   ("underlying", [lisp_core.LispString(stock)] * len(full)),
-                   ("underlying-price", [price] * len(full)),
-                   ("bid", [r["bid"] for r in full]), ("ask", [r["ask"] for r in full]), ("mid", [r["mid"] for r in full]),
-                   ("volume", [r["volume"] for r in full]), ("open-interest", [r["open_interest"] for r in full])]
-        self.env[lisp_core.Symbol(name)] = lisp_tables.make_table_value(
-            [(heading, lisp_tables.column_vector(values)) for heading, values in columns])
-        return full
 
     # Calls at 100, 105, 110 (bid, ask: 6.0 6.2; 3.0 3.2; 1.2 1.4), a put, and a December call to leave out
     BASE = [{"strike": 100, "bid": 6.0, "ask": 6.2}, {"strike": 105, "bid": 3.0, "ask": 3.2},
@@ -1612,7 +1586,7 @@ class TestCallSpreads(LispTestCase):
 
     # -- the same, against a plain calculation, on random chains -------------------------------------------
 
-    def reference(self, rows, expected, prices="bid-ask", min_oi=1, min_volume=1, min_cost=0.0, day=DAY):
+    def reference(self, rows, expected, prices="bid-ask", min_oi=1, min_volume=1, min_cost=0.0, day=OptionChainTestCase.DAY):
         """Every spread, from the definition, in plain Python: (long symbol, short symbol, long strike, short
         strike, cost, worth, profit, ratio, breakeven, max-profit)."""
         f32 = lambda x: float(np.float32(x))
@@ -1714,12 +1688,21 @@ class TestCallSpreads(LispTestCase):
         table = self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 :min-cost 5.5)")
         self.assertEqual(len(table["cost"]), 0)
 
-    def test_two_calls_at_one_strike_make_no_spread(self):
+    def test_options_of_different_roots_never_make_a_spread(self):
+        """Some stocks and indexes have two roots of options with the same strike and expiration (SPX and SPXW): they
+        are not the same contract, and a spread of one with the other is not an order Schwab would take. A spread is of
+        one root's options; and two of the same strike make no spread."""
         table = self.spreads(rows=[{"strike": 100, "bid": 6.0, "ask": 6.2, "symbol": "XYZ   261120C00100000"},
                                    {"strike": 100, "bid": 5.9, "ask": 6.1, "symbol": "XYZW  261120C00100000"},
                                    {"strike": 105, "bid": 3.0, "ask": 3.2}])
-        self.assertEqual(sorted(str(s) for s in table["long-symbol"]), ["XYZ   261120C00100000", "XYZW  261120C00100000"])
-        self.assertEqual(set(table["short-strike"]), {105})
+        self.assertEqual([(str(a), str(b)) for a, b in zip(table["long-symbol"], table["short-symbol"])],
+                         [("XYZ   261120C00100000", "XYZ   261120C00105000")])      # (the 105 is XYZ's; XYZW has just the 100)
+        table = self.spreads(rows=[{"strike": 100, "bid": 6.0, "ask": 6.2, "symbol": "XYZ   261120C00100000"},
+                                   {"strike": 100, "bid": 5.9, "ask": 6.1, "symbol": "XYZW  261120C00100000"},
+                                   {"strike": 105, "bid": 3.0, "ask": 3.2, "symbol": "XYZ   261120C00105000"},
+                                   {"strike": 105, "bid": 2.9, "ask": 3.1, "symbol": "XYZW  261120C00105000"}])
+        self.assertEqual(sorted((str(a), str(b)) for a, b in zip(table["long-symbol"], table["short-symbol"])),
+                         [("XYZ   261120C00100000", "XYZ   261120C00105000"), ("XYZW  261120C00100000", "XYZW  261120C00105000")])
 
     def test_with_fewer_than_two_calls_there_are_no_spreads(self):
         self.make_chain(self.BASE[:1] + self.EXTRAS)

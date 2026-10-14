@@ -3113,6 +3113,34 @@ Just the elements of `v` where the mask is true, in order.
 (vector-select #(10 20 30 40) #(1 0 1 0))   ; => #(10 30)
 ```
 
+#### `(vector-gather v positions)`, `(vector-positions v items)`, `(vector-grid rows columns)`
+Three ways to work with the *positions* of elements (counting from 0), for code
+that builds a table of combinations without a loop.
+
+`vector-gather` is the elements of `v` at those positions, in that order (a
+position can come up more than once; strings and dates work too).
+`vector-positions` goes the other way: for each element of `items`, where in
+`v` it is (the first place, if it's there more than once), or `-1` if it
+isn't. `vector-grid` gives every pair of a row number from 0 to `rows` - 1 and
+a column number from 0 to `columns` - 1, as a list of two vectors (the row
+numbers change slowest); with a mask, it gives the pairs `i < j`, say.
+
+```lisp
+(define strikes #(95 100 105 110))
+(vector-gather strikes #(3 0 0 2))                       ; => #(110 95 95 105)
+(vector-positions strikes #(105 107 95))                 ; => #(2 -1 0)
+(vector-grid 2 3)                                        ; => (#(0 0 0 1 1 1) #(0 1 2 0 1 2))
+
+; the strikes that have another strike 10 above them: where they are, and where the other is
+(define up (vector-positions strikes (+ strikes 10)))
+up                                                       ; => #(2 3 -1 -1)
+(vector-select (vector-range 4) (>= up 0))               ; => #(0 1)
+(vector-gather strikes (vector-select up (>= up 0)))     ; => #(105 110)
+```
+
+A position that is `-1` (not found) is an error for `vector-gather`: take those
+out first, as the last two lines do.
+
 #### `(vector-nan? v)`, `(vector-fill-nan v value)`, `(vector-fill-forward v)`
 `vector-nan?` gives a mask of the missing elements. `vector-fill-nan`
 replaces each missing element with `value`. `vector-fill-forward` replaces
@@ -5530,7 +5558,7 @@ The Python files:
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
 | `lisp_alpha_vantage.py` | `alpha-vantage-dividends`: a stock's dividends from Alpha Vantage, through `lisp_http.py` |
 | `lisp_google.py` | `google-login`, `google-sheet`: tables sent to a new Google spreadsheet |
-| `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-option-chain`, `schwab-orders`, `schwab-spread-order`, ...: your Schwab accounts |
+| `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-option-chain`, `schwab-orders`, `schwab-spread-order`, `schwab-multi-leg-order`, ...: your Schwab accounts |
 | `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `bootstrap-days`, `volatility-model`, `volatility-history`, `volatility-forecast`, `option-value`, `option-payoffs`: simulated prices of an investment, with its volatility starting at today's if asked, and what options on it are worth |
 | `lisp_calendar.py` | `trading-day?`, `add-trading-days`, `trading-days-between`, `nyse-holidays`, ...: the NYSE's trading days |
 | `lisp_futures.py` | `futures-curve-fit`, `futures-leg-carry`: a futures curve's rich and cheap contracts, and its carry |

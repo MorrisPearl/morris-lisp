@@ -145,6 +145,7 @@ files in `examples/` and `lib/` from anywhere:
 | `vol_smile_example.lsp` | fitting the volatility smile to find options out of line | tastytrade |
 | `option_methods_example.lsp` | a stock's options valued three ways, next to the market | tastytrade, Schwab, Alpha Vantage |
 | `call_spread_example.lsp` | the best call spread for the price you expect | Schwab |
+| `option_spreads_example.lsp` | the best spread of any of ten kinds (butterfly, iron condor, straddle, ...) for the price you expect | Schwab |
 | `tastytrade_example.lsp` | quotes, futures curves, option chains, and market metrics | tastytrade |
 
 **Economic data and pictures**
@@ -178,7 +179,7 @@ files in `examples/` and `lib/` from anywhere:
 | **Reproducible randomness** with `random-seed` | [ELIZA](#eliza-chapter-5), [Othello](#othello-chapter-18), [regression kinds](#statistics-and-optimization), [stratification](#statistics-and-optimization) |
 | **Testing**: known answers (perft), comparing with another program (sqlite3), random inputs, deliberate breakage | [chess](#a-chess-program), [SQL](#sql-an-interpreter-over-tables), [writing an example](#writing-an-example) |
 | **A one-time tool that writes a data file**, checked by the program | [the chess opening book](#a-chess-program) |
-| **A script as a thin layer over a library** with `(command-line-arguments)` | [option methods, call spreads](#prices-options-and-trades) |
+| **A script as a thin layer over a library** with `(command-line-arguments)` | [option methods, call spreads, other option spreads](#prices-options-and-trades) |
 | **Spreadsheet-like models**: a column per formula, ordered by dependence | [the column engine](#models-as-columns-of-formulas) |
 | **Seeing what a program does**: tracing, breakpoints, profiling | [debugging and profiling](#debugging-and-profiling) |
 
@@ -1239,11 +1240,11 @@ a short script to copy from.
 
 ## Prices, options, and trades
 
-Two of these scripts are **thin**: `option_methods_example.lsp` is 24 lines and
-`call_spread_example.lsp` 31, a few calls of a library and a display of the result. The
-work, and the explanation, are in the library (`lib/option_methods.lsp`,
-`lib/call_spreads.lsp`), whose header says how it works; the script is there to show the
-call. That is a deliberate convention for this project: put the work in `lib/*.lsp`
+Three of these scripts are **thin**: `option_methods_example.lsp` is 24 lines,
+`call_spread_example.lsp` 31, and `option_spreads_example.lsp` 34, a few calls of a library
+and a display of the result. The work, and the explanation, are in the library
+(`lib/option_methods.lsp`, `lib/call_spreads.lsp`, `lib/option_spreads.lsp`), whose header
+says how it works; the script is there to show the call. That is a deliberate convention for this project: put the work in `lib/*.lsp`
 functions that can be called from a notebook, and keep the example to the call. The others
 here are longer tours: a series of steps, each with a comment saying what it shows.
 
@@ -1259,6 +1260,19 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   the comments show how to go on to prepare one and have Schwab preview it. The library,
   `lib/call_spreads.lsp`, has tests that check its search against a plain brute force
   on random chains.
+- **`option_spreads_example.lsp`** is the same for ten kinds of spread: it takes a stock, a
+  kind (`bull-call`, `bear-put`, `iron-condor`, `long-strangle`, ...), an expiration, and the
+  price you expect, and ranks every spread of the kind by the profit at your price as a share
+  of the most you can lose. It sends no order either. The interesting part is in the
+  library, `lib/option_spreads.lsp`: it finds the spreads of every kind without a loop over
+  strikes — the strikes become whole numbers of cents, so that "the same strike" and "the
+  same width" are exact comparisons, and three vector builtins do the matching:
+  `vector-grid` makes every pair of positions, `vector-positions` finds where each wanted
+  strike is in a column (-1 if it isn't), and `vector-gather` picks the rows — and then
+  finds each spread's greatest loss, greatest gain, and breakevens for all the spreads at
+  once, by using the fact that a spread's profit is a line that bends only at its strikes.
+  The tests check every kind against a plain Python calculation that tries every price from
+  0 up in steps of a quarter, on random chains with several roots.
 - **`investment_paths_example.lsp`** simulates an investment's future prices by copying blocks
   of consecutive days from its own history (a block bootstrap, which keeps the way returns
   cluster that independent days would lose), a thousand paths with a different seed for each so the

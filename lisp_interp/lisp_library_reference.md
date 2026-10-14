@@ -58,6 +58,7 @@ that use all this are described in
   - [Checking option prices against simulated paths](#checking-option-prices-against-simulated-paths)
   - [Valuing options three ways](#valuing-options-three-ways)
   - [Call spreads](#call-spreads)
+  - [Option spreads](#option-spreads)
   - [Portfolios](#portfolios)
 
 ## Where things are
@@ -96,7 +97,8 @@ The functions for investment analysis, in the order an analysis uses them.
    options by Black-Scholes, a binomial tree, and simulated paths, next to
    their bids and asks. "Call spreads": the best pair of a stock's calls to buy
    and sell, if you expect it at a price on the day they expire, with the
-   order to trade it.
+   order to trade it. "Option spreads": the same for ten kinds of spread (the
+   other vertical spreads, butterflies, iron condors, straddles, strangles).
 6. **Rates and mortgages.** The SOFR term structure and its two-factor
    model (`sofr-*`, under "tastytrade (real broker data)"), futures curves
    (`futures-curve-fit`), and `lib/oas_monte_carlo.lsp`, `lib/column_engine.lsp`,
@@ -2052,7 +2054,7 @@ dividends and P/E:
 (schwab-get creds "/marketdata/v1/quotes" '(("symbols" . "AAPL") ("fields" . "quote,fundamental")))
 ```
 
-#### Orders: `schwab-order`, `schwab-spread-order`, `schwab-preview-order`, `schwab-place-order`, `schwab-cancel-order`
+#### Orders: `schwab-order`, `schwab-spread-order`, `schwab-multi-leg-order`, `schwab-preview-order`, `schwab-place-order`, `schwab-cancel-order`
 For whenever you want to trade.
 
 - `(schwab-order instruction symbol quantity [:type t :price p :stop-price s :duration d :asset-type a])`
@@ -2078,6 +2080,25 @@ For whenever you want to trade.
   nothing; it opens new positions (`BUY_TO_OPEN`, `SELL_TO_OPEN`) as a
   single order (`orderType` `NET_DEBIT`, `complexOrderStrategyType`
   `VERTICAL`), both legs filling together or not at all.
+- `(schwab-multi-leg-order strategy legs price [:credit #t :duration d])`
+  makes an order for the other usual spreads, of one stock and expiration, as
+  one order that fills all together or not at all. `strategy` is `VERTICAL`,
+  `BUTTERFLY`, `IRON_CONDOR`, `STRADDLE`, or `STRANGLE`; `legs` is a list of
+  `(instruction symbol quantity)`, the instruction `BUY_TO_OPEN` or
+  `SELL_TO_OPEN`, the symbol an option's (in the form `schwab-spread-order`
+  takes), and the quantity the contracts; and `price` is a limit on the net
+  debit for a share (what is paid in all), or with `:credit #t` on the net
+  credit (what is got), above 0, rounded to a cent. The legs must have the
+  shape of the strategy, which it checks, and says what is wrong: a vertical
+  is two options of one type, one bought and one sold, in equal numbers; a
+  butterfly is three of one type, the strikes equally far apart, the outer two
+  bought and the middle sold, in the numbers 1, 2, 1 (or the other way round);
+  an iron condor is two puts below two calls, the wings of equal width, the
+  outer two bought and the inner two sold (or the other way round), in equal
+  numbers; a straddle is a call and a put at one strike, both bought or both
+  sold, in equal numbers; and a strangle is a put below a call. It sends
+  nothing. `option-spread-order` (see "Option spreads") makes these from a
+  search.
 - `(schwab-preview-order creds account order)` gives what Schwab makes of
   the order, without placing it: any warnings or reasons it would be
   rejected, and the estimated cost.
@@ -2098,7 +2119,9 @@ of the Trader API. Schwab's preview accepted one for a SPY call spread (as
 a limit order of the strategy `VERTICAL`, for the net debit given, with the
 commission and fees, and no warnings), on 2026-10-14. The program's own
 tests use a stand-in for Schwab, and no spread order has been placed by it.
-Preview yours (that places nothing) before you place it.
+Preview yours (that places nothing) before you place it. The forms
+`schwab-multi-leg-order` makes for the other strategies, and for a net credit,
+are from the same documentation and have not been previewed with Schwab.
 
 ### Alpha Vantage (dividends)
 
@@ -5230,7 +5253,10 @@ stock's calls that expire on one day, which pair is the best to **buy the
 one with the lower strike, and sell the one with the higher** -- a *bull
 call spread* -- if you expect the stock to be at a certain price on that
 day? Every pair is ranked by the profit at the price you expect, as a share
-of the most you could lose.
+of the most you could lose. (This is the first and simplest of ten kinds of
+spread that [Option spreads](#option-spreads) ranks the same way; the work is
+done there, and these functions are its `bull-call` kind under their
+original names, which stay as they were.)
 
 **What a spread is.** A call lets you buy the stock at its strike on the
 expiration day, so at expiration it is worth the stock's price less the
@@ -5321,9 +5347,9 @@ The options:
   today). A count the chain doesn't have is taken to be 0. Volume is the
   trades so far today, so it is 0 for every option before the market opens
   (and the search finds nothing, and says why): give `:min-volume 0` then.
-- A pair that would pay you to buy it, with a cost of 0 or less -- from
-  quotes that don't agree -- has no most you can lose to divide by, and is
-  left out; so is one that costs less than `:min-cost` (0).
+- A pair that would pay you to buy it, or costs a tenth of a cent or less --
+  from quotes that don't agree -- has no most you can lose to divide by, and
+  is left out; so is one that costs less than `:min-cost` (0).
 
 **The ratio favors cheap spreads.** A spread that costs a few cents has a
 huge ratio if the stock gets to the higher strike, but there is almost no
@@ -5355,7 +5381,8 @@ Says in words what a spread order -- as `call-spread-order` or
 `schwab-spread-order` makes it -- would do: a day order to open so many
 spreads, with a limit on the net debit of so much a share (so much for each,
 and in all, at most), and the two options it buys and sells. Read it before
-previewing or placing the order. It sends nothing.
+previewing or placing the order. It sends nothing. It also reads the orders
+of the other kinds of spread: see [Option spreads](#option-spreads).
 
 To trade it, look at it, preview it (which places nothing), and then place
 it:
@@ -5379,6 +5406,213 @@ SPY call spread (see `schwab-spread-order`). Even so, look at
 `schwab-preview-order`'s answer for yours -- the commission and fees (here,
 65 cents for each option, and a few cents in fees), and any warnings --
 before placing anything.
+
+### Option spreads
+
+(In `lib/option_spreads.lsp`; its functions work without loading it.) The
+question of "Call spreads" for ten kinds of spread: of a stock's options
+that expire on one day, which spread of one kind is the best, if you expect
+the stock to be at a certain price on that day? Every spread that can be made
+is ranked by the profit at the price you expect, as a share of the most you
+could lose -- the **ratio** -- and you can prepare the order for the best.
+
+**The kinds.** `(option-spread-kinds)` is a table of them. A spread is some
+options bought and some sold, all of one stock and expiration. In the table,
+the strikes rise from the first leg to the last:
+
+| Kind | Legs | Usually | It does well if the stock... |
+|---|---|---|---|
+| `bull-call` | buy a call, sell a higher one | costs you | rises |
+| `bear-call` | sell a call, buy a higher one | pays you | stays below the strike sold |
+| `bull-put` | buy a put, sell a higher one | pays you | stays above the strike sold |
+| `bear-put` | sell a put, buy a higher one | costs you | falls |
+| `call-butterfly` | buy a call, sell two at the middle strike, buy a call (the strikes equally far apart) | costs you | ends at the middle strike |
+| `put-butterfly` | the same with puts | costs you | ends at the middle strike |
+| `iron-condor` | buy a put, sell a higher put, sell a call above it, buy a higher call (the two wings the same width) | pays you | ends between the strikes sold |
+| `iron-butterfly` | an iron condor whose put and call sold have one strike | pays you | ends at that strike |
+| `long-straddle` | buy a call and a put at one strike | costs you | goes far, either way |
+| `long-strangle` | buy a put, and a call at a higher strike | costs you | goes far, either way |
+
+The spreads that pay you (that have a *credit*: more is got for the options
+sold than paid for those bought) make the most they can when they are opened,
+and can lose the rest of their width; the ones that cost you (a *debit*) can
+lose what they cost. Short straddles and strangles, which can lose without
+limit, and spreads of several expirations (calendars, diagonals) or with
+uneven numbers of options (ratio spreads) are not here.
+
+**The numbers.** With the stock at `S` on the day, an option is worth its
+intrinsic value: a call `S` less its strike, or 0; a put its strike less `S`,
+or 0. The spread is **worth** the sum of its options' values, the ones bought
+counted plus and the ones sold minus (a sold option is owed). Its **cost** is
+what is paid for the ones bought (at their asks) less what is got for the ones
+sold (at their bids), or at their middles with `:prices 'mid`; a credit is a
+cost below 0. The **profit** is the worth less the cost. As `S` changes, the
+profit is a line that bends only at the strikes, so its extremes are at
+`S = 0` or at a strike (or it keeps rising without limit: a straddle or a
+strangle, whose **max-profit** is missing). That is how the **max-loss** and
+**max-profit** are found, exactly, and the **breakevens**, the prices where the
+profit crosses 0, a line at a time. The ratio is the profit at the price you
+expect over the max-loss.
+
+For example, with the stock at 108 on the day, calls with bids and asks of 6.0
+and 6.2 at 100, 3.0 and 3.2 at 105, 1.2 and 1.4 at 110, and 0.3 and 0.5 at
+115, and puts with 1.4 and 1.6, 3.7 and 3.9, 6.8 and 7.0, and 11.0 and 11.2:
+the iron condor that buys the 100 put at 1.6, sells the 105 put at 3.7, sells
+the 110 call at 1.2, and buys the 115 call at 0.5 gets a credit of
+3.7 + 1.2 - 1.6 - 0.5 = 2.8. At 108 everything expires worthless, so it
+keeps the 2.8. It can lose the width of a wing less the credit, 5 - 2.8 =
+2.2, if the stock ends at 100 or below or at 115 or above, and it breaks even
+at 105 - 2.8 = 102.2 and at 110 + 2.8 = 112.8. The ratio is 2.8 / 2.2.
+
+```lisp
+(define day (date 2026 11 20))
+(define chain (make-table "symbol" (vector "XYZ   261120C00100000" "XYZ   261120C00105000" "XYZ   261120C00110000" "XYZ   261120C00115000"
+                                            "XYZ   261120P00100000" "XYZ   261120P00105000" "XYZ   261120P00110000" "XYZ   261120P00115000")
+                          "type" (vector "Call" "Call" "Call" "Call" "Put" "Put" "Put" "Put")
+                          "strike" (vector 100.0 105.0 110.0 115.0 100.0 105.0 110.0 115.0)
+                          "expiration-date" (vector day day day day day day day day)
+                          "underlying" (vector "XYZ" "XYZ" "XYZ" "XYZ" "XYZ" "XYZ" "XYZ" "XYZ")
+                          "underlying-price" (vector 104.0 104.0 104.0 104.0 104.0 104.0 104.0 104.0)
+                          "bid" (vector 6.0 3.0 1.2 0.3 1.4 3.7 6.8 11.0)
+                          "ask" (vector 6.2 3.2 1.4 0.5 1.6 3.9 7.0 11.2)
+                          "mid" (vector 6.1 3.1 1.3 0.4 1.5 3.8 6.9 11.1)
+                          "volume" (vector 5 5 5 5 5 5 5 5) "open-interest" (vector 10 10 10 10 10 10 10 10)))
+(define condors (option-spreads-for-chain chain 'iron-condor day 108))
+(table-column (spread-search-spreads condors) "cost")          ; => #(-2.8000002)
+(table-column (spread-search-spreads condors) "max-loss")      ; => #(2.1999998)
+(table-column (spread-search-spreads condors) "ratio")         ; => #(1.2727275)
+(table-column (spread-search-spreads condors) "breakeven-1")   ; => #(102.2)
+(table-column (spread-search-spreads condors) "breakeven-2")   ; => #(112.8)
+(define strangles (option-spreads-for-chain chain 'long-strangle day 108))
+(table-column (spread-search-spreads strangles) "max-profit")  ; => #(nan nan nan nan nan nan)
+```
+
+#### `(option-spread-kinds)`
+A table of the kinds: `kind` (the name to give the functions below), `label`,
+`legs` (in words, lowest strike first), `schwab` (the name of the kind of
+order for Schwab), and `about`.
+
+#### `(option-spreads creds symbol kind expiration expected-price [:prices p :min-open-interest n :min-volume n :min-risk r :max-width w])`
+Gets the stock's options that expire on `expiration` (a date, or
+`"YYYY-MM-DD"`) from Schwab (`schwab-option-chain`) -- the calls, or the puts,
+or both, as the kind needs -- live bids and asks while the market is open; it
+says so, and the quotes are the last close's, if it is closed -- and ranks
+every spread of the `kind`: see `option-spreads-for-chain`. Returns a
+`spread-search`.
+
+#### `(option-spreads-for-chain chain kind expiration expected-price [:prices p :min-open-interest n :min-volume n :min-risk r :max-width w])`
+The same for a chain you already have: a table as `schwab-option-chain` or
+`tastytrade-option-chain` makes. Returns a `spread-search`, whose accessors
+are `spread-search-kind`, `-stock`, `-stock-price`, `-expiration`,
+`-expected-price`, `-prices`, and `-spreads`: the table of spreads, a row for
+each, the best first. For a spread of *n* options (its legs, lowest strike
+first) the columns are:
+
+| Column | What it holds (prices are for a share) |
+|---|---|
+| `symbol-1` ... `symbol-n` | the options (the kind's legs say which are bought and which sold) |
+| `strike-1` ... `strike-n` | their strikes |
+| `price-1` ... `price-n` | the ask of each one bought, the bid of each one sold |
+| `cost` | the net: negative if the spread pays you (a credit) |
+| `max-loss` | the most that can be lost |
+| `max-profit` | the most that can be made; missing if there is no limit |
+| `worth` | what the spread is worth at `expected-price` on the day |
+| `profit` | `worth` less `cost` |
+| `ratio` | `profit` as a share of `max-loss`: 1.5 is 150% |
+| `breakeven-1`, `breakeven-2` | the stock's prices at which the spread breaks even: the lower, and the higher if there are two; missing if there is none |
+
+The options:
+
+- `:prices` is `'bid-ask` (the default) or `'mid`; see "Call spreads" for why
+  to be careful with the middles of thin options.
+- All the options of a spread must have a bid and an ask above 0, and open
+  interest of at least `:min-open-interest` (1), and volume of at least
+  `:min-volume` (1: the option has traded at least once today -- 0 for every
+  option before the market opens, when you give `:min-volume 0`). A count the
+  chain doesn't have is taken to be 0.
+- All the options of a spread are of one *root*: a stock's own options, or its
+  weeklies, or its minis. (SPX's options and SPXW's have the same strikes and
+  expirations, and are not the same contract.)
+- A spread that can lose nothing -- a credit as big as its width, from quotes
+  that don't agree -- is left out, as is one that can lose a tenth of a cent
+  or less (the rounding of the numbers) or less than `:min-risk` (0).
+- `:max-width` (in dollars) leaves out the spreads that are wider: a
+  vertical spread whose strikes are farther apart, a butterfly or a condor
+  whose wings are, a strangle whose strikes are. It also makes the search of a
+  big chain quicker.
+- A kind that needs puts, or calls, when the chain has none that expire on
+  `expiration`, is an error that says on which days it has them.
+
+**What the ratio leaves out.** The ratio favors the spreads that can lose
+little: they make a lot for each dollar at risk if the stock gets where they
+pay, and there is almost no chance it does. The price you expect is one price,
+and the stock can end anywhere -- and the best butterfly or condor for a price
+you expect to the penny is the most fragile of all. The ratio also ignores
+commissions, margin (a spread with an option sold needs some of your money held
+back, and your broker's approval), and that an option you sold can be exercised
+before expiration. `:min-risk` leaves out the spreads that can lose very
+little, and looking at the next few spreads, not only the first, shows how the
+ratio falls off.
+
+#### `(show-option-spreads search [:count n])`
+Shows the best spread in words -- what to buy and sell, what it costs, or
+pays you, for a share and for a contract of 100, what it makes at the expected
+price, where it breaks even, and the most it can make -- and a table of it and
+the next `:count` (10) best, and how to go on to the order. For the condor
+above:
+
+```
+XYZ is at 104.00. Iron condors expiring 2026-11-20, if it is at 108.00 then; bought and sold at the ask and bid prices. 1 spread.
+
+The best: buy 1 100.00 put at 1.60, sell 1 105.00 put at 3.70, sell 1 110.00 call at 1.20, buy 1 115.00 call at 0.50.
+  It pays you 2.80 a share: 280.00 for one contract of each option. The most you can lose is 2.20 a share (220.00).
+  With XYZ at 108.00 on 2026-11-20, it is worth 0.00 a share, a profit of 2.80 (280.00): 127% of the most you can lose.
+  The most it can make is 2.80 a share (280.00). It breaks even with XYZ at 102.20 and at 112.80.
+```
+
+#### `(option-spread-order search [:row r :contracts c :price p :strategy s])`
+An order for one of the spreads, as a hash table in Schwab's form, made by
+`schwab-multi-leg-order`: the options bought (`BUY_TO_OPEN`) and sold
+(`SELL_TO_OPEN`), `:contracts` (1) of each -- two times that for the middle of
+a butterfly -- as one order that fills all together or not at all, with a limit
+on the net debit (`NET_DEBIT`) of `:price`, or on the net credit (`NET_CREDIT`),
+if the spread pays you. The price is the spread's `cost`, unless it is given.
+`:row` picks the spread: 0, the best, is the default; 1 the next; and so on.
+`:strategy` is the name Schwab gives the kind of order, which by default is
+the kind's own (the `schwab` column of `(option-spread-kinds)`).
+**It sends nothing.** With bids and asks, the order at the cost is likely to
+fill at once; a better `:price` may fill at a better price, or not at all.
+
+#### `(show-spread-order order)`
+Says in words what any of these orders would do: a day order to open so many
+spreads (or butterflies, iron condors, straddles, strangles), with a limit on
+the net debit or credit of so much a share (so much for each, and in all, at
+most to pay or at least to get), and the options it buys and sells. Read it
+before previewing or placing the order. It sends nothing.
+
+```lisp
+(define search (option-spreads creds "SPY" 'iron-condor (date 2026 11 20) 765))
+(show-option-spreads search)
+(define order (option-spread-order search :contracts 2))
+(show-spread-order order)                                        ; the order, in words
+(schwab-preview-order creds "Brokerage" order)                   ; what Schwab makes of it
+; (schwab-place-order creds "Brokerage" order :confirm #t)       ; places it, for real
+```
+
+`examples/option_spreads_example.lsp` does the first two lines for a stock, a
+kind, a day, and a price from the command line: `python3 ../lisp_interpreter.py
+option_spreads_example.lsp SPY iron-condor 2026-11-20 765`.
+
+**How much has been tried with Schwab.** Schwab's preview accepted an order
+for a SPY call spread (a debit, of the strategy `VERTICAL`: see
+`schwab-spread-order`) on 2026-10-14. The orders for the other kinds -- the
+credit spreads, which are `NET_CREDIT` orders, the butterflies, condors,
+straddles, and strangles -- have the forms in Schwab's documentation of its
+Trader API, and the program's tests check their legs, quantities, and prices,
+but none has been previewed with Schwab. The iron butterfly is sent as an
+`IRON_CONDOR`, which is a guess; if Schwab doesn't take it, `:strategy` says
+what to call it instead. **Always preview** (that places nothing), and read
+Schwab's answer for the commission and any warning, before placing an order.
 
 ### Portfolios
 

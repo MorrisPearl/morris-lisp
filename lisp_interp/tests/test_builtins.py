@@ -917,6 +917,42 @@ class TestVectorMath(LispTestCase):
         self.assertShows('(vector< (table-column (table-from-rows \'(("a") (()) ("c")) \'("s")) "s") "b")', "#(1 0 0)")
         self.assertShows('(vector= (table-column (table-from-rows \'(("a") (()) ("c")) \'("s")) "s") \'())', "#(0 0 0)")
 
+    def test_gathering_elements_by_position(self):
+        self.assertShows("(vector-gather #(10 20 30 40) #(3 0 0 2))", "#(40 10 10 30)")      # in that order, repeats and all
+        self.assertShows('(vector-gather (vector "a" "b" "c") #(2 1))', '#("c" "b")')        # strings and dates too
+        self.assertShows("(vector-gather (vector (date 2020 1 1) (date 2021 1 1)) #(1))", "#(2021-01-01)")
+        self.assertShows("(vector-gather #(1.5 2.5) (vector-take #(1 2) 0))", "#()")
+        self.assertLispError("(vector-gather #(10 20) #(2))", "there is no position 2 in a vector of 2")
+        self.assertLispError("(vector-gather #(10 20) #(-1))", "positions count from 0")
+        self.assertLispError("(vector-gather #(10 20) #(0.5))", "must be whole numbers")
+        self.assertLispError("(vector-gather #(10 20) (vector nan))", "must be whole numbers")
+        self.assertLispError('(vector-gather #(10 20) (vector "a"))', "must be whole numbers")
+        self.assertLispError("(vector-gather 5 #(0))", "not a vector")
+
+    def test_finding_where_items_are(self):
+        self.assertShows("(vector-positions #(10 20 30) #(30 5 10 20 20))", "#(2 -1 0 1 1)")  # -1: not there
+        self.assertShows("(vector-positions #(1 2 1) #(1))", "#(0)")                         # the first, if there are several
+        self.assertShows("(vector-positions #(100 105) (vector 105.0 100.5))", "#(1 -1)")   # a whole number is its float
+        self.assertShows('(vector-positions (vector "x" "y") (vector "y" "z"))', "#(1 -1)")
+        self.assertShows("(vector-positions (vector (date 2020 1 1)) (vector (date 2020 1 1) (date 2020 1 2)))", "#(0 -1)")
+        self.assertShows("(vector-positions (vector 1.0 nan) (vector nan))", "#(-1)")        # a missing value is never found
+        self.assertShows("(vector-positions #(1 2) (vector-take #(1 2) 0))", "#()")
+        self.assertShows("(vector-gather #(10 20 30) (vector-select (vector-positions #(10 20 30) #(30 7 10)) #(1 0 1)))",
+                         "#(30 10)")                                                         # ...with the -1's taken out
+        self.assertLispError("(vector-positions 5 #(1))", "not a vector")
+
+    def test_every_row_and_column_pair(self):
+        self.assertShows("(vector-grid 2 3)", "(#(0 0 0 1 1 1) #(0 1 2 0 1 2))")
+        self.assertShows("(vector-grid 0 3)", "(#() #())")
+        self.assertShows("(vector-grid 3 0)", "(#() #())")
+        # the pairs i < j, from the grid and a mask
+        self.assertShows("(let* ((g (vector-grid 4 4)) (keep (vector< (car g) (cadr g)))) "
+                         "(list (vector-select (car g) keep) (vector-select (cadr g) keep)))",
+                         "(#(0 0 0 1 1 2) #(1 2 3 2 3 3))")
+        self.assertLispError("(vector-grid -1 3)", "whole numbers, 0 or more")
+        self.assertLispError("(vector-grid 2.5 3)", "whole numbers, 0 or more")
+        self.assertLispError("(vector-grid 100000 100000)", "more than 50000000 pairs")
+
     def test_combining_masks_and_selecting(self):
         self.assertShows("(vector-and #(1 1 0) #(1 0 0))", "#(1 0 0)")
         self.assertShows("(vector-or #(1 0 0) #(0 0 1) #(0 1 0))", "#(1 1 1)")

@@ -35,11 +35,16 @@
 (lazy-load "parser.lsp"
   make-grammar grammar-parse grammar-tokens node-builder)
 
-; Call spreads: the best pair of calls to buy and sell, and the order for it
+; Option spreads: the best vertical spread, butterfly, iron condor, straddle, or strangle for the price you
+; expect, and the order for it
+(lazy-load "option_spreads.lsp"
+  option-spreads option-spreads-for-chain option-spread-kinds show-option-spreads option-spread-order
+  show-spread-order spread-search-kind spread-search-stock spread-search-stock-price spread-search-expiration
+  spread-search-expected-price spread-search-prices spread-search-spreads)
+
+; Call spreads: the best pair of calls to buy and sell (the bull-call kind of the above), and the order for it
 (lazy-load "call_spreads.lsp"
-  call-spreads call-spreads-for-chain show-call-spreads call-spread-order show-spread-order
-  spread-search-stock spread-search-stock-price spread-search-expiration spread-search-expected-price
-  spread-search-prices spread-search-spreads)
+  call-spreads call-spreads-for-chain show-call-spreads call-spread-order)
 
 ; Mortgages: the OAS Monte Carlo, and the prepayment model it uses
 (lazy-load "oas_monte_carlo.lsp"

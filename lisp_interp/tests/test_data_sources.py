@@ -1146,6 +1146,123 @@ class TestSchwab(LispTestCase):
             with self.subTest(call=call):
                 self.assertLispError(call, fragment)
 
+    # -- an order for any of the usual spreads ------------------------------------------------------
+
+    @staticmethod
+    def lisp_legs(*legs):
+        """The legs, (instruction, option, quantity) with the options as "C100" or "P95" of XYZ on 2026-11-20, as Lisp source."""
+        symbol = lambda option: "XYZ   261120%s%08d" % (option[0], round(float(option[1:]) * 1000))
+        return "(list %s)" % " ".join('(list "%s" "%s" %d)' % (instruction, symbol(option), quantity)
+                                      for instruction, option, quantity in legs)
+
+    def multi_leg(self, strategy, legs, price, options=""):
+        return self.lisp_schwab.lisp_to_json(
+            self.run_lisp('(schwab-multi-leg-order "%s" %s %s %s)' % (strategy, self.lisp_legs(*legs), price, options)))
+
+    def test_a_multi_leg_order_for_each_strategy_has_its_legs_and_its_price(self):
+        buy, sell = "BUY_TO_OPEN", "SELL_TO_OPEN"
+        for strategy, legs, price, options, order_type in [
+                ("VERTICAL", [(buy, "P100", 2), (sell, "P105", 2)], 1.234, "", "NET_DEBIT"),
+                ("VERTICAL", [(sell, "C100", 1), (buy, "C105", 1)], 1.5, ":credit #t", "NET_CREDIT"),
+                ("BUTTERFLY", [(buy, "C100", 3), (sell, "C105", 6), (buy, "C110", 3)], 1.3, "", "NET_DEBIT"),
+                ("BUTTERFLY", [(sell, "P100", 1), (buy, "P105", 2), (sell, "P110", 1)], 1.3, ":credit #t", "NET_CREDIT"),
+                ("IRON_CONDOR", [(buy, "P95", 2), (sell, "P100", 2), (sell, "C110", 2), (buy, "C115", 2)], 2.8, ":credit #t", "NET_CREDIT"),
+                ("IRON_CONDOR", [(buy, "P95", 1), (sell, "P100", 1), (sell, "C100", 1), (buy, "C105", 1)], 3.6, ":credit #t", "NET_CREDIT"),
+                ("IRON_CONDOR", [(sell, "P95", 1), (buy, "P100", 1), (buy, "C110", 1), (sell, "C115", 1)], 2.8, "", "NET_DEBIT"),
+                ("STRADDLE", [(buy, "C100", 1), (buy, "P100", 1)], 7.8, "", "NET_DEBIT"),
+                ("STRADDLE", [(sell, "P100", 4), (sell, "C100", 4)], 7.8, ":credit #t", "NET_CREDIT"),
+                ("STRANGLE", [(buy, "P95", 1), (buy, "C105", 1)], 3.8, ":duration \"good_till_cancel\"", "NET_DEBIT"),
+                ("STRANGLE", [(sell, "C105", 2), (sell, "P95", 2)], 3.8, ":credit #t :duration \"fill_or_kill\"", "NET_CREDIT")]:
+            with self.subTest(strategy=strategy, legs=legs):
+                order = self.multi_leg(strategy, legs, price, options)
+                self.assertEqual(order["complexOrderStrategyType"], strategy)
+                self.assertEqual(order["orderType"], order_type)
+                self.assertEqual(order["price"], round(price, 2))
+                self.assertEqual(order["session"], "NORMAL")
+                self.assertEqual(order["orderStrategyType"], "SINGLE")
+                self.assertEqual(order["duration"], {"": "DAY", ":duration \"good_till_cancel\"": "GOOD_TILL_CANCEL",
+                                                     ":credit #t :duration \"fill_or_kill\"": "FILL_OR_KILL"}.get(options, "DAY"))
+                self.assertEqual([(leg["instruction"], leg["quantity"], leg["instrument"]["symbol"]) for leg in order["orderLegCollection"]],
+                                 [(instruction, quantity, "XYZ   261120%s%08d" % (option[0], round(float(option[1:]) * 1000)))
+                                  for instruction, option, quantity in legs])
+                self.assertTrue(all(leg["instrument"]["assetType"] == "OPTION" for leg in order["orderLegCollection"]))
+
+    def test_the_legs_may_be_in_any_order_and_the_names_in_any_case(self):
+        """The shape is checked from the strikes, not from the order the legs are listed in; the order given is kept."""
+        order = self.multi_leg("butterfly", [("buy_to_open", "C110", 1), ("sell_to_open", "C105", 2), ("buy_to_open", "C100", 1)], 1.3)
+        self.assertEqual(order["complexOrderStrategyType"], "BUTTERFLY")
+        self.assertEqual([leg["instrument"]["symbol"][-8:] for leg in order["orderLegCollection"]], ["00110000", "00105000", "00100000"])
+        self.assertEqual(self.multi_leg("iron_condor", [("BUY_TO_OPEN", "C115", 1), ("SELL_TO_OPEN", "P100", 1), ("BUY_TO_OPEN", "P95", 1),
+                                                         ("SELL_TO_OPEN", "C110", 1)], 2.8, ":credit #t")["price"], 2.8)
+
+    def test_a_multi_leg_order_sends_nothing(self):
+        self.sign_in()
+        sent = len(self.requests)
+        self.multi_leg("STRADDLE", [("BUY_TO_OPEN", "C100", 1), ("BUY_TO_OPEN", "P100", 1)], 7.8)
+        self.assertEqual(len(self.requests), sent)
+
+    def test_a_multi_leg_order_that_has_not_the_shape_of_its_strategy_is_refused(self):
+        buy, sell = "BUY_TO_OPEN", "SELL_TO_OPEN"
+        condor = [(buy, "P95", 1), (sell, "P100", 1), (sell, "C110", 1), (buy, "C115", 1)]
+        for strategy, legs, fragment in [
+                ("VERTICAL", [(buy, "C100", 1)], "VERTICAL legs need 2 options, not 1"),
+                ("VERTICAL", [(buy, "C100", 1), (sell, "C105", 1), (sell, "C110", 1)], "VERTICAL legs need 2 options, not 3"),
+                ("VERTICAL", [(buy, "C100", 1), (sell, "P105", 1)], "are all calls or all puts"),
+                ("VERTICAL", [(buy, "C100", 1), (buy, "C105", 1)], "buy one option and sell the other"),
+                ("VERTICAL", [(buy, "C100", 1), (sell, "C105", 2)], "the same quantity of each"),
+                ("BUTTERFLY", [(buy, "C100", 1), (sell, "C105", 2)], "BUTTERFLY legs need 3 options, not 2"),
+                ("BUTTERFLY", [(buy, "C100", 1), (sell, "P105", 2), (buy, "C110", 1)], "are all calls or all puts"),
+                ("BUTTERFLY", [(buy, "C100", 1), (sell, "C106", 2), (buy, "C110", 1)], "three strikes equally far apart"),
+                ("BUTTERFLY", [(buy, "C100", 1), (buy, "C105", 2), (buy, "C110", 1)], "buy the outer two and sell the middle one"),
+                ("BUTTERFLY", [(buy, "C100", 1), (sell, "C105", 1), (buy, "C110", 1)], "the quantities 1, 2, 1"),
+                ("BUTTERFLY", [(buy, "C100", 1), (sell, "C105", 2), (buy, "C110", 2)], "the quantities 1, 2, 1"),
+                ("IRON_CONDOR", condor[:3], "IRON_CONDOR legs need 4 options, not 3"),
+                ("IRON_CONDOR", [(buy, "C95", 1), (sell, "C100", 1), (sell, "C110", 1), (buy, "C115", 1)], "two puts below two calls"),
+                ("IRON_CONDOR", [(buy, "C95", 1), (sell, "P100", 1), (sell, "C110", 1), (buy, "P115", 1)], "two puts below two calls"),
+                ("IRON_CONDOR", [(buy, "P95", 1), (sell, "P112", 1), (sell, "C110", 1), (buy, "C115", 1)], "two puts below two calls"),
+                ("IRON_CONDOR", [(buy, "P95", 1), (sell, "P100", 1), (sell, "C110", 1), (buy, "C116", 1)], "wings of the same width"),
+                ("IRON_CONDOR", [(buy, "P95", 1), (buy, "P100", 1), (sell, "C110", 1), (sell, "C115", 1)], "buy the outer two and sell the inner two"),
+                ("IRON_CONDOR", [(buy, "P95", 2), (sell, "P100", 1), (sell, "C110", 1), (buy, "C115", 2)], "the same quantity of each"),
+                ("STRADDLE", [(buy, "C100", 1), (buy, "C100", 1)], "two legs are the same option"),
+                ("STRADDLE", [(buy, "C100", 1), (buy, "C105", 1)], "are a call and a put"),
+                ("STRADDLE", [(buy, "C100", 1), (buy, "P95", 1)], "the same strike for the call and the put"),
+                ("STRADDLE", [(buy, "C100", 1), (sell, "P100", 1)], "both buy, or both sell"),
+                ("STRADDLE", [(buy, "C100", 1), (buy, "P100", 2)], "the same quantity of each"),
+                ("STRANGLE", [(buy, "C95", 1), (buy, "P100", 1)], "the put's strike below the call's"),
+                ("STRANGLE", [(buy, "C100", 1), (buy, "P100", 1)], "the put's strike below the call's"),
+                ("STRANGLE", [(buy, "P95", 1), (sell, "C105", 1)], "both buy, or both sell"),
+                ("STRANGLE", [(buy, "P95", 1), (buy, "C105", 3)], "the same quantity of each"),
+                ("COLLAR", [(buy, "P95", 1), (buy, "C105", 1)], "the strategy is one of VERTICAL, BUTTERFLY, IRON_CONDOR, STRADDLE, STRANGLE, not COLLAR"),
+                ("VERTICAL", [("BUY_TO_CLOSE", "C100", 1), (sell, "C105", 1)], "BUY_TO_OPEN or SELL_TO_OPEN"),
+                ("VERTICAL", [(buy, "C100", 0), (sell, "C105", 0)], "whole number of contracts, 1 or more"),
+                ("VERTICAL", [(buy, "C100", 1), (sell, "C105", 1)], "")]:
+            with self.subTest(strategy=strategy, legs=legs):
+                call = '(schwab-multi-leg-order "%s" %s 1.5)' % (strategy, self.lisp_legs(*legs))
+                if fragment:
+                    self.assertLispError(call, fragment)
+                else:
+                    self.run_lisp(call)                                   # (the control: this one is good)
+
+    def test_a_multi_leg_order_that_has_not_its_legs_from_one_stock_and_day_or_a_good_price_is_refused(self):
+        legs = self.lisp_legs(("BUY_TO_OPEN", "C100", 1), ("SELL_TO_OPEN", "C105", 1))
+        other_day = '(list (list "BUY_TO_OPEN" "XYZ   261120C00100000" 1) (list "SELL_TO_OPEN" "XYZ   261218C00105000" 1))'
+        other_stock = '(list (list "BUY_TO_OPEN" "XYZ   261120C00100000" 1) (list "SELL_TO_OPEN" "ABC   261120C00105000" 1))'
+        for call, fragment in [
+                ('(schwab-multi-leg-order "VERTICAL" %s 1.5)' % other_day, "the same stock and expiration"),
+                ('(schwab-multi-leg-order "VERTICAL" %s 1.5)' % other_stock, "the same stock and expiration"),
+                ('(schwab-multi-leg-order "VERTICAL" %s 0)' % legs, "net debit must be a number above 0"),
+                ('(schwab-multi-leg-order "VERTICAL" %s 0.004)' % legs, "net debit must be a number above 0"),
+                ('(schwab-multi-leg-order "VERTICAL" %s -1 :credit #t)' % legs, "net credit must be a number above 0"),
+                ('(schwab-multi-leg-order "VERTICAL" %s "1.5")' % legs, "net debit must be a number above 0"),
+                ('(schwab-multi-leg-order "VERTICAL" %s 1.5 :duration "forever")' % legs, ":duration is one of"),
+                ('(schwab-multi-leg-order "VERTICAL" %s 1.5 :limit 2)' % legs, "isn't an option"),
+                ('(schwab-multi-leg-order "VERTICAL" 5 1.5)', "legs is a list of (instruction symbol quantity)"),
+                ('(schwab-multi-leg-order "VERTICAL" (list (list "BUY_TO_OPEN" "XYZ   261120C00100000")) 1.5)', "a leg is a list of three things"),
+                ('(schwab-multi-leg-order "VERTICAL" (list (list "BUY_TO_OPEN" "XYZ" 1) (list "SELL_TO_OPEN" "XYZ   261120C00105000" 1)) 1.5)',
+                 "a leg's option must be an option's symbol")]:
+            with self.subTest(call=call):
+                self.assertLispError(call, fragment)
+
 
 class TestTastytrade(LispTestCase):
     """lisp_tastytrade, with tastytrade's API played by FakeTastytrade."""

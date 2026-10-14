@@ -152,3 +152,35 @@ class LispTestCase(unittest.TestCase):
         raising a raw Python exception rather than a LispError)."""
         with self.assertRaises(exc_type, msg="source: %s" % src):
             self.run_lisp(src)
+
+
+class OptionChainTestCase(LispTestCase):
+    """For the tests of programs that work on an option chain (the call spreads and the other option spreads):
+    make_chain puts a chain, such as schwab-option-chain makes, in the environment."""
+
+    DAY = datetime.date(2026, 11, 20)
+    NAN = float("nan")
+
+    def make_chain(self, rows, name="chain", stock="XYZ", price=104.0):
+        """A chain table, as schwab-option-chain makes one, from rows: dicts with strike, bid, and ask, and
+        optionally type (Call), expiration (DAY), mid, volume (5), open_interest (10), and symbol."""
+        full = []
+        for row in rows:
+            row = dict({"type": "Call", "expiration": self.DAY, "volume": 5, "open_interest": 10}, **row)
+            row.setdefault("mid", (row["bid"] + row["ask"]) / 2)
+            row.setdefault("symbol", "%-6s%s%s%08d" % (stock, row["expiration"].strftime("%y%m%d"), row["type"][0],
+                                                     round(row["strike"] * 1000)))
+            full.append(row)
+        date = lambda d: lisp_core.LispDate(d.year, d.month, d.day)
+        columns = [("symbol", [lisp_core.LispString(r["symbol"]) for r in full]),
+                   ("type", [lisp_core.LispString(r["type"]) for r in full]),
+                   ("strike", [float(r["strike"]) for r in full]),
+                   ("expiration-date", [date(r["expiration"]) for r in full]),
+                   ("underlying", [lisp_core.LispString(stock)] * len(full)),
+                   ("underlying-price", [price] * len(full)),
+                   ("bid", [r["bid"] for r in full]), ("ask", [r["ask"] for r in full]), ("mid", [r["mid"] for r in full]),
+                   ("volume", [r["volume"] for r in full]), ("open-interest", [r["open_interest"] for r in full])]
+        self.env[lisp_core.Symbol(name)] = lisp_tables.make_table_value(
+            [(heading, lisp_tables.column_vector(values)) for heading, values in columns])
+        return full
+

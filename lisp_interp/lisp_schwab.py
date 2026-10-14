@@ -26,6 +26,8 @@ Orders:
                                              an order, to preview or place
   (schwab-spread-order buy-symbol sell-symbol quantity net-debit [:duration d])
                                              an order for a vertical spread: two options, for a net debit
+  (schwab-multi-leg-order strategy legs price [:credit #t :duration d])
+                                             an order for a vertical, butterfly, iron condor, straddle, or strangle
   (schwab-preview-order creds account order) what Schwab would make of it; nothing is placed
   (schwab-place-order creds account order :confirm #t)
   (schwab-cancel-order creds account order-id)
@@ -58,7 +60,7 @@ import webbrowser
 
 from lisp_core import (
     Keyword, LispDate, LispError, LispHashTable, LispString, LispVector, NIL, Pair, date_argument, keyword_options,
-    pairs_to_list,
+    is_true, pairs_to_list,
 )
 from lisp_data_common import credential, text_list
 from lisp_http import json_to_lisp
@@ -814,6 +816,123 @@ def schwab_spread_order(buy_symbol, sell_symbol, quantity, net_debit, *options):
                          "orderLegCollection": [leg("BUY_TO_OPEN", bought), leg("SELL_TO_OPEN", sold)]})
 
 
+STRATEGIES = ["VERTICAL", "BUTTERFLY", "IRON_CONDOR", "STRADDLE", "STRANGLE"]
+OPENING = {"BUY_TO_OPEN": 1, "SELL_TO_OPEN": -1}          # an option bought, or sold: +1 or -1
+
+
+def parse_leg(leg, who):
+    """A leg given as a list (instruction symbol quantity) as a dict: its instruction, side (+1 to buy, -1 to
+    sell), quantity, and the parts of the option's symbol."""
+    items = pairs_to_list(leg) if isinstance(leg, Pair) else None
+    if items is None or len(items) != 3:
+        raise LispError("%s: a leg is a list of three things: (instruction symbol quantity), such as "
+                        '("BUY_TO_OPEN" "SPY   261120C00700000" 1)' % who)
+    instruction = str(items[0]).upper()
+    if instruction not in OPENING:
+        raise LispError("%s: a leg's instruction is BUY_TO_OPEN or SELL_TO_OPEN (this opens new positions), not %s"
+                        % (who, to_display(items[0])))
+    quantity = items[2]
+    if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1:
+        raise LispError("%s: a leg's quantity is a whole number of contracts, 1 or more" % who)
+    stock, expiration, kind, strike, text = option_symbol_parts(items[1], who, "a leg's option")
+    return {"instruction": instruction, "side": OPENING[instruction], "quantity": quantity, "stock": stock,
+            "expiration": expiration, "kind": kind, "strike": round(strike * 1000), "symbol": text}
+
+
+def check_strategy(strategy, legs, who):
+    """Whether the legs have the shape of the strategy -- the strikes, sides, and quantities that Schwab's
+    complexOrderStrategyType of that name means -- or an error that says what's wrong."""
+    def wrong(why):
+        raise LispError("%s: %s legs %s" % (who, strategy, why))
+    counts = {"VERTICAL": 2, "BUTTERFLY": 3, "IRON_CONDOR": 4, "STRADDLE": 2, "STRANGLE": 2}
+    if len(legs) != counts[strategy]:
+        wrong("need %d options, not %d" % (counts[strategy], len(legs)))
+    kinds = [leg["kind"] for leg in legs]
+    ordered = sorted(legs, key=lambda leg: (leg["strike"], 0 if leg["kind"] == "P" else 1))
+    sides = [leg["side"] for leg in ordered]
+    quantities = [leg["quantity"] for leg in ordered]
+    strikes = [leg["strike"] for leg in ordered]
+    if strategy in ("VERTICAL", "BUTTERFLY") and len(set(kinds)) != 1:
+        wrong("are all calls or all puts")
+    if strategy == "VERTICAL":
+        if strikes[0] == strikes[1]:
+            wrong("need different strikes")
+        if sides[0] == sides[1]:
+            wrong("buy one option and sell the other")
+        if quantities[0] != quantities[1]:
+            wrong("need the same quantity of each")
+    elif strategy == "BUTTERFLY":
+        if len(set(strikes)) != 3 or strikes[1] - strikes[0] != strikes[2] - strikes[1]:
+            wrong("need three strikes equally far apart")
+        if not (sides[0] == sides[2] == -sides[1]):
+            wrong("buy the outer two and sell the middle one (or sell the outer and buy the middle)")
+        if quantities[1] != 2 * quantities[0] or quantities[2] != quantities[0]:
+            wrong("are in the quantities 1, 2, 1: the middle option twice")
+    elif strategy == "IRON_CONDOR":
+        if sorted(kinds) != ["C", "C", "P", "P"] or [leg["kind"] for leg in ordered] != ["P", "P", "C", "C"]:
+            wrong("are two puts below two calls (the puts' strikes no higher than the calls')")
+        if not (strikes[0] < strikes[1] <= strikes[2] < strikes[3]):
+            wrong("need four strikes in order, the middle two the same or higher than one another")
+        if strikes[1] - strikes[0] != strikes[3] - strikes[2]:
+            wrong("need wings of the same width (a different width is an unbalanced condor)")
+        if not (sides[0] == sides[3] == -sides[1] == -sides[2]):
+            wrong("buy the outer two and sell the inner two (or the other way round)")
+        if len(set(quantities)) != 1:
+            wrong("need the same quantity of each")
+    else:                                                       # STRADDLE or STRANGLE
+        if sorted(kinds) != ["C", "P"]:
+            wrong("are a call and a put")
+        call = next(leg for leg in legs if leg["kind"] == "C")
+        put = next(leg for leg in legs if leg["kind"] == "P")
+        if strategy == "STRADDLE" and call["strike"] != put["strike"]:
+            wrong("need the same strike for the call and the put (with different strikes it is a strangle)")
+        if strategy == "STRANGLE" and not put["strike"] < call["strike"]:
+            wrong("need the put's strike below the call's")
+        if call["side"] != put["side"]:
+            wrong("both buy, or both sell")
+        if call["quantity"] != put["quantity"]:
+            wrong("need the same quantity of each")
+
+
+def schwab_multi_leg_order(strategy, legs, price, *options):
+    """(schwab-multi-leg-order strategy legs price [:credit #t :duration d]) -- an order, as a hash table
+    in Schwab's form, to open a spread of several options as one order. strategy is VERTICAL, BUTTERFLY,
+    IRON_CONDOR, STRADDLE, or STRANGLE, and the legs must have its shape (a vertical: two options of one
+    type, one bought and the other sold; a butterfly: three of one type, equally far apart, bought, sold twice,
+    bought; an iron condor: two puts below two calls, with wings the same width; a straddle: a call and a put at
+    one strike; a strangle: a put below a call). legs is a list of (instruction symbol quantity): the
+    instruction BUY_TO_OPEN or SELL_TO_OPEN, the option's symbol, and how many contracts. price is a limit on
+    the net debit a share (what is paid in all), or with :credit #t on the net credit (what is got): above 0,
+    rounded to a cent. It sends nothing: give it to schwab-preview-order or schwab-place-order. :duration is
+    DAY (the default), GOOD_TILL_CANCEL, or FILL_OR_KILL."""
+    who = "schwab-multi-leg-order"
+    options = keyword_options(options, ["credit", "duration"], who)
+    duration = str(options.get("duration", "DAY")).upper()
+    if duration not in DURATIONS:
+        raise LispError("%s: :duration is one of %s" % (who, ", ".join(DURATIONS)))
+    strategy = str(strategy).upper()
+    if strategy not in STRATEGIES:
+        raise LispError("%s: the strategy is one of %s, not %s" % (who, ", ".join(STRATEGIES), to_display(strategy)))
+    if not (isinstance(legs, Pair) or legs is NIL):
+        raise LispError("%s: legs is a list of (instruction symbol quantity)" % who)
+    parsed = [parse_leg(leg, who) for leg in pairs_to_list(legs)]
+    if len({(leg["stock"], leg["expiration"]) for leg in parsed}) > 1:
+        raise LispError("%s: the options must all be of the same stock and expiration" % who)
+    if len({leg["symbol"] for leg in parsed}) < len(parsed):
+        raise LispError("%s: two legs are the same option" % who)
+    check_strategy(strategy, parsed, who)
+    credit = is_true(options.get("credit", False))
+    word = "credit" if credit else "debit"
+    if not isinstance(price, (int, float)) or isinstance(price, bool) or round(price, 2) <= 0:
+        raise LispError("%s: the net %s must be a number above 0 (to the cent)" % (who, word))
+    leg_json = [{"instruction": leg["instruction"], "quantity": leg["quantity"],
+                 "instrument": {"symbol": leg["symbol"], "assetType": "OPTION"}} for leg in parsed]
+    return json_to_lisp({"session": "NORMAL", "duration": duration,
+                         "orderType": "NET_CREDIT" if credit else "NET_DEBIT",
+                         "complexOrderStrategyType": strategy, "price": round(float(price), 2),
+                         "orderStrategyType": "SINGLE", "orderLegCollection": leg_json})
+
+
 def lisp_to_json(value):
     """Lisp data as JSON's: a hash table as an object, a list or vector as
     an array."""
@@ -899,6 +1018,7 @@ BUILTINS = {
     "schwab-option-chain": schwab_option_chain,
     "schwab-order": schwab_order,
     "schwab-spread-order": schwab_spread_order,
+    "schwab-multi-leg-order": schwab_multi_leg_order,
     "schwab-preview-order": schwab_preview_order,
     "schwab-place-order": schwab_place_order,
     "schwab-cancel-order": schwab_cancel_order,

@@ -4,6 +4,14 @@
 ; with the lower strike and sell the one with the higher strike. Which pair
 ; is best, if you expect the stock to be at a certain price on that day?
 ;
+; This is the simplest spread, and the one to read first. The work is done by
+; option_spreads.lsp, which ranks nine other kinds of spread besides this one
+; (bear call, bull put, bear put, butterflies, iron condors, straddles,
+; strangles) the same way: (option-spreads-for-chain chain 'bull-call ...) is
+; what call-spreads-for-chain does, with the table's columns named for the
+; call bought (long) and the call sold (short) instead of the first and second
+; option. Everything below is about this one kind.
+;
 ; What a spread is. A call lets you buy the stock at its strike on the
 ; expiration day, so at expiration it is worth the stock's price less the
 ; strike, or nothing, if that's less. Buying the call at the lower strike
@@ -68,68 +76,44 @@
 ; Or, for a chain you have already, from Schwab or tastytrade:
 ;   (call-spreads-for-chain chain (date 2026 11 20) 765)
 
-(defstruct spread-search
-  stock             ; the stock's symbol
-  stock-price       ; its price when the chain was got
-  expiration        ; the day the calls expire
-  expected-price    ; the stock's price that day, as expected
-  prices            ; bid-ask or mid: the prices the spreads cost at
-  spreads)          ; a table: a row for each pair of calls that makes a spread, the best first
-
-(define option-contract-size 100)         ; shares in an option contract
+(load "option_spreads.lsp")
 
 ; ---------------------------------------------------------------------------
 ; Finding the spreads
 ; ---------------------------------------------------------------------------
 
-(define (call-spreads--market-open?)
-  "Whether the stock market is open now: from 9:30 to 4:00, New York time, on
-a trading day. (This takes the computer's clock to be on New York time.)"
-  (let* ((now (current-time))
-         (minutes (+ (* 60 (list-ref now 3)) (list-ref now 4))))      ; since midnight
-    (and (trading-day? (today)) (>= minutes (+ (* 9 60) 30)) (< minutes (* 16 60)))))
-
-(define (call-spreads--day expiration)
-  "A date, from a date or YYYY-MM-DD text."
-  (if (string? expiration) (string->date expiration) expiration))
-
-(define (call-spreads--repeat value like)
-  "A vector of value, as long as like."
-  (vector-map (lambda (x) value) like))
-
-(define (call-spreads--pairs symbols strikes buy sell)
-  "The pairs of calls, whose symbols, strikes, and buying and selling prices
-are in the vectors, in order of strike: the call bought and the call sold, for
-every pair of them, as six vectors: the symbols of the calls bought, and of
-those sold, their strikes, and their prices."
-  (let ((long-symbols '()) (short-symbols '()) (long-strikes '()) (short-strikes '())
-        (long-prices '()) (short-prices '()))
-    (loop for i from 0 below (- (vector-length strikes) 1)
-          do (let ((later (+ i 1)))                  ; the calls sold are those with higher strikes
-               (push (call-spreads--repeat (vector-ref symbols i) (vector-drop strikes later)) long-symbols)
-               (push (vector-drop symbols later) short-symbols)
-               (push (call-spreads--repeat (vector-ref strikes i) (vector-drop strikes later)) long-strikes)
-               (push (vector-drop strikes later) short-strikes)
-               (push (call-spreads--repeat (vector-ref buy i) (vector-drop strikes later)) long-prices)
-               (push (vector-drop sell later) short-prices)))
-    (map (lambda (pieces) (apply vector-append (cons (vector-take strikes 0) (reverse pieces))))
-         (list long-symbols short-symbols long-strikes short-strikes long-prices short-prices))))
-
-(define (call-spreads--no-calls chain day)
-  "The error for a chain with no calls expiring on day."
-  (let ((days (vector-unique (table-column (table-filter chain (= (table-column chain "type") "Call"))
-                                           "expiration-date"))))
-    (error (format "call-spreads: the chain has no calls expiring on {}; its calls expire on {}"
-                   (date->string day)
-                   (if (= (vector-length days) 0)
-                       "no day at all"
-                       (string-join (map date->string (vector->list days)) ", "))))))
+(define (call-spreads--classic search)
+  "A spread-search of bull call spreads from option_spreads.lsp's, with the columns named for the call
+bought and the call sold: option_spreads.lsp's symbol-1 is long-symbol, symbol-2 short-symbol, and so on;
+its max-loss, which for this spread is the cost, is left out; and the breakeven is the lower strike plus the cost
+(where the spread is worth what it cost; for a spread that costs more than its width, that is above the higher strike
+and the spread can never make a profit, and option_spreads.lsp has no breakeven for it)."
+  (let ((table (spread-search-spreads search)))
+    (make-spread-search
+      :kind (spread-search-kind search)
+      :stock (spread-search-stock search)
+      :stock-price (spread-search-stock-price search)
+      :expiration (spread-search-expiration search)
+      :expected-price (spread-search-expected-price search)
+      :prices (spread-search-prices search)
+      :spreads (list (cons "long-symbol" (table-column table "symbol-1"))
+                     (cons "short-symbol" (table-column table "symbol-2"))
+                     (cons "long-strike" (table-column table "strike-1"))
+                     (cons "short-strike" (table-column table "strike-2"))
+                     (cons "long-price" (table-column table "price-1"))
+                     (cons "short-price" (table-column table "price-2"))
+                     (cons "cost" (table-column table "cost"))
+                     (cons "worth" (table-column table "worth"))
+                     (cons "profit" (table-column table "profit"))
+                     (cons "ratio" (table-column table "ratio"))
+                     (cons "breakeven" (+ (table-column table "strike-1") (table-column table "cost")))
+                     (cons "max-profit" (table-column table "max-profit"))))))
 
 (define (call-spreads-for-chain chain expiration expected-price
                                 &key (prices 'bid-ask) (min-open-interest 1) (min-volume 1) (min-cost 0))
   "Every pair of the chain's calls that expire on expiration (a date, or
 YYYY-MM-DD text), bought at the lower strike and sold at the higher, as a
-spread-search (see the top of this file): its table of spreads has a row for
+spread-search (see the top of option_spreads.lsp): its table of spreads has a row for
 each, the best first -- the one with the highest profit, if the stock is at
 expected-price on expiration day, as a share of the most that can be lost.
 chain is a table as tastytrade-option-chain or schwab-option-chain makes.
@@ -145,47 +129,10 @@ The columns of the table:
   max-profit                   the most that can be made: the strikes' difference less cost
 :prices is bid-ask (pay the ask, get the bid) or mid; the others limit which
 calls count: see the top of this file."
-  (unless (or (eq? prices 'bid-ask) (eq? prices 'mid))
-    (error "call-spreads: :prices is 'bid-ask or 'mid, not" prices))
-  (let* ((day (call-spreads--day expiration))
-         (calls (table-filter chain (vector-and (= (table-column chain "type") "Call")
-                                                (= (table-column chain "expiration-date") day)))))
-    (when (= (table-row-count calls) 0)
-      (call-spreads--no-calls chain day))
-    (let* ((quoted (table-sort
-                     (table-filter calls (vector-and (> (table-column calls "bid") 0)
-                                                     (> (table-column calls "ask") 0)
-                                                     (>= (vector-fill-nan (table-column calls "open-interest") 0)
-                                                         min-open-interest)
-                                                     (>= (vector-fill-nan (table-column calls "volume") 0)
-                                                         min-volume)))
-                     "strike"))
-           (buy (table-column quoted (if (eq? prices 'mid) "mid" "ask")))
-           (sell (table-column quoted (if (eq? prices 'mid) "mid" "bid"))))
-      (destructuring-bind (long-symbol short-symbol long-strike short-strike long-price short-price)
-          (call-spreads--pairs (table-column quoted "symbol") (table-column quoted "strike") buy sell)
-        (let* ((cost (- long-price short-price))
-               (worth (- (vector-clip (- expected-price long-strike) 0 1e12)
-                         (vector-clip (- expected-price short-strike) 0 1e12)))
-               (keep (vector-and (> cost 0) (>= cost min-cost) (> short-strike long-strike)))
-               (pick (lambda (v) (vector-select v keep)))
-               (kept-cost (pick cost))
-               (kept-profit (- (pick worth) kept-cost)))
-          (make-spread-search
-            :stock (vector-ref (table-column chain "underlying") 0)
-            :stock-price (vector-ref (table-column chain "underlying-price") 0)
-            :expiration day
-            :expected-price expected-price
-            :prices prices
-            :spreads (table-sort
-                       (make-table "long-symbol" (pick long-symbol) "short-symbol" (pick short-symbol)
-                                   "long-strike" (pick long-strike) "short-strike" (pick short-strike)
-                                   "long-price" (pick long-price) "short-price" (pick short-price)
-                                   "cost" kept-cost "worth" (pick worth) "profit" kept-profit
-                                   "ratio" (/ kept-profit kept-cost)
-                                   "breakeven" (+ (pick long-strike) kept-cost)
-                                   "max-profit" (- (pick short-strike) (pick long-strike) kept-cost))
-                       "ratio" #t)))))))
+  (call-spreads--classic
+    (option-spreads-for-chain chain 'bull-call expiration expected-price
+                              :prices prices :min-open-interest min-open-interest :min-volume min-volume
+                              :min-risk min-cost)))
 
 (define (call-spreads creds symbol expiration expected-price
                       &key (prices 'bid-ask) (min-open-interest 1) (min-volume 1) (min-cost 0))
@@ -193,12 +140,10 @@ calls count: see the top of this file."
 from Schwab -- the bids and asks are live while the market is open, and say so
 if it is closed -- and rank the call spreads: see call-spreads-for-chain, which
 takes the other options, and gives the result."
-  (unless (call-spreads--market-open?)
-    (display "The market is closed now: the bids and asks are from its last close.\n\n"))
-  (call-spreads-for-chain (schwab-option-chain creds symbol :expiration (call-spreads--day expiration) :type "CALL")
-                          expiration expected-price
-                          :prices prices :min-open-interest min-open-interest :min-volume min-volume
-                          :min-cost min-cost))
+  (call-spreads--classic
+    (option-spreads creds symbol 'bull-call expiration expected-price
+                    :prices prices :min-open-interest min-open-interest :min-volume min-volume
+                    :min-risk min-cost)))
 
 ; ---------------------------------------------------------------------------
 ; The order
@@ -224,20 +169,6 @@ sold. A lower :price may fill at a better price, or not fill."
                          (vector-ref (table-column spreads "short-symbol") row)
                          contracts
                          (if (null? price) (vector-ref (table-column spreads "cost") row) price))))
-
-(define (show-spread-order order)
-  "Say in words what a spread order -- as call-spread-order or
-schwab-spread-order makes it -- would do, to read before previewing or placing
-it: what it buys and sells, and the most it would pay. Nothing is sent."
-  (let* ((legs (hash-table-ref order "orderLegCollection"))
-         (contracts (hash-table-ref (first legs) "quantity"))
-         (price (hash-table-ref order "price")))
-    (display (format "This order has not been sent. If it were: a {} order to open {} spread{}, with a limit on the net debit of {:,.2f} a share ({:,.2f} for each, {:,.2f} in all, at most):\n"
-                     (string-downcase (hash-table-ref order "duration")) contracts (if (= contracts 1) "" "s")
-                     price (* option-contract-size price) (* option-contract-size price contracts)))
-    (dolist (leg legs)
-      (display (format "  {:<13} {} x {}\n" (hash-table-ref leg "instruction") (hash-table-ref leg "quantity")
-                       (hash-table-ref (hash-table-ref leg "instrument") "symbol"))))))
 
 ; ---------------------------------------------------------------------------
 ; Showing them
