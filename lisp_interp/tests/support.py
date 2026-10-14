@@ -81,6 +81,9 @@ class LispTestCase(unittest.TestCase):
         self.addCleanup(lisp_core.set_verbose_level, 0)
         lisp_core.debug_state.reset()          # so are breakpoints and the debug hook
         self.addCleanup(lisp_core.debug_state.reset)
+        lisp_core.profile_state.clear()        # and the functions being profiled
+        lisp_core.set_profiling()
+        self.addCleanup(self.stop_profiling)
         # A stop that opens the debug REPL reads the keyboard. Tests that expect
         # one use run_with_input; any other must fail, not wait for a person.
         patcher = mock.patch("builtins.input", side_effect=AssertionError(
@@ -89,6 +92,11 @@ class LispTestCase(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.out = []
         self.env = lisp_builtins.make_global_env(output=self.out.append)
+
+    @staticmethod
+    def stop_profiling():
+        lisp_core.profile_state.clear()
+        lisp_core.set_profiling()
 
     # -- running code ------------------------------------------------------
 

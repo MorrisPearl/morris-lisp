@@ -102,10 +102,12 @@ end.
   - [Introspection / debugging](#introspection--debugging)
   - [Debugging](#debugging-1)
   - [Verbose mode and stack traces](#verbose-mode-and-stack-traces)
+  - [Profiling](#profiling)
 - [A short example](#a-short-example)
 - [Examples after Norvig's *Paradigms of AI Programming*](#examples-after-norvigs-paradigms-of-ai-programming)
 - [A chess program](#a-chess-program)
 - [A KenKen solver](#a-kenken-solver)
+- [A parser framework](#a-parser-framework)
 - [An SQL interpreter](#an-sql-interpreter)
 - [How the code is organized](#how-the-code-is-organized)
 - [Running the tests](#running-the-tests)
@@ -5304,6 +5306,60 @@ Lisp call stack (most recent call last):
   (c)
 ```
 
+### Profiling
+
+To find out where a program spends its time, say which functions to watch, run
+the program, and ask what was found:
+
+```lisp
+(load "sql.lsp")                          ; the SQL interpreter, for something to watch
+(profile 'peg-match-item 'peg-call-rule 'tokenize 'string-downcase)
+(sql "SELECT 1 + 2")
+(show-profile)                            ; a table, the function that took the most time first
+(unprofile)                               ; stop watching them all
+```
+
+#### `(profile function-or-name ... [:time #f])`
+From now on, counts the calls of each function and times them. A function is
+given as its name (`'fib`) or as the procedure itself; either way it is found by
+its name, as `break` does, so it covers a local function or a function defined
+again later, and the name of a function not defined yet is remembered. The
+built-in functions can be profiled too (`'table-group-by`, `'map`). A macro can't
+be: it is expanded once, not each time it is used. Returns the names.
+
+For each function two times are kept. The **total** time is the time in all of its
+calls, including what they call; a call of the function inside a call of the same
+function isn't counted again, so a recursive function's total is the time of the
+outermost calls. The **self** time is the total less the time in calls of *other
+functions being profiled*: it is what the function itself used, if all the functions
+that matter are watched, and if some aren't, their time is in the self time of the
+function that called them.
+
+`:time #f` only counts, which costs less. A program that isn't being profiled pays
+almost nothing for the feature, and a function that calls itself in tail position is
+still a loop that uses no more stack when it is profiled. (A pair of functions that
+call each other in tail position, both profiled, use a little stack for each call,
+which is given back when the loop ends.) A call that ends in an error is counted, but
+its time isn't.
+
+#### `(profile-results [:sort key])`, `(show-profile [:sort key])`
+What was found, as a table with a row for each function: `function`, `calls`,
+`total_s` and `self_s` (seconds), and `ms_per_call` (the self time of a call, in
+milliseconds). The times are missing for a function that is only counted. The rows are
+in order of self time, or by `:sort` `total`, `calls`, or `name`. `show-profile`
+prints the table; `profile-results` returns it, to use as any table.
+
+```lisp
+(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(profile 'fib)
+(fib 15)                                                      ; => 610
+(table-column (profile-results) "calls")                      ; => #(1973)
+```
+
+#### `(unprofile function-or-name ...)`, `(profile-reset!)`
+`unprofile` stops watching the functions given, or all of them if none is. `profile-reset!`
+sets every count and time to zero and goes on watching.
+
 ---
 
 ## A short example
@@ -5458,10 +5514,102 @@ left, and goes back if the guess leads to a contradiction. The 4 × 4 and
 6 × 6 puzzles in the file take no guesses and well under a second; the
 9 × 9 one, which gives no digits and has large cages, about 10 seconds.
 
+## A parser framework
+
+`lib/parser.lsp` reads text in a small language -- a query language, a
+calculator, a configuration file, a data format -- by a **table of rules**,
+instead of a function for each part of the grammar. The text is cut into
+tokens with regular expressions, and the rules say what the tokens make.
+It is no more powerful than recursive descent: a rule that has to guess
+which way to go tries one way, and if that fails tries the next. The SQL
+interpreter below is read by it, and it is meant to be read, too.
+
+```lisp
+(load "parser.lsp")
+
+(define-grammar calculator
+  (token skip   "\\s+")                              ; spaces: read, and thrown away
+  (token number "\\d+(?:\\.\\d+)?"  string->number)  ; the text is made a number
+  (token symbol "[-+*/()]")
+
+  (rule expression ((chain term ("+" . +) ("-" . -))))
+  (rule term       ((chain factor ("*" . *) ("/" . /))))
+  (rule factor     (number))
+  (rule factor     ("(" expression ")")))
+
+(grammar-parse calculator "2 + 3 * (4 - 1)")         ; the tree (+ 2 (* 3 (- 4 1)))
+(eval (grammar-parse calculator "2 + 3 * (4 - 1)"))  ; 11
+```
+
+`define-grammar` is a macro, so load the library by hand (it isn't one of the
+autoloaded ones); `make-grammar` makes the same grammar from a list of rows, for
+a grammar a program builds. `(grammar-parse grammar text [:start rule])` returns
+the value of the text, or signals an error that says what was expected where.
+`(grammar-tokens grammar text)` shows how the text was cut up, as a list of
+`(kind text)`, to see what the token rows make of it.
+
+**Token rows**, `(token kind regular-expression [function])`. At each place in the
+text the regular expressions are tried in the order of the rows, and the first
+that matches takes its piece (not the longest, so `<=` goes before `<`, and
+keywords before names). The token's value is the text, or what the function makes
+of it. A token of kind `skip` is read and thrown away. A character no row matches is a
+token of kind `unknown`, which no rule accepts, so it's an error where it is. The
+expressions can't capture groups (use `(?:...)`) or begin with a flag such as `(?i)`
+(write `(?i:...)` around what it applies to); the grammar says so when it's made.
+
+**Rule rows**, `(rule name (item ...) [action])`. Several rows with the same name are
+alternatives, tried in the order written; the first whose items all match is the
+rule's value. An item is:
+
+| Item | Matches | Its value |
+|---|---|---|
+| `"text"` | a token with that text | none |
+| `kind` | a token of that kind (a name from a token row) | the token's value |
+| `name` | the rule of that name | what the rule makes |
+| `end` | only the end of the text | none |
+| `(opt item ...)` | the items, or nothing | their value, or `'()` |
+| `(flag item ...)` | the items, or nothing | `#t` or `#f` |
+| `(star item ...)`, `(plus item ...)` | the items again and again (`plus`: at least once) | the list of their values |
+| `(sep-by sep item ...)` | the items one or more times with `sep` between | the list of their values |
+| `(or item ...)` | the first of the items that matches | its value |
+| `(one-of "a" "b")` | one of these texts | the text as written in the rule |
+| `(seq item ...)` | the items in a row | their value |
+| `(drop item ...)` | the items | none |
+| `(not item ...)` | succeeds, reading nothing, if the items do not match | none |
+| `(chain operand ("+" . add) ...)` | an operand, and more of them each after an operator, grouped from the left | `(add left right)`, or the procedure's value |
+
+The value of several items together (the items of a rule, or inside an `opt`,
+`star`, and so on) is the value of the one that has a value, or the list of the
+values of several, or `#t` if none has one. A rule's **action** is a procedure called
+with the value of each item of the row that has one; what it returns is the rule's
+value. With no action the value is that of the items together. `(node-builder 'x)`
+makes the action that returns `(x value ...)`, for a tree. A `chain` operator's node is
+a symbol, which makes the tree `(node left right)` (so `("+" . +)` makes Lisp that
+`eval` can run), or, in a grammar made by `make-grammar`, a procedure.
+
+Other rows: `(option ignore-case #t)` (the texts in rules match in any case, and a
+message shows them in capitals), `(option start name)`, `(option error-prefix "sql:")`,
+`(option end-name "the end of the statement")`, and `(describe name "a number")`, which
+says what a rule or kind of token is called in a message.
+
+**When the text doesn't fit** the error says what could have come next at the furthest
+place the text was read to, and what was there:
+`sql: expected ; or the end of the statement but found t3 (at character 19)`. Parts that
+are optional aren't listed while something else was required, and a rule with a
+`describe` is named by it instead of by each thing it tried.
+
+How it works: the rules are tried in order at each place in the tokens, and what each rule
+found at each place is remembered. A rule that is tried again at a place -- as it is when
+an alternative that went some way fails and the next one starts the same way -- costs
+nothing, so the time is in proportion to the length of the text, however many alternatives
+begin alike. (This is the "packrat" method, and the grammars it reads, "parsing expression
+grammars".) A rule that begins with itself, as `sum = sum "+" product`, would never stop,
+and the error says so: write it as a `chain`, `star`, or `sep-by`.
+
 ## An SQL interpreter
 
 `examples/sql.lsp` answers questions written in SQL, using the interpreter's
-own tables, and is meant to be read: it is about 1,100 lines in seven
+own tables, and is meant to be read: it is about 1,100 lines in six
 sections, a good part of them explanation, and each function is described. It works on any table you have --
 one from `load-csv`, `load-sqlite`, or any of the data sources -- and what it
 gives back is an ordinary table, for `display-table`, `plot-chart`, a
@@ -5523,29 +5671,28 @@ How it works, in the order of the file:
 
 1. **The database** is a hash table of tables, with the kind of value (number,
    text, date) of each column kept beside it, because a table does not say.
-2. **Tokens**: one regular expression cuts the text into quoted strings,
-   numbers, words, and symbols.
-3. **The parser** is a recursive-descent parser: a function for each part of
-   the language, from `OR` (the loosest) down to a single number or column,
-   that reads tokens from the front of a list and returns a tree such as
-   `(add (col "x") (num 1))`. `IN` and `BETWEEN` are written out as `OR` and
-   `AND` of comparisons.
-4. **Expressions** are evaluated for a whole table at once, with the vector
+2. **The grammar** is a table of rules, read by the parser framework above
+   (`lib/parser.lsp`). Its token rows cut the text into quoted strings, numbers,
+   keywords, names, and symbols; its rule rows say what a statement is made of,
+   from `OR` (the loosest) down to a single number or column, and each rule's
+   action builds a tree such as `(add (col "x") (num 1))`. `IN` and `BETWEEN` are
+   written out as `OR` and `AND` of comparisons.
+3. **Expressions** are evaluated for a whole table at once, with the vector
    functions: a number is a vector of that number, a column is the table's
    column, `a + b` is `vector-add`, and a condition is a mask, 1 for the
    rows it is true of, which `table-filter` uses to keep rows. `NOT` is not
    applied to a mask: the condition is turned around instead (`NOT (a < b)`
    becomes `a >= b`), because a mask has no way to say "unknown".
-5. **Groups**: `table-group-by` does the work, given columns that tell the groups
+4. **Groups**: `table-group-by` does the work, given columns that tell the groups
    apart and what to find in each. The select list, `HAVING`, and `ORDER BY` are
    then rewritten to use the columns of the grouped table, so `SUM(x) * 12`
    becomes (the column of sums) `* 12`. A column that is neither grouped nor
    inside an aggregate is not there, which is the error SQL gives.
-6. **`SELECT`** takes its steps in the order SQL means them: `FROM` and `JOIN`
+5. **`SELECT`** takes its steps in the order SQL means them: `FROM` and `JOIN`
    (with `table-join`), `WHERE` (`table-filter`), groups, `HAVING`, the select
    list, `DISTINCT`, `ORDER BY` (`table-sort`, once for each key, last key
    first), `LIMIT` (`table-slice`).
-7. **The other statements** and the ways to run them.
+6. **The other statements** and the ways to run them.
 
 `examples/sql_example.lsp` makes a small database of loans and states with
 SQL, asks questions of it, then does the same to the 32,460 pool-months of
@@ -5563,7 +5710,7 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 
 | Directory | What's in it |
 |---|---|
-| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `option_methods.lsp` (a stock's options valued three ways), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
+| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `option_methods.lsp` (a stock's options valued three ways), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp`, `parser.lsp` (a framework for parsers of small languages: see "A parser framework") |
 | `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, with its opening book, `chess_book.lsp`, a KenKen solver, and an SQL interpreter, `sql.lsp` (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `notebooks/` | Jupyter notebooks that use the interpreter (on the `morris_lisp` kernel) |
 | `scratch/` | Experiments: not part of the interpreter, and not tested |
@@ -5584,6 +5731,7 @@ The Python files:
 | `lisp_tables.py` | Tables: `table-filter`, `table-sort`, `table-group-by`, `table-join`, ... |
 | `lisp_stratify.py` | Stratification tables: `stratify`, `stratify-all` |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
+| `lisp_profile.py` | `profile`, `unprofile`, `profile-reset!`, `profile-results`, `show-profile`: the profiling functions (the machinery is in `lisp_core.py`) |
 | `lisp_debug.py` | `break`, `unbreak`, `set-debug-hook!`, `abort`, `locals`, `break-on-error`, ...: the debugging functions (the machinery is in `lisp_core.py`) |
 | `lisp_regression.py` | `linear-regression`, `lad-regression`, `quantile-regression`, `logistic-regression`, `spline-regression`, `spline-lad`, `spline-quantile`, `spline-logistic`, `model-report`, ... |
 | `lisp_save.py` | `save-variables` (with its macro in `macros_init.lsp`) and `load-variables`: variables in a JSON file |
@@ -5631,7 +5779,7 @@ every new environment.
 ## Running the tests
 
 The tests are in `lisp_interp/tests/`, a file for each part of the
-interpreter, about 1,100 of them:
+interpreter, about 1,300 of them:
 
 | File | What it tests |
 |---|---|
@@ -5643,6 +5791,8 @@ interpreter, about 1,100 of them:
 | `test_models.py` | regression, linear programming, the solver, day counts and cash flows, and the template and column-engine libraries |
 | `test_investments.py` | option prices, futures curves, the volatility smile, simulated prices, option chains checked against them, and portfolios |
 | `test_debugging.py` | tracing, stack traces, breakpoints, and the debug REPL, in the console and in Jupyter |
+| `test_profiling.py` | `profile` and its results: counts, times, self time, recursion, tail calls, and built-in functions |
+| `test_parser.py` | the parser framework, `lib/parser.lsp`: tokens, each kind of item, errors, and two grammars compared with Python's own parsing |
 | `test_programs.py` | the command line, the GUI's error report, the chess, KenKen, and SQL programs, and the example scripts |
 | `test_reference_doc.py` | **the two manuals**, this one and `lisp_library_reference.md`: every ` ```lisp ` example with a `; =>` result is run, and the test fails if the interpreter no longer returns that value. So when you change how something behaves, the tests say which documented examples need updating |
 

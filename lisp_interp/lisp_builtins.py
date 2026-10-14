@@ -43,6 +43,7 @@ import lisp_charts
 import lisp_clock
 import lisp_csv
 import lisp_debug
+import lisp_profile
 import lisp_fdic
 import lisp_finance
 import lisp_fred
@@ -1889,6 +1890,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_save.make_save_builtins(env))
     env.update(make_introspection_builtins(env, out))
     env.update(lisp_debug.make_debug_builtins(env, out))
+    env.update(lisp_profile.make_profile_builtins(env, out))
 
     # Remember each builtin's Lisp name, for error messages (see
     # lisp_core.builtin_error).

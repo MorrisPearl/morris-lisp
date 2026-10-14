@@ -45,6 +45,7 @@ bounded by Python's recursion limit. In practice this rarely matters.
 import datetime
 import inspect
 import os
+import time
 import sys
 
 import numpy as np    # LispVector's backing store -- see its class docstring
@@ -1053,7 +1054,7 @@ def call_builtin(function, args):
     exception it raises becomes a LispError naming the builtin; a LispError
     passes through unchanged."""
     try:
-        return function(*args)
+        return _call_builtin_profiled(function, args) if _profiling else function(*args)
     except (LispError, RecursionError):
         raise
     except Exception as exc:
@@ -1585,6 +1586,10 @@ def seval(expr, env, call=None):
             control_stack.insert(0, ('CALL', proc, args, 0))
             if _verbose_level:
                 _trace_enter(proc, args, False)
+            if _profiling:
+                frame = _profile_enter(proc)
+                if frame is not None:
+                    control_stack.insert(0, frame)
     _active_stacks.append(control_stack)
     try:
         if call is not None and isinstance(call[0], Procedure):
@@ -1661,6 +1666,10 @@ def _run_eval_loop(control_stack, value_stack):
                             _trace_enter(proc, arg_values, True)
                     elif _verbose_level:
                         _trace_enter(proc, arg_values, False)
+                    if _profiling:
+                        frame = _profile_enter(proc, control_stack[-1] if control_stack else None)
+                        if frame is not None:
+                            control_stack.append(frame)
                     control_stack.append(('CALL', proc, arg_values, tails))
                     check_breakpoint(proc, arg_values, new_env)     # see "Debugging", below
                 push_sequence(proc.body, new_env, control_stack, value_stack)
@@ -1668,7 +1677,7 @@ def _run_eval_loop(control_stack, value_stack):
                 # call_builtin(proc, arg_values), written out here because this
                 # is the evaluator's busiest line
                 try:
-                    value_stack.append(proc(*arg_values))
+                    value_stack.append(_call_builtin_profiled(proc, arg_values) if _profiling else proc(*arg_values))
                 except (LispError, RecursionError):
                     raise
                 except Exception as exc:
@@ -1684,6 +1693,9 @@ def _run_eval_loop(control_stack, value_stack):
 
         elif tag == 'MCALL':
             pass    # a macro transformer finished; nothing to log or unwind
+
+        elif tag == 'PROFILE':
+            _end_timing(frame[1], frame[2], frame[3])       # a timed call finished (see "Profiling")
 
         elif tag == 'SEQ':
             _, remaining, seq_env = frame
@@ -1973,6 +1985,141 @@ def reconstruct_macro_source(macro, name=None):
     return Pair(Symbol("defmacro"),
                 Pair(name if name is not None else Symbol("<anonymous>"),
                      Pair(param_spec, body)))
+
+
+# ---------------------------------------------------------------------------
+# Profiling
+# ---------------------------------------------------------------------------
+#
+# (profile 'f) has the evaluator count the calls of the functions named f, and time them. It costs a
+# program that isn't being profiled one test of _profiling for each call. The Lisp-callable functions
+# are in lisp_profile.py.
+#
+#   COUNTING -- a call of a profiled function adds to its count when it begins.
+#   TIMING   -- a call of a user-defined function also leaves a PROFILE frame on the control stack,
+#     under the call's CALL frame, and the frame stops the clock when the function returns. A
+#     function's total time is the time in all of its calls (a call inside a call of the same function
+#     isn't counted twice); its own time is that less the time in calls of other profiled functions,
+#     which the call being timed is told about through the `active` list, the profiled calls in progress.
+#     A built-in function is timed around the Python call.
+#   TAIL CALLS -- a function that tail-calls itself is still a loop that uses no more stack: the
+#     frame of the call already in progress times all of them. One that tail-calls another
+#     profiled function leaves a frame for each change of function.
+#   ERRORS -- a call that ends in an error never reaches its PROFILE frame, so its time isn't counted;
+#     the `active` list it leaves is cut back by the next call to finish that began before it.
+
+class ProfileEntry:
+    """What is known of one profiled function: its name, whether it's timed, and the numbers."""
+
+    def __init__(self, name, timed):
+        self.name = name
+        self.timed = timed
+        self.calls = 0
+        self.total = 0.0        # seconds in all of its calls, with what they call
+        self.own = 0.0          # seconds in them, less the calls of other profiled functions
+
+
+class ProfileState:
+    """The functions being profiled. There's one, profile_state, shared by the whole process, like
+    debug_state; tests clear it."""
+
+    def __init__(self):
+        self.clear()
+
+    def clear(self):
+        self.procedures = {}    # name -> ProfileEntry, for functions you define: found by name, wherever
+        self.builtins = {}      # id(function) -> ProfileEntry, for the built-in functions
+        self.functions = {}     # id(function) -> the function, so that its id can't be reused
+        self.active = []        # [entry, time in profiled calls made from it, inside a call of the same function]
+                                # for each timed call in progress, innermost last
+
+    def add(self, what, timed):
+        """Start profiling what resolve() in lisp_profile.py found: ('procedure', name) or ('builtin', function, name)."""
+        if what[0] == "procedure":
+            table, key = self.procedures, what[1]
+        else:
+            table, key = self.builtins, id(what[1])
+            self.functions[key] = what[1]
+        if key in table:
+            table[key].timed = timed
+        else:
+            table[key] = ProfileEntry(what[-1], timed)
+
+    def remove(self, what):
+        if what[0] == "procedure":
+            self.procedures.pop(what[1], None)
+        else:
+            self.builtins.pop(id(what[1]), None)
+            self.functions.pop(id(what[1]), None)
+
+    def reset_counts(self):
+        for entry in self.entries():
+            entry.calls, entry.total, entry.own = 0, 0.0, 0.0
+        self.active.clear()
+
+    def entries(self):
+        return list(self.procedures.values()) + list(self.builtins.values())
+
+
+profile_state = ProfileState()
+_profiling = False      # whether any function is being profiled: change ONLY via set_profiling()
+
+
+def set_profiling():
+    """Note whether anything is being profiled now, after profile_state changed."""
+    global _profiling
+    _profiling = bool(profile_state.procedures or profile_state.builtins)
+
+
+def _begin_timing(entry):
+    """Start the clock for a call of a timed function: [record, start, depth] for _end_timing."""
+    active = profile_state.active
+    if len(active) > 10000:         # left behind by calls that ended in errors
+        active.clear()
+    record = [entry, 0.0, any(r[0] is entry for r in active)]
+    active.append(record)
+    return record, time.perf_counter(), len(active) - 1
+
+
+def _end_timing(record, start, depth):
+    """A timed call ended: add its time to its function, and to the time its caller spent in profiled calls."""
+    elapsed = time.perf_counter() - start
+    active = profile_state.active
+    del active[depth:]
+    entry = record[0]
+    if not record[2]:
+        entry.total += elapsed
+    entry.own += elapsed - record[1]
+    if active:
+        active[-1][1] += elapsed
+
+
+def _profile_enter(proc, below=None):
+    """A call of a user-defined function begins (its CALL frame is about to be pushed). Count it if it is
+    profiled and, if it's timed, return the PROFILE frame to push under its CALL frame -- unless it's a tail
+    call of the function whose PROFILE frame is `below`, which already times it."""
+    entry = profile_state.procedures.get(proc.name) if proc.name is not None else None
+    if entry is None:
+        return None
+    entry.calls += 1
+    if not entry.timed or (below is not None and below[0] == 'PROFILE' and below[1][0] is entry):
+        return None
+    return ('PROFILE',) + _begin_timing(entry)
+
+
+def _call_builtin_profiled(proc, args):
+    """Call the built-in function with the arguments, counting and timing the call if it's profiled."""
+    entry = profile_state.builtins.get(id(proc))
+    if entry is None:
+        return proc(*args)
+    entry.calls += 1
+    if not entry.timed:
+        return proc(*args)
+    record, start, depth = _begin_timing(entry)
+    try:
+        return proc(*args)
+    finally:
+        _end_timing(record, start, depth)
 
 
 # ---------------------------------------------------------------------------

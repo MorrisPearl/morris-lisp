@@ -1357,17 +1357,17 @@ class TestSqlProgram(unittest.TestCase):
                 ("SELECT k FROM t JOIN u ON t.k = u.k", "ambiguous column name: k"),
                 ("SELECT 1 FROM t a JOIN u a ON a.k = a.k", "a is the name of two tables in the query"),
                 ("SELECT u.* FROM t", "no such table: u"),
-                ("SELEC 1", "a statement starts with SELECT"),
+                ("SELEC 1", "SELECT, INSERT, UPDATE, DELETE, CREATE, DROP or the end of the statement but found SELEC"),
                 ("SELECT 1 +", "expected a column, number, or text but found the end of the statement"),
                 ("SELECT (1", "expected ) but found the end of the statement"),
                 ("SELECT 1 FROM", "expected a table name but found the end of the statement"),
-                ("SELECT 1 FROM t WHERE", "expected a column, number, or text"),
-                ("SELECT 1 @ 2", "unexpected @"),
+                ("SELECT 1 FROM t WHERE", "expected an expression but found the end of the statement"),
+                ("SELECT 1 @ 2", "expected ; or the end of the statement but found @ (at character 9)"),
                 ("SELECT 'abc", "a quote that never ends"),
-                ("SELECT \"id\" FROM t", "expected a column, number, or text but found \""),
-                ("SELECT 1 NOT 2", "expected LIKE, BETWEEN, or IN after NOT"),
+                ("SELECT \"id\" FROM t", "expected *, a table name or an expression but found \" (at character 7)"),
+                ("SELECT 1 NOT 2", "expected LIKE, BETWEEN or IN but found 2"),
                 ("SELECT 5 BETWEEN 1", "expected AND"),
-                ("SELECT x IN (SELECT 1) FROM t", "expected a column, number, or text but found select"),
+                ("SELECT x IN (SELECT 1) FROM t", "expected an expression but found SELECT"),
                 ("SELECT foo(1)", "unknown function: foo"),
                 ("SELECT sum(*) FROM t", "sum needs a column or expression, not *"),
                 ("SELECT COUNT(DISTINCT id) FROM t", "count(DISTINCT x) isn't supported"),
@@ -1377,7 +1377,7 @@ class TestSqlProgram(unittest.TestCase):
                 ("SELECT id FROM t ORDER BY 9", "ORDER BY 9 is not a column of the result"),
                 ("SELECT DISTINCT grp FROM t ORDER BY x", "t.x can't be used here"),
                 ("SELECT id FROM t WHERE s LIKE grp", "LIKE needs a pattern in quotes"),
-                ("SELECT id FROM t LIMIT x", "LIMIT needs a number"),
+                ("SELECT id FROM t LIMIT x", "expected a number but found x"),
                 ("SELECT t.id FROM t JOIN u ON t.k < u.k", "ON must be equalities"),
                 ("SELECT t.id FROM t JOIN u ON t.k = t.n", "must compare a column of one table with a column of the other"),
                 ("SELECT t.id FROM t JOIN u", "expected ON"),
@@ -1395,7 +1395,7 @@ class TestSqlProgram(unittest.TestCase):
                 ("CREATE TABLE c (x integer PRIMARY KEY)", "constraints such as PRIMARY KEY"),
                 ("CREATE TABLE c ()", "expected a column name"),
                 ("CREATE INDEX i", "expected TABLE"),
-                ("SELECT 1 FROM t t2 t3", "after the end of the statement"),
+                ("SELECT 1 FROM t t2 t3", "expected ; or the end of the statement but found t3"),
         ]:
             with self.subTest(statement=text):
                 self.assertLispError(text, fragment)
@@ -1490,6 +1490,7 @@ class TestExampleScripts(unittest.TestCase):
         "nlp_parsing_example.lsp",
         "unification_grammar_example.lsp",
         "sql_example.lsp",
+        "parser_example.lsp",
     ]
     SLOW_EXAMPLES = [
         "dolist_vectors_map_example.lsp",
@@ -1528,6 +1529,16 @@ class TestExampleScripts(unittest.TestCase):
         for expected in ["9 rows added", "West           4  1425000.0", "AK         0", "2 rows changed", "1 row deleted",
                          "sql: loans.state can't be used here",
                          "750.0   15666  0.16380148", "(5 rows)", "#(0.1561 0.1594 0.1638 0.1609)", "800.0  0.16094743"]:
+            self.assertIn(expected, out)
+
+    def test_the_parser_example_reads_a_calculator_and_a_settings_file(self):
+        out = self.results["parser_example.lsp"].stdout
+        for expected in ["2 + 3 * 4  =>  (+ 2 (* 3 4))  =>  14", "100 - 30 - 20  =>  (- (- 100 30) 20)  =>  50",
+                         "-2 * (7 - 10) / 4  =>  (/ (* (- 2) (- 7 10)) 4)  =>  1.5",
+                         "2 +  =>  parse error: expected a number, - or ( but found the end of the input",
+                         "2 3  =>  parse error: expected *, /, +, - or the end of the input but found 3 (at character 2)",
+                         "data     folder    /Users/ada/pools", "model    folds     5", "One of its settings: #(5)",
+                         "parse error: expected a number, a name, or text in quotes but found newline (at character 16)"]:
             self.assertIn(expected, out)
 
     def test_the_macros_example_produces_its_documented_output(self):

@@ -48,12 +48,15 @@
 ; How it works, in the order of this file:
 ;
 ;   1. The database -- the tables, and the kind of value (number, text, date) in each column.
-;   2. Tokens -- the text cut into words, numbers, 'strings', and symbols.
-;   3. The parser -- tokens to a tree: a list with what it is first, as (add (col "x") (num 1)).
-;   4. Expressions -- a tree and a table to a vector, one value for each row of the table.
-;   5. Groups -- GROUP BY and the aggregates, with table-group-by.
-;   6. SELECT -- the steps of a query, one after another, each with a table function.
-;   7. The other statements, and the ways to run them.
+;   2. The grammar -- a table of rules that says what a statement is made of, read by the parser
+;      framework in lib/parser.lsp. It cuts the text into tokens (words, numbers, 'strings', symbols)
+;      with regular expressions, and builds a tree from them, such as (add (col "x") (num 1)).
+;   3. Expressions -- a tree and a table to a vector, one value for each row of the table.
+;   4. Groups -- GROUP BY and the aggregates, with table-group-by.
+;   5. SELECT -- the steps of a query, one after another, each with a table function.
+;   6. The other statements, and the ways to run them.
+
+(load "parser.lsp")
 
 ; ---------------------------------------------------------------------------
 ; 1. The database
@@ -137,34 +140,24 @@ that in a join the columns of the tables can't be confused."
        (find-table name)))
 
 ; ---------------------------------------------------------------------------
-; 2. Tokens
+; 2. The grammar
 ; ---------------------------------------------------------------------------
-; The text is cut into pieces, by a regular expression that tries, at each
-; place, a 'quoted string' (in which '' is a quote), a number, a word, a
-; two-character symbol, a one-character symbol, and last anything else that
-; isn't a space, which the parser will say it can't use. Each piece is a list of
-; its kind and value: (word "select"), (number 3.5), (string "it's"), (symbol "<=").
-; Words are made lower case, since names don't depend on case.
-
-(define token-pattern "('(?:[^']|'')*'|\d+(?:\.\d+)?|[A-Za-z_][A-Za-z_0-9]*|<=|>=|<>|!=|[-+*/%=<>(),.;]|\S)")
-
-(define (token-of piece)
-  (cond ((equal? piece "'") (sql-error "a quote that never ends: text goes between single quotes, as 'CA'"))
-        ((string-starts-with? piece "'")
-         (list 'string (string-replace (substring piece 1 (- (string-length piece) 1)) "''" "'")))
-        ((regex-match "\d.*" piece) (list 'number (string->number piece)))
-        ((regex-match "[A-Za-z_].*" piece) (list 'word (string-downcase piece)))
-        (else (list 'symbol piece))))
-
-(define (tokenize text)
-  (map token-of (regex-find-all token-pattern text)))
-
-; ---------------------------------------------------------------------------
-; 3. The parser
-; ---------------------------------------------------------------------------
-; A recursive-descent parser: a function for each part of the language, which
-; reads as many tokens as that part takes from the front of sql-tokens and returns
-; its tree. The trees:
+; The text of a statement is read by a grammar: a table of rows, in the form lib/parser.lsp
+; takes. There are two kinds of row.
+;
+; A token row, (token kind regular-expression [function]), says what a piece of the text looks
+; like: a number, a 'quoted string', a word, a symbol such as <=. The words SQL uses to organize
+; a statement (select, from, where ...) are a kind of their own, keyword, so that a name
+; can't be one. A token's value is its text, unless there's a function to make it something else:
+; the number from the text of a number, the text between the quotes, the word in lower case,
+; since names don't depend on case.
+;
+; A rule row, (rule name (item ...) action), says what a part of the language is made of: a
+; text in quotes is a token with that text (in any case), a symbol is a kind of token or another
+; rule, and (opt ...), (flag ...), (star ...), (sep-by "," ...), (or ...), and (chain ...)
+; are as parser.lsp explains them. Rows with the same name are alternatives, tried in order.
+; The action makes the value of the part from the values of the items that have one -- the
+; ones that aren't texts -- and the values are trees:
 ;
 ;   expressions   (num 3)  (text "ca")  (null)  (col "e.dept")
 ;                 (add a b)  (subtract a b)  (multiply a b)  (divide a b)  (modulo a b)
@@ -176,13 +169,12 @@ that in a join the columns of the tables can't be confused."
 ;   the others    (create name columns if-not-exists)  (drop name if-exists)
 ;                 (insert name columns source)  (update name assignments where)  (delete name where)
 ;
-; Where the lowest precedence is OR, then AND, NOT, the comparisons, + and -,
-; * / %, and last a minus sign, as in SQL: each is a function that calls the
-; next, and a parenthesis starts all over.
+; The rules for expressions go from OR, which holds its operands least tightly, to a single number
+; or column, which holds them most, as in SQL; (chain x ("+" . add) ...) is x, and more x after a
+; + (and so on), grouped from the left, as the tree (add left right): 1 - 2 - 3 is (1 - 2) - 3. A
+; parenthesis starts all over, with expression.
 
 (defstruct select-query distinct items from where group-by having order-by limit offset)
-
-(define sql-tokens '())
 
 (define reserved-words
   '("select" "from" "where" "group" "by" "having" "order" "limit" "offset" "join" "inner" "left"
@@ -191,359 +183,194 @@ that in a join the columns of the tables can't be confused."
 
 (define aggregate-names '("count" "sum" "avg" "min" "max"))
 
-(define (peek-token)
-  (if (null? sql-tokens)
-      (list 'end "")
-      (car sql-tokens)))
-
-(define (advance!)
-  (let ((token (peek-token)))
-    (unless (null? sql-tokens)
-      (set! sql-tokens (cdr sql-tokens)))
-    token))
-
-(define (token-text token)
-  (case (car token)
-    ((end) "the end of the statement")
-    ((string) (format "'{}'" (cadr token)))
-    (else (format "{}" (cadr token)))))
-
-(define (at-word? word) (equal? (peek-token) (list 'word word)))
-(define (at-symbol? symbol) (equal? (peek-token) (list 'symbol symbol)))
-
-(define (accept-word! word)
-  "Reads the word if it's next, and says whether it was."
-  (and (at-word? word) (advance!) #t))
-
-(define (accept-symbol! symbol)
-  (and (at-symbol? symbol) (advance!) #t))
-
-(define (expect-word! word)
-  (unless (accept-word! word)
-    (sql-error "expected" (string-upcase word) "but found" (token-text (peek-token)))))
-
-(define (expect-symbol! symbol)
-  (unless (accept-symbol! symbol)
-    (sql-error "expected" symbol "but found" (token-text (peek-token)))))
-
-(define (parse-name what)
-  "A name for `what`: any word that isn't one SQL uses to organize a statement."
-  (let ((token (peek-token)))
-    (if (and (eq? (car token) 'word) (not (member (cadr token) reserved-words)))
-        (cadr (advance!))
-        (sql-error "expected" what "but found" (token-text token)))))
-
-(define (parse-alias)
-  "The name after AS, or just after an item or table, or '() if there is none."
-  (cond ((accept-word! "as") (parse-name "a name after AS"))
-        ((and (eq? (car (peek-token)) 'word) (not (member (cadr (peek-token)) reserved-words)))
-         (cadr (advance!)))
-        (else '())))
-
-; --- Expressions ---
-
-(define (parse-expression) (parse-or))
-
-(define (parse-chain operators parse-operand)
-  "operand (operator operand)* as a tree grouped from the left: 1 - 2 - 3 is (1 - 2) - 3.
-`operators` pairs a token with the name of the tree."
-  (let more ((left (parse-operand)))
-    (let ((found (assoc (peek-token) operators)))
-      (if found
-          (begin (advance!)
-                 (more (list (cdr found) left (parse-operand))))
-          left))))
-
-(define (parse-or) (parse-chain '(((word "or") . or)) parse-and))
-(define (parse-and) (parse-chain '(((word "and") . and)) parse-not))
-
-(define (parse-not)
-  (if (accept-word! "not")
-      (list 'not (parse-not))
-      (parse-comparison)))
-
-(define comparison-operators
-  '(((symbol "=") . equal) ((symbol "<>") . not-equal) ((symbol "!=") . not-equal)
-    ((symbol "<") . less) ((symbol "<=") . less-equal)
-    ((symbol ">") . greater) ((symbol ">=") . greater-equal)))
-
-(define (parse-comparison)
-  "A sum, which may be followed by a comparison, IS NULL, LIKE, BETWEEN, or IN."
-  (let* ((left (parse-sum))
-         (operator (assoc (peek-token) comparison-operators)))
-    (cond (operator
-           (advance!)
-           (list (cdr operator) left (parse-sum)))
-          ((accept-word! "is")
-           (let ((negated (accept-word! "not")))
-             (expect-word! "null")
-             (list (if negated 'is-not-null 'is-null) left)))
-          (else
-           (let ((negated (accept-word! "not")))
-             (cond ((accept-word! "like")
-                    (list (if negated 'not-like 'like) left (parse-sum)))
-                   ((accept-word! "between")
-                    (let* ((low (parse-sum))
-                           (high (begin (expect-word! "and") (parse-sum)))
-                           (between (list 'and (list 'greater-equal left low) (list 'less-equal left high))))
-                      (if negated (list 'not between) between)))
-                   ((accept-word! "in")
-                    (let ((in (parse-in-list left)))
-                      (if negated (list 'not in) in)))
-                   (negated (sql-error "expected LIKE, BETWEEN, or IN after NOT"))
-                   (else left)))))))
-
-(define (parse-in-list left)
-  "(a, b, c) after IN, as left = a OR left = b OR left = c."
-  (expect-symbol! "(")
-  (let ((tree (list 'equal left (parse-expression))))
-    (while (accept-symbol! ",")
-      (set! tree (list 'or tree (list 'equal left (parse-expression)))))
-    (expect-symbol! ")")
-    tree))
-
-(define (parse-sum)
-  (parse-chain '(((symbol "+") . add) ((symbol "-") . subtract)) parse-product))
-
-(define (parse-product)
-  (parse-chain '(((symbol "*") . multiply) ((symbol "/") . divide) ((symbol "%") . modulo)) parse-unary))
-
-(define (parse-unary)
-  (if (accept-symbol! "-")
-      (list 'negate (parse-unary))
-      (parse-primary)))
-
-(define (parse-primary)
-  (let ((token (peek-token)))
-    (cond ((eq? (car token) 'number) (advance!) (list 'num (cadr token)))
-          ((eq? (car token) 'string) (advance!) (list 'text (cadr token)))
-          ((accept-symbol! "(")
-           (let ((inside (parse-expression)))
-             (expect-symbol! ")")
-             inside))
-          ((accept-word! "null") (list 'null))
-          ((accept-word! "true") (list 'num 1))
-          ((accept-word! "false") (list 'num 0))
-          ((function-call-next?) (parse-call))
-          (else (parse-column)))))
-
-(define (function-call-next?)
-  "Whether a word and then ( come next."
-  (and (eq? (car (peek-token)) 'word)
-       (pair? (cdr sql-tokens))
-       (equal? (cadr sql-tokens) '(symbol "("))))
-
-(define (parse-column)
-  "name or table.name"
-  (let ((name (parse-name "a column, number, or text")))
-    (if (accept-symbol! ".")
-        (list 'col (string-append name "." (parse-name "a column name after the .")))
-        (list 'col name))))
-
-(define (parse-call)
-  "function(arguments), or count(*)"
-  (let ((name (cadr (advance!))))
-    (advance!)                                           ; the (
-    (cond ((member name aggregate-names)
-           (let ((argument (cond ((accept-symbol! "*")
-                                  (unless (equal? name "count")
-                                    (sql-error name "needs a column or expression, not *"))
-                                  (list 'star))
-                                 ((at-word? "distinct") (sql-error "count(DISTINCT x) isn't supported"))
-                                 (else (parse-expression)))))
-             (expect-symbol! ")")
-             (list 'aggregate name argument)))
-          ((assoc name scalar-functions)
-           (let ((arguments '()))
-             (unless (at-symbol? ")")
-               (set! arguments (list (parse-expression)))
-               (while (accept-symbol! ",")
-                 (set! arguments (append arguments (list (parse-expression))))))
-             (expect-symbol! ")")
-             (cons 'call (cons name arguments))))
-          (else (sql-error "unknown function:" name)))))
-
-; --- SELECT ---
-
-(define (parse-select)
-  (expect-word! "select")
-  (let* ((distinct (accept-word! "distinct"))
-         (items (parse-items))
-         (from (if (accept-word! "from") (parse-from) '()))
-         (where (if (accept-word! "where") (parse-expression) '()))
-         (group-by (if (accept-word! "group") (begin (expect-word! "by") (parse-list parse-expression)) '()))
-         (having (if (accept-word! "having") (parse-expression) '()))
-         (order-by (if (accept-word! "order") (begin (expect-word! "by") (parse-list parse-order-item)) '()))
-         (limit (if (accept-word! "limit") (parse-count "LIMIT") '()))
-         (offset (if (accept-word! "offset") (parse-count "OFFSET") '())))
-    (make-select-query :distinct distinct :items items :from from :where where :group-by group-by
-                       :having having :order-by order-by :limit limit :offset offset)))
-
-(define (parse-list parse-one)
-  "one, one, one ..., as a list"
-  (let ((items (list (parse-one))))
-    (while (accept-symbol! ",")
-      (set! items (append items (list (parse-one)))))
-    items))
-
-(define (parse-count what)
-  (let ((token (advance!)))
-    (unless (eq? (car token) 'number)
-      (sql-error what "needs a number, not" (token-text token)))
-    (cadr token)))
-
-(define (parse-items)
-  (parse-list parse-item))
-
-(define (parse-item)
-  "* or table.* or an expression and its name: (star), (star table), (item expression alias)"
-  (cond ((accept-symbol! "*") (list 'star))
-        ((and (eq? (car (peek-token)) 'word)
-              (pair? (cdr sql-tokens)) (pair? (cddr sql-tokens))
-              (equal? (cadr sql-tokens) '(symbol "."))
-              (equal? (caddr sql-tokens) '(symbol "*")))
-         (let ((table (cadr (advance!))))
-           (advance!)
-           (advance!)
-           (list 'star table)))
-        (else
-         (let ((expression (parse-expression)))
-           (list 'item expression (parse-alias))))))
-
-(define (parse-order-item)
-  "an expression, and asc or desc: (expression asc)"
-  (let ((expression (parse-expression)))
-    (cond ((accept-word! "desc") (list expression 'desc))
-          ((accept-word! "asc") (list expression 'asc))
-          (else (list expression 'asc)))))
-
-(define (parse-table-reference)
-  "a table's name and its alias, which is the name if there is none: (table name alias)"
-  (let* ((name (parse-name "a table name"))
-         (alias (parse-alias)))
-    (list 'table name (if (null? alias) name alias))))
-
-(define (parse-join-kind)
-  "inner or left if a JOIN comes next (and it's read), else #f"
-  (cond ((accept-word! "join") 'inner)
-        ((accept-word! "inner") (expect-word! "join") 'inner)
-        ((accept-word! "left") (accept-word! "outer") (expect-word! "join") 'left)
-        (else #f)))
-
-(define (parse-from)
-  "the first table, then each join: a list of (table name alias) and (join kind name alias condition)"
-  (let ((from (list (parse-table-reference)))
-        (kind (parse-join-kind)))
-    (while kind
-      (let ((table (parse-table-reference)))
-        (expect-word! "on")
-        (set! from (append from (list (list 'join kind (cadr table) (caddr table) (parse-expression))))))
-      (set! kind (parse-join-kind)))
-    from))
-
-; --- The other statements ---
-
 (define column-types
   '(("integer" . number) ("int" . number) ("real" . number) ("float" . number) ("double" . number)
     ("numeric" . number) ("number" . number) ("text" . text) ("varchar" . text) ("char" . text)
     ("string" . text) ("date" . date)))
 
-(define (parse-column-definition)
-  "name type, as (name . kind)"
-  (let* ((name (parse-name "a column name"))
-         (type (cadr (advance!)))
-         (kind (assoc type column-types)))
+(define comparison-heads
+  '(("=" . equal) ("<>" . not-equal) ("!=" . not-equal) ("<" . less) ("<=" . less-equal)
+    (">" . greater) (">=" . greater-equal)))
+
+; --- What the actions do ---
+
+(define (keyword-regex)
+  "A regular expression for any of the reserved words, in any case, as a whole word (so that selection is a name)."
+  (string-append "(?i:\\b(?:" (string-join reserved-words "|") ")\\b)"))
+
+(define (text-of-quotes text)
+  "The text between the quotes, with each '' in it a single '."
+  (string-replace (substring text 1 (- (string-length text) 1)) "''" "'"))
+
+(define (quote-never-ends text)
+  (sql-error "a quote that never ends: text goes between single quotes, as 'CA'"))
+
+(define (apply-tail left tail)
+  "A sum, and the tail that may follow it (a comparison, IS NULL, LIKE, ...), which is a procedure of the sum."
+  (if (null? tail)
+      left
+      (tail left)))
+
+(define (tail-of-comparison head right)
+  (lambda (left) (list head left right)))
+
+(define (negated-if negated tree)
+  (if negated (list 'not tree) tree))
+
+(define (in-list left items)
+  "left IN (a, b, c) as left = a OR left = b OR left = c."
+  (let ((tree (list 'equal left (car items))))
+    (dolist (item (cdr items))
+      (set! tree (list 'or tree (list 'equal left item))))
+    tree))
+
+(define (make-call name arguments)
+  "A call of a function or an aggregate: the tree for it."
+  (cond ((member name aggregate-names)
+         (when (equal? arguments '((star)))
+           (unless (equal? name "count")
+             (sql-error name "needs a column or expression, not *")))
+         (unless (= (length arguments) 1)
+           (sql-error name "takes one column or expression"))
+         (list 'aggregate name (car arguments)))
+        ((assoc name scalar-functions) (cons 'call (cons name arguments)))
+        (else (sql-error "unknown function:" name))))
+
+(define (make-select distinct items from where group-by having order-by limit offset)
+  (make-select-query :distinct distinct :items items :from from :where where :group-by group-by
+                     :having having :order-by order-by :limit limit :offset offset))
+
+(define (make-table-reference name alias)
+  "(table name alias): the alias is the name, if there is none."
+  (list 'table name (if (null? alias) name alias)))
+
+(define (make-column-definition name type)
+  (let ((kind (assoc type column-types)))
     (unless kind
       (sql-error "unknown column type:" type "-- use integer, real, text, or date"))
-    (when (accept-symbol! "(")                           ; varchar(20)
-      (parse-count "a type's size")
-      (expect-symbol! ")"))
-    (when (or (at-word? "primary") (at-word? "not") (at-word? "unique") (at-word? "default"))
-      (sql-error "constraints such as PRIMARY KEY, NOT NULL, and DEFAULT aren't supported"))
     (cons name (cdr kind))))
 
-(define (parse-create)
-  (expect-word! "create")
-  (expect-word! "table")
-  (let* ((if-not-exists (and (accept-word! "if") (expect-word! "not") (expect-word! "exists") #t))
-         (name (parse-name "a table name")))
-    (expect-symbol! "(")
-    (let ((columns (parse-list parse-column-definition)))
-      (expect-symbol! ")")
-      (list 'create name columns if-not-exists))))
+(define (constraints-not-supported name type)
+  (sql-error "constraints such as PRIMARY KEY, NOT NULL, and DEFAULT aren't supported"))
 
-(define (parse-drop)
-  (expect-word! "drop")
-  (expect-word! "table")
-  (let* ((if-exists (and (accept-word! "if") (expect-word! "exists") #t))
-         (name (parse-name "a table name")))
-    (list 'drop name if-exists)))
+; --- The table ---
 
-(define (parse-insert)
-  (expect-word! "insert")
-  (expect-word! "into")
-  (let* ((name (parse-name "a table name"))
-         (columns (if (accept-symbol! "(")
-                      (let ((names (parse-list (lambda () (parse-name "a column name")))))
-                        (expect-symbol! ")")
-                        names)
-                      '())))
-    (cond ((accept-word! "values")
-           (list 'insert name columns
-                 (list 'values (parse-list (lambda ()
-                                             (expect-symbol! "(")
-                                             (let ((row (parse-list parse-expression)))
-                                               (expect-symbol! ")")
-                                               row))))))
-          ((at-word? "select")
-           (list 'insert name columns (list 'query (parse-select))))
-          (else (sql-error "expected VALUES or SELECT but found" (token-text (peek-token)))))))
+(define-grammar sql-grammar
+  (option ignore-case #t)
+  (option error-prefix "sql:")
+  (option end-name "the end of the statement")
+  (option start script)
 
-(define (parse-assignment)
-  "column = expression, as (column . expression)"
-  (let ((column (parse-name "a column name")))
-    (expect-symbol! "=")
-    (cons column (parse-expression))))
+  ; The tokens. A text is tried against these in order: a quote with no end must come after the strings.
+  (token skip      "\\s+")
+  (token number    "\\d+(?:\\.\\d+)?" string->number)
+  (token string    "'(?:[^']|'')*'" text-of-quotes)
+  (token bad-quote "'" quote-never-ends)
+  (token keyword   (keyword-regex) string-downcase)
+  (token word      "[A-Za-z_][A-Za-z_0-9]*" string-downcase)
+  (token symbol    "<=|>=|<>|!=|[-+*/%=<>(),.;]")
 
-(define (parse-update)
-  (expect-word! "update")
-  (let ((name (parse-name "a table name")))
-    (expect-word! "set")
-    (let* ((assignments (parse-list parse-assignment))
-           (where (if (accept-word! "where") (parse-expression) '())))
-      (list 'update name assignments where))))
+  (describe word "a name")
+  (describe number "a number")
 
-(define (parse-delete)
-  (expect-word! "delete")
-  (expect-word! "from")
-  (let* ((name (parse-name "a table name"))
-         (where (if (accept-word! "where") (parse-expression) '())))
-    (list 'delete name where)))
+  ; Statements, separated by semicolons.
+  (rule script ((drop (star ";")) (star statement (drop (or (plus ";") end)))))
+  (rule statement (select))
+  (rule statement (insert))
+  (rule statement (update))
+  (rule statement (delete))
+  (rule statement (create))
+  (rule statement (drop-table))
+  (describe statement "SELECT, INSERT, UPDATE, DELETE, CREATE, DROP")
 
-(define (parse-statement)
-  (cond ((at-word? "select") (parse-select))
-        ((at-word? "insert") (parse-insert))
-        ((at-word? "update") (parse-update))
-        ((at-word? "delete") (parse-delete))
-        ((at-word? "create") (parse-create))
-        ((at-word? "drop") (parse-drop))
-        (else (sql-error "a statement starts with SELECT, INSERT, UPDATE, DELETE, CREATE, or DROP, not"
-                         (token-text (peek-token))))))
+  ; SELECT
+  (rule select ("select" (flag "distinct") (sep-by "," select-item) (opt from-clause)
+                (opt "where" expression) (opt "group" "by" (sep-by "," expression)) (opt "having" expression)
+                (opt "order" "by" (sep-by "," order-item)) (opt "limit" number) (opt "offset" number))
+    make-select)
+  (rule select-item ("*") (lambda () '(star)))
+  (rule select-item (table-name "." "*") (node-builder 'star))
+  (rule select-item (expression (opt alias)) (node-builder 'item))
+  (rule alias ("as" word))
+  (rule alias (word))
+  (rule order-item (expression (opt (one-of "asc" "desc")))
+    (lambda (expression direction) (list expression (if (null? direction) 'asc (string->symbol direction)))))
+  (rule from-clause ("from" table-reference (star join))
+    (lambda (first joins) (cons first joins)))
+  (rule table-reference (table-name (opt alias)) make-table-reference)
+  (rule join (join-kind table-reference "on" expression)
+    (lambda (kind table condition) (list 'join kind (cadr table) (caddr table) condition)))
+  (rule join-kind ("join") (lambda () 'inner))
+  (rule join-kind ("inner" "join") (lambda () 'inner))
+  (rule join-kind ("left" (drop (opt "outer")) "join") (lambda () 'left))
+
+  ; Expressions, from the loosest to the tightest.
+  (rule expression ((chain conjunction ("or" . or))))
+  (rule conjunction ((chain negation ("and" . and))))
+  (rule negation ("not" negation) (node-builder 'not))
+  (rule negation (comparison))
+  (rule comparison (sum (opt comparison-tail)) apply-tail)
+  (rule comparison-tail ((one-of "=" "<>" "!=" "<=" ">=" "<" ">") sum)
+    (lambda (operator right) (tail-of-comparison (cdr (assoc operator comparison-heads)) right)))
+  (rule comparison-tail ("is" (flag "not") "null")
+    (lambda (negated) (lambda (left) (list (if negated 'is-not-null 'is-null) left))))
+  (rule comparison-tail ((flag "not") "like" sum)
+    (lambda (negated pattern) (lambda (left) (list (if negated 'not-like 'like) left pattern))))
+  (rule comparison-tail ((flag "not") "between" sum "and" sum)
+    (lambda (negated low high)
+      (lambda (left)
+        (negated-if negated (list 'and (list 'greater-equal left low) (list 'less-equal left high))))))
+  (rule comparison-tail ((flag "not") "in" "(" (sep-by "," expression) ")")
+    (lambda (negated items) (lambda (left) (negated-if negated (in-list left items)))))
+  (rule sum ((chain product ("+" . add) ("-" . subtract))))
+  (rule product ((chain unary ("*" . multiply) ("/" . divide) ("%" . modulo))))
+  (rule unary ("-" unary) (node-builder 'negate))
+  (rule unary (primary))
+  (rule primary (number) (node-builder 'num))
+  (rule primary (string) (node-builder 'text))
+  (rule primary ("(" expression ")"))
+  (rule primary ("null") (lambda () '(null)))
+  (rule primary ("true") (lambda () '(num 1)))
+  (rule primary ("false") (lambda () '(num 0)))
+  (rule primary (word "(" call-arguments ")") make-call)
+  (rule primary (column))
+  (describe unary "a column, number, or text")
+  (describe expression "an expression")
+  (rule call-arguments ("*") (lambda () '((star))))
+  (rule call-arguments ("distinct" expression) (lambda (argument) (sql-error "count(DISTINCT x) isn't supported")))
+  (rule call-arguments ((opt (sep-by "," expression))))
+  (rule column (word "." word) (lambda (table name) (list 'col (string-append table "." name))))
+  (rule column (word) (node-builder 'col))
+  (rule table-name (word))
+  (describe table-name "a table name")
+  (rule column-name (word))
+  (describe column-name "a column name")
+
+  ; The other statements
+  (rule insert ("insert" "into" table-name (opt "(" (sep-by "," column-name) ")") insert-source)
+    (node-builder 'insert))
+  (rule insert-source ("values" (sep-by "," value-row)) (node-builder 'values))
+  (rule insert-source (select) (node-builder 'query))
+  (rule value-row ("(" (sep-by "," expression) ")"))
+  (rule update ("update" table-name "set" (sep-by "," assignment) (opt "where" expression))
+    (node-builder 'update))
+  (rule assignment (column-name "=" expression) cons)
+  (rule delete ("delete" "from" table-name (opt "where" expression)) (node-builder 'delete))
+  (rule create ("create" "table" (flag "if" "not" "exists") table-name "(" (sep-by "," column-definition) ")")
+    (lambda (if-not-exists name columns) (list 'create name columns if-not-exists)))
+  (rule column-definition (column-name word (drop (opt "(" number ")")) (drop (or "primary" "not" "unique" "default")))
+    constraints-not-supported)
+  (rule column-definition (column-name word (drop (opt "(" number ")"))) make-column-definition)
+  (rule drop-table ("drop" "table" (flag "if" "exists") table-name)
+    (lambda (if-exists name) (list 'drop name if-exists))))
 
 (define (parse-statements text)
   "The statements in the text, separated by semicolons, each as a tree. All of the text is read before any
 statement is run, so a mistake in the last statement stops all of them."
-  (set! sql-tokens (tokenize text))
-  (let ((statements '()))
-    (while (not (null? sql-tokens))
-      (unless (accept-symbol! ";")
-        (set! statements (append statements (list (parse-statement))))
-        (unless (or (null? sql-tokens) (at-symbol? ";"))
-          (sql-error "unexpected" (token-text (peek-token)) "after the end of the statement"))))
-    statements))
+  (grammar-parse sql-grammar text))
 
 ; ---------------------------------------------------------------------------
-; 4. Expressions
+; 3. Expressions
 ; ---------------------------------------------------------------------------
 ; An expression is evaluated for a whole table at once: the result is a vector
 ; with a value for each row, made with the vector functions, as the rest of the
@@ -692,7 +519,7 @@ Missing values are in neither."
         (cons "date" (on-text string->date '()))))
 
 ; ---------------------------------------------------------------------------
-; 5. Groups
+; 4. Groups
 ; ---------------------------------------------------------------------------
 ; GROUP BY, or an aggregate such as sum() in the select list, makes one row from
 ; each group of rows. table-group-by does that, given the columns that tell
@@ -797,7 +624,7 @@ With no group expressions, all of the rows are one group."
               (table-drop-columns grouped (map cdr sums)))))))
 
 ; ---------------------------------------------------------------------------
-; 6. SELECT
+; 5. SELECT
 ; ---------------------------------------------------------------------------
 ; The steps of a query, in the order SQL means them:
 ;
@@ -1013,7 +840,7 @@ their order, so sorting by each of the orders from the last to the first, as sep
     (limit-rows result (select-query-limit q) (select-query-offset q))))
 
 ; ---------------------------------------------------------------------------
-; 7. The other statements, and ways to run them
+; 6. The other statements, and ways to run them
 ; ---------------------------------------------------------------------------
 
 (define (rows-word count)

@@ -10,6 +10,7 @@
 ; Only functions can be lazy-loaded -- not a library's macros or variables
 ; -- so a library is still loaded by hand for those: column_engine.lsp (its
 ; defcolumn and lag are macros), template.lsp's template-bindings macro,
+; parser.lsp's define-grammar macro,
 ; and variables such as option-check-formats and vol-smile-formats. When a
 ; library gets a new function that should be called from outside it, add
 ; it here; the tests check that each library defines the names listed for
@@ -29,6 +30,10 @@
   option-methods option-methods-for-chain show-option-methods option-methods-summary
   option-values-options option-values-symbol option-values-price option-values-volatility
   option-values-rate option-values-paths)
+
+; Parsers for small languages (see "A parser framework" in lisp_interpreter_reference.md)
+(lazy-load "parser.lsp"
+  make-grammar grammar-parse grammar-tokens node-builder)
 
 ; Call spreads: the best pair of calls to buy and sell, and the order for it
 (lazy-load "call_spreads.lsp"
