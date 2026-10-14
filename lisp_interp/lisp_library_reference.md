@@ -18,7 +18,9 @@ one.
 
 For a guide to the economic and financial data by topic -- which agency
 publishes what, and which function gets it -- see
-[economic_data_guide.md](economic_data_guide.md).
+[economic_data_guide.md](economic_data_guide.md). The programs in `examples/`
+that use all this are described in
+[lisp_example_programs.md](lisp_example_programs.md).
 
 <!-- This list is made from the headings below: after adding or renaming a section, run
      python3 tools/make_contents.py -->
@@ -114,7 +116,9 @@ to the world outside, is a builtin, written in Python; a model made of
 those is a library, written in Lisp, to be read and changed.
 
 **Examples.** `examples/` has a program for most of this, run from that
-directory with `python3 ../lisp_interpreter.py name.lsp`:
+directory with `python3 ../lisp_interpreter.py name.lsp`; all of them are
+described in [lisp_example_programs.md](lisp_example_programs.md), which also
+explains the programming techniques they show:
 `investment_paths_example.lsp` (simulated prices, an option on them, and
 dividends), `option_methods_example.lsp` (a stock's listed options valued
 by Black-Scholes, a binomial tree, and simulated paths, next to their bids

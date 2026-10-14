@@ -33,10 +33,12 @@ whose path is their first argument. Keep it out of the repository.
   - `lisp_interp/lisp_library_reference.md` -- the library: getting data,
     statistical models, dates and cash flows, and investments. Its first
     chapter, "Where things are", is a map.
+  - `lisp_interp/lisp_example_programs.md` -- the example programs in
+    `lisp_interp/examples/` (a chess player, a SQL interpreter, ELIZA, a
+    Prolog, models of mortgages, and a script for each part of the library),
+    and the programming techniques they show.
 - `lisp_interp/economic_data_guide.md` -- which agency publishes what data,
   and which function gets it.
-- `lisp_interp/examples/` -- programs that use it, such as
-  `investment_paths_example.lsp` and `vol_smile_example.lsp`.
 
 The tests, in `lisp_interp/tests/`: `cd lisp_interp; python3 -m unittest discover -s tests`
 (or `python3 -m pytest -q tests`).

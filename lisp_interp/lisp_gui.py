@@ -118,8 +118,9 @@ if PYQT_AVAILABLE:
     WELCOME_MESSAGE = (
         "A Lisp for investment analysis: tables, vectors, dates, charts, regression,\n"
         "option prices, simulated paths, and data from FRED, the SEC, Schwab, and more.\n"
-        "The manuals: lisp_interpreter_reference.md (the language) and\n"
-        "lisp_library_reference.md (data, models, and investments). Try, for example:\n"
+        "The manuals: lisp_interpreter_reference.md (the language),\n"
+        "lisp_library_reference.md (data, models, and investments), and\n"
+        "lisp_example_programs.md (programs to read). Try, for example:\n"
         "  (define prices (vector 10 20 30 40 50))\n"
         "  (define squares (vector-map (lambda (x) (* x x)) prices))\n"
         "  (display-table (make-table \"price\" prices \"square\" squares))\n"

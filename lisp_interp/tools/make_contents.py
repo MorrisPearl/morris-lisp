@@ -1,9 +1,9 @@
-"""Rebuild the "## Contents" list at the top of each manual --
-lisp_interpreter_reference.md (the language) and lisp_library_reference.md
-(the library) -- from its headings: every ## and ### heading, plus each
-form's short #### heading in "Special forms and standard macros". The links
-are to GitHub's anchors for the headings. Run it after adding or renaming a
-section:
+"""Rebuild the "## Contents" list at the top of each document --
+lisp_interpreter_reference.md (the language), lisp_library_reference.md
+(the library), and lisp_example_programs.md (the example programs) -- from its
+headings: every ## and ### heading, plus each form's short #### heading in
+"Special forms and standard macros". The links are to GitHub's anchors for
+the headings. Run it after adding or renaming a section:
 
     python3 tools/make_contents.py
 """
@@ -12,7 +12,8 @@ import os
 import re
 
 HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-MANUALS = [os.path.join(HERE, "lisp_interpreter_reference.md"), os.path.join(HERE, "lisp_library_reference.md")]
+MANUALS = [os.path.join(HERE, "lisp_interpreter_reference.md"), os.path.join(HERE, "lisp_library_reference.md"),
+           os.path.join(HERE, "lisp_example_programs.md")]
 
 
 def anchor_of(title):

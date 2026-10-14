@@ -12,13 +12,18 @@ debugger, and it runs in a console, a small GUI, or a Jupyter notebook.
 tastytrade package) is needed only for the features that use it. The code
 is meant to be read: "How the code is organized" says which file has what.
 
-There are two manuals. **This one is the language**: its syntax, special
+There are three documents. **This one is the language**: its syntax, special
 forms and macros, and the general builtins -- numbers, lists, strings, hash
 tables, vectors and statistics, tables, dates, charts, input and output,
 and the debugger. **The library manual,
 [lisp_library_reference.md](lisp_library_reference.md)**, has the rest:
 getting data, statistical models, dates and cash flows for finance, and
 investments. Its first chapter, ["Where things are"](lisp_library_reference.md#where-things-are), is a map of them.
+**The example programs,
+[lisp_example_programs.md](lisp_example_programs.md)**, describes the programs in
+`examples/` -- a chess player, a SQL interpreter, ELIZA, a Prolog, models of
+mortgages, and a script for each part of the library -- and explains the
+programming techniques they show.
 
 This document aims to cover **every builtin and special form** of the
 language: what its arguments mean, what it returns, and any non-obvious
@@ -104,11 +109,7 @@ end.
   - [Verbose mode and stack traces](#verbose-mode-and-stack-traces)
   - [Profiling](#profiling)
 - [A short example](#a-short-example)
-- [Examples after Norvig's *Paradigms of AI Programming*](#examples-after-norvigs-paradigms-of-ai-programming)
-- [A chess program](#a-chess-program)
-- [A KenKen solver](#a-kenken-solver)
 - [A parser framework](#a-parser-framework)
-- [An SQL interpreter](#an-sql-interpreter)
 - [How the code is organized](#how-the-code-is-organized)
 - [Running the tests](#running-the-tests)
 - [Adding your own builtins](#adding-your-own-builtins)
@@ -5375,144 +5376,10 @@ sets every count and time to zero and goes on watching.
 (save-chart "demand.png")
 ```
 
-## Examples after Norvig's *Paradigms of AI Programming*
-
-Five programs in `examples/` follow chapters of Peter Norvig's
-*Paradigms of Artificial Intelligence Programming* (1992), the classic
-book of AI programs in Common Lisp. They're written afresh for this
-interpreter -- with its own rules, grammars, and weights -- and show how
-its lists, pattern matching, regular expressions, and vector math handle
-that kind of work. (Norvig's own code is at
-https://github.com/norvig/paip-lisp, under the MIT license.) Run one from
-`examples/`, e.g. `python3 ../lisp_interpreter.py eliza_example.lsp`.
-
-| File | Chapter | What it does |
-|---|---|---|
-| `eliza_example.lsp` | 5 | ELIZA, which holds a conversation by matching what you type against patterns such as `((?* ?x) i want (?* ?y))` and answering from templates, with your words swapped around ("my" becomes "your"). Runs a scripted conversation; to talk to it yourself, `(load "eliza_example.lsp")` and then `(eliza)`. |
-| `symbolic_algebra_example.lsp` | 15 | Polynomials in a canonical form: `(canon '((x + 1) * (x - 1)))` is `"x^2 - 1"`, and `(canon '(d (3 * x ^ 2 + 2 * x + 1) / d x))` is `"6*x + 2"`. |
-| `othello_example.lsp` | 18 | Othello, with players that move at random, count pieces, weigh squares, and search ahead with minimax and alpha-beta pruning. The board is a vector, so a position is scored with vector math. To play, `(load "othello_example.lsp")` and then `(othello human (alpha-beta-searcher 2 weighted-squares) #t)`. |
-| `nlp_parsing_example.lsp` | 19 | A parser that finds every parse of a sentence, so it shows where the sentence is ambiguous ("the man saw the woman with the telescope" has two readings); remembering parses to make it fast; guessing at unknown words; and a grammar whose parses have meanings ("two plus three times four" is 20 or 14). |
-| `unification_grammar_example.lsp` | 20, 21 | A small Prolog (unification and a prover), and a grammar written in it whose features make the subject and verb agree and whose parses are formulas of logic: "every dog chases a cat" is `(every ?x (dog ?x) (some ?y (cat ?y) (chase ?x ?y)))`. Run backwards, it turns a meaning into the sentences that say it. |
-
-ELIZA and Othello read what you type with `read-line`, so they work at the
-console REPL and in a Jupyter notebook.
-
-## A chess program
-
-`examples/chess.lsp` plays chess, and is meant to be read: every part of
-it is short and explained.
-
-- **The board** is a vector of 120 numbers: the 64 squares with a border
-  around them, so a move off the board lands on a border square. A white
-  piece is a positive number and a black one negative.
-- **The rules** are all there: castling, en passant, promotion, check,
-  checkmate, and stalemate. (Not draws by repetition, by the fifty-move
-  rule, or by too little material.) `candidate-moves` finds the moves each
-  piece can make, and a move is legal if, once it's made, the mover's king
-  isn't attacked. `count-positions` checks them against the numbers every
-  chess program must get.
-- **Algebraic notation**: you type moves as `e4`, `Nf3`, `exd5`, `O-O`,
-  `e8=Q`, or as their squares, `e2e4`. Rather than parse what's typed, the
-  program writes each legal move in notation and looks for the one that
-  matches.
-- **Looking ahead**: minimax with alpha-beta pruning, `depth` moves ahead;
-  then, so that the evaluation doesn't judge a position in the middle of
-  an exchange, a search of the captures until the position is quiet. The
-  evaluation counts material and adds a little for pieces on good squares,
-  worked out with vector arithmetic. Nearly all the positions it looks at
-  are in the search of captures, so that is made quick two ways:
-  `capture-moves` finds only the moves that capture or promote, instead of
-  every move, most of which would be thrown away; and what the search of
-  captures found for a position is remembered, for the last 3 moves. Both
-  change no move the program makes (the tests check it), and together take
-  a quarter to a third off the time.
-- **An opening book**: the first 8 moves, by the winners, of 16 games from
-  the 2026 Candidates, Tata Steel, and Norway Chess tournaments, in
-  `examples/chess_book.lsp`, so that the computer opens as strong players
-  did instead of looking two moves ahead at the opening. It plays one of the
-  moves the games made in the position, at random; the book is of
-  positions, so a transposition is in it too. `tools/make_chess_book.py`
-  made it from the games, which lichess.org broadcasts as PGN files, and
-  can make another: it reads every move of each game it chooses with the
-  chess program's own rules, so there is no move in the book that is not
-  legal.
-- **Variety**: so that the computer doesn't play the same game every time,
-  each position's score gets a wiggle of up to 3 hundredths of a pawn,
-  worked out from the position and from random numbers drawn for the game,
-  so that the same position gets the same wiggle all game long (a new
-  random number each time the position was scored would give it two scores,
-  and the search could not agree with itself). Two moves that look about
-  equally good are then taken in a different order in each game.
-- **The board is drawn** with the chess pieces Unicode has (♔ ♕ ♖ ♗ ♘ ♙,
-  ♚ ♛ ♜ ♝ ♞ ♟): in a Jupyter notebook as an HTML table of light and dark
-  squares (with `display-html`), and elsewhere as text.
-
-To play it, at the console or in a notebook:
-
-```lisp
-(load "chess.lsp")
-(play-chess)                     ; you're white; the computer looks 2 moves ahead
-(play-chess :human black :depth 3)
-(play-chess :book #f :variety 0) ; without the opening book or the wiggle: the same game every time
-```
-
-At depth 2 the computer takes a few seconds a move; at depth 3, which
-plays better, ten to thirty seconds. Type `moves` for a list of the legal
-moves, and `quit` to stop. `fen->position` makes a position from
-Forsyth-Edwards Notation, to start somewhere else with `:position`.
-`examples/chess_example.lsp` shows the program checking its rules and
-finding a checkmate, a knight fork, and a sacrifice that mates in two.
-
-## A KenKen solver
-
-`examples/kenken_example.lsp` solves KenKen puzzles: an N × N grid to fill
-with the digits 1 to N, with no digit twice in any row or column, and each
-cage — a group of cells outlined in the puzzle — coming out right: its
-digits, combined by the cage's operation, give the cage's number. A cell
-is written as its row and column (`23` is row 2, column 3), and a cage as
-its cells and its arithmetic:
-
-| Cage | Means |
-|---|---|
-| `((11 12 13 23) (+ 17))` | the four digits add up to 17 |
-| `((31 41) (- 2))` | the larger digit less the smaller is 2 |
-| `((32 33) (* 12))` | the digits multiply to 12 |
-| `((34 44) (/ 3))` | the larger digit divided by the smaller is 3 |
-| `((42) (= 4))` | the digit is 4 |
-
-(A `-` or `/` cage of more than two cells works the same way: the largest
-digit less, or divided by, all the others.) A puzzle is its size and a
-list of its cages:
-
-```lisp
-(load "kenken_example.lsp")              ; solves its own three puzzles first
-(define puzzle
-  '(((11 21 22) (+ 9))  ((12 13) (* 3))     ((14) (= 2))
-    ((23 24 34) (+ 9))  ((31 32 41) (+ 4))  ((33 43 44) (* 18))
-    ((42) (= 4))))
-(solve-kenken 4 puzzle)                  ; ((4 3 1 2) (3 2 4 1) (2 1 3 4) (1 4 2 3)), a list of rows
-(length (kenken-solutions 4 puzzle))     ; 1 -- the puzzle has exactly one solution
-(show-kenken 4 puzzle :solution (solve-kenken 4 puzzle))
-```
-
-`solve-kenken` returns the solution as a list of rows, or `#f` if there's
-none; `kenken-solutions` returns up to `:limit` (default 2) solutions, so
-its length says whether a puzzle has exactly one; `show-kenken` draws the
-puzzle — in a Jupyter notebook as a grid with the cages outlined (with
-`display-html`), elsewhere as text — with the digits of a solution if
-`:solution` is given. A puzzle that isn't well formed (a cell in two cages
-or none, say) is an error that says what's wrong.
-
-How it solves them: for each cell, it keeps the digits the cell could
-still be, and for each cage, the combinations of digits that make its
-arithmetic come out. It rules out what can't be, over and over: a cage
-combination that needs a digit a cell can no longer be; a digit no
-combination puts in a cell; a digit already settled elsewhere in a row or
-column. And a digit that can go in only one cell of a row or column goes
-there. When that stalls, it guesses, at the cell with the fewest digits
-left, and goes back if the guess leads to a contradiction. The 4 × 4 and
-6 × 6 puzzles in the file take no guesses and well under a second; the
-9 × 9 one, which gives no digits and has large cages, about 10 seconds.
+For programs to read — a chess player, a SQL interpreter, a KenKen solver, ELIZA, a Prolog,
+and the examples for each part of the library — see
+[lisp_example_programs.md](lisp_example_programs.md), which explains the programming
+techniques they show.
 
 ## A parser framework
 
@@ -5522,7 +5389,9 @@ instead of a function for each part of the grammar. The text is cut into
 tokens with regular expressions, and the rules say what the tokens make.
 It is no more powerful than recursive descent: a rule that has to guess
 which way to go tries one way, and if that fails tries the next. The SQL
-interpreter below is read by it, and it is meant to be read, too.
+interpreter in `examples/sql.lsp` is read by it, and the library is meant to be
+read, too; [the example programs](lisp_example_programs.md#a-language-from-a-table-the-parser-framework)
+explain how it works and what to learn from it.
 
 ```lisp
 (load "parser.lsp")
@@ -5606,100 +5475,6 @@ begin alike. (This is the "packrat" method, and the grammars it reads, "parsing 
 grammars".) A rule that begins with itself, as `sum = sum "+" product`, would never stop,
 and the error says so: write it as a `chain`, `star`, or `sep-by`.
 
-## An SQL interpreter
-
-`examples/sql.lsp` answers questions written in SQL, using the interpreter's
-own tables, and is meant to be read: it is about 1,100 lines in six
-sections, a good part of them explanation, and each function is described. It works on any table you have --
-one from `load-csv`, `load-sqlite`, or any of the data sources -- and what it
-gives back is an ordinary table, for `display-table`, `plot-chart`, a
-regression, or another query.
-
-```lisp
-(load "sql.lsp")
-(sql-register-table! "loans" (load-csv "loans.csv"))     ; give a table you have a name
-(show-sql "SELECT state, SUM(balance) AS upb
-           FROM loans WHERE rate > 6
-           GROUP BY state ORDER BY upb DESC LIMIT 5")    ; prints the table
-(define big (sql "SELECT * FROM loans WHERE balance > 500000"))   ; a table
-(sql-repl)                                               ; type statements at a prompt
-```
-
-`(sql "...")` runs the statements in the text (separated by semicolons) and
-returns the result of the last: a table for a `SELECT`, a sentence such as
-`3 rows added` for the others. `(show-sql "...")` prints the result of each.
-The text is all read before any of it is run, so a mistake in the last
-statement stops all of them. `(sql-table "loans")` is a table as it is now,
-after any `INSERT`, `UPDATE`, or `DELETE`; `(sql-table-names)` lists them, and
-`(sql-reset!)` forgets them all.
-
-What it understands:
-
-| | |
-|---|---|
-| `SELECT [DISTINCT] items FROM table [alias] [JOIN ...] [WHERE ...] [GROUP BY ...] [HAVING ...] [ORDER BY ... [DESC]] [LIMIT n [OFFSET m]]` | an item is `*`, `alias.*`, or an expression with an optional `[AS] name`; the `FROM` may be left out (`SELECT 1 + 2`) |
-| `[INNER \| LEFT [OUTER]] JOIN table [alias] ON a = b [AND ...]` | joins on equal columns only, from either table in either order |
-| `INSERT INTO table [(columns)] VALUES (...), (...)` or `... SELECT ...` | a column left out gets NULL |
-| `UPDATE table SET column = expression, ... [WHERE ...]`, `DELETE FROM table [WHERE ...]` | every `SET` sees the values from before the update |
-| `CREATE TABLE [IF NOT EXISTS] table (column type, ...)`, `DROP TABLE [IF EXISTS] table` | types `integer`, `real`, `text`, `date` (and the usual other names for them) |
-| expressions | numbers, `'text'` (`''` for a quote), `NULL`, `column` or `table.column`, `+ - * / %`, `= <> != < <= > >=`, `AND OR NOT`, `IS [NOT] NULL`, `[NOT] LIKE 'a%b_'`, `[NOT] BETWEEN`, `[NOT] IN (...)` |
-| functions | `upper`, `lower`, `length`, `abs`, `round(x [, places])`, `coalesce(a, b, ...)`, `date('2024-01-31')`; the aggregates `count(*)`, `count(x)`, `sum`, `avg`, `min`, `max` |
-
-It leaves out subqueries, `UNION`, joins on anything but equal columns,
-`count(DISTINCT x)`, constraints such as `PRIMARY KEY`, and transactions. It
-differs from most SQL databases in a few places:
-
-- Names do not depend on case (`Select`, `LOAN_ID`); text does (`'CA'` and
-  `'ca'` are different).
-- `/` is exact division, so `7 / 2` is 3.5, and numbers with fractions are the
-  interpreter's usual 32-bit floats (about 7 digits). `%` follows the sign of
-  its second number, as a vector `mod` does.
-- A missing value (`NULL`) is `nan` in a column of numbers and `'()` in a
-  column of text or dates, and a column of whole numbers with a `NULL` in it
-  is a column of floats, so it shows as `720.0`. A comparison with a missing
-  value is false and so is `NOT` of it, as in SQL -- `NOT (x > 5)` does not
-  keep the rows where `x` is missing.
-- `ORDER BY` puts a missing value after the others (before them with
-  `DESC`), as PostgreSQL does and SQLite does not; rows that tie stay in
-  their order.
-- A column made from an expression is named with the expression's text
-  (`sum(x) * 2`), and two columns of a result with the same name get `_2`,
-  `_3`, ... after them. `SELECT *` from a join names a column that both
-  tables have `t.k` and `u.k`.
-
-How it works, in the order of the file:
-
-1. **The database** is a hash table of tables, with the kind of value (number,
-   text, date) of each column kept beside it, because a table does not say.
-2. **The grammar** is a table of rules, read by the parser framework above
-   (`lib/parser.lsp`). Its token rows cut the text into quoted strings, numbers,
-   keywords, names, and symbols; its rule rows say what a statement is made of,
-   from `OR` (the loosest) down to a single number or column, and each rule's
-   action builds a tree such as `(add (col "x") (num 1))`. `IN` and `BETWEEN` are
-   written out as `OR` and `AND` of comparisons.
-3. **Expressions** are evaluated for a whole table at once, with the vector
-   functions: a number is a vector of that number, a column is the table's
-   column, `a + b` is `vector-add`, and a condition is a mask, 1 for the
-   rows it is true of, which `table-filter` uses to keep rows. `NOT` is not
-   applied to a mask: the condition is turned around instead (`NOT (a < b)`
-   becomes `a >= b`), because a mask has no way to say "unknown".
-4. **Groups**: `table-group-by` does the work, given columns that tell the groups
-   apart and what to find in each. The select list, `HAVING`, and `ORDER BY` are
-   then rewritten to use the columns of the grouped table, so `SUM(x) * 12`
-   becomes (the column of sums) `* 12`. A column that is neither grouped nor
-   inside an aggregate is not there, which is the error SQL gives.
-5. **`SELECT`** takes its steps in the order SQL means them: `FROM` and `JOIN`
-   (with `table-join`), `WHERE` (`table-filter`), groups, `HAVING`, the select
-   list, `DISTINCT`, `ORDER BY` (`table-sort`, once for each key, last key
-   first), `LIMIT` (`table-slice`).
-6. **The other statements** and the ways to run them.
-
-`examples/sql_example.lsp` makes a small database of loans and states with
-SQL, asks questions of it, then does the same to the 32,460 pool-months of
-`synthetic_mbs_pools.csv`, and uses the answers as tables. The tests compare the answers
-with those of Python's `sqlite3` on the same data -- fixed queries, hundreds
-of random conditions, groups, and joins, and changes to the data.
-
 ---
 
 ## How the code is organized
@@ -5711,10 +5486,10 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 | Directory | What's in it |
 |---|---|
 | `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `option_methods.lsp` (a stock's options valued three ways), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp`, `parser.lsp` (a framework for parsers of small languages: see "A parser framework") |
-| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, with its opening book, `chess_book.lsp`, a KenKen solver, and an SQL interpreter, `sql.lsp` (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
+| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, with its opening book, `chess_book.lsp`, a KenKen solver, and an SQL interpreter, `sql.lsp`. They are described, and the techniques they show explained, in [lisp_example_programs.md](lisp_example_programs.md). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `notebooks/` | Jupyter notebooks that use the interpreter (on the `morris_lisp` kernel) |
 | `scratch/` | Experiments: not part of the interpreter, and not tested |
-| `tools/` | `make_contents.py`, which rebuilds both manuals' Contents from their headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; `make_chess_book.py`, which makes the chess program's opening book from PGN files of games; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
+| `tools/` | `make_contents.py`, which rebuilds the Contents of all three documents from their headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; `make_chess_book.py`, which makes the chess program's opening book from PGN files of games; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 
 `load` finds files in `lib/` and `examples/` from anywhere (see "Where
 `load` finds a file", under "Running it").
@@ -5794,7 +5569,7 @@ interpreter, about 1,300 of them:
 | `test_profiling.py` | `profile` and its results: counts, times, self time, recursion, tail calls, and built-in functions |
 | `test_parser.py` | the parser framework, `lib/parser.lsp`: tokens, each kind of item, errors, and two grammars compared with Python's own parsing |
 | `test_programs.py` | the command line, the GUI's error report, the chess, KenKen, and SQL programs, and the example scripts |
-| `test_reference_doc.py` | **the two manuals**, this one and `lisp_library_reference.md`: every ` ```lisp ` example with a `; =>` result is run, and the test fails if the interpreter no longer returns that value. So when you change how something behaves, the tests say which documented examples need updating |
+| `test_reference_doc.py` | **the three documents**, this manual, `lisp_library_reference.md`, and `lisp_example_programs.md`: every ` ```lisp ` example with a `; =>` result is run, and the test fails if the interpreter no longer returns that value. So when you change how something behaves, the tests say which documented examples need updating |
 
 `support.py` has what they all use: the interpreter's modules, and
 `LispTestCase`, which gives each test a fresh global environment.

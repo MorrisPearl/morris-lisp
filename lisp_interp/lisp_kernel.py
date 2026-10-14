@@ -62,8 +62,9 @@ class LispKernel(IPythonKernel):
         "morris_lisp -- a CL-flavored Lisp for structured-finance modeling.\n"
         "Every cell is plain Lisp source. Charts render inline; "
         "(display-table ...) renders as a table.\n"
-        "See lisp_interpreter_reference.md for the language and its general builtins, and\n"
-        "lisp_library_reference.md for data, models, and investments."
+        "See lisp_interpreter_reference.md for the language and its general builtins,\n"
+        "lisp_library_reference.md for data, models, and investments, and\n"
+        "lisp_example_programs.md for programs to read."
     )
 
     # IPythonKernel.execution_count reads the IPython shell's counter and
