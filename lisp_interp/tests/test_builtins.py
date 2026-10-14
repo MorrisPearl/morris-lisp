@@ -899,6 +899,24 @@ class TestVectorMath(LispTestCase):
         self.assertShows("(vector< (vector (date 2020 1 1) (date 2022 1 1)) (date 2021 1 1))", "#(1 0)")
         self.assertLispError('(vector< #(1 2) "a")', "can't compare")
 
+    def test_missing_strings_and_dates_compare_like_nan(self):
+        """A missing value is equal to nothing, itself included, and neither
+        less nor greater than anything: only /= is true of it. (It used to be
+        an error for <, and equal to another missing value.)"""
+        self.assertShows('(vector< (vector "a" nan "c") "b")', "#(1 0 0)")
+        self.assertShows('(vector>= (vector "a" nan "c") "b")', "#(0 0 1)")
+        self.assertShows('(vector= (vector "a" nan nan) (vector "a" nan "c"))', "#(1 0 0)")
+        self.assertShows('(vector/= (vector "a" nan "c") "a")', "#(0 1 1)")
+        self.assertShows('(vector< "b" (vector "a" nan "c"))', "#(0 0 1)")
+        self.assertShows("(vector< (vector (date 2020 1 1) nan) (date 2021 1 1))", "#(1 0)")
+        self.assertShows("(vector/= (vector (date 2020 1 1) nan) (date 2020 1 1))", "#(0 1)")
+        self.assertShows("(vector/= (vector 1 nan) 1)", "#(0 1)")                   # as numbers always did
+        self.assertShows('(< (vector "a" nan "c") "b" "d")', "#(1 0 0)")            # chained, and with <
+        self.assertLispError('(vector< (vector "a" nan) 1)', "can't compare")
+        # the missing value that table-from-rows and load-csv make in a column of strings is None
+        self.assertShows('(vector< (table-column (table-from-rows \'(("a") (()) ("c")) \'("s")) "s") "b")', "#(1 0 0)")
+        self.assertShows('(vector= (table-column (table-from-rows \'(("a") (()) ("c")) \'("s")) "s") \'())', "#(0 0 0)")
+
     def test_combining_masks_and_selecting(self):
         self.assertShows("(vector-and #(1 1 0) #(1 0 0))", "#(1 0 0)")
         self.assertShows("(vector-or #(1 0 0) #(0 0 1) #(0 1 0))", "#(1 1 1)")

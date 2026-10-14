@@ -125,6 +125,20 @@ class TestTables(LispTestCase):
                          '#("a" "c")')
         self.assertLispError('(table-append loans (make-table "x" #(1)))', "different columns")
 
+    def test_append_to_a_table_with_no_rows_keeps_the_kind_of_the_new_values(self):
+        """An empty column (vector) holds no kind of value; the rows added decide."""
+        self.assertShows('(vector-add (table-column (table-append (make-table "x" (vector)) (make-table "x" #(3 4))) "x") 1)',
+                         "#(4 5)")                                  # still numbers, not a vector of objects
+        self.assertShows('(table-column (table-append (make-table "x" #(3 4)) (make-table "x" (vector))) "x")', "#(3 4)")
+        self.assertShows('(table-column (table-append (make-table "x" (vector)) (make-table "x" (vector "a"))) "x")', '#("a")')
+        self.assertShows('(table-column (table-append (make-table "x" (vector)) (make-table "x" (vector))) "x")', "#()")
+
+    def test_group_min_and_max_of_strings_skip_missing_values(self):
+        self.assertShows('(table-column (table-group-by (make-table "g" #(1 1 2) "s" (vector nan "b" nan)) "g" '
+                         '(list (list "lo" \'min "s") (list "hi" \'max "s"))) "lo")', '#("b" ())')
+        self.assertShows('(table-column (table-group-by (make-table "g" #(1 1 2) "s" (vector nan "b" nan)) "g" '
+                         '(list (list "lo" \'min "s") (list "hi" \'max "s"))) "hi")', '#("b" ())')
+
     def test_group_by(self):
         self.run_lisp("""
           (define g (table-group-by loans "state"

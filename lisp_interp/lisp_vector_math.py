@@ -283,6 +283,33 @@ def comparable(x, name):
     return numbers_of(x, name)
 
 
+def is_text_or_dates(x):
+    """Whether x is a vector's values, or a single value, that are strings or
+    dates rather than numbers (a missing value, None, counts: it may be a
+    string that's missing)."""
+    if isinstance(x, np.ndarray):
+        return x.dtype == object
+    return not is_number(x)
+
+
+def is_missing(x):
+    """Whether one value, from a vector of strings or dates, is missing."""
+    return x is None or (isinstance(x, float) and x != x)
+
+
+def compare_leaving_out_missing(x, y, operation, length):
+    """x and y compared element by element, each a vector's values or one
+    value for every element, as strings or dates are. A missing value (None)
+    acts as NaN does in a comparison of numbers: it's equal to nothing, itself
+    included, and neither less nor greater than anything, so only /= is true
+    of it. (Comparing None itself would be an error for < and true for ==.)"""
+    with_missing = bool(operation(float("nan"), 0))
+    xs = x if isinstance(x, np.ndarray) else [x] * length
+    ys = y if isinstance(y, np.ndarray) else [y] * length
+    return np.array([with_missing if is_missing(a) or is_missing(b) else bool(operation(a, b))
+                     for a, b in zip(xs, ys)], dtype=bool)
+
+
 def compare(name, args, operation):
     """A comparison with vectors: a mask, 1 where each argument is related to
     the next by `operation` -- as (< a b c) means a < b and b < c -- element
@@ -295,8 +322,11 @@ def compare(name, args, operation):
     result = np.ones(length, dtype=bool)
     for x, y in zip(values, values[1:]):
         try:
-            with np.errstate(invalid="ignore"):
-                step = np.asarray(operation(x, y), dtype=bool)
+            if is_text_or_dates(x) or is_text_or_dates(y):
+                step = compare_leaving_out_missing(x, y, operation, length)
+            else:
+                with np.errstate(invalid="ignore"):
+                    step = np.asarray(operation(x, y), dtype=bool)
         except TypeError:
             raise LispError("%s: can't compare these values (e.g. a number with a string)" % name)
         if step.shape != (length,):          # numpy gave one answer for the whole vector

@@ -147,10 +147,38 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
       (error who "expected a list of bindings, ((name value)...), not" bindings)
       (for-each (lambda (binding) (let--check-binding binding who)) bindings)))
 
-(defmacro let (bindings . body)
-  (let--check-bindings bindings "let:")
-  `((%scope-lambda ,(map car bindings) ,@body)
-    ,@(map cadr bindings)))
+; (let name ((variable value)...) body...)
+; A named let: a loop, or any recursion. It makes a procedure called `name`
+; whose parameters are the variables, calls it with the values, and returns
+; what it returns. Inside the body, calling (name new-value...) goes around
+; again with the variables given new values, and a call in tail position
+; (the last thing the body does) is a loop that doesn't grow the stack.
+;
+;   (let count ((i 0) (total 0))
+;     (if (< i 5)
+;         (count (+ i 1) (+ total i))     ; around again
+;         total))                         ; => 10
+;
+; expands to a call of the procedure, which is made in a scope of its own, so
+; that the values are evaluated outside it, where `name` isn't yet anything:
+;
+;   (((%scope-lambda ()
+;       (define count (lambda (i total) ...))
+;       count))
+;    0 0)
+(defmacro let (first . rest)
+  (if (symbol? first)
+      (let ((bindings (if (pair? rest) (car rest) '()))
+            (body (if (pair? rest) (cdr rest) '())))
+        (let--check-bindings bindings "let:")
+        `(((%scope-lambda ()
+             (define ,first (lambda ,(map car bindings) ,@body))
+             ,first))
+          ,@(map cadr bindings)))
+      (begin
+        (let--check-bindings first "let:")
+        `((%scope-lambda ,(map car first) ,@rest)
+          ,@(map cadr first)))))
 
 ; (let* ((name value)...) body...)
 ; Like let, but binds the names one at a time, so each value can use the

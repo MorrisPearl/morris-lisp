@@ -45,6 +45,7 @@ end.
   - [Keyword arguments](#keyword-arguments)
   - [Local variables](#local-variables)
     - [let](#let)
+    - [named let](#named-let)
     - [let*](#let-1)
     - [destructuring-bind](#destructuring-bind)
     - [with-columns](#with-columns)
@@ -105,6 +106,7 @@ end.
 - [Examples after Norvig's *Paradigms of AI Programming*](#examples-after-norvigs-paradigms-of-ai-programming)
 - [A chess program](#a-chess-program)
 - [A KenKen solver](#a-kenken-solver)
+- [An SQL interpreter](#an-sql-interpreter)
 - [How the code is organized](#how-the-code-is-organized)
 - [Running the tests](#running-the-tests)
 - [Adding your own builtins](#adding-your-own-builtins)
@@ -444,6 +446,26 @@ out, since a `let` isn't a function call.) Each binding must be
 
 ```lisp
 (let ((a 1) (b 2)) (+ a b))    ; => 3
+```
+
+#### named let
+#### `(let name ((var val)...) body...)`
+A loop, or any recursion, without a separate `define`. It makes a procedure
+called `name` whose parameters are the variables, calls it with the values
+(evaluated outside, where `name` doesn't exist yet), and returns what it
+returns. Inside `body...`, `(name new-val...)` goes around again with the
+variables given new values. A call in tail position (the last thing the
+body does) is a loop: it doesn't use more of the stack however many times
+it goes around. `name` exists only inside the form.
+
+```lisp
+(let count ((i 0) (total 0))
+  (if (< i 5)
+      (count (+ i 1) (+ total i))        ; around again
+      total))                            ; => 10
+
+(let fact ((n 5))                        ; not in tail position: recursion
+  (if (= n 0) 1 (* n (fact (- n 1)))))   ; => 120
 ```
 
 #### let*
@@ -3046,13 +3068,17 @@ per element. Masks combine with `vector-and`, `vector-or`, and
 
 #### `(vector= a b)`, `(vector/= a b)`, `(vector< a b)`, `(vector<= a b)`, `(vector> a b)`, `(vector>= a b)`
 Compare element by element: equal, not equal, less than, and so on. Either
-argument may be a single value. `vector=` and `vector/=` also work on
-strings and dates; ordering a number against a string is an error. A NaN
-is never equal to anything.
+argument may be a single value. All six also work on strings (in
+alphabetical order) and dates; ordering a number against a string is an
+error. A missing value (`nan`, or `'()` in strings and dates) is never equal
+to anything, itself included, and is neither less nor greater than anything,
+so only `vector/=` is true of it.
 
 ```lisp
 (vector> #(1 5 10) 4)                        ; => #(0 1 1)
 (vector= (vector "CA" "NY" "CA") "CA")       ; => #(1 0 1)
+(vector< (vector "CA" "NY" nan) "M")         ; => #(1 0 0)
+(vector/= (vector "CA" "NY" nan) "CA")       ; => #(0 1 1)
 (vector<= (vector (date 2020 1 1) (date 2021 1 1)) (date 2020 6 1))   ; => #(1 0)
 ```
 
@@ -3567,10 +3593,13 @@ descending).
 #### `(table-append t1 t2 ...)`
 The rows of each table, one table after another — e.g. to combine monthly
 files. The tables must have the same column names (matched by name, in
-the first table's order).
+the first table's order). A table with no rows doesn't affect the kind of
+values a column ends up with, so a table that starts empty can have rows
+appended to it.
 
 ```lisp
 (table-append (make-table "x" #(1 2)) (make-table "x" #(3)))   ; => (("x" . #(1 2 3)))
+(table-append (make-table "x" (vector)) (make-table "x" #(3)))   ; => (("x" . #(3)))
 ```
 
 #### `(table-group-by t keys aggregations [:key f] [:test predicate])`
@@ -5429,6 +5458,101 @@ left, and goes back if the guess leads to a contradiction. The 4 × 4 and
 6 × 6 puzzles in the file take no guesses and well under a second; the
 9 × 9 one, which gives no digits and has large cages, about 10 seconds.
 
+## An SQL interpreter
+
+`examples/sql.lsp` answers questions written in SQL, using the interpreter's
+own tables, and is meant to be read: it is about 1,100 lines in seven
+sections, a good part of them explanation, and each function is described. It works on any table you have --
+one from `load-csv`, `load-sqlite`, or any of the data sources -- and what it
+gives back is an ordinary table, for `display-table`, `plot-chart`, a
+regression, or another query.
+
+```lisp
+(load "sql.lsp")
+(sql-register-table! "loans" (load-csv "loans.csv"))     ; give a table you have a name
+(show-sql "SELECT state, SUM(balance) AS upb
+           FROM loans WHERE rate > 6
+           GROUP BY state ORDER BY upb DESC LIMIT 5")    ; prints the table
+(define big (sql "SELECT * FROM loans WHERE balance > 500000"))   ; a table
+(sql-repl)                                               ; type statements at a prompt
+```
+
+`(sql "...")` runs the statements in the text (separated by semicolons) and
+returns the result of the last: a table for a `SELECT`, a sentence such as
+`3 rows added` for the others. `(show-sql "...")` prints the result of each.
+The text is all read before any of it is run, so a mistake in the last
+statement stops all of them. `(sql-table "loans")` is a table as it is now,
+after any `INSERT`, `UPDATE`, or `DELETE`; `(sql-table-names)` lists them, and
+`(sql-reset!)` forgets them all.
+
+What it understands:
+
+| | |
+|---|---|
+| `SELECT [DISTINCT] items FROM table [alias] [JOIN ...] [WHERE ...] [GROUP BY ...] [HAVING ...] [ORDER BY ... [DESC]] [LIMIT n [OFFSET m]]` | an item is `*`, `alias.*`, or an expression with an optional `[AS] name`; the `FROM` may be left out (`SELECT 1 + 2`) |
+| `[INNER \| LEFT [OUTER]] JOIN table [alias] ON a = b [AND ...]` | joins on equal columns only, from either table in either order |
+| `INSERT INTO table [(columns)] VALUES (...), (...)` or `... SELECT ...` | a column left out gets NULL |
+| `UPDATE table SET column = expression, ... [WHERE ...]`, `DELETE FROM table [WHERE ...]` | every `SET` sees the values from before the update |
+| `CREATE TABLE [IF NOT EXISTS] table (column type, ...)`, `DROP TABLE [IF EXISTS] table` | types `integer`, `real`, `text`, `date` (and the usual other names for them) |
+| expressions | numbers, `'text'` (`''` for a quote), `NULL`, `column` or `table.column`, `+ - * / %`, `= <> != < <= > >=`, `AND OR NOT`, `IS [NOT] NULL`, `[NOT] LIKE 'a%b_'`, `[NOT] BETWEEN`, `[NOT] IN (...)` |
+| functions | `upper`, `lower`, `length`, `abs`, `round(x [, places])`, `coalesce(a, b, ...)`, `date('2024-01-31')`; the aggregates `count(*)`, `count(x)`, `sum`, `avg`, `min`, `max` |
+
+It leaves out subqueries, `UNION`, joins on anything but equal columns,
+`count(DISTINCT x)`, constraints such as `PRIMARY KEY`, and transactions. It
+differs from most SQL databases in a few places:
+
+- Names do not depend on case (`Select`, `LOAN_ID`); text does (`'CA'` and
+  `'ca'` are different).
+- `/` is exact division, so `7 / 2` is 3.5, and numbers with fractions are the
+  interpreter's usual 32-bit floats (about 7 digits). `%` follows the sign of
+  its second number, as a vector `mod` does.
+- A missing value (`NULL`) is `nan` in a column of numbers and `'()` in a
+  column of text or dates, and a column of whole numbers with a `NULL` in it
+  is a column of floats, so it shows as `720.0`. A comparison with a missing
+  value is false and so is `NOT` of it, as in SQL -- `NOT (x > 5)` does not
+  keep the rows where `x` is missing.
+- `ORDER BY` puts a missing value after the others (before them with
+  `DESC`), as PostgreSQL does and SQLite does not; rows that tie stay in
+  their order.
+- A column made from an expression is named with the expression's text
+  (`sum(x) * 2`), and two columns of a result with the same name get `_2`,
+  `_3`, ... after them. `SELECT *` from a join names a column that both
+  tables have `t.k` and `u.k`.
+
+How it works, in the order of the file:
+
+1. **The database** is a hash table of tables, with the kind of value (number,
+   text, date) of each column kept beside it, because a table does not say.
+2. **Tokens**: one regular expression cuts the text into quoted strings,
+   numbers, words, and symbols.
+3. **The parser** is a recursive-descent parser: a function for each part of
+   the language, from `OR` (the loosest) down to a single number or column,
+   that reads tokens from the front of a list and returns a tree such as
+   `(add (col "x") (num 1))`. `IN` and `BETWEEN` are written out as `OR` and
+   `AND` of comparisons.
+4. **Expressions** are evaluated for a whole table at once, with the vector
+   functions: a number is a vector of that number, a column is the table's
+   column, `a + b` is `vector-add`, and a condition is a mask, 1 for the
+   rows it is true of, which `table-filter` uses to keep rows. `NOT` is not
+   applied to a mask: the condition is turned around instead (`NOT (a < b)`
+   becomes `a >= b`), because a mask has no way to say "unknown".
+5. **Groups**: `table-group-by` does the work, given columns that tell the groups
+   apart and what to find in each. The select list, `HAVING`, and `ORDER BY` are
+   then rewritten to use the columns of the grouped table, so `SUM(x) * 12`
+   becomes (the column of sums) `* 12`. A column that is neither grouped nor
+   inside an aggregate is not there, which is the error SQL gives.
+6. **`SELECT`** takes its steps in the order SQL means them: `FROM` and `JOIN`
+   (with `table-join`), `WHERE` (`table-filter`), groups, `HAVING`, the select
+   list, `DISTINCT`, `ORDER BY` (`table-sort`, once for each key, last key
+   first), `LIMIT` (`table-slice`).
+7. **The other statements** and the ways to run them.
+
+`examples/sql_example.lsp` makes a small database of loans and states with
+SQL, asks questions of it, then does the same to the 32,460 pool-months of
+`synthetic_mbs_pools.csv`, and uses the answers as tables. The tests compare the answers
+with those of Python's `sqlite3` on the same data -- fixed queries, hundreds
+of random conditions, groups, and joins, and changes to the data.
+
 ---
 
 ## How the code is organized
@@ -5440,7 +5564,7 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 | Directory | What's in it |
 |---|---|
 | `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `option_methods.lsp` (a stock's options valued three ways), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp` |
-| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, with its opening book, `chess_book.lsp`, and a KenKen solver (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
+| `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, with its opening book, `chess_book.lsp`, a KenKen solver, and an SQL interpreter, `sql.lsp` (see the sections above). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `notebooks/` | Jupyter notebooks that use the interpreter (on the `morris_lisp` kernel) |
 | `scratch/` | Experiments: not part of the interpreter, and not tested |
 | `tools/` | `make_contents.py`, which rebuilds both manuals' Contents from their headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; `make_chess_book.py`, which makes the chess program's opening book from PGN files of games; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
@@ -5519,7 +5643,7 @@ interpreter, about 1,100 of them:
 | `test_models.py` | regression, linear programming, the solver, day counts and cash flows, and the template and column-engine libraries |
 | `test_investments.py` | option prices, futures curves, the volatility smile, simulated prices, option chains checked against them, and portfolios |
 | `test_debugging.py` | tracing, stack traces, breakpoints, and the debug REPL, in the console and in Jupyter |
-| `test_programs.py` | the command line, the GUI's error report, the chess and KenKen programs, and the example scripts |
+| `test_programs.py` | the command line, the GUI's error report, the chess, KenKen, and SQL programs, and the example scripts |
 | `test_reference_doc.py` | **the two manuals**, this one and `lisp_library_reference.md`: every ` ```lisp ` example with a `; =>` result is run, and the test fails if the interpreter no longer returns that value. So when you change how something behaves, the tests say which documented examples need updating |
 
 `support.py` has what they all use: the interpreter's modules, and

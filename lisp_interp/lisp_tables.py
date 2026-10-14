@@ -574,6 +574,8 @@ def table_append(*tables):
     result = []
     for n in names:
         parts = [find_column(columns, n, "table-append").items for columns in all_columns]
+        if any(len(p) for p in parts):
+            parts = [p for p in parts if len(p)]        # a table with no rows has no say in the type
         if any(p.dtype == object for p in parts):
             result.append((n, LispVector(np.concatenate([p.astype(object) for p in parts]))))
         else:
@@ -767,7 +769,7 @@ def aggregate(function, column, weights, order, starts, counts, as_vector=to_vec
     if function in ("min", "max") and column.items.dtype == object:
         arranged = column.items[order].tolist()
         choose = min if function == "min" else max
-        return LispVector([choose([x for x in arranged[s:s + c] if x is not None] or [NIL])
+        return LispVector([choose([x for x in arranged[s:s + c] if not is_missing(x)] or [NIL])
                            for s, c in zip(starts, counts)])
     if np.issubdtype(column.items.dtype, np.integer) and function in ("sum", "min", "max"):
         integers = column.items.astype(np.int64)[order]          # no missing values to skip

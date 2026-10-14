@@ -2,6 +2,9 @@
 program, and the example scripts.
 support.py says how to run them."""
 
+import random
+import sqlite3
+
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
 
 
@@ -911,6 +914,557 @@ class TestChessBookTool(unittest.TestCase):
             self.assertIn("no game qualifies", nothing.stderr)
 
 
+class TestSqlProgram(unittest.TestCase):
+    """examples/sql.lsp, the SQL interpreter. Its answers are compared with those of Python's own sqlite3 on
+    the same data: a list of queries, hundreds of random conditions (to test the way NULL makes a comparison
+    neither true nor false), random GROUP BY and join queries, and changes to the data. The places where it
+    does something different on purpose (the names of columns made from expressions, and where NULL sorts)
+    are tested by themselves."""
+
+    # the data: a table of 60 rows with a NULL here and there, a table to join it to, a table of text keys
+    TEXTS = ["apple", "Apple pie", "banana", "cherry", "it's", "Ab", "ab", "b"]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.out = []
+        cls.env = lisp_builtins.make_global_env(output=cls.out.append)
+        cls.run_lisp('(load "sql.lsp")')
+        cls.lite = sqlite3.connect(":memory:")
+        rng = random.Random(7)
+
+        def maybe(value):
+            return None if rng.random() < 0.15 else value
+        t_rows = [(i, maybe(rng.choice(["a", "B", "c", "d"])), maybe(rng.randint(0, 9)),
+                   maybe(rng.randint(-80, 400) / 4), maybe(rng.choice(cls.TEXTS)), maybe(rng.randint(1, 6)))
+                  for i in range(1, 61)]
+        u_rows = ([(k, rng.choice(["one", "two", "three"]), rng.randint(1, 40) / 4) for k in range(1, 9)]
+                  + [(None, "nokey", 1.5), (3, "again", 2.0)])
+        g_rows = [("a", "first", 1), ("B", "second", 2), ("c", "third", None), (None, "none", 4), ("zz", "unused", 5)]
+        for name, columns, rows in [("t", "id INTEGER, grp TEXT, n INTEGER, x REAL, s TEXT, k INTEGER", t_rows),
+                                    ("w", "id INTEGER, grp TEXT, n INTEGER, x REAL, s TEXT, k INTEGER", t_rows),
+                                    ("u", "k INTEGER, label TEXT, w REAL", u_rows),
+                                    ("g", "grp TEXT, descr TEXT, rank INTEGER", g_rows)]:
+            cls.both("CREATE TABLE %s (%s)" % (name, columns))
+            cls.both("INSERT INTO %s VALUES %s" % (name, ", ".join("(" + ", ".join(cls.literal(v) for v in r) + ")" for r in rows)))
+
+    @staticmethod
+    def literal(value):
+        if value is None:
+            return "NULL"
+        if isinstance(value, str):
+            return "'" + value.replace("'", "''") + "'"
+        return repr(value)
+
+    @classmethod
+    def run_lisp(cls, src, env=None):
+        result = lisp_core.NIL
+        for expr in lisp_core.parse(src):
+            result = lisp_core.seval(expr, env or cls.env)
+        return result
+
+    @classmethod
+    def fresh_env(cls):
+        """An interpreter of its own, with its own (empty) database, for a test that changes the whole of it."""
+        env = lisp_builtins.make_global_env(output=lambda text: None)
+        cls.run_lisp('(load "sql.lsp")', env)
+        return env
+
+    @classmethod
+    def mine(cls, text, env=None):
+        """What (sql text) gives: a sentence, or the column names and the rows of the table, with
+        missing values as None."""
+        result = lisp_core.apply_proc((env or cls.env)[lisp_core.Symbol("sql")], [lisp_core.LispString(text)])
+        if isinstance(result, (str, lisp_core.LispString)):
+            return str(result)
+        columns = lisp_tables.table_columns(result, "test")
+        data = [[None if (v is None or (isinstance(v, float) and v != v)) else (v if isinstance(v, (int, float)) else str(v))
+                 for v in vector.items.tolist()] for _, vector in columns]
+        return [name for name, _ in columns], [list(row) for row in zip(*data)]
+
+    @classmethod
+    def sqlite(cls, text):
+        cursor = cls.lite.execute(text)
+        if cursor.description is None:
+            return cursor.rowcount
+        return [d[0] for d in cursor.description], [list(r) for r in cursor.fetchall()]
+
+    @classmethod
+    def both(cls, text):
+        """Runs a statement that changes data in both; returns the number of rows changed in each."""
+        cursor = cls.lite.execute(text)
+        return cls.mine(text), cursor.rowcount
+
+    @staticmethod
+    def same_value(a, b):
+        if a is None or b is None:
+            return a is None and b is None
+        if isinstance(a, str) or isinstance(b, str):
+            return a == b
+        return math.isclose(a, b, rel_tol=2e-6, abs_tol=1e-6)         # the interpreter's numbers are 32-bit floats
+
+    @staticmethod
+    def sort_key(row):
+        return [(v is None, isinstance(v, str), v if v is not None else 0) for v in row]
+
+    def assertSameAsSqlite(self, text, ordered=False):
+        """The rows (not the names of the columns) are the same, in the same order if `ordered`."""
+        _, mine = self.mine(text)
+        _, theirs = self.sqlite(text)
+        if not ordered:
+            mine, theirs = sorted(mine, key=self.sort_key), sorted(theirs, key=self.sort_key)
+        self.assertEqual(len(mine), len(theirs), "number of rows in: %s" % text)
+        for a, b in zip(mine, theirs):
+            self.assertTrue(len(a) == len(b) and all(self.same_value(x, y) for x, y in zip(a, b)),
+                            "%s\n  mine:   %s\n  sqlite: %s" % (text, a, b))
+
+    def assertLispError(self, text, fragment, env=None):
+        with self.assertRaises(lisp_core.LispError, msg="statement: %s" % text) as caught:
+            self.mine(text, env)
+        self.assertIn(fragment, str(caught.exception))
+
+    def shown(self, text):
+        """What (show-sql text) prints."""
+        del self.out[:]
+        self.run_lisp('(show-sql "%s")' % text.replace('"', '\\"'))
+        return "".join(self.out)
+
+    # -- the same answers as sqlite ----------------------------------------------------------------
+
+    UNORDERED = [
+        "SELECT * FROM t",
+        "SELECT id, grp, x FROM t WHERE x > 50",
+        "SELECT id FROM t WHERE x <= 0 OR n = 3",
+        "SELECT id FROM t WHERE NOT (x > 50)",
+        "SELECT id FROM t WHERE NOT (x > 50 AND n < 5)",
+        "SELECT id FROM t WHERE NOT (x > 50 OR grp = 'a')",
+        "SELECT id FROM t WHERE grp <> 'a'",
+        "SELECT id FROM t WHERE grp = 'a' AND n >= 2",
+        "SELECT id FROM t WHERE grp < 'c'",
+        "SELECT id FROM t WHERE s >= 'b'",
+        "SELECT id FROM t WHERE x BETWEEN 10 AND 20",
+        "SELECT id FROM t WHERE x NOT BETWEEN 10 AND 20",
+        "SELECT id FROM t WHERE n IN (1, 3, 5)",
+        "SELECT id FROM t WHERE n NOT IN (1, 3, 5)",
+        "SELECT id FROM t WHERE grp IN ('a', 'B')",
+        "SELECT id FROM t WHERE s LIKE 'a%'",
+        "SELECT id FROM t WHERE s LIKE '%an%'",
+        "SELECT id FROM t WHERE s NOT LIKE '%a%'",
+        "SELECT id FROM t WHERE s LIKE '_b'",
+        "SELECT id FROM t WHERE s LIKE 'it''s'",
+        "SELECT id FROM t WHERE s IS NULL",
+        "SELECT id FROM t WHERE s IS NOT NULL AND x IS NULL",
+        "SELECT id, x + n, x - n, x * 2, n * n, -x FROM t",
+        "SELECT id, x / 4, x / 0.5, x / 0 FROM t",
+        "SELECT id, n % 3, (n + 1) % 4 FROM t",
+        "SELECT id, 2 + 3 * 4, (2 + 3) * 4, 10 - 4 - 3, -2 * -3 FROM t WHERE id < 4",
+        "SELECT id, upper(s), lower(s), length(s) FROM t",
+        "SELECT id, abs(x), round(x), round(x / 3, 2) FROM t",
+        "SELECT id, coalesce(x, 0), coalesce(s, grp, 'none'), coalesce(n, k, -1) FROM t",
+        "SELECT 1, 2.5, 'x', NULL, 1 + 2",
+        "SELECT DISTINCT grp FROM t",
+        "SELECT DISTINCT grp, n FROM t",
+        "SELECT DISTINCT n % 2 FROM t",
+        "SELECT COUNT(*), COUNT(x), COUNT(grp), SUM(x), AVG(x), MIN(x), MAX(x), SUM(n), MIN(s), MAX(s) FROM t",
+        "SELECT COUNT(*), SUM(x), AVG(x), MIN(x), MAX(s), COUNT(n) FROM t WHERE id < 0",
+        "SELECT grp, COUNT(*), COUNT(x), SUM(x), AVG(x), MIN(n), MAX(n) FROM t GROUP BY grp",
+        "SELECT grp, k, COUNT(*), SUM(n) FROM t GROUP BY grp, k",
+        "SELECT n % 3 AS m, COUNT(*), SUM(x) FROM t GROUP BY n % 3",
+        "SELECT grp, SUM(x) * 2, MAX(x) - MIN(x), COUNT(*) + 1 FROM t GROUP BY grp",
+        "SELECT grp, COUNT(*) FROM t GROUP BY grp HAVING COUNT(*) > 10",
+        "SELECT grp, SUM(x) AS total FROM t GROUP BY grp HAVING SUM(x) > 100 AND grp <> 'B'",
+        "SELECT grp, COUNT(*) FROM t WHERE x > 0 GROUP BY grp",
+        "SELECT k, SUM(x) FROM t WHERE n > 100 GROUP BY k",
+        "SELECT t.id, t.x, u.label, u.w FROM t JOIN u ON t.k = u.k",
+        "SELECT t.id, u.label FROM t INNER JOIN u ON t.k = u.k WHERE u.w > 3",
+        "SELECT t.id, u.label, u.w FROM t LEFT JOIN u ON t.k = u.k",
+        "SELECT u.k, u.label, t.id FROM u LEFT JOIN t ON t.k = u.k",
+        "SELECT u.label, COUNT(*), SUM(t.x) FROM t JOIN u ON t.k = u.k GROUP BY u.label",
+        "SELECT u.label, COUNT(t.id), COUNT(*) FROM u LEFT OUTER JOIN t ON u.k = t.k GROUP BY u.label",
+        "SELECT a.id, b.id FROM t a JOIN t b ON a.k = b.k AND a.grp = b.grp WHERE a.id < b.id AND a.id < 10",
+        "SELECT a.id, b.id FROM t AS a JOIN t AS b ON a.n = b.k WHERE a.id < 20",
+        "SELECT a.id, u.label, v.label FROM t a JOIN u ON a.k = u.k JOIN u v ON a.n = v.k WHERE a.id < 30",
+        "SELECT t.id, g.descr, g.rank FROM t JOIN g ON t.grp = g.grp",
+        "SELECT t.id, g.descr, g.rank FROM t LEFT JOIN g ON t.grp = g.grp",
+        "SELECT g.descr, COUNT(t.id) FROM g LEFT JOIN t ON g.grp = t.grp GROUP BY g.descr",
+        "SELECT * FROM t JOIN u ON t.k = u.k WHERE t.id < 8",
+        "SELECT u.* FROM t JOIN u ON t.k = u.k WHERE t.id < 8",
+        "SELECT t.*, u.w FROM t JOIN u ON t.k = u.k WHERE t.id < 8",
+        "SELECT id AS ident, x AS value FROM t WHERE id < 5",
+        "SELECT id ident FROM t WHERE id < 5",
+        "SELECT x FROM t WHERE id IN (3, 4) OR x > 99",
+    ]
+    ORDERED = [
+        "SELECT id, x FROM t ORDER BY id",
+        "SELECT id, x FROM t WHERE x IS NOT NULL ORDER BY x, id",
+        "SELECT id, x FROM t WHERE x IS NOT NULL ORDER BY x DESC, id",
+        "SELECT id, grp, n FROM t WHERE grp IS NOT NULL AND n IS NOT NULL ORDER BY grp, n DESC, id",
+        "SELECT id, grp FROM t WHERE grp IS NOT NULL ORDER BY grp DESC, id DESC",
+        "SELECT id, x * -1 AS neg FROM t WHERE x IS NOT NULL ORDER BY neg, id",
+        "SELECT id, x FROM t WHERE x IS NOT NULL ORDER BY x * x DESC, id",
+        "SELECT id, x FROM t WHERE x IS NOT NULL ORDER BY 2, 1",
+        "SELECT id, x FROM t WHERE x IS NOT NULL ORDER BY 2 DESC, 1 DESC LIMIT 7",
+        "SELECT id FROM t ORDER BY id LIMIT 5",
+        "SELECT id FROM t ORDER BY id LIMIT 5 OFFSET 10",
+        "SELECT id FROM t ORDER BY id LIMIT 100 OFFSET 55",
+        "SELECT id FROM t ORDER BY id LIMIT 0",
+        "SELECT id FROM t ORDER BY id LIMIT 5 OFFSET 200",
+        "SELECT grp, COUNT(*) AS n FROM t WHERE grp IS NOT NULL GROUP BY grp ORDER BY n DESC, grp",
+        "SELECT grp, SUM(x) FROM t WHERE grp IS NOT NULL GROUP BY grp ORDER BY SUM(x) DESC",
+        "SELECT grp, COUNT(*) FROM t WHERE grp IS NOT NULL GROUP BY grp ORDER BY COUNT(*), grp",
+        "SELECT grp FROM t WHERE grp IS NOT NULL GROUP BY grp ORDER BY MAX(x) DESC, grp",
+        "SELECT DISTINCT grp, n FROM t WHERE grp IS NOT NULL AND n IS NOT NULL ORDER BY n DESC, grp",
+        "SELECT u.label, t.id FROM t JOIN u ON t.k = u.k ORDER BY u.label DESC, t.id LIMIT 12",
+        "SELECT label, w FROM u WHERE k IS NOT NULL ORDER BY label, w DESC",
+        "SELECT id, x FROM t WHERE x IS NOT NULL AND n IS NOT NULL ORDER BY n, x DESC, id",
+    ]
+
+    def test_queries_give_the_rows_sqlite_gives(self):
+        for text in self.UNORDERED:
+            with self.subTest(query=text):
+                self.assertSameAsSqlite(text)
+
+    def test_ordered_queries_give_the_rows_in_the_order_sqlite_does(self):
+        for text in self.ORDERED:
+            with self.subTest(query=text):
+                self.assertSameAsSqlite(text, ordered=True)
+
+    # --- random queries ---
+
+    NUMBERS = ["id", "n", "x", "k"]
+    WORDS = ["grp", "s"]
+
+    def random_atom(self, rng, prefix):
+        number = lambda: rng.choice(["0", "1", "3", "5", "-2", "10.5", "40", "99.25"])          # noqa: E731
+        word = lambda: rng.choice(["'a'", "'B'", "'c'", "'apple'", "'Ab'", "'banana'", "'b'", "''"])   # noqa: E731
+        column = lambda names: prefix + rng.choice(names)                                      # noqa: E731
+        r = rng.random()
+        if r < 0.30:
+            return "%s %s %s" % (column(self.NUMBERS), rng.choice(["=", "<>", "<", "<=", ">", ">=", "!="]),
+                                 rng.choice([number(), column(self.NUMBERS)]))
+        if r < 0.45:
+            return "%s %s %s" % (column(self.WORDS), rng.choice(["=", "<>", "<", "<=", ">", ">="]),
+                                 rng.choice([word(), column(self.WORDS)]))
+        if r < 0.55:
+            return "%s IS %sNULL" % (column(self.NUMBERS + self.WORDS), rng.choice(["", "NOT "]))
+        if r < 0.65:
+            return "%s %sIN (%s)" % (column(self.NUMBERS), rng.choice(["", "NOT "]),
+                                     ", ".join(number() for _ in range(rng.randint(1, 4))))
+        if r < 0.72:
+            return "%s %sIN (%s)" % (column(self.WORDS), rng.choice(["", "NOT "]),
+                                     ", ".join(word() for _ in range(rng.randint(1, 3))))
+        if r < 0.82:
+            return "%s %sBETWEEN %s AND %s" % (column(self.NUMBERS), rng.choice(["", "NOT "]), number(), number())
+        if r < 0.92:
+            return "%s %sLIKE '%s'" % (column(self.WORDS), rng.choice(["", "NOT "]),
+                                       rng.choice(["a%", "%a", "%an%", "_b", "B", "%", "a_", "it''s", "%e%"]))
+        return "%s + %s %s %s" % (column(self.NUMBERS), column(self.NUMBERS), rng.choice(["<", ">", "=", "<>"]), number())
+
+    def random_condition(self, rng, prefix="", depth=0):
+        r = rng.random()
+        if depth >= 3 or r < 0.35:
+            return self.random_atom(rng, prefix)
+        if r < 0.60:
+            return "(%s AND %s)" % (self.random_condition(rng, prefix, depth + 1), self.random_condition(rng, prefix, depth + 1))
+        if r < 0.85:
+            return "(%s OR %s)" % (self.random_condition(rng, prefix, depth + 1), self.random_condition(rng, prefix, depth + 1))
+        return "NOT (%s)" % self.random_condition(rng, prefix, depth + 1)
+
+    def test_random_conditions_keep_the_rows_sqlite_keeps(self):
+        """Conditions of comparisons with AND, OR, and NOT, over columns with NULLs in them: NOT of a comparison
+        with a NULL is not true."""
+        rng = random.Random(11)
+        for _ in range(400):
+            text = "SELECT id FROM t WHERE " + self.random_condition(rng)
+            with self.subTest(query=text):
+                self.assertSameAsSqlite(text)
+
+    def test_random_groups_give_the_groups_sqlite_gives(self):
+        rng = random.Random(23)
+        group_choices = ["grp", "k", "n % 3", "s", "id % 4"]
+        aggregates = ["COUNT(*)", "COUNT(x)", "COUNT(s)", "SUM(x)", "SUM(n)", "AVG(x)", "AVG(n)", "MIN(x)", "MAX(x)", "MIN(s)",
+                      "MAX(s)", "MIN(n)", "SUM(x * 2)", "MAX(x) - MIN(x)", "COUNT(*) + 1", "SUM(x) / COUNT(x)"]
+        havings = ["COUNT(*) > 3", "SUM(x) > 100", "MIN(n) < 5", "MAX(x) >= 50 AND COUNT(*) > 1", "AVG(x) < 40 OR COUNT(x) = 0"]
+        for _ in range(150):
+            groups = rng.sample(group_choices, rng.randint(0, 2))
+            chosen = rng.sample(aggregates, rng.randint(1, 4))
+            text = "SELECT " + ", ".join(groups + chosen) + " FROM t"
+            if rng.random() < 0.5:
+                text += " WHERE " + self.random_condition(rng)
+            if groups:
+                text += " GROUP BY " + ", ".join(groups)
+            if rng.random() < 0.4:
+                text += " HAVING " + rng.choice(havings)
+            with self.subTest(query=text):
+                self.assertSameAsSqlite(text)
+
+    def test_random_joins_give_the_rows_sqlite_gives(self):
+        rng = random.Random(31)
+        for _ in range(100):
+            kind = rng.choice(["JOIN", "INNER JOIN", "LEFT JOIN", "LEFT OUTER JOIN"])
+            if rng.random() < 0.5:
+                other, on, columns = "u", rng.choice(["t.k = u.k", "u.k = t.k", "t.k = u.k AND t.n = u.k", "t.n = u.k AND t.k = u.k"]), "t.id, u.label, u.w"
+            else:
+                other, on, columns = "g", rng.choice(["t.grp = g.grp", "g.grp = t.grp"]), "t.id, g.descr, g.rank"
+            text = "SELECT %s FROM t %s %s ON %s" % (columns, kind, other, on)
+            if rng.random() < 0.6:
+                text += " WHERE " + self.random_condition(rng, prefix="t.")
+            with self.subTest(query=text):
+                self.assertSameAsSqlite(text)
+
+    def test_changes_to_data_leave_the_table_sqlite_leaves(self):
+        """Each change is made in both, and the number of rows it says it changed, and the whole table afterward, are the same."""
+        for text in [
+                "INSERT INTO w (id, grp) VALUES (1001, 'z'), (1002, NULL)",
+                "INSERT INTO w SELECT id + 2000, grp, n, x, s, k FROM w WHERE id < 6",
+                "INSERT INTO w (id, x) SELECT id + 3000, x / 2 FROM w WHERE id < 4",
+                "UPDATE w SET x = x * 2 WHERE n > 5",
+                "UPDATE w SET grp = upper(grp), n = n + 1 WHERE grp = 'a'",
+                "UPDATE w SET x = NULL WHERE id % 7 = 0",
+                "UPDATE w SET s = 'new', k = id WHERE s IS NULL",
+                "UPDATE w SET n = k, k = n WHERE id < 10",
+                "UPDATE w SET x = 1 WHERE 1 = 0",
+                "DELETE FROM w WHERE x IS NULL AND n < 3",
+                "DELETE FROM w WHERE grp = 'c' OR s LIKE 'a%'",
+                "DELETE FROM w WHERE id > 5000",
+                "DELETE FROM w WHERE NOT (n < 4)",
+                "INSERT INTO w VALUES (7000, 'q', 1, 2.5, 'text', 3)",       # into a table that has had its rows deleted
+                "DELETE FROM w",
+                "INSERT INTO w VALUES (8000, 'only', NULL, NULL, NULL, NULL)",
+        ]:
+            with self.subTest(statement=text):
+                sentence, changed = self.both(text)
+                self.assertTrue(sentence.startswith("%d row" % changed), "%s said %r; sqlite changed %d" % (text, sentence, changed))
+                self.assertSameAsSqlite("SELECT * FROM w")
+
+    def test_like_treats_the_characters_of_a_regular_expression_as_themselves(self):
+        self.both("CREATE TABLE special (s TEXT)")
+        self.both("INSERT INTO special VALUES ('a.c'), ('abc'), ('(x)'), ('[ab]'), ('a+b'), ('100%'), ('a_b'), ('^start'), ('end$'), ('back\\slash'), ('A.C'), ('')")
+        for pattern in ["a.c", "a%c", "(x)", "[ab]", "a+b", "%.%", "%+%", "100%", "a_b", "a__b", "^%", "%$", "%\\%", "%[%", "_", "", "%"]:
+            with self.subTest(pattern=pattern):
+                self.assertSameAsSqlite("SELECT s FROM special WHERE s LIKE '%s'" % pattern.replace("'", "''"))
+                self.assertSameAsSqlite("SELECT s FROM special WHERE s NOT LIKE '%s'" % pattern.replace("'", "''"))
+
+    def test_rounding_goes_away_from_zero_on_halves(self):
+        self.both("CREATE TABLE halves (v REAL)")
+        self.both("INSERT INTO halves VALUES (0.5), (1.5), (2.5), (-0.5), (-1.5), (-2.5), (0.25), (-0.75), (3.0), (NULL), (1234.5)")
+        self.assertSameAsSqlite("SELECT v, round(v) FROM halves")
+        self.assertSameAsSqlite("SELECT v, round(v, 1), round(v, 2) FROM halves")
+
+    # -- the differences, on purpose ------------------------------------------------------------
+
+    def test_the_columns_of_a_result_are_named_for_the_expressions(self):
+        self.assertEqual(self.mine("SELECT id, grp AS g, x * 2, upper(s), id + 1 - 2, 2 * (id + 1), -id, id < 3, x IS NULL, "
+                                   "NOT (id < 3 OR x > 1), (x + 1) * (x - 1) FROM t")[0],
+                         ["id", "g", "x * 2", "upper(s)", "id + 1 - 2", "2 * (id + 1)", "-id", "id < 3", "x is null",
+                          "not (id < 3 or x > 1)", "(x + 1) * (x - 1)"])
+        self.assertEqual(self.mine("SELECT sum(x), COUNT(*), avg(x * 2), MAX(x) - MIN(x) FROM t")[0],
+                         ["sum(x)", "count(*)", "avg(x * 2)", "max(x) - min(x)"])
+        self.assertEqual(self.mine("SELECT t.id, T.GRP, X FROM t")[0], ["id", "grp", "x"])
+        self.assertEqual(self.mine("SELECT u.* FROM t JOIN u ON t.k = u.k")[0], ["k", "label", "w"])
+        self.assertEqual(self.mine("SELECT * FROM t JOIN u ON t.k = u.k")[0], ["id", "grp", "n", "x", "s", "t.k", "u.k", "label", "w"])
+        self.assertEqual(self.mine("SELECT t.id, u.k, t.k, u.w AS id FROM t JOIN u ON t.k = u.k")[0], ["id", "k", "k_2", "id_2"])
+
+    def test_a_missing_value_sorts_last_and_in_descending_order_first(self):
+        values = [r[0] for r in self.mine("SELECT x FROM t ORDER BY x")[1]]
+        missing = values.count(None)
+        self.assertGreater(missing, 0)
+        self.assertEqual(values[-missing:], [None] * missing)
+        self.assertEqual(values[:-missing], sorted(values[:-missing]))
+        descending = [r[0] for r in self.mine("SELECT x FROM t ORDER BY x DESC")[1]]
+        self.assertEqual(descending[:missing], [None] * missing)
+        self.assertEqual(descending[missing:], sorted(descending[missing:], reverse=True))
+
+    def test_division_is_exact_and_a_remainder_has_the_sign_of_the_divisor(self):
+        self.assertEqual(self.mine("SELECT 7 / 2, -7 / 2, 7 % 2, 1 / 0")[1], [[3.5, -3.5, 1, None]])
+        self.assertEqual(self.mine("SELECT -7 % 3, 7 % -3")[1], [[2, -2]])        # SQLite's are -1 and 1
+
+    # -- details of the language ------------------------------------------------------------------
+
+    def test_names_and_keywords_do_not_depend_on_case(self):
+        self.assertEqual(self.mine("select ID, Grp from T where X > 99 order by iD")[1],
+                         self.mine("SELECT id, grp FROM t WHERE x > 99 ORDER BY id")[1])
+        self.assertEqual(self.mine("SELECT 'CA' = 'ca', 'CA' = 'CA'")[1], [[0, 1]])           # but text is
+
+    def test_text_in_quotes_and_numbers(self):
+        self.assertEqual(self.mine("SELECT 'it''s', '', 'a b', 2.50, 1.5 + 1, - 3, 'x;y'")[1], [["it's", "", "a b", 2.5, 2.5, -3, "x;y"]])
+
+    def test_select_without_from_is_one_row(self):
+        self.assertEqual(self.mine("SELECT 1 + 2 AS three")[1], [[3]])
+        self.assertEqual(self.mine("SELECT COUNT(*), SUM(5)")[1], [[1, 5]])
+        self.assertEqual(self.mine("SELECT 1 WHERE 1 = 0")[1], [])
+
+    def test_the_sum_of_nothing_but_nulls_is_null_and_the_count_of_nothing_is_zero(self):
+        self.assertEqual(self.mine("SELECT SUM(x), AVG(x), MIN(x), MAX(x), COUNT(x), COUNT(*) FROM t WHERE x IS NULL")[1],
+                         [[None, None, None, None, 0, self.sqlite("SELECT COUNT(*) FROM t WHERE x IS NULL")[1][0][0]]])
+        self.assertEqual(self.mine("SELECT SUM(x), COUNT(*), COUNT(x), MAX(x) FROM t WHERE id < 0")[1], [[None, 0, 0, None]])
+        self.assertEqual(self.mine("SELECT grp, SUM(x) FROM t WHERE id < 0 GROUP BY grp")[1], [])
+
+    def test_a_group_of_missing_keys_is_one_group(self):
+        self.assertSameAsSqlite("SELECT k, grp, COUNT(*) FROM t GROUP BY k, grp")
+
+    def test_a_missing_value_in_a_join_column_matches_nothing(self):
+        mine = self.mine("SELECT t.id, u.label FROM t JOIN u ON t.k = u.k WHERE t.k IS NULL")[1]
+        self.assertEqual(mine, [])
+        self.assertEqual(self.mine("SELECT COUNT(*) FROM u LEFT JOIN u v ON u.k = v.k")[1], self.sqlite("SELECT COUNT(*) FROM u LEFT JOIN u v ON u.k = v.k")[1])
+
+    def test_statements_are_all_read_before_any_is_run(self):
+        self.mine("CREATE TABLE atomic (x INTEGER)")
+        with self.assertRaises(lisp_core.LispError):
+            self.mine("INSERT INTO atomic VALUES (1); INSERT INTO atomic VALUES (2) WHERE")
+        self.assertEqual(self.mine("SELECT COUNT(*) FROM atomic")[1], [[0]])
+        self.assertEqual(self.mine("INSERT INTO atomic VALUES (1); INSERT INTO atomic VALUES (2),(3);"), "2 rows added")    # the last result
+        self.assertEqual(self.mine("SELECT SUM(x) FROM atomic;;")[1], [[6]])
+        self.assertEqual(self.mine(""), "nothing to do")
+
+    def test_create_and_drop(self):
+        self.assertEqual(self.mine("CREATE TABLE made (a integer, b VARCHAR(20), c real, d date)"), "table made created")
+        self.assertEqual(self.mine("SELECT COUNT(*) FROM made")[1], [[0]])
+        self.assertEqual(self.mine("CREATE TABLE IF NOT EXISTS made (z integer)"), "table made is already there")
+        self.assertLispError("CREATE TABLE made (z integer)", "table made already exists")
+        self.assertEqual(self.mine("INSERT INTO made VALUES (1, 'x', 2.5, date('2024-03-05'))"), "1 row added")
+        self.assertEqual(self.mine("SELECT a, b, c, d FROM made WHERE d > date('2024-01-01')")[1], [[1, "x", 2.5, "2024-03-05"]])
+        self.assertEqual(self.mine("DROP TABLE made"), "table made dropped")
+        self.assertEqual(self.mine("DROP TABLE IF EXISTS made"), "there is no table made")
+        self.assertLispError("DROP TABLE made", "no such table: made")
+        self.assertLispError("SELECT * FROM made", "no such table: made")
+
+    def test_inserting_checks_the_kind_of_value_and_fills_in_nulls(self):
+        self.mine("CREATE TABLE kinds (n INTEGER, s TEXT, r REAL)")
+        self.assertLispError("INSERT INTO kinds VALUES ('x', 'a', 1)", "column n holds numbers, not x")
+        self.assertLispError("INSERT INTO kinds VALUES (1, 2, 1)", "column s holds text, not 2")
+        self.assertLispError("INSERT INTO kinds VALUES (1, 'a')", "a row has 2 values for 3 columns")
+        self.assertLispError("INSERT INTO kinds (n, nope) VALUES (1, 2)", "no such column: nope")
+        self.mine("INSERT INTO kinds (s) VALUES ('only text')")
+        self.mine("INSERT INTO kinds (r, n) VALUES (2.5, 3)")
+        self.mine("INSERT INTO kinds VALUES (NULL, NULL, NULL)")
+        self.assertEqual(self.mine("SELECT n, s, r FROM kinds ORDER BY r")[1],
+                         [[3, None, 2.5], [None, "only text", None], [None, None, None]])
+        self.assertEqual(self.mine("SELECT COUNT(*), COUNT(n), COUNT(s), COUNT(r), SUM(n) FROM kinds")[1], [[3, 1, 1, 1, 3]])
+
+    def test_an_update_sees_the_values_from_before_it(self):
+        self.mine("CREATE TABLE swap (a INTEGER, b INTEGER)")
+        self.mine("INSERT INTO swap VALUES (1, 2), (3, 4)")
+        self.assertEqual(self.mine("UPDATE swap SET a = b, b = a"), "2 rows changed")
+        self.assertEqual(self.mine("SELECT a, b FROM swap ORDER BY a")[1], [[2, 1], [4, 3]])
+
+    # -- mistakes ----------------------------------------------------------------------------------
+
+    def test_mistakes_are_errors_that_say_what_is_wrong(self):
+        for text, fragment in [
+                ("SELECT nope FROM t", "no such column: nope"),
+                ("SELECT x.id FROM t", "no such column: x.id"),
+                ("SELECT * FROM nope", "no such table: nope"),
+                ("SELECT k FROM t JOIN u ON t.k = u.k", "ambiguous column name: k"),
+                ("SELECT 1 FROM t a JOIN u a ON a.k = a.k", "a is the name of two tables in the query"),
+                ("SELECT u.* FROM t", "no such table: u"),
+                ("SELEC 1", "a statement starts with SELECT"),
+                ("SELECT 1 +", "expected a column, number, or text but found the end of the statement"),
+                ("SELECT (1", "expected ) but found the end of the statement"),
+                ("SELECT 1 FROM", "expected a table name but found the end of the statement"),
+                ("SELECT 1 FROM t WHERE", "expected a column, number, or text"),
+                ("SELECT 1 @ 2", "unexpected @"),
+                ("SELECT 'abc", "a quote that never ends"),
+                ("SELECT \"id\" FROM t", "expected a column, number, or text but found \""),
+                ("SELECT 1 NOT 2", "expected LIKE, BETWEEN, or IN after NOT"),
+                ("SELECT 5 BETWEEN 1", "expected AND"),
+                ("SELECT x IN (SELECT 1) FROM t", "expected a column, number, or text but found select"),
+                ("SELECT foo(1)", "unknown function: foo"),
+                ("SELECT sum(*) FROM t", "sum needs a column or expression, not *"),
+                ("SELECT COUNT(DISTINCT id) FROM t", "count(DISTINCT x) isn't supported"),
+                ("SELECT grp, SUM(x) FROM t", "t.grp can't be used here"),
+                ("SELECT id FROM t GROUP BY grp", "t.id can't be used here"),
+                ("SELECT id FROM t WHERE SUM(x) > 1", "sum() can't be used here"),
+                ("SELECT id FROM t ORDER BY 9", "ORDER BY 9 is not a column of the result"),
+                ("SELECT DISTINCT grp FROM t ORDER BY x", "t.x can't be used here"),
+                ("SELECT id FROM t WHERE s LIKE grp", "LIKE needs a pattern in quotes"),
+                ("SELECT id FROM t LIMIT x", "LIMIT needs a number"),
+                ("SELECT t.id FROM t JOIN u ON t.k < u.k", "ON must be equalities"),
+                ("SELECT t.id FROM t JOIN u ON t.k = t.n", "must compare a column of one table with a column of the other"),
+                ("SELECT t.id FROM t JOIN u", "expected ON"),
+                ("SELECT id + s FROM t", "isn't a number"),
+                ("SELECT id FROM t WHERE s < 3", "can't compare"),
+                ("INSERT INTO t VALUES (1)", "a row has 1 values for 6 columns"),
+                ("INSERT INTO t VALUES (id, 1, 1, 1, 'a', 1)", "no such column: id"),
+                ("INSERT INTO t", "expected VALUES or SELECT"),
+                ("UPDATE t SET nope = 1", "no such column: nope"),
+                ("UPDATE t SET", "expected a column name"),
+                ("UPDATE nope SET a = 1", "no such table: nope"),
+                ("DELETE t", "expected FROM"),
+                ("DELETE FROM nope", "no such table: nope"),
+                ("CREATE TABLE c (x blob)", "unknown column type: blob"),
+                ("CREATE TABLE c (x integer PRIMARY KEY)", "constraints such as PRIMARY KEY"),
+                ("CREATE TABLE c ()", "expected a column name"),
+                ("CREATE INDEX i", "expected TABLE"),
+                ("SELECT 1 FROM t t2 t3", "after the end of the statement"),
+        ]:
+            with self.subTest(statement=text):
+                self.assertLispError(text, fragment)
+
+    # -- tables that are the interpreter's ----------------------------------------------------------
+
+    def test_a_table_made_by_the_interpreter_can_be_asked_about_and_the_answer_is_a_table(self):
+        env = self.fresh_env()
+        self.run_lisp("""
+          (define bonds (make-table "issuer" (vector "AAA Corp" "B Inc" "AAA Corp" "C LLC" "B Inc")
+                                    "coupon" (vector 5.5 7.25 5.0 nan 7.0)
+                                    "maturity" (vector (date 2030 1 15) (date 2028 6 1) (date 2035 3 1) (date 2027 1 1) (date 2029 9 9))
+                                    "face" #(100 250 300 50 75)))
+          (sql-register-table! "Bonds" bonds)""", env)
+        self.assertEqual(self.run_lisp("(sql-table-names)", env).car, "bonds")                    # a name is lower case
+        self.assertEqual(self.mine("SELECT issuer, SUM(face) AS face, AVG(coupon) AS coupon FROM BONDS GROUP BY issuer ORDER BY face DESC", env)[1],
+                         [["AAA Corp", 400, 5.25], ["B Inc", 325, 7.125], ["C LLC", 50, None]])
+        self.assertEqual(self.mine("SELECT issuer FROM bonds WHERE maturity < date('2029-01-01') AND coupon IS NOT NULL", env)[1], [["B Inc"]])
+        self.assertEqual(self.mine("SELECT issuer, maturity FROM bonds ORDER BY maturity LIMIT 2", env)[1],
+                         [["C LLC", "2027-01-01"], ["B Inc", "2028-06-01"]])
+        self.assertEqual(self.mine("UPDATE bonds SET coupon = 6 WHERE coupon IS NULL", env), "1 row changed")
+        # the answer is a table the other functions work with, and a table can be given a name
+        self.assertEqual(self.run_lisp('(vector-sum (table-column (sql "SELECT face FROM bonds WHERE face > 80") "face"))', env), 650)
+        self.assertEqual(self.run_lisp('(table-row-count (sql-table "bonds"))', env), 5)
+        self.assertEqual(str(self.run_lisp('(table-column (table-sort (sql "SELECT issuer, face FROM bonds") "face" #t) "issuer")', env)),
+                         '#("AAA Corp" "B Inc" "AAA Corp" "B Inc" "C LLC")')
+        self.run_lisp('(sql-register-table! "big" (sql "SELECT issuer, face FROM bonds WHERE face >= 250"))', env)
+        self.assertEqual(self.mine("SELECT issuer, face FROM big ORDER BY face", env)[1], [["B Inc", 250], ["AAA Corp", 300]])
+        self.run_lisp("(sql-reset!)", env)
+        self.assertLispError("SELECT * FROM bonds", "no such table: bonds", env)
+
+    def test_a_column_name_with_capitals_can_be_asked_for_in_any_case(self):
+        self.run_lisp('(sql-register-table! "pool" (make-table "PoolID" #(1 2) "WAC" #(6.5 7.0)))')
+        self.assertEqual(self.mine("SELECT poolid, wac FROM pool WHERE WAC > 6.6")[1], [[2, 7.0]])
+        self.assertEqual(self.mine("SELECT * FROM pool")[0], ["PoolID", "WAC"])
+
+    def test_show_sql_prints_the_result_of_each_statement(self):
+        printed = self.shown("CREATE TABLE shown (a integer); INSERT INTO shown VALUES (1), (2); SELECT a, a * 2 AS twice FROM shown;")
+        self.assertEqual(printed, "table shown created\n2 rows added\n"
+                                  "a  twice\n-  -----\n1      2\n2      4\n(2 rows)\n")
+        self.assertIn("(1 row)", self.shown("SELECT 1"))
+        self.assertIn("(0 rows)", self.shown("SELECT a FROM shown WHERE a > 5"))
+
+    def test_a_longer_result_is_not_cut_short_by_the_default_display(self):
+        self.assertEqual(self.shown("SELECT COUNT(*) FROM t").count("\n"), 4)
+
+    def test_the_repl_reads_statements_that_end_with_a_semicolon(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "repl.lsp")
+            with open(path, "w") as f:
+                f.write('(load "%s")\n(sql-repl)\n(display "after the repl\\n")\n' % os.path.join(EXAMPLES, "sql.lsp"))
+            r = run_cli(path, stdin="create table a (x integer);\ninsert into a values (1), (2),\n  (3);\n"
+                                    "select sum(x) as total from a;\nselect nope from a;\nquit;\nselect 99;\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for expected in ["table a created", "3 rows added", "total", "(1 row)", "Error: sql: no such column: nope", "after the repl"]:
+            self.assertIn(expected, r.stdout)
+        self.assertNotIn("99", r.stdout)                         # after quit;
+
+    def test_the_repl_ends_at_the_end_of_the_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "repl.lsp")
+            with open(path, "w") as f:
+                f.write('(load "%s")\n(sql-repl)\n(display "done\\n")\n' % os.path.join(EXAMPLES, "sql.lsp"))
+            r = run_cli(path, stdin="select 1 + 1 as two;\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("two", r.stdout)
+        self.assertIn("done", r.stdout)
+
+
 class TestExampleScripts(unittest.TestCase):
     """Smoke tests: each offline example must run to completion. Every
     script runs ONCE (in setUpClass), in a temporary copy of the examples
@@ -935,6 +1489,7 @@ class TestExampleScripts(unittest.TestCase):
         "symbolic_algebra_example.lsp",
         "nlp_parsing_example.lsp",
         "unification_grammar_example.lsp",
+        "sql_example.lsp",
     ]
     SLOW_EXAMPLES = [
         "dolist_vectors_map_example.lsp",
@@ -967,6 +1522,13 @@ class TestExampleScripts(unittest.TestCase):
         self.assertEqual(out.count("\ntotal "), 8)                 # eight tables, each with a total row
         self.assertIn("under 3.0 ", out)
         self.assertIn("5000  2,103,258,327   100.0%", out)
+
+    def test_the_sql_example_asks_its_questions_of_both_kinds_of_table(self):
+        out = self.results["sql_example.lsp"].stdout
+        for expected in ["9 rows added", "West           4  1425000.0", "AK         0", "2 rows changed", "1 row deleted",
+                         "sql: loans.state can't be used here",
+                         "750.0   15666  0.16380148", "(5 rows)", "#(0.1561 0.1594 0.1638 0.1609)", "800.0  0.16094743"]:
+            self.assertIn(expected, out)
 
     def test_the_macros_example_produces_its_documented_output(self):
         out = self.results["macros_example.lsp"].stdout

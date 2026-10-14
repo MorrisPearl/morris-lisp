@@ -932,9 +932,24 @@ class TestErrorMessages(LispTestCase):
         self.assertLispError("(define x)", "define: badly formed: (define x)")
         self.assertLispError("(if)", "if: badly formed: (if)")
 
+    def test_named_let_is_a_loop_or_a_recursion(self):
+        self.assertShows("(let count ((i 0) (total 0)) (if (< i 5) (count (+ i 1) (+ total i)) total))", "10")
+        self.assertShows("(let fact ((n 5)) (if (= n 0) 1 (* n (fact (- n 1)))))", "120")
+        self.assertShows("(let go () 3)", "3")                                      # no variables
+        self.assertShows("(let loop ((i 0)) (if (< i 100000) (loop (+ i 1)) i))", "100000")   # a tail call doesn't grow the stack
+        self.assertShows("(let loop ((i 0) (seen '())) (if (< i 3) (loop (+ i 1) (cons i seen)) (reverse seen)))", "(0 1 2)")
+        # the values are evaluated outside the loop, where its name isn't yet anything
+        self.run_lisp("(define loop-count 7)")
+        self.assertShows("(let loop-count ((n loop-count) (acc '())) (if (> n 0) (loop-count (- n 1) (cons n acc)) acc))",
+                         "(1 2 3 4 5 6 7)")
+        self.assertShows("(let loop ((i 0)) (if (< i 3) (loop (+ i 1)) (let loop ((j 10)) (+ j i))))", "13")
+        self.assertShows("(let ((x 1) (y 2)) (+ x y))", "3")                       # an ordinary let is as it was
+        self.assertLispError("(let 5 ((i 0)) i)", "let: expected a list of bindings")
+
     def test_a_badly_formed_let(self):
         self.assertLispError("(let ((x)) x)", "let: each binding must be (name value), not (x)")
-        self.assertLispError("(let loop ((i 0)) i)", "let: expected a list of bindings")
+        self.assertLispError("(let loop 5 i)", "let: expected a list of bindings")
+        self.assertLispError("(let loop ((i)) i)", "let: each binding must be (name value), not (i)")
         self.assertLispError("(let* ((x 1) y) x)", "let*: each binding must be (name value), not y")
 
     def test_calling_something_that_is_not_a_procedure(self):
