@@ -2090,9 +2090,11 @@ For whenever you want to trade.
 ```
 
 `schwab-spread-order`'s form of an order is Schwab's, from its documentation
-of the Trader API, and has not been sent to Schwab by the program's tests,
-which use a stand-in. Preview the first one (it places nothing) before you
-place it.
+of the Trader API. Schwab's preview accepted one for a SPY call spread (as
+a limit order of the strategy `VERTICAL`, for the net debit given, with the
+commission and fees, and no warnings), on 2026-10-14. The program's own
+tests use a stand-in for Schwab, and no spread order has been placed by it.
+Preview yours (that places nothing) before you place it.
 
 ### Alpha Vantage (dividends)
 
@@ -5366,9 +5368,11 @@ day, and a price from the command line: `python3 ../lisp_interpreter.py
 call_spread_example.lsp SPY 2026-11-20 765`.
 
 The reading of Schwab's chain was checked against its real answer (see
-`schwab-option-chain`). The form of the spread order is from Schwab's
-documentation of the Trader API, and has not been sent to Schwab, even to
-preview: look at `schwab-preview-order`'s answer before placing anything.
+`schwab-option-chain`), and Schwab's preview accepted the spread order for a
+SPY call spread (see `schwab-spread-order`). Even so, look at
+`schwab-preview-order`'s answer for yours -- the commission and fees (here,
+65 cents for each option, and a few cents in fees), and any warnings --
+before placing anything.
 
 ### Portfolios
 
