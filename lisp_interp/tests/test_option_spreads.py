@@ -852,6 +852,7 @@ class TestGettingTheChain(OptionSpreadsTestCase):
         for strike, (call_bid, call_ask), (put_bid, put_ask) in TestSpreadsByHand.QUOTES:
             rows.append({"strike": strike, "bid": call_bid, "ask": call_ask})
             rows.append({"strike": strike, "bid": put_bid, "ask": put_ask, "type": "Put"})
+        self.rows = rows
         self.make_chain(rows)
         self.asked = []
         self.env[lisp_core.Symbol("schwab-option-chain")] = lambda creds, symbol, *options: (
@@ -993,12 +994,33 @@ class TestGettingTheChain(OptionSpreadsTestCase):
                       ":min-risk 4.6))")
         self.assertIn("prices. 1 spread.", self.printed())
 
+    def test_the_example_charts_as_many_positions_as_there_are(self):
+        def run(kind):
+            lisp_builtins.set_command_line_arguments(["XYZ", kind, "2026-11-20", "108"])
+            with in_a_temporary_folder() as folder:
+                lisp_core.run_file(os.path.join(EXAMPLES, "option_spreads_example.lsp"), self.env)
+                return sorted(os.listdir(folder))
+        try:
+            self.assertEqual(run("long-stock"), ["option_spreads_profit.png"])          # (one position: nothing to compare it with)
+            self.assertEqual(run("iron-condor"), ["option_spreads_compared.png", "option_spreads_profit.png"])
+            self.out.clear()
+            self.make_chain([dict(row, bid=0.0) for row in self.rows])                   # no option has a bid: no position
+            self.assertEqual(run("iron-condor"), [])
+            self.assertIn("No such spread can be made", self.printed())
+        finally:
+            lisp_builtins.set_command_line_arguments([])
+
     def test_the_example_takes_the_stock_the_kind_the_day_and_the_price_from_the_command_line(self):
         try:
             lisp_builtins.set_command_line_arguments(["XYZ", "iron-condor", "2026-11-20", "108"])
-            lisp_core.run_file(os.path.join(EXAMPLES, "option_spreads_example.lsp"), self.env)
+            with in_a_temporary_folder() as folder:
+                lisp_core.run_file(os.path.join(EXAMPLES, "option_spreads_example.lsp"), self.env)
+                for chart in ("option_spreads_profit.png", "option_spreads_compared.png"):
+                    self.assertTrue(is_a_png(os.path.join(folder, chart)), chart)
             self.assertEqual(self.asked, [("credentials.json", "XYZ", [":expiration", "2026-11-20", ":type", '"ALL"'])])
             self.assertIn("Iron condors expiring 2026-11-20", self.printed())
+            self.assertIn("[chart] Iron condor on XYZ, expiring 2026-11-20\n", self.printed())
+            self.assertIn("[chart] Iron condors on XYZ, expiring 2026-11-20: the best 3 compared\n", self.printed())
             for bad in (["XYZ"], ["XYZ", "iron-condor", "2026-11-20"]):
                 lisp_builtins.set_command_line_arguments(bad)
                 with self.assertRaises(lisp_core.LispError) as caught:
@@ -1213,10 +1235,15 @@ class TestComparingTheKinds(OptionSpreadsTestCase):
     def test_the_example_takes_the_stock_the_day_and_the_price_from_the_command_line(self):
         try:
             lisp_builtins.set_command_line_arguments(["XYZ", "2026-11-20", "108"])
-            lisp_core.run_file(os.path.join(EXAMPLES, "option_positions_example.lsp"), self.env)
+            with in_a_temporary_folder() as folder:
+                lisp_core.run_file(os.path.join(EXAMPLES, "option_positions_example.lsp"), self.env)
+                for chart in ("option_positions_profit.png", "option_positions_hedged.png"):
+                    self.assertTrue(is_a_png(os.path.join(folder, chart)), chart)
             self.assertEqual(self.asked, [("credentials.json", "XYZ", [":expiration", "2026-11-20", ":type", '"ALL"'])])
             self.assertIn("The best position of each kind expiring 2026-11-20", self.printed())
             self.assertIn("Owning the stock (long-stock) is number 16 of 17", self.printed())
+            self.assertIn("[chart] The best position of each kind on XYZ, expiring 2026-11-20\n  put-butterfly (profit 4.60)", self.printed())
+            self.assertIn("  long-stock (profit 4.00): ", self.printed())
             lisp_builtins.set_command_line_arguments(["XYZ", "2026-11-20"])
             with self.assertRaises(lisp_core.LispError) as caught:
                 lisp_core.run_file(os.path.join(EXAMPLES, "option_positions_example.lsp"), self.env)
@@ -1229,6 +1256,375 @@ def lisp_schwab_json(value):
     """A Lisp value (a hash table of an order, or a list of them) as the Python JSON Schwab takes."""
     import lisp_schwab
     return lisp_schwab.lisp_to_json(value)
+
+
+def profit_of(kind, strikes, cost, price):
+    """The profit, for a share, of a position of the kind with these strikes (lowest first) that cost this, on the
+    expiration day with the stock at the price, by the definition: what it is worth then, less the cost."""
+    legs = LEGS[kind]
+    shares = sum(q for t, q in legs if t == "S")
+    options = [leg for leg in legs if leg[0] != "S"]
+    worth = shares * price + sum(q * (max(price - k, 0) if t == "C" else max(k - price, 0))
+                                 for (t, q), k in zip(options, strikes))
+    return worth - cost
+
+
+class TestProfitCharts(OptionSpreadsTestCase):
+    """The charts of a position's profit on the expiration day, up the side, against the price of the stock then,
+    along the bottom: option-profit-curve, plot-option-profit, option-profit-panel, plot-option-positions, and
+    plot-call-spreads."""
+
+    EXPECTED = "(date 2026 11 20) 108"
+
+    def setUp(self):
+        super().setUp()
+        self.specs = []                                     # the charts that are plotted
+        self.env = lisp_builtins.make_global_env(output=self.out.append, plot=self.specs.append)
+        for library in ("option_spreads.lsp", "option_positions.lsp", "call_spreads.lsp"):
+            self.run_lisp('(load "%s")' % library)
+        self.rows = []
+        for strike, (call_bid, call_ask), (put_bid, put_ask) in TestSpreadsByHand.QUOTES:
+            self.rows.append({"strike": strike, "bid": call_bid, "ask": call_ask})
+            self.rows.append({"strike": strike, "bid": put_bid, "ask": put_ask, "type": "Put"})
+        self.make_chain(self.rows)
+
+    def position(self, kind, options=""):
+        """The first position of the kind: its strikes, cost, and breakevens, from the search (which is `search`)."""
+        table = self.spreads("(option-spreads-for-chain chain '%s %s %s)" % (kind, self.EXPECTED, options))
+        option_legs = len([leg for leg in LEGS[kind] if leg[0] != "S"])
+        return ([table["strike-%d" % (n + 1)][0] for n in range(option_legs)], table["cost"][0],
+                [b for b in (table["breakeven-1"][0], table["breakeven-2"][0]) if b == b])
+
+    def curve(self, call):
+        """The table that the call (Lisp source) makes, as a dict of columns, as Python lists."""
+        table = self.run_lisp(call)
+        return {str(name): list(vector.items) for name, vector in lisp_tables.table_columns(table, "test")}
+
+    def labels(self, spec):
+        return [series["label"] for series in spec["series"]]
+
+    # -- the numbers: option-profit-curve ---------------------------------------------------------------------
+
+    def test_the_profit_curve_is_the_profit_at_each_price_for_every_kind(self):
+        for kind in KINDS:
+            with self.subTest(kind=kind):
+                strikes, cost, breakevens = self.position(kind)
+                curve = self.curve("(option-profit-curve search)")
+                prices, profits = curve["price"], curve["profit"]
+                self.assertEqual(list(curve), ["price", "profit"])
+                self.assertTrue(all(a < b for a, b in zip(prices, prices[1:])), "prices rise")
+                self.assertGreaterEqual(len(prices), 200)
+                np.testing.assert_allclose(profits, [profit_of(kind, strikes, cost, price) for price in prices], atol=1e-3)
+                # through every strike and breakeven, where the line bends or crosses 0
+                for price in strikes + breakevens:
+                    self.assertTrue(any(abs(p - price) < 1e-4 for p in prices), "%s is charted" % price)
+                # from 15% below the lowest price that matters to 15% above the highest
+                matter = strikes + breakevens + [104.0, 108.0]            # (the stock now, and expected)
+                self.assertAlmostEqual(prices[0], max(0, 0.85 * min(matter)), places=3)
+                self.assertAlmostEqual(prices[-1], 1.15 * max(matter), places=3)
+
+    def test_the_prices_can_be_chosen(self):
+        """The iron condor of the 100, 105, 110, and 115 breaks even at 102.2 and 112.8."""
+        self.position("iron-condor")
+        curve = self.curve("(option-profit-curve search :low 90 :high 120 :points 7)")
+        np.testing.assert_allclose(curve["price"], [90, 95, 100, 102.2, 105, 110, 112.8, 115, 120], atol=1e-4)
+        np.testing.assert_allclose(curve["profit"], [-2.2, -2.2, -2.2, 0, 2.8, 2.8, 0, -2.2, -2.2], atol=1e-4)
+        # a range that leaves some of the strikes out leaves them out
+        curve = self.curve("(option-profit-curve search :low 101 :high 111 :points 3)")
+        np.testing.assert_allclose(curve["price"], [101, 102.2, 105, 106, 110, 111], atol=1e-4)
+        # the next best position, and the best of another kind
+        second = self.curve("(option-profit-curve search :row 1 :points 5)")
+        self.assertNotEqual(second["profit"], self.curve("(option-profit-curve search :points 5)")["profit"])
+        self.position("long-stock")
+        np.testing.assert_allclose(self.curve("(option-profit-curve search :low 100 :high 110 :points 3)")["profit"],
+                                   [-4, 0, 1, 6], atol=1e-4)                      # at 100, 104 (breakeven), 105, 110
+
+    def test_what_the_curve_will_not_take(self):
+        self.position("bull-call")
+        self.assertEqual(len(self.curve("(option-profit-curve search :row 20)")["price"]) > 200, True)      # (the last of 21)
+        for call, fragment in [("(option-profit-curve search :row 21)", "there is no row 21: the search found 21 positions"),
+                               ("(option-profit-curve search :row 99)", "there is no row 99: the search found 21 positions"),
+                               ("(option-profit-curve search :row -1)", "there is no row -1"),
+                               ("(option-profit-curve search :points 1)", ":points is how many prices to chart, 2 or more"),
+                               ("(option-profit-curve search :points 2.5)", ":points is how many prices to chart, 2 or more"),
+                               ('(option-profit-curve search :low "a")', ":low is a price of the stock, a number"),
+                               ('(option-profit-curve search :high "a")', ":high is a price of the stock, a number"),
+                               ("(option-profit-curve search :low 120 :high 100)", ":low must be less than :high"),
+                               ("(option-profit-curve search :low 100 :high 100)", ":low must be less than :high"),
+                               ("(option-profit-curve search :size 3)", "unknown keyword")]:
+            with self.subTest(call=call):
+                self.assertLispError(call, fragment)
+
+    # -- the chart of one position ---------------------------------------------------------------------------------
+
+    def test_the_chart_of_one_position_by_hand(self):
+        """The iron condor of the 100, 105, 110, and 115 pays 2.8 and can lose 2.2: it is worth most, 2.8, with the
+        stock from 105 to 110, and breaks even at 102.2 and 112.8; at 108 it has made 2.8."""
+        self.position("iron-condor")
+        self.run_lisp("(plot-option-profit search)")
+        spec = self.specs[-1]
+        self.assertEqual(spec["title"], "Iron condor on XYZ, expiring 2026-11-20\n"
+                                        "buy 1 100.00 put, sell 1 105.00 put, sell 1 110.00 call, buy 1 115.00 call")
+        self.assertEqual((spec["x_label"], spec["y_label"]), ("price of XYZ on 2026-11-20", "profit, for a share"))
+        self.assertEqual((spec["width"], spec["height"], spec["x_kind"]), (8.0, 5.5, "number"))
+        self.assertEqual(self.labels(spec), ["gain", "loss", "profit at expiration", "breakeven", "XYZ at 108.00: profit 2.80"])
+        gain, loss, line, breakevens, expected = spec["series"]
+        # the same prices for the gain, the loss, and the line: above 0 the gain, below it the loss
+        self.assertEqual(gain["x"], line["x"])
+        self.assertEqual(loss["x"], line["x"])
+        np.testing.assert_allclose(gain["y"], [max(y, 0) for y in line["y"]], atol=1e-6)
+        np.testing.assert_allclose(loss["y"], [min(y, 0) for y in line["y"]], atol=1e-6)
+        self.assertEqual((gain["fill"], gain["color"], loss["fill"], loss["color"]), (True, "green", True, "red"))
+        self.assertEqual(gain["fill_to"], [0.0] * len(line["x"]))
+        self.assertEqual((line["line"], line["color"], line["line_width"], line["fill"]), ("solid", "black", 2.0, False))
+        np.testing.assert_allclose(line["y"], [profit_of("iron-condor", [100, 105, 110, 115], -2.8, x) for x in line["x"]], atol=1e-4)
+        for price in (100, 105, 110, 115, 102.2, 112.8):                      # the line bends, and crosses 0, there
+            self.assertTrue(any(abs(x - price) < 1e-4 for x in line["x"]), price)
+        self.assertEqual((breakevens["symbol"], breakevens["line"], breakevens["color"]), ("circle", None, "black"))
+        np.testing.assert_allclose(breakevens["x"], [102.2, 112.8], atol=1e-4)
+        self.assertEqual(breakevens["y"], [0.0, 0.0])
+        self.assertEqual((expected["symbol"], expected["line"], expected["color"]), ("diamond", None, "blue"))
+        np.testing.assert_allclose(expected["x"], [108.0])
+        np.testing.assert_allclose(expected["y"], [2.8], atol=1e-5)
+        # the lines across the chart: the stock now and the price expected; 0, the most it can make, and the most it can lose
+        self.assertEqual(spec["x_lines"], [{"at": 104.0, "label": "now", "color": "gray"},
+                                           {"at": 108.0, "label": "expected", "color": "black"}])
+        self.assertEqual([(l["label"], l["color"]) for l in spec["y_axis"]["lines"]],
+                         [("", "gray"), ("most it can make 2.80", "green"), ("most it can lose 2.20", "red")])
+        np.testing.assert_allclose([l["at"] for l in spec["y_axis"]["lines"]], [0, 2.8, -2.2], atol=1e-5)
+        # room above the most it can make, for its label, and below the most it can lose: 16% and 8% of the 5.0 between
+        np.testing.assert_allclose([spec["y_axis"]["min"], spec["y_axis"]["max"]], [-2.2 - 0.4, 2.8 + 0.8], atol=1e-5)
+        self.assertEqual(spec["legend"], "upper left")                 # (the profit is low on the left)
+
+    def test_a_loss_at_the_price_expected_is_a_loss(self):
+        self.position("bull-call")
+        self.run_lisp("(plot-option-profit search)")
+        self.assertEqual(self.labels(self.specs[-1])[-1], "XYZ at 108.00: profit 3.00")
+        # with the stock expected at 100, the 100 and 105 call spread is worth nothing, and cost 3.2
+        table = self.spreads("(option-spreads-for-chain chain 'bull-call (date 2026 11 20) 100)")
+        row = [i for i in range(len(table["ratio"])) if (table["strike-1"][i], table["strike-2"][i]) == (100, 105)][0]
+        self.run_lisp("(plot-option-profit search :rows (list %d))" % row)
+        self.assertEqual(self.labels(self.specs[-1])[-1], "XYZ at 100.00: loss 3.20")
+
+    def test_the_chart_shows_the_most_it_can_make_and_lose_where_they_are_in_it(self):
+        for kind, lines in [("bull-call", ["most it can make 5.00", "most it can lose 5.00"]),
+                            ("long-call", ["most it can lose 6.20"]),                  # (no limit to what it can make)
+                            ("long-put", ["most it can lose 15.40"]),                  # (it makes most with the stock at 0)
+                            ("long-stock", []),                                        # (it can lose all 104, at 0)
+                            ("covered-call", ["most it can make 7.20"]),
+                            ("cash-secured-put", ["most it can make 6.80"]),
+                            ("protective-put", ["most it can lose 5.60"]),
+                            ("collar", ["most it can make 2.40", "most it can lose 2.60"])]:
+            with self.subTest(kind=kind):
+                self.position(kind)
+                self.run_lisp("(plot-option-profit search)")
+                shown = [l["label"] for l in self.specs[-1]["y_axis"]["lines"]]
+                self.assertEqual(shown, [""] + lines)                                   # (0 first)
+
+    def test_a_position_that_never_breaks_even_has_no_breakeven_marked(self):
+        """The bull call spread of the 95 and 100, which costs 5.3 for a worth of 5 at most."""
+        self.make_chain([{"strike": 95, "bid": 10.0, "ask": 10.2}, {"strike": 100, "bid": 4.9, "ask": 5.1}])
+        self.run_lisp("(define search (option-spreads-for-chain chain 'bull-call (date 2026 11 20) 110))")
+        self.run_lisp("(plot-option-profit search)")
+        self.assertEqual(self.labels(self.specs[-1]), ["gain", "loss", "profit at expiration", "XYZ at 110.00: loss 0.30"])
+        self.assertTrue(all(y <= 0 for y in self.specs[-1]["series"][2]["y"]))       # (a loss everywhere)
+        self.assertTrue(all(y == 0 for y in self.specs[-1]["series"][0]["y"]))        # (and no gain)
+
+    def test_a_range_that_leaves_out_the_marks_leaves_them_out_of_the_chart(self):
+        self.position("iron-condor")                                    # it breaks even at 102.2 and 112.8, and expected is 108
+        self.run_lisp("(plot-option-profit search :low 103 :high 112)")
+        self.assertEqual(self.labels(self.specs[-1]), ["gain", "loss", "profit at expiration", "XYZ at 108.00: profit 2.80"])
+        self.run_lisp("(plot-option-profit search :low 85 :high 107)")
+        self.assertEqual(self.labels(self.specs[-1]), ["gain", "loss", "profit at expiration", "breakeven"])
+        np.testing.assert_allclose(self.specs[-1]["series"][3]["x"], [102.2], atol=1e-4)
+
+    def test_the_legend_goes_where_the_profit_is_not(self):
+        for kind, corner in [("bull-call", "upper left"), ("bear-call", "lower left"), ("long-put", "lower left"),
+                             ("long-call", "upper left"), ("covered-call", "upper left"), ("iron-condor", "upper left")]:
+            with self.subTest(kind=kind):
+                self.position(kind)
+                self.run_lisp("(plot-option-profit search)")
+                self.assertEqual(self.specs[-1]["legend"], corner)
+
+    # -- several positions on one chart -----------------------------------------------------------------------------
+
+    def test_several_positions_are_lines_on_one_chart(self):
+        self.position("bull-call")
+        self.run_lisp("(plot-option-profit search :rows (list 0 1 2))")
+        spec = self.specs[-1]
+        self.assertEqual(spec["title"], "Bull call spreads on XYZ, expiring 2026-11-20: the best 3 compared")
+        self.assertEqual(self.labels(spec), ["buy 1 100.00 call, sell 1 110.00 call", "buy 1 100.00 call, sell 1 105.00 call",
+                                             "buy 1 105.00 call, sell 1 110.00 call"])
+        for series, strikes, cost in zip(spec["series"], [(100, 110), (100, 105), (105, 110)], [5.0, 3.2, 2.0]):
+            self.assertEqual((series["line"], series["line_width"], series["fill"], series["symbol"]), ("solid", 2.0, False, None))
+            self.assertEqual(series["x"], spec["series"][0]["x"])                     # the same prices for each
+            np.testing.assert_allclose(series["y"], [profit_of("bull-call", strikes, cost, x) for x in series["x"]], atol=1e-4)
+        self.assertEqual([l["label"] for l in spec["y_axis"]["lines"]], [""])         # only the line at 0
+        self.assertEqual([l["label"] for l in spec["x_lines"]], ["now", "expected"])
+        self.assertEqual(spec["legend"], "best")
+        np.testing.assert_allclose([spec["y_axis"]["min"], spec["y_axis"]["max"]], [-5 - 0.08 * 10, 5 + 0.16 * 10], atol=1e-5)
+        # the prices have the strikes of each, and the breakevens
+        for price in (100, 105, 110, 103.2, 105.0, 107.0):
+            self.assertTrue(any(abs(x - price) < 1e-4 for x in spec["series"][0]["x"]), price)
+
+    def test_what_the_chart_will_not_take(self):
+        self.position("bull-call")
+        for call, fragment in [("(plot-option-profit search :rows (list 0 99))", "there is no row 99"),
+                               ("(plot-option-profit search :rows '())", ":rows is a list of rows of the search"),
+                               ("(plot-option-profit search :rows (list 0.5))", "there is no row 0.5"),
+                               ("(plot-option-profit search :points 1)", ":points is how many prices to chart"),
+                               ("(plot-option-profit search :low 130 :high 90)", ":low must be less than :high"),
+                               ("(option-profit-panel search :row 99)", "option-profit-panel: there is no row 99")]:
+            with self.subTest(call=call):
+                self.assertLispError(call, fragment)
+        self.assertEqual(len(self.specs), 0)                                 # (nothing was plotted)
+
+    # -- a panel, for plot-panels ---------------------------------------------------------------------------------
+
+    def test_panels_of_different_kinds_line_up(self):
+        self.position("bull-call")
+        self.run_lisp("(define first-search search)")
+        self.position("iron-condor")
+        self.run_lisp("(plot-panels (list (option-profit-panel first-search :low 85 :high 130) "
+                      "                   (option-profit-panel search :low 85 :high 130)) :x-min 85 :x-max 130)")
+        spec = self.specs[-1]
+        self.assertEqual(spec["kind"], "panels")
+        self.assertEqual([panel["title"] for panel in spec["panels"]],
+                         ["bull-call: buy 1 100.00 call, sell 1 110.00 call",
+                          "iron-condor: buy 1 100.00 put, sell 1 105.00 put, sell 1 110.00 call, buy 1 115.00 call"])
+        for panel in spec["panels"]:
+            self.assertEqual([s["label"] for s in panel["series"]][:3], ["gain", "loss", "profit at expiration"])
+            self.assertIsNone(panel["legend"])                              # (a panel has none)
+            line = panel["series"][2]
+            self.assertEqual((line["x"][0], line["x"][-1]), (85.0, 130.0))
+            self.assertEqual([l["label"] for l in panel["x_lines"]], ["now", "expected"])
+            self.assertEqual((panel["x_min"], panel["x_max"]), (85.0, 130.0))
+
+    def test_a_panel_is_the_series_and_options_of_the_chart(self):
+        self.position("collar")
+        panel = self.run_lisp("(option-profit-panel search)")
+        items = lisp_core.pairs_to_list(panel)
+        self.assertEqual(len(lisp_core.pairs_to_list(items[0])), 5)             # the series: gain, loss, profit, breakeven, expected
+        options = [str(x) for x in items[1::2]]
+        self.assertEqual(options, [":title", ":x-lines", ":y-lines", ":legend", ":y-min", ":y-max"])
+        self.assertEqual(lisp_core.to_string(items[2]), '"collar: buy 100 shares, buy 1 100.00 put, sell 1 105.00 call"')
+        self.assertIs(items[8], False)                                           # :legend #f
+
+    # -- the chart of the best of several kinds --------------------------------------------------------------------
+
+    def comparison(self, options=""):
+        self.run_lisp("(define comparison (option-positions-for-chain chain %s %s))" % (self.EXPECTED, options))
+
+    def test_the_best_few_of_the_kinds_with_no_shares_are_charted(self):
+        self.comparison()
+        self.run_lisp("(plot-option-positions comparison)")
+        spec = self.specs[-1]
+        self.assertEqual(spec["title"], "The best position of each kind on XYZ, expiring 2026-11-20")
+        self.assertEqual(self.labels(spec), ["put-butterfly (profit 4.60)", "call-butterfly (profit 1.70)",
+                                             "iron-condor (profit 2.80)", "iron-butterfly (profit 1.60)"])
+        self.assertEqual([(s["line"], s["color"]) for s in spec["series"]], [("solid", None)] * 4)
+        self.run_lisp("(plot-option-positions comparison :count 2)")
+        self.assertEqual(self.labels(self.specs[-1]), ["put-butterfly (profit 4.60)", "call-butterfly (profit 1.70)"])
+        # (the collar is fifth by the ratio, but has shares, so the fifth chart is the one after it: the bull put spread)
+        self.run_lisp("(plot-option-positions comparison :count 5)")
+        self.assertEqual(self.labels(self.specs[-1])[3:], ["iron-butterfly (profit 1.60)", "bull-put (profit 2.10)"])
+        # each line is its position's profit, at the same prices
+        self.run_lisp("(define search (position-comparison-search comparison 'iron-condor))")
+        strikes, cost, _ = self.position("iron-condor")
+        self.comparison()
+        self.run_lisp("(plot-option-positions comparison)")
+        condor = self.specs[-1]["series"][2]
+        np.testing.assert_allclose(condor["y"], [profit_of("iron-condor", strikes, cost, x) for x in condor["x"]], atol=1e-4)
+        for series in self.specs[-1]["series"]:
+            self.assertEqual(series["x"], condor["x"])
+
+    def test_the_kinds_with_shares_are_charted_together_with_the_stock_dashed(self):
+        self.comparison()
+        self.run_lisp("(plot-option-positions comparison :kinds '(long-stock covered-call protective-put collar))")
+        spec = self.specs[-1]
+        self.assertEqual(self.labels(spec), ["long-stock (profit 4.00)", "covered-call (profit 5.20)",
+                                             "protective-put (profit 2.40)", "collar (profit 2.40)"])
+        self.assertEqual([(s["line"], s["color"]) for s in spec["series"]],
+                         [("dashed", "black"), ("solid", None), ("solid", None), ("solid", None)])
+        stock = spec["series"][0]
+        np.testing.assert_allclose(stock["y"], [x - 104 for x in stock["x"]], atol=1e-4)      # its profit is the stock's change
+        # the order asked for is the order of the lines
+        self.run_lisp("(plot-option-positions comparison :kinds '(collar long-stock))")
+        self.assertEqual(self.labels(self.specs[-1]), ["collar (profit 2.40)", "long-stock (profit 4.00)"])
+
+    def test_the_chart_of_the_kinds_says_what_it_will_not_take(self):
+        self.comparison()
+        self.assertLispError("(plot-option-positions comparison :kinds '(bull-calls))", "the comparison has no bull-calls; it has ")
+        self.comparison(":kinds '(bull-call) :min-volume 6")
+        self.assertLispError("(plot-option-positions comparison)", "the comparison has no positions to chart")
+        self.comparison()
+        for bad in ("0", "1.5", "-1"):
+            self.assertLispError("(plot-option-positions comparison :count %s)" % bad, ":count is how many kinds to chart, 1 or more")
+        self.assertLispError("(plot-option-positions comparison :points 1)", ":points is how many prices to chart")
+        self.assertEqual(len(self.specs), 0)
+
+    # -- the call spreads' chart -----------------------------------------------------------------------------------------
+
+    def test_the_call_spreads_chart_is_the_bull_call_charts(self):
+        self.run_lisp("(define classic (call-spreads-for-chain chain %s))" % self.EXPECTED)
+        self.run_lisp("(define engine (option-spreads-for-chain chain 'bull-call %s))" % self.EXPECTED)
+        for options in ("", " :rows (list 0 1 2)", " :low 90 :high 120 :points 30"):
+            with self.subTest(options=options):
+                self.run_lisp("(plot-call-spreads classic%s)" % options)
+                self.run_lisp("(plot-option-profit engine%s)" % options)
+                self.assertEqual(self.specs[-2], self.specs[-1])
+        self.assertEqual(self.specs[-1]["x_lines"][1]["label"], "expected")
+
+    def test_a_call_spread_that_costs_more_than_its_width_has_no_breakeven_in_the_chart(self):
+        """The 95 and 100 costs 5.3, and is worth 5 at most: this file's breakeven, 100.3, is above the higher strike."""
+        self.make_chain([{"strike": 95, "bid": 10.0, "ask": 10.2}, {"strike": 100, "bid": 4.9, "ask": 5.1}])
+        self.run_lisp("(define classic (call-spreads-for-chain chain (date 2026 11 20) 110))")
+        self.run_lisp("(plot-call-spreads classic)")
+        self.assertEqual(self.labels(self.specs[-1]), ["gain", "loss", "profit at expiration", "XYZ at 110.00: loss 0.30"])
+
+    # -- saving a chart -------------------------------------------------------------------------------------------------
+
+    def test_the_charts_can_be_drawn_and_saved(self):
+        if not lisp_charts.MATPLOTLIB_AVAILABLE:
+            self.skipTest("matplotlib isn't installed")
+        self.position("collar")
+        self.comparison()
+        self.run_lisp("(plot-option-profit search)")
+        self.run_lisp("(plot-option-profit search :rows (list 0 1 2))")
+        self.run_lisp("(plot-option-positions comparison)")
+        self.run_lisp("(plot-panels (list (option-profit-panel search) (option-profit-panel search :row 1)))")
+        self.assertEqual(len(self.specs), 4)
+        with in_a_temporary_folder() as folder:
+            for number, spec in enumerate(self.specs):
+                path = os.path.join(folder, "chart%d.png" % number)
+                lisp_charts.render_chart_to_file(spec, path)
+                self.assertTrue(is_a_png(path), path)
+            # and by the builtin that saves the last one
+            self.run_lisp('(save-chart "last.png")')
+            self.assertTrue(is_a_png(os.path.join(folder, "last.png")))
+
+    def test_the_chart_is_drawn_with_its_lines_and_marks(self):
+        if not lisp_charts.MATPLOTLIB_AVAILABLE:
+            self.skipTest("matplotlib isn't installed")
+        self.position("iron-condor")
+        self.run_lisp("(plot-option-profit search)")
+        fig = lisp_charts.Figure()
+        lisp_charts.FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
+        lisp_charts.draw_chart_on_axes(fig, ax, self.specs[-1])
+        legend = ax.get_legend()
+        self.assertEqual([t.get_text() for t in legend.get_texts()],
+                         ["gain", "loss", "profit at expiration", "breakeven", "XYZ at 108.00: profit 2.80"])
+        self.assertEqual((ax.get_xlabel(), ax.get_ylabel()), ("price of XYZ on 2026-11-20", "profit, for a share"))
+        low, high = ax.get_ylim()
+        self.assertAlmostEqual(low, -2.6, places=4)
+        self.assertAlmostEqual(high, 3.6, places=4)
+        dashed = [line for line in ax.lines if line.get_linestyle() == "--"]      # (the reference lines)
+        horizontal = sorted(round(float(line.get_ydata()[0]), 2) for line in dashed
+                            if line.get_ydata()[0] == line.get_ydata()[1])
+        self.assertEqual(horizontal, [-2.2, 0.0, 2.8])                           # at 0, and the most it can lose and make
+        vertical = sorted(float(line.get_xdata()[0]) for line in dashed if line.get_xdata()[0] == line.get_xdata()[1])
+        self.assertEqual(vertical, [104.0, 108.0])                               # now, and expected
 
 
 class TestCallSpreadsAreTheBullCallKind(OptionSpreadsTestCase):

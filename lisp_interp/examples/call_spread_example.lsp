@@ -13,7 +13,11 @@
 ; and asks are live. It needs a Schwab sign-in ((schwab-login creds); it lasts
 ; a week): creds is set to the credentials file's path in init.lsp.
 ;
-; It shows the best spreads and sends no order. To go on to trade the best,
+; It shows the best spreads, and a chart of the best one's profit on the
+; expiration day against the price the stock might have then -- the shape of a
+; bull call spread: flat at a loss below the lower strike, rising to a flat gain
+; above the higher -- which it saves in call_spread_profit.png (in a notebook or
+; the GUI, it is drawn too). It sends no order. To go on to trade the best,
 ; in a notebook or at the console:
 ;   (load "call_spreads.lsp")
 ;   (define search (call-spreads creds "SPY" (date 2026 11 20) 765))
@@ -27,5 +31,8 @@
 (when (< (length arguments) 3)
   (error "Give the stock, the expiration day, and the price you expect, such as: SPY 2026-11-20 765"))
 
-(show-call-spreads (call-spreads creds (first arguments) (string->date (second arguments))
-                                 (string->number (third arguments))))
+(define search (call-spreads creds (first arguments) (string->date (second arguments))
+                            (string->number (third arguments))))
+(show-call-spreads search)
+(plot-call-spreads search)
+(save-chart "call_spread_profit.png")

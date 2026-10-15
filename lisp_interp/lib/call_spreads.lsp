@@ -198,6 +198,47 @@ and what it makes."
               stock (vector-ref (table-column spreads "breakeven") 0)
               (vector-ref (table-column spreads "max-profit") 0) stock high))))
 
+; ---------------------------------------------------------------------------
+; The chart
+; ---------------------------------------------------------------------------
+
+(define (call-spreads--engine-search search)
+  "A search of option_spreads.lsp's, from one of this file's: the columns of the table are named for the first option
+and the second, not for the call bought and sold, and a spread that can never make a profit -- one that costs more
+than its width -- has no breakeven there (this file's is above the higher strike)."
+  (let ((table (spread-search-spreads search)))
+    (make-spread-search
+      :kind (spread-search-kind search)
+      :stock (spread-search-stock search)
+      :stock-price (spread-search-stock-price search)
+      :expiration (spread-search-expiration search)
+      :expected-price (spread-search-expected-price search)
+      :prices (spread-search-prices search)
+      :spreads (list (cons "symbol-1" (table-column table "long-symbol"))
+                     (cons "symbol-2" (table-column table "short-symbol"))
+                     (cons "strike-1" (table-column table "long-strike"))
+                     (cons "strike-2" (table-column table "short-strike"))
+                     (cons "price-1" (table-column table "long-price"))
+                     (cons "price-2" (table-column table "short-price"))
+                     (cons "cost" (table-column table "cost"))
+                     (cons "max-loss" (table-column table "cost"))
+                     (cons "max-profit" (table-column table "max-profit"))
+                     (cons "worth" (table-column table "worth"))
+                     (cons "profit" (table-column table "profit"))
+                     (cons "ratio" (table-column table "ratio"))
+                     (cons "breakeven-1" (vector-where (<= (table-column table "breakeven") (table-column table "short-strike"))
+                                                       (table-column table "breakeven")
+                                                       nan))
+                     (cons "breakeven-2" (vector-map (lambda (x) nan) (table-column table "cost")))))))
+
+(define (plot-call-spreads search &key (rows (list 0)) (low '()) (high '()) (points 200))
+  "Chart the profit of one of the spreads of a spread-search -- the best, unless :rows (a list of row numbers) says -- on
+the expiration day, against the price the stock might have then. It rises from a loss of the spread's cost, with the
+stock at the lower strike or less, to a gain of the strikes' difference less the cost, with the stock at the higher
+strike or more, and crosses 0 at the breakeven. See plot-option-profit in option_spreads.lsp, which draws it, and
+whose options these are; save-chart saves the chart to a file."
+  (plot-option-profit (call-spreads--engine-search search) :rows rows :low low :high high :points points))
+
 (define (show-call-spreads search &key (count 10))
   "Show what call-spreads found: the best spread in words, and a table of it
 and the next count best."

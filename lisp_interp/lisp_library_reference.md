@@ -5368,6 +5368,15 @@ share and for a contract of 100, what it makes at the expected price, where it
 breaks even, and the most it can make -- and a table of it and the next
 `:count` (10) best.
 
+#### `(plot-call-spreads search [:rows rows :low l :high h :points n])`
+Charts the profit of one of the spreads -- the best, unless `:rows` (a list of row
+numbers) says -- on the expiration day, against the price the stock might have then. It is
+flat at a loss of the spread's cost with the stock at the lower strike or less, rises
+dollar for dollar between the strikes, and is flat at a gain of the strikes' difference
+less the cost at the higher strike or more; it crosses 0 at the breakeven. It is
+`plot-option-profit`'s chart (see "Option spreads"), whose options these are, of the
+bull call spread. `save-chart` saves it.
+
 #### `(call-spread-order search [:row r :contracts c :price p])`
 An order for one of the spreads, as a hash table in Schwab's form, made by
 `schwab-spread-order`: buy the call with the lower strike, sell the one with
@@ -5517,6 +5526,10 @@ at 105 - 2.8 = 102.2 and at 110 + 2.8 = 112.8. The ratio is 2.8 / 2.2.
 (define owning (option-spreads-for-chain chain 'long-stock day 108))
 (table-column (spread-search-spreads owning) "cost")           ; => #(104.0)
 (table-column (spread-search-spreads owning) "ratio")          ; => #(0.03846154)
+(define curve (option-profit-curve condors))                   ; the condor's profit at each price, to chart
+(vector-ref (table-column curve "profit") 0)                   ; => -2.1999998
+(vector-max (table-column curve "profit"))                     ; => 2.8000002
+(vector-length (table-column curve "price"))                   ; => 206
 ```
 
 With shares the same chain gives a covered call that buys a share at 104 and
@@ -5703,6 +5716,85 @@ These 2 orders have not been sent. If they were, you would send them in this ord
   SELL_TO_OPEN  2 x XYZ   261120C00110000
 ```
 
+#### The profit charts
+
+A position's profit on the expiration day -- up the side -- against the price
+the stock might have then -- along the bottom -- is the standard picture of
+what an option position is: a *payoff diagram*. These functions draw it, for any
+position of a search, and `option-profit-curve` gives its numbers.
+
+```text
+profit
+ +2.8 |                    _____
+      |                   /     \
+    0 |------------------/-------\------------------
+      |                 /         \
+ -2.2 |________________/           \________________
+      +----------------+-----+-----+----------------  price of the stock
+                      100   105   110 115
+```
+
+(A sketch of the condor above, not to scale.) Above 0 the position has made money
+-- the chart is green there -- and below 0 it has lost money, red. The line bends
+only at the strikes, and is straight between them, so it is drawn through every
+strike and every breakeven (where it crosses 0) as well as through a grid of
+prices: the corners are sharp, and the green and red meet exactly at 0. With one
+position, the chart marks where it breaks even (circles) and the stock at the
+price you expect (a diamond, with the profit or loss there), draws dashed lines at
+the most it can make and the most it can lose when they are within the chart
+(a long call has no limit to what it can make, and the long stock loses all it cost
+only with the stock at 0, far off the chart), and at the stock's price now and the
+price expected. The profits are for a share, as everywhere here: a contract is 100 times
+them. `save-chart` saves the chart, as for any other (`(save-chart "condor.png")`).
+
+#### `(option-profit-curve search [:row r :low l :high h :points n])`
+The profit of one of a search's positions -- the best, unless `:row` says -- on
+the expiration day, for each price the stock might have then, as a table of
+`price` and `profit` (for a share): `:points` (200) prices evenly from `:low` to
+`:high`, and the position's strikes and breakevens among them, in order. Unless
+they are given, `:low` and `:high` are 15% below the lowest price that matters --
+a strike, a breakeven, the stock's price now, the price expected -- and 15% above
+the highest. The profit at a price is the position's worth there, with its
+shares, less its cost: what `show-option-spreads` works out at the price you expect,
+at every price. This is the data of the charts, for your own.
+
+#### `(plot-option-profit search [:rows rows :low l :high h :points n])`
+Draws the chart of one position -- the best, unless `:rows` (a list of row
+numbers: `(list 0)`, the best, is the default; 1 is the next) says -- as above. Given
+several rows, the positions are lines on one chart, with each one's legs in the
+legend, to compare them: the best three bull call spreads, say, whose lines cross
+at the prices where one starts to beat another. The options are those of
+`option-profit-curve`. Returns nothing; the chart goes where any other does: the
+GUI's chart tab, a Jupyter cell, or a summary at the console, which is why a script
+follows it with `save-chart`.
+
+```lisp
+(plot-option-profit search)                         ; the best position of the kind, in detail
+(save-chart "iron_condor.png")
+(plot-option-profit search :rows (list 0 1 2))      ; the best three, on one chart
+```
+
+#### `(option-profit-panel search [:row r :low l :high h :points n])`
+The chart of one position as a panel for `plot-panels`, with its kind and legs as its
+title and no legend, to put the charts of several kinds one above another on the
+same prices. Give them the same `:low` and `:high`, and the figure the same
+`:x-min` and `:x-max`, so that they line up:
+
+```lisp
+(plot-panels (map (lambda (kind) (option-profit-panel (position-comparison-search comparison kind) :low 85 :high 140))
+                  '(call-butterfly put-butterfly iron-condor iron-butterfly))
+             :title "Butterflies and condors" :x-min 85 :x-max 140 :height 12)
+(save-chart "butterflies.png")
+```
+
+`examples/option_payoffs_example.lsp` draws every kind this way, from a made-up chain
+(so it needs no Schwab account): one position in detail, the best few options-only
+positions on one chart, the stock with a covered call, a protective put, and a collar, and
+a gallery of the seventeen kinds in three figures. The other examples chart what they
+find: `call_spread_example.lsp`, `option_spreads_example.lsp`, and
+`option_positions_example.lsp` save a chart or two of the best positions of the stock you
+give them. The pictures they save are not kept in the repository.
+
 #### The kinds side by side
 
 `lib/option_positions.lsp` takes the best position of every kind, and ranks
@@ -5731,6 +5823,21 @@ tables of positions above.
 All the positions of one kind in the comparison, as the `spread-search` that
 found them -- the best first -- to show with `show-option-spreads`, or to make
 orders from.
+
+#### `(plot-option-positions comparison [:kinds k :count n :low l :high h :points n])`
+Charts the profits, on the expiration day, of the best position of each of several
+kinds of a comparison, as lines on one chart, with the stock's price along the bottom
+and the profit for a share up the side -- the same picture as `plot-option-profit`'s,
+of different kinds, to compare their shapes. `:kinds` is a list of the names of the
+kinds to draw. Unless it is given, they are the `:count` (4) best, by the ratio of
+the comparison, of the kinds that have no shares: the options alone, whose profits
+are of a size that can be set side by side. The long stock and the kinds with shares
+are on a scale of their own, since they gain and lose what the stock does, so they go in a chart of their own:
+`:kinds '(long-stock covered-call protective-put collar)` is the stock, and what each of
+the three does to it -- the covered call stops rising at its strike, the protective put
+stops falling at its strike, the collar both -- with the stock's line dashed. The legend
+says what each position makes or loses at the price expected. `:low`, `:high`, and
+`:points` are those of `option-profit-curve`.
 
 #### `(show-option-positions comparison [:count n])`
 Shows the table of the first `:count` (20) kinds, and where owning the stock

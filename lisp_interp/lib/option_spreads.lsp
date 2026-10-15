@@ -944,3 +944,212 @@ stock's price and worth the price you expect, which can lose all they cost."
 
 (define (option-spreads--capitalized text)
   (string-append (string-upcase (substring text 0 1)) (substring text 1)))
+
+; ---------------------------------------------------------------------------
+; 8. The profit chart
+; ---------------------------------------------------------------------------
+; A payoff diagram. Along the bottom is the price the stock might have on the
+; expiration day; up the side, what a position would have made or lost then,
+; for a share: a gain above 0 (green), a loss below it (red). The line bends
+; at the strikes, and is straight between them, so it is drawn through every
+; strike and every breakeven (where it crosses 0), and through a grid of prices
+; besides. The profit is the worth of section 4, less the cost, at each price.
+
+(define option-spreads--chart-margin 0.15)   ; the chart goes this far (a share of the price) below the lowest price
+                                             ; that matters, and above the highest
+
+(define (option-spreads--marks search row)
+  "The prices of the stock at which the position in the row bends or crosses 0: its strikes, and where it breaks
+even (if it does)."
+  (let ((spreads (spread-search-spreads search))
+        (kind (option-spreads--kind (spread-search-kind search))))
+    (filter (lambda (price) (= price price))             ; (a breakeven that there isn't is missing)
+            (append (loop for place from 1 to (length (spread-kind-legs kind))
+                          collect (vector-ref (table-column spreads (format "strike-{}" place)) row))
+                    (list (vector-ref (table-column spreads "breakeven-1") row)
+                          (vector-ref (table-column spreads "breakeven-2") row))))))
+
+(define (option-spreads--profit-at search row prices)
+  "The profit of the position in the row, for a share, on the expiration day with the stock at each of these prices
+(a vector): its worth then, less its cost."
+  (let* ((spreads (spread-search-spreads search))
+         (kind (option-spreads--kind (spread-search-kind search)))
+         (zeros (make-vector (vector-length prices) 0))
+         (strikes (loop for place from 1 to (length (spread-kind-legs kind))
+                        collect (+ zeros (vector-ref (table-column spreads (format "strike-{}" place)) row)))))
+    (- (option-spreads--worth kind strikes prices zeros)
+       (vector-ref (table-column spreads "cost") row))))
+
+(define (option-spreads--chart-prices entries low high points)
+  "The prices of the stock to chart the profits of the entries at, in order: points of them, evenly from low to high
+-- from the margin below the lowest price that matters (a strike or breakeven of an entry, or the price of the stock
+now or expected) to the margin above the highest, unless they are given -- and the strikes and breakevens in between.
+Each entry is a list (search row label options)."
+  (let* ((search (first (first entries)))
+         (pins (apply append (map (lambda (entry) (option-spreads--marks (first entry) (second entry))) entries)))
+         (matter (append pins (list (spread-search-stock-price search) (spread-search-expected-price search))))
+         (from (if (null? low) (max 0 (* (- 1 option-spreads--chart-margin) (apply min matter))) low))
+         (to (if (null? high) (* (+ 1 option-spreads--chart-margin) (apply max matter)) high))
+         (grid (+ from (* (- to from) (/ (vector-range points) (- points 1)))))
+         (marks (list->vector pins))
+         (in-range (vector-select marks (vector-and (>= marks from) (<= marks to)))))      ; (the grid is, by its making)
+    (vector-unique (vector-append grid in-range))))
+
+(define (option-spreads--check-chart-arguments search rows low high points who)
+  "An error, if a row isn't one of the search's, or the prices to chart can't be."
+  (let ((found (table-row-count (spread-search-spreads search))))
+    (when (null? rows)
+      (error (format "{}: :rows is a list of rows of the search, such as (list 0 1)" who)))
+    (dolist (row rows)
+      (unless (and (integer? row) (>= row 0) (< row found))
+        (error (format "{}: there is no row {}: the search found {} positions" who row found)))))
+  (unless (and (integer? points) (>= points 2))
+    (error (format "{}: :points is how many prices to chart, 2 or more" who)))
+  (unless (or (null? low) (number? low))
+    (error (format "{}: :low is a price of the stock, a number" who)))
+  (unless (or (null? high) (number? high))
+    (error (format "{}: :high is a price of the stock, a number" who)))
+  (when (and (number? low) (number? high) (>= low high))
+    (error (format "{}: :low must be less than :high" who))))
+
+(define (option-profit-curve search &key (row 0) (low '()) (high '()) (points 200))
+  "The profit of one of a search's positions -- the best, unless :row says -- on the expiration day, for each price the
+stock might have then, as a table of price and profit (for a share): :points (200) prices evenly from :low to :high, and
+the position's strikes and breakevens. :low and :high are, unless they are given, a margin of 15% below the lowest
+price that matters -- a strike, a breakeven, the stock's price now, the price expected -- and above the highest. This
+is what plot-option-profit draws."
+  (option-spreads--check-chart-arguments search (list row) low high points "option-profit-curve")
+  (let ((prices (option-spreads--chart-prices (list (list search row "")) low high points)))
+    (make-table "price" prices "profit" (option-spreads--profit-at search row prices))))
+
+(define (option-spreads--reference-lines search row prices profit)
+  "The lines across the chart of the profit of one position: at 0, and at the most it can make and the most it can
+lose, where the chart shows them (the long stock can lose all it cost, far below the chart). Each is a list (price
+label color)."
+  (let* ((spreads (spread-search-spreads search))
+         (gain (vector-ref (table-column spreads "max-profit") row))
+         (loss (vector-ref (table-column spreads "max-loss") row)))
+    (append (list (list 0 "" "gray"))
+            (if (and (= gain gain) (<= (- gain (vector-max profit)) 0.001))
+                (list (list gain (format "most it can make {:,.2f}" gain) "green"))
+                '())
+            (if (<= (+ (vector-min profit) loss) 0.001)
+                (list (list (- loss) (format "most it can lose {:,.2f}" loss) "red"))
+                '()))))
+
+(define (option-spreads--gain-and-loss-series prices profit)
+  "Two series that fill the chart between the profit and 0: the gain, in green, where it is above 0; the loss, in red."
+  (list (list "gain" prices (vector-clip profit 0 1e12) :fill #t :color "green")
+        (list "loss" prices (vector-clip profit -1e12 0) :fill #t :color "red")))
+
+(define (option-spreads--legend-corner prices profit bottom top)
+  "Where the legend of a chart of one position's profit goes, so that it covers as little of the profit as it can:
+the upper left, or the lower left, where the profit, in the left 40% of the chart, goes less far into the third of
+the chart's height, from bottom to top, that the legend takes. (The right is for the labels of the lines at the most
+the position can make and lose.)"
+  (let* ((from (vector-ref prices 0))
+         (to (vector-ref prices (- (vector-length prices) 1)))
+         (left (vector-select profit (<= prices (+ from (* 0.4 (- to from))))))
+         (taken (* 0.34 (- top bottom)))
+         (into-the-top (max 0 (- (vector-max left) (- top taken))))
+         (into-the-bottom (max 0 (- (+ bottom taken) (vector-min left)))))
+    (if (<= into-the-top into-the-bottom) "upper left" "lower left")))
+
+(define (option-spreads--profit-series search row prices)
+  "The series that draw one position's profit, as a list for plot-chart: the gain, in green, and the loss, in red; the
+profit as a line; a circle where it breaks even; and a diamond for the stock at the price expected -- the marks that
+are among the prices charted."
+  (let* ((stock (spread-search-stock search))
+         (expected (spread-search-expected-price search))
+         (profit (option-spreads--profit-at search row prices))
+         (at-expected (vector-ref (option-spreads--profit-at search row (vector expected)) 0))
+         (charted? (lambda (price) (and (>= price (vector-ref prices 0))
+                                        (<= price (vector-ref prices (- (vector-length prices) 1))))))
+         (breakevens (filter (lambda (price) (and (= price price) (charted? price)))     ; (a breakeven there isn't is missing)
+                             (list (vector-ref (table-column (spread-search-spreads search) "breakeven-1") row)
+                                   (vector-ref (table-column (spread-search-spreads search) "breakeven-2") row)))))
+    (append (option-spreads--gain-and-loss-series prices profit)
+            (list (list "profit at expiration" prices profit :line #t :color "black" :line-width 2))
+            (if (null? breakevens)
+                '()
+                (list (list "breakeven" (list->vector breakevens) (make-vector (length breakevens) 0)
+                            :symbol "circle" :color "black" :symbol-size 7)))
+            (if (charted? expected)
+                (list (list (format "{} at {:,.2f}: {} {:,.2f}" stock expected (if (< at-expected 0) "loss" "profit")
+                                    (abs at-expected))
+                            (vector expected) (vector at-expected) :symbol "diamond" :color "blue" :symbol-size 9))
+                '()))))
+
+(define (option-spreads--profit-chart entries title low high points legend?)
+  "A chart of the profits of the entries, each a list (search row label options), as a list that plot-chart takes, as
+(apply plot-chart series options), and plot-panels takes as a panel: the series, then the options. One entry is
+drawn in detail; several are lines on one chart, for comparing, each with the series options its entry has (a line,
+unless it says), and the label for its legend. legend? is false for a panel, which has none. The chart has room
+above the highest profit and below the lowest, for the labels of the lines."
+  (let* ((search (first (first entries)))
+         (prices (option-spreads--chart-prices entries low high points))
+         (profits (map (lambda (entry) (option-spreads--profit-at (first entry) (second entry) prices)) entries))
+         (best (max 0 (apply max (map vector-max profits))))      ; (the chart has the line at 0 in it)
+         (worst (min 0 (apply min (map vector-min profits))))
+         (span (if (> best worst) (- best worst) 1))
+         (bottom (- worst (* 0.08 span)))                         ; (the chart has room for the labels of the lines)
+         (top (+ best (* 0.16 span)))
+         (room (list :y-min bottom :y-max top))
+         (lines (list (list (spread-search-stock-price search) "now" "gray")
+                      (list (spread-search-expected-price search) "expected" "black"))))
+    (if (null? (cdr entries))
+        (let ((row (second (first entries))))
+          (append (list (option-spreads--profit-series search row prices))
+                  (list :title title :x-lines lines
+                        :y-lines (option-spreads--reference-lines search row prices (first profits))
+                        :legend (if legend? (option-spreads--legend-corner prices (first profits) bottom top) #f))
+                  room))
+        (append (list (map (lambda (entry profit)
+                             (append (list (third entry) prices profit)
+                                     (if (null? (fourth entry)) (list :line #t) (fourth entry))
+                                     (list :line-width 2)))
+                           entries profits)
+                      :title title :x-lines lines :y-lines (list (list 0 "" "gray")))
+                room))))
+
+(define (option-spreads--plot-chart chart search)
+  "Plot a chart that option-spreads--profit-chart made of positions of this search's stock and expiration, with its
+axes named, and a size that suits it."
+  (apply plot-chart (first chart)
+         (append (rest chart)
+                 (list :x-label (format "price of {} on {}" (spread-search-stock search)
+                                        (date->string (spread-search-expiration search)))
+                       :y-label "profit, for a share" :width 8 :height 5.5))))
+
+(define (plot-option-profit search &key (rows (list 0)) (low '()) (high '()) (points 200))
+  "Chart the profit, on the expiration day, of one of a search's positions -- the best, unless :rows (a list of row
+numbers: 0 is the best, 1 the next, ...) says -- against the price the stock might have then: a payoff diagram, with
+the price along the bottom and the profit for a share up the side. It is green where the position gains, red where it
+loses, marks where it breaks even, and with the stock at the price expected; shows the most it can make and lose,
+where they are in the chart; and has lines for the price now and the price expected. Given several rows, the
+positions are lines on one chart, to compare. :low and :high (prices) and :points are as for option-profit-curve.
+save-chart saves the chart to a file."
+  (option-spreads--check-chart-arguments search rows low high points "plot-option-profit")
+  (let* ((kind (option-spreads--kind (spread-search-kind search)))
+         (expiration (date->string (spread-search-expiration search)))
+         (stock (spread-search-stock search))
+         (single? (null? (cdr rows)))
+         (entries (map (lambda (row) (list search row (option-spreads--position-in-words search row #f) '())) rows))
+         (title (if single?
+                    (format "{} on {}, expiring {}\n{}" (option-spreads--capitalized (spread-kind-label kind)) stock expiration
+                            (third (first entries)))
+                    (format "{} on {}, expiring {}: the best {} compared" (option-spreads--capitalized
+                                                                           (option-spreads--plural (spread-kind-label kind) 2))
+                            stock expiration (length rows))))
+         (chart (option-spreads--profit-chart entries title low high points #t)))
+    (option-spreads--plot-chart chart search)))
+
+(define (option-profit-panel search &key (row 0) (low '()) (high '()) (points 200))
+  "A panel for plot-panels: the profit of one of a search's positions -- the best, unless :row says -- on the expiration
+day, as plot-option-profit draws it, with the kind and the position in words as its title. Panels that share their
+:low and :high (and are given them as :x-min and :x-max) line up, to compare the shapes of different kinds."
+  (option-spreads--check-chart-arguments search (list row) low high points "option-profit-panel")
+  (let* ((kind (option-spreads--kind (spread-search-kind search)))
+         (entries (list (list search row (option-spreads--position-in-words search row #f) '()))))
+    (option-spreads--profit-chart entries (format "{}: {}" (spread-kind-name kind) (third (first entries)))
+                                  low high points #f)))

@@ -40,18 +40,19 @@
 (lazy-load "option_spreads.lsp"
   option-spreads option-spreads-for-chain option-spread-kinds show-option-spreads option-spread-order
   option-position-orders show-spread-order spread-search-kind spread-search-stock spread-search-stock-price
-  spread-search-expiration spread-search-expected-price spread-search-prices spread-search-spreads)
+  spread-search-expiration spread-search-expected-price spread-search-prices spread-search-spreads
+  option-profit-curve plot-option-profit option-profit-panel)
 
 ; Option positions: the best position of each of those kinds, and owning the stock, ranked together
 (lazy-load "option_positions.lsp"
-  option-positions option-positions-for-chain show-option-positions position-comparison-search
+  option-positions option-positions-for-chain show-option-positions plot-option-positions position-comparison-search
   position-comparison-stock position-comparison-stock-price position-comparison-expiration
   position-comparison-expected-price position-comparison-prices position-comparison-positions
   position-comparison-searches)
 
 ; Call spreads: the best pair of calls to buy and sell (the bull-call kind of the above), and the order for it
 (lazy-load "call_spreads.lsp"
-  call-spreads call-spreads-for-chain show-call-spreads call-spread-order)
+  call-spreads call-spreads-for-chain show-call-spreads call-spread-order plot-call-spreads)
 
 ; Mortgages: the OAS Monte Carlo, and the prepayment model it uses
 (lazy-load "oas_monte_carlo.lsp"

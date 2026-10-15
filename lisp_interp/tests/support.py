@@ -73,6 +73,26 @@ EXAMPLES_DOC = os.path.join(HERE, "lisp_example_programs.md")
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+@contextlib.contextmanager
+def in_a_temporary_folder():
+    """Run in a new empty folder, deleted afterwards (and give its path): for a program that writes files, such as
+    the charts an example saves, so that they never land in the repository."""
+    old = os.getcwd()
+    with tempfile.TemporaryDirectory() as folder:
+        os.chdir(folder)
+        try:
+            yield folder
+        finally:
+            os.chdir(old)
+
+
+def is_a_png(path):
+    """Whether the file is a PNG image of some size: what save-chart writes."""
+    with open(path, "rb") as f:
+        data = f.read()
+    return data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 5000
+
+
 class LispTestCase(unittest.TestCase):
     """Every test gets a fresh global environment (no init.lsp loaded) whose
     display/print output is captured rather than written to the console."""

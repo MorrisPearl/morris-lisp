@@ -15,8 +15,12 @@
 ; and asks are live. It needs a Schwab sign-in ((schwab-login creds); it lasts
 ; a week): creds is set to the credentials file's path in init.lsp.
 ;
-; It shows the best spreads and sends no order. To go on to trade the best,
-; in a notebook or at the console:
+; It shows the best spreads, and two charts of their profit on the expiration
+; day (up the side) against the price the stock might have then (along the
+; bottom): the best one in detail, in option_spreads_profit.png, and the best
+; three on one chart to compare, in option_spreads_compared.png (in a notebook
+; or the GUI they are drawn too). It sends no order. To go on to trade the
+; best, in a notebook or at the console:
 ;   (load "option_spreads.lsp")
 ;   (define search (option-spreads creds "SPY" 'iron-condor (date 2026 11 20) 765))
 ;   (define order (option-spread-order search :contracts 1))   ; sends nothing
@@ -29,6 +33,15 @@
 (when (< (length arguments) 4)
   (error "Give the stock, the kind of spread, the expiration day, and the price you expect, such as: SPY iron-condor 2026-11-20 765"))
 
-(show-option-spreads (option-spreads creds (first arguments) (string->symbol (second arguments))
-                                     (string->date (third arguments))
-                                     (string->number (fourth arguments))))
+(define search (option-spreads creds (first arguments) (string->symbol (second arguments))
+                              (string->date (third arguments))
+                              (string->number (fourth arguments))))
+(show-option-spreads search)
+
+(define positions (table-row-count (spread-search-spreads search)))
+(when (> positions 0)
+  (plot-option-profit search)
+  (save-chart "option_spreads_profit.png"))
+(when (> positions 1)
+  (plot-option-profit search :rows (iota (min positions 3)))
+  (save-chart "option_spreads_compared.png"))

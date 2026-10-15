@@ -1491,6 +1491,7 @@ class TestExampleScripts(unittest.TestCase):
         "unification_grammar_example.lsp",
         "sql_example.lsp",
         "parser_example.lsp",
+        "option_payoffs_example.lsp",
     ]
     SLOW_EXAMPLES = [
         "dolist_vectors_map_example.lsp",
@@ -1654,6 +1655,21 @@ class TestExampleScripts(unittest.TestCase):
         out = self.results["kenken_example.lsp"].stdout
         self.assertEqual(out.count("Its one solution"), 3)
         self.assertIn("|  1     4  |  5     3     7  |  2     9  |  6  |  8  |", out)
+
+    def test_the_option_payoffs_example_ranks_the_kinds_and_saves_its_charts(self):
+        out = self.results["option_payoffs_example.lsp"].stdout
+        self.assertIn("XYZ is at 104.00. The best position of each kind expiring 2026-11-20, if it is at 108.00 then;", out)
+        self.assertIn(" 17 positions.\n", out)
+        self.assertIn("Owning the stock (long-stock) is number ", out)
+        # the made-up chain has strikes every 5, so that the best butterfly and condor are the ones with wings of 5
+        self.assertIn("buy 1 105.00 call, sell 2 110.00 calls, buy 1 115.00 call", out)
+        self.assertIn("buy 1 100.00 put, sell 1 105.00 put, sell 1 110.00 call, buy 1 115.00 call", out)
+        for chart in ("option_payoff_condor.png", "option_payoffs_compared.png", "option_payoffs_hedged.png",
+                      "option_payoffs_verticals.png", "option_payoffs_butterflies.png", "option_payoffs_shares.png"):
+            self.assertTrue(is_a_png(os.path.join(self.tmp, chart)), chart)
+        self.assertIn("[chart] Iron condor on XYZ, expiring 2026-11-20\n", out)
+        self.assertIn("[chart] The vertical spreads and the single options\n  panel 1: bull-call: ", out)
+        self.assertIn("  panel 4: collar: buy 100 shares, ", out)                         # (the last of "with shares")
 
     def test_the_with_struct_example_produces_its_documented_output(self):
         out = self.results["with_struct_example.lsp"].stdout

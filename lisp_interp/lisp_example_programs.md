@@ -144,9 +144,10 @@ files in `examples/` and `lib/` from anywhere:
 | `option_chain_example.lsp` | an option chain as a table: filtering by column, looking at rows | tastytrade |
 | `vol_smile_example.lsp` | fitting the volatility smile to find options out of line | tastytrade |
 | `option_methods_example.lsp` | a stock's options valued three ways, next to the market | tastytrade, Schwab, Alpha Vantage |
-| `call_spread_example.lsp` | the best call spread for the price you expect | Schwab |
-| `option_spreads_example.lsp` | the best position of one of seventeen kinds (spread, butterfly, iron condor, covered call, ...) for the price you expect | Schwab |
-| `option_positions_example.lsp` | the best of every kind side by side, with owning the stock among them | Schwab |
+| `call_spread_example.lsp` | the best call spread for the price you expect, and a chart of its profit against the stock's price | Schwab |
+| `option_spreads_example.lsp` | the best position of one of seventeen kinds (spread, butterfly, iron condor, covered call, ...) for the price you expect, with profit charts | Schwab |
+| `option_positions_example.lsp` | the best of every kind side by side, with owning the stock among them, and profit charts | Schwab |
+| `option_payoffs_example.lsp` | what each of the seventeen kinds pays: a chart of its profit against the stock's price, for a made-up chain | nothing: no network |
 | `tastytrade_example.lsp` | quotes, futures curves, option chains, and market metrics | tastytrade |
 
 **Economic data and pictures**
@@ -181,6 +182,7 @@ files in `examples/` and `lib/` from anywhere:
 | **Testing**: known answers (perft), comparing with another program (sqlite3), random inputs, deliberate breakage | [chess](#a-chess-program), [SQL](#sql-an-interpreter-over-tables), [writing an example](#writing-an-example) |
 | **A one-time tool that writes a data file**, checked by the program | [the chess opening book](#a-chess-program) |
 | **A script as a thin layer over a library** with `(command-line-arguments)` | [option methods, call spreads, other option spreads](#prices-options-and-trades) |
+| **Charting a function that bends**: the grid of prices plus its corners and zero crossings; gain and loss as two filled series; panels to compare shapes | [option payoffs](#prices-options-and-trades) |
 | **Spreadsheet-like models**: a column per formula, ordered by dependence | [the column engine](#models-as-columns-of-formulas) |
 | **Seeing what a program does**: tracing, breakpoints, profiling | [debugging and profiling](#debugging-and-profiling) |
 
@@ -1242,8 +1244,9 @@ a short script to copy from.
 ## Prices, options, and trades
 
 Four of these scripts are **thin**: `option_methods_example.lsp` is 24 lines,
-`call_spread_example.lsp` 31, `option_spreads_example.lsp` 34, and
-`option_positions_example.lsp` 35, a few calls of a library and a display of the result. The
+`call_spread_example.lsp` 38, `option_spreads_example.lsp` 47, and
+`option_positions_example.lsp` 46, a few calls of a library, a display of the result, and
+the charts of it. The
 work, and the explanation, are in the library (`lib/option_methods.lsp`, `lib/call_spreads.lsp`,
 `lib/option_spreads.lsp`, `lib/option_positions.lsp`), whose header says how it works; the
 script is there to show the call. That is a deliberate convention for this project: put the work in `lib/*.lsp`
@@ -1258,14 +1261,19 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   columns, with one valuation per method: the library is `lib/option_methods.lsp`.
 - **`call_spread_example.lsp`** takes a stock, an expiration, and the price you expect, and
   ranks every pair of calls (buy the lower strike, sell the higher) by the profit at your
-  price as a share of the most you can lose. It shows the best spreads and **sends no order**;
+  price as a share of the most you can lose. It shows the best spreads, and a chart of the
+  best one's profit on the expiration day against the price the stock might have then (saved
+  in `call_spread_profit.png`: flat at a loss below the lower strike, rising to a flat gain
+  above the higher), and **sends no order**;
   the comments show how to go on to prepare one and have Schwab preview it. The library,
   `lib/call_spreads.lsp`, has tests that check its search against a plain brute force
   on random chains.
 - **`option_spreads_example.lsp`** is the same for seventeen kinds of position: it takes a stock, a
   kind (`bull-call`, `bear-put`, `iron-condor`, `long-strangle`, `long-call`, `covered-call`,
   `collar`, ...), an expiration, and the price you expect, and ranks every position of the kind
-  by the profit at your price as a share of the most you can lose. It sends no order either. The interesting part is in the
+  by the profit at your price as a share of the most you can lose. It sends no order either,
+  and charts the best position in detail (`option_spreads_profit.png`) and the best three on
+  one chart to compare (`option_spreads_compared.png`). The interesting part is in the
   library, `lib/option_spreads.lsp`: it finds the spreads of every kind without a loop over
   strikes — the strikes become whole numbers of cents, so that "the same strike" and "the
   same width" are exact comparisons, and three vector builtins do the matching:
@@ -1284,10 +1292,29 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   compared: by the ratio of profit to the most you can lose, a butterfly or a condor tops the
   list if you expect the stock to end where it pays, and the stock itself, which can lose all of
   its price, is near the bottom; none of that says which is the better bet, only what each
-  makes at the one price you gave. Its kinds with shares are the lesson in how a plain
+  makes at the one price you gave. It charts the profits of the best few of the kinds that
+  are options alone together (`option_positions_profit.png`), and the stock with what a
+  covered call, a protective put, and a collar do to it (`option_positions_hedged.png`).
+  Its kinds with shares are the lesson in how a plain
   position is built out of parts: the shares are one leg whose worth is the stock's price, the
   options are the others, the cost adds them, and the profit's slope at the top — the shares,
   and the calls bought less sold — says whether the gain is limited.
+- **`option_payoffs_example.lsp`** needs no account or network: it makes up a stock and its
+  options (Black-Scholes prices, with a bid and ask a little either side), finds the best
+  position of each of the seventeen kinds for a price you expect, and draws what each pays: its
+  profit on the expiration day, up the side, against the stock's price, along the bottom, green
+  where it gains and red where it loses. It saves six pictures: one position in detail (the
+  iron condor, with the points where it breaks even, the most it can make and lose, and the
+  price expected marked); the best few options-only positions on one chart (the three butterflies
+  come out nearly the same line: a butterfly of calls, of puts, or of both is the same bet); the
+  stock and its three hedges; and a gallery of every kind in three figures, one panel for each.
+  The pictures are not kept in the repository: run the script to make them. The charts are
+  `plot-option-profit`, `plot-option-positions`, and `option-profit-panel` (for `plot-panels`)
+  in `lib/option_spreads.lsp` and `lib/option_positions.lsp`. How they are drawn is the lesson:
+  a position's profit is a line that bends only at its strikes, so the chart is drawn through
+  the strikes and through the breakevens (where it crosses 0) as well as a grid of prices, which
+  makes the corners sharp and the green and red meet exactly at 0, with no cleverness in the
+  plotting: the gain and the loss are two filled series, the profit clipped above 0 and below it.
 - **`investment_paths_example.lsp`** simulates an investment's future prices by copying blocks
   of consecutive days from its own history (a block bootstrap, which keeps the way returns
   cluster that independent days would lose), a thousand paths with a different seed for each so the

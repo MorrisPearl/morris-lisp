@@ -1843,9 +1843,12 @@ class TestCallSpreads(OptionChainTestCase):
         self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("no-credentials-needed.json")
         try:
             lisp_builtins.set_command_line_arguments(["XYZ", "2026-11-20", "108"])
-            lisp_core.run_file(os.path.join(EXAMPLES, "call_spread_example.lsp"), self.env)
+            with in_a_temporary_folder() as folder:
+                lisp_core.run_file(os.path.join(EXAMPLES, "call_spread_example.lsp"), self.env)
+                self.assertTrue(is_a_png(os.path.join(folder, "call_spread_profit.png")))      # the chart it saves
             self.assertEqual(asked, [("XYZ", "2026-11-20")])
             self.assertIn("The best: buy the 100.00 call, at 6.20, and sell the 110.00 call, at 1.20.", self.printed())
+            self.assertIn("[chart] Bull call spread on XYZ, expiring 2026-11-20\nbuy 1 100.00 call, sell 1 110.00 call\n", self.printed())
             self.assertNotIn("schwab-place-order creds \"your account\" order :confirm #f", self.printed())
             lisp_builtins.set_command_line_arguments(["XYZ"])
             with self.assertRaises(lisp_core.LispError) as caught:

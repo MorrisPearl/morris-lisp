@@ -164,3 +164,41 @@ owning the stock comes among them."
         (display "\nFor the best few of one kind, and an order for it:\n")
         (display "  (define search (position-comparison-search comparison 'covered-call))\n")
         (display "  (show-option-spreads search)\n")))))
+
+; ---------------------------------------------------------------------------
+; The profits of the kinds, charted together
+; ---------------------------------------------------------------------------
+
+(define (option-positions--entry comparison name)
+  "The entry of the best position of a kind for option_spreads.lsp's profit chart: its search, its row (0), the
+legend's label for it -- the kind, and what it makes or loses at the price expected -- and how its line is drawn: the
+long stock, which the others are compared with, is dashed and black."
+  (let* ((search (position-comparison-search comparison name))
+         (profit (vector-ref (table-column (spread-search-spreads search) "profit") 0)))
+    (list search 0
+          (format "{} ({} {:,.2f})" name (if (< profit 0) "loss" "profit") (abs profit))
+          (if (eq? name 'long-stock) (list :color "black" :line "dashed") '()))))
+
+(define (plot-option-positions comparison &key (kinds '()) (count 4) (low '()) (high '()) (points 200))
+  "Chart the profits, on the expiration day, of the best position of each of several kinds in a position-comparison,
+as lines on one chart, with the price the stock might have then along the bottom and the profit for a share up the
+side: see plot-option-profit, which draws one position in detail. :kinds is a list of the names of the kinds to chart.
+Unless it is given, they are the :count (4) best of the kinds that have no shares -- the options alone, whose profits
+are of a size that can be compared -- by the ratio of the comparison; to chart the shares, with the stock itself, give
+them: '(long-stock covered-call protective-put collar). The legend says what each makes or loses at the price expected.
+:low, :high, and :points are as for option-profit-curve. save-chart saves the chart to a file."
+  (unless (and (integer? count) (>= count 1))
+    (error "plot-option-positions: :count is how many kinds to chart, 1 or more"))
+  (let* ((ranked (map string->symbol (vector->list (table-column (position-comparison-positions comparison) "kind"))))
+         (options-alone (filter (lambda (name) (= (spread-kind-shares (option-spreads--kind name)) 0)) ranked))
+         (chosen (if (null? kinds)
+                     (loop for name in options-alone for place from 0 below count collect name)
+                     kinds)))
+    (when (null? chosen)
+      (error "plot-option-positions: the comparison has no positions to chart"))
+    (let* ((entries (map (lambda (name) (option-positions--entry comparison name)) chosen))
+           (search (first (first entries)))
+           (title (format "The best position of each kind on {}, expiring {}" (position-comparison-stock comparison)
+                          (date->string (position-comparison-expiration comparison)))))
+      (option-spreads--check-chart-arguments search (list 0) low high points "plot-option-positions")
+      (option-spreads--plot-chart (option-spreads--profit-chart entries title low high points #t) search))))
