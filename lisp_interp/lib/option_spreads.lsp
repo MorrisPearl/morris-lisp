@@ -46,8 +46,8 @@
 ; share of each option -- an option contract is for 100 shares, so a covered
 ; call is 100 shares and one call. (A call sold alone, with no shares, can
 ; lose without limit, and is left out. So are the short straddle and strangle.
-; Positions with shares are for stocks and ETFs, not for an index, which has no
-; shares to buy.)
+; Positions with shares are for stocks and ETFs, and for futures (see below),
+; not for an index, which has nothing to buy.)
 ;
 ; In a butterfly the strikes are equally far apart (K2 - K1 = K3 - K2), and in
 ; the iron condor and the iron butterfly the two wings are the same width
@@ -81,8 +81,8 @@
 ; what you'd get if you could trade in the middle. Be careful with 'mid: thin
 ; options have wide, ragged quotes, and their middles can make a spread look
 ; far cheaper than it can be traded. A higher :min-open-interest guards
-; against these. The prices are for one share; an option contract is for 100
-; (option-contract-size).
+; against these. The prices are for one share; a stock's option contract is
+; for 100 (option-contract-size, the default of :contract-size).
 ;
 ; Which options count. Each must have a bid and an ask above 0, and open
 ; interest of at least :min-open-interest (1) and volume of at least
@@ -106,6 +106,36 @@
 ; (usually to collect a dividend). A butterfly or a condor ranked first for a
 ; price you expect to the penny is the most fragile of all.
 ;
+; Options on futures. The chain can be of a future's options as well -- crude
+; oil's, from (tastytrade-option-chain creds "CL" 2 12) -- and the positions are
+; found and ranked in the same way. Three things are not the same:
+;
+;   Which future. Each delivery month is a future with a price of its own, and
+;   an option is on one of them, which goes on trading for a few days after the
+;   option has expired (crude oil's options that expire in the middle of
+;   November are on the December future). What the option is worth on its
+;   expiration day is set by that future's price that day: so the price you
+;   expect is that future's, not the price of oil, or of the front month's
+;   future, or what the future will be at delivery. If the options that expire
+;   on one day are on more than one future, :underlying says which one ("CLZ6"):
+;   the search is of that future's options, and its price is the shares' price.
+;
+;   How much a contract is. Crude oil's options are for 1,000 barrels, not 100
+;   shares. :contract-size says how many, and :unit what to call one ("barrel"),
+;   so that what is said of a contract is in its dollars: they are the price
+;   times :contract-size. (For a price in cents, as corn's is, that is the
+;   dollars of a cent: 50, for a contract of 5,000 bushels.)
+;
+;   The future is not paid for. In the kinds with shares the shares are the
+;   future, bought: its profit is the same as that of shares bought at its price,
+;   but only margin, a part of the price, is put up for it. The cost and the
+;   most to lose here count all of its price, as they do for shares, so the
+;   ratio of these kinds is for each dollar of that, not of the margin. (The kinds
+;   of options alone have no such thing to count.)
+;
+; The orders are Schwab's, for a stock's options, and are not made for a
+; future's, whose chains are for analysis: tastytrade places no orders.
+;
 ; Usage:
 ;   (load "option_spreads.lsp")
 ;   (option-spread-kinds)                         ; a table of the kinds
@@ -120,6 +150,11 @@
 ; Or, for a chain you have already, from Schwab or tastytrade:
 ;   (option-spreads-for-chain chain 'bull-put (date 2026 11 20) 765)
 ;
+; Or, for a future's options, where a contract is more than 100 shares:
+;   (define chain (tastytrade-option-chain creds "CL" 2 12))
+;   (option-spreads-for-chain chain 'iron-condor (date 2026 11 17) 99.0
+;                             :underlying "CLZ6" :contract-size 1000 :unit "barrel")
+;
 ; A kind with shares and options is more than one order (the shares, then each
 ; option), which option-position-orders makes, a list to preview and place one
 ; after another. option_positions.lsp ranks the kinds against one another, with
@@ -127,14 +162,16 @@
 
 (defstruct spread-search
   kind              ; which kind of spread: bull-call, iron-condor, covered-call, ... (see option-spread-kinds)
-  stock             ; the stock's symbol
+  stock             ; the underlying's symbol: the stock's, or the future's
   stock-price       ; its price when the chain was got, or the :stock-price given: what shares are bought at
   expiration        ; the day the options expire
-  expected-price    ; the stock's price that day, as expected
+  expected-price    ; the underlying's price that day, as expected
   prices            ; bid-ask or mid: the prices the options are bought and sold at
+  (contract-size option-contract-size)   ; how many of the underlying's units a contract covers: 100 shares, 1,000 barrels
+  (unit "share")    ; what one is called: the prices, and the profits, are for one
   spreads)          ; a table: a row for each position, the best first
 
-(define option-contract-size 100)         ; shares in an option contract
+(define option-contract-size 100)         ; shares in a stock's option contract: what the orders are for, and :contract-size's default
 (define option-spreads--least-risk 0.001)  ; a share's most to lose below this is nothing: a tenth of a cent
 
 ; ---------------------------------------------------------------------------
@@ -273,6 +310,50 @@ a trading day. (This takes the computer's clock to be on New York time.)"
                    (if (= (vector-length days) 0)
                        "no day at all"
                        (string-join (map date->string (vector->list days)) ", "))))))
+
+(define (option-spreads--check-units contract-size unit who)
+  "An error, unless contract-size is a number above 0 and unit is some text."
+  (unless (and (number? contract-size) (> contract-size 0))
+    (error (format "{}: :contract-size is how many of the underlying's units a contract covers, a number above 0, not"
+                   who)
+           contract-size))
+  (unless (and (string? unit) (> (string-length unit) 0))
+    (error (format "{}: :unit is what to call one of them, text such as \"share\" or \"barrel\", not" who) unit)))
+
+(define (option-spreads--underlyings-in-words table)
+  "The underlyings of the table's options, each with its price: CLX6 at 97.685, CLZ6 at 96.22."
+  (string-join
+    (map (lambda (name)
+           (format "{} at {}" name
+                   (vector-ref (table-column (table-filter table (= (table-column table "underlying") name))
+                                             "underlying-price")
+                               0)))
+         (vector->list (vector-unique (table-column table "underlying"))))
+    ", "))
+
+(define (option-spreads--of-underlying chain day underlying)
+  "The chain's options on one underlying, as a table: the stock's, or one of the futures'. :underlying names it. If it
+isn't given, it is the one that the options expiring on day are on (or that the chain's are, if none expire that day),
+and there has to be just one. A stock has only itself, but a futures chain has a future for each delivery month, each
+with a price of its own, and the options that expire on one day can be on more than one of them."
+  (let* ((names-in (lambda (table) (vector->list (vector-unique (table-column table "underlying")))))
+         (on-day (table-filter chain (= (table-column chain "expiration-date") day)))
+         (looked-at (if (= (table-row-count on-day) 0) chain on-day))
+         (found (names-in looked-at))
+         (chosen (cond ((= (table-row-count chain) 0)
+                        (error "option-spreads: the chain has no options"))
+                       ((not (null? underlying)) underlying)
+                       ((= (length found) 1) (first found))
+                       (else
+                        (error (format "option-spreads: {} are on more than one underlying: {}. Say which one, with :underlying"
+                                       (if (= (table-row-count on-day) 0)
+                                           "the chain's options"
+                                           (format "the options expiring on {}" (date->string day)))
+                                       (option-spreads--underlyings-in-words looked-at)))))))
+    (unless (member chosen (names-in chain))
+      (error (format "option-spreads: the chain has no options on {}; it has options on {}" chosen
+                     (option-spreads--underlyings-in-words chain))))
+    (table-filter chain (= (table-column chain "underlying") chosen))))
 
 (define (option-spreads--quoted chain type day prices min-open-interest min-volume)
   "The chain's options of this type (Call or Put) that expire on day and count: they have a bid and an ask,
@@ -495,10 +576,12 @@ worth, profit, max-loss, max-profit (nan: no limit), breakeven-1, breakeven-2 (n
   (vector-gather (table-column quoted column) positions))
 
 (define (option-spreads--root-of symbol)
-  "The root of an option's symbol: the stock's, or the name of a kind of its options (SPXW for SPX's weeklies), without
-the padding spaces. (An option's symbol is the root padded to 6 characters, the expiration as YYMMDD, C or P, and the
-strike times 1000 in 8 digits.)"
-  (string-trim (regex-replace "\\d{6}[CP]\\d{8}$" symbol "")))
+  "The root of an option's symbol: what comes before the expiration day, without the padding spaces. A stock's option
+has the stock's, or the name of a kind of its options (SPXW for SPX's weeklies); a future's has the future and the kind
+of option on it (./CLZ6 LOZ6 for the standard monthly options on December crude oil, ./CLZ6 LO3V6 for a weekly's). An
+option's symbol ends with the expiration as YYMMDD, C or P, and the strike: for a stock's option the strike times 1000
+in 8 digits (and the root is padded to 6 characters); for a future's, the strike itself, such as 93.5."
+  (string-trim (regex-replace "\\d{6}[CP][0-9.]+$" symbol "")))
 
 (define (option-spreads--with-root table)
   (if (= (table-row-count table) 0)
@@ -549,16 +632,17 @@ table, not in order: see option-spreads-for-chain. The shares, if the kind has a
 
 (define (option-spreads-for-chain chain kind-name expiration expected-price
                                   &key (prices 'bid-ask) (min-open-interest 1) (min-volume 1) (min-risk 0)
-                                  (max-width '()) (stock-price '()))
+                                  (max-width '()) (stock-price '()) (underlying '())
+                                  (contract-size option-contract-size) (unit "share"))
   "Every spread of the kind (bull-call, iron-condor, covered-call, long-stock, ...: see option-spread-kinds) that can
 be made of the chain's options expiring on expiration (a date, or YYYY-MM-DD text), as a spread-search (see the top
 of this file): its table of spreads has a row for each, the best first -- the one with the highest profit, if the
 stock is at expected-price on expiration day, as a share of the most that can be lost. chain is a table as
 tastytrade-option-chain or schwab-option-chain makes. All the options of a spread are of one root (the stock's own
 options, or its weeklies, or its minis: some stocks and indexes have several of the same strike and expiration,
-which are not the same contract). The shares of a kind that has them are bought at :stock-price (a share's price;
-the chain's own price of the stock, unless it is given). The columns of the table, for a spread of n options (its
-legs, lowest strike first; none, for the long stock):
+which are not the same contract) and of one underlying. The shares of a kind that has them are bought at
+:stock-price (a share's price; the price of the underlying in the chain, unless it is given). The columns of the
+table, for a spread of n options (its legs, lowest strike first; none, for the long stock):
   symbol-1 ... symbol-n    the options (the kind's legs say which are bought and which sold)
   strike-1 ... strike-n    their strikes
   price-1 ... price-n      the price of each for a share: the ask for one bought, the bid for one sold
@@ -571,14 +655,18 @@ legs, lowest strike first; none, for the long stock):
   breakeven-1, breakeven-2 the stock's prices at which the position breaks even: the lower, and the higher if there
                            are two; missing, if there is none (a position that cannot make a profit has none)
 :prices is bid-ask (pay the ask, get the bid) or mid; the others limit which options count and which spreads are
-kept: see the top of this file."
+kept: see the top of this file. For a future's options, :underlying names the future (\"CLZ6\") if the options that
+expire on the day are on more than one, and :contract-size and :unit say how many of its units a contract covers
+(1000) and what to call one (\"barrel\"): a stock's are 100 and \"share\", and a share, above, is one of these."
   (unless (or (eq? prices 'bid-ask) (eq? prices 'mid))
     (error "option-spreads: :prices is 'bid-ask or 'mid, not" prices))
   (unless (or (null? stock-price) (and (number? stock-price) (> stock-price 0)))
     (error "option-spreads: :stock-price is the price of a share, a number above 0, not" stock-price))
+  (option-spreads--check-units contract-size unit "option-spreads")
   (let* ((kind (option-spreads--kind kind-name))
          (legs (spread-kind-legs kind))
          (day (option-spreads--day expiration))
+         (chain (option-spreads--of-underlying chain day underlying))
          (share-price (if (null? stock-price) (vector-ref (table-column chain "underlying-price") 0) stock-price))
          (check (when (and (> (spread-kind-shares kind) 0) (not (> share-price 0)))
                   (error "option-spreads: the chain has no price for the stock; give :stock-price, the price of a share")))
@@ -606,6 +694,8 @@ kept: see the top of this file."
       :expiration day
       :expected-price expected-price
       :prices prices
+      :contract-size contract-size
+      :unit unit
       :spreads (table-sort (apply table-append tables) "ratio" #t))))
 
 (define (option-spreads creds symbol kind-name expiration expected-price
@@ -643,6 +733,34 @@ have, says what the options are, and gives the result."
                    (table-row-count (spread-search-spreads search)))))
   (unless (and (integer? contracts) (>= contracts 1))
     (error (format "{}: :contracts is a whole number of spreads, 1 or more" who))))
+
+(define (option-spreads--row-symbols search row)
+  "The symbols of the options of the position in the row."
+  (let ((kind (option-spreads--kind (spread-search-kind search))))
+    (loop for place from 1 to (length (spread-kind-legs kind))
+          collect (vector-ref (table-column (spread-search-spreads search) (format "symbol-{}" place)) row))))
+
+(define (option-spreads--stock-option? symbol)
+  "Whether the symbol is a stock's option's, as OCC writes it: the stock's, padded to 6 characters, the expiration as
+YYMMDD, C or P, and the strike times 1000 in 8 digits."
+  (if (regex-match "[A-Z0-9./]{1,6} *\\d{6}[CP]\\d{8}" symbol) #t #f))
+
+(define (option-spreads--orderable? search symbols)
+  "Whether Schwab's orders are for the search: it is of a stock's options, which cover option-contract-size shares each,
+and symbols, those of the options of one of its positions, are as OCC writes them. (A future's options are neither,
+and are for analysis: tastytrade, where their chains are got, places no orders.)"
+  (and (= (spread-search-contract-size search) option-contract-size)
+       (every option-spreads--stock-option? symbols)))
+
+(define (option-spreads--check-orderable search symbols who)
+  "An error, unless the search is of a stock's options, which Schwab's orders are for: see option-spreads--orderable?."
+  (unless (= (spread-search-contract-size search) option-contract-size)
+    (error (format "{}: orders are for a stock's options, which cover {} shares each, and the options of this search cover {}"
+                   who option-contract-size (option-spreads--units search 1))))
+  (dolist (symbol symbols)
+    (unless (option-spreads--stock-option? symbol)
+      (error (format "{}: {} is not a stock's option, whose symbol OCC writes as the stock's, 6 characters, the expiration as YYMMDD, C or P, and the strike in 8 digits; orders are for a stock's options, not a future's"
+                     who symbol)))))
 
 (define (option-spreads--cents price)
   "A price rounded to the cent, as a limit price is."
@@ -684,11 +802,14 @@ each part: option-position-orders makes them.
 
 At the cost, if the prices are bid-ask, the order is likely to fill at once: it pays what is asked for the options
 bought and takes what is bid for those sold. A better :price (lower, for a debit; higher, for a credit) may fill at
-a better price, or not fill. Selling options needs your broker's approval, and some of your money held."
+a better price, or not fill. Selling options needs your broker's approval, and some of your money held. The orders
+are for a stock's options: a search of a future's options (or of any other :contract-size than option-contract-size)
+is refused."
   (let* ((kind (option-spreads--kind (spread-search-kind search)))
          (spreads (spread-search-spreads search))
          (legs (spread-kind-legs kind)))
     (option-spreads--check-order-arguments search row contracts "option-spread-order")
+    (option-spreads--check-orderable search (option-spreads--row-symbols search row) "option-spread-order")
     (cond
       ((not (equal? (spread-kind-strategy kind) ""))         ; a spread: one order for all its options
        (let* ((cost (vector-ref (table-column spreads "cost") row))
@@ -718,9 +839,11 @@ order option-spread-order makes. A position with shares and options is an order 
 (100 for each contract, with a limit on the price of a share), then each option (to buy it, or to sell it, with a
 limit on its price a share, as in the row). Place them in order, and let the shares fill before the options: a call
 sold against shares you don't hold yet is a call sold naked, which your broker may refuse. They are not one order, so
-the shares may be bought and the options not filled. It sends nothing."
+the shares may be bought and the options not filled. It sends nothing. (A search of a future's options is refused: see
+option-spread-order.)"
   (let ((kind (option-spreads--kind (spread-search-kind search))))
     (option-spreads--check-order-arguments search row contracts "option-position-orders")
+    (option-spreads--check-orderable search (option-spreads--row-symbols search row) "option-position-orders")
     (if (or (not (equal? (spread-kind-strategy kind) "")) (= (option-spreads--parts kind) 1))
         (list (option-spread-order search :row row :contracts contracts))
         (append
@@ -732,6 +855,15 @@ the shares may be bought and the options not filled. It sends nothing."
   (cond ((= count 1) noun)
         ((string-ends-with? noun "y") (string-append (substring noun 0 (- (string-length noun) 1)) "ies"))
         (else (string-append noun "s"))))
+
+(define (option-spreads--a unit)
+  "The unit with its article: a share, a barrel, an ounce."
+  (string-append (if (regex-search "(?i)^[aeio]" unit) "an " "a ") unit))
+
+(define (option-spreads--units search shares)
+  "As many units of the underlying as a contract covers, for each of shares: 100 shares, 1,000 barrels, 1 barrel."
+  (let ((count (* (spread-search-contract-size search) shares)))
+    (format "{:,} {}" count (option-spreads--plural (spread-search-unit search) count))))
 
 (define (option-spreads--legs-in-words order)
   "A line for each leg of the order: the instruction, how many, and the option or stock."
@@ -815,23 +947,24 @@ false, without the prices."
          (legs (spread-kind-legs kind)))
     (string-join
       (append (if (> (spread-kind-shares kind) 0)
-                  (list (format "buy {} shares{}" (* option-contract-size (spread-kind-shares kind))
+                  (list (format "buy {}{}" (option-spreads--units search (spread-kind-shares kind))
                                 (if prices? (format " at {:,.2f}" (spread-search-stock-price search)) "")))
                   '())
               (loop for place from 1 to (length legs)
                     collect (option-spreads--leg-in-words search legs row place prices?)))
       ", ")))
 
-(define (option-spreads--per-contract kind)
+(define (option-spreads--per-contract search)
   "What the amounts for a contract cover: 100 shares, and one contract of each option."
-  (string-join
-    (append (if (> (spread-kind-shares kind) 0)
-                (list (format "{} shares" (* option-contract-size (spread-kind-shares kind))))
-                '())
-            (cond ((null? (spread-kind-legs kind)) '())
-                  ((= (length (spread-kind-legs kind)) 1) (list "one contract"))
-                  (else (list "one contract of each option"))))
-    " and "))
+  (let ((kind (option-spreads--kind (spread-search-kind search))))
+    (string-join
+      (append (if (> (spread-kind-shares kind) 0)
+                  (list (option-spreads--units search (spread-kind-shares kind)))
+                  '())
+              (cond ((null? (spread-kind-legs kind)) '())
+                    ((= (length (spread-kind-legs kind)) 1) (list "one contract"))
+                    (else (list "one contract of each option"))))
+      " and ")))
 
 (define (option-spreads--gain-in-words profit)
   "A profit of 3.00, or a loss of 0.20, as a share: the amount without its sign, with the word for it."
@@ -845,37 +978,40 @@ stock's price and worth the price you expect, which can lose all they cost."
   (let* ((stock (spread-search-stock search))
          (price (spread-search-stock-price search))
          (expected (spread-search-expected-price search))
-         (profit (- expected price)))
-    (format "  For comparison, owning the stock instead (100 shares at {:,.2f}): {} a share ({:,.2f}) with {} at {:,.2f}, {:.1%} of the {:,.2f} a share they could lose."
-            price (option-spreads--gain-in-words profit) (abs (* option-contract-size profit)) stock expected
-            (/ profit price) price)))
+         (profit (- expected price))
+         (per (option-spreads--a (spread-search-unit search))))
+    (format "  For comparison, owning the stock instead ({} at {:,.2f}): {} {} ({:,.2f}) with {} at {:,.2f}, {:.1%} of the {:,.2f} {} they could lose."
+            (option-spreads--units search 1) price (option-spreads--gain-in-words profit) per
+            (abs (* (spread-search-contract-size search) profit)) stock expected
+            (/ profit price) price per)))
 
 (define (option-spreads--best-in-words search)
   "A paragraph about the best position: what to buy and sell, what it costs, and what it makes."
   (let* ((kind (option-spreads--kind (spread-search-kind search)))
          (spreads (spread-search-spreads search))
          (stock (spread-search-stock search))
-         (size option-contract-size)
+         (size (spread-search-contract-size search))
+         (per (option-spreads--a (spread-search-unit search)))
          (cost (vector-ref (table-column spreads "cost") 0))
          (loss (vector-ref (table-column spreads "max-loss") 0))
          (gain (vector-ref (table-column spreads "max-profit") 0))
          (profit (vector-ref (table-column spreads "profit") 0))
          (low (vector-ref (table-column spreads "breakeven-1") 0))
          (high (vector-ref (table-column spreads "breakeven-2") 0))
-         (covers (option-spreads--per-contract kind)))
+         (covers (option-spreads--per-contract search)))
     (string-append
       (format "The best: {}.\n" (option-spreads--position-in-words search 0 #t))
       (if (< cost 0)
-          (format "  It pays you {:,.2f} a share: {:,.2f} for {}. The most you can lose is {:,.2f} a share ({:,.2f}).\n"
-                  (- cost) (* size (- cost)) covers loss (* size loss))
-          (format "  It costs {:,.2f} a share: {:,.2f} for {}. The most you can lose is {:,.2f} a share ({:,.2f}).\n"
-                  cost (* size cost) covers loss (* size loss)))
-      (format "  With {} at {:,.2f} on {}, it is worth {:,.2f} a share, {} ({:,.2f}): {:.0%} of the most you can lose.\n"
+          (format "  It pays you {:,.2f} {}: {:,.2f} for {}. The most you can lose is {:,.2f} {} ({:,.2f}).\n"
+                  (- cost) per (* size (- cost)) covers loss per (* size loss))
+          (format "  It costs {:,.2f} {}: {:,.2f} for {}. The most you can lose is {:,.2f} {} ({:,.2f}).\n"
+                  cost per (* size cost) covers loss per (* size loss)))
+      (format "  With {} at {:,.2f} on {}, it is worth {:,.2f} {}, {} ({:,.2f}): {:.0%} of the most you can lose.\n"
               stock (spread-search-expected-price search) (date->string (spread-search-expiration search))
-              (vector-ref (table-column spreads "worth") 0) (option-spreads--gain-in-words profit) (abs (* size profit))
+              (vector-ref (table-column spreads "worth") 0) per (option-spreads--gain-in-words profit) (abs (* size profit))
               (vector-ref (table-column spreads "ratio") 0))
       (if (= gain gain)
-          (format "  The most it can make is {:,.2f} a share ({:,.2f}). " gain (* size gain))
+          (format "  The most it can make is {:,.2f} {} ({:,.2f}). " gain per (* size gain))
           "  There is no limit to what it can make. ")
       (cond ((and (= low low) (= high high))
              (format "It breaks even with {} at {:,.2f} and at {:,.2f}." stock low high))
@@ -912,9 +1048,9 @@ stock's price and worth the price you expect, which can lose all they cost."
          (rows (table-row-count spreads))
          (noun (option-spreads--noun kind)))
     (if (null? legs)
-        (display (format "{} is at {:,.2f}. Owning {} shares of it, if it is at {:,.2f} on {}. {} {}.\n\n"
+        (display (format "{} is at {:,.2f}. Owning {} of it, if it is at {:,.2f} on {}. {} {}.\n\n"
                          (spread-search-stock search) (spread-search-stock-price search)
-                         (* option-contract-size (spread-kind-shares kind)) (spread-search-expected-price search)
+                         (option-spreads--units search (spread-kind-shares kind)) (spread-search-expected-price search)
                          (date->string (spread-search-expiration search)) rows (option-spreads--plural noun rows)))
         (display (format "{} is at {:,.2f}. {} expiring {}, if it is at {:,.2f} then; bought and sold at the {} prices{}. {} {}.\n\n"
                          (spread-search-stock search) (spread-search-stock-price search)
@@ -922,7 +1058,8 @@ stock's price and worth the price you expect, which can lose all they cost."
                          (date->string (spread-search-expiration search)) (spread-search-expected-price search)
                          (if (eq? (spread-search-prices search) 'mid) "middle" "ask and bid")
                          (if (> (spread-kind-shares kind) 0)
-                             (format ", the shares at {:,.2f}" (spread-search-stock-price search))
+                             (format ", the {} at {:,.2f}" (option-spreads--plural (spread-search-unit search) 2)
+                                     (spread-search-stock-price search))
                              "")
                          rows (option-spreads--plural noun rows))))
     (cond
@@ -931,8 +1068,8 @@ stock's price and worth the price you expect, which can lose all they cost."
                         noun)))
       (else
         (display (option-spreads--best-in-words search))
-        (display (format "\n\nThe best {}, by the ratio of profit to the most that can be lost (prices are for a share):\n"
-                         (min count rows)))
+        (display (format "\n\nThe best {}, by the ratio of profit to the most that can be lost (prices are for {}):\n"
+                         (min count rows) (option-spreads--a (spread-search-unit search))))
         (display-table (table-head spreads count)
                        (append
                          (loop for place from 1 to (length legs) collect (list (format "symbol-{}" place)))
@@ -940,7 +1077,9 @@ stock's price and worth the price you expect, which can lose all they cost."
                          (loop for place from 1 to (length legs) collect (list (format "price-{}" place) ",.2f"))
                          '(("cost" ",.2f") ("max-loss" ",.2f") ("max-profit" ",.2f") ("worth" ",.2f") ("profit" ",.2f")
                            ("ratio" ".0%") ("breakeven-1" ",.2f") ("breakeven-2" ",.2f"))))
-        (display (option-spreads--how-to-trade kind))))))
+        (display (if (option-spreads--orderable? search (option-spreads--row-symbols search 0))
+                     (option-spreads--how-to-trade kind)
+                     "\nOrders are made for a stock's options, and these are not: they are for analysis.\n"))))))
 
 (define (option-spreads--capitalized text)
   (string-append (string-upcase (substring text 0 1)) (substring text 1)))
@@ -1119,7 +1258,8 @@ axes named, and a size that suits it."
          (append (rest chart)
                  (list :x-label (format "price of {} on {}" (spread-search-stock search)
                                         (date->string (spread-search-expiration search)))
-                       :y-label "profit, for a share" :width 8 :height 5.5))))
+                       :y-label (format "profit, for {}" (option-spreads--a (spread-search-unit search)))
+                       :width 8 :height 5.5))))
 
 (define (plot-option-profit search &key (rows (list 0)) (low '()) (high '()) (points 200))
   "Chart the profit, on the expiration day, of one of a search's positions -- the best, unless :rows (a list of row

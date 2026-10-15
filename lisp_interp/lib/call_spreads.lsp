@@ -96,6 +96,8 @@ and the spread can never make a profit, and option_spreads.lsp has no breakeven 
       :expiration (spread-search-expiration search)
       :expected-price (spread-search-expected-price search)
       :prices (spread-search-prices search)
+      :contract-size (spread-search-contract-size search)
+      :unit (spread-search-unit search)
       :spreads (list (cons "long-symbol" (table-column table "symbol-1"))
                      (cons "short-symbol" (table-column table "symbol-2"))
                      (cons "long-strike" (table-column table "strike-1"))
@@ -110,7 +112,8 @@ and the spread can never make a profit, and option_spreads.lsp has no breakeven 
                      (cons "max-profit" (table-column table "max-profit"))))))
 
 (define (call-spreads-for-chain chain expiration expected-price
-                                &key (prices 'bid-ask) (min-open-interest 1) (min-volume 1) (min-cost 0))
+                                &key (prices 'bid-ask) (min-open-interest 1) (min-volume 1) (min-cost 0)
+                                (underlying '()) (contract-size option-contract-size) (unit "share"))
   "Every pair of the chain's calls that expire on expiration (a date, or
 YYYY-MM-DD text), bought at the lower strike and sold at the higher, as a
 spread-search (see the top of option_spreads.lsp): its table of spreads has a row for
@@ -128,11 +131,14 @@ The columns of the table:
   breakeven                    the stock's price at which the spread is worth its cost
   max-profit                   the most that can be made: the strikes' difference less cost
 :prices is bid-ask (pay the ask, get the bid) or mid; the others limit which
-calls count: see the top of this file."
+calls count: see the top of this file. For a future's options, :underlying names the
+future if the options that expire on the day are on more than one, and :contract-size
+and :unit say how many of its units a contract covers and what to call one: see
+option-spreads-for-chain."
   (call-spreads--classic
     (option-spreads-for-chain chain 'bull-call expiration expected-price
                               :prices prices :min-open-interest min-open-interest :min-volume min-volume
-                              :min-risk min-cost)))
+                              :min-risk min-cost :underlying underlying :contract-size contract-size :unit unit)))
 
 (define (call-spreads creds symbol expiration expected-price
                       &key (prices 'bid-ask) (min-open-interest 1) (min-volume 1) (min-cost 0))
@@ -165,6 +171,9 @@ sold. A lower :price may fill at a better price, or not fill."
     (when (>= row (table-row-count spreads))
       (error (format "call-spread-order: there is no row {}: the search found {} spreads" row
                      (table-row-count spreads))))
+    (option-spreads--check-orderable search (list (vector-ref (table-column spreads "long-symbol") row)
+                                                  (vector-ref (table-column spreads "short-symbol") row))
+                                     "call-spread-order")
     (schwab-spread-order (vector-ref (table-column spreads "long-symbol") row)
                          (vector-ref (table-column spreads "short-symbol") row)
                          contracts
@@ -179,7 +188,8 @@ sold. A lower :price may fill at a better price, or not fill."
 and what it makes."
   (let* ((spreads (spread-search-spreads search))
          (stock (spread-search-stock search))
-         (size option-contract-size)
+         (size (spread-search-contract-size search))
+         (per (option-spreads--a (spread-search-unit search)))
          (cost (vector-ref (table-column spreads "cost") 0))
          (profit (vector-ref (table-column spreads "profit") 0))
          (low (vector-ref (table-column spreads "long-strike") 0))
@@ -188,15 +198,15 @@ and what it makes."
       (format "The best: buy the {:,.2f} call, at {:,.2f}, and sell the {:,.2f} call, at {:,.2f}.\n"
               low (vector-ref (table-column spreads "long-price") 0)
               high (vector-ref (table-column spreads "short-price") 0))
-      (format "  It costs {:,.2f} a share ({:,.2f} for a contract of {}). That is the most you can lose, if {} ends at {:,.2f} or less.\n"
-              cost (* size cost) size stock low)
-      (format "  With {} at {:,.2f} on {}, the spread is worth {:,.2f} a share, a profit of {:,.2f} ({:,.2f} a contract): {:.0%} of the most you can lose.\n"
+      (format "  It costs {:,.2f} {} ({:,.2f} for a contract of {:,}). That is the most you can lose, if {} ends at {:,.2f} or less.\n"
+              cost per (* size cost) size stock low)
+      (format "  With {} at {:,.2f} on {}, the spread is worth {:,.2f} {}, a profit of {:,.2f} ({:,.2f} a contract): {:.0%} of the most you can lose.\n"
               stock (spread-search-expected-price search) (date->string (spread-search-expiration search))
-              (vector-ref (table-column spreads "worth") 0) profit (* size profit)
+              (vector-ref (table-column spreads "worth") 0) per profit (* size profit)
               (vector-ref (table-column spreads "ratio") 0))
-      (format "  It breaks even with {} at {:,.2f}; the most it can make is {:,.2f} a share, with {} at {:,.2f} or more."
+      (format "  It breaks even with {} at {:,.2f}; the most it can make is {:,.2f} {}, with {} at {:,.2f} or more."
               stock (vector-ref (table-column spreads "breakeven") 0)
-              (vector-ref (table-column spreads "max-profit") 0) stock high))))
+              (vector-ref (table-column spreads "max-profit") 0) per stock high))))
 
 ; ---------------------------------------------------------------------------
 ; The chart
@@ -214,6 +224,8 @@ than its width -- has no breakeven there (this file's is above the higher strike
       :expiration (spread-search-expiration search)
       :expected-price (spread-search-expected-price search)
       :prices (spread-search-prices search)
+      :contract-size (spread-search-contract-size search)
+      :unit (spread-search-unit search)
       :spreads (list (cons "symbol-1" (table-column table "long-symbol"))
                      (cons "symbol-2" (table-column table "short-symbol"))
                      (cons "strike-1" (table-column table "long-strike"))
@@ -253,14 +265,18 @@ and the next count best."
        (display "No pair of its calls makes a spread: there are no two with a bid and an ask, open interest, volume today, and a net cost above 0.\n(Volume counts today's trades, and is 0 before the market opens: give :min-volume 0 then.)\n"))
       (else
         (display (call-spreads--best-in-words search))
-        (display (format "\n\nThe best {}, by the ratio of profit to the most that can be lost (prices are for a share):\n"
-                         (min count rows)))
+        (display (format "\n\nThe best {}, by the ratio of profit to the most that can be lost (prices are for {}):\n"
+                         (min count rows) (option-spreads--a (spread-search-unit search))))
         (display-table (table-head spreads count)
                        '(("long-symbol") ("short-symbol") ("long-strike" ",.2f") ("short-strike" ",.2f")
                          ("long-price" ",.2f") ("short-price" ",.2f") ("cost" ",.2f") ("worth" ",.2f")
                          ("profit" ",.2f") ("ratio" ".0%") ("breakeven" ",.2f") ("max-profit" ",.2f")))
-        (display "\nTo trade the best one: call-spread-order sends nothing, the preview asks Schwab what it makes of\nthe order and places nothing, and only the last line places it:\n")
-        (display "  (define order (call-spread-order search :contracts 1))\n")
-        (display "  (show-spread-order order)                               ; the order, in words\n")
-        (display "  (schwab-preview-order creds \"your account\" order)     ; what Schwab makes of it; nothing is placed\n")
-        (display "  (schwab-place-order creds \"your account\" order :confirm #t)     ; places it, for real\n")))))
+        (if (option-spreads--orderable? search (list (vector-ref (table-column spreads "long-symbol") 0)
+                                                     (vector-ref (table-column spreads "short-symbol") 0)))
+            (begin
+              (display "\nTo trade the best one: call-spread-order sends nothing, the preview asks Schwab what it makes of\nthe order and places nothing, and only the last line places it:\n")
+              (display "  (define order (call-spread-order search :contracts 1))\n")
+              (display "  (show-spread-order order)                               ; the order, in words\n")
+              (display "  (schwab-preview-order creds \"your account\" order)     ; what Schwab makes of it; nothing is placed\n")
+              (display "  (schwab-place-order creds \"your account\" order :confirm #t)     ; places it, for real\n"))
+            (display "\nOrders are made for a stock's options, and these are not: they are for analysis.\n"))))))

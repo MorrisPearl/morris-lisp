@@ -183,7 +183,8 @@ class OptionChainTestCase(LispTestCase):
 
     def make_chain(self, rows, name="chain", stock="XYZ", price=104.0):
         """A chain table, as schwab-option-chain makes one, from rows: dicts with strike, bid, and ask, and
-        optionally type (Call), expiration (DAY), mid, volume (5), open_interest (10), and symbol."""
+        optionally type (Call), expiration (DAY), mid, volume (5), open_interest (10), symbol, and underlying
+        (stock) and underlying_price (price): a chain of futures options has several underlyings."""
         full = []
         for row in rows:
             row = dict({"type": "Call", "expiration": self.DAY, "volume": 5, "open_interest": 10}, **row)
@@ -196,8 +197,8 @@ class OptionChainTestCase(LispTestCase):
                    ("type", [lisp_core.LispString(r["type"]) for r in full]),
                    ("strike", [float(r["strike"]) for r in full]),
                    ("expiration-date", [date(r["expiration"]) for r in full]),
-                   ("underlying", [lisp_core.LispString(stock)] * len(full)),
-                   ("underlying-price", [price] * len(full)),
+                   ("underlying", [lisp_core.LispString(r.get("underlying", stock)) for r in full]),
+                   ("underlying-price", [r.get("underlying_price", price) for r in full]),
                    ("bid", [r["bid"] for r in full]), ("ask", [r["ask"] for r in full]), ("mid", [r["mid"] for r in full]),
                    ("volume", [r["volume"] for r in full]), ("open-interest", [r["open_interest"] for r in full])]
         self.env[lisp_core.Symbol(name)] = lisp_tables.make_table_value(

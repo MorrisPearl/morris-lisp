@@ -462,7 +462,9 @@ class TestAgainstAPlainCalculation(OptionSpreadsTestCase):
 
     GRID = np.arange(0, 4 * 130 + 0.25, 0.25)
 
-    def random_rows(self, seed, roots=("XYZ",)):
+    def random_rows(self, seed, roots=("XYZ",), futures=False):
+        """Random options, of each root: with symbols as OCC writes a stock's, or, if futures, as tastytrade writes a
+        future's (the roots are then the future and the kind of option on it: "./CLZ6 LOZ6"). Each row says its root."""
         rng = np.random.default_rng(seed)
         rows = []
         for root in roots:
@@ -475,7 +477,9 @@ class TestAgainstAPlainCalculation(OptionSpreadsTestCase):
                     half = rng.choice([0.05, 0.1, 0.15])
                     row = {"strike": float(strike), "type": type, "bid": round(max(price - half, 0), 2), "ask": round(price + half, 2),
                            "open_interest": int(rng.choice([0, 3, 10, 10, 50, 50])), "volume": int(rng.choice([0, 1, 5, 5, 20])),
-                           "symbol": "%-6s261120%s%08d" % (root, type[0], round(strike * 1000))}
+                           "symbol": ("%s  261120%s%g" % (root, type[0], strike) if futures
+                                      else "%-6s261120%s%08d" % (root, type[0], round(strike * 1000))),
+                           "root": root}
                     luck = rng.uniform()
                     if luck < 0.04:
                         row["bid"] = 0.0
@@ -503,9 +507,9 @@ class TestAgainstAPlainCalculation(OptionSpreadsTestCase):
         slope = shares + sum(q for t, q in option_legs if t == "C")      # the profit's slope with the stock very high
         found = {}
         # (each root's options make their own positions; the stock alone has no root, and is one position)
-        roots = [None] if not option_legs else sorted({r["symbol"][:6] for r in usable})
+        roots = [None] if not option_legs else sorted({r["root"] for r in usable})
         for root in roots:
-            options = {t: sorted((r for r in usable if r["symbol"][:6] == root and r["type"][0] == t), key=lambda r: r["strike"])
+            options = {t: sorted((r for r in usable if r["root"] == root and r["type"][0] == t), key=lambda r: r["strike"])
                        for t in "CP"}
             for combo in self.combos(kind, options, max_width):
                 price = lambda r, q: r["mid"] if prices == "mid" else (r["ask"] if q > 0 else r["bid"])
@@ -615,6 +619,15 @@ class TestAgainstAPlainCalculation(OptionSpreadsTestCase):
         for seed in (10, 11):
             rows = self.random_rows(seed, roots=("XYZ", "XYZW"))
             self.make_chain(rows)
+            for kind in KINDS:
+                with self.subTest(seed=seed, kind=kind):
+                    self.assertGreater(self.compare(kind, rows, 106, ""), 0)
+
+    def test_and_with_a_futures_options_symbols_and_two_kinds_of_option_on_the_future(self):
+        """A monthly and a weekly option on one future, of the same strikes and day, are not the same contract."""
+        for seed in (20, 21):
+            rows = self.random_rows(seed, roots=("./CLZ6 LOZ6", "./CLZ6 LO3V6"), futures=True)
+            self.make_chain(rows, stock="CLZ6")
             for kind in KINDS:
                 with self.subTest(seed=seed, kind=kind):
                     self.assertGreater(self.compare(kind, rows, 106, ""), 0)
@@ -1252,6 +1265,327 @@ class TestComparingTheKinds(OptionSpreadsTestCase):
             lisp_builtins.set_command_line_arguments([])
 
 
+def futures_option_symbol(future, product, day, letter, strike):
+    """A future's option's symbol, as tastytrade writes it: ./CLZ6 LOZ6  261120C100 -- the future, the kind of option on
+    it (padded to 5 characters), the expiration as YYMMDD, C or P, and the strike as it is."""
+    return "./%s %-5s %s%s%g" % (future, product, day.strftime("%y%m%d"), letter, strike)
+
+
+class TestFuturesOptions(OptionSpreadsTestCase):
+    """The options of a future (crude oil's, from tastytrade-option-chain) are ranked as a stock's are -- but their
+    symbols are not OCC's, each delivery month is a future with a price of its own, and a contract is for 1,000
+    barrels, not 100 shares."""
+
+    DAY = datetime.date(2026, 11, 20)
+    EARLIER = datetime.date(2026, 11, 13)
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('(load "option_positions.lsp")')
+        self.run_lisp('(load "call_spreads.lsp")')
+
+    def rows(self, future="CLZ6", price=104.0, product="LOZ6", day=None):
+        """The calls and puts of TestSpreadsByHand's chain, as options on a future, with the symbols tastytrade writes."""
+        day = day or self.DAY
+        rows = []
+        for strike, (call_bid, call_ask), (put_bid, put_ask) in TestSpreadsByHand.QUOTES:
+            for letter, bid, ask in (("C", call_bid, call_ask), ("P", put_bid, put_ask)):
+                rows.append({"strike": strike, "bid": bid, "ask": ask, "type": "Call" if letter == "C" else "Put",
+                             "expiration": day, "underlying": future, "underlying_price": price,
+                             "symbol": futures_option_symbol(future, product, day, letter, strike)})
+        return rows
+
+    def stock_rows(self):
+        """The same options, as a stock's, XYZ at 104, with OCC's symbols."""
+        rows = []
+        for strike, (call_bid, call_ask), (put_bid, put_ask) in TestSpreadsByHand.QUOTES:
+            rows.append({"strike": strike, "bid": call_bid, "ask": call_ask})
+            rows.append({"strike": strike, "bid": put_bid, "ask": put_ask, "type": "Put"})
+        return rows
+
+    def kinds_compared(self, options):
+        """The names of the kinds of the comparison that (option-positions-for-chain chain ...) makes, sorted."""
+        self.run_lisp("(define comparison (option-positions-for-chain chain (date 2026 11 20) 100 %s))" % options)
+        table = self.run_lisp("(position-comparison-positions comparison)")
+        return sorted(str(kind) for kind in dict(lisp_tables.table_columns(table, "test"))["kind"].items)
+
+    # -- the symbols --------------------------------------------------------------------------------------------
+
+    def test_the_root_of_a_symbol_is_what_comes_before_its_day(self):
+        for symbol, root in [("XYZ   261120C00100000", "XYZ"), ("XYZW  261120P00110000", "XYZW"),
+                             ("BRK/B 261120C00500000", "BRK/B"),
+                             ("./CLZ6 LOZ6  261117C93.5", "./CLZ6 LOZ6"), ("./CLZ6 LO3V6 261016P94.75", "./CLZ6 LO3V6"),
+                             ("./ESZ6 E3DV6 261015C7770", "./ESZ6 E3DV6"), ("./ZCZ6 OZCX6 261023P475", "./ZCZ6 OZCX6"),
+                             ("not an option", "not an option")]:
+            with self.subTest(symbol=symbol):
+                self.assertEqual(str(self.run_lisp('(option-spreads--root-of "%s")' % symbol)), root)
+
+    def test_a_futures_chain_is_ranked_as_the_same_options_with_a_stocks_symbols_are(self):
+        self.make_chain(self.rows(), name="future")
+        self.make_chain(self.stock_rows())
+        for kind in KINDS:
+            with self.subTest(kind=kind):
+                future = self.spreads("(option-spreads-for-chain future '%s (date 2026 11 20) 108)" % kind)
+                stock = self.spreads("(option-spreads-for-chain chain '%s (date 2026 11 20) 108)" % kind)
+                self.assertGreater(len(stock["ratio"]), 0)
+                for column in stock:
+                    if column.startswith("symbol-"):
+                        self.assertTrue(all(str(s).startswith("./CLZ6 LOZ6 ") for s in future[column]), column)
+                    else:
+                        np.testing.assert_allclose(future[column], stock[column], equal_nan=True, err_msg=column)
+
+    def test_a_monthly_and_a_weekly_option_on_the_future_are_not_mixed(self):
+        self.make_chain(self.rows(product="LOZ6")[:6] + self.rows(product="LO3V6")[:6])     # the strikes 90, 95, and 100, of each
+        for kind, total in [("bull-call", 6), ("long-straddle", 6), ("iron-condor", 0), ("long-stock", 1)]:
+            with self.subTest(kind=kind):
+                table = self.spreads("(option-spreads-for-chain chain '%s (date 2026 11 20) 108)" % kind)
+                self.assertEqual(len(table["ratio"]), total)
+                for i in range(len(table["ratio"])):
+                    kinds_of_option = {str(table[c][i])[:12] for c in table if c.startswith("symbol-")}
+                    self.assertEqual(len(kinds_of_option), 0 if kind == "long-stock" else 1, kinds_of_option)
+
+    # -- which future -------------------------------------------------------------------------------------------
+
+    def test_the_shares_price_is_the_price_of_the_future_the_options_are_on(self):
+        """The first row of the chain is on the November future, at 105; the options of the day are on December's, at 96.5."""
+        self.make_chain(self.rows("CLX6", 105.0, "LOX6", self.EARLIER) + self.rows("CLZ6", 96.5))
+        table = self.spreads("(option-spreads-for-chain chain 'covered-call (date 2026 11 20) 100)")
+        self.assertShows("(spread-search-stock search)", '"CLZ6"')
+        self.assertShows("(spread-search-stock-price search)", "96.5")
+        self.assertAlmostEqual(table["cost"][table["strike-1"].index(110)], 96.5 - 1.2, places=4)     # the future, less the call
+        table = self.spreads("(option-spreads-for-chain chain 'long-stock (date 2026 11 20) 100)")
+        self.assertAlmostEqual(table["cost"][0], 96.5, places=4)
+        # (the November options, on the other day, are on the other future)
+        table = self.spreads("(option-spreads-for-chain chain 'long-stock (date 2026 11 13) 100)")
+        self.assertShows("(spread-search-stock search)", '"CLX6"')
+        self.assertAlmostEqual(table["cost"][0], 105.0, places=4)
+        self.run_lisp("(define comparison (option-positions-for-chain chain (date 2026 11 20) 100))")
+        self.assertShows("(position-comparison-stock comparison)", '"CLZ6"')
+        self.assertShows("(position-comparison-stock-price comparison)", "96.5")
+        # :stock-price is still the price to use, if it is given
+        self.spreads("(option-spreads-for-chain chain 'long-stock (date 2026 11 20) 100 :stock-price 96.75)")
+        self.assertShows("(spread-search-stock-price search)", "96.75")
+
+    def test_options_expiring_on_one_day_on_two_futures_need_the_one_chosen(self):
+        self.make_chain(self.rows("CLX6", 105.0, "LOX6") + self.rows("CLZ6", 96.5))
+        said = ("the options expiring on 2026-11-20 are on more than one underlying: CLX6 at 105.0, CLZ6 at 96.5. "
+                "Say which one, with :underlying")
+        for call in ("(option-spreads-for-chain chain 'bull-call (date 2026 11 20) 100)",
+                     "(option-spreads-for-chain chain 'long-stock (date 2026 11 20) 100)",
+                     "(option-positions-for-chain chain (date 2026 11 20) 100)",
+                     "(call-spreads-for-chain chain (date 2026 11 20) 100)"):
+            with self.subTest(call=call):
+                self.assertLispError(call, said)
+        for future, price in (("CLX6", 105.0), ("CLZ6", 96.5)):
+            with self.subTest(future=future):
+                table = self.spreads('(option-spreads-for-chain chain \'covered-call (date 2026 11 20) 100 :underlying "%s")' % future)
+                self.assertEqual(len(table["ratio"]), 7)
+                self.assertTrue(all(str(s).startswith("./%s " % future) for s in table["symbol-1"]))
+                self.assertShows("(spread-search-stock search)", '"%s"' % future)
+                self.assertShows("(spread-search-stock-price search)", str(price))
+        self.assertLispError('(option-spreads-for-chain chain \'bull-call (date 2026 11 20) 100 :underlying "CLF7")',
+                             "the chain has no options on CLF7; it has options on CLX6 at 105.0, CLZ6 at 96.5")
+
+    def test_a_day_with_no_options_has_no_future_to_ask_for(self):
+        self.make_chain(self.rows("CLX6", 105.0, "LOX6", self.EARLIER) + self.rows("CLZ6", 96.5))
+        # the stock alone needs the future, and the chain has two
+        self.assertLispError("(option-spreads-for-chain chain 'long-stock (date 2026 12 25) 100)",
+                             "the chain's options are on more than one underlying: CLX6 at 105.0, CLZ6 at 96.5")
+        table = self.spreads('(option-spreads-for-chain chain \'long-stock (date 2026 12 25) 100 :underlying "CLZ6")')
+        self.assertAlmostEqual(table["cost"][0], 96.5, places=4)
+        # options need the day: and the days it lists are those of the future asked for
+        for future, day in (("CLZ6", "2026-11-20"), ("CLX6", "2026-11-13")):
+            self.assertLispError('(option-spreads-for-chain chain \'bull-call (date 2026 12 25) 100 :underlying "%s")' % future,
+                                 "the chain has no calls expiring on 2026-12-25; its calls expire on %s" % day)
+
+    def test_a_chain_of_nothing_is_said_to_be_empty(self):
+        self.make_chain(self.rows())
+        self.run_lisp('(define empty (table-filter chain (< (table-column chain "strike") 0)))')
+        for call in ("(option-spreads-for-chain empty 'bull-call (date 2026 11 20) 100)",
+                     "(option-positions-for-chain empty (date 2026 11 20) 100)"):
+            with self.assertRaises(lisp_core.LispError) as caught:
+                self.run_lisp(call)
+            self.assertEqual(str(caught.exception), "option-spreads: the chain has no options")
+
+    def test_a_comparison_of_one_future_is_of_the_options_of_that_future(self):
+        """The calls of the day are on November's future and the puts on December's: of each, only the kinds it has."""
+        calls = [r for r in self.rows("CLX6", 105.0, "LOX6") if r["type"] == "Call"]
+        puts = [r for r in self.rows("CLZ6", 96.5) if r["type"] == "Put"]
+        self.make_chain(calls + puts)
+        self.assertEqual(self.kinds_compared(':underlying "CLZ6"'),
+                         sorted(["bull-put", "bear-put", "put-butterfly", "long-put", "cash-secured-put", "protective-put",
+                                 "long-stock"]))
+        self.assertEqual(self.kinds_compared(':underlying "CLX6"'),
+                         sorted(["bull-call", "bear-call", "call-butterfly", "long-call", "covered-call", "long-stock"]))
+        self.assertShows("(position-comparison-stock-price comparison)", "105.0")
+
+    # -- how much a contract is, and what to call one -----------------------------------------------------------------
+
+    def shown(self, call):
+        self.out.clear()
+        self.run_lisp("(show-option-spreads %s)" % call)
+        return self.printed()
+
+    def test_the_default_is_a_stocks_contract_of_100_shares(self):
+        self.make_chain(self.rows())
+        self.run_lisp("(define search (option-spreads-for-chain chain 'bull-call (date 2026 11 20) 108))")
+        self.assertShows("(spread-search-contract-size search)", "100")
+        self.assertShows("(spread-search-unit search)", '"share"')
+        self.run_lisp("(define comparison (option-positions-for-chain chain (date 2026 11 20) 108))")
+        self.assertShows("(position-comparison-contract-size comparison)", "100")
+        self.assertShows("(position-comparison-unit comparison)", '"share"')
+        self.assertShows("option-contract-size", "100")
+
+    def test_a_contract_of_a_thousand_barrels_is_said_in_barrels_and_its_dollars(self):
+        self.make_chain(self.rows())
+        options = ":contract-size 1000 :unit \"barrel\""
+        for kind, lines in [
+                ("bull-call", ["CLZ6 is at 104.00. Bull call spreads expiring 2026-11-20, if it is at 108.00 then; bought and sold at the ask and bid prices.",
+                               "The best: buy 1 100.00 call at 6.20, sell 1 110.00 call at 1.20.",
+                               "It costs 5.00 a barrel: 5,000.00 for one contract of each option. The most you can lose is 5.00 a barrel (5,000.00).",
+                               "With CLZ6 at 108.00 on 2026-11-20, it is worth 8.00 a barrel, a profit of 3.00 (3,000.00): 60% of the most you can lose.",
+                               "The most it can make is 5.00 a barrel (5,000.00). It breaks even with CLZ6 at 105.00.",
+                               "(prices are for a barrel):",
+                               "For comparison, owning the stock instead (1,000 barrels at 104.00): a profit of 4.00 a barrel (4,000.00) "
+                               "with CLZ6 at 108.00, 3.8% of the 104.00 a barrel they could lose."]),
+                ("iron-condor", ["It pays you 2.80 a barrel: 2,800.00 for one contract of each option. The most you can lose is 2.20 a barrel (2,200.00)."]),
+                ("long-call", ["It costs 6.20 a barrel: 6,200.00 for one contract."]),
+                ("covered-call", ["CLZ6 is at 104.00. Covered calls expiring 2026-11-20, if it is at 108.00 then; bought and sold at the ask and bid prices, the barrels at 104.00. 7 positions.",
+                                  "The best: buy 1,000 barrels at 104.00, sell 1 110.00 call at 1.20.",
+                                  "It costs 102.80 a barrel: 102,800.00 for 1,000 barrels and one contract. The most you can lose is 102.80 a barrel (102,800.00).",
+                                  "With CLZ6 at 108.00 on 2026-11-20, it is worth 108.00 a barrel, a profit of 5.20 (5,200.00): 5% of the most you can lose.",
+                                  "The most it can make is 7.20 a barrel (7,200.00). It breaks even with CLZ6 at 102.80."]),
+                ("collar", ["It costs 102.60 a barrel: 102,600.00 for 1,000 barrels and one contract of each option."]),
+                ("long-stock", ["CLZ6 is at 104.00. Owning 1,000 barrels of it, if it is at 108.00 on 2026-11-20. 1 position.",
+                                "The best: buy 1,000 barrels at 104.00.",
+                                "It costs 104.00 a barrel: 104,000.00 for 1,000 barrels. The most you can lose is 104.00 a barrel (104,000.00)."])]:
+            with self.subTest(kind=kind):
+                shown = self.shown("(option-spreads-for-chain chain '%s (date 2026 11 20) 108 %s)" % (kind, options))
+                for line in lines:
+                    self.assertIn(line, shown)
+                self.assertNotIn("share", shown)                                 # (nothing is said of shares)
+                self.assertIn("Orders are made for a stock's options, and these are not: they are for analysis.", shown)
+                self.assertNotIn("To trade the best one", shown)
+        self.run_lisp("(define search (option-spreads-for-chain chain 'bull-call (date 2026 11 20) 108 %s))" % options)
+        self.assertShows("(spread-search-contract-size search)", "1000")
+        self.assertShows("(spread-search-unit search)", '"barrel"')
+
+    def test_options_whose_symbols_are_not_a_stocks_offer_no_orders_even_with_a_stocks_contract(self):
+        """(gold's contract, 100 ounces, is the size of a stock's: it is the symbols that say these are not a stock's.)"""
+        self.make_chain(self.rows())
+        shown = self.shown("(option-spreads-for-chain chain 'bull-call (date 2026 11 20) 108)")
+        self.assertIn("Orders are made for a stock's options, and these are not: they are for analysis.", shown)
+        self.assertNotIn("To trade the best one", shown)
+        self.out.clear()
+        self.run_lisp("(show-call-spreads (call-spreads-for-chain chain (date 2026 11 20) 108))")
+        self.assertIn("Orders are made for a stock's options, and these are not", self.printed())
+        self.assertNotIn("To trade the best one", self.printed())
+        self.out.clear()
+        self.run_lisp("(show-option-positions (option-positions-for-chain chain (date 2026 11 20) 108))")
+        self.assertIn("For the best few of one kind (orders are made for a stock's options, and these are not):", self.printed())
+
+    def test_one_of_them_is_not_many_and_an_ounce_is_an_ounce(self):
+        self.make_chain(self.rows())
+        shown = self.shown("(option-spreads-for-chain chain 'covered-call (date 2026 11 20) 108 :contract-size 1 :unit \"barrel\")")
+        self.assertIn("The best: buy 1 barrel at 104.00, sell 1 110.00 call at 1.20.", shown)
+        self.assertIn("It costs 102.80 a barrel: 102.80 for 1 barrel and one contract.", shown)
+        self.assertIn("owning the stock instead (1 barrel at 104.00): a profit of 4.00 a barrel (4.00)", shown)
+        shown = self.shown("(option-spreads-for-chain chain 'covered-call (date 2026 11 20) 108 :contract-size 100 :unit \"ounce\")")
+        self.assertIn("The best: buy 100 ounces at 104.00, sell 1 110.00 call at 1.20.", shown)
+        self.assertIn("It costs 102.80 an ounce: 10,280.00 for 100 ounces and one contract.", shown)
+        self.assertIn("(prices are for an ounce):", shown)
+        shown = self.shown("(option-spreads-for-chain chain 'covered-call (date 2026 11 20) 108 :contract-size 5000 :unit \"bushel\")")
+        self.assertIn("buy 5,000 bushels at 104.00", shown)
+        shown = self.shown("(option-spreads-for-chain chain 'bull-call (date 2026 11 20) 108 :unit \"unit\")")
+        self.assertIn("It costs 5.00 a unit: 500.00 for one contract of each option.", shown)
+
+    def test_the_comparison_says_it_in_the_same_words(self):
+        self.make_chain(self.rows())
+        self.out.clear()
+        self.run_lisp('(show-option-positions (option-positions-for-chain chain (date 2026 11 20) 108 :contract-size 1000 :unit "barrel"))')
+        shown = self.printed()
+        self.assertIn("CLZ6 is at 104.00. The best position of each kind expiring 2026-11-20, if it is at 108.00 then; "
+                      "options bought and sold at the ask and bid prices, barrels at 104.00. 17 positions.", shown)
+        self.assertIn("(prices are for a barrel):", shown)
+        self.assertIn("buy 1,000 barrels, buy 1 100.00 put, sell 1 105.00 call", shown)               # the collar
+        self.assertIn("buy 1,000 barrels, sell 1 110.00 call", shown)                                    # the covered call
+        self.assertIn("buy 1,000 barrels  ", shown)                                                      # the long stock
+        self.assertNotIn("shares", shown)
+        self.assertIn("For the best few of one kind (orders are made for a stock's options, and these are not):", shown)
+        # (and a stock's options, with the defaults, say shares, and how to order)
+        self.make_chain(self.stock_rows())
+        self.out.clear()
+        self.run_lisp("(show-option-positions (option-positions-for-chain chain (date 2026 11 20) 108))")
+        self.assertIn("shares at 104.00. 17 positions.", self.printed())
+        self.assertIn("(prices are for a share):", self.printed())
+        self.assertIn("buy 100 shares, sell 1 110.00 call", self.printed())
+        self.assertIn("For the best few of one kind, and an order for it:", self.printed())
+
+    def test_the_call_spreads_say_it_too(self):
+        self.make_chain(self.rows("CLX6", 105.0, "LOX6") + self.rows("CLZ6", 96.5))
+        self.run_lisp('(define search (call-spreads-for-chain chain (date 2026 11 20) 108 :underlying "CLZ6" '
+                      ':contract-size 1000 :unit "barrel"))')
+        self.assertShows("(spread-search-contract-size search)", "1000")
+        self.assertShows("(spread-search-unit search)", '"barrel"')
+        self.out.clear()
+        self.run_lisp("(show-call-spreads search)")
+        shown = self.printed()
+        for line in ["CLZ6 is at 96.50. Bull call spreads expiring 2026-11-20, if it is at 108.00 then;",
+                     "The best: buy the 100.00 call, at 6.20, and sell the 110.00 call, at 1.20.",
+                     "It costs 5.00 a barrel (5,000.00 for a contract of 1,000). That is the most you can lose, if CLZ6 ends at 100.00 or less.",
+                     "the spread is worth 8.00 a barrel, a profit of 3.00 (3,000.00 a contract): 60% of the most you can lose.",
+                     "the most it can make is 5.00 a barrel, with CLZ6 at 110.00 or more.",
+                     "(prices are for a barrel):",
+                     "Orders are made for a stock's options, and these are not: they are for analysis."]:
+            self.assertIn(line, shown)
+        self.assertNotIn("To trade the best one", shown)
+
+    def test_the_contract_size_and_unit_must_be_good_ones(self):
+        self.make_chain(self.rows())
+        for bad in ("0", "-100", '"1000"', "'()"):
+            for call, who in [("(option-spreads-for-chain chain 'bull-call (date 2026 11 20) 108 :contract-size %s)", "option-spreads"),
+                              ("(option-positions-for-chain chain (date 2026 11 20) 108 :contract-size %s)", "option-positions"),
+                              ("(call-spreads-for-chain chain (date 2026 11 20) 108 :contract-size %s)", "option-spreads")]:
+                with self.subTest(bad=bad, who=who):
+                    self.assertLispError(call % bad, "%s: :contract-size is how many of the underlying's units a contract covers, "
+                                                      "a number above 0" % who)
+        for bad in ('""', "5", "'barrel"):
+            for call, who in [("(option-spreads-for-chain chain 'bull-call (date 2026 11 20) 108 :unit %s)", "option-spreads"),
+                              ("(option-positions-for-chain chain (date 2026 11 20) 108 :unit %s)", "option-positions")]:
+                with self.subTest(bad=bad, who=who):
+                    self.assertLispError(call % bad, "%s: :unit is what to call one of them, text such as \"share\" or \"barrel\"" % who)
+
+    # -- orders are for a stock's options -----------------------------------------------------------------------------
+
+    def test_a_futures_options_symbols_are_not_orderable(self):
+        self.make_chain(self.rows())
+        for kind in ("bull-call", "iron-condor", "long-call", "long-put", "covered-call", "collar"):
+            with self.subTest(kind=kind):
+                self.run_lisp("(define search (option-spreads-for-chain chain '%s (date 2026 11 20) 108))" % kind)
+                for call, who in [("(option-spread-order search)", "option-spread-order"),
+                                  ("(option-position-orders search)", "option-position-orders")]:
+                    self.assertLispError(call, "%s: ./CLZ6 LOZ6" % who)
+                    self.assertLispError(call, "is not a stock's option, whose symbol OCC writes as the stock's, 6 characters, "
+                                               "the expiration as YYMMDD, C or P, and the strike in 8 digits; orders are for a "
+                                               "stock's options, not a future's")
+        self.run_lisp("(define search (call-spreads-for-chain chain (date 2026 11 20) 108))")
+        self.assertLispError("(call-spread-order search)", "call-spread-order: ./CLZ6 LOZ6")
+
+    def test_orders_are_for_contracts_of_a_stocks_size(self):
+        self.make_chain(self.stock_rows())                                # (OCC's symbols: the contract is what is wrong)
+        said = "orders are for a stock's options, which cover 100 shares each, and the options of this search cover 1,000 barrels"
+        for kind in ("bull-call", "long-call", "covered-call", "long-stock"):
+            with self.subTest(kind=kind):
+                self.run_lisp('(define search (option-spreads-for-chain chain \'%s (date 2026 11 20) 108 :contract-size 1000 :unit "barrel"))' % kind)
+                self.assertLispError("(option-spread-order search)", "option-spread-order: " + said)
+                self.assertLispError("(option-position-orders search)", "option-position-orders: " + said)
+        self.run_lisp('(define search (call-spreads-for-chain chain (date 2026 11 20) 108 :contract-size 1000 :unit "barrel"))')
+        self.assertLispError("(call-spread-order search)", "call-spread-order: " + said)
+        # (a stock's, with the defaults, is orderable, as ever)
+        self.run_lisp("(define search (option-spreads-for-chain chain 'bull-call (date 2026 11 20) 108))")
+        self.assertShows('(hash-table-ref (option-spread-order search) "orderType")', '"NET_DEBIT"')
+
+
 def lisp_schwab_json(value):
     """A Lisp value (a hash table of an order, or a list of them) as the Python JSON Schwab takes."""
     import lisp_schwab
@@ -1395,6 +1729,19 @@ class TestProfitCharts(OptionSpreadsTestCase):
         # room above the most it can make, for its label, and below the most it can lose: 16% and 8% of the 5.0 between
         np.testing.assert_allclose([spec["y_axis"]["min"], spec["y_axis"]["max"]], [-2.2 - 0.4, 2.8 + 0.8], atol=1e-5)
         self.assertEqual(spec["legend"], "upper left")                 # (the profit is low on the left)
+
+    def test_the_axis_says_what_the_profit_is_for(self):
+        """For a share, unless the options are of a future's: for a barrel, for an ounce."""
+        for options, label in [("", "profit, for a share"), (':contract-size 1000 :unit "barrel"', "profit, for a barrel"),
+                               (':contract-size 100 :unit "ounce"', "profit, for an ounce")]:
+            with self.subTest(options=options):
+                self.run_lisp("(plot-option-profit (option-spreads-for-chain chain 'iron-condor %s %s))" % (self.EXPECTED, options))
+                self.assertEqual(self.specs[-1]["y_label"], label)
+                self.run_lisp("(plot-option-positions (option-positions-for-chain chain %s %s))" % (self.EXPECTED, options))
+                self.assertEqual(self.specs[-1]["y_label"], label)
+                self.run_lisp("(plot-call-spreads (call-spreads-for-chain chain %s %s))" % (self.EXPECTED, options))
+                self.assertEqual(self.specs[-1]["y_label"], label)
+                self.assertEqual(self.specs[-1]["x_label"], "price of XYZ on 2026-11-20")
 
     def test_a_loss_at_the_price_expected_is_a_loss(self):
         self.position("bull-call")

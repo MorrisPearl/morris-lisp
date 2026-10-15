@@ -5312,12 +5312,14 @@ while the market is open; it says so, and the quotes are the last close's, if
 it is closed -- and ranks every pair: see `call-spreads-for-chain`. Returns a
 `spread-search`.
 
-#### `(call-spreads-for-chain chain expiration expected-price [:prices p :min-open-interest n :min-volume n :min-cost c])`
+#### `(call-spreads-for-chain chain expiration expected-price [:prices p :min-open-interest n :min-volume n :min-cost c :underlying u :contract-size n :unit w])`
 The same for a chain you already have: a table as `schwab-option-chain` or
-`tastytrade-option-chain` makes. Returns a `spread-search`, whose accessors
+`tastytrade-option-chain` makes (`:underlying`, `:contract-size`, and `:unit`
+are for a future's options, as in `option-spreads-for-chain`). Returns a
+`spread-search`, whose accessors
 are `spread-search-stock`, `-stock-price`, `-expiration`, `-expected-price`,
-`-prices`, and `-spreads`: the table of spreads, a row for each pair, the
-best first, with the columns
+`-prices`, `-contract-size`, `-unit`, and `-spreads`: the table of spreads, a
+row for each pair, the best first, with the columns
 
 | Column | What it holds (prices are for a share) |
 |---|---|
@@ -5422,7 +5424,8 @@ before placing anything.
 
 (In `lib/option_spreads.lsp` and `lib/option_positions.lsp`; their functions
 work without loading them.) The question of "Call spreads" for seventeen
-kinds of position: of a stock's options that expire on one day, which spread,
+kinds of position: of a stock's options (or a future's: see "Options on
+futures") that expire on one day, which spread,
 single option, or position with shares of one kind is the best, if you
 expect the stock to be at a certain price on that day? Every position that
 can be made is ranked by the profit at the price you expect, as a share of the
@@ -5468,7 +5471,8 @@ the stock's price in the chain (`:stock-price` says another, such as the ask),
 are worth the stock's price on the day, and are in the cost: a covered call
 costs the shares' price less the call's. A stock can fall to 0, so shares can
 lose all they cost, less what their options make up for. These kinds are for
-stocks and ETFs, not for an index such as SPX, which has no shares to buy. A
+stocks and ETFs, and for futures (see "Options on futures"), not for an index
+such as SPX, which has nothing to buy. A
 cash-secured put is a put sold with the cash to buy the shares at its strike
 held back, so that it cannot lose without limit (the stock can only fall to 0);
 that cash is your broker's to hold, and the ratio, like the others, is over the
@@ -5557,12 +5561,12 @@ open; it says so, and the quotes are the last close's, if it is closed -- and
 ranks every position of the `kind`: see `option-spreads-for-chain`. Returns a
 `spread-search`.
 
-#### `(option-spreads-for-chain chain kind expiration expected-price [:prices p :min-open-interest n :min-volume n :min-risk r :max-width w :stock-price s])`
+#### `(option-spreads-for-chain chain kind expiration expected-price [:prices p :min-open-interest n :min-volume n :min-risk r :max-width w :stock-price s :underlying u :contract-size n :unit w])`
 The same for a chain you already have: a table as `schwab-option-chain` or
 `tastytrade-option-chain` makes. Returns a `spread-search`, whose accessors
 are `spread-search-kind`, `-stock`, `-stock-price`, `-expiration`,
-`-expected-price`, `-prices`, and `-spreads`: the table of positions, a row for
-each, the best first. For a position of *n* options (its legs, lowest strike
+`-expected-price`, `-prices`, `-contract-size`, `-unit`, and `-spreads`: the
+table of positions, a row for each, the best first. For a position of *n* options (its legs, lowest strike
 first; none, for the long stock) the columns are:
 
 | Column | What it holds (prices are for a share) |
@@ -5594,7 +5598,17 @@ The options:
   chain doesn't have is taken to be 0.
 - All the options of a spread are of one *root*: a stock's own options, or its
   weeklies, or its minis. (SPX's options and SPXW's have the same strikes and
-  expirations, and are not the same contract.)
+  expirations, and are not the same contract.) A future's options have the
+  future and the kind of option on it for a root, `./CLZ6 LOZ6` for the monthly
+  options on December crude oil. They are also all of one *underlying*; see
+  `:underlying`, next.
+- `:underlying`, `:contract-size`, and `:unit` are for a future's options; see
+  "Options on futures", below. `:underlying` names the future (`"CLZ6"`), if the
+  options that expire on the day are on more than one. `:contract-size` is how
+  many of the underlying's units a contract covers (1000, for crude oil), the
+  default being a stock's, 100, and `:unit` what to call one (`"barrel"`; the
+  default, `"share"`). The search records them, and every "for a share" here
+  is for one unit.
 - A position that can lose nothing -- a credit as big as a spread's width, or
   a collar whose put is worth more than the stock and the collar cost, from
   quotes that don't agree -- is left out, as is one that can lose a tenth of a
@@ -5623,7 +5637,10 @@ Shows the best position in words -- what to buy and sell, what it costs, or
 pays you, for a share and for a contract of 100 (and the 100 shares), what it
 makes at the expected price, where it breaks even, and the most it can make --
 how owning the stock instead would do (not for the long stock itself), and a
-table of it and the next `:count` (10) best, and how to go on to the order.
+table of it and the next `:count` (10) best, and how to go on to the order (for
+a stock's options: for a future's it says there are none). For a future's
+options it says it with the search's `:contract-size` and `:unit`: a barrel for
+a share, 1,000 for the 100.
 For the condor above, up to its table:
 
 ```
@@ -5653,7 +5670,10 @@ best, is the default; 1 the next; and so on. `:strategy` is the name Schwab
 gives the kind of spread order, which by default is the kind's own (the
 `schwab` column of `(option-spread-kinds)`); a single order has none.
 **It sends nothing.** With bids and asks, the order at the cost is likely to
-fill at once; a better `:price` may fill at a better price, or not at all.
+fill at once; a better `:price` may fill at a better price, or not at all. The
+orders are for a stock's options, Schwab's, whose symbols are OCC's and whose
+contract is 100 shares: a search of a future's options, or of any other
+`:contract-size`, is an error that says so.
 
 #### `(option-position-orders search [:row r :contracts c])`
 The orders for one of the positions, as a list, to preview and place one after
@@ -5667,7 +5687,7 @@ this has been able to check, and each of these is a plain order of a form
 `schwab-order` makes. So place them in order, and let the shares fill first: a
 call sold against shares you don't hold yet is a call sold naked, which your
 broker may refuse. Because they are separate, the shares may be bought and an
-option not fill. It sends nothing.
+option not fill. It sends nothing. (A future's options are refused, as above.)
 
 #### `(show-spread-order order)`
 Says in words what any of these orders would do: a day order to open so many
@@ -5716,6 +5736,99 @@ These 2 orders have not been sent. If they were, you would send them in this ord
   SELL_TO_OPEN  2 x XYZ   261120C00110000
 ```
 
+#### Options on futures
+
+The same functions rank a future's options. `tastytrade-option-chain` makes
+the chain -- crude oil's, with `(tastytrade-option-chain creds "CL" 2 12)` --
+with the columns they need: the options' bids, asks, volume, and open interest,
+and the future's price. Three things are not as they are for a stock, and the
+functions take a keyword for each.
+
+- **Which future.** Each delivery month is a future with a price of its own, and
+  an option is on one of them -- one that goes on trading for some days after the
+  option has expired. Crude oil's options that expire in the middle of November
+  are on the December future (as are its weeklies from the middle of October on).
+  What an option is worth on its expiration day is set by *that future's* price
+  that day. So the price you expect, `expected-price`, is that future's price on
+  the expiration day: not the price of oil, nor the front month's future's (which
+  can be dollars away, when the months are priced apart), nor what the future
+  will be at delivery. The search takes the underlying's name and price from the
+  options it is of. If the options that expire on one day are on more than one
+  future, it is an error that says which, with their prices;
+  `:underlying "CLZ6"` chooses one, and the search is of that future's options
+  alone. (A chain of stock's options has just the one underlying, and never
+  needs it.)
+- **How much a contract is.** A contract of crude oil's options is for 1,000
+  barrels, not 100 shares. `:contract-size` says how many of the underlying's
+  units, and `:unit` what to call one, so that what is said of a contract is in
+  its dollars (the price times `:contract-size`) and in its words: `a barrel`,
+  `1,000 barrels`, and the `profit, for a barrel` on a chart's axis. Some of the
+  usual ones (check the exchange's specifications for the contract you trade):
+
+  | Future | `:contract-size` | `:unit` |
+  |---|---|---|
+  | crude oil, `CL` | 1000 | `"barrel"` |
+  | natural gas, `NG` | 10000 | `"MMBtu"` |
+  | gold, `GC` | 100 | `"ounce"` |
+  | silver, `SI` | 5000 | `"ounce"` |
+  | corn, `ZC` | 50 (prices are in cents: a cent is $50 of 5,000 bushels) | `"bushel"` |
+
+  For corn the words that count the units of the kinds with shares say 50
+  bushels where the contract is 5,000, and its prices are in cents: the
+  dollars are right. The displays show prices to the cent, so natural gas's,
+  quoted to a tenth of a cent, are rounded there; the tables hold them exactly.
+- **The future is not paid for.** In the kinds with shares the shares are the
+  future, bought: its profit is the same as that of shares bought at its price,
+  but you put up only margin, a part of the price, for it. The cost and the most
+  to lose count all of its price, as they do for shares, so the ratio of these
+  kinds (`long-stock`, `covered-call`, `protective-put`, `collar`) is for each
+  dollar of that, not of the margin. The kinds of options alone have nothing of
+  the sort to count.
+
+The orders are Schwab's, for a stock's options; for a future's they are not made
+(an error says so), and the displays leave out how to order. Analysis only:
+`tastytrade-option-chain` and the functions here only read.
+
+```lisp
+(define day (date 2026 11 20))
+(define crude
+  (make-table "symbol" (vector "./CLZ6 LOZ6  261120C94" "./CLZ6 LOZ6  261120C96" "./CLZ6 LOZ6  261120C98"
+                               "./CLZ6 LOZ6  261120P94" "./CLZ6 LOZ6  261120P96" "./CLZ6 LOZ6  261120P98"
+                               "./CLX6 LOX6  261120C96" "./CLX6 LOX6  261120P96")
+              "type" (vector "Call" "Call" "Call" "Put" "Put" "Put" "Call" "Put")
+              "strike" (vector 94.0 96.0 98.0 94.0 96.0 98.0 96.0 96.0)
+              "expiration-date" (vector day day day day day day day day)
+              "underlying" (vector "CLZ6" "CLZ6" "CLZ6" "CLZ6" "CLZ6" "CLZ6" "CLX6" "CLX6")
+              "underlying-price" (vector 96.0 96.0 96.0 96.0 96.0 96.0 97.5 97.5)
+              "bid" (vector 2.9 1.9 1.0 0.8 1.7 3.0 3.2 1.4)
+              "ask" (vector 3.1 2.1 1.2 1.0 1.9 3.2 3.4 1.6)
+              "mid" (vector 3.0 2.0 1.1 0.9 1.8 3.1 3.3 1.5)
+              "volume" (vector 5 5 5 5 5 5 5 5) "open-interest" (vector 10 10 10 10 10 10 10 10)))
+; (option-spreads-for-chain crude 'bull-call day 99.0)   is an error: the options expiring on 2026-11-20 are on more
+; than one underlying: CLX6 at 97.5, CLZ6 at 96.0. Say which one, with :underlying
+(define spreads (option-spreads-for-chain crude 'bull-call day 99.0
+                                          :underlying "CLZ6" :contract-size 1000 :unit "barrel"))
+(spread-search-stock spreads)                                   ; => "CLZ6"
+(table-column (spread-search-spreads spreads) "strike-1")       ; => #(94.0 96.0 94.0)
+(table-column (spread-search-spreads spreads) "strike-2")       ; => #(98.0 98.0 96.0)
+(table-column (spread-search-spreads spreads) "cost")           ; => #(2.1 1.0999999 1.1999999)
+(table-column (spread-search-spreads spreads) "ratio")          ; => #(0.90476197 0.818182 0.66666675)
+(define covered (option-spreads-for-chain crude 'covered-call day 99.0
+                                          :underlying "CLX6" :contract-size 1000 :unit "barrel"))
+(spread-search-stock-price covered)                             ; => 97.5
+(table-column (spread-search-spreads covered) "cost")           ; => #(94.3)
+(spread-search-contract-size covered)                           ; => 1000
+(spread-search-unit covered)                                    ; => "barrel"
+```
+
+The bull call spread of the 94 and 98 calls costs 3.1 - 1.0 = 2.1 a barrel, which
+is 2,100 for a contract of 1,000 barrels. The covered call, on the November
+future's options, buys the future at 97.5 and sells the 96 call at 3.2. For the
+whole of the picture, `(show-option-positions (option-positions-for-chain chain
+day 99.0 :underlying "CLZ6" :contract-size 1000 :unit "barrel"))` ranks the best
+position of each kind, and `plot-option-profit` and `plot-option-positions` draw
+them, with the profit "for a barrel" up the side.
+
 #### The profit charts
 
 A position's profit on the expiration day -- up the side -- against the price
@@ -5745,7 +5858,7 @@ the most it can make and the most it can lose when they are within the chart
 (a long call has no limit to what it can make, and the long stock loses all it cost
 only with the stock at 0, far off the chart), and at the stock's price now and the
 price expected. The profits are for a share, as everywhere here: a contract is 100 times
-them. `save-chart` saves the chart, as for any other (`(save-chart "condor.png")`).
+them (`:contract-size` times, for a future's options, and the axis says "for a barrel"). `save-chart` saves the chart, as for any other (`(save-chart "condor.png")`).
 
 #### `(option-profit-curve search [:row r :low l :high h :points n])`
 The profit of one of a search's positions -- the best, unless `:row` says -- on
@@ -5806,14 +5919,16 @@ Gets the stock's options that expire on `expiration` from Schwab -- the calls
 and the puts, or only those the `:kinds` need -- and ranks the best position of
 each kind: see `option-positions-for-chain`. Returns a `position-comparison`.
 
-#### `(option-positions-for-chain chain expiration expected-price [:kinds k :prices p ...])`
+#### `(option-positions-for-chain chain expiration expected-price [:kinds k :prices p ... :underlying u :contract-size n :unit w])`
 The same for a chain you already have. `:kinds` is a list of the names of the
 kinds you want (the default is all seventeen); the other options are those of
-`option-spreads-for-chain`, which does the searching. A kind that needs puts,
-or calls, that the chain has none of on that day, and a kind of which no
-position can be made, are left out. Returns a `position-comparison`, whose
+`option-spreads-for-chain`, which does the searching, `:underlying`,
+`:contract-size`, and `:unit` among them. A kind that needs puts, or calls,
+that the chain has none of on that day (on the underlying), and a kind of which
+no position can be made, are left out. Returns a `position-comparison`, whose
 accessors are `position-comparison-stock`, `-stock-price`, `-expiration`,
-`-expected-price`, `-prices`, `-positions`, and `-searches`. Its table of
+`-expected-price`, `-prices`, `-contract-size`, `-unit`, `-positions`, and
+`-searches`. Its table of
 positions has a row for each kind, the best ratio first, with the columns `kind`;
 `position`, what it buys and sells in words; and `cost`, `max-loss`, `max-profit`,
 `worth`, `profit`, `ratio`, `breakeven-1`, and `breakeven-2`, as in the
