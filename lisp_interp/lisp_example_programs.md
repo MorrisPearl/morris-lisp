@@ -145,7 +145,8 @@ files in `examples/` and `lib/` from anywhere:
 | `vol_smile_example.lsp` | fitting the volatility smile to find options out of line | tastytrade |
 | `option_methods_example.lsp` | a stock's options valued three ways, next to the market | tastytrade, Schwab, Alpha Vantage |
 | `call_spread_example.lsp` | the best call spread for the price you expect | Schwab |
-| `option_spreads_example.lsp` | the best spread of any of ten kinds (butterfly, iron condor, straddle, ...) for the price you expect | Schwab |
+| `option_spreads_example.lsp` | the best position of one of seventeen kinds (spread, butterfly, iron condor, covered call, ...) for the price you expect | Schwab |
+| `option_positions_example.lsp` | the best of every kind side by side, with owning the stock among them | Schwab |
 | `tastytrade_example.lsp` | quotes, futures curves, option chains, and market metrics | tastytrade |
 
 **Economic data and pictures**
@@ -1240,11 +1241,12 @@ a short script to copy from.
 
 ## Prices, options, and trades
 
-Three of these scripts are **thin**: `option_methods_example.lsp` is 24 lines,
-`call_spread_example.lsp` 31, and `option_spreads_example.lsp` 34, a few calls of a library
-and a display of the result. The work, and the explanation, are in the library
-(`lib/option_methods.lsp`, `lib/call_spreads.lsp`, `lib/option_spreads.lsp`), whose header
-says how it works; the script is there to show the call. That is a deliberate convention for this project: put the work in `lib/*.lsp`
+Four of these scripts are **thin**: `option_methods_example.lsp` is 24 lines,
+`call_spread_example.lsp` 31, `option_spreads_example.lsp` 34, and
+`option_positions_example.lsp` 35, a few calls of a library and a display of the result. The
+work, and the explanation, are in the library (`lib/option_methods.lsp`, `lib/call_spreads.lsp`,
+`lib/option_spreads.lsp`, `lib/option_positions.lsp`), whose header says how it works; the
+script is there to show the call. That is a deliberate convention for this project: put the work in `lib/*.lsp`
 functions that can be called from a notebook, and keep the example to the call. The others
 here are longer tours: a series of steps, each with a comment saying what it shows.
 
@@ -1260,10 +1262,10 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   the comments show how to go on to prepare one and have Schwab preview it. The library,
   `lib/call_spreads.lsp`, has tests that check its search against a plain brute force
   on random chains.
-- **`option_spreads_example.lsp`** is the same for ten kinds of spread: it takes a stock, a
-  kind (`bull-call`, `bear-put`, `iron-condor`, `long-strangle`, ...), an expiration, and the
-  price you expect, and ranks every spread of the kind by the profit at your price as a share
-  of the most you can lose. It sends no order either. The interesting part is in the
+- **`option_spreads_example.lsp`** is the same for seventeen kinds of position: it takes a stock, a
+  kind (`bull-call`, `bear-put`, `iron-condor`, `long-strangle`, `long-call`, `covered-call`,
+  `collar`, ...), an expiration, and the price you expect, and ranks every position of the kind
+  by the profit at your price as a share of the most you can lose. It sends no order either. The interesting part is in the
   library, `lib/option_spreads.lsp`: it finds the spreads of every kind without a loop over
   strikes — the strikes become whole numbers of cents, so that "the same strike" and "the
   same width" are exact comparisons, and three vector builtins do the matching:
@@ -1273,6 +1275,19 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   once, by using the fact that a spread's profit is a line that bends only at its strikes.
   The tests check every kind against a plain Python calculation that tries every price from
   0 up in steps of a quarter, on random chains with several roots.
+- **`option_positions_example.lsp`** takes the same three words as `call_spread_example.lsp` --
+  a stock, an expiration, and the price you expect -- and shows the best position of *every*
+  kind in one ranking, with simply owning the stock among them. It is a layer over the one
+  above: `lib/option_positions.lsp` runs the search of each kind (the same function, with the
+  kind as the only difference) and puts the first row of each in a table, so there is no new
+  mathematics, only a comparison. What it shows is how much the answer depends on what is
+  compared: by the ratio of profit to the most you can lose, a butterfly or a condor tops the
+  list if you expect the stock to end where it pays, and the stock itself, which can lose all of
+  its price, is near the bottom; none of that says which is the better bet, only what each
+  makes at the one price you gave. Its kinds with shares are the lesson in how a plain
+  position is built out of parts: the shares are one leg whose worth is the stock's price, the
+  options are the others, the cost adds them, and the profit's slope at the top — the shares,
+  and the calls bought less sold — says whether the gain is limited.
 - **`investment_paths_example.lsp`** simulates an investment's future prices by copying blocks
   of consecutive days from its own history (a block bootstrap, which keeps the way returns
   cluster that independent days would lose), a thousand paths with a different seed for each so the

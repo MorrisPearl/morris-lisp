@@ -481,6 +481,28 @@ class TestLazyLoad(LispTestCase):
             self.assertShows("(twice 5 :by 3)", "15")             # keyword arguments too
             self.assertShows("(list (thrice 5) (twice 1) loads)", "(15 2 1)")   # loaded once, for both
 
+    def test_a_stub_called_while_another_stub_s_arguments_are_worked_out_does_not_load_the_file_again(self):
+        """In (show (make)), the stub of show is looked up first, and the call of make loads the file. The stub of show
+        must not load it a second time: that would make the file's structs new types, and the thing make made would not
+        be one of them."""
+        with tempfile.TemporaryDirectory() as d:
+            path = self.write_library(d, """
+              (set! loads (+ loads 1))
+              (defstruct thing size)
+              (define (make) (make-thing :size 3))
+              (define (show t) (* 10 (thing-size t)))""")
+            self.run_lisp("(define loads 0)")
+            self.run_lisp('(lazy-load "%s" make show thing-size)' % path)
+            self.assertShows("(show (make))", "30")
+            self.assertShows("loads", "1")
+            # (and a stub kept from before the load is still good, and doesn't load it either)
+            self.run_lisp('(lazy-load "%s" make2 show2)' % self.write_library(d, """
+              (set! loads2 (+ loads2 1))
+              (define (make2) 2)
+              (define (show2 x) (+ x 1))"""))
+            self.run_lisp("(define loads2 0) (define kept show2)")
+            self.assertShows("(list (make2) (kept 5) (kept 6) (show2 1) loads2)", "(2 6 7 2 1)")
+
     def test_a_stub_says_what_it_will_load(self):
         self.run_lisp('(lazy-load "solver.lsp" ridders)')
         self.run_lisp("(pretty-print-function ridders)")

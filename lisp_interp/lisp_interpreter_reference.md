@@ -364,9 +364,12 @@ of them is. (Emacs Lisp calls this `autoload`.) It returns the names.
 
 Each name is first a stand-in, a *stub*, which the file's own definition
 replaces when it's loaded: the stubs of all the names at once, since the
-file defines them all, so the file is loaded once. A stub that the file
-doesn't replace is an error (`lazy-load: solver.lsp didn't define ...`),
-not a loop. It works for functions, not for a file's macros or variables:
+file defines them all, so the file is loaded once -- even when one stub is
+called while the arguments of another are worked out, as in `(show-things
+(make-things))` the first time either is used: the stub that finds the file
+loaded already just calls the function there. A stub that the file doesn't
+replace is an error (`lazy-load: solver.lsp didn't define ...`), not a
+loop. It works for functions, not for a file's macros or variables:
 a macro is needed before the code that uses it runs, and a variable isn't
 called. `lib/autoloads.lsp` has the lazy-loads for the libraries that come
 with the interpreter, and `init.lsp` loads it, so that `(option-methods

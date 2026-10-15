@@ -780,16 +780,24 @@ one of names (unless allow-other-keys)."
 ;
 ; Each name is defined as a stand-in, a "stub", which the file's own
 ; definition replaces when it's loaded -- the stubs of all the names at
-; once, since the file defines them all. A stub looks up its name again
-; after the load, so it finds the file's function there:
+; once, since the file defines them all. A stub looks up its name when it
+; is called. If the name is still the stub, it loads the file, and looks
+; again, to find the file's function there. If the name is not the stub, the
+; file has been loaded already -- by another of its stubs, called while the
+; arguments of this one were worked out, as in (show-things (make-things))
+; -- and loading it again would make its structs new types, so the stub
+; just calls the function that is there:
 ;
-;   (define (ridders . %arguments-2)
-;     "Loads solver.lsp, which defines ridders, and calls it."
-;     (let ((%stub-1 ridders))
-;       (load "solver.lsp")
-;       (when (eq? ridders %stub-1)
-;         (error "lazy-load:" "solver.lsp" "didn't define" 'ridders))
-;       (apply ridders %arguments-2)))
+;   (define ridders
+;     (let ((%stub-1 #f))
+;       (set! %stub-1 (lambda %arguments-2
+;                       "Loads solver.lsp, which defines ridders, and calls it."
+;                       (when (eq? ridders %stub-1)
+;                         (load "solver.lsp")
+;                         (when (eq? ridders %stub-1)
+;                           (error "lazy-load:" "solver.lsp" "didn't define" 'ridders)))
+;                       (apply ridders %arguments-2)))
+;       %stub-1))
 ;
 ; It works for functions, and not for a file's macros or variables: a
 ; macro is needed before the code that uses it is evaluated, and a
@@ -802,13 +810,16 @@ one of names (unless allow-other-keys)."
     (error "lazy-load: expected the names of functions, not" name))
   (let ((stub (gensym "stub"))
         (arguments (gensym "arguments")))
-    `(define ,(cons name arguments)               ; (name . arguments): every argument, as a list
-       ,(format "Loads {}, which defines {}, and calls it." file name)
-       (let ((,stub ,name))
-         (load ,file)
-         (when (eq? ,name ,stub)
-           (error "lazy-load:" ,file "didn't define" ',name))
-         (apply ,name ,arguments)))))
+    `(define ,name
+       (let ((,stub #f))
+         (set! ,stub (lambda ,arguments               ; every argument, as a list
+                       ,(format "Loads {}, which defines {}, and calls it." file name)
+                       (when (eq? ,name ,stub)        ; (if not, the file has been loaded since)
+                         (load ,file)
+                         (when (eq? ,name ,stub)
+                           (error "lazy-load:" ,file "didn't define" ',name)))
+                       (apply ,name ,arguments)))
+         ,stub))))
 
 (defmacro lazy-load (file . names)
   (when (null? names)
