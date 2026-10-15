@@ -3576,6 +3576,17 @@ functions:
 (table-add-column t "pool" "P1")   ; => (("balance" . #(100 200)) ("rate" . #(6.0 4.5)) ("pool" . #("P1" "P1")))
 ```
 
+#### `(table-add-columns t columns)`
+The table with several columns added, one after another as `table-add-column`
+adds one. `columns` is a list of `(name . values)` pairs, each `values` a
+vector or a single value:
+
+```lisp
+(define t (make-table "balance" #(100 200)))
+(table-add-columns t (list (cons "rate" #(6.0 4.5)) (cons "pool" "P1")))
+; => (("balance" . #(100 200)) ("rate" . #(6.0 4.5)) ("pool" . #("P1" "P1")))
+```
+
 #### `(table-rename-column t old new)`
 The table with one column renamed.
 
@@ -5563,7 +5574,7 @@ The Python files:
 | `lisp_google.py` | `google-login`, `google-sheet`: tables sent to a new Google spreadsheet |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-option-chain`, `schwab-orders`, `schwab-spread-order`, `schwab-multi-leg-order`, ...: your Schwab accounts |
 | `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `bootstrap-days`, `volatility-model`, `volatility-history`, `volatility-forecast`, `option-value`, `option-payoffs`: simulated prices of an investment, with its volatility starting at today's if asked, and what options on it are worth |
-| `lisp_calendar.py` | `trading-day?`, `add-trading-days`, `trading-days-between`, `nyse-holidays`, ...: the NYSE's trading days |
+| `lisp_calendar.py` | `trading-day?`, `add-trading-days`, `trading-days-between`, `market-open?`, `nyse-holidays`, ...: the NYSE's trading days |
 | `lisp_futures.py` | `futures-curve-fit`, `futures-leg-carry`: a futures curve's rich and cheap contracts, and its carry |
 | `lisp_portfolio.py` | `combine-returns`, `bootstrap-paths`, `portfolio-value`, `covariance-matrix`, `correlation-matrix`, `minimum-variance-weights`, `mean-variance-weights`, ...: portfolios |
 | `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |

@@ -50,7 +50,6 @@ import base64
 import datetime
 import importlib.util
 import json
-import os
 import re
 import time
 import urllib.error
@@ -62,6 +61,7 @@ from lisp_core import (
     Keyword, LispDate, LispError, LispHashTable, LispString, LispVector, NIL, Pair, date_argument, keyword_options,
     is_true, pairs_to_list,
 )
+import lisp_data_common
 from lisp_data_common import credential, text_list
 from lisp_http import json_to_lisp
 from lisp_tables import table_from_tuples
@@ -127,24 +127,16 @@ def app_settings(credentials_path, who):
 
 def token_file(credentials_path):
     """Where the tokens are kept: schwab_tokens.json, next to the credentials file."""
-    return os.path.join(os.path.dirname(os.path.abspath(str(credentials_path))), "schwab_tokens.json")
+    return lisp_data_common.token_file(credentials_path, "Schwab")
 
 
 def save_tokens(credentials_path, tokens):
     """Save the tokens, readable only by you."""
-    path = token_file(credentials_path)
-    descriptor = os.open(path + ".part", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w") as f:
-        json.dump(tokens, f)
-    os.replace(path + ".part", path)
+    lisp_data_common.save_tokens(credentials_path, "Schwab", tokens)
 
 
 def load_tokens(credentials_path, who):
-    try:
-        with open(token_file(credentials_path)) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        raise LispError("%s: not signed in to Schwab -- sign in with (schwab-login creds)" % who)
+    return lisp_data_common.load_tokens(credentials_path, "Schwab", who)
 
 
 def token_request(credentials_path, form, who):

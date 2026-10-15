@@ -123,6 +123,14 @@ def _doc_value_matches(actual, documented):
     return documented.startswith(actual) and documented[len(actual):len(actual) + 1] in (" ", ",", "\t")
 
 
+def _fresh_env():
+    """A new environment, with the libraries' functions callable (init.lsp's autoloads), as at the console: an
+    example that calls one is run, not skipped as using a name that isn't there."""
+    env = lisp_builtins.make_global_env(output=lambda s: None)
+    lisp_core.run_file(os.path.join(LIB, "autoloads.lsp"), env)
+    return env
+
+
 class TestReferenceDocExamples(unittest.TestCase):
 
     MIN_VERIFIED = 150          # guard: the checker must not silently verify nothing
@@ -169,10 +177,10 @@ class TestReferenceDocExamples(unittest.TestCase):
             if section is not None and "; =>" not in block and "(load " not in block:
                 continue                    # an excerpt from a program, shown for reading, not for running
             if section is None:
-                env = lisp_builtins.make_global_env(output=lambda s: None)
+                env = _fresh_env()
             else:
                 if section not in shared_envs:
-                    shared_envs[section] = lisp_builtins.make_global_env(output=lambda s: None)
+                    shared_envs[section] = _fresh_env()
                 env = shared_envs[section]
             lisp_core.debug_state.reset()       # breakpoints belong to the whole process, not one block
             if use_alarm:

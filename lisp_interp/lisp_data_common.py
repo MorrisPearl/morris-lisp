@@ -11,8 +11,9 @@ whose path is the first argument of most of the data functions.
 import datetime
 import json
 import math
+import os
 
-from lisp_core import LispDate, LispError, LispString, LispVector, Pair, pairs_to_list
+from lisp_core import LispDate, LispError, LispHashTable, LispString, LispVector, Pair, pairs_to_list
 from lisp_tables import column_vector, make_table_value
 
 
@@ -49,8 +50,47 @@ def credential(credentials_path, name, who, needed_for=None):
 
 
 # ---------------------------------------------------------------------------
+# Sign-in tokens (Schwab's and Google's: the provider is named as it is in a message, "Schwab")
+# ---------------------------------------------------------------------------
+
+def token_file(credentials_path, provider):
+    """Where a provider's tokens are kept: schwab_tokens.json, for "Schwab", next to the credentials file."""
+    return os.path.join(os.path.dirname(os.path.abspath(str(credentials_path))), provider.lower() + "_tokens.json")
+
+
+def save_tokens(credentials_path, provider, tokens):
+    """Save the provider's tokens, readable only by you."""
+    path = token_file(credentials_path, provider)
+    descriptor = os.open(path + ".part", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as f:
+        json.dump(tokens, f)
+    os.replace(path + ".part", path)
+
+
+def load_tokens(credentials_path, provider, who):
+    """The provider's saved tokens, or an error that says to sign in."""
+    try:
+        with open(token_file(credentials_path, provider)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        raise LispError("%s: not signed in to %s -- sign in with (%s-login creds)" % (who, provider, provider.lower()))
+
+
+# ---------------------------------------------------------------------------
 # Arguments
 # ---------------------------------------------------------------------------
+
+def name_value_pairs(parameters, who):
+    """A list of (name . value) pairs, or a hash table, as a Python list of (name, value)."""
+    if isinstance(parameters, LispHashTable):
+        return list(parameters.table.items())
+    pairs = []
+    for entry in pairs_to_list(parameters):
+        if not isinstance(entry, Pair):
+            raise LispError("%s: parameters must be (name . value) pairs, not %r" % (who, entry))
+        pairs.append((entry.car, entry.cdr))
+    return pairs
+
 
 def text_list(value, who, what):
     """A string, or a list or vector of them, as a Python list of strings."""

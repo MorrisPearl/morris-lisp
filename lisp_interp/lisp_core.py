@@ -201,14 +201,6 @@ def _lisp_scalar(x):
     return x.item() if isinstance(x, np.generic) else x
 
 
-def _narrow_vector_result(arr):
-    """Convert a float64 result of numpy arithmetic back to
-    LispVector.FLOAT_DTYPE. Numpy promotes int32 + float32, or float32 times
-    a Python float, to float64, which would double a large vector's memory
-    for no benefit."""
-    return arr.astype(LispVector.FLOAT_DTYPE) if arr.dtype == np.float64 else arr
-
-
 def _value_fits_dtype(x, dtype):
     """True if number x can be stored in a numpy array of this dtype
     exactly. Checked beforehand because numpy doesn't always complain:
@@ -1308,6 +1300,105 @@ def expand_macro_call(macro, form):
     return expansion
 
 
+def define_struct(args, env):
+    """(defstruct name slot...) or (defstruct (name (:include parent)) slot...); args is what follows the
+    defstruct. Each slot is a symbol (default '()) or (slot default-expr). Defines, in env:
+      make-<name>          a constructor taking one keyword argument per slot --
+                           an ordinary &key Procedure whose body calls %make-struct
+      <name>-<slot>        an accessor for each slot, inherited slots included
+      <name>-<slot>-set!   a setter for each slot
+      <name>?              a predicate
+      copy-<name>          a shallow copy
+    Each accepts an instance of this type or of any type that includes it. Returns the type's name."""
+    name_form = args.car
+    parent_type = None
+    own_slots = []
+    if isinstance(name_form, Pair):
+        type_name = name_form.car
+        opt_p = name_form.cdr
+        while isinstance(opt_p, Pair):
+            opt = opt_p.car
+            if (isinstance(opt, Pair) and isinstance(opt.car, Keyword)
+                    and opt.car == ":include" and isinstance(opt.cdr, Pair)):
+                parent_name = opt.cdr.car
+                parent_type = env.lookup_or_none(Symbol("%%struct-type-%s" % parent_name))
+                if parent_type is None:
+                    raise LispError(
+                        "defstruct: :include parent %r is not a known struct type "
+                        "(define it with defstruct first)" % (parent_name,))
+                # (:include parent (slot new-default) ...) changes an inherited slot's
+                # default, the same as redeclaring that slot in the main slot list.
+                override_p = opt.cdr.cdr
+                while isinstance(override_p, Pair):
+                    override_spec = override_p.car
+                    if not isinstance(override_spec, Pair):
+                        raise LispError(
+                            "defstruct: malformed :include slot override %r "
+                            "(expected (slot-name default-expr))" % (override_spec,))
+                    own_slots.append((override_spec.car, override_spec.cdr.car))
+                    override_p = override_p.cdr
+            else:
+                raise LispError("defstruct: unsupported option in %r (only :include is supported)"
+                                 % (name_form,))
+            opt_p = opt_p.cdr
+    else:
+        type_name = name_form
+
+    p = args.cdr
+    while isinstance(p, Pair):
+        spec = p.car
+        if isinstance(spec, Pair):
+            own_slots.append((spec.car, spec.cdr.car))
+        else:
+            own_slots.append((spec, None))
+        p = p.cdr
+    struct_type = LispStructType(type_name, own_slots, parent=parent_type)
+    slots = struct_type.slots
+    env[Symbol("%%struct-type-%s" % type_name)] = struct_type  # for a later defstruct's :include
+
+    plist_items = []
+    for slot_name, _ in slots:
+        plist_items.append(list_to_pairs([Symbol("quote"), slot_name]))
+        plist_items.append(slot_name)
+    list_call = Pair(Symbol("list"), list_to_pairs(plist_items))
+    make_body = list_to_pairs([Symbol("%make-struct"), struct_type, list_call])
+    env[Symbol("make-%s" % type_name)] = Procedure(
+        [], [make_body], env, rest_param=None, keyword_specs=slots,
+        name=Symbol("make-%s" % type_name))
+
+    def make_accessor(slot_name):
+        def accessor(s):
+            if not (isinstance(s, LispStruct) and s.struct_type.is_a(struct_type)):
+                raise LispError("%s-%s: not a %s: %r" % (type_name, slot_name, type_name, s))
+            return s.values[slot_name]
+        return accessor
+
+    def make_setter(slot_name):
+        def setter(s, v):
+            if not (isinstance(s, LispStruct) and s.struct_type.is_a(struct_type)):
+                raise LispError("%s-%s-set!: not a %s: %r" % (type_name, slot_name, type_name, s))
+            s.values[slot_name] = v
+            return NIL
+        return setter
+
+    for slot_name, _ in slots:
+        define_builtin(env, "%s-%s" % (type_name, slot_name), make_accessor(slot_name))
+        define_builtin(env, "%s-%s-set!" % (type_name, slot_name), make_setter(slot_name))
+
+    define_builtin(env, "%s?" % type_name,
+                   lambda s, t=struct_type: isinstance(s, LispStruct) and s.struct_type.is_a(t))
+
+    def copier(s, t=struct_type):
+        # A shallow copy, of the instance's own type -- so copying a child
+        # instance through a parent's copy-<name> keeps its extra slots.
+        if not (isinstance(s, LispStruct) and s.struct_type.is_a(t)):
+            raise LispError("copy-%s: not a %s: %r" % (type_name, type_name, s))
+        return LispStruct(s.struct_type, dict(s.values))
+    define_builtin(env, "copy-%s" % type_name, copier)
+
+    return type_name
+
+
 def eval_special_form(op, args, env, control_stack, value_stack):
     """Handle one of the special forms in SPECIAL_FORMS by pushing whatever
     control frames are needed to carry out its evaluation."""
@@ -1385,102 +1476,7 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         eval_or(pairs_to_list(args), env, control_stack, value_stack)
 
     elif op == "defstruct":
-        # (defstruct name slot...) or (defstruct (name (:include parent)) slot...).
-        # Each slot is a symbol (default '()) or (slot default-expr). Defines:
-        #   make-<name>          a constructor taking one keyword argument per slot --
-        #                        an ordinary &key Procedure whose body calls %make-struct
-        #   <name>-<slot>        an accessor for each slot, inherited slots included
-        #   <name>-<slot>-set!   a setter for each slot
-        #   <name>?              a predicate
-        #   copy-<name>          a shallow copy
-        # Each accepts an instance of this type or of any type that includes it.
-        name_form = args.car
-        parent_type = None
-        own_slots = []
-        if isinstance(name_form, Pair):
-            type_name = name_form.car
-            opt_p = name_form.cdr
-            while isinstance(opt_p, Pair):
-                opt = opt_p.car
-                if (isinstance(opt, Pair) and isinstance(opt.car, Keyword)
-                        and opt.car == ":include" and isinstance(opt.cdr, Pair)):
-                    parent_name = opt.cdr.car
-                    parent_type = env.lookup_or_none(Symbol("%%struct-type-%s" % parent_name))
-                    if parent_type is None:
-                        raise LispError(
-                            "defstruct: :include parent %r is not a known struct type "
-                            "(define it with defstruct first)" % (parent_name,))
-                    # (:include parent (slot new-default) ...) changes an inherited slot's
-                    # default, the same as redeclaring that slot in the main slot list.
-                    override_p = opt.cdr.cdr
-                    while isinstance(override_p, Pair):
-                        override_spec = override_p.car
-                        if not isinstance(override_spec, Pair):
-                            raise LispError(
-                                "defstruct: malformed :include slot override %r "
-                                "(expected (slot-name default-expr))" % (override_spec,))
-                        own_slots.append((override_spec.car, override_spec.cdr.car))
-                        override_p = override_p.cdr
-                else:
-                    raise LispError("defstruct: unsupported option in %r (only :include is supported)"
-                                     % (name_form,))
-                opt_p = opt_p.cdr
-        else:
-            type_name = name_form
-
-        p = args.cdr
-        while isinstance(p, Pair):
-            spec = p.car
-            if isinstance(spec, Pair):
-                own_slots.append((spec.car, spec.cdr.car))
-            else:
-                own_slots.append((spec, None))
-            p = p.cdr
-        struct_type = LispStructType(type_name, own_slots, parent=parent_type)
-        slots = struct_type.slots
-        env[Symbol("%%struct-type-%s" % type_name)] = struct_type  # for a later defstruct's :include
-
-        plist_items = []
-        for slot_name, _ in slots:
-            plist_items.append(list_to_pairs([Symbol("quote"), slot_name]))
-            plist_items.append(slot_name)
-        list_call = Pair(Symbol("list"), list_to_pairs(plist_items))
-        make_body = list_to_pairs([Symbol("%make-struct"), struct_type, list_call])
-        env[Symbol("make-%s" % type_name)] = Procedure(
-            [], [make_body], env, rest_param=None, keyword_specs=slots,
-            name=Symbol("make-%s" % type_name))
-
-        def make_accessor(slot_name):
-            def accessor(s):
-                if not (isinstance(s, LispStruct) and s.struct_type.is_a(struct_type)):
-                    raise LispError("%s-%s: not a %s: %r" % (type_name, slot_name, type_name, s))
-                return s.values[slot_name]
-            return accessor
-
-        def make_setter(slot_name):
-            def setter(s, v):
-                if not (isinstance(s, LispStruct) and s.struct_type.is_a(struct_type)):
-                    raise LispError("%s-%s-set!: not a %s: %r" % (type_name, slot_name, type_name, s))
-                s.values[slot_name] = v
-                return NIL
-            return setter
-
-        for slot_name, _ in slots:
-            define_builtin(env, "%s-%s" % (type_name, slot_name), make_accessor(slot_name))
-            define_builtin(env, "%s-%s-set!" % (type_name, slot_name), make_setter(slot_name))
-
-        define_builtin(env, "%s?" % type_name,
-                       lambda s, t=struct_type: isinstance(s, LispStruct) and s.struct_type.is_a(t))
-
-        def copier(s, t=struct_type):
-            # A shallow copy, of the instance's own type -- so copying a child
-            # instance through a parent's copy-<name> keeps its extra slots.
-            if not (isinstance(s, LispStruct) and s.struct_type.is_a(t)):
-                raise LispError("copy-%s: not a %s: %r" % (type_name, type_name, s))
-            return LispStruct(s.struct_type, dict(s.values))
-        define_builtin(env, "copy-%s" % type_name, copier)
-
-        value_stack.append(type_name)
+        value_stack.append(define_struct(args, env))
 
     elif op == "backtrace":
         # (backtrace) prints the current chain of calls, as an error report would.

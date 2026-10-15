@@ -84,7 +84,7 @@ from then."
            (call? (= type "Call"))
            (iv (lambda (price) (black-implied-vol call? price forward strike T discount)))
            (iv-mid (iv mid)))
-      (make-table-from-columns
+      (table-add-columns
         chain
         (list (cons "T" T)
               (cons "discount" discount)
@@ -94,12 +94,6 @@ from then."
               (cons "iv-mid" iv-mid)
               (cons "iv-ask" (iv ask))
               (cons "Y" (* T iv-mid iv-mid)))))))
-
-(define (make-table-from-columns table columns)
-  "table with each (name . vector) in columns added."
-  (dolist (column columns)
-    (set! table (table-add-column table (car column) (cdr column))))
-  table)
 
 (define (liquid-options options max-vol-spread out-of-the-money-only)
   "The options worth fitting to: traded today, with open interest, a bid,
@@ -155,7 +149,7 @@ out-of-the-money-only, only calls with K >= 0 and puts with K <= 0."
            (model-price (black-price (= type "Call") forward strike T discount fitted-iv))
            (rich (> bid model-price))
            (cheap (< ask model-price)))
-      (make-table-from-columns
+      (table-add-columns
         options
         (list (cons "fitted-iv" fitted-iv)
               (cons "iv-residual" (- iv-mid fitted-iv))

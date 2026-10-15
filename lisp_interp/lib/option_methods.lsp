@@ -73,27 +73,10 @@
 ; The options to value
 ; ---------------------------------------------------------------------------
 
-(define (option-methods--market-open?)
-  "Whether the stock market is open now: from 9:30 to 4:00, New York time, on
-a trading day. (This takes the computer's clock to be on New York time.)"
-  (let* ((now (current-time))
-         (minutes (+ (* 60 (list-ref now 3)) (list-ref now 4))))      ; since midnight
-    (and (trading-day? (today)) (>= minutes (+ (* 9 60) 30)) (< minutes (* 16 60)))))
-
-(define (option-methods--trading-days start-date expirations)
-  "The trading days after start-date, up to each expiration, as a vector."
-  (list->vector (map (lambda (expiration) (trading-days-between start-date expiration)) (vector->list expirations))))
-
 (define (option-methods--dividends-present-value schedule rate days)
   "The present value, at the interest rate, of the schedule's dividends in the next `days` trading days."
   (let ((paid (table-filter schedule (<= (table-column schedule "day") days))))
     (vector-sum (* (table-column paid "amount") (exp (- (* rate (/ (table-column paid "day") 252.0))))))))
-
-(define (option-methods--add-columns table columns)
-  "The table with each (name . vector) of columns added to it."
-  (if (null? columns)
-      table
-      (option-methods--add-columns (table-add-column table (car (car columns)) (cdr (car columns))) (cdr columns))))
 
 (define (option-methods--with-market-vols options spot schedule rate)
   "The options, with columns added: years (to expiration, in years of 252
@@ -106,7 +89,7 @@ formula (iv-bid, iv-ask, and market-vol)."
            (ex-dividend (- spot (list->vector (map (lambda (d) (option-methods--dividends-present-value schedule rate d))
                                                    (vector->list days)))))
            (vol-of (lambda (price) (implied-vol price type ex-dividend strike years rate))))
-      (option-methods--add-columns options (list (cons "years" years)
+      (table-add-columns options (list (cons "years" years)
                                                  (cons "ex-dividend-price" ex-dividend)
                                                  (cons "iv-bid" (vol-of bid))
                                                  (cons "iv-ask" (vol-of ask))
@@ -185,7 +168,7 @@ does on), and paths-probability (what share of them)."
          (log-returns (table-column returns "log-return"))
          (moves (- log-returns (vector-mean log-returns)))
          (volatility (sqrt (* 252 (vector-mean (* moves moves)))))      ; as the paths have it
-         (dated (table-add-column chain "days" (option-methods--trading-days start-date
+         (dated (table-add-column chain "days" (trading-days-between start-date
                                                                            (table-column chain "expiration-date"))))
          (ahead (table-filter dated (> (table-column dated "days") 0)))      ; not one that expires today
          (schedule (if (null? dividends)
@@ -207,7 +190,7 @@ and its dividends (from Alpha Vantage), and value its liquid options three
 ways: see option-methods-for-chain, which takes the other options, and
 gives the result. Says so if the market is closed, when the bids and asks
 are the last close's."
-  (unless (option-methods--market-open?)
+  (unless (market-open?)
     (display "The market is closed now: the bids and asks are from its last close.\n\n"))
   (let* ((chain (tastytrade-option-chain creds symbol months strikes))
          (dividends (alpha-vantage-dividends creds symbol))

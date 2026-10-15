@@ -1331,6 +1331,26 @@ class TestTradingCalendar(LispTestCase):
         self.assertShows("(trading-days-between (date 2026 11 21) (date 2026 11 22))", "0")    # a weekend
         self.assertShows("(trading-days-between (date 2025 12 31) (date 2026 12 31))", "251")  # 261 weekdays less 10 holidays
 
+    def test_counting_trading_days_to_each_of_a_vector_of_dates(self):
+        dates = "(vector (date 2026 11 23) (date 2026 11 30) (date 2026 11 20) (date 2026 11 30))"
+        self.assertShows("(trading-days-between (date 2026 11 20) %s)" % dates, "#(1 5 0 5)")
+        self.assertShows("(trading-days-between %s (date 2026 12 1))" % dates, "#(5 1 6 1)")
+        self.assertShows("(trading-days-between (vector (date 2026 11 20) (date 2026 11 23)) (vector (date 2026 11 30) (date 2026 11 20)))",
+                         "#(5 -1)")
+        self.assertShows("(trading-days-between (date 2026 11 20) (vector))", "#()")
+        self.assertLispError("(trading-days-between (vector (date 2026 11 20)) (vector (date 2026 11 23) (date 2026 11 30)))",
+                             "the vectors of dates are 1 and 2 long")
+        self.assertLispError("(trading-days-between (date 2026 11 20) (vector (date 2026 11 23) 3))", "the end must be a date")
+
+    def test_the_market_is_open_from_half_past_nine_to_four_on_a_trading_day(self):
+        for moment, is_open in [(datetime.datetime(2026, 10, 14, 10, 30), True), (datetime.datetime(2026, 10, 14, 9, 29), False),
+                                (datetime.datetime(2026, 10, 14, 9, 30), True), (datetime.datetime(2026, 10, 14, 15, 59), True),
+                                (datetime.datetime(2026, 10, 14, 16, 0), False), (datetime.datetime(2026, 10, 17, 11, 0), False),
+                                (datetime.datetime(2026, 11, 26, 11, 0), False)]:           # (a Saturday; Thanksgiving)
+            with self.subTest(moment=moment):
+                with mock.patch.object(lisp_clock, "now", lambda moment=moment: moment):
+                    self.assertShows("(market-open?)", "#t" if is_open else "#f")
+
     def test_adding_and_counting_agree(self):
         # (counting back from a day the market is closed isn't the opposite of counting forward: the
         # trading days "after" a Saturday don't include that Saturday's own Friday)
@@ -1350,6 +1370,18 @@ class TestTradingCalendar(LispTestCase):
         self.assertLispError("(trading-days-between (date 2026 10 7) 3)", "the end must be a date")
         self.assertLispError("(nyse-holidays 2026.0)", "the year must be a whole number")
         self.assertLispError("(nyse-holidays 0)", "the year must be a whole number")
+
+
+class TestTablesOfBuiltins(unittest.TestCase):
+
+    def test_no_name_is_in_two_tables_of_builtins(self):
+        """Every environment starts with all of them; a name in two would be silently the one added last."""
+        seen = {}
+        for table in lisp_builtins.SHARED_BUILTIN_TABLES:
+            for name in table:
+                self.assertNotIn(name, seen, "%s is in two tables of builtins" % name)
+                seen[name] = table
+        self.assertGreater(len(seen), 400)
 
 
 if __name__ == "__main__":

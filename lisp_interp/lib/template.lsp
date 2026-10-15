@@ -285,32 +285,41 @@ string directly otherwise."
   (car (template--parse-nodes template-string 0 '())))
 
 ; ---------------------------------------------------------------------
-; Plain-text rendering.
+; Rendering, in both modes: the one walk over the nodes.
 ; ---------------------------------------------------------------------
 
-(define (template--render-nodes nodes bindings)
-  (cond
-    ((null? nodes) "")
-    (else (string-append (template--render-node (car nodes) bindings)
-                          (template--render-nodes (cdr nodes) bindings)))))
+; Both modes are one walk over the nodes (text, each, and if), which gives
+; (cons text params): the text of what is rendered, and the values that go
+; with it -- none, in plain text. They differ only in what a {{name}} becomes,
+; which is the one thing that is given to the walk: render-var, a procedure
+; from the node and the bindings to such a pair.
 
-(define (template--render-each-items nodes items bindings itemvar sep)
+(define (template--render-nodes nodes bindings render-var)
+  "The nodes rendered one after another: (cons text params)."
+  (if (null? nodes)
+      (cons "" '())
+      (let ((first (template--render-node (car nodes) bindings render-var))
+            (rest (template--render-nodes (cdr nodes) bindings render-var)))
+        (cons (string-append (car first) (car rest))
+              (append (cdr first) (cdr rest))))))
+
+(define (template--render-each-items nodes items bindings itemvar sep render-var)
+  "The nodes rendered for each of the items, with sep between: (cons text params)."
   (cond
-    ((null? items) "")
+    ((null? items) (cons "" '()))
     ((null? (cdr items))
-     (template--render-nodes nodes (template--alist-set bindings itemvar (car items))))
+     (template--render-nodes nodes (template--alist-set bindings itemvar (car items)) render-var))
     (else
-     (string-append
-       (template--render-nodes nodes (template--alist-set bindings itemvar (car items)))
-       sep
-       (template--render-each-items nodes (cdr items) bindings itemvar sep)))))
+     (let ((first-part (template--render-nodes nodes (template--alist-set bindings itemvar (car items)) render-var))
+           (rest-part (template--render-each-items nodes (cdr items) bindings itemvar sep render-var)))
+       (cons (string-append (car first-part) sep (car rest-part))
+             (append (cdr first-part) (cdr rest-part)))))))
 
-(define (template--render-node node bindings)
+(define (template--render-node node bindings render-var)
   (define kind (car node))
   (cond
-    ((eq? kind 'text) (list-ref node 1))
-    ((eq? kind 'var) (format-value (template--alist-get bindings (list-ref node 1) "")
-                                   (list-ref node 2)))
+    ((eq? kind 'text) (cons (list-ref node 1) '()))
+    ((eq? kind 'var) (render-var node bindings))
     ((eq? kind 'each)
      (let* ((itemvar (list-ref node 1))
             (listname (list-ref node 2))
@@ -318,13 +327,24 @@ string directly otherwise."
             (body (list-ref node 4))
             (items (template--as-list (template--alist-get bindings listname '())))
             (sep (if (null? sepvar) "" (number->string (template--alist-get bindings sepvar "")))))
-       (template--render-each-items body items bindings itemvar sep)))
+       (template--render-each-items body items bindings itemvar sep render-var)))
     ((eq? kind 'if)
      (let ((condval (template--alist-get bindings (list-ref node 1) #f)))
        (if (template--truthy? condval)
-           (template--render-nodes (list-ref node 2) bindings)
-           (template--render-nodes (list-ref node 3) bindings))))
+           (template--render-nodes (list-ref node 2) bindings render-var)
+           (template--render-nodes (list-ref node 3) bindings render-var))))
     (else (error "template-render: unknown node kind" kind))))
+
+(define (template--parsed template)
+  "The template's nodes: it, if it is already parsed, or what template-parse makes of the string."
+  (if (string? template) (template-parse template) template))
+
+; ---------------------------------------------------------------------
+; Plain-text rendering: a {{name}} is its value, formatted.
+; ---------------------------------------------------------------------
+
+(define (template--plain-var node bindings)
+  (cons (format-value (template--alist-get bindings (list-ref node 1) "") (list-ref node 2)) '()))
 
 (define (template-render template bindings)
   "Render `template` (a template string, or an already-parsed node list
@@ -332,62 +352,21 @@ from template-parse) against `bindings` (a list of (name value) pairs --
 see template-bindings) to a plain string. See the file header for
 {{name}}/{{#each}}/{{#if}} syntax. NOT meant for building a SQL string
 out of untrusted data -- use template-render-sql for that."
-  (define nodes (if (string? template) (template-parse template) template))
-  (template--render-nodes nodes bindings))
+  (car (template--render-nodes (template--parsed template) bindings template--plain-var)))
 
 ; ---------------------------------------------------------------------
-; SQL-safe rendering: every node-rendering function here returns
-; (cons sql-text-fragment params-list-fragment) instead of just a
-; string, and {{name}} ALWAYS contributes "?" plus one bound value to
-; the params list -- see the file header for why this is what actually
+; SQL-safe rendering: {{name}} ALWAYS contributes "?" plus one bound value
+; to the params list -- see the file header for why this is what actually
 ; makes SQL injection impossible here, not just unlikely.
 ; ---------------------------------------------------------------------
 
-(define (template--render-nodes-sql nodes bindings)
-  (cond
-    ((null? nodes) (cons "" '()))
-    (else
-     (let ((first (template--render-node-sql (car nodes) bindings))
-           (rest (template--render-nodes-sql (cdr nodes) bindings)))
-       (cons (string-append (car first) (car rest))
-             (append (cdr first) (cdr rest)))))))
-
-(define (template--render-each-items-sql nodes items bindings itemvar sep)
-  (cond
-    ((null? items) (cons "" '()))
-    ((null? (cdr items))
-     (template--render-nodes-sql nodes (template--alist-set bindings itemvar (car items))))
-    (else
-     (let ((first-part (template--render-nodes-sql nodes (template--alist-set bindings itemvar (car items))))
-           (rest-part (template--render-each-items-sql nodes (cdr items) bindings itemvar sep)))
-       (cons (string-append (car first-part) sep (car rest-part))
-             (append (cdr first-part) (cdr rest-part)))))))
-
-(define (template--render-node-sql node bindings)
-  (define kind (car node))
-  (cond
-    ((eq? kind 'text) (cons (list-ref node 1) '()))
-    ((eq? kind 'var)
-     (if (string=? (list-ref node 2) "")
-         (cons "?" (list (template--alist-get bindings (list-ref node 1) '())))
-         (error (string-append "template-render-sql: {{" (symbol->string (list-ref node 1))
-                               ":" (list-ref node 2) "}} -- a format spec can't be used in a"
-                               " SQL template, because the value is passed to SQLite as a"
-                               " parameter, not written into the text"))))
-    ((eq? kind 'each)
-     (let* ((itemvar (list-ref node 1))
-            (listname (list-ref node 2))
-            (sepvar (list-ref node 3))
-            (body (list-ref node 4))
-            (items (template--as-list (template--alist-get bindings listname '())))
-            (sep (if (null? sepvar) "" (number->string (template--alist-get bindings sepvar "")))))
-       (template--render-each-items-sql body items bindings itemvar sep)))
-    ((eq? kind 'if)
-     (let ((condval (template--alist-get bindings (list-ref node 1) #f)))
-       (if (template--truthy? condval)
-           (template--render-nodes-sql (list-ref node 2) bindings)
-           (template--render-nodes-sql (list-ref node 3) bindings))))
-    (else (error "template-render-sql: unknown node kind" kind))))
+(define (template--sql-var node bindings)
+  (if (string=? (list-ref node 2) "")
+      (cons "?" (list (template--alist-get bindings (list-ref node 1) '())))
+      (error (string-append "template-render-sql: {{" (symbol->string (list-ref node 1))
+                            ":" (list-ref node 2) "}} -- a format spec can't be used in a"
+                            " SQL template, because the value is passed to SQLite as a"
+                            " parameter, not written into the text"))))
 
 (define (template-render-sql template bindings)
   "Render `template` (a template string, or an already-parsed node list)
@@ -398,8 +377,7 @@ to skip that step). Every {{name}} becomes a bound parameter, never text
 spliced into the SQL -- see the file header for why that's what makes
 this safe against SQL injection, and for the {{#each ... sep ...}} \"IN
 (?, ?, ?)\" pattern."
-  (define nodes (if (string? template) (template-parse template) template))
-  (template--render-nodes-sql nodes bindings))
+  (template--render-nodes (template--parsed template) bindings template--sql-var))
 
 ; ---------------------------------------------------------------------
 ; Convenience: build a bindings list without hand-quoting each name.

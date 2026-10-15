@@ -5,6 +5,7 @@ which days the market is open, and counting them.
   (next-trading-day date)             the date, or the first trading day after it
   (add-trading-days date n)           the date n trading days later (earlier, if n is negative)
   (trading-days-between start end)    how many trading days after start, up to and including end
+  (market-open?)                      #t if the stock market is open now
   (nyse-holidays year)                the weekdays the market is closed in a year
 
 A trading day is a Monday through Friday that isn't a holiday. The NYSE
@@ -31,6 +32,7 @@ September 11, 2001 -- aren't known to the rules.
 import datetime
 from functools import lru_cache
 
+import lisp_clock
 from lisp_core import LispError, LispVector, _date_from_pydate, date_argument
 
 MONDAY, THURSDAY = 0, 3
@@ -170,12 +172,45 @@ def add_trading_days(d, n):
     return _date_from_pydate(trading_days_after(day, n))
 
 
+def _dates_of(value, who, what):
+    """A date, or a vector of them, as a list of Python dates."""
+    if isinstance(value, LispVector):
+        return [date_argument(d, who, what) for d in value.items]
+    return [date_argument(value, who, what)]
+
+
 def trading_days_between(start, end):
     """(trading-days-between start end) -- how many trading days there are
     after start, up to and including end: 1 from a Friday to the Monday
-    after it, if that is a trading day. Negative if end is before start."""
+    after it, if that is a trading day. Negative if end is before start.
+    Either can be a vector of dates -- an option chain's expirations, say --
+    and the answer is then a vector, with the other date used for each."""
     who = "trading-days-between"
-    return count_trading_days(date_argument(start, who, "the start"), date_argument(end, who, "the end"))
+    if not isinstance(start, LispVector) and not isinstance(end, LispVector):
+        return count_trading_days(date_argument(start, who, "the start"), date_argument(end, who, "the end"))
+    starts, ends = _dates_of(start, who, "the start"), _dates_of(end, who, "the end")
+    if isinstance(start, LispVector) and isinstance(end, LispVector):
+        if len(starts) != len(ends):
+            raise LispError("%s: the vectors of dates are %d and %d long: they must be as long as each other"
+                            % (who, len(starts), len(ends)))
+    elif isinstance(start, LispVector):
+        ends = ends * len(starts)
+    else:
+        starts = starts * len(ends)
+    counted = {}                                     # (each pair of dates is counted once, however often it comes)
+    for pair in zip(starts, ends):
+        if pair not in counted:
+            counted[pair] = count_trading_days(*pair)
+    return LispVector([counted[pair] for pair in zip(starts, ends)])
+
+
+def market_open_p():
+    """(market-open?) -- #t if the stock market is open now: from 9:30 am to
+    4:00 pm on a trading day. The computer's clock is taken to be on New
+    York time."""
+    moment = lisp_clock.now()
+    minutes = moment.hour * 60 + moment.minute
+    return is_trading_day(moment.date()) and 9 * 60 + 30 <= minutes < 16 * 60
 
 
 def nyse_holidays(year):
@@ -193,5 +228,6 @@ BUILTINS = {
     "next-trading-day": next_trading_day,
     "add-trading-days": add_trading_days,
     "trading-days-between": trading_days_between,
+    "market-open?": market_open_p,
     "nyse-holidays": nyse_holidays,
 }

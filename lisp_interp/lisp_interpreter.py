@@ -53,7 +53,7 @@ HOW THE CODE IS ORGANIZED
     lisp_alpha_vantage.py alpha-vantage-dividends  (a stock's dividends, from Alpha Vantage)
     lisp_investment_paths.py  daily-returns, adjust-returns, dividend-schedule, bootstrap-path, option-value
                           (simulated prices of an investment, and an option's value)
-    lisp_calendar.py      trading-day?, add-trading-days, trading-days-between: the NYSE's trading days
+    lisp_calendar.py      trading-day?, add-trading-days, trading-days-between, market-open?: the NYSE's trading days
     lisp_portfolio.py     combine-returns, bootstrap-paths, portfolio-value, covariance-matrix, mean-variance-weights, ...
     lisp_sofr.py          sofr-* interest-rate modeling    (sofr-calibration-data
                                                             downloads from tastytrade)

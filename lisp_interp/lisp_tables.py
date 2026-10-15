@@ -490,6 +490,16 @@ def table_add_column(table, column_name, values):
     return make_table_value(columns + [(column_name, vector)])
 
 
+def table_add_columns(table, columns):
+    """(table-add-columns table columns) -- the table with each of the columns added, as table-add-column adds one.
+    columns is a list of (name . values) pairs: (list (cons "T" t) (cons "K" k))."""
+    for entry in pairs_to_list(columns):
+        if not isinstance(entry, Pair):
+            raise LispError("table-add-columns: columns is a list of (name . values) pairs, not %s" % _brief(entry))
+        table = table_add_column(table, entry.car, entry.cdr)
+    return table
+
+
 def table_rename_column(table, old_name, new_name):
     """(table-rename-column table old new) -- the table with one column renamed."""
     columns = table_columns(table, "table-rename-column")
@@ -501,6 +511,7 @@ COLUMN_BUILTINS = {
     "table-select": table_select,
     "table-drop-columns": table_drop_columns,
     "table-add-column": table_add_column,
+    "table-add-columns": table_add_columns,
     "table-rename-column": table_rename_column,
 }
 

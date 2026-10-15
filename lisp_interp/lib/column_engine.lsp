@@ -195,6 +195,22 @@
                     (append done ready)))))))
   (visit columns '()))
 
+; Used by write-csv, below: turns a list of column structs into the
+; (name vector decimals) shape write-columns-csv expects, keeping only the
+; visible ones (visible #f columns -- pure bookkeeping, e.g.
+; wala/sched_principal in mortgage_amortization_example.lsp -- are left
+; out).
+(define (columns->display-pairs cols)
+  (map (lambda (c) (list (column-name c) (column-series c) (column-decimals c)))
+       (filter column-visible cols)))
+
+; (display-column-table cols) -- shows the visible columns in `cols` with
+; display-table, each number with commas and its column's `decimals`.
+(define (display-column-table cols)
+  (let ((shown (filter column-visible cols)))
+    (display-table (map (lambda (c) (cons (column-name c) (column-series c))) shown)
+                   (map (lambda (c) (list (column-name c) (format ",.{}f" (column-decimals c)))) shown))))
+
 ; (calculate-all columns n) -- columns: a list of column structs (e.g.
 ; *columns*); n: how many rows (periods) to compute, including row 0.
 ; Orders the columns by `after`, pre-allocates each one's `series`,
@@ -213,22 +229,6 @@
 ;             sees the current-row value instead of pass 1's carry-
 ;             forward, while an EARLIER one (or one reached via `lag`)
 ;             still only ever saw the previous row's.
-; Used by write-csv, below: turns a list of column structs into the
-; (name vector decimals) shape write-columns-csv expects, keeping only the
-; visible ones (visible #f columns -- pure bookkeeping, e.g.
-; wala/sched_principal in mortgage_amortization_example.lsp -- are left
-; out).
-(define (columns->display-pairs cols)
-  (map (lambda (c) (list (column-name c) (column-series c) (column-decimals c)))
-       (filter column-visible cols)))
-
-; (display-column-table cols) -- shows the visible columns in `cols` with
-; display-table, each number with commas and its column's `decimals`.
-(define (display-column-table cols)
-  (let ((shown (filter column-visible cols)))
-    (display-table (map (lambda (c) (cons (column-name c) (column-series c))) shown)
-                   (map (lambda (c) (list (column-name c) (format ",.{}f" (column-decimals c)))) shown))))
-
 ; Finally displays every visible column with display-column-table.
 (define (calculate-all columns n)
   (define ordered (topo-sort columns))

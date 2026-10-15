@@ -1812,6 +1812,21 @@ COMMAND_LINE_BUILTINS = {
 # The global environment
 # ---------------------------------------------------------------------------
 
+# Every table of builtins that is the same in every environment: a dict from a Lisp name to its Python function,
+# from this file and from the other lisp_*.py. (No two have a name in common: test_builtins checks.)
+SHARED_BUILTIN_TABLES = (
+    NUMBER_BUILTINS, BOOLEAN_BUILTINS, LIST_BUILTINS, CXR_BUILTINS, POSITION_BUILTINS, PROCEDURE_BUILTINS,
+    STRUCT_BUILTINS, HASH_TABLE_BUILTINS, STRING_BUILTINS, lisp_regex.BUILTINS, VECTOR_BUILTINS, DATE_BUILTINS,
+    COMMAND_LINE_BUILTINS, lisp_vector_math.BUILTINS, lisp_tables.BUILTINS, lisp_stratify.BUILTINS,
+    lisp_time_series.BUILTINS, lisp_csv.BUILTINS, lisp_regression.BUILTINS, lisp_sqlite.BUILTINS, lisp_fred.BUILTINS,
+    lisp_sec.BUILTINS, lisp_fdic.BUILTINS, lisp_census.BUILTINS, lisp_bls.BUILTINS, lisp_bea.BUILTINS,
+    lisp_maps.BUILTINS, lisp_google.BUILTINS, lisp_schwab.BUILTINS, lisp_alpha_vantage.BUILTINS, lisp_http.BUILTINS,
+    lisp_tastytrade.BUILTINS, lisp_futures.BUILTINS, lisp_sofr.BUILTINS, lisp_simplex.BUILTINS,
+    lisp_investment_paths.BUILTINS, lisp_portfolio.BUILTINS, lisp_finance.BUILTINS, lisp_options.BUILTINS,
+    lisp_clock.BUILTINS, lisp_calendar.BUILTINS,
+)
+
+
 def make_global_env(output=None, plot=None, table=None, markdown=None, html=None):
     """Build a fresh global environment holding every built-in procedure.
 
@@ -1840,47 +1855,8 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.trace_emit = out.write      # verbose-mode trace lines go where display output does
 
     # Builtins that are the same in every environment.
-    env.update(NUMBER_BUILTINS)
-    env.update(BOOLEAN_BUILTINS)
-    env.update(LIST_BUILTINS)
-    env.update(CXR_BUILTINS)
-    env.update(POSITION_BUILTINS)
-    env.update(PROCEDURE_BUILTINS)
-    env.update(STRUCT_BUILTINS)
-    env.update(HASH_TABLE_BUILTINS)
-    env.update(STRING_BUILTINS)
-    env.update(lisp_regex.BUILTINS)
-    env.update(VECTOR_BUILTINS)
-    env.update(DATE_BUILTINS)
-    env.update(COMMAND_LINE_BUILTINS)
-    env.update(lisp_vector_math.BUILTINS)
-    env.update(lisp_tables.BUILTINS)
-    env.update(lisp_stratify.BUILTINS)
-    env.update(lisp_time_series.BUILTINS)
-    env.update(lisp_csv.BUILTINS)
-    env.update(lisp_regression.BUILTINS)
-    env.update(lisp_sqlite.BUILTINS)
-    env.update(lisp_fred.BUILTINS)
-    env.update(lisp_sec.BUILTINS)
-    env.update(lisp_fdic.BUILTINS)
-    env.update(lisp_census.BUILTINS)
-    env.update(lisp_bls.BUILTINS)
-    env.update(lisp_bea.BUILTINS)
-    env.update(lisp_maps.BUILTINS)
-    env.update(lisp_google.BUILTINS)
-    env.update(lisp_schwab.BUILTINS)
-    env.update(lisp_alpha_vantage.BUILTINS)
-    env.update(lisp_http.BUILTINS)
-    env.update(lisp_tastytrade.BUILTINS)
-    env.update(lisp_futures.BUILTINS)
-    env.update(lisp_sofr.BUILTINS)
-    env.update(lisp_simplex.BUILTINS)
-    env.update(lisp_investment_paths.BUILTINS)
-    env.update(lisp_portfolio.BUILTINS)
-    env.update(lisp_finance.BUILTINS)
-    env.update(lisp_options.BUILTINS)
-    env.update(lisp_clock.BUILTINS)
-    env.update(lisp_calendar.BUILTINS)
+    for builtins in SHARED_BUILTIN_TABLES:
+        env.update(builtins)
 
     # Builtins that belong to this environment.
     env.update(make_output_builtins(out, markdown, html))

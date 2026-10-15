@@ -108,6 +108,12 @@ class TestTables(LispTestCase):
         self.assertShows('(table-column-names (table-add-column loans "month" #(9 9 9 9 9)))',
                          '("id" "month" "state" "balance" "rate")')
         self.assertLispError('(table-add-column loans "x" #(1 2))', "5 rows")
+        self.assertShows('(table-column-names (table-add-columns loans (list (cons "one" 1) (cons "month" #(9 9 9 9 9)))))',
+                         '("id" "month" "state" "balance" "rate" "one")')       # (one is added; month is replaced)
+        self.assertShows('(table-column (table-add-columns loans (list (cons "one" 1))) "one")', "#(1 1 1 1 1)")
+        self.assertShows("(table-column-names (table-add-columns loans (list)))", '("id" "month" "state" "balance" "rate")')
+        self.assertLispError('(table-add-columns loans (list (cons "x" #(1 2))))', "5 rows")
+        self.assertLispError("(table-add-columns loans (list 5))", "a list of (name . values) pairs, not 5")
         self.assertShows('(table-column-names (table-rename-column loans "id" "loan"))',
                          '("loan" "month" "state" "balance" "rate")')
 

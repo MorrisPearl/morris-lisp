@@ -40,7 +40,6 @@ import hashlib
 import http.server
 import json
 import math
-import os
 import re
 import secrets
 import time
@@ -50,6 +49,7 @@ import urllib.request
 import webbrowser
 
 from lisp_core import LispDate, LispError, LispString, Keyword, NIL, Pair, keyword_options, to_display_string
+import lisp_data_common
 from lisp_data_common import credential
 from lisp_tables import HIDDEN, column_values, format_specs, table_columns
 from lisp_vector_math import is_number
@@ -124,24 +124,16 @@ def token_request(credentials_path, form, who):
 
 def token_file(credentials_path):
     """Where the tokens are kept: google_tokens.json, next to the credentials file."""
-    return os.path.join(os.path.dirname(os.path.abspath(str(credentials_path))), "google_tokens.json")
+    return lisp_data_common.token_file(credentials_path, "Google")
 
 
 def save_tokens(credentials_path, tokens):
     """Save the tokens, readable only by you."""
-    path = token_file(credentials_path)
-    descriptor = os.open(path + ".part", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w") as f:
-        json.dump(tokens, f)
-    os.replace(path + ".part", path)
+    lisp_data_common.save_tokens(credentials_path, "Google", tokens)
 
 
 def load_tokens(credentials_path, who):
-    try:
-        with open(token_file(credentials_path)) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        raise LispError("%s: not signed in to Google -- sign in with (google-login creds)" % who)
+    return lisp_data_common.load_tokens(credentials_path, "Google", who)
 
 
 def access_token(credentials_path, who):

@@ -35,6 +35,7 @@ import urllib.request
 
 from lisp_core import LispError, LispHashTable, LispString, NIL, Pair, list_to_pairs, pairs_to_list
 from lisp_csv import csv_arguments, table_from_csv_rows
+from lisp_data_common import name_value_pairs
 
 
 USER_AGENT = "morris-lisp (https://github.com/MorrisPearl/morris-lisp)"
@@ -193,14 +194,7 @@ def http_url(base, parameters):
     encoded properly, so spaces and symbols in them are safe:
     (http-url "https://x.org/data" (list (cons "series" "DGS10") (cons "limit" 5)))
     => "https://x.org/data?series=DGS10&limit=5"."""
-    if isinstance(parameters, LispHashTable):
-        pairs = list(parameters.table.items())
-    else:
-        pairs = []
-        for entry in pairs_to_list(parameters):
-            if not isinstance(entry, Pair):
-                raise LispError("http-url: parameters must be a list of (name . value) pairs")
-            pairs.append((entry.car, entry.cdr))
+    pairs = name_value_pairs(parameters, "http-url")
     query = urllib.parse.urlencode([(str(k), str(v)) for k, v in pairs])
     base = str(base)
     if not query:

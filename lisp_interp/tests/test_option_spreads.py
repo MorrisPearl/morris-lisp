@@ -27,6 +27,15 @@ LEGS = {"bull-call": [("C", 1), ("C", -1)], "bear-call": [("C", -1), ("C", 1)],
         "collar": [("S", 1), ("P", 1), ("C", -1)]}
 
 
+def by_hand_rows():
+    """The rows of the chain of TestSpreadsByHand's quotes, for make_chain: a call and a put at each strike."""
+    rows = []
+    for strike, (call_bid, call_ask), (put_bid, put_ask) in TestSpreadsByHand.QUOTES:
+        rows.append({"strike": strike, "bid": call_bid, "ask": call_ask})
+        rows.append({"strike": strike, "bid": put_bid, "ask": put_ask, "type": "Put"})
+    return rows
+
+
 class OptionSpreadsTestCase(OptionChainTestCase):
 
     def setUp(self):
@@ -50,10 +59,7 @@ class TestSpreadsByHand(OptionSpreadsTestCase):
 
     def setUp(self):
         super().setUp()
-        rows = []
-        for strike, (call_bid, call_ask), (put_bid, put_ask) in self.QUOTES:
-            rows.append({"strike": strike, "bid": call_bid, "ask": call_ask})
-            rows.append({"strike": strike, "bid": put_bid, "ask": put_ask, "type": "Put"})
+        rows = by_hand_rows()
         self.make_chain(rows)
 
     def row(self, kind, strikes, expected=108, options=""):
@@ -639,10 +645,7 @@ class TestOrders(OptionSpreadsTestCase):
 
     def setUp(self):
         super().setUp()
-        rows = []
-        for strike, (call_bid, call_ask), (put_bid, put_ask) in self.WORKED:
-            rows.append({"strike": strike, "bid": call_bid, "ask": call_ask})
-            rows.append({"strike": strike, "bid": put_bid, "ask": put_ask, "type": "Put"})
+        rows = by_hand_rows()
         self.make_chain(rows)
 
     def order(self, kind, call="(option-spread-order search)", expected=108, options=""):
@@ -861,10 +864,7 @@ class TestGettingTheChain(OptionSpreadsTestCase):
 
     def setUp(self):
         super().setUp()
-        rows = []
-        for strike, (call_bid, call_ask), (put_bid, put_ask) in TestSpreadsByHand.QUOTES:
-            rows.append({"strike": strike, "bid": call_bid, "ask": call_ask})
-            rows.append({"strike": strike, "bid": put_bid, "ask": put_ask, "type": "Put"})
+        rows = by_hand_rows()
         self.rows = rows
         self.make_chain(rows)
         self.asked = []
@@ -1055,10 +1055,7 @@ class TestComparingTheKinds(OptionSpreadsTestCase):
     def setUp(self):
         super().setUp()
         self.run_lisp('(load "option_positions.lsp")')
-        self.rows = []
-        for strike, (call_bid, call_ask), (put_bid, put_ask) in TestSpreadsByHand.QUOTES:
-            self.rows.append({"strike": strike, "bid": call_bid, "ask": call_ask})
-            self.rows.append({"strike": strike, "bid": put_bid, "ask": put_ask, "type": "Put"})
+        self.rows = by_hand_rows()
         self.make_chain(self.rows)
         self.asked = []
         self.env[lisp_core.Symbol("schwab-option-chain")] = lambda creds, symbol, *options: (
@@ -1295,14 +1292,6 @@ class TestFuturesOptions(OptionSpreadsTestCase):
                              "symbol": futures_option_symbol(future, product, day, letter, strike)})
         return rows
 
-    def stock_rows(self):
-        """The same options, as a stock's, XYZ at 104, with OCC's symbols."""
-        rows = []
-        for strike, (call_bid, call_ask), (put_bid, put_ask) in TestSpreadsByHand.QUOTES:
-            rows.append({"strike": strike, "bid": call_bid, "ask": call_ask})
-            rows.append({"strike": strike, "bid": put_bid, "ask": put_ask, "type": "Put"})
-        return rows
-
     def kinds_compared(self, options):
         """The names of the kinds of the comparison that (option-positions-for-chain chain ...) makes, sorted."""
         self.run_lisp("(define comparison (option-positions-for-chain chain (date 2026 11 20) 100 %s))" % options)
@@ -1322,7 +1311,7 @@ class TestFuturesOptions(OptionSpreadsTestCase):
 
     def test_a_futures_chain_is_ranked_as_the_same_options_with_a_stocks_symbols_are(self):
         self.make_chain(self.rows(), name="future")
-        self.make_chain(self.stock_rows())
+        self.make_chain(by_hand_rows())
         for kind in KINDS:
             with self.subTest(kind=kind):
                 future = self.spreads("(option-spreads-for-chain future '%s (date 2026 11 20) 108)" % kind)
@@ -1513,7 +1502,7 @@ class TestFuturesOptions(OptionSpreadsTestCase):
         self.assertNotIn("shares", shown)
         self.assertIn("For the best few of one kind (orders are made for a stock's options, and these are not):", shown)
         # (and a stock's options, with the defaults, say shares, and how to order)
-        self.make_chain(self.stock_rows())
+        self.make_chain(by_hand_rows())
         self.out.clear()
         self.run_lisp("(show-option-positions (option-positions-for-chain chain (date 2026 11 20) 108))")
         self.assertIn("shares at 104.00. 17 positions.", self.printed())
@@ -1572,7 +1561,7 @@ class TestFuturesOptions(OptionSpreadsTestCase):
         self.assertLispError("(call-spread-order search)", "call-spread-order: ./CLZ6 LOZ6")
 
     def test_orders_are_for_contracts_of_a_stocks_size(self):
-        self.make_chain(self.stock_rows())                                # (OCC's symbols: the contract is what is wrong)
+        self.make_chain(by_hand_rows())                                # (OCC's symbols: the contract is what is wrong)
         said = "orders are for a stock's options, which cover 100 shares each, and the options of this search cover 1,000 barrels"
         for kind in ("bull-call", "long-call", "covered-call", "long-stock"):
             with self.subTest(kind=kind):
@@ -1616,10 +1605,7 @@ class TestProfitCharts(OptionSpreadsTestCase):
         self.env = lisp_builtins.make_global_env(output=self.out.append, plot=self.specs.append)
         for library in ("option_spreads.lsp", "option_positions.lsp", "call_spreads.lsp"):
             self.run_lisp('(load "%s")' % library)
-        self.rows = []
-        for strike, (call_bid, call_ask), (put_bid, put_ask) in TestSpreadsByHand.QUOTES:
-            self.rows.append({"strike": strike, "bid": call_bid, "ask": call_ask})
-            self.rows.append({"strike": strike, "bid": put_bid, "ask": put_ask, "type": "Put"})
+        self.rows = by_hand_rows()
         self.make_chain(self.rows)
 
     def position(self, kind, options=""):

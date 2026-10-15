@@ -71,12 +71,6 @@
 
 (load "vol_smile.lsp")
 
-(define (option-check--trading-days chain start-date)
-  "For each option, the number of trading days after start-date, up to its
-expiration."
-  (list->vector (map (lambda (expiration) (trading-days-between start-date expiration))
-                     (vector->list (table-column chain "expiration-date")))))
-
 (define (option-check--tree-dividends schedule start-date)
   "A dividend schedule (as dividend-schedule makes it) as the table of time,
 in years from start-date, and amount that american-price takes; '() for
@@ -97,7 +91,7 @@ bid, ask, and mid; then the implied volatilities are found again."
            (premium (- (american-price type underlying-price strike T rate iv-mid :dividends dividends :steps 100)
                        (american-price type underlying-price strike T rate iv-mid :dividends dividends :steps 100
                                        :early-exercise #f))))
-      (with-smile-columns (make-table-from-columns options (list (cons "early-exercise" premium)
+      (with-smile-columns (table-add-columns options (list (cons "early-exercise" premium)
                                                                  (cons "bid" (- bid premium))
                                                                  (cons "ask" (- ask premium))
                                                                  (cons "mid" (- mid premium))))
@@ -112,7 +106,7 @@ expected-value, if there is one."
          (prices (list (cons "bid" (+ (table-column checked "bid") premium))
                        (cons "ask" (+ (table-column checked "ask") premium))
                        (cons "model-price" (+ (table-column checked "model-price") premium)))))
-    (make-table-from-columns checked
+    (table-add-columns checked
                              (if (member "expected-value" (table-column-names checked))
                                  (cons (cons "expected-value" (+ (table-column checked "expected-value") premium)) prices)
                                  prices))))
@@ -196,7 +190,7 @@ and the rest in order of how far out of line they are. payoffs is what the
 options pay on average (option-payoffs) over paths that grow at the interest
 rate, and real-payoffs the same over paths with the underlying's expected
 return, or '() for no expected return."
-  (let ((with-payoffs (make-table-from-columns options payoffs))
+  (let ((with-payoffs (table-add-columns options payoffs))
         (columns (append option-check-columns
                          (if (member "early-exercise" (table-column-names options)) '("early-exercise") '())
                          (if (null? real-payoffs) '() option-check-expected-columns))))
@@ -206,7 +200,7 @@ return, or '() for no expected return."
              (model-iv (black-implied-vol (= type "Call") model-price forward strike T discount))
              (rich (> bid (+ model-price (* standard-errors standard-error))))
              (cheap (< ask (- model-price (* standard-errors standard-error))))
-             (compared (make-table-from-columns
+             (compared (table-add-columns
                          with-payoffs
                          (append (list (cons "model-price" model-price)
                                        (cons "standard-error" standard-error)
@@ -300,7 +294,7 @@ the ask, or the bid less expected-value (0 for neither). These are expected
 values: they are not adjusted for risk."
   (let* ((priced (if (null? start-price) chain (table-add-column chain "underlying-price" start-price)))
          (calendar-days (days-between start-date (table-column priced "expiration-date")))
-         (trading-days (option-check--trading-days priced start-date))
+         (trading-days (trading-days-between start-date (table-column priced "expiration-date")))
          (ahead (table-filter (table-add-column (table-add-column priced "days-to-expiration" calendar-days)
                                                 "trading-days" trading-days)
                               (> trading-days 0))))

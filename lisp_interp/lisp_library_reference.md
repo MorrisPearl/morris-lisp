@@ -2470,13 +2470,22 @@ With `n` of 0, it is the date itself, a trading day or not.
 #### `(trading-days-between start end)`
 How many trading days there are after `start`, up to and including `end`:
 1 from a Friday to the Monday after it. Negative if `end` is before
-`start`.
+`start`. Either can be a vector of dates -- the expirations of an option
+chain, say -- and the answer is then a vector, with the other date used for
+each.
 
 ```lisp
 (trading-days-between (date 2026 11 20) (date 2026 11 23))    ; => 1
 (trading-days-between (date 2026 11 20) (date 2026 11 30))    ; => 5
 (trading-days-between (date 2025 12 31) (date 2026 12 31))    ; => 251
+(trading-days-between (date 2026 11 20) (vector (date 2026 11 23) (date 2026 11 30)))    ; => #(1 5)
 ```
+
+#### `(market-open?)`
+`#t` if the stock market is open now: from 9:30 am to 4:00 pm on a trading
+day. The computer's clock is taken to be on New York time. The functions that
+fetch quotes (`option-spreads`, `option-positions`, `option-methods`) use it to
+say that the bids and asks are the last close's.
 
 #### `(nyse-holidays year)`
 A vector of the dates in a year when the market is closed on a weekday.

@@ -289,13 +289,6 @@ or an order for each part), and what it is for."
 ; 2. The options that count
 ; ---------------------------------------------------------------------------
 
-(define (option-spreads--market-open?)
-  "Whether the stock market is open now: from 9:30 to 4:00, New York time, on
-a trading day. (This takes the computer's clock to be on New York time.)"
-  (let* ((now (current-time))
-         (minutes (+ (* 60 (list-ref now 3)) (list-ref now 4))))      ; since midnight
-    (and (trading-day? (today)) (>= minutes (+ (* 9 60) 30)) (< minutes (* 16 60)))))
-
 (define (option-spreads--day expiration)
   "A date, from a date or YYYY-MM-DD text."
   (if (string? expiration) (string->date expiration) expiration))
@@ -490,19 +483,6 @@ a vector of 0 as long as they are, which the total is added to, so that it is a 
                                          (vector-clip (- strike price) 0 1e12))))))
     total))
 
-(define (option-spreads--lowest vectors)
-  "The least of each spread's numbers, over the list of vectors."
-  (let ((least (car vectors)))
-    (dolist (v (cdr vectors))
-      (set! least (vector-where (< v least) v least)))
-    least))
-
-(define (option-spreads--highest vectors)
-  (let ((most (car vectors)))
-    (dolist (v (cdr vectors))
-      (set! most (vector-where (> v most) v most)))
-    most))
-
 (define (option-spreads--earlier a b)
   "The less of two vectors, where one is missing the other."
   (vector-where (vector-nan? a) b (vector-where (vector-nan? b) a (vector-where (< a b) a b))))
@@ -556,8 +536,8 @@ worth, profit, max-loss, max-profit (nan: no limit), breakeven-1, breakeven-2 (n
          (last-root (option-spreads--fold option-spreads--later roots)))
     (list worth
           (- worth cost)
-          (- (option-spreads--lowest profits))
-          (if (> slope 0) (make-vector (vector-length cost) nan) (option-spreads--highest profits))
+          (- (apply min profits))
+          (if (> slope 0) (make-vector (vector-length cost) nan) (apply max profits))
           first-root
           (vector-where (vector= first-root last-root) nan last-root))))
 
@@ -707,7 +687,7 @@ is closed -- and rank the spreads of the kind: see option-spreads-for-chain, whi
 have, says what the options are, and gives the result."
   (let* ((kind (option-spreads--kind kind-name))
          (contracts (option-spreads--contracts-needed (list kind))))
-    (unless (option-spreads--market-open?)
+    (unless (market-open?)
       (display "The market is closed now: the bids and asks are from its last close.\n\n"))
     (option-spreads-for-chain (schwab-option-chain creds symbol :expiration (option-spreads--day expiration) :type contracts)
                               kind-name expiration expected-price
@@ -739,6 +719,9 @@ have, says what the options are, and gives the result."
   (let ((kind (option-spreads--kind (spread-search-kind search))))
     (loop for place from 1 to (length (spread-kind-legs kind))
           collect (vector-ref (table-column (spread-search-spreads search) (format "symbol-{}" place)) row))))
+
+(define option-spreads--no-orders-note
+  "\nOrders are made for a stock's options, and these are not: they are for analysis.\n")
 
 (define (option-spreads--stock-option? symbol)
   "Whether the symbol is a stock's option's, as OCC writes it: the stock's, padded to 6 characters, the expiration as
@@ -1079,7 +1062,7 @@ stock's price and worth the price you expect, which can lose all they cost."
                            ("ratio" ".0%") ("breakeven-1" ",.2f") ("breakeven-2" ",.2f"))))
         (display (if (option-spreads--orderable? search (option-spreads--row-symbols search 0))
                      (option-spreads--how-to-trade kind)
-                     "\nOrders are made for a stock's options, and these are not: they are for analysis.\n"))))))
+                     option-spreads--no-orders-note))))))
 
 (define (option-spreads--capitalized text)
   (string-append (string-upcase (substring text 0 1)) (substring text 1)))

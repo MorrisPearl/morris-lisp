@@ -82,6 +82,14 @@
 ; Finding the spreads
 ; ---------------------------------------------------------------------------
 
+; The columns of a bull call spread that have the same numbers in this file's table and in option_spreads.lsp's:
+; (this file's name . option_spreads.lsp's), in this file's order. The rest -- the breakeven, the max-loss -- are
+; worked out from them.
+(define call-spreads--same-columns
+  '(("long-symbol" . "symbol-1") ("short-symbol" . "symbol-2") ("long-strike" . "strike-1") ("short-strike" . "strike-2")
+    ("long-price" . "price-1") ("short-price" . "price-2") ("cost" . "cost") ("worth" . "worth") ("profit" . "profit")
+    ("ratio" . "ratio")))
+
 (define (call-spreads--classic search)
   "A spread-search of bull call spreads from option_spreads.lsp's, with the columns named for the call
 bought and the call sold: option_spreads.lsp's symbol-1 is long-symbol, symbol-2 short-symbol, and so on;
@@ -98,18 +106,9 @@ and the spread can never make a profit, and option_spreads.lsp has no breakeven 
       :prices (spread-search-prices search)
       :contract-size (spread-search-contract-size search)
       :unit (spread-search-unit search)
-      :spreads (list (cons "long-symbol" (table-column table "symbol-1"))
-                     (cons "short-symbol" (table-column table "symbol-2"))
-                     (cons "long-strike" (table-column table "strike-1"))
-                     (cons "short-strike" (table-column table "strike-2"))
-                     (cons "long-price" (table-column table "price-1"))
-                     (cons "short-price" (table-column table "price-2"))
-                     (cons "cost" (table-column table "cost"))
-                     (cons "worth" (table-column table "worth"))
-                     (cons "profit" (table-column table "profit"))
-                     (cons "ratio" (table-column table "ratio"))
-                     (cons "breakeven" (+ (table-column table "strike-1") (table-column table "cost")))
-                     (cons "max-profit" (table-column table "max-profit"))))))
+      :spreads (append (map (lambda (names) (cons (car names) (table-column table (cdr names)))) call-spreads--same-columns)
+                       (list (cons "breakeven" (+ (table-column table "strike-1") (table-column table "cost")))
+                             (cons "max-profit" (table-column table "max-profit")))))))
 
 (define (call-spreads-for-chain chain expiration expected-price
                                 &key (prices 'bid-ask) (min-open-interest 1) (min-volume 1) (min-cost 0)
@@ -226,22 +225,13 @@ than its width -- has no breakeven there (this file's is above the higher strike
       :prices (spread-search-prices search)
       :contract-size (spread-search-contract-size search)
       :unit (spread-search-unit search)
-      :spreads (list (cons "symbol-1" (table-column table "long-symbol"))
-                     (cons "symbol-2" (table-column table "short-symbol"))
-                     (cons "strike-1" (table-column table "long-strike"))
-                     (cons "strike-2" (table-column table "short-strike"))
-                     (cons "price-1" (table-column table "long-price"))
-                     (cons "price-2" (table-column table "short-price"))
-                     (cons "cost" (table-column table "cost"))
-                     (cons "max-loss" (table-column table "cost"))
-                     (cons "max-profit" (table-column table "max-profit"))
-                     (cons "worth" (table-column table "worth"))
-                     (cons "profit" (table-column table "profit"))
-                     (cons "ratio" (table-column table "ratio"))
-                     (cons "breakeven-1" (vector-where (<= (table-column table "breakeven") (table-column table "short-strike"))
-                                                       (table-column table "breakeven")
-                                                       nan))
-                     (cons "breakeven-2" (vector-map (lambda (x) nan) (table-column table "cost")))))))
+      :spreads (append (map (lambda (names) (cons (cdr names) (table-column table (car names)))) call-spreads--same-columns)
+                       (list (cons "max-loss" (table-column table "cost"))
+                             (cons "max-profit" (table-column table "max-profit"))
+                             (cons "breakeven-1" (vector-where (<= (table-column table "breakeven") (table-column table "short-strike"))
+                                                               (table-column table "breakeven")
+                                                               nan))
+                             (cons "breakeven-2" (vector-map (lambda (x) nan) (table-column table "cost"))))))))
 
 (define (plot-call-spreads search &key (rows (list 0)) (low '()) (high '()) (points 200))
   "Chart the profit of one of the spreads of a spread-search -- the best, unless :rows (a list of row numbers) says -- on
@@ -279,4 +269,4 @@ and the next count best."
               (display "  (show-spread-order order)                               ; the order, in words\n")
               (display "  (schwab-preview-order creds \"your account\" order)     ; what Schwab makes of it; nothing is placed\n")
               (display "  (schwab-place-order creds \"your account\" order :confirm #t)     ; places it, for real\n"))
-            (display "\nOrders are made for a stock's options, and these are not: they are for analysis.\n"))))))
+            (display option-spreads--no-orders-note))))))

@@ -127,7 +127,7 @@ closed -- and rank the best position of each kind: see option-positions-for-chai
 have, and gives the result."
   (let ((contracts (option-spreads--contracts-needed
                      (map option-spreads--kind (if (null? kinds) (map spread-kind-name spread-kinds) kinds)))))
-    (unless (option-spreads--market-open?)
+    (unless (market-open?)
       (display "The market is closed now: the bids and asks are from its last close.\n\n"))
     (option-positions-for-chain (schwab-option-chain creds symbol :expiration (option-spreads--day expiration) :type contracts)
                                 expiration expected-price

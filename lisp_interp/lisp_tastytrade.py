@@ -46,7 +46,7 @@ from lisp_core import (
     LispDate, LispError, LispHashTable, LispString, LispVector, NIL, Pair,
     list_to_pairs, pairs_to_list,
 )
-from lisp_data_common import read_credentials
+from lisp_data_common import name_value_pairs, read_credentials
 from lisp_http import json_to_lisp
 from lisp_tables import column_vector, make_table_value, table_from_rows, table_from_tuples
 from lisp_time_series import months_later
@@ -254,16 +254,8 @@ def _request_parameters(parameters, who):
     each of its items: ("symbol[]" "AAPL" "MSFT") asks about both."""
     if parameters is NIL or parameters is None:
         return {}
-    if isinstance(parameters, LispHashTable):
-        pairs = list(parameters.table.items())
-    else:
-        pairs = []
-        for entry in pairs_to_list(parameters):
-            if not isinstance(entry, Pair):
-                raise LispError("%s: parameters must be (name . value) pairs, not %r" % (who, entry))
-            pairs.append((entry.car, entry.cdr))
     result = {}
-    for name, value in pairs:
+    for name, value in name_value_pairs(parameters, who):
         if isinstance(value, Pair):
             result[str(name)] = [_parameter_text(v) for v in pairs_to_list(value)]
         else:
