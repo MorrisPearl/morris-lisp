@@ -46,7 +46,7 @@ class TestTheCallableBond(unittest.TestCase):
                                    present_value_by_hand(FORWARDS, 0.0075, 10, 0.05, 3, call_price), places=9)
 
     def test_with_volatility_it_is_the_average_of_the_prices_along_the_paths_of_the_model(self):
-        _, rates, _ = model.simulate_curve_paths(FORWARDS, 0.012, 0.007, 10, 20, seed=9, a=1.4, b=0.2)
+        _, rates, _ = model.simulate_rate_paths(FORWARDS, 0.012, 0.007, 10, 20, seed=9, a=1.4, b=0.2)
         expected = np.mean([present_value_by_hand(path, 0.0075, 10, 0.05, 3, 100.0) for path in rates])
         got = self.price(sigma1=0.012, sigma2=0.007, n_paths=20, seed=9, a=1.4, b=0.2)
         self.assertAlmostEqual(got, expected, places=9)
@@ -92,7 +92,7 @@ class TestTheMortgageSpread(unittest.TestCase):
         observed = (datetime.date(2026, 10, 15), 0.0675)
         with mock.patch.object(mortgage_spread, "fetch_current_mortgage_rate", lambda path, series: observed):
             spread, rate, model_rate, day = mortgage_spread.compute_sofr_mortgage_spread(flat, credentials_path="unused")
-        expected = model.forward_par_yield(flat, 0.0, 10.0)
+        expected = model.curve_par_yield(flat, 0.0, 10.0)
         self.assertAlmostEqual(model_rate, expected, places=12)
         self.assertAlmostEqual(spread, 0.0675 - expected, places=12)
         self.assertEqual((rate, day), (0.0675, datetime.date(2026, 10, 15)))
@@ -106,7 +106,7 @@ class TestTheMortgageSpread(unittest.TestCase):
     def test_another_tenor_can_be_asked_for(self):
         with mock.patch.object(mortgage_spread, "fetch_current_mortgage_rate", lambda path, series: (None, 0.0675)):
             spread = mortgage_spread.compute_sofr_mortgage_spread(FORWARDS, credentials_path="unused", tenor_years=5)[0]
-        self.assertAlmostEqual(spread, 0.0675 - model.forward_par_yield(FORWARDS, 0.0, 5.0), places=12)
+        self.assertAlmostEqual(spread, 0.0675 - model.curve_par_yield(FORWARDS, 0.0, 5.0), places=12)
 
 
 class TestTheRatePathsExample(LispTestCase):
@@ -169,6 +169,16 @@ class TestWhatWasRemoved(LispTestCase):
         for name in ("sofr-simulate-rate-paths", "sofr-extend-curve-with-treasury"):
             self.assertLispError("(%s 1 2 3)" % name, name)
 
+    def test_the_builtins_that_were_renamed_are_under_their_new_names_only(self):
+        renamed = {"sofr-simulate-curve-paths": "simulate-rate-paths", "sofr-simulate-mortgage-rate-paths": "simulate-mortgage-rate-paths",
+                   "sofr-simulate-factor-paths": "simulate-rate-factors", "sofr-curve-on-date": "rate-curve-on-date",
+                   "sofr-par-yield": "curve-par-yield", "sofr-calibrate-jointly": "calibrate-rate-model",
+                   "sofr-calibrate-note-options": "calibrate-to-note-options", "sofr-calibrate-model": "calibrate-to-sofr-options",
+                   "sofr-note-option-comparison": "note-option-comparison"}
+        for old, new in renamed.items():
+            self.assertLispError("(%s 1 2 3)" % old, old)                       # no longer a name
+            self.assertTrue(callable(self.run_lisp(new)), new)                  # the symbol is bound to the builtin
+
 
 class TestTheModelsOwnDemo(unittest.TestCase):
 
@@ -192,8 +202,8 @@ class TestTheGui(unittest.TestCase):
         window = gui.TermStructureWindow()
         window._on_bootstrap_clicked()
         asked = []
-        simulate = gui.tsm.simulate_curve_paths
-        gui.tsm.simulate_curve_paths = lambda *arguments, **keywords: (asked.append(keywords), simulate(*arguments, **keywords))[1]
+        simulate = gui.tsm.simulate_rate_paths
+        gui.tsm.simulate_rate_paths = lambda *arguments, **keywords: (asked.append(keywords), simulate(*arguments, **keywords))[1]
         for radio in (window.treasury_rate_radio, window.mortgage_rate_radio, window.sofr_rate_radio):
             radio.setChecked(True)
             window._on_simulate_clicked()

@@ -2,11 +2,11 @@
 ;
 ; Options on the 10-year note future (ZN), shaped for the interest-rate model.
 ;
-; The model of interest rates (sofr-calibrate-model) is fitted to SOFR futures
+; The model of interest rates (calibrate-to-sofr-options) is fitted to SOFR futures
 ; options, which show how much the SHORT rate moves. A mortgage depends on
 ; the LONG end, and a 10-year note option says how much that moves. The
-; builtins sofr-calibrate-note-options, sofr-calibrate-jointly and
-; sofr-note-option-comparison fit and check the model against those options:
+; builtins calibrate-to-note-options, calibrate-rate-model and
+; note-option-comparison fit and check the model against those options:
 ; see "Fitting the model to option prices", under "Interest rate paths", in lisp_library_reference.md.
 ; What this file does is the small step before them: the chain of options,
 ; as tastytrade-option-chain gives it, as the rows they read.
@@ -15,9 +15,9 @@
 ;   (define chain (tastytrade-option-chain creds "ZN" 12 12))
 ;   (define rows (note-option-rows chain))               ; (type strike days futures-price market-price)
 ;   (define forwards (table-column (curve-forward-rates (treasury-zero-curve (treasury-par-curve))) "forward"))
-;   (define fit (sofr-calibrate-note-options forwards rows))
+;   (define fit (calibrate-to-note-options forwards rows))
 ;   (cdr (assoc 'sigma2 fit))                            ; the volatility of the long end, as 0.0134
-;   (sofr-note-option-comparison forwards rows 0.01 (cdr (assoc 'sigma2 fit)))   ; the model's prices and the market's
+;   (note-option-comparison forwards rows 0.01 (cdr (assoc 'sigma2 fit)))   ; the model's prices and the market's
 
 (define (note-option-rows chain &key (day (today)) (min-days 7) (max-days 400))
   "The options of a chain (a table, as tastytrade-option-chain gives it) as rows (type strike days futures-price

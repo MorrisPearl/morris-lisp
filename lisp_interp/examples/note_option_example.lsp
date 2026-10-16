@@ -2,7 +2,7 @@
 ;
 ; Fitting the interest-rate model to options on the 10-year Treasury note future (ZN).
 ;
-; The model of rates can be fitted to SOFR futures options (sofr-calibrate-model); those show how
+; The model of rates can be fitted to SOFR futures options (calibrate-to-sofr-options); those show how
 ; much the SHORT rate moves. A mortgage follows the LONG end, and options on the 10-year note future say how much
 ; that moves. Here the model's prices of the options are set beside the market's, and the volatility of the long
 ; end (sigma2) is found for which they are nearest. See "Fitting the model to option prices" under
@@ -27,13 +27,13 @@
                  (apply min (map third rows)) (apply max (map third rows))))
 
 ; --- The fit: the long end's volatility, sigma2, for which the model's prices are nearest the market's ---
-(define fit (sofr-calibrate-note-options forwards rows))
+(define fit (calibrate-to-note-options forwards rows))
 (define sigma2 (cdr (assoc 'sigma2 fit)))
 (display (format "sigma2 = {:.4f} a year; the model's volatilities are {:.1%} from the market's, root mean square.\n"
                  sigma2 (cdr (assoc 'error fit))))
 
 ; --- The model's prices beside the market's ---
-(define comparison (sofr-note-option-comparison forwards rows (cdr (assoc 'sigma1 fit)) sigma2))
+(define comparison (note-option-comparison forwards rows (cdr (assoc 'sigma1 fit)) sigma2))
 (display (format "A yield volatility of {:.0f} basis points a year (the market's: {:.0f}), for a note of {:.1f} years' duration.\n"
                  (vector-mean (table-column comparison "model-yield-vol"))
                  (vector-mean (table-column comparison "market-yield-vol"))

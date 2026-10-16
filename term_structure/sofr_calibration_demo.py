@@ -5,7 +5,7 @@ sofr_calibration_demo.py
 End-to-end demo: fetch real, exchange-traded CME 3-Month SOFR (SR3)
 futures and a few options on those futures via tastytrade, bootstrap a
 SOFR forward curve, then calibrate the model -- (a, sigma1, sigma2), with
-b left fixed; see term_structure_model.calibrate_sofr_model()'s docstring
+b left fixed; see term_structure_model.calibrate_to_sofr_options()'s docstring
 for why -- so the calibration options price correctly under Monte Carlo.
 Can run the grid-search calibrator, the Nelder-Mead one, or both side by
 side for comparison (--method). Then uses the calibrated model to run a
@@ -86,7 +86,7 @@ def main():
           f"2-year forward: {forward_rates[23]:.4%}")
 
     # curve_real_months: how many months of forward_rates are the REAL
-    # (non-extrapolated) part of the curve -- see calibrate_sofr_model()'s
+    # (non-extrapolated) part of the curve -- see calibrate_to_sofr_options()'s
     # docstring. b is left fixed in both calibrators.
     curve_real_months = curve_futures[-1]['end_months']
     if args.min_expiry_months > 0:
@@ -98,12 +98,12 @@ def main():
         print("\nCalibrating (grid search): grid-searching (a, sigma1, sigma2) "
               "directly against the fetched option prices. Takes roughly "
               "10-20 seconds (it's a 3-D search)...")
-        results["grid search"] = tsm.calibrate_sofr_model(
+        results["grid search"] = tsm.calibrate_to_sofr_options(
             forward_rates, options, curve_real_months, min_expiry_months=args.min_expiry_months)
     if args.method in ("nelder-mead", "both"):
         print("\nCalibrating (Nelder-Mead): simplex search for (a, sigma1, sigma2) "
               "against the same option prices. Typically a few seconds...")
-        results["Nelder-Mead"] = tsm.calibrate_sofr_model_nelder_mead(
+        results["Nelder-Mead"] = tsm.calibrate_to_sofr_options_nelder_mead(
             forward_rates, options, curve_real_months, min_expiry_months=args.min_expiry_months)
 
     print("\nCalibration results:")
@@ -115,7 +115,7 @@ def main():
 
     # Use the grid-search result (if it ran) for everything downstream --
     # arbitrary but consistent choice between two methods that, per
-    # calibrate_sofr_model_nelder_mead()'s docstring, should usually agree
+    # calibrate_to_sofr_options_nelder_mead()'s docstring, should usually agree
     # closely; if they don't, that itself is worth a look.
     a, theta_bar, sigma1, sigma2, error = results.get("grid search") or results["Nelder-Mead"]
 

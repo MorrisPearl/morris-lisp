@@ -5612,7 +5612,7 @@ The Python files:
 | `lisp_calendar.py` | `trading-day?`, `add-trading-days`, `trading-days-between`, `market-open?`, `nyse-holidays`, ...: the NYSE's trading days |
 | `lisp_futures.py` | `futures-curve-fit`, `futures-leg-carry`: a futures curve's rich and cheap contracts, and its carry |
 | `lisp_portfolio.py` | `combine-returns`, `bootstrap-paths`, `portfolio-value`, `covariance-matrix`, `correlation-matrix`, `minimum-variance-weights`, `mean-variance-weights`, ...: portfolios |
-| `lisp_sofr.py` | `sofr-*` interest-rate modeling (uses `term_structure/`) |
+| `lisp_rates.py` | `simulate-rate-paths`, `calibrate-rate-model`, ...: paths of interest rates, and their fit to option prices; `sofr-*`: SOFR curves (uses `term_structure/`) |
 | `lisp_gui.py` | The PyQt6 window |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |
 | `lisp_jupyter_debug.py` | The debug REPL in Jupyter, made with ipywidgets |

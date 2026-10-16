@@ -55,8 +55,8 @@ HOW THE CODE IS ORGANIZED
                           (simulated prices of an investment, and an option's value)
     lisp_calendar.py      trading-day?, add-trading-days, trading-days-between, market-open?: the NYSE's trading days
     lisp_portfolio.py     combine-returns, bootstrap-paths, portfolio-value, covariance-matrix, mean-variance-weights, ...
-    lisp_sofr.py          sofr-* interest-rate modeling    (sofr-calibration-data
-                                                            downloads from tastytrade)
+    lisp_rates.py         interest-rate paths and their fit to option prices (simulate-rate-paths, calibrate-rate-model, ...), and
+                          SOFR curves (sofr-*; sofr-calibration-data downloads from tastytrade)
     lisp_gui.py           the PyQt6 window
     lisp_kernel.py        the Jupyter kernel (with lisp_jupyter.py)
     lisp_jupyter_debug.py the debug REPL in Jupyter, made with ipywidgets

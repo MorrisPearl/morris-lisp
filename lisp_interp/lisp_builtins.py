@@ -60,7 +60,7 @@ import lisp_save
 import lisp_schwab
 import lisp_sec
 import lisp_simplex
-import lisp_sofr
+import lisp_rates
 import lisp_sqlite
 import lisp_stratify
 import lisp_tables
@@ -1821,7 +1821,7 @@ SHARED_BUILTIN_TABLES = (
     lisp_time_series.BUILTINS, lisp_csv.BUILTINS, lisp_regression.BUILTINS, lisp_sqlite.BUILTINS, lisp_fred.BUILTINS,
     lisp_sec.BUILTINS, lisp_fdic.BUILTINS, lisp_census.BUILTINS, lisp_bls.BUILTINS, lisp_bea.BUILTINS,
     lisp_maps.BUILTINS, lisp_google.BUILTINS, lisp_schwab.BUILTINS, lisp_alpha_vantage.BUILTINS, lisp_http.BUILTINS,
-    lisp_tastytrade.BUILTINS, lisp_futures.BUILTINS, lisp_sofr.BUILTINS, lisp_simplex.BUILTINS,
+    lisp_tastytrade.BUILTINS, lisp_futures.BUILTINS, lisp_rates.BUILTINS, lisp_simplex.BUILTINS,
     lisp_investment_paths.BUILTINS, lisp_portfolio.BUILTINS, lisp_finance.BUILTINS, lisp_options.BUILTINS,
     lisp_clock.BUILTINS, lisp_calendar.BUILTINS,
 )

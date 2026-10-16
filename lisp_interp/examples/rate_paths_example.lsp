@@ -22,25 +22,25 @@
 (define zeros (treasury-zero-curve (treasury-par-curve)))
 (define forwards (table-column (curve-forward-rates zeros) "forward"))
 (display (format "1. Today's curve, as par yields: 2 years {:.2%}, 5 years {:.2%}, 10 years {:.2%}, 30 years {:.2%}.\n"
-                 (sofr-par-yield forwards 2) (sofr-par-yield forwards 5) (sofr-par-yield forwards 10) (sofr-par-yield forwards 30)))
+                 (curve-par-yield forwards 2) (curve-par-yield forwards 5) (curve-par-yield forwards 10) (curve-par-yield forwards 30)))
 
 ; --- 2. With no volatility, a path is that curve itself, read forward in time ---
-(define no-volatility (sofr-simulate-curve-paths forwards 0 0 5 2))
+(define no-volatility (simulate-rate-paths forwards 0 0 5 2))
 (define curve-short-rate (first (second no-volatility)))
 (define curve-yield (first (third no-volatility)))
 (display (format "2. With no volatility, every path is the curve: the short rate in 2 years is {:.2%} (the curve's forward rate for that month: {:.2%}),\n"
                  (vector-ref curve-short-rate 24) (vector-ref forwards 24)))
 (display (format "   and the 10-year yield then is {:.2%}: the par yield of a 10-year note starting in 2 years, on today's curve ({:.2%}).\n"
-                 (vector-ref curve-yield 24) (sofr-par-yield forwards 10 :start-months 24)))
+                 (vector-ref curve-yield 24) (curve-par-yield forwards 10 :start-months 24)))
 
 ; --- 3. The model's two random factors, over 5 years ---
 ; delta-r: how far the short rate has strayed from the curve's; delta-theta: how far the level (the long end) has.
-(define factors (sofr-simulate-factor-paths sigma1 sigma2 5 200 :a a :seed 1))
+(define factors (simulate-rate-factors sigma1 sigma2 5 200 :a a :seed 1))
 (define delta-r (second factors))
 (define delta-theta (third factors))
 
 ; The paths, from the same factors (the same seed). Follow one whose 10-year yield after 3 years is among the highest tenth.
-(define paths (sofr-simulate-curve-paths forwards sigma1 sigma2 5 200 :a a :seed 1))
+(define paths (simulate-rate-paths forwards sigma1 sigma2 5 200 :a a :seed 1))
 (define years (first paths))
 (define short-rates (second paths))
 (define ten-year-yields (third paths))
@@ -55,7 +55,7 @@
 
 ; --- 4. The curve on that date: today's curve for the dates from then on, bent by the factors ---
 ; The short end follows delta-r, the long end delta-theta, and a says how quickly the one gives way to the other.
-(define on-date (sofr-curve-on-date forwards 36 r-at-3-years theta-at-3-years :a a))
+(define on-date (rate-curve-on-date forwards 36 r-at-3-years theta-at-3-years :a a))
 (define months (table-column on-date "months"))
 (display (format "4. The curve 3 years from now, as the model has it on path {}: first month {:.2%} (today's curve says {:.2%}), month 10 years out {:.2%} ({:.2%}).\n"
                  followed (vector-ref (table-column on-date "model") 0) (vector-ref (table-column on-date "today") 0)

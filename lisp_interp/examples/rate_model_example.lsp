@@ -23,13 +23,13 @@
 (define note-rows (note-option-rows (tastytrade-option-chain creds "ZN" 12 12) :min-days 20 :max-days 120))
 
 ; --- Calibrate: one model that prices both kinds of option ---
-(define fit (sofr-calibrate-jointly sofr-curve treasury (cdr sofr-data) note-rows sofr-months))
+(define fit (calibrate-rate-model sofr-curve treasury (cdr sofr-data) note-rows sofr-months))
 (define (fitted name) (cdr (assoc name fit)))
 (display (format "a = {:.2f}, sigma1 = {:.4f}, sigma2 = {:.4f}. The model's volatilities are {:.0%} from the SOFR options' and {:.0%} from the notes'.\n"
                  (fitted 'a) (fitted 'sigma1) (fitted 'sigma2) (fitted 'sofr-error) (fitted 'note-error)))
 
 ; --- Paths: 200 of them, 5 years, a month at a time ---
-(define paths (sofr-simulate-curve-paths treasury (fitted 'sigma1) (fitted 'sigma2) 5 200 :a (fitted 'a) :seed 1))
+(define paths (simulate-rate-paths treasury (fitted 'sigma1) (fitted 'sigma2) 5 200 :a (fitted 'a) :seed 1))
 (define years (first paths))
 (define short-rates (second paths))
 (define ten-year-yields (third paths))

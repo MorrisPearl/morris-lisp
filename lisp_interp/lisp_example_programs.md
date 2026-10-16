@@ -1353,15 +1353,15 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   the 10-year Treasury note future (ZN). The SOFR options show how much the short rate moves; a
   mortgage depends on the long end, and these show how much that moves. It reads the options with
   `note-option-rows`, finds the volatility of the model's long-end factor for which the model's
-  Monte Carlo prices are nearest the market's (`sofr-calibrate-note-options`), and prints the
-  model's prices and implied volatilities beside the market's (`sofr-note-option-comparison`),
+  Monte Carlo prices are nearest the market's (`calibrate-to-note-options`), and prints the
+  model's prices and implied volatilities beside the market's (`note-option-comparison`),
   then charts the volatility each price implies by strike: the market's is a smile, the
   model's nearly flat. The library manual's
   [Fitting the model to option prices](lisp_library_reference.md#fitting-the-model-to-option-prices)
   says how it works, and why the Treasury's curve, not SOFR's, is the one the paths are centered on.
 - **`rate_model_example.lsp`**: the short version of the whole pipeline. It fits the model to SOFR
-  options and to 10-year note options together (`sofr-calibrate-jointly`), then draws 200 paths of
-  rates with the fitted model (`sofr-simulate-curve-paths`) and charts eight of them: the 10-year
+  options and to 10-year note options together (`calibrate-rate-model`), then draws 200 paths of
+  rates with the fitted model (`simulate-rate-paths`) and charts eight of them: the 10-year
   yield and the short rate. The paths start where the market is today, and spread as the
   options say they should.
 

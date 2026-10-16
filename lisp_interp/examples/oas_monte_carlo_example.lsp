@@ -6,14 +6,14 @@
 ;      oas_monte_carlo.lsp's annualized-realized-vol docstring) a
 ;      historical-vol cross-check for the sigma1/sigma2 used below.
 ;   3. simulate Monte Carlo short-rate / mortgage-rate paths off that
-;      curve (sofr-simulate-mortgage-rate-paths).
+;      curve (simulate-mortgage-rate-paths).
 ;   4. generate one pass-through mortgage cashflow vector per path.
 ;   5. solve for the OAS that reproduces an assumed market price.
 ;
 ; All the curve numbers below are ILLUSTRATIVE (made up, in the same spirit as
 ; term_structure_model.py's own __main__ demo) -- replace with real data (the
 ; Treasury's own curve: treasury-par-curve; sigma1/sigma2 from options:
-; sofr-calibrate-jointly, see oas_monte_carlo_live_example.lsp; a real MBS
+; calibrate-rate-model, see oas_monte_carlo_live_example.lsp; a real MBS
 ; market price) for an actual analysis. sigma1/sigma2 here are simply assumed,
 ; not fit to option prices, to keep this example runnable with no network
 ; access and no credentials file.
@@ -54,7 +54,7 @@
 (define horizon-years 30)
 (define mortgage-spread 0.020)  ; 200bp over the model's 10-year par yield
 
-(define sim (sofr-simulate-mortgage-rate-paths
+(define sim (simulate-mortgage-rate-paths
               forward-rates sigma1 sigma2 horizon-years n-paths
               mortgage-spread :seed 42))
 (define short-rate-paths (second sim))
@@ -89,7 +89,7 @@
 (define assumed-market-price 98.50)   ; per 100 face
 
 ; scaled-path-cashflows[i] is paired against short-rate-paths[i] (same
-; path order sofr-simulate-mortgage-rate-paths returned them in) --
+; path order simulate-mortgage-rate-paths returned them in) --
 ; oas-model-price/oas-solve accept a LIST of per-path cashflow vectors
 ; for exactly this case (see oas_monte_carlo.lsp).
 (define model-price-at-0-oas (oas-model-price scaled-path-cashflows short-rate-paths 0.0))

@@ -99,7 +99,7 @@ def compute_sofr_mortgage_spread(forward_rates,
 
     forward_rates: the curve you'll pass to simulate_mortgage_rate_paths().
         The model's "current" rate is its par yield today,
-        forward_par_yield(forward_rates, 0.0, tenor_years) -- the same
+        curve_par_yield(forward_rates, 0.0, tenor_years) -- the same
         yield simulate_mortgage_rate_paths() adds mortgage_spread on top
         of in its first month (its paths start on the curve), and in every
         later month.
@@ -113,6 +113,6 @@ def compute_sofr_mortgage_spread(forward_rates,
         mortgage_rate_date -- the FRED observation's date
     """
     mortgage_rate_date, mortgage_rate = fetch_current_mortgage_rate(credentials_path, series_id)
-    model_rate = tsm.forward_par_yield(forward_rates, 0.0, tenor_years)
+    model_rate = tsm.curve_par_yield(forward_rates, 0.0, tenor_years)
     spread = mortgage_rate - model_rate
     return spread, mortgage_rate, model_rate, mortgage_rate_date

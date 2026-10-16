@@ -8,7 +8,7 @@ Two tabs:
     rate paths and plot the short-end (SOFR-like) rate, the model's
     10-year (Treasury-like) par yield, or a simple proxy mortgage rate
     (10-year yield + a flat spread you choose). The paths start on the
-    active curve (simulate_curve_paths).
+    active curve (simulate_rate_paths).
   - "Callable Bond (OAS)": enter a callable bond's term, coupon rate,
     call date, call price, and an option-adjusted spread (OAS), and see
     the Monte Carlo price the model computes.
@@ -20,7 +20,7 @@ set by ONE of two "Market & Model Setup" panels at the top:
   - "SOFR Curve (tastytrade, live)": fetch real, exchange-traded CME SOFR
     (SR3) futures + a spread of options on them (sofr_market_data.py),
     bootstrap the curve from the futures (bootstrap_sofr_curve), and
-    calibrate a/sigma1/sigma2 to the options (calibrate_sofr_model) --
+    calibrate a/sigma1/sigma2 to the options (calibrate_to_sofr_options) --
     all with one click each.
 
 Run with:      python3 term_structure_gui.py
@@ -99,15 +99,15 @@ class SofrFetchWorker(QThread):
 
 
 class SofrCalibrationWorker(QThread):
-    """Runs term_structure_model.calibrate_sofr_model() or
-    calibrate_sofr_model_nelder_mead() off the UI thread.
+    """Runs term_structure_model.calibrate_to_sofr_options() or
+    calibrate_to_sofr_options_nelder_mead() off the UI thread.
 
     The grid search calibrates (a, sigma1, sigma2) together as a 3-D grid
     search and takes on the order of ten to twenty seconds (see
-    calibrate_sofr_model()'s docstring for why that's still fast enough
+    calibrate_to_sofr_options()'s docstring for why that's still fast enough
     to just do directly); Nelder-Mead is usually a few seconds but isn't
     guaranteed to find as good a fit -- see
-    calibrate_sofr_model_nelder_mead()'s docstring for the trade-off.
+    calibrate_to_sofr_options_nelder_mead()'s docstring for the trade-off.
     Either way, long enough that blocking the UI thread would be a bad
     idea."""
 
@@ -124,8 +124,8 @@ class SofrCalibrationWorker(QThread):
         self.min_expiry_months = min_expiry_months
 
     def run(self):
-        calibrate = (tsm.calibrate_sofr_model if self.method == "grid"
-                     else tsm.calibrate_sofr_model_nelder_mead)
+        calibrate = (tsm.calibrate_to_sofr_options if self.method == "grid"
+                     else tsm.calibrate_to_sofr_options_nelder_mead)
         try:
             result = calibrate(self.forward_rates, self.options, self.curve_real_months,
                                 min_expiry_months=self.min_expiry_months)
@@ -286,7 +286,7 @@ class TermStructureWindow(QMainWindow):
         self.sofr_calibrate_button.setToolTip(
             "Search (a, sigma1, sigma2) so the model's Monte Carlo prices "
             "for the fetched SOFR options match their real market prices "
-            "(b is left fixed -- see calibrate_sofr_model()'s docstring). "
+            "(b is left fixed -- see calibrate_to_sofr_options()'s docstring). "
             "Fills in sigma1/sigma2 above and stores the fitted a internally."
         )
         self.sofr_calibrate_button.setEnabled(False)
@@ -297,7 +297,7 @@ class TermStructureWindow(QMainWindow):
         self.sofr_method_combo.addItem("Grid search (thorough, ~10-20s)", "grid")
         self.sofr_method_combo.addItem("Nelder-Mead (fast, ~seconds)", "nelder-mead")
         self.sofr_method_combo.setToolTip(
-            "Which calibration algorithm to run -- see calibrate_sofr_model_nelder_mead()'s "
+            "Which calibration algorithm to run -- see calibrate_to_sofr_options_nelder_mead()'s "
             "docstring for the trade-off. Run each once and compare the fitted a/sigma1/sigma2 "
             "if you want to sanity-check the result."
         )
@@ -549,7 +549,7 @@ class TermStructureWindow(QMainWindow):
                 mortgage_spread=spread, seed=None, a=a)
             title = f"Simulated mortgage-rate paths (10y + {self.mortgage_spread_spin.value():.0f}bp)"
         else:
-            years, short_rate_paths, ten_year_paths = tsm.simulate_curve_paths(
+            years, short_rate_paths, ten_year_paths = tsm.simulate_rate_paths(
                 self.forward_rates, sigma1, sigma2, horizon_years, n_paths, seed=None, a=a)
             if self.treasury_rate_radio.isChecked():
                 values = ten_year_paths

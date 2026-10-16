@@ -1,24 +1,29 @@
-"""SOFR interest-rate modeling for the Lisp interpreter: the sofr-*
-builtins, which bridge to term_structure/term_structure_model.py (a pure
-model -- no networking) and term_structure/sofr_market_data.py (which
-fetches SOFR futures and options from tastytrade).
+"""Interest-rate modeling for the Lisp interpreter: the builtins that bridge to
+term_structure/term_structure_model.py (a pure model -- no networking) and
+term_structure/sofr_market_data.py (which fetches SOFR futures and options from
+tastytrade).
 
+The curve and the data of SOFR futures (sofr-*):
   sofr-forward-curve, sofr-bootstrap-curve    build a 360-month forward curve
                                               from SOFR futures (flat past the
                                               last one: for the long end, use
                                               the Treasury's: yield_curves.lsp)
   sofr-calibration-data                       fetch futures + options (network)
-  sofr-calibrate-model                        fit the two-factor model to options
-  sofr-calibrate-note-options                 fit it to options on the 10-year
-                                              note future (ZN)
-  sofr-calibrate-jointly                      fit it to both kinds at once
-  sofr-note-option-comparison                 the model's prices of ZN options
+
+Paths of rates from the two-factor model, which start on any curve (the
+Treasury's is the one to use):
+  simulate-rate-paths,                        Monte Carlo rate scenarios
+  simulate-mortgage-rate-paths
+  simulate-rate-factors,                      what they are made of: the model's
+  rate-curve-on-date, curve-par-yield         two random factors, the curve they
+                                              bend on a date, a curve's par yields
+
+Fitting the model to option prices:
+  calibrate-rate-model                        to SOFR and 10-year note options at once
+  calibrate-to-sofr-options                   to options on SOFR futures
+  calibrate-to-note-options                   to options on the 10-year note future (ZN)
+  note-option-comparison                      the model's prices of ZN options
                                               next to the market's
-  sofr-simulate-curve-paths,                  Monte Carlo rate scenarios that
-  sofr-simulate-mortgage-rate-paths           start on today's curve
-  sofr-simulate-factor-paths,                 what they are made of: the model's
-  sofr-curve-on-date, sofr-par-yield          two random factors, the curve they
-                                              bend on a date, its par yields
 
 If term_structure/ isn't next to this directory, or numpy is missing, the
 builtins raise a clear error when called.
@@ -37,15 +42,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 try:
     from term_structure_model import bootstrap_sofr_curve as _bootstrap_sofr_curve
-    from term_structure_model import forward_curve_on_date as _forward_curve_on_date
-    from term_structure_model import forward_par_yield as _forward_par_yield
-    from term_structure_model import simulate_factor_paths as _simulate_factor_paths
+    from term_structure_model import rate_curve_on_date as _rate_curve_on_date
+    from term_structure_model import curve_par_yield as _curve_par_yield
+    from term_structure_model import simulate_rate_factors as _simulate_rate_factors
     from term_structure_model import simulate_mortgage_rate_paths as _simulate_mortgage_rate_paths
-    from term_structure_model import calibrate_sofr_model as _calibrate_sofr_model
-    from term_structure_model import calibrate_note_options as _calibrate_note_options
-    from term_structure_model import calibrate_sofr_and_note_options as _calibrate_sofr_and_note_options
+    from term_structure_model import calibrate_to_sofr_options as _calibrate_to_sofr_options
+    from term_structure_model import calibrate_to_note_options as _calibrate_to_note_options
+    from term_structure_model import calibrate_rate_model as _calibrate_rate_model
     from term_structure_model import note_option_comparison as _note_option_comparison
-    from term_structure_model import simulate_curve_paths as _simulate_curve_paths
+    from term_structure_model import simulate_rate_paths as _simulate_rate_paths
     _TERM_STRUCTURE_AVAILABLE = True
 except ImportError:
     _TERM_STRUCTURE_AVAILABLE = False
@@ -111,8 +116,8 @@ def sofr_calibration_data_fn(credentials_path, n_futures=40, n_underlyings=10, n
       options-rows        (type strike expiry-months quarter-start-months
                           quarter-end-months market-price underlying-price),
                           near-the-money calls and puts on n-underlyings
-                          contracts -- for sofr-calibrate-model (which does not
-                          use the last number) and sofr-calibrate-jointly
+                          contracts -- for calibrate-to-sofr-options (which does not
+                          use the last number) and calibrate-rate-model
 
     The options are spread across the whole curve, not just the nearest
     contracts, so the model's two volatilities can be told apart. See
@@ -159,9 +164,9 @@ def sofr_bootstrap_curve_fn(curve_futures_rows):
     return Pair(months, forward_rates)
 
 
-def sofr_calibrate_model_fn(forward_rates, options_rows, curve_real_months,
+def calibrate_to_sofr_options_fn(forward_rates, options_rows, curve_real_months,
                              n_paths=2000, seed=42, n_grid=7, n_rounds=4):
-    """(sofr-calibrate-model forward-rates options-rows curve-real-months
+    """(calibrate-to-sofr-options forward-rates options-rows curve-real-months
       [n-paths seed n-grid n-rounds]) -> (list a theta-bar sigma1 sigma2 error)
 
     Fits the two-factor model -- mean-reversion speed `a`, short-rate
@@ -169,7 +174,7 @@ def sofr_calibrate_model_fn(forward_rates, options_rows, curve_real_months,
     rate reverts to -- to real SOFR futures option prices. It tries a grid
     of (a, sigma1, sigma2) values, keeps the one that prices the options
     best, narrows the grid around it, and repeats n-rounds times. theta-bar
-    is refitted at each `a`. See term_structure_model.calibrate_sofr_model().
+    is refitted at each `a`. See term_structure_model.calibrate_to_sofr_options().
 
       forward-rates       from sofr-forward-curve or sofr-bootstrap-curve
       options-rows        from sofr-calibration-data
@@ -182,18 +187,18 @@ def sofr_calibrate_model_fn(forward_rates, options_rows, curve_real_months,
     No network access, so it's cheap to rerun with other settings."""
     if not _TERM_STRUCTURE_AVAILABLE:
         raise LispError(
-            "sofr-calibrate-model: term_structure_model.py (and numpy) aren't "
+            "calibrate-to-sofr-options: term_structure_model.py (and numpy) aren't "
             "available -- see term_structure/ next to lisp_interp/")
     options = [pairs_to_list(r) for r in pairs_to_list(options_rows)]
     if not options:
-        raise LispError("sofr-calibrate-model: options-rows is empty")
+        raise LispError("calibrate-to-sofr-options: options-rows is empty")
     option_dicts = [{
         "type": str(o[0]), "strike": float(o[1]), "expiry_months": int(o[2]),
         "quarter_start_months": int(o[3]), "quarter_end_months": int(o[4]),
         "market_price": float(o[5]),
     } for o in options]
     forward_rates_list = [float(v) for v in forward_rates.items]
-    a, theta_bar, sigma1, sigma2, error = _calibrate_sofr_model(
+    a, theta_bar, sigma1, sigma2, error = _calibrate_to_sofr_options(
         forward_rates_list, option_dicts, int(curve_real_months),
         n_paths=int(n_paths), seed=int(seed), n_grid=int(n_grid), n_rounds=int(n_rounds))
     return list_to_pairs([float(a), float(theta_bar), float(sigma1), float(sigma2), float(error)])
@@ -264,8 +269,8 @@ _NOTE_MODEL_OPTIONS = ["a", "b", "n-paths", "seed", "ctd-maturity", "ctd-coupon"
 _NOTE_FIT_OPTIONS = ["fit", "sigma1", "sigma2", "min-days", "moneyness-window"]
 
 
-def sofr_note_option_comparison_fn(forward_rates, option_rows, sigma1, sigma2, *options):
-    """(sofr-note-option-comparison forward-rates option-rows sigma1 sigma2
+def note_option_comparison_fn(forward_rates, option_rows, sigma1, sigma2, *options):
+    """(note-option-comparison forward-rates option-rows sigma1 sigma2
       [:a :b :n-paths :seed :ctd-maturity :ctd-coupon]) -> table
 
     The model's prices of options on the 10-year note future (ZN) next to the
@@ -294,7 +299,7 @@ def sofr_note_option_comparison_fn(forward_rates, option_rows, sigma1, sigma2, *
 
     See term_structure_model.price_note_future_options_mc(). No network
     access."""
-    who = "sofr-note-option-comparison"
+    who = "note-option-comparison"
     _check_term_structure(who)
     choices = _model_choices(options, who, _NOTE_MODEL_OPTIONS)
     rows = _note_option_dicts(option_rows, who)
@@ -312,8 +317,8 @@ def sofr_note_option_comparison_fn(forward_rates, option_rows, sigma1, sigma2, *
     return make_table_value(columns)
 
 
-def sofr_calibrate_note_options_fn(forward_rates, option_rows, *options):
-    """(sofr-calibrate-note-options forward-rates option-rows
+def calibrate_to_note_options_fn(forward_rates, option_rows, *options):
+    """(calibrate-to-note-options forward-rates option-rows
       [:fit :sigma1 :sigma2 :a :b :n-paths :seed :ctd-maturity :ctd-coupon
        :min-days :moneyness-window]) -> association list
 
@@ -322,7 +327,7 @@ def sofr_calibrate_note_options_fn(forward_rates, option_rows, *options):
     closest to the market's, the error being the root mean square of the
     options' relative volatility errors. forward-rates and option-rows, and
     :a :b :n-paths :seed :ctd-maturity :ctd-coupon, are as for
-    sofr-note-option-comparison.
+    note-option-comparison.
 
       :fit               the parameters to fit, a list of a, b, sigma1, sigma2
                          (by default (sigma2): the long end's volatility is what
@@ -336,18 +341,18 @@ def sofr_calibrate_note_options_fn(forward_rates, option_rows, *options):
     The result is ((a . 1.0) (b . 0.15) (sigma1 . 0.01) (sigma2 . 0.013)
     (error . 0.03) (options-used . 24) (evaluations . 36)); read a value with
     (cdr (assoc 'sigma2 result)). See
-    term_structure_model.calibrate_note_options(). No network access."""
-    who = "sofr-calibrate-note-options"
+    term_structure_model.calibrate_to_note_options(). No network access."""
+    who = "calibrate-to-note-options"
     _check_term_structure(who)
     choices = _model_choices(options, who, _NOTE_MODEL_OPTIONS + _NOTE_FIT_OPTIONS)
     rows = _note_option_dicts(option_rows, who)
-    fit = _calibrate_note_options(_forward_rates_list(forward_rates, who), rows, **choices)
+    fit = _calibrate_to_note_options(_forward_rates_list(forward_rates, who), rows, **choices)
     return _alist([(name, fit[name]) for name in ("a", "b", "sigma1", "sigma2", "error")]
                   + [("options-used", fit["options_used"]), ("evaluations", fit["evaluations"])])
 
 
-def sofr_calibrate_jointly_fn(sofr_forward_rates, note_forward_rates, sofr_rows, note_rows, curve_real_months, *options):
-    """(sofr-calibrate-jointly sofr-forward-rates treasury-forward-rates
+def calibrate_rate_model_fn(sofr_forward_rates, note_forward_rates, sofr_rows, note_rows, curve_real_months, *options):
+    """(calibrate-rate-model sofr-forward-rates treasury-forward-rates
       sofr-option-rows note-option-rows curve-real-months [:fit :sigma1 :sigma2 :a :sofr-paths :note-paths :seed
       :ctd-maturity :ctd-coupon :min-days :moneyness-window :sofr-min-months]) -> association list
 
@@ -364,8 +369,8 @@ def sofr_calibrate_jointly_fn(sofr_forward_rates, note_forward_rates, sofr_rows,
                               (curve-forward-rates), which the note options'
                               paths are centered on
       sofr-option-rows        from sofr-calibration-data (the 7-item rows)
-      note-option-rows        as for sofr-note-option-comparison
-      curve-real-months       as for sofr-calibrate-model
+      note-option-rows        as for note-option-comparison
+      curve-real-months       as for calibrate-to-sofr-options
 
     The error is the root mean square relative volatility error of the SOFR
     options and that of the note options, put together as the square root of
@@ -376,12 +381,12 @@ def sofr_calibrate_jointly_fn(sofr_forward_rates, note_forward_rates, sofr_rows,
     volatilities are the same at all dates cannot match the market's front
     months (the Fed's next move being nearly known), and their large relative
     errors would decide the fit. :min-days and :moneyness-window are as for
-    sofr-calibrate-note-options.
+    calibrate-to-note-options.
 
     The result is ((a . 1.0) (sigma1 . 0.01) (sigma2 . 0.013) (theta-bar . 0.05)
     (sofr-error . 0.02) (note-error . 0.03) (error . 0.05) (sofr-options-used . 30)
     (note-options-used . 24) (evaluations . 100)). No network access."""
-    who = "sofr-calibrate-jointly"
+    who = "calibrate-rate-model"
     _check_term_structure(who)
     allowed = ["fit", "sigma1", "sigma2", "a", "sofr-paths", "note-paths", "seed", "ctd-maturity", "ctd-coupon",
                "min-days", "moneyness-window", "sofr-min-months"]
@@ -397,7 +402,7 @@ def sofr_calibrate_jointly_fn(sofr_forward_rates, note_forward_rates, sofr_rows,
             "quarter_start_months": int(row[3]), "quarter_end_months": int(row[4]),
             "market_price": float(row[5]), "underlying_price": float(row[6])})
     notes = _note_option_dicts(note_rows, who)
-    fit = _calibrate_sofr_and_note_options(
+    fit = _calibrate_rate_model(
         _forward_rates_list(sofr_forward_rates, who), _forward_rates_list(note_forward_rates, who),
         sofr_options, notes, int(curve_real_months), **choices)
     return _alist([("a", fit["a"]), ("sigma1", fit["sigma1"]), ("sigma2", fit["sigma2"]), ("theta-bar", fit["theta_bar"]),
@@ -418,12 +423,12 @@ def _lisp_paths(paths):
     return list_to_pairs([LispVector([float(x) for x in row]) for row in paths])
 
 
-def sofr_simulate_curve_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths, *options):
-    """(sofr-simulate-curve-paths forward-rates sigma1 sigma2 horizon-years n-paths
+def simulate_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths, *options):
+    """(simulate-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths
       [:a :b :seed :tenor-years]) -> (list years short-rate-paths yield-paths)
 
     Simulates n-paths Monte Carlo scenarios of the model that
-    sofr-calibrate-note-options and sofr-calibrate-jointly fit, horizon-years
+    calibrate-to-note-options and calibrate-rate-model fit, horizon-years
     ahead, month by month. The paths start where the market is: they are the
     market's forward curve plus the model's random factors, as the calibration
     prices options, so the first month's yield is today's.
@@ -437,22 +442,22 @@ def sofr_simulate_curve_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n
     last rate. sigma1 and sigma2 are the volatilities from the calibration, :a
     (1.0) and :b (0.15) its mean-reversion speeds. :seed (an integer) makes the
     paths the same each time; without it they are new. n-paths is made even (an odd
-    number is rounded up). See term_structure_model.simulate_curve_paths().
+    number is rounded up). See term_structure_model.simulate_rate_paths().
     No network access."""
-    who = "sofr-simulate-curve-paths"
+    who = "simulate-rate-paths"
     _check_term_structure(who)
-    years, short_rate_paths, yield_paths = _simulate_curve_paths(
+    years, short_rate_paths, yield_paths = _simulate_rate_paths(
         _forward_rates_list(forward_rates, who), float(sigma1), float(sigma2), float(horizon_years), int(n_paths),
         **_path_keywords(options, who))
     return list_to_pairs([LispVector([float(y) for y in years]), _lisp_paths(short_rate_paths), _lisp_paths(yield_paths)])
 
 
-def sofr_simulate_factor_paths_fn(sigma1, sigma2, horizon_years, n_paths, *options):
-    """(sofr-simulate-factor-paths sigma1 sigma2 horizon-years n-paths [:a :b :seed])
+def simulate_rate_factors_fn(sigma1, sigma2, horizon_years, n_paths, *options):
+    """(simulate-rate-factors sigma1 sigma2 horizon-years n-paths [:a :b :seed])
     -> (list years delta-r-paths delta-theta-paths)
 
     The two random factors of the model, which are all there is to its paths
-    besides the market's curve (sofr-simulate-curve-paths adds them to it).
+    besides the market's curve (simulate-rate-paths adds them to it).
       delta-r      how far the short rate has strayed from where today's curve has it
       delta-theta  how far the long-run level has strayed (the long end of the curve)
     Both start at 0. Each is a list of vectors, one per scenario, as rates (0.01 is
@@ -460,23 +465,23 @@ def sofr_simulate_factor_paths_fn(sigma1, sigma2, horizon_years, n_paths, *optio
     toward delta-theta at speed :a (1.0), and delta-theta toward 0, slowly, at speed
     :b (0.15); sigma1 and sigma2 are the sizes of their random shocks. :seed (an
     integer) makes the paths the same each time; n-paths is made even. See
-    term_structure_model.simulate_factor_paths(). No network access."""
-    who = "sofr-simulate-factor-paths"
+    term_structure_model.simulate_rate_factors(). No network access."""
+    who = "simulate-rate-factors"
     _check_term_structure(who)
     chosen = keyword_options(options, ["a", "b", "seed"], who)
     conversions = {"a": float, "b": float, "seed": int}
-    years, delta_r_paths, delta_theta_paths = _simulate_factor_paths(
+    years, delta_r_paths, delta_theta_paths = _simulate_rate_factors(
         float(sigma1), float(sigma2), float(horizon_years), int(n_paths), **{name: conversions[name](value) for name, value in chosen.items()})
     return list_to_pairs([LispVector([float(y) for y in years]), _lisp_paths(delta_r_paths), _lisp_paths(delta_theta_paths)])
 
 
-def sofr_curve_on_date_fn(forward_rates, months_ahead, delta_r, delta_theta, *options):
-    """(sofr-curve-on-date forward-rates months-ahead delta-r delta-theta [:a :months])
+def rate_curve_on_date_fn(forward_rates, months_ahead, delta_r, delta_theta, *options):
+    """(rate-curve-on-date forward-rates months-ahead delta-r delta-theta [:a :months])
     -> table
 
     The model's forward curve on a date months-ahead from today, when its two
     factors have the values delta-r and delta-theta (a scenario's, at that date, from
-    sofr-simulate-factor-paths): today's curve for the dates from then on, bent by
+    simulate-rate-factors): today's curve for the dates from then on, bent by
     them. The short end follows delta-r, the long end delta-theta, and the two meet
     at speed :a (1.0). With both 0 it is today's curve itself.
 
@@ -487,13 +492,13 @@ def sofr_curve_on_date_fn(forward_rates, months_ahead, delta_r, delta_theta, *op
     :months (by default, all the months forward-rates has after the date) is how many
     to give; a curve that is shorter continues at its last rate. The first model rate
     is the scenario's short rate that month, and the par yield of a note is worked
-    out from the whole curve (sofr-simulate-curve-paths gives those). No network
+    out from the whole curve (simulate-rate-paths gives those). No network
     access."""
-    who = "sofr-curve-on-date"
+    who = "rate-curve-on-date"
     _check_term_structure(who)
     chosen = keyword_options(options, ["a", "months"], who)
     conversions = {"a": float, "months": int}
-    months, today, on_date = _forward_curve_on_date(
+    months, today, on_date = _rate_curve_on_date(
         _forward_rates_list(forward_rates, who), int(months_ahead), float(delta_r), float(delta_theta),
         **{name: conversions[name](value) for name, value in chosen.items()})
     return make_table_value([("months", LispVector([int(m) for m in months])),
@@ -501,8 +506,8 @@ def sofr_curve_on_date_fn(forward_rates, months_ahead, delta_r, delta_theta, *op
                              ("model", LispVector([float(x) for x in on_date]))])
 
 
-def sofr_par_yield_fn(forward_rates, tenor_years, *options):
-    """(sofr-par-yield forward-rates tenor-years [:start-months]) -> number
+def curve_par_yield_fn(forward_rates, tenor_years, *options):
+    """(curve-par-yield forward-rates tenor-years [:start-months]) -> number
 
     The par yield a curve gives a note of tenor-years that starts :start-months
     (0, today) from now: the coupon, an annual rate paid every six months, that
@@ -510,22 +515,22 @@ def sofr_par_yield_fn(forward_rates, tenor_years, *options):
     forward rates (curve-forward-rates), long enough to reach start-months plus
     tenor-years. With :start-months 0 it is the yield the Treasury would publish if
     the curve were its own; later, what the curve implies for that yield then (the
-    first value of a path with no volatility, in sofr-simulate-curve-paths, is this
+    first value of a path with no volatility, in simulate-rate-paths, is this
     for each month). No network access."""
-    who = "sofr-par-yield"
+    who = "curve-par-yield"
     _check_term_structure(who)
     chosen = keyword_options(options, ["start-months"], who)
     start_months = float(chosen.get("start-months", 0))
-    return float(_forward_par_yield(_forward_rates_list(forward_rates, who), start_months / 12.0, float(tenor_years)))
+    return float(_curve_par_yield(_forward_rates_list(forward_rates, who), start_months / 12.0, float(tenor_years)))
 
 
-def sofr_simulate_mortgage_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths,
+def simulate_mortgage_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths,
                                           mortgage_spread, *options):
-    """(sofr-simulate-mortgage-rate-paths forward-rates sigma1 sigma2
+    """(simulate-mortgage-rate-paths forward-rates sigma1 sigma2
       horizon-years n-paths mortgage-spread [:a :b :seed :tenor-years])
     -> (list years short-rate-paths underlying-paths mortgage-paths)
 
-    The same simulation as sofr-simulate-curve-paths, plus a simple mortgage
+    The same simulation as simulate-rate-paths, plus a simple mortgage
     rate for each scenario and month: the par yield of a note of :tenor-years
     (default 10) plus mortgage-spread. underlying-paths is that yield before
     adding the spread.
@@ -535,7 +540,7 @@ def sofr_simulate_mortgage_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_
     term_structure/mortgage_spread.py for estimating the spread from FRED's
     MORTGAGE30US, as today's mortgage rate less the curve's 10-year par yield.
     No network access."""
-    who = "sofr-simulate-mortgage-rate-paths"
+    who = "simulate-mortgage-rate-paths"
     _check_term_structure(who)
     years, short_rate_paths, underlying_paths, mortgage_paths = _simulate_mortgage_rate_paths(
         _forward_rates_list(forward_rates, who), float(sigma1), float(sigma2), float(horizon_years), int(n_paths),
@@ -548,13 +553,13 @@ BUILTINS = {
     "sofr-forward-curve": sofr_forward_curve_fn,
     "sofr-calibration-data": sofr_calibration_data_fn,
     "sofr-bootstrap-curve": sofr_bootstrap_curve_fn,
-    "sofr-calibrate-model": sofr_calibrate_model_fn,
-    "sofr-calibrate-note-options": sofr_calibrate_note_options_fn,
-    "sofr-calibrate-jointly": sofr_calibrate_jointly_fn,
-    "sofr-note-option-comparison": sofr_note_option_comparison_fn,
-    "sofr-simulate-curve-paths": sofr_simulate_curve_paths_fn,
-    "sofr-simulate-factor-paths": sofr_simulate_factor_paths_fn,
-    "sofr-curve-on-date": sofr_curve_on_date_fn,
-    "sofr-par-yield": sofr_par_yield_fn,
-    "sofr-simulate-mortgage-rate-paths": sofr_simulate_mortgage_rate_paths_fn,
+    "calibrate-to-sofr-options": calibrate_to_sofr_options_fn,
+    "calibrate-to-note-options": calibrate_to_note_options_fn,
+    "calibrate-rate-model": calibrate_rate_model_fn,
+    "note-option-comparison": note_option_comparison_fn,
+    "simulate-rate-paths": simulate_rate_paths_fn,
+    "simulate-rate-factors": simulate_rate_factors_fn,
+    "rate-curve-on-date": rate_curve_on_date_fn,
+    "curve-par-yield": curve_par_yield_fn,
+    "simulate-mortgage-rate-paths": simulate_mortgage_rate_paths_fn,
 }

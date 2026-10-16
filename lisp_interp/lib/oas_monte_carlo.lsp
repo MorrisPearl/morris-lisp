@@ -2,8 +2,8 @@
 ;
 ; The option-adjusted spread (OAS) of a security whose cashflows depend on
 ; interest rates, such as a mortgage pool, which prepays faster when rates
-; fall. Simulate many paths of rates (sofr-simulate-curve-paths, or
-; sofr-simulate-mortgage-rate-paths, the two-factor model in
+; fall. Simulate many paths of rates (simulate-rate-paths, or
+; simulate-mortgage-rate-paths, the two-factor model in
 ; term_structure/term_structure_model.py, whose paths start on the market's
 ; curve, so that their average discount factor is the curve's); discount the security's
 ; cashflows along each path at that path's own rates plus a spread; and
@@ -14,7 +14,7 @@
 ;
 ; Three pieces, each usable on its own:
 ;   1. annualized-realized-vol -- the volatility of a rate's history, to
-;      check the sigma1 and sigma2 that sofr-calibrate-model fits.
+;      check the sigma1 and sigma2 that calibrate-to-sofr-options fits.
 ;   2. path-present-value, oas-model-price, oas-solve -- the OAS of any
 ;      vector of monthly cashflows, one per path.
 ;   3. simple-mortgage-cashflows, mortgage-cashflows-per-path -- the
@@ -30,7 +30,7 @@
 ; --- 1. historical-volatility cross-check --------------------------------
 
 ; (annualized-realized-vol rate-levels periods-per-year) -> a decimal
-; annualized volatility, in the SAME units as sofr-calibrate-model's
+; annualized volatility, in the SAME units as calibrate-to-sofr-options's
 ; fitted sigma1/sigma2 -- both are the standard deviation, per
 ; sqrt(year), of ABSOLUTE (not log, not percentage) changes in a short
 ; rate, since that's the diffusion term's own units in
@@ -54,7 +54,7 @@
 ; DGS10 (the 10-year Treasury yield, a proxy for where the "long-run
 ; level" the short rate reverts to has itself been drifting). Neither is
 ; a rigorous substitute for calibrating against real SOFR futures option
-; prices (sofr-calibrate-model) -- these are single free-standing rate
+; prices (calibrate-to-sofr-options) -- these are single free-standing rate
 ; series, not the two-factor model's own latent state -- but they're a
 ; fast, no-options-data-needed sanity check that a fitted sigma1/sigma2
 ; is at least the right ORDER OF MAGNITUDE:
@@ -72,7 +72,7 @@
 ; cashflows: a vector, one entry per month, months 1..N (index 0 is
 ;     month 1's cashflow).
 ; short-rate-path: a vector of at least N simulated short rates -- one
-;     Monte Carlo PATH from sofr-simulate-curve-paths'/sofr-simulate-
+;     Monte Carlo PATH from simulate-rate-paths'/sofr-simulate-
 ;     mortgage-rate-paths' short-rate-paths list (index k is the rate
 ;     prevailing at the START of month k+1 -- the same start-of-period
 ;     convention term_structure_model.py's price_callable_bond_mc() uses
@@ -100,7 +100,7 @@
 
 ; (oas-model-price cashflows rate-paths oas) -> a number -- the Monte
 ; Carlo model price: path-present-value averaged across every path in
-; rate-paths (a Lisp LIST of vectors, e.g. sofr-simulate-curve-paths'
+; rate-paths (a Lisp LIST of vectors, e.g. simulate-rate-paths'
 ; short-rate-paths return value, or one path per scenario you built
 ; yourself).
 ;
@@ -194,7 +194,7 @@
 ;     psa_speed argument (100 = standard 100% PSA).
 ; market-rate-path: a DECIMAL rate vector (e.g. one row of sofr-simulate-
 ;     mortgage-rate-paths' mortgage-paths, or its underlying-paths, or
-;     sofr-simulate-curve-paths' yield-paths) of length >= n-months, index k = the market rate prevailing
+;     simulate-rate-paths' yield-paths) of length >= n-months, index k = the market rate prevailing
 ;     at the START of month k+1 -- multiplied by 100 here before being
 ;     compared to note-rate-percent, since the two are in different unit
 ;     conventions upstream (term_structure_model.py works in decimals

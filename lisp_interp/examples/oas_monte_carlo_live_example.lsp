@@ -6,7 +6,7 @@
 ;     which the paths of rates start on;
 ;   - SOFR futures and options on them, and options on the 10-year note
 ;     future, from tastytrade, to calibrate the two-factor model's a,
-;     sigma1 and sigma2 (sofr-calibrate-jointly: see rate_model_example.lsp);
+;     sigma1 and sigma2 (calibrate-rate-model: see rate_model_example.lsp);
 ;   - a historical-volatility cross-check for the fitted sigma1/sigma2
 ;     (annualized-realized-vol), computed from real FRED daily-rate
 ;     history (DFF for the short-rate factor, DGS10 for the slower
@@ -55,7 +55,7 @@
 (define par-curve (treasury-par-curve))
 (define treasury-day (vector-max (table-column par-curve "date")))
 (define treasury-forwards (table-column (curve-forward-rates (treasury-zero-curve par-curve)) "forward"))
-(define (par-yield years) (sofr-par-yield treasury-forwards years))
+(define (par-yield years) (curve-par-yield treasury-forwards years))
 (display "  as of ") (display treasury-day) (display ": 2y=") (display (par-yield 2))
 (display " 5y=") (display (par-yield 5)) (display " 10y=") (display (par-yield 10))
 (display " 30y=") (display (par-yield 30)) (newline)
@@ -81,7 +81,7 @@
 ; --- 3. calibrate (a, sigma1, sigma2) against both kinds of option ------
 
 (display "Calibrating against the option prices...") (newline)
-(define fit (sofr-calibrate-jointly sofr-forward-rates treasury-forwards sofr-option-rows note-rows real-months))
+(define fit (calibrate-rate-model sofr-forward-rates treasury-forwards sofr-option-rows note-rows real-months))
 (define (fitted name) (cdr (assoc name fit)))
 (define fitted-a (fitted 'a))
 (define fitted-sigma1 (fitted 'sigma1))
@@ -134,7 +134,7 @@
 
 (display "Simulating ") (display n-scenario-paths) (display " mortgage-rate paths over ")
 (display horizon-years) (display " years...") (newline)
-(define sim (sofr-simulate-mortgage-rate-paths
+(define sim (simulate-mortgage-rate-paths
               treasury-forwards fitted-sigma1 fitted-sigma2 horizon-years n-scenario-paths
               mortgage-spread :seed 42 :a fitted-a))
 (define short-rate-paths (list-ref sim 1))
