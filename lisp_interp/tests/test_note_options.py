@@ -337,6 +337,90 @@ class TestThePricer(unittest.TestCase):
         self.assertGreater(vol, ceiling * 0.7)
 
 
+def par_yield_by_hand(monthly_rate, years):
+    """The par yield of a note of this many years, on a flat curve of this monthly-compounded rate: its coupon, paid every
+    six months, for which it is worth par."""
+    discount = [(1 + monthly_rate / 12) ** (-6 * k) for k in range(1, int(round(2 * years)) + 1)]
+    return 2 * (1 - discount[-1]) / sum(discount)
+
+
+class TestPathsFromTheCurve(unittest.TestCase):
+    """simulate_curve_paths: the model's paths around the market's curve, month by month."""
+
+    def test_with_no_volatility_every_month_is_the_curve_as_it_is(self):
+        flat = np.full(360, 0.06)
+        years, short, yields = model.simulate_curve_paths(flat, 0.0, 0.0, 3, 4, seed=1)
+        np.testing.assert_allclose(years, np.arange(37) / 12)
+        np.testing.assert_allclose(short, 0.06, rtol=1e-14)
+        np.testing.assert_allclose(yields, par_yield_by_hand(0.06, 10), rtol=1e-12)
+        _, _, five = model.simulate_curve_paths(flat, 0.0, 0.0, 3, 4, seed=1, tenor_years=5)
+        np.testing.assert_allclose(five, par_yield_by_hand(0.06, 5), rtol=1e-12)
+
+    def test_the_paths_start_on_the_curve_and_average_to_it(self):
+        years, short, yields = model.simulate_curve_paths(FORWARDS, 0.012, 0.012, 2, 100, seed=3)
+        self.assertEqual(short.shape, (100, 25))
+        self.assertEqual(yields.shape, (100, 25))
+        np.testing.assert_allclose(short[:, 0], FORWARDS[0], rtol=1e-14)
+        np.testing.assert_allclose(yields[:, 0], model._forward_par_coupon(FORWARDS, 0.0, 10.0), rtol=1e-12)
+        # the paths come in mirror images, so the short rate averages to the curve's forward rate exactly
+        np.testing.assert_allclose(short.mean(axis=0), FORWARDS[:25], rtol=1e-12)
+        self.assertGreater(short[:, 24].std(), 0.003)                  # and spreads out
+
+    def test_the_rate_of_a_month_is_the_deviation_of_that_day_added_to_the_curve(self):
+        years, short, yields = model.simulate_curve_paths(FORWARDS, 0.012, 0.014, 2, 50, seed=5, a=1.3, b=0.2)
+        found = model._simulate_deviations([365, 730], 0.012, 0.014, 1.3, 0.2, 50, 5)
+        delta_r, delta_theta, _ = found[730]
+        np.testing.assert_allclose(short[:, 24], FORWARDS[24] + delta_r, rtol=1e-12)
+        np.testing.assert_allclose(short[:, 12], FORWARDS[12] + found[365][0], rtol=1e-12)
+        # one path's 10-year par yield, by hand: the market's discount factors from then, bent by the deviations
+        path = 7
+        times = 0.5 * np.arange(1, 21)
+        discount = []
+        for tau in times:
+            b_of_tau = (1 - math.exp(-1.3 * tau)) / 1.3
+            market = model._market_discount_factors(FORWARDS, [2.0 + tau])[0] / model._market_discount_factors(FORWARDS, [2.0])[0]
+            discount.append(market * math.exp(-delta_theta[path] * (tau - b_of_tau) - delta_r[path] * b_of_tau))
+        self.assertAlmostEqual(yields[path, 24], 2 * (1 - discount[-1]) / sum(discount), places=12)
+
+    def test_the_yield_follows_the_level_factor(self):
+        # With the short rate tied to the level (a large) and no noise of its own, every forward rate past the first weeks
+        # moves with the level, and so does the 10-year yield: about one for one.
+        years, short, yields = model.simulate_curve_paths(FORWARDS, 0.0, 0.01, 1, 4000, seed=2, a=20.0)
+        _, delta_theta, _ = model._simulate_deviations([365], 0.0, 0.01, 20.0, 0.15, 4000, 2)[365]
+        self.assertGreater(np.corrcoef(yields[:, 12], delta_theta)[0, 1], 0.99)
+        slope = np.polyfit(delta_theta, yields[:, 12], 1)[0]
+        self.assertGreater(slope, 0.95)
+        self.assertLess(slope, 1.05)
+
+    def test_the_seed_makes_the_same_paths_and_no_seed_new_ones(self):
+        first = model.simulate_curve_paths(FORWARDS, 0.01, 0.01, 1, 10, seed=8)
+        again = model.simulate_curve_paths(FORWARDS, 0.01, 0.01, 1, 10, seed=8)
+        other = model.simulate_curve_paths(FORWARDS, 0.01, 0.01, 1, 10)
+        another = model.simulate_curve_paths(FORWARDS, 0.01, 0.01, 1, 10)
+        np.testing.assert_array_equal(first[1], again[1])
+        self.assertFalse(np.array_equal(other[1], another[1]))
+
+    def test_the_shortest_horizon_is_a_month(self):
+        years, short, yields = model.simulate_curve_paths(FORWARDS, 0.01, 0.01, 1 / 12, 4, seed=1)
+        np.testing.assert_allclose(years, [0, 1 / 12])
+        self.assertEqual(short.shape, (4, 2))
+
+    def test_an_odd_number_of_paths_is_rounded_up(self):
+        self.assertEqual(model.simulate_curve_paths(FORWARDS, 0.01, 0.01, 1, 7, seed=1)[1].shape, (8, 13))
+
+    def test_the_horizon_and_the_tenor_must_fit_in_the_curve(self):
+        with self.assertRaises(ValueError) as caught:
+            model.simulate_curve_paths(FORWARDS, 0.01, 0.01, 0.0, 10)
+        self.assertIn("at least a month", str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            model.simulate_curve_paths(FORWARDS[:120], 0.01, 0.01, 10, 10)
+        self.assertIn("has 120 months", str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            model.simulate_curve_paths(FORWARDS[:120], 0.01, 0.01, 2, 10)             # 12 years in all, in a 10-year curve
+        self.assertIn("ends at 10.0 years", str(caught.exception))
+        model.simulate_curve_paths(FORWARDS[:126], 0.01, 0.01, 10, 10, tenor_years=0.5)         # exactly as far as the curve goes
+
+
 class TestTheComparison(unittest.TestCase):
 
     def test_the_rows_are_the_options_with_what_the_market_and_the_model_say(self):
@@ -719,6 +803,40 @@ class TestTheBuiltins(NoteOptionsLispTestCase):
 
     def test_a_rate_in_the_rows_may_be_given_as_a_whole_number(self):
         self.assertShows("(table-row-count (sofr-note-option-comparison forwards '((\"Call\" 105 36 106 1)) 0.01 0.01))", "1")
+
+
+class TestThePathBuiltin(NoteOptionsLispTestCase):
+
+    def paths(self, keywords=""):
+        return self.run_lisp("(sofr-simulate-curve-paths forwards 0.012 0.014 2 6 %s)" % keywords)
+
+    def test_the_result_is_the_years_and_a_vector_for_each_path_of_the_rate_and_of_the_yield(self):
+        result = lisp_core.pairs_to_list(self.paths(":seed 4"))
+        self.assertEqual(len(result), 3)
+        years, short, yields = result
+        np.testing.assert_allclose(years.items, np.arange(25) / 12)
+        self.assertEqual(len(lisp_core.pairs_to_list(short)), 6)
+        self.assertEqual(len(lisp_core.pairs_to_list(yields)), 6)
+        first = lisp_core.pairs_to_list(short)[0]
+        self.assertEqual(len(first.items), 25)
+
+    def test_the_paths_are_the_models(self):
+        years, short, yields = lisp_core.pairs_to_list(self.paths(":seed 4 :a 1.3 :b 0.2 :tenor-years 7.5"))
+        expected = model.simulate_curve_paths(FORWARDS, 0.012, 0.014, 2, 6, seed=4, a=1.3, b=0.2, tenor_years=7.5)
+        np.testing.assert_allclose([p.items for p in lisp_core.pairs_to_list(short)], expected[1], rtol=1e-6)
+        np.testing.assert_allclose([p.items for p in lisp_core.pairs_to_list(yields)], expected[2], rtol=1e-6)
+
+    def test_a_seed_gives_the_same_paths_and_none_new_ones(self):
+        self.assertEqual(self.show("(cadr (sofr-simulate-curve-paths forwards 0.01 0.01 1 4 :seed 2))"),
+                         self.show("(cadr (sofr-simulate-curve-paths forwards 0.01 0.01 1 4 :seed 2))"))
+        self.assertNotEqual(self.show("(cadr (sofr-simulate-curve-paths forwards 0.01 0.01 1 4))"),
+                            self.show("(cadr (sofr-simulate-curve-paths forwards 0.01 0.01 1 4))"))
+
+    def test_the_choices_and_the_curve_are_checked(self):
+        self.assertLispError("(sofr-simulate-curve-paths forwards 0.01 0.01 1 4 :speed 2)", ":speed isn't an option")
+        self.assertLispError("(sofr-simulate-curve-paths 5 0.01 0.01 1 4)", "forward-rates must be a vector")
+        self.assertLispError("(sofr-simulate-curve-paths forwards 0.01 0.01 0 4)", "at least a month")
+        self.assertLispError("(sofr-simulate-curve-paths forwards 0.01 0.01 25 4)", "ends at")
 
 
 class TestTheBuiltinForBothKinds(NoteOptionsLispTestCase):

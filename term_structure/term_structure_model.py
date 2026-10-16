@@ -1232,10 +1232,7 @@ def _forward_par_coupon(forward_rates, expiry_years, maturity_years):
     maturity_years a par bond on the market's forward curve as of expiry_years
     from now: the one for which its price there is 1.
     """
-    times = _note_cash_flow_times(maturity_years)
-    discount = _market_discount_factors(forward_rates, expiry_years + times) / \
-        _market_discount_factors(forward_rates, [expiry_years])[0]
-    return float(2.0 * (1.0 - discount[-1]) / np.sum(discount))
+    return float(_par_yields_at_expiry(forward_rates, expiry_years, np.zeros(1), np.zeros(1), 1.0, maturity_years)[0])
 
 
 def _note_cash_flows(maturity_years, coupon):
@@ -1245,27 +1242,49 @@ def _note_cash_flows(maturity_years, coupon):
     return flows
 
 
-def _note_prices_at_expiry(forward_rates, expiry_years, delta_r, delta_theta, a, maturity_years, coupon):
+def _discount_factors_at_expiry(forward_rates, expiry_years, delta_r, delta_theta, a, times):
     """
-    The price, per 100 of face, of a note of maturity_years remaining and the
-    given coupon, at expiry_years from now, for each Monte Carlo path (its
-    delta_r and delta_theta: numpy arrays).
+    D(T, T+tau), the discount factors at expiry_years (T) from now for the
+    dates `times` (the taus, in years) after it, as an array with a row for each
+    Monte Carlo path (its delta_r and delta_theta: numpy arrays) and a column for
+    each tau.
 
-    Its discount factors come from the curve of the model (see THE IDEA above):
-    the market's forward rates for those dates, plus deviations that fade from
-    delta_r at the near end to delta_theta at the far end. With continuously
-    compounded forwards that is closed-form:
+    They come from the curve of the model (see THE IDEA above): the market's
+    forward rates for those dates, plus deviations that fade from delta_r at the
+    near end to delta_theta at the far end. With continuously compounded
+    forwards that is closed-form:
         D(T, T+tau) = D_market(T, T+tau) * exp(-delta_theta * A(tau) - delta_r * B(tau))
         B(tau) = (1 - exp(-a tau)) / a,        A(tau) = tau - B(tau)
     (the integrals of exp(-a s) and of 1 - exp(-a s) over s from 0 to tau).
     """
-    times = _note_cash_flow_times(maturity_years)
     market = _market_discount_factors(forward_rates, expiry_years + times) / \
         _market_discount_factors(forward_rates, [expiry_years])[0]
     b_of_tau = -np.expm1(-a * times) / a
     a_of_tau = times - b_of_tau
-    discount = market[None, :] * np.exp(-np.outer(delta_theta, a_of_tau) - np.outer(delta_r, b_of_tau))
+    return market[None, :] * np.exp(-np.outer(delta_theta, a_of_tau) - np.outer(delta_r, b_of_tau))
+
+
+def _note_prices_at_expiry(forward_rates, expiry_years, delta_r, delta_theta, a, maturity_years, coupon):
+    """
+    The price, per 100 of face, of a note of maturity_years remaining and the
+    given coupon, at expiry_years from now, for each Monte Carlo path (its
+    delta_r and delta_theta: numpy arrays), on the curve of the model (see
+    _discount_factors_at_expiry()).
+    """
+    times = _note_cash_flow_times(maturity_years)
+    discount = _discount_factors_at_expiry(forward_rates, expiry_years, delta_r, delta_theta, a, times)
     return discount @ _note_cash_flows(maturity_years, coupon)
+
+
+def _par_yields_at_expiry(forward_rates, expiry_years, delta_r, delta_theta, a, maturity_years):
+    """
+    The par yield (the coupon, an annual rate paid semiannually, that makes the
+    note worth par) of a note of maturity_years at expiry_years from now, for each
+    Monte Carlo path, on the curve of the model.
+    """
+    times = _note_cash_flow_times(maturity_years)
+    discount = _discount_factors_at_expiry(forward_rates, expiry_years, delta_r, delta_theta, a, times)
+    return 2.0 * (1.0 - discount[:, -1]) / discount.sum(axis=1)
 
 
 def _note_duration(forward_rates, expiry_years, maturity_years, coupon):
@@ -1368,6 +1387,52 @@ def price_note_future_options_mc(forward_rates, options, sigma1, sigma2,
                 payoffs = np.maximum(option['strike'] - futures, 0.0)
             prices[i] = float(np.mean(discount * payoffs))
     return prices
+
+
+def simulate_curve_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths, seed=None,
+                         a=SHORT_RATE_REVERSION_SPEED, b=MEAN_LEVEL_REVERSION_SPEED, tenor_years=10):
+    """
+    Monte Carlo paths of the model that the note-option calibration fits
+    (see THE IDEA above), month by month: the same random factors, stepped by
+    the day, around the market's forward curve. Unlike simulate_rate_paths(),
+    whose paths start from the model's own crude curve, these start where the
+    market is today: the first month's short rate is the curve's first forward
+    rate, and the tenor_years par yield at the start is the curve's own.
+
+    forward_rates: the market's monthly forward rates, the Treasury's (see THE
+        IDEA above); a curve longer than horizon_years + tenor_years.
+    seed: an integer for the same paths each time; None (the default) for new ones.
+    n_paths: the number of paths (an even number: an odd one is rounded up).
+
+    Returns (years, short_rate_paths, yield_paths):
+        years              -- 0, 1/12, 2/12, ... out to horizon_years
+        short_rate_paths   -- array (n_paths, len(years)): the model's short
+                              rate at each date, the market's forward rate for
+                              the month that starts then plus the path's delta_r
+        yield_paths        -- array (n_paths, len(years)): the par yield of a
+                              note of tenor_years (as the Treasury publishes), at
+                              each date, on the curve of the model that day
+    """
+    months = int(round(horizon_years * MONTHS_PER_YEAR))
+    if months < 1:
+        raise ValueError("the horizon must be at least a month")
+    if months >= len(forward_rates):
+        raise ValueError(f"the forward curve has {len(forward_rates)} months, and a horizon of "
+                         f"{horizon_years} years needs one more than {months}")
+    paths = 2 * ((n_paths + 1) // 2)
+    days = [int(round(month * DAYS_PER_YEAR / MONTHS_PER_YEAR)) for month in range(1, months + 1)]
+    found = _simulate_deviations(days, sigma1, sigma2, a, b, n_paths, seed)
+    forward = np.asarray(forward_rates, dtype=float)
+    short_rate_paths = np.zeros((paths, months + 1))
+    yield_paths = np.zeros((paths, months + 1))
+    for month in range(months + 1):
+        if month == 0:
+            delta_r = delta_theta = np.zeros(paths)
+        else:
+            delta_r, delta_theta, _ = found[days[month - 1]]
+        short_rate_paths[:, month] = forward[month] + delta_r
+        yield_paths[:, month] = _par_yields_at_expiry(forward, month / MONTHS_PER_YEAR, delta_r, delta_theta, a, tenor_years)
+    return np.arange(months + 1) / MONTHS_PER_YEAR, short_rate_paths, yield_paths
 
 
 def _market_view(forward_rates, option):

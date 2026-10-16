@@ -24,6 +24,7 @@ lisp_interp/**/option_payoffs_*.png
 lisp_interp/**/yield_curve_zero.png
 lisp_interp/**/yield_curve_forward.png
 lisp_interp/**/note_option_smile.png
+lisp_interp/**/rate_model_paths.png
 lisp_interp/**/synthetic_mbs_pools.csv
 lisp_interp/**/mortgage_amortization_example.csv
 lisp_interp/**/sofr_floating_rate_example.csv

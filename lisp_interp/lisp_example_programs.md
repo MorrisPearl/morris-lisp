@@ -131,6 +131,7 @@ files in `examples/` and `lib/` from anywhere:
 | `sofr_monte_carlo_example.lsp` | calibrating the two-factor rate model to futures options, and simulating rates | tastytrade |
 | `oas_monte_carlo_example.lsp` | the whole option-adjusted-spread pipeline on made-up numbers | nothing (60 s) |
 | `oas_monte_carlo_live_example.lsp` | the same on live data, written to a report | tastytrade, FRED |
+| `rate_model_example.lsp` | fitting the rate model to SOFR and 10-year note options together, then drawing and charting a few paths from it | tastytrade, the Treasury's curve |
 | `note_option_example.lsp` | fitting the rate model to options on the 10-year note future: the model's prices next to the market's, and the volatility smile | tastytrade, the Treasury's curve |
 | `prepayment_demo.lsp` | loading pool data, a spline-logistic model, a held-out test, a chart | nothing |
 | `regression_kinds_example.lsp` | six kinds of regression on the same data, and cross-validation | nothing |
@@ -1351,6 +1352,11 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   model's nearly flat. The library manual's
   [Fitting the model to options on the 10-year note future](lisp_library_reference.md#fitting-the-model-to-options-on-the-10-year-note-future)
   says how it works, and why the Treasury's curve, not SOFR's, is the one the paths are centered on.
+- **`rate_model_example.lsp`**: the short version of the whole pipeline. It fits the model to SOFR
+  options and to 10-year note options together (`sofr-calibrate-jointly`), then draws 200 paths of
+  rates with the fitted model (`sofr-simulate-curve-paths`) and charts eight of them: the 10-year
+  yield and the short rate. The paths start where the market is today, and spread as the
+  options say they should.
 
 Most of these need the market open, for live bids and asks, and credentials; each file's
 header says which. The libraries behind them, and the functions they call, are in the

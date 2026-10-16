@@ -1926,6 +1926,42 @@ fitted together with the SOFR options, `sigma2` was 0.0122 (with `a` of 2.75 and
                                     (cdr data) rows 62))
 ```
 
+#### `(sofr-simulate-curve-paths forward-rates sigma1 sigma2 horizon-years n-paths [:a :b :seed :tenor-years])`
+Pure function — no networking. Simulates `n-paths` Monte Carlo scenarios of the
+model that `sofr-calibrate-note-options` and `sofr-calibrate-jointly` fit, month
+by month for `horizon-years`: the same random factors (stepped by the day),
+added to the market's forward curve, as the calibration prices options. Use the
+fitted `sigma1`, `sigma2` and `a`, with the Treasury's forward curve
+(`curve-forward-rates`), which must reach `:tenor-years` beyond the horizon.
+`:a` (1.0) and `:b` (0.15) are the mean-reversion speeds, `:tenor-years` (10) the
+note whose par yield is followed, and `:seed` (an integer) makes the paths the
+same each time (without it they are new). `n-paths` is rounded up to an even
+number: the paths come in mirror-image pairs, so that their average is the
+curve's own.
+
+Returns `(list years short-rate-paths yield-paths)`, the shape
+`sofr-simulate-rate-paths` gives: `years` is `0, 1/12, 2/12, ...`; the others
+are a list with a vector for each path: the model's short rate (the market's
+forward rate for the month that starts then, plus the path's deviation), and the
+par yield of the note of `:tenor-years` that day, as the Treasury publishes it.
+
+These paths start where the market is: the first path value of the 10-year yield
+is the Treasury's own (5.10% on 2026-10-15). `sofr-simulate-rate-paths` starts from
+the model's own curve, which fits today's only roughly: with the fit above its
+10-year rate started at 4.59%, half a point under the market's. The
+model's rates are normal (they can go below zero, and its volatility doesn't
+rise with the level), so a path now and then goes somewhere a real rate
+would not: 200 paths of 5 years from the fit above ended between 1% and
+10.5% for the 10-year yield.
+
+```lisp
+(define paths (sofr-simulate-curve-paths treasury-forwards 0.0194 0.0122 5 200 :a 2.75 :seed 1))
+(define ten-year-yields (third paths))          ; 200 vectors of 61 monthly yields
+```
+
+See `examples/rate_model_example.lsp`, which fits the model to SOFR and note
+options and then draws and charts a few paths.
+
 #### `(sofr-simulate-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths [seed a theta-bar])`
 Pure function — no networking. Simulates `n-paths` Monte Carlo scenarios
 of the two-factor model (a short-rate factor and a slower mean-reversion-

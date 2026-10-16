@@ -13,6 +13,8 @@ fetches SOFR futures and options from tastytrade).
   sofr-calibrate-jointly                      fit it to both kinds at once
   sofr-note-option-comparison                 the model's prices of ZN options
                                               next to the market's
+  sofr-simulate-curve-paths                   Monte Carlo rate scenarios that
+                                              start on today's curve
   sofr-simulate-rate-paths,                   Monte Carlo rate scenarios
   sofr-simulate-mortgage-rate-paths
 
@@ -40,6 +42,7 @@ try:
     from term_structure_model import calibrate_note_options as _calibrate_note_options
     from term_structure_model import calibrate_sofr_and_note_options as _calibrate_sofr_and_note_options
     from term_structure_model import note_option_comparison as _note_option_comparison
+    from term_structure_model import simulate_curve_paths as _simulate_curve_paths
     _TERM_STRUCTURE_AVAILABLE = True
 except ImportError:
     _TERM_STRUCTURE_AVAILABLE = False
@@ -436,6 +439,41 @@ def sofr_calibrate_jointly_fn(sofr_forward_rates, note_forward_rates, sofr_rows,
                    ("evaluations", fit["evaluations"])])
 
 
+def sofr_simulate_curve_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths, *options):
+    """(sofr-simulate-curve-paths forward-rates sigma1 sigma2 horizon-years n-paths
+      [:a :b :seed :tenor-years]) -> (list years short-rate-paths yield-paths)
+
+    Simulates n-paths Monte Carlo scenarios of the model that
+    sofr-calibrate-note-options and sofr-calibrate-jointly fit, horizon-years
+    ahead, month by month. The same shape as sofr-simulate-rate-paths gives,
+    but the paths start where the market is: the model's own curve is a poor fit
+    to today's (its 10-year rate can start half a point off), and these paths
+    are the market's forward curve plus the model's random factors, as the
+    calibration prices options.
+      years            a vector of times: 0, 1/12, 2/12, ... horizon-years
+      short-rate-paths a list of vectors, one per scenario: the short rate
+      yield-paths      the same scenarios' par yield for a note of :tenor-years
+                       (10 if not given), as the Treasury publishes it
+
+    forward-rates is the Treasury's monthly forward curve (curve-forward-rates),
+    at least :tenor-years longer than the horizon. sigma1 and sigma2 are the
+    volatilities from the calibration, :a (1.0) and :b (0.15) its mean-reversion
+    speeds. :seed (an integer) makes the paths the same each time; without it they
+    are new. n-paths is made even (an odd number is rounded up). See
+    term_structure_model.simulate_curve_paths(). No network access."""
+    who = "sofr-simulate-curve-paths"
+    _check_term_structure(who)
+    chosen = keyword_options(options, ["a", "b", "seed", "tenor-years"], who)
+    arguments = {"a": float, "b": float, "seed": int, "tenor_years": float}
+    keywords = {name.replace("-", "_"): arguments[name.replace("-", "_")](value) for name, value in chosen.items()}
+    years, short_rate_paths, yield_paths = _simulate_curve_paths(
+        _forward_rates_list(forward_rates, who), float(sigma1), float(sigma2), float(horizon_years), int(n_paths), **keywords)
+    return list_to_pairs([
+        LispVector([float(y) for y in years]),
+        list_to_pairs([LispVector([float(x) for x in row]) for row in short_rate_paths]),
+        list_to_pairs([LispVector([float(x) for x in row]) for row in yield_paths])])
+
+
 def sofr_simulate_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths,
                                  seed=None, a=None, theta_bar=None):
     """(sofr-simulate-rate-paths forward-rates sigma1 sigma2 horizon-years
@@ -517,6 +555,7 @@ BUILTINS = {
     "sofr-calibrate-note-options": sofr_calibrate_note_options_fn,
     "sofr-calibrate-jointly": sofr_calibrate_jointly_fn,
     "sofr-note-option-comparison": sofr_note_option_comparison_fn,
+    "sofr-simulate-curve-paths": sofr_simulate_curve_paths_fn,
     "sofr-simulate-rate-paths": sofr_simulate_rate_paths_fn,
     "sofr-simulate-mortgage-rate-paths": sofr_simulate_mortgage_rate_paths_fn,
 }
