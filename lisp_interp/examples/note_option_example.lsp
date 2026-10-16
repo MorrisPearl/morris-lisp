@@ -2,11 +2,11 @@
 ;
 ; Fitting the interest-rate model to options on the 10-year Treasury note future (ZN).
 ;
-; The model of rates is fitted to SOFR futures options elsewhere (sofr_monte_carlo_example.lsp); those show how
+; The model of rates can be fitted to SOFR futures options (sofr-calibrate-model); those show how
 ; much the SHORT rate moves. A mortgage follows the LONG end, and options on the 10-year note future say how much
 ; that moves. Here the model's prices of the options are set beside the market's, and the volatility of the long
-; end (sigma2) is found for which they are nearest. See "Fitting the model to options on the 10-year note future"
-; in the library manual.
+; end (sigma2) is found for which they are nearest. See "Fitting the model to option prices" under
+; "Interest rate paths" in the library manual.
 ;
 ; Needs a tastytrade account (creds, in init.lsp) for the options, and downloads the Treasury's yield curve. Read-only:
 ; nothing is placed. Run it from the examples directory:

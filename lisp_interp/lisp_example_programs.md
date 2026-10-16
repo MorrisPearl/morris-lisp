@@ -128,9 +128,9 @@ files in `examples/` and `lib/` from anywhere:
 |---|---|---|
 | `mortgage_amortization_example.lsp` | a mortgage and a four-tranche deal, as columns of formulas (`lib/column_engine.lsp`) | tastytrade (for its SOFR section) |
 | `sofr_floating_rate_example.lsp` | a floating-rate note driven by the SOFR futures curve | tastytrade |
-| `sofr_monte_carlo_example.lsp` | calibrating the two-factor rate model to futures options, and simulating rates | tastytrade |
 | `oas_monte_carlo_example.lsp` | the whole option-adjusted-spread pipeline on made-up numbers | nothing (60 s) |
 | `oas_monte_carlo_live_example.lsp` | the same on live data, written to a report | tastytrade, FRED |
+| `rate_paths_example.lsp` | how paths of interest rates are made, a stage at a time: today's curve, the curve with no volatility, the model's two random factors, the curve they bend on a date, and many paths | nothing: a free download |
 | `rate_model_example.lsp` | fitting the rate model to SOFR and 10-year note options together, then drawing and charting a few paths from it | tastytrade, the Treasury's curve |
 | `note_option_example.lsp` | fitting the rate model to options on the 10-year note future: the model's prices next to the market's, and the volatility smile | tastytrade, the Treasury's curve |
 | `prepayment_demo.lsp` | loading pool data, a spline-logistic model, a held-out test, a chart | nothing |
@@ -1234,12 +1234,12 @@ a short script to copy from.
   catches. Separating the *problem* (data, in a file) from the *solver* (code) means a
   portfolio manager can edit the first without touching the second.
 - **`oas_monte_carlo_example.lsp`** (60 seconds; the **live** version uses real data). The
-  option-adjusted spread pipeline from `lib/oas_monte_carlo.lsp`: bootstrap a SOFR curve from
-  futures, extend its long end with a Treasury curve, simulate paths of a two-factor rate
-  model, generate a mortgage cash flow for each path, and solve for the spread that reproduces a
-  market price. All of the inputs in this version are made up, which makes the pipeline
+  option-adjusted spread pipeline from `lib/oas_monte_carlo.lsp`: a forward curve from par
+  yields, paths of a two-factor rate model that start on it, a mortgage cash flow for each path,
+  and the spread that reproduces a market price. All of the inputs in this version are made up, which makes the pipeline
   runnable anywhere and its stages easy to follow; the live version
-  (`oas_monte_carlo_live_example.lsp`) swaps in the real curves and writes a report that
+  (`oas_monte_carlo_live_example.lsp`) swaps in the Treasury's curve, a model fitted to option prices,
+  and the mortgage rate and its spread over the 10-year yield, and writes a report that
   separates what was fetched from the one number (the price) that is still an assumption.
 
 ---
@@ -1338,10 +1338,17 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   square, and shows the options furthest out of line with the rest of their smile (the
   ones whose price, at the bid or the ask, the fit says is off: a possible trade). It then
   fits one surface across all the expirations at once, and draws the first smile.
-- **`tastytrade_example.lsp`**, **`sofr_monte_carlo_example.lsp`**,
-  **`sofr_floating_rate_example.lsp`**: the live-data end of the same pipelines.
-  The Monte Carlo one calibrates the model to option prices by a shrinking grid
-  search, which is slow (it says so, and turns its settings down for a quicker first run).
+- **`tastytrade_example.lsp`**, **`sofr_floating_rate_example.lsp`**: the live-data end of the same
+  pipelines.
+- **`rate_paths_example.lsp`** takes a path of interest rates apart, and needs no key. A path is today's
+  forward curve (the Treasury's, downloaded) bent by two random numbers, and the program shows each stage and
+  what is read from it: the curve's own par yields; a path with no volatility (which **is** the forward curve, read
+  forward in time: the program checks the short rate and the 10-year yield against the curve's); the two
+  factors; one path's curve three years on, next to today's (a chart); what the path reports from that curve;
+  and 200 paths, whose average discount factor is the curve's (the program prints both, 3 basis points apart).
+  The second chart shows seven paths, the one followed, and the curve with no volatility, over the factors of the
+  path followed. The library manual's
+  [Interest rate paths](lisp_library_reference.md#interest-rate-paths-the-two-factor-model) says how to make them.
 - **`note_option_example.lsp`**: the same rate model, fitted to a different market: options on
   the 10-year Treasury note future (ZN). The SOFR options show how much the short rate moves; a
   mortgage depends on the long end, and these show how much that moves. It reads the options with
@@ -1350,7 +1357,7 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   model's prices and implied volatilities beside the market's (`sofr-note-option-comparison`),
   then charts the volatility each price implies by strike: the market's is a smile, the
   model's nearly flat. The library manual's
-  [Fitting the model to options on the 10-year note future](lisp_library_reference.md#fitting-the-model-to-options-on-the-10-year-note-future)
+  [Fitting the model to option prices](lisp_library_reference.md#fitting-the-model-to-option-prices)
   says how it works, and why the Treasury's curve, not SOFR's, is the one the paths are centered on.
 - **`rate_model_example.lsp`**: the short version of the whole pipeline. It fits the model to SOFR
   options and to 10-year note options together (`sofr-calibrate-jointly`), then draws 200 paths of

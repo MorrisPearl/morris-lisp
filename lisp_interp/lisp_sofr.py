@@ -4,8 +4,9 @@ model -- no networking) and term_structure/sofr_market_data.py (which
 fetches SOFR futures and options from tastytrade).
 
   sofr-forward-curve, sofr-bootstrap-curve    build a 360-month forward curve
-  sofr-extend-curve-with-treasury             replace its flat long end with
-                                              the Treasury curve's shape
+                                              from SOFR futures (flat past the
+                                              last one: for the long end, use
+                                              the Treasury's: yield_curves.lsp)
   sofr-calibration-data                       fetch futures + options (network)
   sofr-calibrate-model                        fit the two-factor model to options
   sofr-calibrate-note-options                 fit it to options on the 10-year
@@ -15,6 +16,9 @@ fetches SOFR futures and options from tastytrade).
                                               next to the market's
   sofr-simulate-curve-paths,                  Monte Carlo rate scenarios that
   sofr-simulate-mortgage-rate-paths           start on today's curve
+  sofr-simulate-factor-paths,                 what they are made of: the model's
+  sofr-curve-on-date, sofr-par-yield          two random factors, the curve they
+                                              bend on a date, its par yields
 
 If term_structure/ isn't next to this directory, or numpy is missing, the
 builtins raise a clear error when called.
@@ -33,7 +37,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 try:
     from term_structure_model import bootstrap_sofr_curve as _bootstrap_sofr_curve
-    from term_structure_model import extend_curve_long_end as _extend_curve_long_end
+    from term_structure_model import forward_curve_on_date as _forward_curve_on_date
+    from term_structure_model import forward_par_yield as _forward_par_yield
+    from term_structure_model import simulate_factor_paths as _simulate_factor_paths
     from term_structure_model import simulate_mortgage_rate_paths as _simulate_mortgage_rate_paths
     from term_structure_model import calibrate_sofr_model as _calibrate_sofr_model
     from term_structure_model import calibrate_note_options as _calibrate_note_options
@@ -66,8 +72,8 @@ def sofr_forward_curve_fn(curve_rows):
 
     months-vector is 1..360; element i of forward-rates-vector is the
     annualized forward rate (a decimal, e.g. 0.045) for month i+1. Past the
-    last listed contract the curve is flat -- see
-    sofr-extend-curve-with-treasury. The method is
+    last listed contract the curve is flat; extend-forward-curve (yield_curves.lsp)
+    carries it on with the Treasury's. The method is
     term_structure_model.bootstrap_sofr_curve(); this only reshapes the rows.
     No network access."""
     if not _TERM_STRUCTURE_AVAILABLE:
@@ -151,42 +157,6 @@ def sofr_bootstrap_curve_fn(curve_futures_rows):
     months = LispVector([int(m) for m in result["months"]])
     forward_rates = LispVector([float(fr) for fr in result["forward_rates"]])
     return Pair(months, forward_rates)
-
-
-def sofr_extend_curve_with_treasury_fn(forward_rates, curve_real_months,
-                                        yield_3m, yield_6m, yield_1y, yield_2y,
-                                        yield_5y, yield_10y, yield_30y, blend_months=12):
-    """(sofr-extend-curve-with-treasury forward-rates curve-real-months
-      yield-3m yield-6m yield-1y yield-2y yield-5y yield-10y yield-30y
-      [blend-months]) -> forward-rates-vector
-
-    A SOFR curve is flat past its last futures contract (about 5 years out).
-    This replaces that flat part with the shape of the Treasury curve, built
-    from today's par yields and blended in linearly over blend-months
-    (default 12) so there's no kink. Useful for anything priced off the far
-    end of the curve, such as a 30-year mortgage.
-
-      forward-rates       from sofr-forward-curve or sofr-bootstrap-curve
-      curve-real-months   how many months are backed by real futures prices
-      yield-...           Treasury par yields as DECIMALS (0.045, not 4.5) --
-                          e.g. FRED's DGS3MO ... DGS30 divided by 100
-
-    It borrows the Treasury curve's shape as-is; there's no SOFR/Treasury
-    basis adjustment. No network access."""
-    if not _TERM_STRUCTURE_AVAILABLE:
-        raise LispError(
-            "sofr-extend-curve-with-treasury: term_structure_model.py (and "
-            "numpy) aren't available -- see term_structure/ next to lisp_interp/")
-    forward_rates_list = [float(v) for v in forward_rates.items]
-    treasury_yields = {
-        "3m": float(yield_3m), "6m": float(yield_6m), "12m": float(yield_1y),
-        "2y": float(yield_2y), "5y": float(yield_5y), "10y": float(yield_10y),
-        "30y": float(yield_30y),
-    }
-    extended = _extend_curve_long_end(
-        forward_rates_list, int(curve_real_months), treasury_yields,
-        blend_months=int(blend_months))
-    return LispVector([float(fr) for fr in extended])
 
 
 def sofr_calibrate_model_fn(forward_rates, options_rows, curve_real_months,
@@ -387,9 +357,9 @@ def sofr_calibrate_jointly_fn(sofr_forward_rates, note_forward_rates, sofr_rows,
     (sigma2); fitting both fixes a and sigma1 against the SOFR options and
     sigma2 against the note options, and the model has to agree with both.
 
-      sofr-forward-rates      the SOFR curve (sofr-forward-curve, or with its
-                              long end from sofr-extend-curve-with-treasury),
-                              which the SOFR options' paths start from
+      sofr-forward-rates      the SOFR curve (sofr-forward-curve or
+                              sofr-bootstrap-curve), which the SOFR options'
+                              paths start from
       treasury-forward-rates  the Treasury's monthly forward curve
                               (curve-forward-rates), which the note options'
                               paths are centered on
@@ -477,6 +447,78 @@ def sofr_simulate_curve_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n
     return list_to_pairs([LispVector([float(y) for y in years]), _lisp_paths(short_rate_paths), _lisp_paths(yield_paths)])
 
 
+def sofr_simulate_factor_paths_fn(sigma1, sigma2, horizon_years, n_paths, *options):
+    """(sofr-simulate-factor-paths sigma1 sigma2 horizon-years n-paths [:a :b :seed])
+    -> (list years delta-r-paths delta-theta-paths)
+
+    The two random factors of the model, which are all there is to its paths
+    besides the market's curve (sofr-simulate-curve-paths adds them to it).
+      delta-r      how far the short rate has strayed from where today's curve has it
+      delta-theta  how far the long-run level has strayed (the long end of the curve)
+    Both start at 0. Each is a list of vectors, one per scenario, as rates (0.01 is
+    one percent), month by month like the years vector. The short rate pulls back
+    toward delta-theta at speed :a (1.0), and delta-theta toward 0, slowly, at speed
+    :b (0.15); sigma1 and sigma2 are the sizes of their random shocks. :seed (an
+    integer) makes the paths the same each time; n-paths is made even. See
+    term_structure_model.simulate_factor_paths(). No network access."""
+    who = "sofr-simulate-factor-paths"
+    _check_term_structure(who)
+    chosen = keyword_options(options, ["a", "b", "seed"], who)
+    conversions = {"a": float, "b": float, "seed": int}
+    years, delta_r_paths, delta_theta_paths = _simulate_factor_paths(
+        float(sigma1), float(sigma2), float(horizon_years), int(n_paths), **{name: conversions[name](value) for name, value in chosen.items()})
+    return list_to_pairs([LispVector([float(y) for y in years]), _lisp_paths(delta_r_paths), _lisp_paths(delta_theta_paths)])
+
+
+def sofr_curve_on_date_fn(forward_rates, months_ahead, delta_r, delta_theta, *options):
+    """(sofr-curve-on-date forward-rates months-ahead delta-r delta-theta [:a :months])
+    -> table
+
+    The model's forward curve on a date months-ahead from today, when its two
+    factors have the values delta-r and delta-theta (a scenario's, at that date, from
+    sofr-simulate-factor-paths): today's curve for the dates from then on, bent by
+    them. The short end follows delta-r, the long end delta-theta, and the two meet
+    at speed :a (1.0). With both 0 it is today's curve itself.
+
+    The table has a row for each month, the columns
+      months  1, 2, ...: the rate is for the month that starts months - 1 months after the date
+      today   the market's forward rate for that month, annual, from forward-rates
+      model   the model's, on the date: today plus the bend
+    :months (by default, all the months forward-rates has after the date) is how many
+    to give; a curve that is shorter continues at its last rate. The first model rate
+    is the scenario's short rate that month, and the par yield of a note is worked
+    out from the whole curve (sofr-simulate-curve-paths gives those). No network
+    access."""
+    who = "sofr-curve-on-date"
+    _check_term_structure(who)
+    chosen = keyword_options(options, ["a", "months"], who)
+    conversions = {"a": float, "months": int}
+    months, today, on_date = _forward_curve_on_date(
+        _forward_rates_list(forward_rates, who), int(months_ahead), float(delta_r), float(delta_theta),
+        **{name: conversions[name](value) for name, value in chosen.items()})
+    return make_table_value([("months", LispVector([int(m) for m in months])),
+                             ("today", LispVector([float(x) for x in today])),
+                             ("model", LispVector([float(x) for x in on_date]))])
+
+
+def sofr_par_yield_fn(forward_rates, tenor_years, *options):
+    """(sofr-par-yield forward-rates tenor-years [:start-months]) -> number
+
+    The par yield a curve gives a note of tenor-years that starts :start-months
+    (0, today) from now: the coupon, an annual rate paid every six months, that
+    makes the note worth its face value. forward-rates is a curve of monthly
+    forward rates (curve-forward-rates), long enough to reach start-months plus
+    tenor-years. With :start-months 0 it is the yield the Treasury would publish if
+    the curve were its own; later, what the curve implies for that yield then (the
+    first value of a path with no volatility, in sofr-simulate-curve-paths, is this
+    for each month). No network access."""
+    who = "sofr-par-yield"
+    _check_term_structure(who)
+    chosen = keyword_options(options, ["start-months"], who)
+    start_months = float(chosen.get("start-months", 0))
+    return float(_forward_par_yield(_forward_rates_list(forward_rates, who), start_months / 12.0, float(tenor_years)))
+
+
 def sofr_simulate_mortgage_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths,
                                           mortgage_spread, *options):
     """(sofr-simulate-mortgage-rate-paths forward-rates sigma1 sigma2
@@ -506,11 +548,13 @@ BUILTINS = {
     "sofr-forward-curve": sofr_forward_curve_fn,
     "sofr-calibration-data": sofr_calibration_data_fn,
     "sofr-bootstrap-curve": sofr_bootstrap_curve_fn,
-    "sofr-extend-curve-with-treasury": sofr_extend_curve_with_treasury_fn,
     "sofr-calibrate-model": sofr_calibrate_model_fn,
     "sofr-calibrate-note-options": sofr_calibrate_note_options_fn,
     "sofr-calibrate-jointly": sofr_calibrate_jointly_fn,
     "sofr-note-option-comparison": sofr_note_option_comparison_fn,
     "sofr-simulate-curve-paths": sofr_simulate_curve_paths_fn,
+    "sofr-simulate-factor-paths": sofr_simulate_factor_paths_fn,
+    "sofr-curve-on-date": sofr_curve_on_date_fn,
+    "sofr-par-yield": sofr_par_yield_fn,
     "sofr-simulate-mortgage-rate-paths": sofr_simulate_mortgage_rate_paths_fn,
 }

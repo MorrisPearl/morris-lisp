@@ -1,6 +1,6 @@
-"""Options on the 10-year note future (ZN): the Monte Carlo pricer and calibration of term_structure_model.py (Step 3b),
-the note-option-rows library function, and the sofr-note-option-comparison, sofr-calibrate-note-options and
-sofr-calibrate-jointly builtins that bring them to Lisp.
+"""The two-factor rate model of term_structure_model.py: options on the 10-year note future (ZN), their Monte Carlo pricer and
+calibration (Step 3b), and the paths that start on the market's curve, with what they are made of; the note-option-rows
+library function; and the sofr-* builtins that bring them to Lisp.
 
 The numbers that can be worked out by hand are (Bachelier's formula, discount factors, a note's price and duration, the
 variances of the simulated factors); the rest are checked as the model's own promises: no volatility gives the
@@ -351,7 +351,7 @@ class TestPathsFromTheCurve(unittest.TestCase):
         flat = np.full(360, 0.06)
         years, short, yields = model.simulate_curve_paths(flat, 0.0, 0.0, 3, 4, seed=1)
         np.testing.assert_allclose(years, np.arange(37) / 12)
-        np.testing.assert_allclose(short, 0.06, rtol=1e-14)
+        np.testing.assert_allclose(short, 0.06, rtol=1e-12)
         np.testing.assert_allclose(yields, par_yield_by_hand(0.06, 10), rtol=1e-12)
         _, _, five = model.simulate_curve_paths(flat, 0.0, 0.0, 3, 4, seed=1, tenor_years=5)
         np.testing.assert_allclose(five, par_yield_by_hand(0.06, 5), rtol=1e-12)
@@ -360,18 +360,22 @@ class TestPathsFromTheCurve(unittest.TestCase):
         years, short, yields = model.simulate_curve_paths(FORWARDS, 0.012, 0.012, 2, 100, seed=3)
         self.assertEqual(short.shape, (100, 25))
         self.assertEqual(yields.shape, (100, 25))
-        np.testing.assert_allclose(short[:, 0], FORWARDS[0], rtol=1e-14)
+        np.testing.assert_allclose(short[:, 0], FORWARDS[0], rtol=1e-12)
         np.testing.assert_allclose(yields[:, 0], model.forward_par_yield(FORWARDS, 0.0, 10.0), rtol=1e-12)
-        # the paths come in mirror images, so the short rate averages to the curve's forward rate exactly
-        np.testing.assert_allclose(short.mean(axis=0), FORWARDS[:25], rtol=1e-12)
+        # the paths come in mirror images, so the short rate averages to the curve's forward rate (to a tenth of a basis point)
+        np.testing.assert_allclose(short.mean(axis=0), FORWARDS[:25], atol=1e-5)
         self.assertGreater(short[:, 24].std(), 0.003)                  # and spreads out
 
-    def test_the_rate_of_a_month_is_the_deviation_of_that_day_added_to_the_curve(self):
+    def test_the_rate_of_a_month_is_the_first_month_of_the_curve_the_factors_of_that_day_bend(self):
         years, short, yields = model.simulate_curve_paths(FORWARDS, 0.012, 0.014, 2, 50, seed=5, a=1.3, b=0.2)
         found = model._simulate_deviations([365, 730], 0.012, 0.014, 1.3, 0.2, 50, 5)
         delta_r, delta_theta, _ = found[730]
-        np.testing.assert_allclose(short[:, 24], FORWARDS[24] + delta_r, rtol=1e-12)
-        np.testing.assert_allclose(short[:, 12], FORWARDS[12] + found[365][0], rtol=1e-12)
+        h = 1 / 12
+        b_of_h = (1 - math.exp(-1.3 * h)) / 1.3
+        a_of_h = h - b_of_h
+        expected = 12 * ((1 + FORWARDS[24] / 12) * np.exp(delta_theta * a_of_h + delta_r * b_of_h) - 1)       # a month's money, bent
+        np.testing.assert_allclose(short[:, 24], expected, rtol=1e-12)
+        np.testing.assert_allclose(short[:, 24], FORWARDS[24] + delta_r, atol=2e-3)                          # about forward + delta_r
         # one path's 10-year par yield, by hand: the market's discount factors from then, bent by the deviations
         path = 7
         times = 0.5 * np.arange(1, 21)
@@ -420,7 +424,7 @@ class TestPathsFromTheCurve(unittest.TestCase):
         short = FORWARDS[:120]
         continued = np.concatenate([short, np.full(130, short[-1])])
         years, rates, yields = model.simulate_curve_paths(short, 0.0, 0.0, 10, 2, seed=1)
-        np.testing.assert_allclose(rates[0], continued[:121], rtol=1e-14)                 # including month 120: the last rate again
+        np.testing.assert_allclose(rates[0], continued[:121], rtol=1e-12)                 # including month 120: the last rate again
         for month in (0, 60, 120):
             self.assertAlmostEqual(yields[0, month], model.forward_par_yield(continued, month / 12, 10.0), places=12)
         # a curve already long enough is used as it is
@@ -438,6 +442,101 @@ class TestPathsFromTheCurve(unittest.TestCase):
         years, rates, yields = model.simulate_curve_paths(FORWARDS[:100], 0.0, 0.0, 8, 2, seed=1, tenor_years=7.5)
         continued = np.concatenate([FORWARDS[:100], np.full(100, FORWARDS[99])])
         self.assertAlmostEqual(yields[0, 96], model.forward_par_yield(continued, 8.0, 7.5), places=12)
+
+
+class TestFactorPaths(unittest.TestCase):
+    """simulate_factor_paths: the two random factors, month by month; the paths are these added to the market's curve."""
+
+    def test_the_factors_start_at_zero_and_are_the_simulators_values_on_each_months_day(self):
+        years, delta_r, delta_theta = model.simulate_factor_paths(0.012, 0.014, 2, 10, seed=5, a=1.3, b=0.2)
+        np.testing.assert_allclose(years, np.arange(25) / 12)
+        self.assertEqual(delta_r.shape, (10, 25))
+        np.testing.assert_array_equal(delta_r[:, 0], 0.0)
+        np.testing.assert_array_equal(delta_theta[:, 0], 0.0)
+        days = [round(month * 365 / 12) for month in range(1, 25)]
+        found = model._simulate_deviations(days, 0.012, 0.014, 1.3, 0.2, 10, 5)
+        for month in (1, 2, 12, 24):
+            np.testing.assert_array_equal(delta_r[:, month], found[days[month - 1]][0])
+            np.testing.assert_array_equal(delta_theta[:, month], found[days[month - 1]][1])
+
+    def test_with_no_volatility_they_stay_at_zero(self):
+        _, delta_r, delta_theta = model.simulate_factor_paths(0.0, 0.0, 1, 4, seed=1)
+        np.testing.assert_array_equal(delta_r, 0.0)
+        np.testing.assert_array_equal(delta_theta, 0.0)
+
+    def test_the_seed_the_rounding_and_the_horizon(self):
+        first = model.simulate_factor_paths(0.01, 0.01, 1, 6, seed=3)
+        again = model.simulate_factor_paths(0.01, 0.01, 1, 6, seed=3)
+        other = model.simulate_factor_paths(0.01, 0.01, 1, 6)
+        np.testing.assert_array_equal(first[1], again[1])
+        self.assertFalse(np.array_equal(first[1], other[1]))
+        self.assertEqual(model.simulate_factor_paths(0.01, 0.01, 1, 7, seed=1)[1].shape, (8, 13))
+        with self.assertRaises(ValueError) as caught:
+            model.simulate_factor_paths(0.01, 0.01, 0.0, 4)
+        self.assertIn("at least a month", str(caught.exception))
+
+    def test_the_paths_of_the_curve_are_these_factors_added_to_it(self):
+        years, delta_r, delta_theta = model.simulate_factor_paths(0.012, 0.014, 3, 10, seed=5, a=1.3, b=0.2)
+        _, short, yields = model.simulate_curve_paths(FORWARDS, 0.012, 0.014, 3, 10, seed=5, a=1.3, b=0.2)
+        for path, month in ((0, 0), (4, 12), (9, 36)):
+            on_date = model.forward_curve_on_date(FORWARDS, month, delta_r[path, month], delta_theta[path, month], a=1.3)[2]
+            self.assertAlmostEqual(short[path, month], on_date[0], places=14)
+        np.testing.assert_allclose(short, FORWARDS[:37] + delta_r, atol=2e-3)                      # (the rate plus delta_r, about)
+        for month in (0, 12, 36):
+            np.testing.assert_allclose(yields[:, month], model._par_yields_at_expiry(
+                FORWARDS, month / 12, delta_r[:, month], delta_theta[:, month], 1.3, 10), rtol=1e-14)
+
+
+class TestTheCurveOnADate(unittest.TestCase):
+    """forward_curve_on_date: today's curve for the dates from then on, bent by a path's factors on that date."""
+
+    def test_with_no_factors_it_is_todays_curve_from_that_date(self):
+        months, today, on_date = model.forward_curve_on_date(FORWARDS, 24, 0.0, 0.0)
+        np.testing.assert_array_equal(months, np.arange(1, 337))
+        np.testing.assert_array_equal(today, FORWARDS[24:])
+        np.testing.assert_allclose(on_date, today, rtol=1e-10)
+
+    def test_the_short_end_follows_delta_r_and_the_long_end_delta_theta(self):
+        a, delta_r, delta_theta = 1.3, 0.004, -0.007
+        months, today, on_date = model.forward_curve_on_date(FORWARDS, 12, delta_r, delta_theta, a=a)
+        factor = lambda tau: (-delta_theta * (tau - (1 - math.exp(-a * tau)) / a)) - delta_r * (1 - math.exp(-a * tau)) / a   # minus the bend's integral
+
+        for month in (1, 2, 7, 25, 120, 300):
+            # a month's money grows by 1 + rate / 12: today's rate, and the bend's integral over the month (continuous form)
+            tau0, tau1 = (month - 1) / 12, month / 12
+            grown = (1 + FORWARDS[12 + month - 1] / 12) * math.exp(factor(tau0) - factor(tau1))
+            self.assertAlmostEqual(on_date[month - 1], 12 * (grown - 1), places=13)
+        # near the date the curve is bent about delta_r, and far out about delta_theta
+        self.assertAlmostEqual(on_date[0] - today[0], delta_r, delta=1e-3)
+        self.assertAlmostEqual(on_date[-1] - today[-1], delta_theta, delta=1e-4)
+
+    def test_the_first_month_is_the_short_rate_of_the_path(self):
+        years, delta_r, delta_theta = model.simulate_factor_paths(0.012, 0.014, 3, 6, seed=2)
+        _, short, _ = model.simulate_curve_paths(FORWARDS, 0.012, 0.014, 3, 6, seed=2)
+        for path, month in ((0, 5), (3, 30), (5, 36)):
+            _, _, on_date = model.forward_curve_on_date(FORWARDS, month, delta_r[path, month], delta_theta[path, month])
+            self.assertAlmostEqual(on_date[0], short[path, month], places=14)
+
+    def test_its_par_yield_is_the_paths(self):
+        years, delta_r, delta_theta = model.simulate_factor_paths(0.019, 0.012, 5, 4, seed=3, a=2.75)
+        _, _, yields = model.simulate_curve_paths(FORWARDS, 0.019, 0.012, 5, 4, seed=3, a=2.75)
+        for path, month in ((1, 24), (2, 36), (3, 60)):
+            _, _, on_date = model.forward_curve_on_date(FORWARDS, month, delta_r[path, month], delta_theta[path, month], a=2.75, months=200)
+            discount = np.cumprod(1 / (1 + on_date / 12))
+            at_coupons = discount[5::6][:20]                                      # months 6, 12, ... 120
+            par = 2 * (1 - at_coupons[-1]) / at_coupons.sum()
+            self.assertAlmostEqual(par, yields[path, month], places=12)
+
+    def test_months_gives_a_longer_or_shorter_curve_and_a_short_one_continues(self):
+        self.assertEqual(len(model.forward_curve_on_date(FORWARDS, 60, 0.0, 0.0, months=24)[0]), 24)
+        months, today, _ = model.forward_curve_on_date(FORWARDS[:100], 90, 0.0, 0.0, months=30)
+        np.testing.assert_array_equal(today[:10], FORWARDS[90:100])
+        np.testing.assert_array_equal(today[10:], FORWARDS[99])
+        with self.assertRaises(ValueError) as caught:
+            model.forward_curve_on_date(FORWARDS, 360, 0.0, 0.0)
+        self.assertIn("nothing after month 360", str(caught.exception))
+        months, today, on_date = model.forward_curve_on_date(FORWARDS, 359, 0.0, 0.0)      # one month is a curve
+        self.assertEqual((list(months), list(today)), ([1], [FORWARDS[359]]))
 
 
 class TestMortgageRatePaths(unittest.TestCase):
@@ -877,6 +976,50 @@ class TestThePathBuiltin(NoteOptionsLispTestCase):
         years, short, yields = lisp_core.pairs_to_list(self.run_lisp("(sofr-simulate-curve-paths forwards 0.01 0.01 25 4 :seed 1)"))
         self.assertEqual(len(years.items), 301)
         self.assertEqual(len(lisp_core.pairs_to_list(yields)[0].items), 301)
+
+
+class TestTheFactorAndCurveBuiltins(NoteOptionsLispTestCase):
+
+    def test_the_factors_are_the_years_and_a_vector_of_each_factor_for_each_path(self):
+        years, delta_r, delta_theta = lisp_core.pairs_to_list(self.run_lisp("(sofr-simulate-factor-paths 0.012 0.014 2 6 :seed 4 :a 1.3 :b 0.2)"))
+        expected = model.simulate_factor_paths(0.012, 0.014, 2, 6, seed=4, a=1.3, b=0.2)
+        np.testing.assert_allclose(years.items, expected[0])
+        for got, want in ((delta_r, expected[1]), (delta_theta, expected[2])):
+            np.testing.assert_allclose([p.items for p in lisp_core.pairs_to_list(got)], want, rtol=1e-6)
+
+    def test_the_factor_choices_are_checked(self):
+        self.assertLispError("(sofr-simulate-factor-paths 0.01 0.01 1 4 :tenor-years 5)", ":tenor-years isn't an option")
+        self.assertLispError("(sofr-simulate-factor-paths 0.01 0.01 0 4)", "at least a month")
+
+    def test_the_curve_on_a_date_is_a_table_of_todays_curve_and_the_models(self):
+        self.run_lisp("(define result (sofr-curve-on-date forwards 12 0.004 -0.007 :a 1.3 :months 48))")
+        self.assertEqual([str(n) for n in lisp_core.pairs_to_list(self.run_lisp("(table-column-names result)"))], ["months", "today", "model"])
+        expected = model.forward_curve_on_date(FORWARDS, 12, 0.004, -0.007, a=1.3, months=48)
+        self.assertEqual(list(self.run_lisp('(table-column result "months")').items), list(range(1, 49)))
+        np.testing.assert_allclose(self.run_lisp('(table-column result "today")').items, expected[1], rtol=1e-6)
+        np.testing.assert_allclose(self.run_lisp('(table-column result "model")').items, expected[2], rtol=1e-6)
+
+    def test_the_curve_on_a_date_by_default_has_all_the_months_the_curve_has_after_it(self):
+        self.assertShows("(table-row-count (sofr-curve-on-date forwards 60 0.0 0.0))", "300")
+        self.assertLispError("(sofr-curve-on-date forwards 360 0.0 0.0)", "nothing after month 360")
+        self.assertLispError("(sofr-curve-on-date forwards 12 0.0 0.0 :speed 1)", ":speed isn't an option")
+
+    def test_the_par_yield_is_the_models_for_a_tenor_from_today_or_from_a_later_month(self):
+        self.assertAlmostEqual(self.run_lisp("(sofr-par-yield forwards 10)"), model.forward_par_yield(FORWARDS, 0.0, 10.0), places=6)
+        self.assertAlmostEqual(self.run_lisp("(sofr-par-yield forwards 5 :start-months 24)"), model.forward_par_yield(FORWARDS, 2.0, 5.0), places=6)
+        self.assertAlmostEqual(self.run_lisp("(sofr-par-yield forwards 7.5 :start-months 6)"), model.forward_par_yield(FORWARDS, 0.5, 7.5), places=6)
+
+    def test_the_par_yield_of_a_curve_with_no_volatility_is_the_paths_yield_each_month(self):
+        years, short, yields = lisp_core.pairs_to_list(self.run_lisp("(sofr-simulate-curve-paths forwards 0 0 3 2)"))
+        for month in (0, 6, 36):
+            self.assertAlmostEqual(self.run_lisp("(sofr-par-yield forwards 10 :start-months %d)" % month),
+                                   lisp_core.pairs_to_list(yields)[0].items[month], places=6)
+            self.assertAlmostEqual(lisp_core.pairs_to_list(short)[1].items[month], FORWARDS[month], places=6)
+
+    def test_the_par_yields_choices_and_curve_are_checked(self):
+        self.assertLispError("(sofr-par-yield 5 10)", "forward-rates must be a vector")
+        self.assertLispError("(sofr-par-yield forwards 10 :start-years 1)", ":start-years isn't an option")
+        self.assertLispError("(sofr-par-yield forwards 10 :start-months 340)", "ends at")
 
 
 class TestTheMortgagePathBuiltin(NoteOptionsLispTestCase):

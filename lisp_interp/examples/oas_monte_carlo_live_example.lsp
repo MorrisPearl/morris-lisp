@@ -2,19 +2,19 @@
 ;
 ; The same pipeline as oas_monte_carlo_example.lsp, but against REAL
 ; market data instead of made-up illustrative numbers:
-;   - the near-term SOFR curve, and the options used to calibrate the
-;     two-factor model's sigma1/sigma2, both fetched from tastytrade
-;     (sofr-calibration-data -- the same real-data fetch
-;     sofr_monte_carlo_example.lsp uses);
-;   - the Treasury par curve used to extend the SOFR curve's long end
-;     (sofr-extend-curve-with-treasury), fetched from FRED;
+;   - the Treasury's par yield curve, from the Treasury (treasury-par-curve),
+;     which the paths of rates start on;
+;   - SOFR futures and options on them, and options on the 10-year note
+;     future, from tastytrade, to calibrate the two-factor model's a,
+;     sigma1 and sigma2 (sofr-calibrate-jointly: see rate_model_example.lsp);
 ;   - a historical-volatility cross-check for the fitted sigma1/sigma2
 ;     (annualized-realized-vol), computed from real FRED daily-rate
 ;     history (DFF for the short-rate factor, DGS10 for the slower
 ;     mean-reversion-level factor);
 ;   - the mortgage note rate driving simple-mortgage-cashflows, fetched
 ;     from FRED's MORTGAGE30US (the weekly Freddie Mac Primary Mortgage
-;     Market Survey average) instead of an assumed number.
+;     Market Survey average) instead of an assumed number, and the spread
+;     of mortgage rates over the 10-year yield that it implies.
 ;
 ; The ONE number this script cannot fetch anywhere in this codebase is
 ; the security's own MARKET PRICE -- there's no live TBA/pass-through
@@ -29,20 +29,19 @@
 ; automatically at startup; edit that if your credentials file lives
 ; somewhere else.
 ;
-; CALIBRATION IS SLOW, and so is generating one cashflow vector per
-; Monte Carlo path in pure Lisp (see oas_monte_carlo.lsp's header
-; comment for why that part isn't done through column_engine.lsp) --
-; calibration-n-paths/n-grid/n-rounds and n-scenario-paths, below, are
-; turned down from term_structure_model.py's own defaults so a first run
-; finishes in roughly a minute; turn them back up for a more careful
-; run once you've confirmed everything works. Writes a report to
-; oas_monte_carlo_live_report.txt (and prints the same report to the
-; console) with every market data point and assumption this run used.
+; Generating one cashflow vector per Monte Carlo path in pure Lisp takes a
+; while (see oas_monte_carlo.lsp's header comment for why that part isn't done
+; through column_engine.lsp), so n-scenario-paths, below, is turned down: turn
+; it back up for a more careful run once you've confirmed everything works.
+; Writes a report to oas_monte_carlo_live_report.txt (and prints the same report
+; to the console) with every market data point and assumption this run used.
 ;
 ; Run it from the examples directory with:
 ;   python3 ../lisp_interpreter.py oas_monte_carlo_live_example.lsp
 
 (load "oas_monte_carlo.lsp")
+(load "yield_curves.lsp")
+(load "note_options.lsp")
 
 (define (latest table column)
   ; the date and value of a FRED table's latest value in column, as (date value)
@@ -50,70 +49,47 @@
     (list (vector-ref (table-column known "date") (- (table-row-count known) 1))
           (vector-ref (table-column known column) (- (table-row-count known) 1)))))
 
-; --- 1. fetch the SOFR futures curve AND calibration options ------------
+; --- 1. the Treasury's curve: the paths of rates start on it -------------
 
-(display "Fetching SOFR futures curve and options from tastytrade...") (newline)
+(display "Fetching the Treasury's par yield curve...") (newline)
+(define par-curve (treasury-par-curve))
+(define treasury-day (vector-max (table-column par-curve "date")))
+(define treasury-forwards (table-column (curve-forward-rates (treasury-zero-curve par-curve)) "forward"))
+(define (par-yield years) (sofr-par-yield treasury-forwards years))
+(display "  as of ") (display treasury-day) (display ": 2y=") (display (par-yield 2))
+(display " 5y=") (display (par-yield 5)) (display " 10y=") (display (par-yield 10))
+(display " 30y=") (display (par-yield 30)) (newline)
+
+; --- 2. fetch the SOFR futures curve and options, and the 10-year note options ---
+
+(display "Fetching SOFR futures, SOFR options and 10-year note options from tastytrade...") (newline)
 (define calibration-data (sofr-calibration-data creds 40 8 3))
 (define curve-futures-rows (car calibration-data))
-(define options-rows (cdr calibration-data))
-
-(define sofr-curve (sofr-bootstrap-curve curve-futures-rows))
-(define sofr-forward-rates (cdr sofr-curve))
+(define sofr-option-rows (cdr calibration-data))
+(define sofr-forward-rates (cdr (sofr-bootstrap-curve curve-futures-rows)))
+(define note-rows (note-option-rows (tastytrade-option-chain creds "ZN" 12 12) :min-days 20 :max-days 120))
 
 ; How many months of sofr-forward-rates are the REAL (non-extrapolated)
 ; part of the curve -- the last SR3 contract's end_months. curve-futures-
 ; rows is (symbol start_months end_months rate); end_months is field 2.
-(define (curve-real-months rows)
-  (if (null? (cdr rows))
-      (list-ref (car rows) 2)
-      (max (list-ref (car rows) 2) (curve-real-months (cdr rows)))))
-(define real-months (curve-real-months curve-futures-rows))
+(define real-months (apply max (map third curve-futures-rows)))
 
 (display "  ") (display (length curve-futures-rows)) (display " SOFR futures contracts, ")
-(display (length options-rows)) (display " options, real curve out to month ")
-(display real-months) (newline)
+(display (length sofr-option-rows)) (display " SOFR options, ")
+(display (length note-rows)) (display " options on the 10-year note future") (newline)
 
-; --- 2. calibrate (a, sigma1, sigma2) against the options ----
+; --- 3. calibrate (a, sigma1, sigma2) against both kinds of option ------
 
-(display "Calibrating against real SOFR futures option prices...") (newline)
-(define calibration-n-paths 500)    ; turned down from term_structure_model.py's
-(define calibration-n-grid 5)       ; own defaults (2000/7/4) for a quicker
-(define calibration-n-rounds 3)     ; first run
-(define fit (sofr-calibrate-model sofr-forward-rates options-rows real-months
-                                   calibration-n-paths 42
-                                   calibration-n-grid calibration-n-rounds))
-(define fitted-a (list-ref fit 0))
-(define fitted-sigma1 (list-ref fit 2))
-(define fitted-sigma2 (list-ref fit 3))
-(define fitted-error (list-ref fit 4))
+(display "Calibrating against the option prices...") (newline)
+(define fit (sofr-calibrate-jointly sofr-forward-rates treasury-forwards sofr-option-rows note-rows real-months))
+(define (fitted name) (cdr (assoc name fit)))
+(define fitted-a (fitted 'a))
+(define fitted-sigma1 (fitted 'sigma1))
+(define fitted-sigma2 (fitted 'sigma2))
+(define fitted-error (fitted 'error))
 (display "  a=") (display fitted-a)
 (display "  sigma1=") (display fitted-sigma1) (display "  sigma2=") (display fitted-sigma2)
 (display "  error=") (display fitted-error) (newline)
-
-; --- 3. fetch the Treasury par curve from FRED, extend the SOFR curve --
-
-(display "Fetching Treasury par yields from FRED...") (newline)
-(define treasury (fred-table creds '("DGS3MO" "DGS6MO" "DGS1" "DGS2" "DGS5" "DGS10" "DGS30")))
-(define (latest-yield column) (/ (second (latest treasury column)) 100.0))   ; as a decimal
-
-(define yield-3m (latest-yield "DGS3MO"))
-(define yield-6m (latest-yield "DGS6MO"))
-(define yield-1y (latest-yield "DGS1"))
-(define yield-2y (latest-yield "DGS2"))
-(define yield-5y (latest-yield "DGS5"))
-(define yield-10y (latest-yield "DGS10"))
-(define yield-30y (latest-yield "DGS30"))
-
-(display "  3m=") (display yield-3m) (display " 6m=") (display yield-6m)
-(display " 1y=") (display yield-1y) (display " 2y=") (display yield-2y)
-(display " 5y=") (display yield-5y) (display " 10y=") (display yield-10y)
-(display " 30y=") (display yield-30y) (display "  (as of ")
-(display (first (latest treasury "DGS10"))) (display ")") (newline)
-
-(define extended-forward-rates
-  (sofr-extend-curve-with-treasury sofr-forward-rates real-months
-                                    yield-3m yield-6m yield-1y yield-2y
-                                    yield-5y yield-10y yield-30y))
 
 ; --- 4. historical-vol cross-check for fitted sigma1/sigma2 -------------
 
@@ -145,21 +121,21 @@
 (display "  MORTGAGE30US: ") (display note-rate-percent) (display "%  (as of ")
 (display (first (latest mortgage30us "MORTGAGE30US"))) (display ")") (newline)
 
-; --- 6. simulate Monte Carlo mortgage-rate paths off the fitted model,
-;        extended curve --------------------------------------------------
+; The spread of mortgage rates over the 10-year yield: today's mortgage rate less the curve's 10-year par yield.
+; A paths' mortgage rate is that yield plus this spread, so that it starts at today's mortgage rate.
+(define mortgage-spread (- (/ note-rate-percent 100.0) (par-yield 10)))
+(display "  over the curve's 10-year yield: ") (display mortgage-spread) (newline)
+
+; --- 6. simulate Monte Carlo mortgage-rate paths off the fitted model ---
 
 (define n-scenario-paths 100)   ; turned down for a quicker first run --
                                  ; see this file's header comment
 (define horizon-years 30)
-(define mortgage-spread 0.0175)  ; 175bp -- see term_structure/
-                                  ; mortgage_spread.py for a data-driven
-                                  ; estimate instead of a guess; not
-                                  ; fetched here
 
 (display "Simulating ") (display n-scenario-paths) (display " mortgage-rate paths over ")
 (display horizon-years) (display " years...") (newline)
 (define sim (sofr-simulate-mortgage-rate-paths
-              extended-forward-rates fitted-sigma1 fitted-sigma2 horizon-years n-scenario-paths
+              treasury-forwards fitted-sigma1 fitted-sigma2 horizon-years n-scenario-paths
               mortgage-spread :seed 42 :a fitted-a))
 (define short-rate-paths (list-ref sim 1))
 (define mortgage-paths (list-ref sim 3))
@@ -199,36 +175,24 @@
 
   (display "--- MARKET DATA (fetched) ---") (newline) (newline)
 
-  (display "SOFR futures curve (tastytrade):") (newline)
-  (display "  ") (display (length curve-futures-rows)) (display " contracts, real curve out to month ")
-  (display real-months) (newline)
-  (display "  1-month forward rate at month 1:   ") (display (vector-ref sofr-forward-rates 0)) (newline)
-  (display "  1-month forward rate at month ") (display real-months) (display ": ")
-  (display (vector-ref sofr-forward-rates (- real-months 1))) (newline) (newline)
+  (display "Treasury par yield curve (Treasury, as of ") (display treasury-day) (display "):") (newline)
+  (display "  2y=") (display (par-yield 2)) (display "  5y=") (display (par-yield 5))
+  (display "  10y=") (display (par-yield 10)) (display "  30y=") (display (par-yield 30)) (newline)
+  (display "  forward rate, month 1:   ") (display (vector-ref treasury-forwards 0)) (newline)
+  (display "  forward rate, month 60:  ") (display (vector-ref treasury-forwards 59)) (newline)
+  (display "  forward rate, month 120: ") (display (vector-ref treasury-forwards 119)) (newline)
+  (display "  forward rate, month 360: ") (display (vector-ref treasury-forwards 359)) (newline) (newline)
 
-  (display "Calibration options (tastytrade): ") (display (length options-rows))
-  (display " SOFR futures options") (newline) (newline)
+  (display "SOFR futures curve and options (tastytrade):") (newline)
+  (display "  ") (display (length curve-futures-rows)) (display " contracts, real curve out to month ")
+  (display real-months) (display "; ") (display (length sofr-option-rows)) (display " SOFR futures options") (newline)
+  (display "10-year note future options (tastytrade): ") (display (length note-rows)) (display " options") (newline) (newline)
 
   (display "Calibrated two-factor model parameters (fit against the options above):") (newline)
   (display "  a (mean-reversion speed)        = ") (display fitted-a) (newline)
   (display "  sigma1 (short-rate factor vol)  = ") (display fitted-sigma1) (newline)
   (display "  sigma2 (level factor vol)       = ") (display fitted-sigma2) (newline)
-  (display "  total squared pricing error     = ") (display fitted-error) (newline) (newline)
-
-  (display "Treasury par yields (FRED, as of ") (display (first (latest treasury "DGS10")))
-  (display "):") (newline)
-  (display "  3m=") (display yield-3m) (display "  6m=") (display yield-6m)
-  (display "  1y=") (display yield-1y) (display "  2y=") (display yield-2y) (newline)
-  (display "  5y=") (display yield-5y) (display "  10y=") (display yield-10y)
-  (display "  30y=") (display yield-30y) (newline) (newline)
-
-  (display "Extended forward curve (SOFR out to month ") (display real-months)
-  (display ", Treasury-shaped beyond that):") (newline)
-  (display "  month 12:  ") (display (vector-ref extended-forward-rates 11)) (newline)
-  (display "  month 60:  ") (display (vector-ref extended-forward-rates 59)) (newline)
-  (display "  month 120: ") (display (vector-ref extended-forward-rates 119)) (newline)
-  (display "  month 240: ") (display (vector-ref extended-forward-rates 239)) (newline)
-  (display "  month 360: ") (display (vector-ref extended-forward-rates 359)) (newline) (newline)
+  (display "  error (relative volatility)     = ") (display fitted-error) (newline) (newline)
 
   (display "Historical-volatility cross-check (FRED, last ") (display vol-window-days)
   (display " business days):") (newline)
@@ -239,15 +203,14 @@
 
   (display "Current 30-year mortgage rate (FRED MORTGAGE30US, as of ")
   (display (first (latest mortgage30us "MORTGAGE30US"))) (display "): ")
-  (display note-rate-percent) (display "%") (newline) (newline)
+  (display note-rate-percent) (display "%") (newline)
+  (display "  its spread over the curve's 10-year par yield: ") (display mortgage-spread) (newline) (newline)
 
   (display "--- ASSUMPTIONS (not fetched) ---") (newline) (newline)
 
   (display "Loan: initial balance $") (display initial-balance)
   (display ", ") (display n-months) (display "-month term, ")
   (display psa-speed) (display "% PSA prepayment speed") (newline)
-  (display "Mortgage spread over the 10-year par yield: ") (display mortgage-spread)
-  (display "  (see term_structure/mortgage_spread.py for a data-driven estimate)") (newline)
   (display "Assumed market price (NOT fetched -- no live quote source wired up): ")
   (display assumed-market-price) (display " per 100 face") (newline)
   (display "Monte Carlo scenario paths: ") (display n-scenario-paths)

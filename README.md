@@ -48,7 +48,8 @@ The tests, in `lisp_interp/tests/`: `cd lisp_interp; python3 -m unittest discove
 Other projects, some of which the interpreter uses:
 
 - `simplex/` -- the simplex method, for the interpreter's linear programming.
-- `term_structure/` -- the two-factor SOFR model behind the interpreter's `sofr-*` functions.
+- `term_structure/` -- the two-factor model of interest rates behind the interpreter's `sofr-*` functions: paths of
+  rates that start on the Treasury's curve, and the model fitted to SOFR and 10-year note option prices.
 - `tasty_api/` -- a desktop app for CME futures options and relative value, from tastytrade.
 - `strats/` -- a desktop app for stratification reports.
 - `load_freddie_data/` -- builds a dataset from Freddie Mac's loan-level data.

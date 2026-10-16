@@ -6,8 +6,8 @@
 ; 10-year Treasury note future (the long end). The model's three numbers -- how fast the short rate follows the
 ; long-run level (a), and the volatility of each (sigma1, sigma2) -- are found for which the model's prices of both
 ; are nearest the market's. Paths are then drawn from the fitted model. They start where the market is today: the
-; 10-year yield of day one is today's. See "Fitting the model to options on the 10-year note future" in the
-; library manual. Needs a tastytrade account (creds, in init.lsp), and downloads the Treasury's yield curve.
+; 10-year yield of day one is today's. See "Interest rate paths" in the
+; library manual (rate_paths_example.lsp takes the paths apart). Needs a tastytrade account (creds, in init.lsp), and downloads the Treasury's yield curve.
 ; Read-only. Run it from the examples directory:
 ;   python3 ../lisp_interpreter.py rate_model_example.lsp
 ; It saves a chart, rate_model_paths.png.

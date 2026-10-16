@@ -313,71 +313,6 @@ def bootstrap_sofr_curve(sofr_futures):
     }
 
 
-def extend_curve_long_end(forward_rates, curve_real_months, treasury_yields, blend_months=12):
-    """
-    Extend a curve -- typically bootstrap_sofr_curve()'s output -- past
-    its real (non-extrapolated) coverage using a SEPARATE curve
-    bootstrapped from Treasury par yields, instead of flat-extrapolating
-    the original curve's last real rate all the way out to 30 years.
-
-    WHY: bootstrap_sofr_curve() is honest that it has no market
-    information beyond the last SOFR futures contract used to build it
-    (CME lists roughly a 5-year strip) -- everything past that is held
-    flat at that last rate. For anything priced off the FAR end of the
-    curve (a 30-year MBS, say), that flat tail is a much cruder
-    assumption than it needs to be, when a public, free, much
-    longer-dated curve (the Treasury par curve) is sitting right there on
-    FRED. This doesn't try to convert Treasury yields into a SOFR-basis
-    curve (that basis is a real, separate modeling question this
-    sidesteps) -- it just uses the TREASURY curve's own SHAPE past
-    curve_real_months, applied as-is.
-
-    forward_rates: the ORIGINAL curve's 1-month forward rates (e.g.
-        bootstrap_sofr_curve(...)['forward_rates']) -- a length-
-        TOTAL_MONTHS (360) sequence.
-    curve_real_months: how many of those months are backed by real market
-        data -- e.g. the largest end_months among the SOFR futures
-        bootstrap_sofr_curve() was given (the same quantity
-        calibrate_sofr_model()'s curve_real_months argument means).
-        Everything beyond this was flat-extrapolated by
-        bootstrap_sofr_curve() itself, and is a candidate for replacement
-        here.
-    treasury_yields: dict with bootstrap_forward_curve()'s required keys
-        ('3m', '6m', '12m', '2y', '5y', '10y', '30y'), decimals -- e.g.
-        today's most recent observation of FRED's DGS3MO/DGS6MO/DGS1/
-        DGS2/DGS5/DGS10/DGS30 series (each reported by FRED in percent,
-        so divide by 100 before passing in here).
-    blend_months: width (in months, starting at curve_real_months) of a
-        LINEAR transition from the original curve's forward rate to the
-        Treasury curve's forward rate, so the two curves -- fit to
-        different instruments, and not expected to agree exactly where
-        they meet -- don't visibly kink at the splice point.
-
-    Returns a new list of TOTAL_MONTHS forward rates (the input is not
-    modified in place).
-
-    SIMPLIFICATION: a straight linear blend, not a smoother (e.g. cubic)
-    transition -- consistent with this whole module's stated preference
-    for simplicity over polish (see the module docstring).
-    """
-    forward_rates = np.array(forward_rates, dtype=float)
-    n = len(forward_rates)
-    treasury_curve = bootstrap_forward_curve(treasury_yields)
-    treasury_forwards = np.array(treasury_curve['forward_rates'], dtype=float)
-
-    blend_start = curve_real_months
-    blend_end = min(curve_real_months + blend_months, n)
-    if blend_end > blend_start:
-        weights = np.linspace(0.0, 1.0, blend_end - blend_start, endpoint=False)
-        idx = np.arange(blend_start, blend_end)
-        forward_rates[idx] = (1 - weights) * forward_rates[idx] + weights * treasury_forwards[idx]
-    if blend_end < n:
-        idx = np.arange(blend_end, n)
-        forward_rates[idx] = treasury_forwards[idx]
-
-    return forward_rates.tolist()
-
-
 # ---------------------------------------------------------------------------
 # Step 2: two-factor Monte Carlo simulation, and SOFR futures options
 # ---------------------------------------------------------------------------
@@ -1134,15 +1069,88 @@ def _continued_flat(forward_rates, months):
     return np.concatenate([forward, np.full(months - len(forward), forward[-1])])
 
 
+def simulate_factor_paths(sigma1, sigma2, horizon_years, n_paths, seed=None,
+                          a=SHORT_RATE_REVERSION_SPEED, b=MEAN_LEVEL_REVERSION_SPEED):
+    """
+    The model's two random factors along Monte Carlo paths, month by month: the
+    heart of the paths, and all there is to them besides the market's curve.
+        delta_r      -- how far the short rate has strayed from where today's
+                        curve has it: it pulls back toward delta_theta, at speed a
+        delta_theta  -- how far the long-run level has strayed from today's
+                        curve (it pulls back toward 0, slowly, at speed b)
+    both start at 0, and are stepped by the day with random shocks of size sigma1
+    and sigma2 (independent). simulate_curve_paths() adds them to the market's curve.
+
+    seed: an integer for the same paths each time; None (the default) for new ones.
+    n_paths: the number of paths (an even number: an odd one is rounded up).
+
+    Returns (years, delta_r_paths, delta_theta_paths):
+        years               -- 0, 1/12, 2/12, ... out to horizon_years
+        delta_r_paths       -- array (n_paths, len(years)), as rates (0.01 is one percent)
+        delta_theta_paths   -- array (n_paths, len(years))
+    """
+    months = int(round(horizon_years * MONTHS_PER_YEAR))
+    if months < 1:
+        raise ValueError("the horizon must be at least a month")
+    days = [int(round(month * DAYS_PER_YEAR / MONTHS_PER_YEAR)) for month in range(1, months + 1)]
+    found = _simulate_deviations(days, sigma1, sigma2, a, b, n_paths, seed)
+    paths = 2 * ((n_paths + 1) // 2)
+    delta_r_paths = np.zeros((paths, months + 1))
+    delta_theta_paths = np.zeros((paths, months + 1))
+    for month in range(1, months + 1):
+        delta_r_paths[:, month], delta_theta_paths[:, month], _ = found[days[month - 1]]
+    return np.arange(months + 1) / MONTHS_PER_YEAR, delta_r_paths, delta_theta_paths
+
+
+def _monthly_forwards(discount):
+    """The one-month forward rates (annual, monthly interest: a month's money grows by 1 + rate / 12) of discount factors
+    D(0), D(1 month), D(2 months), ... , where D(0) is 1: an array with a row for each path and a column for each month."""
+    return MONTHS_PER_YEAR * (discount[:, :-1] / discount[:, 1:] - 1.0)
+
+
+def forward_curve_on_date(forward_rates, months_ahead, delta_r, delta_theta,
+                           a=SHORT_RATE_REVERSION_SPEED, months=None):
+    """
+    The model's forward curve on a date months_ahead from today, when the two
+    factors have the values delta_r and delta_theta (a path's, at that date):
+    today's curve for the dates from then on, bent by the factors. In
+    continuous time the bend adds to each forward rate
+        delta_theta * (1 - exp(-a tau)) + delta_r * exp(-a tau)
+    at tau years after the date, so the short end follows delta_r, and the
+    long end delta_theta (the two meet at the speed a). With both 0 it is
+    today's curve itself: a path with no volatility. This is the curve the paths
+    read what they report from: the short rate is its first month, and the par
+    yield of a note is worked out from it.
+
+    months: how many months of the curve to give (by default, all that
+        forward_rates has after the date; a longer curve continues flat).
+
+    Returns (month_numbers, today, on_date): arrays of that many monthly forward
+    rates, as annual rates (a month's money grows by 1 + rate / 12) -- the rate
+    for the month that starts month_number - 1 months after the date: today's
+    curve, and the model's.
+    """
+    if months is None:
+        months = len(forward_rates) - months_ahead
+    if months < 1:
+        raise ValueError(f"the forward curve has {len(forward_rates)} months, and nothing after month {months_ahead}")
+    forward = _continued_flat(forward_rates, months_ahead + months)
+    times = np.arange(months + 1) / MONTHS_PER_YEAR
+    discount = _discount_factors_at_expiry(forward, months_ahead / MONTHS_PER_YEAR, np.array([delta_r]), np.array([delta_theta]), a, times)
+    return np.arange(1, months + 1), forward[months_ahead:months_ahead + months], _monthly_forwards(discount)[0]
+
+
 def simulate_curve_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths, seed=None,
                          a=SHORT_RATE_REVERSION_SPEED, b=MEAN_LEVEL_REVERSION_SPEED, tenor_years=10):
     """
     Monte Carlo paths of the model that the note-option calibration fits
-    (see THE IDEA above), month by month: the same random factors, stepped by
-    the day, around the market's forward curve. Unlike _simulate_two_factor_paths(),
-    whose paths start from the model's own crude curve, these start where the
+    (see THE IDEA above), month by month: the market's forward curve, bent by
+    the two random factors of simulate_factor_paths(). The paths start where the
     market is today: the first month's short rate is the curve's first forward
-    rate, and the tenor_years par yield at the start is the curve's own.
+    rate, and the tenor_years par yield at the start is the curve's own. With
+    sigma1 = sigma2 = 0 every path is the curve itself, read forward in time.
+    Each month, on each path, the two factors bend the curve (see
+    forward_curve_on_date()), and what is reported is read from that curve.
 
     forward_rates: the market's monthly forward rates, the Treasury's (see THE
         IDEA above). SIMPLIFICATION: the yield at the end of a long horizon needs
@@ -1155,29 +1163,23 @@ def simulate_curve_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths, 
     Returns (years, short_rate_paths, yield_paths):
         years              -- 0, 1/12, 2/12, ... out to horizon_years
         short_rate_paths   -- array (n_paths, len(years)): the model's short
-                              rate at each date, the market's forward rate for
-                              the month that starts then plus the path's delta_r
+                              rate at each date, the first month of its curve
+                              then (the market's forward rate for the month that
+                              starts then, plus the path's delta_r, to a hair)
         yield_paths        -- array (n_paths, len(years)): the par yield of a
                               note of tenor_years (as the Treasury publishes), at
                               each date, on the curve of the model that day
     """
-    months = int(round(horizon_years * MONTHS_PER_YEAR))
-    if months < 1:
-        raise ValueError("the horizon must be at least a month")
-    paths = 2 * ((n_paths + 1) // 2)
-    days = [int(round(month * DAYS_PER_YEAR / MONTHS_PER_YEAR)) for month in range(1, months + 1)]
-    found = _simulate_deviations(days, sigma1, sigma2, a, b, n_paths, seed)
-    forward = _continued_flat(forward_rates, int(months + tenor_years * MONTHS_PER_YEAR) + 1)    # (a month too many is no harm)
-    short_rate_paths = np.zeros((paths, months + 1))
-    yield_paths = np.zeros((paths, months + 1))
-    for month in range(months + 1):
-        if month == 0:
-            delta_r = delta_theta = np.zeros(paths)
-        else:
-            delta_r, delta_theta, _ = found[days[month - 1]]
-        short_rate_paths[:, month] = forward[month] + delta_r
+    years, delta_r_paths, delta_theta_paths = simulate_factor_paths(sigma1, sigma2, horizon_years, n_paths, seed, a=a, b=b)
+    forward = _continued_flat(forward_rates, int(len(years) - 1 + tenor_years * MONTHS_PER_YEAR) + 1)    # (a month too many is no harm)
+    short_rate_paths = np.zeros(delta_r_paths.shape)
+    yield_paths = np.zeros(delta_r_paths.shape)
+    for month in range(len(years)):
+        delta_r, delta_theta = delta_r_paths[:, month], delta_theta_paths[:, month]
+        one_month = _discount_factors_at_expiry(forward, month / MONTHS_PER_YEAR, delta_r, delta_theta, a, np.array([0.0, 1.0 / MONTHS_PER_YEAR]))
+        short_rate_paths[:, month] = _monthly_forwards(one_month)[:, 0]
         yield_paths[:, month] = _par_yields_at_expiry(forward, month / MONTHS_PER_YEAR, delta_r, delta_theta, a, tenor_years)
-    return np.arange(months + 1) / MONTHS_PER_YEAR, short_rate_paths, yield_paths
+    return years, short_rate_paths, yield_paths
 
 
 def simulate_mortgage_rate_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths,

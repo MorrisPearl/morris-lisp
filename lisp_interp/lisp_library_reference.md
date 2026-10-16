@@ -47,6 +47,7 @@ that use all this are described in
   - [Day counts and cash flows](#day-counts-and-cash-flows)
 - [Statistical models](#statistical-models)
   - [Yield curves (the Treasury's and the Fed's)](#yield-curves-the-treasurys-and-the-feds)
+  - [Interest rate paths (the two-factor model)](#interest-rate-paths-the-two-factor-model)
   - [Regression models](#regression-models)
   - [How good is a model? The measures, explained](#how-good-is-a-model-the-measures-explained)
   - [Linear programming](#linear-programming)
@@ -102,8 +103,10 @@ The functions for investment analysis, in the order an analysis uses them.
    (the other vertical spreads, butterflies, iron condors, straddles, strangles,
    single options, covered calls, protective puts, collars, and owning the stock),
    and the best of each side by side.
-6. **Rates and mortgages.** The SOFR term structure and its two-factor
-   model (`sofr-*`, under "tastytrade (real broker data)"), futures curves
+6. **Rates and mortgages.** The Treasury's and the Fed's yield curves ("Yield curves"),
+   the two-factor model of rates, with paths of rates drawn from it and fitted to
+   option prices ("Interest rate paths"), the SOFR futures it can be fitted to
+   (`sofr-*`, under "tastytrade (real broker data)"), futures curves
    (`futures-curve-fit`), and `lib/oas_monte_carlo.lsp`, `lib/column_engine.lsp`,
    `lib/template.lsp`, and `lib/prepayment_model.lsp`, for mortgage pools and
    their tranches.
@@ -1674,377 +1677,9 @@ months-vector forward-rates-vector)`.
 (define sofr-forward-rates (cdr curve))
 ```
 
-#### `(sofr-extend-curve-with-treasury forward-rates curve-real-months yield-3m yield-6m yield-1y yield-2y yield-5y yield-10y yield-30y [blend-months])`
-Pure function — no networking. Replaces the flat-extrapolated tail of a
-curve from `sofr-bootstrap-curve`/`sofr-forward-curve` — past
-`curve-real-months`, everything is held at the last real futures rate —
-with the SHAPE of a separate curve bootstrapped from Treasury par yields,
-linearly blended in over `blend-months` (default `12`) so the splice
-doesn't visibly kink. Reuses `term_structure_model.py`'s
-`extend_curve_long_end()` (and, internally, `bootstrap_forward_curve()`
-for the Treasury side) as-is.
-
-CME only lists roughly a 5-year strip of SR3 contracts, so any SOFR curve
-is flat past there; for anything priced off the far end of the curve (a
-30-year MBS, say), the free, much longer-dated Treasury par curve on FRED
-is a better long-end *shape* than a flat line. This does **not** attempt
-a SOFR/Treasury basis adjustment — it borrows the Treasury curve's shape
-as-is past `curve-real-months`, a simplification worth being aware of.
-
-- `forward-rates` — the curve to extend, e.g. `sofr-bootstrap-curve`'s or
-  `sofr-forward-curve`'s second return value.
-- `curve-real-months` — same meaning as `sofr-calibrate-model`'s argument
-  of the same name: how many months of `forward-rates` are backed by real
-  market data.
-- `yield-3m`/`6m`/`1y`/`2y`/`5y`/`10y`/`30y` — today's Treasury par
-  yields, as DECIMALS (`0.045`, not `4.5`) — e.g. FRED's
-  `DGS3MO`/`DGS6MO`/`DGS1`/`DGS2`/`DGS5`/`DGS10`/`DGS30`, each divided by
-  100 (FRED reports those series in percent).
-- `blend-months` (default `12`) — width, in months starting at
-  `curve-real-months`, of the linear transition zone.
-
-Returns a new forward-rates vector (same length as the input; the input
-is not modified).
-
-```lisp
-(define extended-forward-rates
-  (sofr-extend-curve-with-treasury sofr-forward-rates curve-real-months
-                                    0.043 0.041 0.039 0.038 0.040 0.043 0.046))
-```
-
-#### `(sofr-calibrate-model forward-rates options-rows curve-real-months [n-paths seed n-grid n-rounds])`
-Pure function — no networking (cheap to re-run with different settings
-once you've fetched `options-rows` once). Fits the two-factor model's
-mean-reversion speed `a` and both volatilities — `sigma1` (the short-rate
-factor) and `sigma2` (the slower-moving mean-reversion-*level* factor) —
-directly against real SOFR futures option prices, by a "zooming grid
-search": try a grid of `(a, sigma1, sigma2)` combinations, keep whichever
-prices the options closest, shrink the search window around it, repeat
-`n-rounds` times. Reuses `term_structure_model.py`'s
-`calibrate_sofr_model()` as-is — see that function's docstring for the
-full methodology, including *why* it fits `a` against option prices
-directly rather than against today's curve shape (found, on real data, to
-meaningfully improve the fit) and how `theta_bar` (the long-run level the
-model's second factor drifts toward) gets refit in closed form at every
-candidate `a`.
-
-- `forward-rates` — `sofr-forward-curve`'s or `sofr-bootstrap-curve`'s
-  second return value.
-- `options-rows` — `sofr-calibration-data`'s second return value (or
-  anything shaped the same way).
-- `curve-real-months` — how many months of `forward-rates` are the REAL
-  (non-extrapolated) part of the curve, i.e. the largest `end-months`
-  among the `curve-futures-rows` used to build it.
-- `n-paths` (default `2000`) — Monte Carlo paths used to price EACH
-  option at EACH candidate tried; an accuracy/speed trade-off for the
-  *calibration* itself, separate from how many scenario paths
-  `sofr-simulate-curve-paths` later generates.
-- `seed` (default `42`), `n-grid` (default `7`), `n-rounds` (default
-  `4`) — grid resolution per round / how many times to zoom in. Cost is
-  roughly `O(n-grid³ × n-rounds × n-paths × number of options)` — the
-  `term_structure_model.py` module docstring reports **ten to twenty
-  seconds** for its own real-data test at these same defaults and a
-  handful of options; turn `n-paths`/`n-grid`/`n-rounds` down for a
-  quicker first pass. See `sofr_monte_carlo_example.lsp`.
-
-Returns `(list a theta-bar sigma1 sigma2 error)` — `error` is the total
-squared pricing error at the winning parameters.
-
-```lisp
-(define fit (sofr-calibrate-model sofr-forward-rates options-rows 24
-                                   500 42 5 3))    ; turned down for speed
-(define fitted-a (list-ref fit 0))
-(define fitted-theta-bar (list-ref fit 1))
-(define fitted-sigma1 (list-ref fit 2))
-(define fitted-sigma2 (list-ref fit 3))
-```
-
-##### Fitting the model to options on the 10-year note future
-
-`sofr-calibrate-model` fits the model to SOFR futures options, which show
-how much the *short* rate moves. A mortgage rate follows the *long* end, and
-options on the 10-year note future (ZN, the most traded of the Treasury
-futures) say how much that moves, directly. In this model the 10-year yield
-is about a tenth the short-rate factor and nine tenths the level factor,
-so these options mostly pin down `sigma2`, the level's volatility. They say
-little about `sigma1` (the options go out only a few months), so they are best
-fitted *together with* the SOFR options: `sigma1` and `a` from the SOFR
-options, `sigma2` from the notes', and a model that has to agree with both.
-
-The method is the one you described: simulate paths of the rates, work out
-the price of a note at each option's expiry along each path, and price the
-option as the average discounted payoff over the paths; then vary the
-parameters until the model's prices are near the market's. Four things make
-that work for a note future, and none is obvious:
-
-- **Today's curve is the center.** The model's own starting curve is too
-  crude to match a note: on one real day it priced the 6% 10-year note at
-  99.3, where today's Treasury curve says 107.0 and the market's future said
-  105.6 — a six-point error, many times the premium of an at-the-money
-  option (about 0.9 points). So the paths keep only the model's *randomness* — how far each
-  factor strays from its expected path — and add it to the forward rates the
-  market gives today. Pass the **Treasury's** forward curve
-  (`curve-forward-rates` of `treasury-zero-curve`; see "Yield curves"), not the
-  SOFR curve: the future is a Treasury contract.
-- **The note.** A ZN future is settled by delivering any of several notes,
-  usually the cheapest to deliver: ones with 6½ to 8 years left (CME's
-  specification), not the ten of the 6% notional note. Its price moves like a
-  note of about seven years. The model takes the future to be one note of
-  `:ctd-maturity` (6.75) years at the option's expiry, with the coupon that
-  makes it a par bond on the forward curve. This is a simplification: no
-  basket of notes and no switch of the cheapest.
-- **The level of the future.** A future is marked to market daily, so its price
-  is expected to stay where it is: the model's note price is scaled, at each
-  expiry, so its average over the paths is the future's price today. That
-  one scale absorbs what the model doesn't have — the conversion factor,
-  the basis, the carry — and leaves the model to say how widely the price
-  is spread around it.
-- **Days.** The options expire from a week to four months out, so the paths
-  step by the day, and an option expires on its own day. Like the others
-  here, the model's options are European; the market's are American.
-
-The error being minimized is in *volatility*, not price: each option's error
-is its price error divided by its vega times its own volatility, which is the
-relative error of the volatility it implies (a "normal" volatility, in
-points of the future's price a year). That makes a two-point option and a
-tenth-of-a-point option comparable, and keeps far out-of-the-money options,
-whose price barely depends on volatility, from counting: only options within
-`:moneyness-window` (2) standard deviations of the money are used.
-
-On the day of the sample (2026-10-15), the Treasury curve and the 24 options
-expiring 2026-11-20 gave `sigma2` = 0.0134 and a 3.4% root mean square
-volatility error: the model's 6.85 points of volatility against the market's
-6.7–7.2, a yield volatility of about 112 basis points a year at a duration of
-5.8. What is left is the *smile* — the market's volatility is higher for the
-strikes away from the money, and a model with a single volatility cannot have
-that.
-
-#### `(note-option-rows chain [:day d :min-days n :max-days n])`
-Shapes a chain of options, as `(tastytrade-option-chain creds "ZN" months
-strikes)` makes it, into the rows the three functions below read: each is
-`(type strike days futures-price market-price)` — the type `"call"` or
-`"put"`, the strike, the days from `:day` (today) until the option expires,
-the price of the future the option is on, and the middle of the option's bid
-and ask. Options without a bid or an ask are left out, and those with fewer than
-`:min-days` (7) or more than `:max-days` (400) days to expiry (the last few days
-are priced mostly on the next few days' news). A chain has options on more
-than one future (the December options on the December future, the later ones on
-March's), and each row carries the price of its own. In `note_options.lsp`.
-
-```lisp
-(define chain (tastytrade-option-chain creds "ZN" 12 12))
-(define rows (note-option-rows chain))
-```
-
-#### `(sofr-note-option-comparison forward-rates option-rows sigma1 sigma2 [:a :b :n-paths :seed :ctd-maturity :ctd-coupon])`
-Pure function — no networking. The model's price of each option on the 10-year
-note future next to the market's, as a table, one row per option.
-`forward-rates` is a vector of monthly forward rates — the Treasury's:
-`(table-column (curve-forward-rates (treasury-zero-curve (treasury-par-curve))) "forward")`.
-`option-rows` are those of `note-option-rows`. The model's parameters are
-`a` (`:a`, 1.0) and `b` (`:b`, 0.15), the speeds at which the short rate and the
-level revert, and the volatilities `sigma1` and `sigma2` — 0.01 each is a start.
-`:n-paths` (10000) paths, `:seed` (42), `:ctd-maturity` (6.75), `:ctd-coupon`
-(by default the coupon that makes the note a par bond on the curve).
-
-The columns: `type`, `strike`, `days`, `futures-price`, `market-price`,
-`model-price`; `market-vol` and `model-vol`, the volatility each price implies, in
-points of the future's price a year; `market-yield-vol` and `model-yield-vol`, the
-same as a volatility of the *yield* of the note, in basis points a year (the
-price volatility over the price and the note's duration); `duration`; and
-`error`, `model-vol / market-vol - 1`.
-
-```lisp
-(define comparison (sofr-note-option-comparison treasury-forwards rows 0.01 0.0134))
-(display-table comparison)
-```
-
-#### `(sofr-calibrate-note-options forward-rates option-rows [:fit :sigma1 :sigma2 :a :b :n-paths :seed :ctd-maturity :ctd-coupon :min-days :moneyness-window])`
-Pure function — no networking. Fits the model to the options by finding the
-parameters for which its Monte Carlo prices are nearest the market's (the root
-mean square of the options' relative volatility errors; a Nelder–Mead search in
-the parameters' logarithms). `:fit` is a list of the parameters to fit — any of `a`,
-`b`, `sigma1` and `sigma2`; by default `'(sigma2)`. The others keep the values
-given by `:a`, `:b`, `:sigma1` and `:sigma2` (1.0, 0.15, 0.01, 0.01), which are also where the search
-of those that are fitted starts. Everything else is as for
-`sofr-note-option-comparison`. `:min-days` (10) and `:moneyness-window` (2) say which options are
-used.
-
-Returns an association list: `((a . 1.0) (b . 0.15) (sigma1 . 0.01) (sigma2 .
-0.0134) (error . 0.034) (options-used . 24) (evaluations . 36))`. Read a value
-with `(cdr (assoc 'sigma2 fit))`.
-
-The same random numbers are priced at every set of parameters, so the Monte
-Carlo noise is the same at each and the error is a smooth function of the
-parameters; the price is that the fit carries the noise of those numbers.
-More paths make it smaller (as the square root of their number). A change
-of `:seed` shows how much is left.
-
-```lisp
-(define fit (sofr-calibrate-note-options treasury-forwards rows))
-(cdr (assoc 'sigma2 fit))                          ; 0.0134, on 2026-10-15
-(sofr-note-option-comparison treasury-forwards rows 0.01 (cdr (assoc 'sigma2 fit)))
-```
-
-The ZN options reach only a few months, so `b` — how slowly the level reverts — cannot
-be told from them, and `sigma1` only a little; fit `'(sigma2)`, or fit the others
-together with SOFR options.
-
-#### `(sofr-calibrate-jointly sofr-forward-rates treasury-forward-rates sofr-option-rows note-option-rows curve-real-months [:fit :sigma1 :sigma2 :a :sofr-paths :note-paths :seed :ctd-maturity :ctd-coupon :min-days :moneyness-window :sofr-min-months])`
-Pure function — no networking. Fits the model to SOFR futures options and to
-options on the 10-year note future together. `sofr-forward-rates` is the SOFR
-curve (`sofr-bootstrap-curve`), which the SOFR options' paths start from, and
-`treasury-forward-rates` the Treasury's, which the notes' paths are centered
-on; `sofr-option-rows` are `sofr-calibration-data`'s (with the price of the
-future last); `note-option-rows` are those of `note-option-rows`; and
-`curve-real-months` is as for `sofr-calibrate-model`. `:fit` is a list of `a`,
-`sigma1` and `sigma2` (by default all three). `:sofr-paths` (2000) and
-`:note-paths` (10000) are the numbers of paths for each kind. The error is
-that of `sofr-calibrate-note-options` for the notes, and the same kind of
-relative volatility error for the SOFR options, the two put together as the
-square root of the sum of their squares (so that neither kind is ignored).
-
-SOFR options with fewer than `:sofr-min-months` (3) months to expiry are left out.
-A model whose volatilities are the same at every date cannot match the front of
-the market, where the Fed's next move is nearly known: on 2026-10-15, the
-one-month SOFR options' volatility was 18 basis points a year and the
-eight-month options' 102. Those few options, with their huge relative errors,
-would decide the fit, and push `sigma1` to 0.
-
-Returns an association list: `((a . 2.75) (sigma1 . 0.0193) (sigma2 . 0.0122)
-(theta-bar . 0.0461) (sofr-error . 0.14) (note-error . 0.047) (error .
-0.148) (sofr-options-used . 18) (note-options-used . 96) (evaluations . 161))`
-— `theta-bar` is the value for pricing the SOFR options, as `sofr-calibrate-model`
-gives it (the paths of `sofr-simulate-curve-paths` do not use it). On 2026-10-15 the notes' options alone gave a `sigma2` of 0.0132;
-fitted together with the SOFR options, `sigma2` was 0.0122 (with `a` of 2.75 and
-`sigma1` of 0.019), the SOFR options fit to 14% and the notes' to 4.7% (against
-3.6% alone): the price of making one model agree with both.
-
-```lisp
-(define data (sofr-calibration-data creds 40 8 3))
-(define fit (sofr-calibrate-jointly (cdr (sofr-bootstrap-curve (car data))) treasury-forwards
-                                    (cdr data) rows 62))
-```
-
-#### `(sofr-simulate-curve-paths forward-rates sigma1 sigma2 horizon-years n-paths [:a :b :seed :tenor-years])`
-Pure function — no networking. Simulates `n-paths` Monte Carlo scenarios of the
-model that `sofr-calibrate-note-options` and `sofr-calibrate-jointly` fit, month
-by month for `horizon-years`: the same random factors (stepped by the day),
-added to the market's forward curve, as the calibration prices options. Use the
-fitted `sigma1`, `sigma2` and `a`, with the Treasury's forward curve
-(`curve-forward-rates`). The yield at the end of a long horizon needs the curve
-`:tenor-years` beyond it (a 30-year mortgage's last month needs a curve to year
-40): where the curve is shorter, it continues at its last forward rate.
-`:a` (1.0) and `:b` (0.15) are the mean-reversion speeds, `:tenor-years` (10) the
-note whose par yield is followed, and `:seed` (an integer) makes the paths the
-same each time (without it they are new). `n-paths` is rounded up to an even
-number: the paths come in mirror-image pairs, so that their average is the
-curve's own.
-
-Returns `(list years short-rate-paths yield-paths)`: `years` is `0, 1/12, 2/12, ...`; the others
-are a list with a vector for each path: the model's short rate (the market's
-forward rate for the month that starts then, plus the path's deviation), and the
-par yield of the note of `:tenor-years` that day, as the Treasury publishes it.
-
-These paths start where the market is: the first path value of the 10-year yield
-is the Treasury's own (5.10% on 2026-10-15), and a path's average discount
-factor reproduces the curve's (to within 3 basis points over 5 years, on that
-day), which is what an option-adjusted spread needs of the rates it discounts
-along. The model's rates are normal (they can go below zero, and its volatility doesn't
-rise with the level), so a path now and then goes somewhere a real rate
-would not: 200 paths of 5 years from the fit above ended between 1% and
-10.5% for the 10-year yield.
-
-```lisp
-(define paths (sofr-simulate-curve-paths treasury-forwards 0.0194 0.0122 5 200 :a 2.75 :seed 1))
-(define ten-year-yields (third paths))          ; 200 vectors of 61 monthly yields
-```
-
-See `examples/rate_model_example.lsp`, which fits the model to SOFR and note
-options and then draws and charts a few paths.
-
-#### `(sofr-simulate-mortgage-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths mortgage-spread [:a :b :seed :tenor-years])`
-Pure function — no networking. The same simulation as
-`sofr-simulate-curve-paths` (its arguments, and the paths start on
-`forward-rates`, the market's curve), plus a simple proxy mortgage rate per
-path/month: `mortgage_rate = tenor-years-yield + mortgage-spread`
-(`tenor-years` defaults to `10`, the usual rate-sensitivity proxy for a
-30-year mortgage). Reuses `simulate_mortgage_rate_paths()` as-is. The spread
-that puts the first month's mortgage rate at today's is today's mortgage rate (FRED's
-`MORTGAGE30US`) less the curve's 10-year par yield.
-
-**SIMPLIFICATION** (from the underlying model, not this bridge): a real
-mortgage rate tracks current-coupon MBS yields — the whole curve,
-prepayment risk, origination costs — not one flat spread over one tenor
-point; `mortgage-spread` is a deliberate simplification, named so it's
-obvious where to plug in something richer (`term_structure/
-mortgage_spread.py`'s `fetch_current_mortgage_rate()` pulls FRED's
-`MORTGAGE30US` for one way to estimate it from real data instead of
-guessing).
-
-Returns `(list years-vector short-rate-paths underlying-paths
-mortgage-paths)` — `underlying-paths` is the `tenor-years` yield before
-adding the spread; `mortgage-paths` is after. Each of the three is a Lisp
-LIST of `(horizon-years×12 + 1)`-element vectors, one per path.
-
-**Example**: `examples/sofr_monte_carlo_example.lsp` runs the
-full pipeline end to end — `sofr-calibration-data` →
-`sofr-bootstrap-curve` → `sofr-calibrate-model` →
-`sofr-simulate-mortgage-rate-paths` — then charts a few paths and writes
-all of them to CSV via `write-columns-csv` (see "Displaying tables", in the [language manual](lisp_interpreter_reference.md#displaying-tables)). Its
-header comment sketches feeding one simulated path into
-`mortgage_amortization_example.lsp` in place of the deterministic
-SOFR-forward-curve-derived rate, for a single Monte Carlo scenario's
-cashflows (looping over several paths, each with its own
-`column_engine.lsp` registry, is the natural next step toward a full
-Monte Carlo distribution of cashflows — not built out there).
-
-That "loop over several paths" step is exactly what
-[`oas_monte_carlo.lsp`](lib/oas_monte_carlo.lsp) does, deliberately WITHOUT
-`column_engine.lsp` (its per-row registry/topological-sort machinery is
-built for readability on a single calculated table, not for generating
-hundreds-to-thousands of per-path cashflow vectors fast). It adds:
-
-- `annualized-realized-vol` — a historical-data cross-check for
-  `sofr-calibrate-model`'s fitted `sigma1`/`sigma2` (or a quick sanity
-  check with no options data at all), from a plain rate-level vector —
-  see its docstring for a worked example with FRED's `"DFF"` and `"DGS10"`.
-- `simple-mortgage-cashflows` / `mortgage-cashflows-per-path` — a fast,
-  direct (not `column_engine.lsp`-based) fixed-rate, PSA-prepaying
-  pass-through cashflow generator, reusing `prepayment_model.lsp`'s
-  `cpr`/`smm-from-cpr`, either for one path or for every path in a
-  `sofr-simulate-mortgage-rate-paths` result at once.
-- `path-present-value` / `oas-model-price` / `oas-solve` — the
-  Option-Adjusted Spread engine itself: discounts a cashflow stream along
-  one Monte Carlo path using that path's own simulated short rate plus a
-  trial spread (the SAME discounting convention `term_structure_model.py`'s
-  `price_callable_bond_mc()` uses), averages across paths for a model
-  price, then bisects for whichever spread reproduces a target market
-  price — the "solve for OAS" direction that function's own docstring
-  flags as unimplemented. Works for a single shared cashflow vector (an
-  ordinary bond) or a per-path list of cashflow vectors (a prepaying
-  mortgage, whose cashflows are path-dependent).
-
-See [`oas_monte_carlo_example.lsp`](examples/oas_monte_carlo_example.lsp) for the
-full pipeline end to end — curve extension → (illustrated) historical-vol
-cross-check → `sofr-simulate-mortgage-rate-paths` →
-`mortgage-cashflows-per-path` → `oas-solve` — runnable with no network
-access or credentials (its curve/volatility/market-price numbers are all
-illustrative, in the same spirit as `term_structure_model.py`'s own
-`__main__` demo).
-
-[`oas_monte_carlo_live_example.lsp`](examples/oas_monte_carlo_live_example.lsp) is
-the same pipeline against REAL data instead: the SOFR futures curve and
-calibration options from tastytrade (`sofr-calibration-data`), the
-Treasury par curve and the DFF/DGS10 historical-vol cross-check from
-`fred-table`, and the mortgage note rate from FRED's `MORTGAGE30US` —
-only the security's own market price has no live source wired up
-anywhere in this codebase, so that one number stays an assumption.
-Writes `oas_monte_carlo_live_report.txt` (and prints the same report to
-the console) listing every fetched data point and every assumption the
-run used, split into separate sections so it's clear which is which.
-Needs a credentials file with both tastytrade fields and a
-`"fred_api_key"` entry (`creds` in `init.lsp`).
+The functions that turn these curves into paths of rates, and fit the model of the paths to option prices,
+are in "Interest rate paths (the two-factor model)". The curve is flat past the last futures contract (about 5 years
+out); for the long end, the Treasury's curve is the one to use (see "Yield curves").
 
 **Example** (also runnable as [`tastytrade_example.lsp`](examples/tastytrade_example.lsp) —
 `python3 ../lisp_interpreter.py tastytrade_example.lsp`, from `examples/`). Exercises all
@@ -3007,14 +2642,12 @@ forward rates:
 (table-column forwards "forward")             ; 360 months of forward rates
 ```
 
-For a model of the short rate, such as the one `sofr-calibrate-model` fits, the
-forward rates are the starting curve: `(table-column forwards "forward")` is a vector
-of 360 monthly forward rates, in the form the `sofr-` functions take (the `cdr` of what
-`sofr-bootstrap-curve` returns, built from SOFR futures). Where
-the futures end, about 5 years out, the model's curve is flat; either of these curves,
-which go to 30 years, can take it from there (`extend-forward-curve`, below), in place of
-`sofr-extend-curve-with-treasury`'s seven yields. Neither is a SOFR curve: they are
-Treasury curves, and SOFR and Treasury rates differ by a spread that isn't here.
+For a model of rates, the forward rates are the starting curve: `(table-column forwards "forward")` is a
+vector of 360 monthly forward rates, in the form the `sofr-` functions take (the `cdr` of what
+`sofr-bootstrap-curve` returns, built from SOFR futures, is another). They are what "Interest rate paths
+(the two-factor model)" makes its paths from. Where the futures end, about 5 years out, a SOFR curve is flat;
+either of these curves, which go to 30 years, can take it from there (`extend-forward-curve`, below).
+Neither is a SOFR curve: they are Treasury curves, and SOFR and Treasury rates differ by a spread that isn't here.
 
 #### `(extend-forward-curve forwards real-months longer-forwards [:blend-months n])`
 The forward rates of a curve that is only known to `real-months` -- the SOFR futures'
@@ -3023,8 +2656,7 @@ curve. `forwards` and `longer-forwards` are vectors of one-month forward rates, 
 as each other (360, say), such as the `forward` column of `curve-forward-rates`. The
 result has `forwards` for the first `real-months`, then a straight-line change over
 `:blend-months` (12) to `longer-forwards`, so that there is no jump where they meet,
-and `longer-forwards` from then on. `sofr-extend-curve-with-treasury` does the same with
-the Treasury curve of seven yields.
+and `longer-forwards` from then on.
 
 ```lisp
 (define short (make-vector 360 0.04))       ; a curve known for 5 years, flat after
@@ -3036,6 +2668,438 @@ the Treasury curve of seven yields.
 ```
 
 `examples/yield_curve_example.lsp` draws the Treasury's and the Fed's curves for today.
+
+### Interest rate paths (the two-factor model)
+
+(In `lisp_sofr.py`, over `term_structure/term_structure_model.py`.) Questions about
+mortgages, bonds, and options on rates are questions about what rates might do: not one
+forecast, but thousands of possible futures, each a **path** of rates, month by month.
+This section makes them from one curve and three numbers, shows what they are made of,
+and fits the three numbers to option prices. The functions' names begin with `sofr-`
+because the model was first fitted to SOFR futures; the paths start on whatever curve you
+give them, and the Treasury's is the one to use.
+
+#### How to generate paths
+
+1. **Take today's curve**: a vector of 360 monthly forward rates. The Treasury's is free:
+
+   ```lisp
+   (load "yield_curves.lsp")
+   (define forwards (table-column (curve-forward-rates (treasury-zero-curve (treasury-par-curve))) "forward"))
+   (sofr-par-yield forwards 10)       ; the 10-year par yield this curve gives: 5.10% on 2026-10-15
+   ```
+
+   See "Yield curves" for the others (the Fed's is smoother; your own would do). A curve
+   made from SOFR futures (`sofr-bootstrap-curve`) stops after about 5 years and is flat after that,
+   and SOFR rates sit a quarter of a point under Treasury yields, so for anything that
+   depends on the long end, such as a mortgage, use the Treasury's.
+
+2. **Choose the model's three numbers**: `a`, how fast the short rate follows the level
+   (a gap between them closes in about 1/`a` years: a year for 1, four months for 2.75); `sigma1`, how hard the short rate is shocked (as a rate a year, so
+   0.019 is 1.9 points); and `sigma2`, the same for the level, which is the long end of the curve.
+   Assume them, or fit them to option prices (see "Fitting the model to option prices", below). Those fitted on
+   2026-10-15 were `a` = 2.75, `sigma1` = 0.019 and `sigma2` = 0.012.
+
+3. **Generate the paths**:
+
+   ```lisp
+   (define paths (sofr-simulate-curve-paths forwards 0.019 0.012 5 200 :a 2.75 :seed 1))
+   (define years (first paths))               ; 0, 1/12, ... 5: sixty-one months
+   (define short-rates (second paths))        ; a list of 200 vectors, one per path: the short rate each month
+   (define ten-year-yields (third paths))     ; the same, for the 10-year par yield
+   (vector-ref (list-ref ten-year-yields 7) 24)     ; path 7 (the eighth), two years from now
+   ```
+
+   Each path is a vector with a value for each month: element 0 is today, element 24 two years
+   from now. All the paths start where the market is (the first 10-year yield is the Treasury's),
+   and then spread out. `:seed` makes the same paths each time; leave it out for new ones. 200 paths
+   are enough for a picture, a few thousand for a price (a thousand paths of 30 years take a fifth
+   of a second). Chart some:
+
+   ```lisp
+   (plot-chart (loop for path in ten-year-yields for number from 1 to 8 collect (list "path" years path))
+               :legend #f :title "Eight paths of the 10-year yield" :y-format "{:.1%}")
+   ```
+
+4. **For mortgages**, add a spread to the yield. The spread that makes the paths' first mortgage rate
+   today's is today's mortgage rate (say 7.4%, from FRED's `MORTGAGE30US`) less the curve's 10-year yield:
+
+   ```lisp
+   (define spread (- 0.074 (sofr-par-yield forwards 10)))
+   (define mortgage-paths (fourth (sofr-simulate-mortgage-rate-paths forwards 0.019 0.012 30 200 spread :a 2.75 :seed 1)))
+   ```
+
+5. **Use them.** A path is one possible future. Discount a security's cash flows along each path
+   and average, to price it (`oas-model-price`, `oas-solve`: see "Mortgages and option-adjusted
+   spread", below), or look at how the 10-year yield is spread after five years:
+
+   ```lisp
+   (define yields-in-5-years (list->vector (map (lambda (path) (vector-ref path 60)) ten-year-yields)))
+   (vector-quantile yields-in-5-years (vector 0.1 0.5 0.9))
+   ```
+
+`examples/rate_model_example.lsp` does all of this, fitting the three numbers to market data
+first; `examples/rate_paths_example.lsp` takes it apart.
+
+#### What a path is made of
+
+A path is **today's curve, bent by two random numbers**. The two numbers, called the model's
+*factors*, are how far the short rate (`delta-r`) and the long-run level (`delta-theta`, which
+is the long end of the curve) have strayed from where today's curve has them. Both start at 0,
+and each day each is shocked at random, by an amount that grows with `sigma1` and `sigma2`;
+each is also pulled back, `delta-r` toward `delta-theta` at speed `a`, and `delta-theta` toward 0
+slowly (at speed `b`, 0.15). On a given date on a given path, the factors bend today's
+curve like this, at tau years after that date:
+
+> forward rate = (today's rate for that date) + `delta-theta` × (1 − e<sup>−a·tau</sup>) + `delta-r` × e<sup>−a·tau</sup>
+
+so the short end of the curve follows `delta-r`, the long end follows `delta-theta`, and `a` sets how
+quickly the one gives way to the other. What a path reports each month is read from that
+bent curve: the **short rate** is its first month, and the **10-year yield** is the par
+yield of a 10-year note on it. Nothing else is random.
+
+Each stage has a function that shows it:
+
+| To see | Use |
+|---|---|
+| today's curve, as yields | `(sofr-par-yield forwards 10)`, for any tenor; `curve-forward-rates` for the whole curve, as a table |
+| what today's curve implies for later | `(sofr-par-yield forwards 10 :start-months 24)`: the 10-year yield two years from now |
+| a path with no randomness | `(sofr-simulate-curve-paths forwards 0 0 5 1)`: **the curve itself, read forward in time** |
+| the factors | `(sofr-simulate-factor-paths sigma1 sigma2 5 200 :a a :seed 1)` |
+| the curve on a date, bent | `(sofr-curve-on-date forwards 36 delta-r delta-theta :a a)`: a table of today's curve for the dates after that, and the model's |
+| what is read from it | the paths: `(sofr-simulate-curve-paths ...)` |
+
+**With no volatility (`sigma1` and `sigma2` both 0) every path is the forward curve**,
+read forward in time. The short rate in month 24 is the curve's forward rate for month 24, and the
+10-year yield is the par yield of a 10-year note that starts then, on today's curve: the same as
+`(sofr-par-yield forwards 10 :start-months 24)`. The paths with volatility wander around that
+line (the black line in the chart of `rate_paths_example.lsp`). It is what today's curve expects rates
+to do, and not a forecast.
+
+For example (the Treasury's curve of 2026-10-15; `examples/rate_paths_example.lsp` prints these). On one path,
+three years from now, the short rate had strayed 2.4 points above the curve's and the level 2.1 points. The curve
+for the months from then on, which today says starts at 4.95% and reaches 6.10% at ten years, has become one that starts
+at 7.33% and reaches 8.24%; and its 10-year par yield is 7.58%, where the curve with no volatility has 5.39%.
+
+```lisp
+(define on-date (sofr-curve-on-date forwards 36 0.0240 0.0212 :a 2.75))
+(table-column on-date "model")              ; the bent curve, a month at a time
+```
+
+Two checks that the paths are consistent with the curve they start on. The first path value is
+the curve's own (the 10-year yield at the start is exactly the Treasury's). And a security's price from the
+paths (the paths' average discount factor) is close to its price from the curve: for a payment in 5 years,
+on 2026-10-15, it was 3 basis points of yield away (4.84% against the curve's 4.87%). The remainder is the
+*convexity* of the model, which it does not correct for.
+
+**What the model leaves out**, which a path can show:
+- Rates move in a bell curve of the same size at every level, so a path can go below 0
+  or somewhere far: of 200 paths of 5 years, with the numbers above, one ended with a 10-year yield of 1.0% and another
+  10.4%, and one came within 0.1% of 0 on the way.
+- The two shocks are independent, so the short and long ends move together only because
+  `delta-r` follows `delta-theta`. A correlation between them is not in the model.
+- The volatilities are constants. The model's `sigma2` fits the options of one month to four, and a model
+  with one volatility cannot match the smile (the market's volatility is higher for options far from the
+  money).
+- A curve shorter than the horizon plus the tenor (a 30-year mortgage's last month needs a curve to year 40)
+  continues flat at its last forward rate.
+
+#### Fitting the model to option prices
+
+The three numbers that make paths can be fitted to the prices of options, which say how much the
+market expects rates to move. Two kinds help, and which function to use follows from which you have:
+
+| You have | Use | Finds |
+|---|---|---|
+| options on SOFR futures (`sofr-calibration-data`) | `sofr-calibrate-model` | `a`, `sigma1`, `sigma2` (and `theta-bar`, for pricing those options only) |
+| options on the 10-year note future (ZN: `note-option-rows`) | `sofr-calibrate-note-options` | `sigma2` (and, loosely, others) |
+| both | `sofr-calibrate-jointly` | `a`, `sigma1`, `sigma2`: **the one to use** |
+
+The SOFR options show how much the *short* rate moves. A mortgage rate follows the *long* end, and
+options on the 10-year note future (ZN, the most traded of the Treasury futures) say how much that
+moves, directly. In this model the 10-year yield is about a tenth the short-rate factor and nine
+tenths the level factor, so these options mostly pin down `sigma2`. They say little about `sigma1`
+(the options go out only a few months), so they are best fitted *together with* the SOFR options:
+`sigma1` and `a` from the SOFR options, `sigma2` from the notes', and a model that has to agree with both.
+
+The method: simulate the factors, work out the price of a note at each option's expiry along each
+path, and price the option as the average discounted payoff over the paths; then vary the parameters
+until the model's prices are near the market's. Four things make that work for a note future, and none
+is obvious:
+
+- **Today's curve is the center.** The model's own starting curve is too crude to match a
+  note: on one real day it priced the 6% 10-year note at 99.3, where today's Treasury curve says 107.0
+  and the market's future said 105.6 — a six-point error, many times the premium of an at-the-money
+  option (about 0.9 points). So the paths keep only the model's *randomness* and add it to the forward
+  rates the market gives today. Pass the **Treasury's** forward curve, not the SOFR curve: the future is
+  a Treasury contract.
+- **The note.** A ZN future is settled by delivering any of several notes, usually the cheapest
+  to deliver: ones with 6½ to 8 years left (CME's specification), not the ten of the 6% notional note.
+  Its price moves like a note of about seven years. The model takes the future to be one note of
+  `:ctd-maturity` (6.75) years at the option's expiry, with the coupon that makes it a par bond on the
+  forward curve: no basket of notes and no switch of the cheapest. The options cannot say which maturity is
+  right, and it matters: `sigma2` is 0.0147, 0.0132 or 0.0118 for a note of 6, 6.75 or 7.5 years, at
+  the same fit. If you know the cheapest to deliver's remaining maturity, give it.
+- **The level of the future.** A future is marked to market daily, so its price is expected to
+  stay where it is: the model's note price is scaled, at each expiry, so its average over the paths
+  is the future's price today. That one scale absorbs what the model doesn't have — the conversion
+  factor, the basis, the carry — and leaves the model to say how widely the price is spread around it.
+- **Days.** The options expire from a week to four months out, so the paths step by the day, and
+  an option expires on its own day. The model's options are European; the market's are American, which is
+  worth under a third of a percent of a premium at these expiries.
+
+The error being minimized is in *volatility*, not price: each option's error is its price error
+divided by its vega times its own volatility, which is the relative error of the volatility it
+implies (a "normal" volatility, in points of the future's price a year). That makes a two-point option
+and a tenth-of-a-point option comparable, and keeps far out-of-the-money options, whose price barely depends
+on volatility, from counting: only options within `:moneyness-window` (2) standard deviations of the money
+are used.
+
+On 2026-10-15, the Treasury curve and the 24 options expiring 2026-11-20 gave `sigma2` = 0.0134 and a 3.4% root
+mean square volatility error: the model's 6.85 points of volatility against the market's 6.7–7.2, a yield
+volatility of about 112 basis points a year at a duration of 5.8. What is left is the smile. Fitted together
+with the SOFR options (three months out or more), `sigma2` was 0.0122, with `a` = 2.75 and `sigma1` = 0.019,
+the SOFR options fit to 14% and the notes' to 4.7%. Left in, the SOFR options of a month or two (whose
+volatility, 18 basis points a year, is a fifth of those a year out) push `sigma1` to 0: a model with one
+volatility cannot match the front of the market, where the Fed's next move is nearly known.
+
+#### `(sofr-simulate-curve-paths forward-rates sigma1 sigma2 horizon-years n-paths [:a :b :seed :tenor-years])`
+Pure function — no networking. Simulates `n-paths` Monte Carlo scenarios of the model, month
+by month for `horizon-years`: the market's forward curve, bent by the two random factors (stepped
+by the day), as the calibration prices options. See "How to generate paths" and "What a path
+is made of". `forward-rates` is the Treasury's monthly forward curve (`curve-forward-rates`). The
+yield at the end of a long horizon needs the curve `:tenor-years` beyond it (a 30-year mortgage's last month
+needs a curve to year 40): where the curve is shorter, it continues at its last forward rate. `sigma1`
+and `sigma2` are the volatilities, `:a` (1.0) and `:b` (0.15) the mean-reversion speeds, `:tenor-years` (10)
+the note whose par yield is followed, and `:seed` (an integer) makes the paths the same each time (without it
+they are new). `n-paths` is rounded up to an even number: the paths come in mirror-image pairs, so that
+their average is the curve's own.
+
+Returns `(list years short-rate-paths yield-paths)`: `years` is `0, 1/12, 2/12, ...`; the others are a list
+with a vector for each path: the model's short rate (the first month of its curve that month), and the par
+yield of the note of `:tenor-years` that day, as the Treasury publishes it. With `sigma1` and `sigma2` of 0
+they are the curve itself.
+
+```lisp
+(define paths (sofr-simulate-curve-paths forwards 0.0194 0.0122 5 200 :a 2.75 :seed 1))
+(define ten-year-yields (third paths))          ; 200 vectors of 61 monthly yields
+```
+
+#### `(sofr-simulate-mortgage-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths mortgage-spread [:a :b :seed :tenor-years])`
+Pure function — no networking. The same simulation as `sofr-simulate-curve-paths` (its arguments, and
+the paths start on `forward-rates`, the market's curve), plus a simple proxy mortgage rate per
+path/month: `mortgage_rate = tenor-years-yield + mortgage-spread` (`tenor-years` defaults to `10`, the usual
+rate-sensitivity proxy for a 30-year mortgage). Reuses `simulate_mortgage_rate_paths()` as-is. The spread
+that puts the first month's mortgage rate at today's is today's mortgage rate (FRED's `MORTGAGE30US`) less the
+curve's 10-year par yield, as in step 4 of "How to generate paths".
+
+**SIMPLIFICATION** (from the underlying model, not this bridge): a real mortgage rate tracks current-coupon MBS
+yields — the whole curve, prepayment risk, origination costs — not one flat spread over one tenor point;
+`mortgage-spread` is a deliberate simplification, named so it's obvious where to plug in something richer
+(`term_structure/mortgage_spread.py`'s `fetch_current_mortgage_rate()` pulls FRED's `MORTGAGE30US` for one way to
+estimate it from real data).
+
+Returns `(list years-vector short-rate-paths underlying-paths mortgage-paths)` — `underlying-paths` is the
+`tenor-years` yield before adding the spread; `mortgage-paths` is after. Each of the three is a Lisp LIST of
+`(horizon-years×12 + 1)`-element vectors, one per path.
+
+#### `(sofr-simulate-factor-paths sigma1 sigma2 horizon-years n-paths [:a :b :seed])`
+Pure function — no networking. The model's two random factors along `n-paths` scenarios, which are all
+there is to a path besides the market's curve (`sofr-simulate-curve-paths` adds them to it): `delta-r`, how
+far the short rate has strayed from where today's curve has it, and `delta-theta`, how far the long-run level
+has. Both start at 0. The short rate pulls back toward `delta-theta` at speed `:a` (1.0), and `delta-theta`
+toward 0, slowly, at speed `:b` (0.15); `sigma1` and `sigma2` are the sizes of their random shocks.
+
+Returns `(list years delta-r-paths delta-theta-paths)`: the years, as for the paths, and for each factor a Lisp
+LIST of vectors, one per scenario, month by month, as rates (0.01 is a point). The same arguments and `:seed`
+as a `sofr-simulate-curve-paths` call give the factors of its paths.
+
+```lisp
+(define factors (sofr-simulate-factor-paths 0.019 0.012 5 200 :a 2.75 :seed 1))
+(vector-ref (list-ref (second factors) 140) 36)   ; delta-r of path 140, three years in: 0.0240
+```
+
+#### `(sofr-curve-on-date forward-rates months-ahead delta-r delta-theta [:a :months])`
+Pure function — no networking. The model's forward curve on a date `months-ahead` from today, when its
+factors have the values `delta-r` and `delta-theta` (a path's, from `sofr-simulate-factor-paths`): today's
+curve for the dates from then on, bent by them. The short end follows `delta-r`, the long end `delta-theta`,
+and the two meet at the speed `:a` (1.0); with both 0 it is today's curve itself. It is the curve that a
+path's short rate and 10-year yield are read from: the short rate is its first month, and the yield is its par yield.
+
+Returns a table with a row for each month, with the columns `months` (1, 2, ...: the rate is for the month that
+starts `months` − 1 months after the date), `today` (the market's forward rate for that month, an annual
+rate, from `forward-rates`) and `model` (the model's, on the date). `:months` is how many rows (by default, all the months
+`forward-rates` has after the date; a shorter curve continues at its last rate).
+
+```lisp
+(define on-date (sofr-curve-on-date forwards 36 0.0240 0.0212 :a 2.75))
+(plot-chart (list (list "today's" (/ (table-column on-date "months") 12.0) (table-column on-date "today"))
+                  (list "on that path" (/ (table-column on-date "months") 12.0) (table-column on-date "model"))))
+```
+
+#### `(sofr-par-yield forward-rates tenor-years [:start-months])`
+Pure function — no networking. The par yield a curve gives a note of `tenor-years` that starts `:start-months`
+(0, today) from now: the coupon, an annual rate paid every six months, that makes the note worth its face value.
+`forward-rates` must reach `:start-months` plus `tenor-years` (a 30-year curve, for a note of 10 years, to month 240).
+With `:start-months` 0 it is the yield the Treasury would publish if the curve were its own; later, what the curve
+implies for that yield then: the first value of each path with no volatility is this, for each month.
+
+```lisp
+(sofr-par-yield forwards 10)                       ; 0.0510, today's 10-year yield
+(sofr-par-yield forwards 10 :start-months 24)      ; 0.0530, what the curve implies for it in two years
+```
+
+#### `(sofr-calibrate-jointly sofr-forward-rates treasury-forward-rates sofr-option-rows note-option-rows curve-real-months [:fit :sigma1 :sigma2 :a :sofr-paths :note-paths :seed :ctd-maturity :ctd-coupon :min-days :moneyness-window :sofr-min-months])`
+Pure function — no networking. Fits the model to SOFR futures options and to options on the 10-year note
+future together. `sofr-forward-rates` is the SOFR curve (`sofr-bootstrap-curve`), which the SOFR options'
+paths start from, and `treasury-forward-rates` the Treasury's, which the notes' paths are centered on;
+`sofr-option-rows` are `sofr-calibration-data`'s (with the price of the future last); `note-option-rows` are
+those of `note-option-rows`; and `curve-real-months` is as for `sofr-calibrate-model`. `:fit` is a list of `a`,
+`sigma1` and `sigma2` (by default all three). `:sofr-paths` (2000) and `:note-paths` (10000) are the numbers
+of paths for each kind. The error is that of `sofr-calibrate-note-options` for the notes, and the same kind of
+relative volatility error for the SOFR options, the two put together as the square root of the sum of their
+squares (so that neither kind is ignored).
+
+SOFR options with fewer than `:sofr-min-months` (3) months to expiry are left out, for the reason in "Fitting
+the model to option prices". The other options are as for `sofr-calibrate-note-options`.
+
+Returns an association list: `((a . 2.75) (sigma1 . 0.0193) (sigma2 . 0.0122) (theta-bar . 0.0461) (sofr-error
+. 0.14) (note-error . 0.047) (error . 0.148) (sofr-options-used . 18) (note-options-used . 96) (evaluations .
+161))` — `theta-bar` is the value for pricing the SOFR options, as `sofr-calibrate-model` gives it (the paths of
+`sofr-simulate-curve-paths` do not use it). Read a value with `(cdr (assoc 'sigma2 fit))`.
+
+```lisp
+(define data (sofr-calibration-data creds 40 8 3))
+(define fit (sofr-calibrate-jointly (cdr (sofr-bootstrap-curve (car data))) treasury-forwards
+                                    (cdr data) rows 62))
+```
+
+#### `(sofr-calibrate-note-options forward-rates option-rows [:fit :sigma1 :sigma2 :a :b :n-paths :seed :ctd-maturity :ctd-coupon :min-days :moneyness-window])`
+Pure function — no networking. Fits the model to the options on the 10-year note future by finding the
+parameters for which its Monte Carlo prices are nearest the market's (the root mean square of the options'
+relative volatility errors; a Nelder–Mead search in the parameters' logarithms). `forward-rates` is the
+Treasury's curve and `option-rows` those of `note-option-rows`. `:fit` is a list of the parameters to fit — any of
+`a`, `b`, `sigma1` and `sigma2`; by default `'(sigma2)`. The others keep the values given by `:a`, `:b`, `:sigma1` and
+`:sigma2` (1.0, 0.15, 0.01, 0.01), which are also where the search of those that are fitted starts. `:n-paths` (10000)
+paths, `:seed` (42), `:ctd-maturity` (6.75) and `:ctd-coupon` (by default the coupon that makes the note a par bond
+on the curve) are as for `sofr-note-option-comparison`. `:min-days` (10) and `:moneyness-window` (2) say which options
+are used.
+
+Returns an association list: `((a . 1.0) (b . 0.15) (sigma1 . 0.01) (sigma2 . 0.0134) (error . 0.034)
+(options-used . 24) (evaluations . 36))`. Read a value with `(cdr (assoc 'sigma2 fit))`.
+
+The same random numbers are priced at every set of parameters, so the Monte Carlo noise is the same at each and
+the error is a smooth function of the parameters; the price is that the fit carries the noise of those numbers.
+More paths make it smaller (as the square root of their number). A change of `:seed` shows how much is left.
+
+```lisp
+(define fit (sofr-calibrate-note-options treasury-forwards rows))
+(cdr (assoc 'sigma2 fit))                          ; 0.0134, on 2026-10-15
+```
+
+The ZN options reach only a few months, so `b` — how slowly the level reverts — cannot be told from them, and
+`sigma1` only a little; fit `'(sigma2)`, or fit the others together with SOFR options (`sofr-calibrate-jointly`).
+
+#### `(sofr-note-option-comparison forward-rates option-rows sigma1 sigma2 [:a :b :n-paths :seed :ctd-maturity :ctd-coupon])`
+Pure function — no networking. The model's price of each option on the 10-year note future next to the market's, as
+a table, one row per option. `forward-rates` is a vector of monthly forward rates — the Treasury's.
+`option-rows` are those of `note-option-rows`. The model's parameters are `a` (`:a`, 1.0) and `b` (`:b`, 0.15), the
+speeds at which the short rate and the level revert, and the volatilities `sigma1` and `sigma2` — 0.01 each is a
+start. `:n-paths` (10000) paths, `:seed` (42), `:ctd-maturity` (6.75), `:ctd-coupon` (by default the coupon that
+makes the note a par bond on the curve).
+
+The columns: `type`, `strike`, `days`, `futures-price`, `market-price`, `model-price`; `market-vol` and
+`model-vol`, the volatility each price implies, in points of the future's price a year; `market-yield-vol` and
+`model-yield-vol`, the same as a volatility of the *yield* of the note, in basis points a year (the price volatility
+over the price and the note's duration); `duration`; and `error`, `model-vol / market-vol - 1`.
+
+```lisp
+(define comparison (sofr-note-option-comparison treasury-forwards rows 0.01 0.0134))
+(display-table comparison)
+```
+
+#### `(note-option-rows chain [:day d :min-days n :max-days n])`
+Shapes a chain of options, as `(tastytrade-option-chain creds "ZN" months strikes)` makes it, into the rows the
+functions above read: each is `(type strike days futures-price market-price)` — the type `"call"` or `"put"`, the
+strike, the days from `:day` (today) until the option expires, the price of the future the option is on, and the middle of
+the option's bid and ask. Options without a bid or an ask are left out, and those with fewer than `:min-days` (7) or
+more than `:max-days` (400) days to expiry (the last few days are priced mostly on the next few days' news). A chain
+has options on more than one future (the December options on the December future, the later ones on March's), and
+each row carries the price of its own. In `note_options.lsp`.
+
+```lisp
+(define chain (tastytrade-option-chain creds "ZN" 12 12))
+(define rows (note-option-rows chain))
+```
+
+#### `(sofr-calibrate-model forward-rates options-rows curve-real-months [n-paths seed n-grid n-rounds])`
+Pure function — no networking (cheap to re-run with different settings once you've fetched `options-rows` once).
+Fits the model's mean-reversion speed `a` and both volatilities — `sigma1` (the short-rate factor) and `sigma2` (the
+slower-moving mean-reversion-*level* factor) — directly against real SOFR futures option prices, by a "zooming grid
+search": try a grid of `(a, sigma1, sigma2)` combinations, keep whichever prices the options closest, shrink the
+search window around it, repeat `n-rounds` times. Reuses `term_structure_model.py`'s `calibrate_sofr_model()`
+as-is — see that function's docstring for the full methodology, including *why* it fits `a` against option prices
+directly rather than against today's curve shape and how `theta_bar` (the long-run level SOFR options' prices are
+worked out from) gets refit in closed form at every candidate `a`.
+
+It uses SOFR options alone, and minimizes the error in price, which the long-dated options dominate. On 2026-10-15
+it gave `a` = 2.76, `sigma1` of about 0 and `sigma2` = 0.015, where `sofr-calibrate-jointly`, which weighs the errors
+in volatility and has the note options too, gave 2.75, 0.019 and 0.012.
+
+- `forward-rates` — `sofr-forward-curve`'s or `sofr-bootstrap-curve`'s second return value.
+- `options-rows` — `sofr-calibration-data`'s second return value (or anything shaped the same way).
+- `curve-real-months` — how many months of `forward-rates` are the REAL (non-extrapolated) part of the curve, i.e.
+  the largest `end-months` among the `curve-futures-rows` used to build it.
+- `n-paths` (default `2000`) — Monte Carlo paths used to price EACH option at EACH candidate tried; an
+  accuracy/speed trade-off for the *calibration* itself, separate from how many scenario paths
+  `sofr-simulate-curve-paths` later generates.
+- `seed` (default `42`), `n-grid` (default `7`), `n-rounds` (default `4`) — grid resolution per round / how many
+  times to zoom in. Cost is roughly `O(n-grid³ × n-rounds × n-paths × number of options)` — ten to twenty seconds at
+  these defaults and a handful of options; turn `n-paths`/`n-grid`/`n-rounds` down for a quicker first pass.
+
+Returns `(list a theta-bar sigma1 sigma2 error)` — `error` is the total squared pricing error at the winning
+parameters.
+
+```lisp
+(define fit (sofr-calibrate-model sofr-forward-rates options-rows 24
+                                   500 42 5 3))    ; turned down for speed
+(define fitted-a (list-ref fit 0))
+(define fitted-sigma1 (list-ref fit 2))
+(define fitted-sigma2 (list-ref fit 3))
+```
+
+#### Mortgages and option-adjusted spread (`oas_monte_carlo.lsp`)
+
+The paths are the input to a Monte Carlo price. [`oas_monte_carlo.lsp`](lib/oas_monte_carlo.lsp) does the next step
+in Lisp, deliberately WITHOUT `column_engine.lsp` (its per-row registry/topological-sort machinery is built for
+readability on a single calculated table, not for generating hundreds-to-thousands of per-path cashflow vectors fast).
+It has:
+
+- `annualized-realized-vol` — a historical-data cross-check for the fitted `sigma1`/`sigma2` (or a quick sanity
+  check with no options data at all), from a plain rate-level vector — see its docstring for a worked example with
+  FRED's `"DFF"` and `"DGS10"`.
+- `simple-mortgage-cashflows` / `mortgage-cashflows-per-path` — a fast, direct fixed-rate, PSA-prepaying
+  pass-through cashflow generator, reusing `prepayment_model.lsp`'s `cpr`/`smm-from-cpr`, either for one path or for
+  every path in a `sofr-simulate-mortgage-rate-paths` result at once (prepayments on each path respond to that
+  path's mortgage rate).
+- `path-present-value` / `oas-model-price` / `oas-solve` — the Option-Adjusted Spread engine itself: discounts a
+  cashflow stream along one path using that path's own short rate plus a trial spread (the SAME discounting convention
+  `term_structure_model.py`'s `price_callable_bond_mc()` uses), averages across paths for a model price, then
+  bisects for whichever spread reproduces a target market price. Works for a single shared cashflow vector (an
+  ordinary bond) or a per-path list of cashflow vectors (a prepaying mortgage, whose cashflows are path-dependent).
+  Because the paths start on the curve and their average discount factor is the curve's, a security of fixed cash flows
+  with no option in it has an OAS of about 0 against the curve the paths start on.
+
+See [`oas_monte_carlo_example.lsp`](examples/oas_monte_carlo_example.lsp) for the pipeline end to end — a curve from
+par yields → `sofr-simulate-mortgage-rate-paths` → `mortgage-cashflows-per-path` → `oas-solve` — runnable with no
+network access or credentials (its curve, volatilities and market price are all illustrative).
+[`oas_monte_carlo_live_example.lsp`](examples/oas_monte_carlo_live_example.lsp) is the same against REAL data: the
+Treasury's curve, SOFR and note options from tastytrade fitted with `sofr-calibrate-jointly`, a historical-volatility
+cross-check and the mortgage note rate from FRED, and a mortgage spread worked out from them. Only the
+security's own market price has no live source wired up anywhere in this codebase, so that one number stays an
+assumption. It writes `oas_monte_carlo_live_report.txt` (and prints the same report to the console) listing every
+fetched data point and every assumption the run used. Needs a credentials file with both tastytrade fields and a
+`"fred_api_key"` entry (`creds` in `init.lsp`).
 
 ### Regression models
 

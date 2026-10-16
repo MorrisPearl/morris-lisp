@@ -165,8 +165,7 @@ rate of each month is on a smooth curve through those given (and flat beyond the
 beyond the last futures contract -- carried on by the forward rates of a longer curve. forwards and longer-forwards
 are vectors of one-month forward rates, as curve-forward-rates makes (its forward column) and as the sofr- functions
 take, as long as each other. The result is forwards for the first real-months, then a straight-line change over
-:blend-months (12) to longer-forwards, so that there is no jump where they meet, and longer-forwards from then on.
-(This is what sofr-extend-curve-with-treasury does, with the Treasury curve of seven yields.)"
+:blend-months (12) to longer-forwards, so that there is no jump where they meet, and longer-forwards from then on."
   (unless (= (vector-length forwards) (vector-length longer-forwards))
     (error (format "extend-forward-curve: forwards has {} months and longer-forwards {}: they must be as long as each other"
                    (vector-length forwards) (vector-length longer-forwards))))

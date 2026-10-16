@@ -1,56 +1,43 @@
 ; oas_monte_carlo_example.lsp
 ;
 ; Worked, end-to-end example of oas_monte_carlo.lsp's pipeline:
-;   1. bootstrap a near-term SOFR curve, then extend its long end with a
-;      Treasury curve instead of leaving it flat-extrapolated.
+;   1. a curve of forward rates, from par yields.
 ;   2. (illustrated, not run against live data here -- see
 ;      oas_monte_carlo.lsp's annualized-realized-vol docstring) a
 ;      historical-vol cross-check for the sigma1/sigma2 used below.
 ;   3. simulate Monte Carlo short-rate / mortgage-rate paths off that
-;      extended curve.
+;      curve (sofr-simulate-mortgage-rate-paths).
 ;   4. generate one pass-through mortgage cashflow vector per path.
 ;   5. solve for the OAS that reproduces an assumed market price.
 ;
-; All the curve/option numbers below are ILLUSTRATIVE (made up, in the
-; same spirit as term_structure_model.py's own __main__ demo) -- replace
-; with real data (sofr-calibration-data + sofr-calibrate-model for
-; sigma1/sigma2, a real FRED Treasury curve, a real MBS market price) for
-; an actual analysis. sigma1/sigma2 here are simply assumed, not fit to
-; option prices, to keep this example runnable with no network access and
-; no credentials file.
+; All the curve numbers below are ILLUSTRATIVE (made up, in the same spirit as
+; term_structure_model.py's own __main__ demo) -- replace with real data (the
+; Treasury's own curve: treasury-par-curve; sigma1/sigma2 from options:
+; sofr-calibrate-jointly, see oas_monte_carlo_live_example.lsp; a real MBS
+; market price) for an actual analysis. sigma1/sigma2 here are simply assumed,
+; not fit to option prices, to keep this example runnable with no network
+; access and no credentials file.
 ;
 ; Run it from the examples directory with:
 ;   python3 ../lisp_interpreter.py oas_monte_carlo_example.lsp
 
 (load "oas_monte_carlo.lsp")
+(load "yield_curves.lsp")
 
-; --- 1. curve: bootstrap the near term, extend the long end --------------
-
-; A handful of illustrative SR3 quarterly futures rates -- the "real"
-; (non-extrapolated) part of the curve, out to 2 years.
-(define sofr-futures-rows
-  (list (list "F1" 0 3 0.045)
-        (list "F2" 3 6 0.044)
-        (list "F3" 6 12 0.043)
-        (list "F4" 12 18 0.042)
-        (list "F5" 18 24 0.041)))
-(define curve-real-months 24)
-
-(define curve (sofr-bootstrap-curve sofr-futures-rows))
-(define forward-rates (cdr curve))
+; --- 1. curve: from par yields to a month-by-month forward curve ---------
 
 ; The same illustrative Treasury par curve term_structure_model.py's own
-; __main__ demo uses, decimals.
-(define extended-forward-rates
-  (sofr-extend-curve-with-treasury forward-rates curve-real-months
-                                    0.043 0.041 0.039 0.038 0.040 0.043 0.046))
+; __main__ demo uses (maturities in years, yields as decimals).
+(define zeros (par-curve-zeros (vector 0.25 0.5 1 2 5 10 30)
+                               (vector 0.043 0.041 0.039 0.038 0.040 0.043 0.046)))
+(define forward-rates (table-column (curve-forward-rates zeros) "forward"))
 
-(display "Forward rate at month 24 (last real SOFR month): ")
-(display (vector-ref extended-forward-rates 23)) (newline)
-(display "Forward rate at month 30 (blended toward Treasury shape): ")
-(display (vector-ref extended-forward-rates 29)) (newline)
-(display "Forward rate at month 360 (Treasury long end, not flat): ")
-(display (vector-ref extended-forward-rates 359)) (newline)
+(display "Forward rate at month 1: ")
+(display (vector-ref forward-rates 0)) (newline)
+(display "Forward rate at month 60: ")
+(display (vector-ref forward-rates 59)) (newline)
+(display "Forward rate at month 360 (the long end): ")
+(display (vector-ref forward-rates 359)) (newline)
 
 ; --- 2. historical-vol cross-check (illustrated, not fetched here) -------
 
@@ -68,7 +55,7 @@
 (define mortgage-spread 0.020)  ; 200bp over the model's 10-year par yield
 
 (define sim (sofr-simulate-mortgage-rate-paths
-              extended-forward-rates sigma1 sigma2 horizon-years n-paths
+              forward-rates sigma1 sigma2 horizon-years n-paths
               mortgage-spread :seed 42))
 (define short-rate-paths (second sim))
 (define mortgage-paths (fourth sim))

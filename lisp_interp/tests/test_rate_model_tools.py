@@ -2,10 +2,12 @@
 demo, and the GUI (run in a child process, with no screen), all on the paths that start on the market's curve."""
 
 import os
+import re
 import subprocess
 import textwrap
 
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
+from test_yield_curves import NOW, TREASURY_1990, TREASURY_2025, TREASURY_2026, TREASURY_2027   # the Treasury's files, faked
 
 TERM_STRUCTURE = os.path.join(HERE, "..", "term_structure")
 sys.path.insert(0, TERM_STRUCTURE)
@@ -105,6 +107,67 @@ class TestTheMortgageSpread(unittest.TestCase):
         with mock.patch.object(mortgage_spread, "fetch_current_mortgage_rate", lambda path, series: (None, 0.0675)):
             spread = mortgage_spread.compute_sofr_mortgage_spread(FORWARDS, credentials_path="unused", tenor_years=5)[0]
         self.assertAlmostEqual(spread, 0.0675 - model.forward_par_yield(FORWARDS, 0.0, 5.0), places=12)
+
+
+class TestTheRatePathsExample(LispTestCase):
+    """examples/rate_paths_example.lsp, on the Treasury's curve of the yield-curve tests (its download faked)."""
+
+    def setUp(self):
+        super().setUp()
+        files = {"daily-treasury-rates.csv/%d/all" % year: text
+                 for year, text in ((1990, TREASURY_1990), (2025, TREASURY_2025), (2026, TREASURY_2026), (2027, TREASURY_2027))}
+
+        def download(url, cache_hours, headers, name, *more, **keywords):
+            for part, text in files.items():
+                if part in str(url):
+                    return text.encode()
+            raise lisp_core.LispError("%s: couldn't download %s: HTTP 404" % (name, url))
+
+        for target, replacement in ((lisp_http, ("download", download)), (lisp_clock, ("now", lambda: NOW))):
+            patcher = mock.patch.object(target, replacement[0], replacement[1])
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_example(self):
+        with in_a_temporary_folder() as folder:
+            lisp_core.run_file(os.path.join(EXAMPLES, "rate_paths_example.lsp"), self.env)
+            for chart in ("rate_paths_curve.png", "rate_paths_fan.png"):
+                self.assertTrue(is_a_png(os.path.join(folder, chart)), chart)
+        return self.printed()
+
+    def percents(self, line):
+        return [float(x) for x in re.findall(r"([-+]?\d+\.\d+)%", line)]
+
+    def test_it_takes_a_path_apart_and_what_it_shows_agrees_with_itself(self):
+        shown = self.run_example()
+        lines = {line[:2]: line for line in shown.splitlines() if re.match(r"\d\. ", line)}
+        self.assertEqual(sorted(lines), ["1.", "2.", "3.", "4.", "5.", "6."])
+        # with no volatility, the short rate in two years is the curve's forward rate; and the yield is the curve's par yield then
+        first, second = shown.split("2. ")[1].split("\n")[:2]
+        short, forward = self.percents(first)
+        self.assertEqual(short, forward)
+        yield_in_2_years, par_yield = self.percents(second)
+        self.assertEqual(yield_in_2_years, par_yield)
+        # the short rate on the path in month 36 is the first month of the curve then
+        short_on_path, first_month, ten_year = self.percents(lines["5."])
+        self.assertEqual(short_on_path, first_month)
+        # the paths' average discount factor is the curve's, to a few basis points
+        curve_rate, paths_rate = self.percents(lines["6."])[:2]
+        self.assertAlmostEqual(curve_rate, paths_rate, delta=0.1)
+        self.assertIn("[chart] The curve 3 years from now", shown)
+
+    def test_the_curve_it_starts_from_is_the_treasurys(self):
+        shown = self.run_example()
+        two, five, ten, thirty = self.percents(shown.split("1. ")[1].split("\n")[0])
+        self.assertEqual((two, five, ten), (4.77, 4.91, 5.10))          # the par yields of the fake file's 2026-10-15
+        self.assertAlmostEqual(thirty, 5.43, places=2)
+
+
+class TestWhatWasRemoved(LispTestCase):
+
+    def test_the_builtins_that_the_curve_functions_replaced_are_gone(self):
+        for name in ("sofr-simulate-rate-paths", "sofr-extend-curve-with-treasury"):
+            self.assertLispError("(%s 1 2 3)" % name, name)
 
 
 class TestTheModelsOwnDemo(unittest.TestCase):
