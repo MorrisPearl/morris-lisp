@@ -120,11 +120,11 @@ class TestTheNote(unittest.TestCase):
         discount = [(1 + monthly / 12) ** (-12 * t) for t in times]
         expected = 2 * (1 - discount[-1]) / sum(discount)
         for expiry in (0.1, 0.5):
-            self.assertAlmostEqual(model._forward_par_coupon(np.full(360, monthly), expiry, 6.75), expected, places=10)
+            self.assertAlmostEqual(model.forward_par_yield(np.full(360, monthly), expiry, 6.75), expected, places=10)
 
     def test_the_note_with_its_par_coupon_is_worth_par_where_the_curve_is_the_markets(self):
         for expiry in (0.1, 0.4):
-            coupon = model._forward_par_coupon(FORWARDS, expiry, 6.75)
+            coupon = model.forward_par_yield(FORWARDS, expiry, 6.75)
             price = model._note_prices_at_expiry(FORWARDS, expiry, np.zeros(1), np.zeros(1), 1.0, 6.75, coupon)
             self.assertAlmostEqual(float(price[0]), 100.0, places=9)
 
@@ -152,7 +152,7 @@ class TestTheNote(unittest.TestCase):
 
     def test_the_duration_is_the_percent_fall_for_a_parallel_rise_in_rates(self):
         expiry = 0.1
-        coupon = model._forward_par_coupon(FORWARDS, expiry, 6.75)
+        coupon = model.forward_par_yield(FORWARDS, expiry, 6.75)
         duration = model._note_duration(FORWARDS, expiry, 6.75, coupon)
         shift = 1e-5                                  # r and theta both up by this: every forward rate is
         up = model._note_prices_at_expiry(FORWARDS, expiry, np.array([shift]), np.array([shift]), 1.0, 6.75, coupon)[0]
@@ -252,7 +252,7 @@ class TestThePricer(unittest.TestCase):
         expiry = days / DAYS_PER_YEAR
         sigma1, sigma2, a, b = 0.012, 0.011, 1.2, 0.2
         delta_r, delta_theta, adjustment = model._simulate_deviations([days], sigma1, sigma2, a, b, 2000, 5)[days]
-        coupon = model._forward_par_coupon(FORWARDS, expiry, 6.75)
+        coupon = model.forward_par_yield(FORWARDS, expiry, 6.75)
         note = model._note_prices_at_expiry(FORWARDS, expiry, delta_r, delta_theta, a, 6.75, coupon)
         futures = FUTURES_PRICE * note / note.mean()
         discount = model._market_discount_factors(FORWARDS, [expiry])[0] * adjustment
@@ -314,7 +314,7 @@ class TestThePricer(unittest.TestCase):
                   for m in (2.0, 4.0, 6.75, 9.0)]
         self.assertTrue(np.all(np.diff(prices) > 0))
         # By default the coupon makes the note a par bond on the forward curve; giving that coupon changes nothing.
-        coupon = model._forward_par_coupon(FORWARDS, 36 / DAYS_PER_YEAR, 6.75)
+        coupon = model.forward_par_yield(FORWARDS, 36 / DAYS_PER_YEAR, 6.75)
         default = model.price_note_future_options_mc(FORWARDS, options, 0.01, 0.012, n_paths=2000)[0]
         given = model.price_note_future_options_mc(FORWARDS, options, 0.01, 0.012, n_paths=2000, ctd_coupon=coupon)[0]
         self.assertAlmostEqual(float(default), float(given), places=12)
@@ -329,7 +329,7 @@ class TestThePricer(unittest.TestCase):
         price = model.price_note_future_options_mc(FORWARDS, options, 0.0, 0.01, a=20.0, n_paths=40000)[0]
         discount = model._market_discount_factors(FORWARDS, [36 / DAYS_PER_YEAR])[0]
         vol = model._implied_normal_vol("call", float(price), FUTURES_PRICE, FUTURES_PRICE, 36 / DAYS_PER_YEAR, discount)
-        coupon = model._forward_par_coupon(FORWARDS, 36 / DAYS_PER_YEAR, 6.75)
+        coupon = model.forward_par_yield(FORWARDS, 36 / DAYS_PER_YEAR, 6.75)
         duration = model._note_duration(FORWARDS, 36 / DAYS_PER_YEAR, 6.75, coupon)
         # theta's own moves are over the weighted average of forwards (a factor a bit below the duration), so a range.
         ceiling = duration * FUTURES_PRICE * 0.01
@@ -361,7 +361,7 @@ class TestPathsFromTheCurve(unittest.TestCase):
         self.assertEqual(short.shape, (100, 25))
         self.assertEqual(yields.shape, (100, 25))
         np.testing.assert_allclose(short[:, 0], FORWARDS[0], rtol=1e-14)
-        np.testing.assert_allclose(yields[:, 0], model._forward_par_coupon(FORWARDS, 0.0, 10.0), rtol=1e-12)
+        np.testing.assert_allclose(yields[:, 0], model.forward_par_yield(FORWARDS, 0.0, 10.0), rtol=1e-12)
         # the paths come in mirror images, so the short rate averages to the curve's forward rate exactly
         np.testing.assert_allclose(short.mean(axis=0), FORWARDS[:25], rtol=1e-12)
         self.assertGreater(short[:, 24].std(), 0.003)                  # and spreads out
@@ -408,17 +408,52 @@ class TestPathsFromTheCurve(unittest.TestCase):
     def test_an_odd_number_of_paths_is_rounded_up(self):
         self.assertEqual(model.simulate_curve_paths(FORWARDS, 0.01, 0.01, 1, 7, seed=1)[1].shape, (8, 13))
 
-    def test_the_horizon_and_the_tenor_must_fit_in_the_curve(self):
+    def test_the_shortest_horizon_is_a_month_and_less_is_an_error(self):
         with self.assertRaises(ValueError) as caught:
             model.simulate_curve_paths(FORWARDS, 0.01, 0.01, 0.0, 10)
         self.assertIn("at least a month", str(caught.exception))
-        with self.assertRaises(ValueError) as caught:
-            model.simulate_curve_paths(FORWARDS[:120], 0.01, 0.01, 10, 10)
-        self.assertIn("has 120 months", str(caught.exception))
-        with self.assertRaises(ValueError) as caught:
-            model.simulate_curve_paths(FORWARDS[:120], 0.01, 0.01, 2, 10)             # 12 years in all, in a 10-year curve
-        self.assertIn("ends at 10.0 years", str(caught.exception))
-        model.simulate_curve_paths(FORWARDS[:126], 0.01, 0.01, 10, 10, tenor_years=0.5)         # exactly as far as the curve goes
+        with self.assertRaises(ValueError):
+            model.simulate_curve_paths(FORWARDS, 0.01, 0.01, 0.03, 10)
+
+    def test_a_curve_too_short_for_the_horizon_and_the_tenor_continues_at_its_last_rate(self):
+        # 10 years of curve, a horizon of 10 years, and a tenor of 10: the yield in the last month needs a curve to year 20
+        short = FORWARDS[:120]
+        continued = np.concatenate([short, np.full(130, short[-1])])
+        years, rates, yields = model.simulate_curve_paths(short, 0.0, 0.0, 10, 2, seed=1)
+        np.testing.assert_allclose(rates[0], continued[:121], rtol=1e-14)                 # including month 120: the last rate again
+        for month in (0, 60, 120):
+            self.assertAlmostEqual(yields[0, month], model.forward_par_yield(continued, month / 12, 10.0), places=12)
+        # a curve already long enough is used as it is
+        long_enough = model.simulate_curve_paths(FORWARDS, 0.01, 0.01, 5, 6, seed=2)
+        longer = model.simulate_curve_paths(np.concatenate([FORWARDS, np.full(50, 0.09)]), 0.01, 0.01, 5, 6, seed=2)
+        np.testing.assert_array_equal(long_enough[1], longer[1])
+        np.testing.assert_array_equal(long_enough[2], longer[2])
+
+    def test_a_tenor_that_is_not_a_whole_number_of_months_needs_the_next_month_of_curve(self):
+        years, rates, yields = model.simulate_curve_paths(FORWARDS[:100], 0.0, 0.0, 8, 2, seed=1, tenor_years=7.3)
+        continued = np.concatenate([FORWARDS[:100], np.full(100, FORWARDS[99])])
+        self.assertAlmostEqual(yields[0, 96], model.forward_par_yield(continued, 8.0, 7.3), places=12)
+
+    def test_the_curve_is_continued_for_a_fractional_tenor_too(self):
+        years, rates, yields = model.simulate_curve_paths(FORWARDS[:100], 0.0, 0.0, 8, 2, seed=1, tenor_years=7.5)
+        continued = np.concatenate([FORWARDS[:100], np.full(100, FORWARDS[99])])
+        self.assertAlmostEqual(yields[0, 96], model.forward_par_yield(continued, 8.0, 7.5), places=12)
+
+
+class TestMortgageRatePaths(unittest.TestCase):
+
+    def test_a_mortgage_rate_is_the_yield_of_the_same_paths_and_a_spread(self):
+        years, short, underlying, mortgage = model.simulate_mortgage_rate_paths(FORWARDS, 0.012, 0.014, 3, 10, 0.0175, seed=4, a=1.3, b=0.2)
+        expected = model.simulate_curve_paths(FORWARDS, 0.012, 0.014, 3, 10, seed=4, a=1.3, b=0.2)
+        np.testing.assert_array_equal(years, expected[0])
+        np.testing.assert_array_equal(short, expected[1])
+        np.testing.assert_array_equal(underlying, expected[2])
+        np.testing.assert_allclose(mortgage, expected[2] + 0.0175, rtol=1e-14)
+
+    def test_the_tenor_is_chosen_and_the_first_month_is_the_curves_yield_and_the_spread(self):
+        _, _, underlying, mortgage = model.simulate_mortgage_rate_paths(FORWARDS, 0.012, 0.014, 2, 4, 0.02, seed=1, tenor_years=7)
+        np.testing.assert_allclose(underlying[:, 0], model.forward_par_yield(FORWARDS, 0.0, 7.0), rtol=1e-12)
+        np.testing.assert_allclose(mortgage[:, 0], model.forward_par_yield(FORWARDS, 0.0, 7.0) + 0.02, rtol=1e-12)
 
 
 class TestTheComparison(unittest.TestCase):
@@ -836,7 +871,40 @@ class TestThePathBuiltin(NoteOptionsLispTestCase):
         self.assertLispError("(sofr-simulate-curve-paths forwards 0.01 0.01 1 4 :speed 2)", ":speed isn't an option")
         self.assertLispError("(sofr-simulate-curve-paths 5 0.01 0.01 1 4)", "forward-rates must be a vector")
         self.assertLispError("(sofr-simulate-curve-paths forwards 0.01 0.01 0 4)", "at least a month")
-        self.assertLispError("(sofr-simulate-curve-paths forwards 0.01 0.01 25 4)", "ends at")
+
+    def test_a_horizon_longer_than_the_curve_less_the_tenor_is_fine(self):
+        # (the curve is 30 years, and a 25-year horizon needs 35: the curve continues at its last rate)
+        years, short, yields = lisp_core.pairs_to_list(self.run_lisp("(sofr-simulate-curve-paths forwards 0.01 0.01 25 4 :seed 1)"))
+        self.assertEqual(len(years.items), 301)
+        self.assertEqual(len(lisp_core.pairs_to_list(yields)[0].items), 301)
+
+
+class TestTheMortgagePathBuiltin(NoteOptionsLispTestCase):
+
+    def paths(self, keywords=""):
+        return lisp_core.pairs_to_list(self.run_lisp("(sofr-simulate-mortgage-rate-paths forwards 0.012 0.014 2 6 0.021 %s)" % keywords))
+
+    def test_the_result_is_the_years_the_short_rates_the_yields_and_the_mortgage_rates(self):
+        years, short, underlying, mortgage = self.paths(":seed 4")
+        np.testing.assert_allclose(years.items, np.arange(25) / 12)
+        for name in (short, underlying, mortgage):
+            self.assertEqual([len(p.items) for p in lisp_core.pairs_to_list(name)], [25] * 6)
+        np.testing.assert_allclose([p.items for p in lisp_core.pairs_to_list(mortgage)],
+                                   np.array([p.items for p in lisp_core.pairs_to_list(underlying)]) + 0.021, rtol=1e-6)
+
+    def test_the_paths_are_the_models(self):
+        years, short, underlying, mortgage = self.paths(":seed 4 :a 1.3 :b 0.2 :tenor-years 7.5")
+        expected = model.simulate_mortgage_rate_paths(FORWARDS, 0.012, 0.014, 2, 6, 0.021, seed=4, a=1.3, b=0.2, tenor_years=7.5)
+        for got, want in ((short, expected[1]), (underlying, expected[2]), (mortgage, expected[3])):
+            np.testing.assert_allclose([p.items for p in lisp_core.pairs_to_list(got)], want, rtol=1e-6)
+
+    def test_the_choices_are_checked(self):
+        self.assertLispError("(sofr-simulate-mortgage-rate-paths forwards 0.01 0.01 1 4 0.02 :theta-bar 0.05)", ":theta-bar isn't an option")
+        self.assertLispError("(sofr-simulate-mortgage-rate-paths forwards 0.01 0.01 1 4 0.02 0.05)", ":name value pairs")
+        self.assertLispError("(sofr-simulate-mortgage-rate-paths 5 0.01 0.01 1 4 0.02)", "forward-rates must be a vector")
+
+    def test_the_old_short_rate_builtin_is_gone(self):
+        self.assertLispError("(sofr-simulate-rate-paths forwards 0.01 0.01 1 4)", "sofr-simulate-rate-paths")
 
 
 class TestTheBuiltinForBothKinds(NoteOptionsLispTestCase):

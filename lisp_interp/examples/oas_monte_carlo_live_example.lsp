@@ -73,7 +73,7 @@
 (display (length options-rows)) (display " options, real curve out to month ")
 (display real-months) (newline)
 
-; --- 2. calibrate (a, theta_bar, sigma1, sigma2) against the options ----
+; --- 2. calibrate (a, sigma1, sigma2) against the options ----
 
 (display "Calibrating against real SOFR futures option prices...") (newline)
 (define calibration-n-paths 500)    ; turned down from term_structure_model.py's
@@ -83,11 +83,10 @@
                                    calibration-n-paths 42
                                    calibration-n-grid calibration-n-rounds))
 (define fitted-a (list-ref fit 0))
-(define fitted-theta-bar (list-ref fit 1))
 (define fitted-sigma1 (list-ref fit 2))
 (define fitted-sigma2 (list-ref fit 3))
 (define fitted-error (list-ref fit 4))
-(display "  a=") (display fitted-a) (display "  theta_bar=") (display fitted-theta-bar)
+(display "  a=") (display fitted-a)
 (display "  sigma1=") (display fitted-sigma1) (display "  sigma2=") (display fitted-sigma2)
 (display "  error=") (display fitted-error) (newline)
 
@@ -161,7 +160,7 @@
 (display horizon-years) (display " years...") (newline)
 (define sim (sofr-simulate-mortgage-rate-paths
               extended-forward-rates fitted-sigma1 fitted-sigma2 horizon-years n-scenario-paths
-              mortgage-spread 42 fitted-a fitted-theta-bar))
+              mortgage-spread :seed 42 :a fitted-a))
 (define short-rate-paths (list-ref sim 1))
 (define mortgage-paths (list-ref sim 3))
 
@@ -212,7 +211,6 @@
 
   (display "Calibrated two-factor model parameters (fit against the options above):") (newline)
   (display "  a (mean-reversion speed)        = ") (display fitted-a) (newline)
-  (display "  theta_bar (long-run level)      = ") (display fitted-theta-bar) (newline)
   (display "  sigma1 (short-rate factor vol)  = ") (display fitted-sigma1) (newline)
   (display "  sigma2 (level factor vol)       = ") (display fitted-sigma2) (newline)
   (display "  total squared pricing error     = ") (display fitted-error) (newline) (newline)
@@ -248,7 +246,7 @@
   (display "Loan: initial balance $") (display initial-balance)
   (display ", ") (display n-months) (display "-month term, ")
   (display psa-speed) (display "% PSA prepayment speed") (newline)
-  (display "Mortgage spread over the model's tenor-year proxy rate: ") (display mortgage-spread)
+  (display "Mortgage spread over the 10-year par yield: ") (display mortgage-spread)
   (display "  (see term_structure/mortgage_spread.py for a data-driven estimate)") (newline)
   (display "Assumed market price (NOT fetched -- no live quote source wired up): ")
   (display assumed-market-price) (display " per 100 face") (newline)

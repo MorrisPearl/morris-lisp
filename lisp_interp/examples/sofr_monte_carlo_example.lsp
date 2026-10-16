@@ -5,8 +5,8 @@
 ; curve, CALIBRATE the two-factor model's mean-reversion speed (a) and
 ; both volatilities (sigma1, sigma2) against those real option prices
 ; (sofr-calibrate-model), then use the fitted parameters to generate a
-; set of Monte Carlo interest-rate paths (sofr-simulate-rate-paths /
-; sofr-simulate-mortgage-rate-paths) -- all of it reusing
+; set of Monte Carlo interest-rate paths (sofr-simulate-mortgage-rate-paths)
+; -- all of it reusing
 ; term_structure/term_structure_model.py and sofr_market_data.py as-is;
 ; see those files (and each builtin's own docstring in
 ; lisp_sofr.py) for the full methodology and its documented
@@ -46,7 +46,7 @@
       (max (list-ref (car rows) 2) (curve-real-months (cdr rows)))))
 (define real-months (curve-real-months curve-futures-rows))
 
-; --- 3. calibrate (a, theta_bar, sigma1, sigma2) against the options ----
+; --- 3. calibrate (a, sigma1, sigma2) against the options ----
 (display "Calibrating against ") (display (length options-rows)) (display " options...") (newline)
 (define calibration-n-paths 500)   ; turned down from the module default
 (define calibration-n-grid 5)      ; (2000/7/4) for a quicker first run
@@ -55,12 +55,10 @@
                                    calibration-n-paths 42
                                    calibration-n-grid calibration-n-rounds))
 (define fitted-a (list-ref fit 0))
-(define fitted-theta-bar (list-ref fit 1))
 (define fitted-sigma1 (list-ref fit 2))
 (define fitted-sigma2 (list-ref fit 3))
 (define fitted-error (list-ref fit 4))
 (display "a=") (display fitted-a)
-(display "  theta_bar=") (display fitted-theta-bar)
 (display "  sigma1=") (display fitted-sigma1)
 (display "  sigma2=") (display fitted-sigma2)
 (display "  total squared pricing error=") (display fitted-error)
@@ -77,10 +75,15 @@
                                      ; mortgage_spread.py for a data-
                                      ; driven estimate instead of a guess
 
+; The paths start on the curve they are given. This SOFR curve ends at about 5 years
+; (and is flat after), so its "10-year yield" is that flat extension; for a long end
+; that follows the Treasury's, extend it first (sofr-extend-curve-with-treasury, as
+; oas_monte_carlo_live_example.lsp does) or use the Treasury's own forward curve
+; (see rate_model_example.lsp).
 (define sim (sofr-simulate-mortgage-rate-paths
              sofr-forward-rates fitted-sigma1 fitted-sigma2
              simulation-horizon-years n-scenario-paths mortgage-spread
-             42 fitted-a fitted-theta-bar))
+             :seed 42 :a fitted-a))
 (define sim-years (list-ref sim 0))
 (define short-rate-paths (list-ref sim 1))
 (define underlying-paths (list-ref sim 2))

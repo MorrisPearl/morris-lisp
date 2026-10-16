@@ -87,34 +87,32 @@ def fetch_current_mortgage_rate(credentials_path: str | Path | None = None,
     raise RuntimeError(f"No valid observations returned for FRED series {series_id!r}")
 
 
-def compute_sofr_mortgage_spread(forward_rates, a, theta_bar,
+def compute_sofr_mortgage_spread(forward_rates,
                                   credentials_path: str | Path | None = None,
                                   series_id: str = MORTGAGE30US_SERIES_ID,
                                   tenor_years: float = 10):
     """
     The current mortgage_spread to feed into
     term_structure_model.simulate_mortgage_rate_paths(): today's real
-    30-year mortgage rate (from FRED) minus the model's own current
-    SOFR-curve-implied ~tenor_years rate.
+    30-year mortgage rate (from FRED) minus the par yield of a note of
+    tenor_years on the curve.
 
-    forward_rates, a, theta_bar: the (calibrated) SOFR curve and model
-        parameters -- same ones you'd pass to simulate_mortgage_rate_paths().
-        The model's "current" ~tenor_years rate is
-        ten_year_rate_from_state(forward_rates[0], theta_bar, a=a,
-        tenor_years=tenor_years) -- i.e. the SAME approximate long-tenor
-        rate simulate_mortgage_rate_paths() adds mortgage_spread on top
-        of at every future simulated date, just evaluated at today's
-        state (r0, theta_bar) instead of a simulated future one.
+    forward_rates: the curve you'll pass to simulate_mortgage_rate_paths().
+        The model's "current" rate is its par yield today,
+        forward_par_yield(forward_rates, 0.0, tenor_years) -- the same
+        yield simulate_mortgage_rate_paths() adds mortgage_spread on top
+        of in its first month (its paths start on the curve), and in every
+        later month.
 
     Returns (spread, mortgage_rate, model_rate, mortgage_rate_date):
         spread            -- decimal (e.g. 0.025 for 250bp), ready for
                               simulate_mortgage_rate_paths()'s
                               mortgage_spread argument
         mortgage_rate     -- the FRED rate used, decimal
-        model_rate        -- the model's current ~tenor_years rate, decimal
+        model_rate        -- the curve's current tenor_years par yield, decimal
         mortgage_rate_date -- the FRED observation's date
     """
     mortgage_rate_date, mortgage_rate = fetch_current_mortgage_rate(credentials_path, series_id)
-    model_rate = tsm.ten_year_rate_from_state(forward_rates[0], theta_bar, a=a, tenor_years=tenor_years)
+    model_rate = tsm.forward_par_yield(forward_rates, 0.0, tenor_years)
     spread = mortgage_rate - model_rate
     return spread, mortgage_rate, model_rate, mortgage_rate_date

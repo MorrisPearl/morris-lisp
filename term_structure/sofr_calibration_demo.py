@@ -9,10 +9,10 @@ b left fixed; see term_structure_model.calibrate_sofr_model()'s docstring
 for why -- so the calibration options price correctly under Monte Carlo.
 Can run the grid-search calibrator, the Nelder-Mead one, or both side by
 side for comparison (--method). Then uses the calibrated model to run a
-small Monte Carlo mortgage-rate example: SOFR curve -> approximate 10y
-rate + a spread -> a proxy 30y mortgage rate, per Monte Carlo path. The
+small Monte Carlo mortgage-rate example: SOFR curve -> 10y par yield
++ a spread -> a proxy 30y mortgage rate, per Monte Carlo path. The
 spread defaults to an EMPIRICAL one -- today's real 30-year mortgage rate
-(FRED) minus the model's own current ~10y rate -- see mortgage_spread.py
+(FRED) minus the curve's current 10y par yield -- see mortgage_spread.py
 for why this uses FRED rather than TBA MBS futures (tastytrade doesn't
 offer any MBS/TBA product at all).
 
@@ -150,22 +150,22 @@ def main():
         print("\nFetching today's 30-year mortgage rate from FRED "
               "(MORTGAGE30US) to compute the spread empirically...")
         mortgage_spread, mortgage_rate, model_rate, rate_date = ms.compute_sofr_mortgage_spread(
-            forward_rates, a, theta_bar, credentials_path=credentials_path)
+            forward_rates, credentials_path=credentials_path)
         print(f"  FRED 30y mortgage rate ({rate_date}): {mortgage_rate:.3%}")
-        print(f"  Model's current ~10y rate:             {model_rate:.3%}")
+        print(f"  The curve's current 10y par yield:     {model_rate:.3%}")
         print(f"  Implied spread:                        {mortgage_spread:.3%} "
               f"({mortgage_spread * 10000:.0f}bp)")
 
     print(f"\nRunning a Monte Carlo mortgage-rate example off the calibrated "
           f"SOFR model ({args.mortgage_paths} paths, {args.mortgage_years}y "
           f"horizon, +{mortgage_spread * 10000:.0f}bp spread over the "
-          f"model's ~10y rate)...")
+          f"10-year par yield)...")
     years, short_rate_paths, ten_year_paths, mortgage_paths = tsm.simulate_mortgage_rate_paths(
         forward_rates, sigma1, sigma2,
         horizon_years=args.mortgage_years,
         n_paths=args.mortgage_paths,
         mortgage_spread=mortgage_spread,
-        a=a, theta_bar=theta_bar)
+        a=a)
 
     print("  Simulated 30y-mortgage-rate proxy, percentiles across paths:")
     for y in [yy for yy in (1, 2, 3, 5, 10) if yy <= args.mortgage_years]:

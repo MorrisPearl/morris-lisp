@@ -201,7 +201,7 @@ async def _fetch_async(credentials_path: str, n_futures: int, n_underlyings: int
 
     # Evenly-spaced picks across every curve quarter that has a listed
     # option chain -- not just the nearest n_underlyings -- so
-    # calibrate_volatilities() sees both near- and far-dated expiries and
+    # the calibration sees both near- and far-dated expiries and
     # can separately identify sigma1 from sigma2 (see the module
     # docstring).
     n_pick = min(n_underlyings, len(usable))

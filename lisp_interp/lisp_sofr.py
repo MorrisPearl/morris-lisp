@@ -13,10 +13,8 @@ fetches SOFR futures and options from tastytrade).
   sofr-calibrate-jointly                      fit it to both kinds at once
   sofr-note-option-comparison                 the model's prices of ZN options
                                               next to the market's
-  sofr-simulate-curve-paths                   Monte Carlo rate scenarios that
-                                              start on today's curve
-  sofr-simulate-rate-paths,                   Monte Carlo rate scenarios
-  sofr-simulate-mortgage-rate-paths
+  sofr-simulate-curve-paths,                  Monte Carlo rate scenarios that
+  sofr-simulate-mortgage-rate-paths           start on today's curve
 
 If term_structure/ isn't next to this directory, or numpy is missing, the
 builtins raise a clear error when called.
@@ -36,7 +34,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 try:
     from term_structure_model import bootstrap_sofr_curve as _bootstrap_sofr_curve
     from term_structure_model import extend_curve_long_end as _extend_curve_long_end
-    from term_structure_model import simulate_rate_paths as _simulate_rate_paths
     from term_structure_model import simulate_mortgage_rate_paths as _simulate_mortgage_rate_paths
     from term_structure_model import calibrate_sofr_model as _calibrate_sofr_model
     from term_structure_model import calibrate_note_options as _calibrate_note_options
@@ -439,111 +436,70 @@ def sofr_calibrate_jointly_fn(sofr_forward_rates, note_forward_rates, sofr_rows,
                    ("evaluations", fit["evaluations"])])
 
 
+def _path_keywords(options, who):
+    """The :a :b :seed :tenor-years choices of the path builtins as keyword arguments of the model's functions."""
+    chosen = keyword_options(options, ["a", "b", "seed", "tenor-years"], who)
+    conversions = {"a": float, "b": float, "seed": int, "tenor_years": float}
+    return {name.replace("-", "_"): conversions[name.replace("-", "_")](value) for name, value in chosen.items()}
+
+
+def _lisp_paths(paths):
+    """An array with a row for each path, as a Lisp list with a vector for each path."""
+    return list_to_pairs([LispVector([float(x) for x in row]) for row in paths])
+
+
 def sofr_simulate_curve_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths, *options):
     """(sofr-simulate-curve-paths forward-rates sigma1 sigma2 horizon-years n-paths
       [:a :b :seed :tenor-years]) -> (list years short-rate-paths yield-paths)
 
     Simulates n-paths Monte Carlo scenarios of the model that
     sofr-calibrate-note-options and sofr-calibrate-jointly fit, horizon-years
-    ahead, month by month. The same shape as sofr-simulate-rate-paths gives,
-    but the paths start where the market is: the model's own curve is a poor fit
-    to today's (its 10-year rate can start half a point off), and these paths
-    are the market's forward curve plus the model's random factors, as the
-    calibration prices options.
+    ahead, month by month. The paths start where the market is: they are the
+    market's forward curve plus the model's random factors, as the calibration
+    prices options, so the first month's yield is today's.
       years            a vector of times: 0, 1/12, 2/12, ... horizon-years
       short-rate-paths a list of vectors, one per scenario: the short rate
       yield-paths      the same scenarios' par yield for a note of :tenor-years
                        (10 if not given), as the Treasury publishes it
 
-    forward-rates is the Treasury's monthly forward curve (curve-forward-rates),
-    at least :tenor-years longer than the horizon. sigma1 and sigma2 are the
-    volatilities from the calibration, :a (1.0) and :b (0.15) its mean-reversion
-    speeds. :seed (an integer) makes the paths the same each time; without it they
-    are new. n-paths is made even (an odd number is rounded up). See
-    term_structure_model.simulate_curve_paths(). No network access."""
+    forward-rates is the Treasury's monthly forward curve (curve-forward-rates);
+    where it is shorter than the horizon plus :tenor-years it continues at its
+    last rate. sigma1 and sigma2 are the volatilities from the calibration, :a
+    (1.0) and :b (0.15) its mean-reversion speeds. :seed (an integer) makes the
+    paths the same each time; without it they are new. n-paths is made even (an odd
+    number is rounded up). See term_structure_model.simulate_curve_paths().
+    No network access."""
     who = "sofr-simulate-curve-paths"
     _check_term_structure(who)
-    chosen = keyword_options(options, ["a", "b", "seed", "tenor-years"], who)
-    arguments = {"a": float, "b": float, "seed": int, "tenor_years": float}
-    keywords = {name.replace("-", "_"): arguments[name.replace("-", "_")](value) for name, value in chosen.items()}
     years, short_rate_paths, yield_paths = _simulate_curve_paths(
-        _forward_rates_list(forward_rates, who), float(sigma1), float(sigma2), float(horizon_years), int(n_paths), **keywords)
-    return list_to_pairs([
-        LispVector([float(y) for y in years]),
-        list_to_pairs([LispVector([float(x) for x in row]) for row in short_rate_paths]),
-        list_to_pairs([LispVector([float(x) for x in row]) for row in yield_paths])])
-
-
-def sofr_simulate_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths,
-                                 seed=None, a=None, theta_bar=None):
-    """(sofr-simulate-rate-paths forward-rates sigma1 sigma2 horizon-years
-      n-paths [seed a theta-bar]) -> (list years short-rate-paths ten-year-paths)
-
-    Simulates n-paths Monte Carlo scenarios of the two-factor model,
-    horizon-years ahead, month by month.
-      years            a vector of times: 0, 1/12, 2/12, ... horizon-years
-      short-rate-paths a list of vectors, one per scenario: the short rate
-      ten-year-paths   the same scenarios' approximate ten-year rate
-
-    Pass the `a` and theta-bar from sofr-calibrate-model: the default
-    theta-bar is the average of the curve's last 2 years, which for a SOFR
-    curve is just the flat extrapolation. seed '() (the default) gives new
-    random paths each time; an integer makes them reproducible. No network
-    access."""
-    if not _TERM_STRUCTURE_AVAILABLE:
-        raise LispError(
-            "sofr-simulate-rate-paths: term_structure_model.py (and numpy) "
-            "aren't available -- see term_structure/ next to lisp_interp/")
-    forward_rates_list = [float(v) for v in forward_rates.items]
-    kwargs = {}
-    if a is not None:
-        kwargs["a"] = float(a)
-    if theta_bar is not None:
-        kwargs["theta_bar"] = float(theta_bar)
-    years, r_paths, ten_year_paths = _simulate_rate_paths(
-        forward_rates_list, float(sigma1), float(sigma2), float(horizon_years), int(n_paths),
-        seed=(int(seed) if seed is not None else None), **kwargs)
-    years_vec = LispVector([float(y) for y in years])
-    r_paths_list = list_to_pairs([LispVector([float(x) for x in row]) for row in r_paths])
-    ten_year_list = list_to_pairs([LispVector([float(x) for x in row]) for row in ten_year_paths])
-    return list_to_pairs([years_vec, r_paths_list, ten_year_list])
+        _forward_rates_list(forward_rates, who), float(sigma1), float(sigma2), float(horizon_years), int(n_paths),
+        **_path_keywords(options, who))
+    return list_to_pairs([LispVector([float(y) for y in years]), _lisp_paths(short_rate_paths), _lisp_paths(yield_paths)])
 
 
 def sofr_simulate_mortgage_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths,
-                                          mortgage_spread, seed=None, a=None, theta_bar=None,
-                                          tenor_years=10):
+                                          mortgage_spread, *options):
     """(sofr-simulate-mortgage-rate-paths forward-rates sigma1 sigma2
-      horizon-years n-paths mortgage-spread [seed a theta-bar tenor-years])
+      horizon-years n-paths mortgage-spread [:a :b :seed :tenor-years])
     -> (list years short-rate-paths underlying-paths mortgage-paths)
 
-    The same simulation as sofr-simulate-rate-paths, plus a simple mortgage
-    rate for each scenario and month: the model's tenor-years rate (default
-    10) plus mortgage-spread. underlying-paths is that rate before adding
-    the spread.
+    The same simulation as sofr-simulate-curve-paths, plus a simple mortgage
+    rate for each scenario and month: the par yield of a note of :tenor-years
+    (default 10) plus mortgage-spread. underlying-paths is that yield before
+    adding the spread.
 
     A real mortgage rate depends on more than one spread over one rate
     (prepayment risk, the whole curve, costs); see
     term_structure/mortgage_spread.py for estimating the spread from FRED's
-    MORTGAGE30US. No network access."""
-    if not _TERM_STRUCTURE_AVAILABLE:
-        raise LispError(
-            "sofr-simulate-mortgage-rate-paths: term_structure_model.py (and "
-            "numpy) aren't available -- see term_structure/ next to lisp_interp/")
-    forward_rates_list = [float(v) for v in forward_rates.items]
-    kwargs = {}
-    if a is not None:
-        kwargs["a"] = float(a)
-    if theta_bar is not None:
-        kwargs["theta_bar"] = float(theta_bar)
-    years, r_paths, underlying_paths, mortgage_paths = _simulate_mortgage_rate_paths(
-        forward_rates_list, float(sigma1), float(sigma2), float(horizon_years), int(n_paths),
-        float(mortgage_spread), seed=(int(seed) if seed is not None else None),
-        tenor_years=float(tenor_years), **kwargs)
-    years_vec = LispVector([float(y) for y in years])
-    r_paths_list = list_to_pairs([LispVector([float(x) for x in row]) for row in r_paths])
-    underlying_list = list_to_pairs([LispVector([float(x) for x in row]) for row in underlying_paths])
-    mortgage_list = list_to_pairs([LispVector([float(x) for x in row]) for row in mortgage_paths])
-    return list_to_pairs([years_vec, r_paths_list, underlying_list, mortgage_list])
+    MORTGAGE30US, as today's mortgage rate less the curve's 10-year par yield.
+    No network access."""
+    who = "sofr-simulate-mortgage-rate-paths"
+    _check_term_structure(who)
+    years, short_rate_paths, underlying_paths, mortgage_paths = _simulate_mortgage_rate_paths(
+        _forward_rates_list(forward_rates, who), float(sigma1), float(sigma2), float(horizon_years), int(n_paths),
+        float(mortgage_spread), **_path_keywords(options, who))
+    return list_to_pairs([LispVector([float(y) for y in years]), _lisp_paths(short_rate_paths),
+                          _lisp_paths(underlying_paths), _lisp_paths(mortgage_paths)])
 
 
 BUILTINS = {
@@ -556,6 +512,5 @@ BUILTINS = {
     "sofr-calibrate-jointly": sofr_calibrate_jointly_fn,
     "sofr-note-option-comparison": sofr_note_option_comparison_fn,
     "sofr-simulate-curve-paths": sofr_simulate_curve_paths_fn,
-    "sofr-simulate-rate-paths": sofr_simulate_rate_paths_fn,
     "sofr-simulate-mortgage-rate-paths": sofr_simulate_mortgage_rate_paths_fn,
 }

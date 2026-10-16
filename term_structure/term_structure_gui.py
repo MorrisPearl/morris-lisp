@@ -6,8 +6,9 @@ A small PyQt6 GUI on top of term_structure_model.py.
 Two tabs:
   - "Rate Path Chart": simulate a chosen number of Monte Carlo interest
     rate paths and plot the short-end (SOFR-like) rate, the model's
-    approximate ~10-year (Treasury-like) rate, or a simple proxy
-    mortgage rate (~10-year rate + a flat spread you choose).
+    10-year (Treasury-like) par yield, or a simple proxy mortgage rate
+    (10-year yield + a flat spread you choose). The paths start on the
+    active curve (simulate_curve_paths).
   - "Callable Bond (OAS)": enter a callable bond's term, coupon rate,
     call date, call price, and an option-adjusted spread (OAS), and see
     the Monte Carlo price the model computes.
@@ -19,7 +20,7 @@ set by ONE of two "Market & Model Setup" panels at the top:
   - "SOFR Curve (tastytrade, live)": fetch real, exchange-traded CME SOFR
     (SR3) futures + a spread of options on them (sofr_market_data.py),
     bootstrap the curve from the futures (bootstrap_sofr_curve), and
-    calibrate sigma1/sigma2 to the options (calibrate_volatilities) --
+    calibrate a/sigma1/sigma2 to the options (calibrate_sofr_model) --
     all with one click each.
 
 Run with:      python3 term_structure_gui.py
@@ -40,7 +41,6 @@ uses, so the window doesn't freeze while it waits on the network.
 
 import sys
 
-import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -137,23 +137,20 @@ class SofrCalibrationWorker(QThread):
 
 class MortgageRateFetchWorker(QThread):
     """Fetches today's real 30-year mortgage rate from FRED and turns it
-    into a mortgage_spread over the model's current ~10y rate (see
+    into a mortgage_spread over the active curve's current 10y par yield (see
     mortgage_spread.compute_sofr_mortgage_spread) off the UI thread."""
 
     finished_ok = pyqtSignal(object)  # (spread, mortgage_rate, model_rate, date)
     failed = pyqtSignal(str)
 
-    def __init__(self, forward_rates, a, theta_bar, credentials_path, parent=None):
+    def __init__(self, forward_rates, credentials_path, parent=None):
         super().__init__(parent)
         self.forward_rates = forward_rates
-        self.a = a
-        self.theta_bar = theta_bar
         self.credentials_path = credentials_path
 
     def run(self):
         try:
-            result = ms.compute_sofr_mortgage_spread(
-                self.forward_rates, self.a, self.theta_bar, credentials_path=self.credentials_path)
+            result = ms.compute_sofr_mortgage_spread(self.forward_rates, credentials_path=self.credentials_path)
         except Exception as e:
             self.failed.emit(str(e))
             return
@@ -171,7 +168,6 @@ class TermStructureWindow(QMainWindow):
         self.sofr_curve_futures = None  # set once a SOFR fetch succeeds
         self.sofr_options = None
         self.sofr_a = None  # set once "Calibrate to SOFR Options" succeeds
-        self.sofr_theta_bar = None  # set together with sofr_a
         self._sofr_fetch_worker = None
         self._sofr_calibration_worker = None
         self._mortgage_rate_worker = None
@@ -248,7 +244,6 @@ class TermStructureWindow(QMainWindow):
         self.forward_rates = curve['forward_rates']
         self.curve_source = "Treasury (manual)"
         self.sofr_a = None  # only meaningful for a SOFR-sourced curve
-        self.sofr_theta_bar = None
         self.curve_status_label.setText(
             f"Active curve: Treasury (manual) -- 1-month forward: {self.forward_rates[0]:.3%}, "
             f"30-year forward: {self.forward_rates[-1]:.3%}"
@@ -349,7 +344,6 @@ class TermStructureWindow(QMainWindow):
         self.sofr_curve_futures = curve_futures
         self.sofr_options = options
         self.sofr_a = None  # stale until "Calibrate" is run again
-        self.sofr_theta_bar = None
 
         curve = tsm.bootstrap_sofr_curve(curve_futures)
         self.forward_rates = curve['forward_rates']
@@ -404,12 +398,11 @@ class TermStructureWindow(QMainWindow):
         self._sofr_calibration_worker.start()
 
     def _on_sofr_calibration_finished(self, result):
-        a, theta_bar, sigma1, sigma2, error = result
+        a, _, sigma1, sigma2, error = result      # (theta_bar, the second, is for pricing SOFR options only)
         self.sofr_calibrate_button.setEnabled(True)
         self.sofr_fetch_button.setEnabled(True)
 
         self.sofr_a = a
-        self.sofr_theta_bar = theta_bar
         self.sigma1_input.setValue(sigma1 * 100.0)
         self.sigma2_input.setValue(sigma2 * 100.0)
         method_label = self.sofr_method_combo.currentText()
@@ -431,13 +424,11 @@ class TermStructureWindow(QMainWindow):
         if self._mortgage_rate_worker is not None and self._mortgage_rate_worker.isRunning():
             return
 
-        a, theta_bar = self._current_a_theta_bar()
         credentials_path = self.sofr_credentials_edit.text().strip() or None
         self.mortgage_rate_fetch_button.setEnabled(False)
         self.mortgage_rate_status_label.setText("Fetching today's mortgage rate from FRED...")
 
-        self._mortgage_rate_worker = MortgageRateFetchWorker(
-            self.forward_rates, a, theta_bar, credentials_path)
+        self._mortgage_rate_worker = MortgageRateFetchWorker(self.forward_rates, credentials_path)
         self._mortgage_rate_worker.finished_ok.connect(self._on_mortgage_rate_fetch_finished)
         self._mortgage_rate_worker.failed.connect(self._on_mortgage_rate_fetch_failed)
         self._mortgage_rate_worker.start()
@@ -448,7 +439,7 @@ class TermStructureWindow(QMainWindow):
         self.mortgage_spread_spin.setValue(spread * 10000.0)
         self.mortgage_rate_status_label.setText(
             f"FRED 30y mortgage rate ({rate_date}): {mortgage_rate:.3%}. Active curve's "
-            f"current ~10y rate: {model_rate:.3%}. Spread set to {spread * 10000:.0f}bp."
+            f"current 10y par yield: {model_rate:.3%}. Spread set to {spread * 10000:.0f}bp."
         )
 
     def _on_mortgage_rate_fetch_failed(self, message):
@@ -478,8 +469,8 @@ class TermStructureWindow(QMainWindow):
         controls.addWidget(self.horizon_spin)
 
         self.sofr_rate_radio = QRadioButton("SOFR rate (short end)")
-        self.treasury_rate_radio = QRadioButton("Treasury rate (~10y)")
-        self.mortgage_rate_radio = QRadioButton("Mortgage rate (~10y + spread)")
+        self.treasury_rate_radio = QRadioButton("Treasury rate (10y)")
+        self.mortgage_rate_radio = QRadioButton("Mortgage rate (10y + spread)")
         self.sofr_rate_radio.setChecked(True)
         rate_choice_group = QButtonGroup(tab)
         rate_choice_group.addButton(self.sofr_rate_radio)
@@ -495,7 +486,7 @@ class TermStructureWindow(QMainWindow):
         self.mortgage_spread_spin.setSuffix(" bp")
         self.mortgage_spread_spin.setValue(175.0)
         self.mortgage_spread_spin.setToolTip(
-            "Flat spread added to the model's ~10-year rate to proxy a 30-year "
+            "Flat spread added to the model's 10-year par yield to proxy a 30-year "
             "mortgage rate -- only used when 'Mortgage rate' is selected. See "
             "term_structure_model.simulate_mortgage_rate_paths()'s SIMPLIFICATION "
             "note: real mortgage spreads aren't actually constant."
@@ -514,7 +505,7 @@ class TermStructureWindow(QMainWindow):
         self.mortgage_rate_fetch_button.setToolTip(
             "Look up today's real 30-year mortgage rate (FRED series MORTGAGE30US, "
             "Freddie Mac's weekly Primary Mortgage Market Survey) and set the spread "
-            "above to (that rate - the active curve's current ~10-year rate). See "
+            "above to (that rate - the active curve's current 10-year par yield). See "
             "mortgage_spread.py for why this uses FRED rather than TBA MBS futures "
             "-- tastytrade doesn't offer any MBS/TBA/agency product at all."
         )
@@ -531,24 +522,14 @@ class TermStructureWindow(QMainWindow):
 
         return tab
 
-    def _current_a_theta_bar(self):
+    def _current_a(self):
         """
-        (a, theta_bar) to use for the currently ACTIVE curve: the
-        calibrated SOFR fit if the SOFR curve is active and has been
-        calibrated (see calibrate_sofr_model()'s docstring for why the
-        module defaults would otherwise bias a SOFR-curve simulation),
-        otherwise the same defaults _simulate_two_factor_paths() would
-        fall back to on its own -- computed explicitly here so callers
-        that need a concrete theta_bar right now (e.g. the mortgage-rate
-        FRED lookup, which isn't itself a simulation call) don't have to
-        duplicate that fallback.
+        The short rate's mean-reversion speed to use for the currently
+        ACTIVE curve: the calibrated SOFR fit if the SOFR curve is active
+        and has been calibrated, otherwise the module default.
         """
         is_calibrated_sofr = self.curve_source == "SOFR (live, tastytrade)" and self.sofr_a is not None
-        if is_calibrated_sofr:
-            return self.sofr_a, self.sofr_theta_bar
-        a = tsm.SHORT_RATE_REVERSION_SPEED
-        theta_bar = float(np.mean(self.forward_rates[-24:]))
-        return a, theta_bar
+        return self.sofr_a if is_calibrated_sofr else tsm.SHORT_RATE_REVERSION_SPEED
 
     def _on_simulate_clicked(self):
         if not self._require_curve():
@@ -557,7 +538,7 @@ class TermStructureWindow(QMainWindow):
         n_paths = self.n_paths_spin.value()
         horizon_years = self.horizon_spin.value()
         sigma1, sigma2 = self._current_sigmas()
-        a, theta_bar = self._current_a_theta_bar()
+        a = self._current_a()
 
         # seed=None -> a fresh random draw every time the button is
         # clicked, so repeated clicks show different sample paths.
@@ -565,26 +546,25 @@ class TermStructureWindow(QMainWindow):
             spread = self.mortgage_spread_spin.value() / 10000.0  # bp -> decimal
             years, short_rate_paths, ten_year_paths, values = tsm.simulate_mortgage_rate_paths(
                 self.forward_rates, sigma1, sigma2, horizon_years, n_paths,
-                mortgage_spread=spread, seed=None, a=a, theta_bar=theta_bar)
-            title = f"Simulated mortgage-rate paths (~10y + {self.mortgage_spread_spin.value():.0f}bp)"
+                mortgage_spread=spread, seed=None, a=a)
+            title = f"Simulated mortgage-rate paths (10y + {self.mortgage_spread_spin.value():.0f}bp)"
         else:
-            years, short_rate_paths, ten_year_paths = tsm.simulate_rate_paths(
-                self.forward_rates, sigma1, sigma2, horizon_years, n_paths, seed=None,
-                a=a, theta_bar=theta_bar)
+            years, short_rate_paths, ten_year_paths = tsm.simulate_curve_paths(
+                self.forward_rates, sigma1, sigma2, horizon_years, n_paths, seed=None, a=a)
             if self.treasury_rate_radio.isChecked():
                 values = ten_year_paths
-                title = "Simulated Treasury rate paths (~10y, approximate)"
+                title = "Simulated Treasury rate paths (10y par yield)"
             else:
                 values = short_rate_paths
                 title = "Simulated SOFR (short-end) rate paths"
 
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        for path_index in range(n_paths):
-            ax.plot(years, values[path_index, :] * 100.0, linewidth=0.8)
+        for path in values:
+            ax.plot(years, path * 100.0, linewidth=0.8)
         ax.set_xlabel("Years from today")
         ax.set_ylabel("Rate (%)")
-        ax.set_title(f"{title}  ({n_paths} paths)\ncurve: {self.curve_source}")
+        ax.set_title(f"{title}  ({len(values)} paths)\ncurve: {self.curve_source}")
         self.figure.tight_layout()
         self.canvas.draw()
 

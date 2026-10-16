@@ -2,9 +2,10 @@
 ;
 ; The option-adjusted spread (OAS) of a security whose cashflows depend on
 ; interest rates, such as a mortgage pool, which prepays faster when rates
-; fall. Simulate many paths of rates (sofr-simulate-rate-paths, or
+; fall. Simulate many paths of rates (sofr-simulate-curve-paths, or
 ; sofr-simulate-mortgage-rate-paths, the two-factor model in
-; term_structure/term_structure_model.py); discount the security's
+; term_structure/term_structure_model.py, whose paths start on the market's
+; curve, so that their average discount factor is the curve's); discount the security's
 ; cashflows along each path at that path's own rates plus a spread; and
 ; average them, for a model price. The OAS is the spread at which the model
 ; price is the security's market price, found by bisection: the yield the
@@ -71,7 +72,7 @@
 ; cashflows: a vector, one entry per month, months 1..N (index 0 is
 ;     month 1's cashflow).
 ; short-rate-path: a vector of at least N simulated short rates -- one
-;     Monte Carlo PATH from sofr-simulate-rate-paths'/sofr-simulate-
+;     Monte Carlo PATH from sofr-simulate-curve-paths'/sofr-simulate-
 ;     mortgage-rate-paths' short-rate-paths list (index k is the rate
 ;     prevailing at the START of month k+1 -- the same start-of-period
 ;     convention term_structure_model.py's price_callable_bond_mc() uses
@@ -99,7 +100,7 @@
 
 ; (oas-model-price cashflows rate-paths oas) -> a number -- the Monte
 ; Carlo model price: path-present-value averaged across every path in
-; rate-paths (a Lisp LIST of vectors, e.g. sofr-simulate-rate-paths'
+; rate-paths (a Lisp LIST of vectors, e.g. sofr-simulate-curve-paths'
 ; short-rate-paths return value, or one path per scenario you built
 ; yourself).
 ;
@@ -192,8 +193,8 @@
 ; psa-speed: fed straight through to prepayment_model.lsp's `cpr` as its
 ;     psa_speed argument (100 = standard 100% PSA).
 ; market-rate-path: a DECIMAL rate vector (e.g. one row of sofr-simulate-
-;     mortgage-rate-paths' mortgage-paths, or ten-year-paths/underlying-
-;     paths) of length >= n-months, index k = the market rate prevailing
+;     mortgage-rate-paths' mortgage-paths, or its underlying-paths, or
+;     sofr-simulate-curve-paths' yield-paths) of length >= n-months, index k = the market rate prevailing
 ;     at the START of month k+1 -- multiplied by 100 here before being
 ;     compared to note-rate-percent, since the two are in different unit
 ;     conventions upstream (term_structure_model.py works in decimals

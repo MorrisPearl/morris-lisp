@@ -10,24 +10,24 @@ three steps:
      -- into a full curve of 1-month forward rates, one for every month
      out to 30 years.
 
-  2. price_cme_option_mc(...) / price_sofr_future_option_mc(...)
-     Simulates that curve forward in time with two random ("stochastic")
+  2. price_sofr_future_option_mc(...)
+     Simulates a curve forward in time with two random ("stochastic")
      factors -- a short-rate factor and a slower-moving long-term
      mean-reversion level -- using Monte Carlo, and uses the simulated
-     paths to price a CME-style option on either a 10-year note future or
-     a 3-month SOFR future.
+     paths to price an option on a 3-month SOFR future.
 
-  3. calibrate_volatilities(...)
-     Searches for the two volatility parameters (one per factor) that make
-     the model's option prices match a set of real market option prices
-     you supply (works with either option pricer above via `price_fn`).
+  3. calibrate_sofr_model(...) / calibrate_sofr_model_nelder_mead(...)
+     Search for the model's parameters (the short rate's mean-reversion
+     speed and the volatility of each factor) that make its option prices
+     match a set of real SOFR futures option prices you supply.
 
   3b. price_note_future_options_mc(...) / calibrate_note_options(...) /
-      calibrate_sofr_and_note_options(...)
-     A second way to price options on the 10-year note future, built for
-     fitting the model to real ZN options: it centers the paths on today's
-     Treasury curve, steps by the day, and fits relative volatility errors
-     (see "Step 3b" below). The last function fits it together with the
+      calibrate_sofr_and_note_options(...) / simulate_curve_paths(...)
+     Options on the 10-year note future, for fitting the model to real ZN
+     options: the paths are centered on today's Treasury curve, step by the
+     day, and the fit is of relative volatility errors (see "Step 3b"
+     below). simulate_curve_paths() draws paths of the fitted model, and
+     calibrate_sofr_and_note_options() fits it together with the
      SOFR options.
 
 This module is deliberately free of any network/broker dependency -- it
@@ -55,10 +55,6 @@ SHORT_RATE_REVERSION_SPEED = 1.0     # "a" -- bigger = snaps back faster
 
 # How fast the mean-reversion level itself drifts back to its long-run average.
 MEAN_LEVEL_REVERSION_SPEED = 0.15    # "b" -- much slower than the short rate
-
-# CME 10-year note futures are based on a notional 6%-coupon, 10-year note.
-NOTIONAL_COUPON_RATE = 0.06
-NOTIONAL_MATURITY_YEARS = 10
 
 MONTHS_PER_YEAR = 12
 TOTAL_MONTHS = 30 * MONTHS_PER_YEAR   # 360 -- 30 years of monthly forwards
@@ -383,16 +379,17 @@ def extend_curve_long_end(forward_rates, curve_real_months, treasury_yields, ble
 
 
 # ---------------------------------------------------------------------------
-# Step 2: two-factor Monte Carlo simulation + option pricing
+# Step 2: two-factor Monte Carlo simulation, and SOFR futures options
 # ---------------------------------------------------------------------------
 
 def _simulate_two_factor_paths(forward_rates, sigma1, sigma2, horizon_months,
-                                n_paths, seed,
+                                n_paths, seed, theta_bar,
                                 a=SHORT_RATE_REVERSION_SPEED,
-                                b=MEAN_LEVEL_REVERSION_SPEED,
-                                theta_bar=None):
+                                b=MEAN_LEVEL_REVERSION_SPEED):
     """
-    Simulate n_paths Monte Carlo paths of the two factors:
+    Simulate n_paths Monte Carlo paths of the two factors, month by month
+    from the model's own starting state (r0 = the curve's first forward
+    rate, theta0 = theta_bar):
         r      -- the short-rate factor
         theta  -- the (stochastic) long-term mean-reversion level
 
@@ -402,21 +399,16 @@ def _simulate_two_factor_paths(forward_rates, sigma1, sigma2, horizon_months,
     SIMPLIFICATION: the two random shocks dW1, dW2 are independent (no
     correlation parameter). Adding one would be a one-line change.
 
-    theta_bar: optional override for the long-run level theta drifts
-        toward. If not supplied (the default), it's computed as the
-        average forward rate over the last 2 years of the supplied curve
-        (the "long end") -- this is the ORIGINAL behavior, appropriate
-        when forward_rates spans a genuine multi-decade curve (e.g. the
-        Treasury-bootstrapped curve this model was first built for).
+    theta_bar: the long-run level theta drifts toward (and starts at).
+        price_sofr_future_option_mc() fits it to the real, non-extrapolated
+        part of a SOFR curve (see _fit_sofr_theta_bar()): bootstrap_sofr_curve()
+        extrapolates FLAT beyond its last real futures quarter, which would
+        otherwise anchor theta at an arbitrary flat tail value that has
+        nothing to do with a near-dated option's dynamics.
 
-        Pass an explicit value when that default would anchor theta
-        somewhere not economically meaningful for what's being priced --
-        e.g. price_sofr_future_option_mc() passes the average over the
-        curve's real (non-extrapolated) SOFR-futures-implied months
-        instead, since bootstrap_sofr_curve() extrapolates FLAT beyond
-        its last real futures quarter, which would otherwise anchor theta
-        at an arbitrary flat tail value that has nothing to do with a
-        near-dated option's dynamics and biases the whole path's drift.
+    These paths start from the model's own crude curve, which fits today's
+    only roughly. For paths that start on the market's curve, use
+    simulate_curve_paths().
 
     Returns:
         r_paths     -- array (n_paths, horizon_months + 1), the short-rate
@@ -428,10 +420,6 @@ def _simulate_two_factor_paths(forward_rates, sigma1, sigma2, horizon_months,
     dt = 1.0 / MONTHS_PER_YEAR
 
     r0 = forward_rates[0]
-    if theta_bar is None:
-        # Long-run level that theta drifts toward: the average forward
-        # rate over the last 2 years of today's curve (the "long end").
-        theta_bar = float(np.mean(forward_rates[-24:]))
     theta0 = theta_bar
 
     r = np.full(n_paths, r0)
@@ -455,153 +443,6 @@ def _simulate_two_factor_paths(forward_rates, sigma1, sigma2, horizon_months,
     return r_paths, theta_paths
 
 
-def _average_forward_rate_from_state(r, theta, tau1, tau2, a=SHORT_RATE_REVERSION_SPEED):
-    """
-    Closed-form average of the model's own forward-rate curve
-    f(tau) = theta + (r - theta) * exp(-a * tau) (see _note_price_from_state)
-    over the window tau in [tau1, tau2], where tau is years forward from
-    the state date. Used both by ten_year_rate_from_state (tau1=0,
-    tau2=10) and by price_sofr_future_option_mc (tau1/tau2 = a SOFR
-    future's 3-month reference quarter).
-
-    r and theta can be scalars or numpy arrays (e.g. a whole path/state
-    vector); tau1 and tau2 are scalars.
-    """
-    tau2 = max(tau2, tau1 + 1e-6)  # guard against a zero-width window
-    return theta + (r - theta) * (np.exp(-a * tau1) - np.exp(-a * tau2)) / (a * (tau2 - tau1))
-
-
-def ten_year_rate_from_state(r, theta, a=SHORT_RATE_REVERSION_SPEED, tenor_years=10):
-    """
-    Approximate "the ten-year rate" implied by the model's state (r, theta)
-    at some date, for charting purposes.
-
-    SIMPLIFICATION: rather than building the full 10-year curve and solving
-    for a par yield, this uses the closed-form average of the modeled
-    forward curve over the next 10 years (see _average_forward_rate_from_state).
-    This is close to, but not identical to, a true compounded 10-year zero
-    or par yield -- good enough for a quick chart, not for precise pricing.
-    r and theta can be scalars or numpy arrays (e.g. a whole path).
-    """
-    return _average_forward_rate_from_state(r, theta, 0.0, tenor_years, a)
-
-
-def simulate_rate_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths, seed=None,
-                         a=SHORT_RATE_REVERSION_SPEED, theta_bar=None):
-    """
-    Public convenience wrapper (used by the GUI, or anyone who just wants
-    to look at simulated rate paths without pricing an option or a bond).
-
-    a / theta_bar: optional overrides -- see _simulate_two_factor_paths()'s
-        docstring. Pass the (a, theta_bar) from calibrate_sofr_model()
-        when forward_rates came from bootstrap_sofr_curve() rather than
-        bootstrap_forward_curve(), for the same reason
-        price_sofr_future_option_mc() does -- otherwise the paths use the
-        module-default a and the "last 2 years" theta_bar, which for a
-        SOFR curve is an arbitrary flat-extrapolated value.
-
-    Returns:
-        years            -- array of times in years, 0, 1/12, 2/12, ... out
-                             to horizon_years
-        short_rate_paths -- array (n_paths, len(years)), the short-rate
-                             factor along each path
-        ten_year_paths   -- array (n_paths, len(years)), the approximate
-                             ten-year rate along each path (see
-                             ten_year_rate_from_state)
-    """
-    horizon_months = int(round(horizon_years * MONTHS_PER_YEAR))
-    r_paths, theta_paths = _simulate_two_factor_paths(
-        forward_rates, sigma1, sigma2, horizon_months, n_paths, seed, a=a, theta_bar=theta_bar)
-    years = np.arange(horizon_months + 1) / MONTHS_PER_YEAR
-    ten_year_paths = ten_year_rate_from_state(r_paths, theta_paths, a=a)
-    return years, r_paths, ten_year_paths
-
-
-def simulate_mortgage_rate_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths,
-                                  mortgage_spread, seed=None,
-                                  a=SHORT_RATE_REVERSION_SPEED, theta_bar=None, tenor_years=10):
-    """
-    Simulate a simple proxy mortgage rate alongside the model's own rate
-    paths -- for Monte Carlo mortgage analysis (e.g. prepayment modeling)
-    off a SOFR curve. For every simulated month on every path:
-
-        mortgage_rate = tenor_years_rate + mortgage_spread
-
-    where tenor_years_rate is the model's own approximate long-tenor rate
-    (see ten_year_rate_from_state; tenor_years defaults to 10, the usual
-    rate-sensitivity proxy for a 30-year mortgage) at that path/month, and
-    mortgage_spread is a constant spread you supply (e.g. 0.015 for 150bp).
-
-    a / theta_bar: pass the (a, theta_bar) from calibrate_sofr_model() when
-        forward_rates came from bootstrap_sofr_curve() -- see that
-        function's docstring (and
-        price_sofr_future_option_mc()'s) for why the module defaults
-        (a fixed at SHORT_RATE_REVERSION_SPEED, theta_bar as the average
-        of the curve's last 2 years) are the wrong anchors for a SOFR
-        curve that's flat-extrapolated past its last real futures quarter.
-
-    SIMPLIFICATION: mortgage rates actually track something closer to
-    current-coupon MBS yields (which move with the whole curve,
-    prepayment risk, and origination costs -- not just one point on it),
-    and the mortgage-to-underlying spread is NOT constant in reality; it
-    widens and narrows with MBS supply, bank demand, and rate volatility.
-    A single flat spread is a deliberate simplification -- named in the
-    function's own parameter (mortgage_spread) so it's obvious where to
-    plug in a richer assumption later.
-
-    Returns:
-        years            -- as in simulate_rate_paths
-        short_rate_paths -- as in simulate_rate_paths
-        underlying_paths -- the tenor_years rate along each path (what
-                             simulate_rate_paths calls ten_year_paths)
-        mortgage_paths   -- underlying_paths + mortgage_spread, same shape
-    """
-    horizon_months = int(round(horizon_years * MONTHS_PER_YEAR))
-    r_paths, theta_paths = _simulate_two_factor_paths(
-        forward_rates, sigma1, sigma2, horizon_months, n_paths, seed, a=a, theta_bar=theta_bar)
-    years = np.arange(horizon_months + 1) / MONTHS_PER_YEAR
-    underlying_paths = ten_year_rate_from_state(r_paths, theta_paths, a=a, tenor_years=tenor_years)
-    mortgage_paths = underlying_paths + mortgage_spread
-    return years, r_paths, underlying_paths, mortgage_paths
-
-
-def _note_price_from_state(r_T, theta_T, a=SHORT_RATE_REVERSION_SPEED,
-                            coupon_rate=NOTIONAL_COUPON_RATE,
-                            maturity_years=NOTIONAL_MATURITY_YEARS):
-    """
-    Approximate the price of the CME notional 6%-coupon, 10-year note as of
-    a future simulation date T, given that date's simulated short-rate
-    factor (r_T) and mean-reversion level (theta_T). r_T and theta_T are
-    numpy arrays, one value per Monte Carlo path.
-
-    SIMPLIFICATION: forward rates beyond T are assumed to follow a simple
-    exponential blend from r_T (near end) to theta_T (far end):
-
-        f(T, T+tau) = theta_T + (r_T - theta_T) * exp(-a * tau)
-
-    This gives each future date a smooth, two-parameter curve shape (right
-    level, right slope) but does not try to reproduce fine detail (humps,
-    etc.) in the future curve -- a deliberate trade-off for simplicity.
-    """
-    months_ahead = np.arange(1, maturity_years * MONTHS_PER_YEAR + 1)
-    tau = months_ahead / MONTHS_PER_YEAR
-
-    r_T = r_T.reshape(-1, 1)
-    theta_T = theta_T.reshape(-1, 1)
-    forwards = theta_T + (r_T - theta_T) * np.exp(-a * tau)   # (n_paths, 120)
-
-    monthly_factors = 1.0 / (1.0 + forwards / MONTHS_PER_YEAR)
-    discount_factors = np.cumprod(monthly_factors, axis=1)    # DF(T, T+m/12)
-
-    coupon = 100 * coupon_rate / 2
-    coupon_months = np.arange(6, maturity_years * MONTHS_PER_YEAR + 1, 6)
-    coupon_idx = coupon_months - 1  # zero-based column index
-
-    df_at_coupons = discount_factors[:, coupon_idx]
-    price = np.sum(coupon * df_at_coupons, axis=1) + 100 * df_at_coupons[:, -1]
-    return price  # (n_paths,)
-
-
 def _discount_to_today(r_paths):
     """Product of monthly discount factors along each path, from month 0 to
     the last month in r_paths (used to discount an option payoff back to
@@ -609,52 +450,6 @@ def _discount_to_today(r_paths):
     at the START of that month."""
     monthly_factors = 1.0 / (1.0 + r_paths[:, :-1] / MONTHS_PER_YEAR)
     return np.prod(monthly_factors, axis=1)
-
-
-def price_cme_option_mc(forward_rates, option, sigma1, sigma2,
-                         n_paths=2000, seed=42):
-    """
-    Monte Carlo price of one CME-style option on the 10-year note future.
-
-    option: dict with keys
-        'type'              -- 'call' or 'put'
-        'strike'            -- strike price (note/futures price terms, e.g. 108.5)
-        'expiry_months'     -- months from today until option expiry
-        'conversion_factor' -- optional, default 1.0. Converts the model's
-                               notional note price into an approximate
-                               futures price: futures_price = note_price /
-                               conversion_factor. Supply the conversion
-                               factor of the note you expect to be cheapest
-                               to deliver for a closer approximation.
-        'market_price'      -- optional, only needed for calibration
-
-    SIMPLIFICATIONS:
-      - CME options on note futures are American-style; this model prices
-        them as European (exercise only at expiry). It ignores early-
-        exercise value.
-      - The futures price is approximated as the notional 6% bond's price
-        divided by a single supplied conversion factor, rather than
-        modeling the full deliverable basket / cheapest-to-deliver
-        optimization (which needs a whole basket of real bonds as input).
-    """
-    horizon = option['expiry_months']
-    r_paths, theta_paths = _simulate_two_factor_paths(
-        forward_rates, sigma1, sigma2, horizon, n_paths, seed)
-    r_T = r_paths[:, -1]
-    theta_T = theta_paths[:, -1]
-
-    note_prices = _note_price_from_state(r_T, theta_T)
-    conversion_factor = option.get('conversion_factor', 1.0)
-    futures_prices = note_prices / conversion_factor
-
-    strike = option['strike']
-    if option['type'] == 'call':
-        payoffs = np.maximum(futures_prices - strike, 0.0)
-    else:
-        payoffs = np.maximum(strike - futures_prices, 0.0)
-
-    discount = _discount_to_today(r_paths)
-    return float(np.mean(payoffs * discount))
 
 
 # ---------------------------------------------------------------------------
@@ -732,10 +527,10 @@ def _sofr_futures_price_from_state(r_T, theta_T, tau1, tau2,
         SOFR over its reference quarter; this uses 100 minus the SIMPLE
         average of the model's own forward curve over the quarter instead
         (a negligible difference for a 3-month window at typical rate
-        levels) -- the same style of approximation ten_year_rate_from_state()
-        and _note_price_from_state() already use elsewhere in this file.
-      - Uses the same "exponential blend" forward-curve shape as those
-        functions, f(T, T+tau) = theta_T + (r_T - theta_T) * exp(-a*tau),
+        levels).
+      - Takes the model's forward curve at T to be an "exponential blend"
+        from r_T (near end) to theta_T (far end),
+        f(T, T+tau) = theta_T + (r_T - theta_T) * exp(-a*tau),
         averaged analytically over tau in [tau1, tau2]:
             avg = theta_T + (r_T - theta_T) * (exp(-a*tau1) - exp(-a*tau2))
                                                 / (a * (tau2 - tau1))
@@ -803,8 +598,9 @@ def price_sofr_future_option_mc(forward_rates, option, sigma1, sigma2,
 
     SIMPLIFICATION: CME SOFR futures options are American-style; this
     model prices them as European (exercise only at expiry), ignoring
-    early-exercise value -- the same simplification price_cme_option_mc()
-    makes for note-future options.
+    early-exercise value -- which is under a third of a percent of a
+    premium for options of these expiries (checked against a binomial tree
+    on options on the 10-year note future).
     """
     if theta_bar is None:
         theta_bar = _fit_sofr_theta_bar(forward_rates, theta_bar_months, a=a)
@@ -835,66 +631,8 @@ def price_sofr_future_option_mc(forward_rates, option, sigma1, sigma2,
 
 
 # ---------------------------------------------------------------------------
-# Step 3: calibrate the two volatilities to market option prices
+# Step 3: calibrate the model to SOFR futures options
 # ---------------------------------------------------------------------------
-
-def calibrate_volatilities(forward_rates, options, n_paths=2000, seed=42,
-                            sigma1_range=(0.0005, 0.03),
-                            sigma2_range=(0.0005, 0.02),
-                            n_grid=7, n_rounds=4,
-                            price_fn=price_cme_option_mc):
-    """
-    Find (sigma1, sigma2) -- the volatility of the short-rate factor and of
-    the mean-reversion-level factor -- that make price_fn match each
-    option's 'market_price' as closely as possible.
-
-    price_fn defaults to price_cme_option_mc (options on the CME 10-year
-    note future); pass price_sofr_future_option_mc instead to calibrate to
-    SOFR futures options. Both take the same (forward_rates, option,
-    sigma1, sigma2, n_paths, seed) signature -- only the shape of the
-    `option` dict and what it prices differ.
-
-    METHOD (deliberately simple, no external optimizer library):
-    a "zooming grid search". Try a grid of (sigma1, sigma2) combinations,
-    keep whichever combination has the lowest total squared pricing error,
-    then shrink the search window around that point and repeat. This is
-    slower than a gradient-based optimizer but much easier to follow.
-
-    The same random seed is reused for every combination tried, so the
-    Monte Carlo noise is identical across comparisons -- only the change in
-    (sigma1, sigma2) affects the price, which is what makes "keep the best
-    combination" a meaningful thing to do.
-
-    Returns (best_sigma1, best_sigma2, best_total_squared_error).
-    """
-    lo1, hi1 = sigma1_range
-    lo2, hi2 = sigma2_range
-    best_sigma1, best_sigma2, best_error = None, None, None
-
-    for _ in range(n_rounds):
-        candidates1 = np.linspace(lo1, hi1, n_grid)
-        candidates2 = np.linspace(lo2, hi2, n_grid)
-        best_error = None
-
-        for s1 in candidates1:
-            for s2 in candidates2:
-                total_error = 0.0
-                for option in options:
-                    model_price = price_fn(
-                        forward_rates, option, s1, s2, n_paths, seed)
-                    total_error += (model_price - option['market_price']) ** 2
-                if best_error is None or total_error < best_error:
-                    best_error = total_error
-                    best_sigma1, best_sigma2 = s1, s2
-
-        # Zoom in: narrow the search window around the best point found.
-        span1 = (hi1 - lo1) / n_grid * 1.5
-        span2 = (hi2 - lo2) / n_grid * 1.5
-        lo1, hi1 = max(1e-6, best_sigma1 - span1), best_sigma1 + span1
-        lo2, hi2 = max(1e-6, best_sigma2 - span2), best_sigma2 + span2
-
-    return best_sigma1, best_sigma2, best_error
-
 
 def _filter_calibration_options(options, min_expiry_months):
     """
@@ -924,9 +662,9 @@ def calibrate_sofr_model(forward_rates, options, curve_real_months,
                           min_expiry_months=0):
     """
     Calibrate the SOFR model's (a, sigma1, sigma2) directly against real
-    SOFR futures option prices -- the same "zooming grid search"
-    calibrate_volatilities() uses for sigma1/sigma2 alone, extended to a
-    third dimension. b (MEAN_LEVEL_REVERSION_SPEED) is left fixed: it only
+    SOFR futures option prices, by a "zooming grid search" (try a grid of
+    (a, sigma1, sigma2), keep the best, shrink the grid around it, repeat).
+    b (MEAN_LEVEL_REVERSION_SPEED) is left fixed: it only
     shows up in slow, multi-year dynamics, and real SOFR option liquidity
     (per sofr_market_data.py) is thin past roughly the first couple of
     years, so there usually isn't enough independent information in the
@@ -963,9 +701,8 @@ def calibrate_sofr_model(forward_rates, options, curve_real_months,
 
     a_range: (lo, hi) bounds for the search. The lower bound is kept
         comfortably above 0 because a appears in a DENOMINATOR
-        (a * (tau2 - tau1)) in _sofr_futures_price_from_state() /
-        _average_forward_rate_from_state() -- a fit landing at exactly 0
-        would blow those up.
+        (a * (tau2 - tau1)) in _sofr_futures_price_from_state() -- a fit
+        landing at exactly 0 would blow it up.
 
     min_expiry_months: drop calibration options with expiry_months <= this
         value before fitting (default 0 -- keep everything). Useful for
@@ -977,9 +714,8 @@ def calibrate_sofr_model(forward_rates, options, curve_real_months,
 
     Returns (a, theta_bar, sigma1, sigma2, error) -- theta_bar is
     _fit_sofr_theta_bar()'s fit at the winning a; error is the total
-    squared pricing error at the winning (a, sigma1, sigma2), same
-    definition calibrate_volatilities() returns (summed over whatever
-    options survived the min_expiry_months filter).
+    squared pricing error at the winning (a, sigma1, sigma2) (summed over
+    whatever options survived the min_expiry_months filter).
     """
     options = _filter_calibration_options(options, min_expiry_months)
     lo_a, hi_a = a_range
@@ -1226,11 +962,12 @@ def _note_cash_flow_times(maturity_years):
     return maturity_years - 0.5 * np.arange(count - 1, -1, -1)
 
 
-def _forward_par_coupon(forward_rates, expiry_years, maturity_years):
+def forward_par_yield(forward_rates, expiry_years, maturity_years):
     """
-    The coupon (an annual rate, paid semiannually) that makes a note of
-    maturity_years a par bond on the market's forward curve as of expiry_years
-    from now: the one for which its price there is 1.
+    The par yield -- the coupon (an annual rate, paid semiannually) that
+    makes a note of maturity_years a par bond -- on the market's forward curve
+    as of expiry_years from now: the one for which its price there is 100.
+    With expiry_years = 0, today's par yield for that maturity.
     """
     return float(_par_yields_at_expiry(forward_rates, expiry_years, np.zeros(1), np.zeros(1), 1.0, maturity_years)[0])
 
@@ -1372,7 +1109,7 @@ def price_note_future_options_mc(forward_rates, options, sigma1, sigma2,
     for day in sorted(set(days)):
         expiry_years = day / DAYS_PER_YEAR
         delta_r, delta_theta, adjustment = found[day]
-        coupon = ctd_coupon if ctd_coupon is not None else _forward_par_coupon(
+        coupon = ctd_coupon if ctd_coupon is not None else forward_par_yield(
             forward_rates, expiry_years, ctd_maturity_years)
         note = _note_prices_at_expiry(forward_rates, expiry_years, delta_r, delta_theta, a, ctd_maturity_years, coupon)
         relative = note / note.mean()                      # the future's price over today's: its average is 1
@@ -1389,18 +1126,29 @@ def price_note_future_options_mc(forward_rates, options, sigma1, sigma2,
     return prices
 
 
+def _continued_flat(forward_rates, months):
+    """The monthly forward rates as an array of at least `months` of them: a curve that is shorter continues at its last rate."""
+    forward = np.asarray(forward_rates, dtype=float)
+    if len(forward) >= months:
+        return forward
+    return np.concatenate([forward, np.full(months - len(forward), forward[-1])])
+
+
 def simulate_curve_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths, seed=None,
                          a=SHORT_RATE_REVERSION_SPEED, b=MEAN_LEVEL_REVERSION_SPEED, tenor_years=10):
     """
     Monte Carlo paths of the model that the note-option calibration fits
     (see THE IDEA above), month by month: the same random factors, stepped by
-    the day, around the market's forward curve. Unlike simulate_rate_paths(),
+    the day, around the market's forward curve. Unlike _simulate_two_factor_paths(),
     whose paths start from the model's own crude curve, these start where the
     market is today: the first month's short rate is the curve's first forward
     rate, and the tenor_years par yield at the start is the curve's own.
 
     forward_rates: the market's monthly forward rates, the Treasury's (see THE
-        IDEA above); a curve longer than horizon_years + tenor_years.
+        IDEA above). SIMPLIFICATION: the yield at the end of a long horizon needs
+        the curve tenor_years beyond it (a 30-year mortgage's last month needs a
+        curve to year 40); where the curve is shorter, it continues flat at its
+        last forward rate.
     seed: an integer for the same paths each time; None (the default) for new ones.
     n_paths: the number of paths (an even number: an odd one is rounded up).
 
@@ -1416,13 +1164,10 @@ def simulate_curve_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths, 
     months = int(round(horizon_years * MONTHS_PER_YEAR))
     if months < 1:
         raise ValueError("the horizon must be at least a month")
-    if months >= len(forward_rates):
-        raise ValueError(f"the forward curve has {len(forward_rates)} months, and a horizon of "
-                         f"{horizon_years} years needs one more than {months}")
     paths = 2 * ((n_paths + 1) // 2)
     days = [int(round(month * DAYS_PER_YEAR / MONTHS_PER_YEAR)) for month in range(1, months + 1)]
     found = _simulate_deviations(days, sigma1, sigma2, a, b, n_paths, seed)
-    forward = np.asarray(forward_rates, dtype=float)
+    forward = _continued_flat(forward_rates, int(months + tenor_years * MONTHS_PER_YEAR) + 1)    # (a month too many is no harm)
     short_rate_paths = np.zeros((paths, months + 1))
     yield_paths = np.zeros((paths, months + 1))
     for month in range(months + 1):
@@ -1433,6 +1178,41 @@ def simulate_curve_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths, 
         short_rate_paths[:, month] = forward[month] + delta_r
         yield_paths[:, month] = _par_yields_at_expiry(forward, month / MONTHS_PER_YEAR, delta_r, delta_theta, a, tenor_years)
     return np.arange(months + 1) / MONTHS_PER_YEAR, short_rate_paths, yield_paths
+
+
+def simulate_mortgage_rate_paths(forward_rates, sigma1, sigma2, horizon_years, n_paths,
+                                  mortgage_spread, seed=None,
+                                  a=SHORT_RATE_REVERSION_SPEED, b=MEAN_LEVEL_REVERSION_SPEED, tenor_years=10):
+    """
+    Simulate a simple proxy mortgage rate alongside the model's own rate
+    paths -- for Monte Carlo mortgage analysis (e.g. prepayment modeling).
+    On every path, in every month,
+
+        mortgage_rate = (the par yield of a note of tenor_years) + mortgage_spread
+
+    where the yield (tenor_years defaults to 10, the usual rate-sensitivity
+    proxy for a 30-year mortgage) is that of simulate_curve_paths(), and
+    mortgage_spread is a constant spread you supply (e.g. 0.015 for 150bp).
+    The paths start on forward_rates, the market's curve, so a spread found as
+    today's mortgage rate less forward_par_yield(forward_rates, 0.0, 10) puts the
+    first month's mortgage rate at today's.
+
+    SIMPLIFICATION: mortgage rates actually track something closer to
+    current-coupon MBS yields (which move with the whole curve,
+    prepayment risk, and origination costs -- not just one point on it),
+    and the mortgage-to-underlying spread is NOT constant in reality; it
+    widens and narrows with MBS supply, bank demand, and rate volatility.
+    A single flat spread is a deliberate simplification -- named in the
+    function's own parameter (mortgage_spread) so it's obvious where to
+    plug in a richer assumption later.
+
+    Returns (years, short_rate_paths, underlying_paths, mortgage_paths): the
+    years, short rates and tenor_years yields (called underlying_paths here)
+    of simulate_curve_paths(), and underlying_paths + mortgage_spread.
+    """
+    years, short_rate_paths, underlying_paths = simulate_curve_paths(
+        forward_rates, sigma1, sigma2, horizon_years, n_paths, seed, a=a, b=b, tenor_years=tenor_years)
+    return years, short_rate_paths, underlying_paths, underlying_paths + mortgage_spread
 
 
 def _market_view(forward_rates, option):
@@ -1491,7 +1271,7 @@ def note_option_comparison(forward_rates, options, sigma1, sigma2,
         discount, market_vol, _, _ = _market_view(forward_rates, option)
         model_vol = _implied_normal_vol(option['type'], float(price), option['futures_price'], option['strike'],
                                          option['expiry_years'], discount)
-        coupon = ctd_coupon if ctd_coupon is not None else _forward_par_coupon(
+        coupon = ctd_coupon if ctd_coupon is not None else forward_par_yield(
             forward_rates, option['expiry_years'], ctd_maturity_years)
         duration = _note_duration(forward_rates, option['expiry_years'], ctd_maturity_years, coupon)
         row = dict(option)
@@ -1682,9 +1462,13 @@ def calibrate_sofr_and_note_options(sofr_forward_rates, note_forward_rates, sofr
 
 def price_callable_bond_mc(forward_rates, sigma1, sigma2, term_years,
                             coupon_rate, call_years, call_price, oas,
-                            n_paths=2000, seed=123, face=100):
+                            n_paths=2000, seed=123, face=100,
+                            a=SHORT_RATE_REVERSION_SPEED, b=MEAN_LEVEL_REVERSION_SPEED):
     """
     Monte Carlo price of a callable bond, given an option-adjusted spread.
+    The rates are the short-rate paths of simulate_curve_paths() (so, around
+    forward_rates, the market's curve: use the Treasury's), with the fitted
+    a, b, sigma1 and sigma2.
 
     term_years   -- bond's total maturity, in years from today
     coupon_rate  -- annual coupon rate (decimal, e.g. 0.05 for 5%), paid
@@ -1698,9 +1482,8 @@ def price_callable_bond_mc(forward_rates, sigma1, sigma2, term_years,
                     credit/liquidity risk on top of the risk-free curve.
                     This is an INPUT here -- you supply the OAS, the model
                     tells you the resulting price. (The reverse direction,
-                    solving for the OAS that reproduces a market price,
-                    could be added the same way calibrate_volatilities()
-                    searches for sigmas -- not included here.)
+                    solving for the OAS that reproduces a market price, is
+                    what oas_monte_carlo.lsp's oas-solve does.)
 
     SIMPLIFICATIONS:
       - Models a single, one-time call right at call_years (a "European"
@@ -1724,8 +1507,8 @@ def price_callable_bond_mc(forward_rates, sigma1, sigma2, term_years,
             "call_years must be strictly before term_years -- a bond "
             "'called' exactly at maturity is just a bond maturing.")
 
-    r_paths, _ = _simulate_two_factor_paths(
-        forward_rates, sigma1, sigma2, horizon_months, n_paths, seed)
+    _, r_paths, _ = simulate_curve_paths(forward_rates, sigma1, sigma2, term_years, n_paths, seed, a=a, b=b)
+    n_paths = r_paths.shape[0]      # (rounded up to an even number)
 
     # Discount factors from today to every month, per path, using the
     # simulated short rate PLUS the option-adjusted spread.
@@ -1792,34 +1575,37 @@ if __name__ == '__main__':
     for m, f in zip(curve['months'][-6:], forward_rates[-6:]):
         print(f"  month {m:>3}: {f:.4%}")
 
-    # A handful of illustrative CME 10-year note option quotes, with strikes
-    # placed near the model's own at-the-money futures level (~114) so the
-    # example is internally consistent. Replace with real market quotes.
-    # strike/market_price are in futures price points (e.g. 114-16 = 114.5).
+    # A handful of illustrative quotes for options on the 10-year note future (the
+    # future's price is made up, and so are the option prices: Bachelier's formula
+    # at a volatility of 6.5 points a year). Replace with real market quotes.
+    futures_price, expiry_years = 108.0, 45 / 365.0
+    discount = _market_discount_factors(forward_rates, [expiry_years])[0]
     example_options = [
-        {'type': 'call', 'strike': 114.0, 'expiry_months': 2,
-         'market_price': 0.75, 'conversion_factor': 0.93},
-        {'type': 'call', 'strike': 115.0, 'expiry_months': 2,
-         'market_price': 0.36, 'conversion_factor': 0.93},
-        {'type': 'put', 'strike': 113.0, 'expiry_months': 2,
-         'market_price': 0.37, 'conversion_factor': 0.93},
-        {'type': 'put', 'strike': 112.0, 'expiry_months': 3,
-         'market_price': 0.27, 'conversion_factor': 0.93},
+        {'type': kind, 'strike': strike, 'expiry_years': expiry_years, 'futures_price': futures_price,
+         'market_price': _bachelier_price(kind, futures_price, strike, 6.5, expiry_years, discount)}
+        for kind, strike in (('call', 107.0), ('call', 108.0), ('put', 108.0), ('put', 109.0))
     ]
 
-    print("\nCalibrating sigma1 (short-rate vol) and sigma2 (mean-reversion "
-          "level vol) to the example option prices...")
-    sigma1, sigma2, error = calibrate_volatilities(forward_rates, example_options)
-    print(f"  fitted sigma1 = {sigma1:.5f}")
-    print(f"  fitted sigma2 = {sigma2:.5f}")
-    print(f"  total squared pricing error = {error:.6f}")
+    print("\nCalibrating sigma2 (the level factor's volatility) to the example "
+          "option prices...")
+    fit = calibrate_note_options(forward_rates, example_options)
+    sigma1, sigma2 = fit['sigma1'], fit['sigma2']
+    print(f"  fitted sigma2 = {sigma2:.5f}  (sigma1 = {sigma1:.5f}, as given)")
+    print(f"  root mean square relative volatility error = {fit['error']:.5f}")
 
     print("\nModel price vs. market price after calibration:")
-    for option in example_options:
-        model_price = price_cme_option_mc(forward_rates, option, sigma1, sigma2)
+    for option, model_price in zip(example_options, price_note_future_options_mc(
+            forward_rates, example_options, sigma1, sigma2)):
         print(f"  {option['type']:<4} strike {option['strike']:<7} "
-              f"expiry {option['expiry_months']}m -> "
+              f"expiry {option['expiry_years'] * DAYS_PER_YEAR:.0f}d -> "
               f"model {model_price:.4f}  market {option['market_price']:.4f}")
+
+    # A few paths of the calibrated model, five years: they start on the curve.
+    years, short_rate_paths, ten_year_paths = simulate_curve_paths(
+        forward_rates, sigma1, sigma2, 5, 1000, seed=1)
+    low, middle, high = np.percentile(ten_year_paths[:, -1], [10, 50, 90])
+    print(f"\nThe 10-year par yield starts at {ten_year_paths[0, 0]:.3%}; after 5 years, "
+          f"over 1000 paths: p10 {low:.3%}  median {middle:.3%}  p90 {high:.3%}")
 
     # A small example of the callable bond pricer, using the just-calibrated
     # sigmas: a 10-year, 5% coupon bond, callable at par starting in year 3,

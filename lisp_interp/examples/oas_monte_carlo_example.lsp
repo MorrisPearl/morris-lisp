@@ -65,11 +65,11 @@
 
 (define n-paths 200)          ; kept small so this example runs quickly
 (define horizon-years 30)
-(define mortgage-spread 0.020)  ; 200bp over the model's 10-year proxy rate
+(define mortgage-spread 0.020)  ; 200bp over the model's 10-year par yield
 
 (define sim (sofr-simulate-mortgage-rate-paths
               extended-forward-rates sigma1 sigma2 horizon-years n-paths
-              mortgage-spread 42))
+              mortgage-spread :seed 42))
 (define short-rate-paths (second sim))
 (define mortgage-paths (fourth sim))
 

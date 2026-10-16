@@ -1738,7 +1738,7 @@ candidate `a`.
 - `n-paths` (default `2000`) — Monte Carlo paths used to price EACH
   option at EACH candidate tried; an accuracy/speed trade-off for the
   *calibration* itself, separate from how many scenario paths
-  `sofr-simulate-rate-paths` later generates.
+  `sofr-simulate-curve-paths` later generates.
 - `seed` (default `42`), `n-grid` (default `7`), `n-rounds` (default
   `4`) — grid resolution per round / how many times to zoom in. Cost is
   roughly `O(n-grid³ × n-rounds × n-paths × number of options)` — the
@@ -1914,8 +1914,8 @@ would decide the fit, and push `sigma1` to 0.
 Returns an association list: `((a . 2.75) (sigma1 . 0.0193) (sigma2 . 0.0122)
 (theta-bar . 0.0461) (sofr-error . 0.14) (note-error . 0.047) (error .
 0.148) (sofr-options-used . 18) (note-options-used . 96) (evaluations . 161))`
-— `theta-bar` is the value for the SOFR model's paths, as `sofr-calibrate-model`
-gives it. On 2026-10-15 the notes' options alone gave a `sigma2` of 0.0132;
+— `theta-bar` is the value for pricing the SOFR options, as `sofr-calibrate-model`
+gives it (the paths of `sofr-simulate-curve-paths` do not use it). On 2026-10-15 the notes' options alone gave a `sigma2` of 0.0132;
 fitted together with the SOFR options, `sigma2` was 0.0122 (with `a` of 2.75 and
 `sigma1` of 0.019), the SOFR options fit to 14% and the notes' to 4.7% (against
 3.6% alone): the price of making one model agree with both.
@@ -1932,24 +1932,25 @@ model that `sofr-calibrate-note-options` and `sofr-calibrate-jointly` fit, month
 by month for `horizon-years`: the same random factors (stepped by the day),
 added to the market's forward curve, as the calibration prices options. Use the
 fitted `sigma1`, `sigma2` and `a`, with the Treasury's forward curve
-(`curve-forward-rates`), which must reach `:tenor-years` beyond the horizon.
+(`curve-forward-rates`). The yield at the end of a long horizon needs the curve
+`:tenor-years` beyond it (a 30-year mortgage's last month needs a curve to year
+40): where the curve is shorter, it continues at its last forward rate.
 `:a` (1.0) and `:b` (0.15) are the mean-reversion speeds, `:tenor-years` (10) the
 note whose par yield is followed, and `:seed` (an integer) makes the paths the
 same each time (without it they are new). `n-paths` is rounded up to an even
 number: the paths come in mirror-image pairs, so that their average is the
 curve's own.
 
-Returns `(list years short-rate-paths yield-paths)`, the shape
-`sofr-simulate-rate-paths` gives: `years` is `0, 1/12, 2/12, ...`; the others
+Returns `(list years short-rate-paths yield-paths)`: `years` is `0, 1/12, 2/12, ...`; the others
 are a list with a vector for each path: the model's short rate (the market's
 forward rate for the month that starts then, plus the path's deviation), and the
 par yield of the note of `:tenor-years` that day, as the Treasury publishes it.
 
 These paths start where the market is: the first path value of the 10-year yield
-is the Treasury's own (5.10% on 2026-10-15). `sofr-simulate-rate-paths` starts from
-the model's own curve, which fits today's only roughly: with the fit above its
-10-year rate started at 4.59%, half a point under the market's. The
-model's rates are normal (they can go below zero, and its volatility doesn't
+is the Treasury's own (5.10% on 2026-10-15), and a path's average discount
+factor reproduces the curve's (to within 3 basis points over 5 years, on that
+day), which is what an option-adjusted spread needs of the rates it discounts
+along. The model's rates are normal (they can go below zero, and its volatility doesn't
 rise with the level), so a path now and then goes somewhere a real rate
 would not: 200 paths of 5 years from the fit above ended between 1% and
 10.5% for the 10-year yield.
@@ -1962,42 +1963,15 @@ would not: 200 paths of 5 years from the fit above ended between 1% and
 See `examples/rate_model_example.lsp`, which fits the model to SOFR and note
 options and then draws and charts a few paths.
 
-#### `(sofr-simulate-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths [seed a theta-bar])`
-Pure function — no networking. Simulates `n-paths` Monte Carlo scenarios
-of the two-factor model (a short-rate factor and a slower mean-reversion-
-level factor — see `term_structure/term_structure_model.py`'s module
-docstring) `horizon-years` forward, reusing that module's
-`simulate_rate_paths()` as-is. `seed` defaults to `'()` (a fresh random
-seed each call); an integer gives reproducible paths.
-
-Pass `sofr-calibrate-model`'s fitted `a`/`theta-bar` (its first two
-return values) for `a`/`theta-bar` when `forward-rates` came from
-`sofr-bootstrap-curve`/`sofr-forward-curve` — leaving them `'()` uses
-this function's own default (theta-bar as the average of `forward-
-rates`' last 2 years), which for a SOFR curve anchors theta-bar at an
-arbitrary flat-extrapolated value with no connection to real market data.
-
-Returns `(list years-vector short-rate-paths ten-year-paths)`:
-- `years-vector` — times in years: `0, 1/12, 2/12, ..., horizon-years`.
-- `short-rate-paths` / `ten-year-paths` — each a Lisp LIST of
-  `(horizon-years×12 + 1)`-element vectors, one per path. `ten-year-
-  paths[i]` is path `i`'s approximate ten-year rate, a closed-form
-  function of that path's state at each month, not a separately-
-  simulated factor.
-
-```lisp
-(define sim (sofr-simulate-rate-paths sofr-forward-rates 0.005 0.01 5.0 20 42))
-(define years (list-ref sim 0))
-(define short-rate-paths (list-ref sim 1))
-(plot-chart (map (lambda (path) (list "short rate" years path)) short-rate-paths) :legend #f)
-```
-
-#### `(sofr-simulate-mortgage-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths mortgage-spread [seed a theta-bar tenor-years])`
+#### `(sofr-simulate-mortgage-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths mortgage-spread [:a :b :seed :tenor-years])`
 Pure function — no networking. The same simulation as
-`sofr-simulate-rate-paths`, plus a simple proxy mortgage rate per
-path/month: `mortgage_rate = tenor-years-rate + mortgage-spread`
+`sofr-simulate-curve-paths` (its arguments, and the paths start on
+`forward-rates`, the market's curve), plus a simple proxy mortgage rate per
+path/month: `mortgage_rate = tenor-years-yield + mortgage-spread`
 (`tenor-years` defaults to `10`, the usual rate-sensitivity proxy for a
-30-year mortgage). Reuses `simulate_mortgage_rate_paths()` as-is.
+30-year mortgage). Reuses `simulate_mortgage_rate_paths()` as-is. The spread
+that puts the first month's mortgage rate at today's is today's mortgage rate (FRED's
+`MORTGAGE30US`) less the curve's 10-year par yield.
 
 **SIMPLIFICATION** (from the underlying model, not this bridge): a real
 mortgage rate tracks current-coupon MBS yields — the whole curve,
@@ -2009,8 +1983,9 @@ mortgage_spread.py`'s `fetch_current_mortgage_rate()` pulls FRED's
 guessing).
 
 Returns `(list years-vector short-rate-paths underlying-paths
-mortgage-paths)` — `underlying-paths` is the `tenor-years` rate before
-adding the spread; `mortgage-paths` is after.
+mortgage-paths)` — `underlying-paths` is the `tenor-years` yield before
+adding the spread; `mortgage-paths` is after. Each of the three is a Lisp
+LIST of `(horizon-years×12 + 1)`-element vectors, one per path.
 
 **Example**: `examples/sofr_monte_carlo_example.lsp` runs the
 full pipeline end to end — `sofr-calibration-data` →
