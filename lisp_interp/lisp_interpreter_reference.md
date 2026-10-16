@@ -3336,6 +3336,26 @@ The distinct values of `v`, sorted.
 (vector-unique (vector "b" "a" "b"))   ; => #("a" "b")
 ```
 
+#### `(interpolate x xs ys [:smooth #t])`
+The value at `x` of the line through the points `(xs[i], ys[i])`: straight between
+them, and flat beyond the first and the last. `x` is a number, or a vector of them,
+and so is the answer. `xs` must rise, and be as long as `ys`. With `:smooth #t` the
+curve through them is smooth instead (a monotone cubic, as PCHIP makes: it goes up
+and down only where the points do, so it never overshoots them, and the line it
+makes has no corners). A yield curve between the
+maturities that are quoted, for one -- yields of 0.5, 1, and 2 percent at 5, 10, and 30 years:
+
+```lisp
+(interpolate 7.5 (vector 5 10 30) (vector 0.5 1 2))                 ; => 0.75
+(interpolate (vector 1 5 20 40) (vector 5 10 30) (vector 0.5 1 2))   ; => #(0.5 0.5 1.5 2.0)
+(interpolate (vector 1 5 7.5 10 20 40) (vector 5 10 30) (vector 0.5 1 2) :smooth #t)
+; => #(0.5 0.5 0.77410716 1.0 1.6535715 2.0)
+(interpolate (vector 6 8 10 12 14) (vector 5 10 15) (vector 0 1 0) :smooth #t)      ; => #(0.36 0.84 1.0 0.84 0.36)
+```
+
+The last one goes up to the middle point and no higher: a spline that is smooth, but not
+monotone, would rise above it between the points.
+
 ### Tables
 
 (In `lisp_tables.py`.) A **table** is a list of `(name . vector)` columns,
@@ -4528,7 +4548,7 @@ Undoes `redirect-output`: closes whatever file is currently open (if any)
 and returns to writing to the console/GUI log. Safe to call even if no
 redirect is active.
 
-#### `(load-csv filename [has-header?] [:text columns])`
+#### `(load-csv filename [has-header?] [:text columns] [:skip rows] [:missing texts])`
 (In `lisp_csv.py`.) Reads a CSV file into a table (see "Tables") — a list
 of `(name . vector)` columns, the same shape `sqlite-query` returns. Every
 column and every row is kept. Each column becomes:
@@ -4561,6 +4581,21 @@ column is read as above. (It isn't guessed from the values, such as a
 leading zero: a file of only western states' zips has none, so the same
 column would be numbers from one file and strings from another -- and
 joining numbers to a column of zip strings matches nothing.)
+
+**Notes above the header, and "NA".** Agencies' files often start with a few
+lines of notes, and write a missing number as `NA` (or `N/A`, or `.`) -- which,
+read as it is, would make the whole column strings. `:skip` leaves out the rows
+above the header: a number of them (a blank line is a row), or the text the
+header row's first cell is, which keeps working if the notes change length.
+`:missing` -- a text, or a list of them -- names what is read as a blank:
+
+```lisp
+; notes.csv:   "Not an official release, and it may change."
+;              (a blank line)
+;              Date,2y,10y
+;              2026-10-09,4.77,NA
+(define y (load-csv "notes.csv" :skip "Date" :missing "NA"))    ; the 10y of the day is nan, not "NA"
+```
 
 ```lisp
 (define pools (load-csv "synthetic_mbs_pools.csv"))

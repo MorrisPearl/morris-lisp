@@ -51,6 +51,12 @@
   position-comparison-expected-price position-comparison-prices position-comparison-contract-size
   position-comparison-unit position-comparison-positions position-comparison-searches)
 
+; Yield curves: the Treasury's par curve and the Fed's fitted curve, zero rates and forward rates
+(lazy-load "yield_curves.lsp"
+  treasury-par-curve treasury-zero-curve par-curve-zeros curve-forward-rates extend-forward-curve gsw-curve
+  gsw-parameters gsw-zero-curve
+  svensson-zero-rates svensson-forward-rates)
+
 ; Call spreads: the best pair of calls to buy and sell (the bull-call kind of the above), and the order for it
 (lazy-load "call_spreads.lsp"
   call-spreads call-spreads-for-chain show-call-spreads call-spread-order plot-call-spreads)

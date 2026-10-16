@@ -25,7 +25,8 @@ import operator
 import numpy as np
 
 from lisp_core import (
-    LispDate, LispError, LispVector, NIL, _brief, _lisp_scalar, is_true, list_to_pairs, numeric_value, to_string,
+    LispDate, LispError, LispVector, NIL, _brief, _lisp_scalar, is_true, keyword_options, list_to_pairs, numeric_value,
+    to_string,
 )
 
 
@@ -739,6 +740,70 @@ def vector_unique(v):
     return LispVector(distinct)
 
 
+def end_slope(h0, h1, delta0, delta1):
+    """The slope of a monotone cubic curve at its first point (swap the ends for the last): from the three points,
+    kept from making the curve turn back, or overshoot, there."""
+    slope = ((2 * h0 + h1) * delta0 - h0 * delta1) / (h0 + h1)
+    if np.sign(slope) != np.sign(delta0):
+        return 0.0
+    if np.sign(delta0) != np.sign(delta1) and abs(slope) > 3 * abs(delta0):
+        return 3 * delta0
+    return slope
+
+
+def monotone_cubic(wanted, points, values):
+    """The value at each of `wanted` of the monotone cubic curve through the points (Fritsch and Carlson's, as PCHIP
+    has it): smooth, going up and down only where the points do, so that it never overshoots them; flat beyond
+    the first and last."""
+    n = len(points)
+    if n == 1:
+        return np.full(len(wanted), values[0])
+    gaps = np.diff(points)
+    slopes_between = np.diff(values) / gaps
+    slope = np.zeros(n)
+    if n == 2:
+        slope[:] = slopes_between[0]
+    else:
+        # in the middle: the harmonic mean of the slopes either side, weighted by the gaps; 0 where the line turns
+        weight1 = 2 * gaps[1:] + gaps[:-1]
+        weight2 = gaps[1:] + 2 * gaps[:-1]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mean = (weight1 + weight2) / (weight1 / slopes_between[:-1] + weight2 / slopes_between[1:])
+        slope[1:-1] = np.where(slopes_between[:-1] * slopes_between[1:] > 0, mean, 0.0)
+        slope[0] = end_slope(gaps[0], gaps[1], slopes_between[0], slopes_between[1])
+        slope[-1] = end_slope(gaps[-1], gaps[-2], slopes_between[-1], slopes_between[-2])
+    at = np.clip(np.asarray(wanted, dtype=float), points[0], points[-1])
+    i = np.clip(np.searchsorted(points, at, side="right") - 1, 0, n - 2)
+    s = (at - points[i]) / gaps[i]
+    return ((2 * s ** 3 - 3 * s ** 2 + 1) * values[i] + (s ** 3 - 2 * s ** 2 + s) * gaps[i] * slope[i]
+            + (-2 * s ** 3 + 3 * s ** 2) * values[i + 1] + (s ** 3 - s ** 2) * gaps[i] * slope[i + 1])
+
+
+def vector_interpolate(x, xs, ys, *options):
+    """(interpolate x xs ys [:smooth #t]) -- the value at x of the line that
+    goes through the points (xs[i], ys[i]): straight between them, and flat
+    beyond the first and last. With :smooth #t, a smooth curve instead (a
+    monotone cubic: it goes up and down only where the points do, and
+    never overshoots them). x is a number, or a vector of them, and so is the
+    answer; xs rises, and is as long as ys."""
+    who = "interpolate"
+    smooth = is_true(keyword_options(options, ["smooth"], who).get("smooth", False))
+    points, values = floats_of(xs, who), floats_of(ys, who)
+    if len(points) == 0 or len(points) != len(values):
+        raise LispError("%s: xs and ys must have as many numbers as each other, and at least one: they have %d and %d"
+                        % (who, len(points), len(values)))
+    if np.isnan(points).any() or np.isnan(values).any():
+        raise LispError("%s: xs and ys must not have a missing number" % who)
+    if (np.diff(points) <= 0).any():
+        raise LispError("%s: xs must rise: each number greater than the one before" % who)
+    curve = (lambda wanted: monotone_cubic(wanted, points, values)) if smooth else (lambda wanted: np.interp(wanted, points, values))
+    if isinstance(x, LispVector):
+        return to_vector(curve(floats_of(x, who)))
+    if not is_number(x):
+        raise LispError("%s: x must be a number or a vector of them, not %s" % (who, _brief(x)))
+    return float(curve(np.array([x], dtype=float))[0])
+
+
 TIME_SERIES_BUILTINS = {
     "vector-lag": vector_lag,
     "vector-diff": vector_diff,
@@ -749,6 +814,7 @@ TIME_SERIES_BUILTINS = {
     "vector-rolling-sum": lambda v, window: rolling("vector-rolling-sum", v, window, np.sum),
     "vector-range": vector_range,
     "vector-unique": vector_unique,
+    "interpolate": vector_interpolate,
 }
 
 

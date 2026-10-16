@@ -1418,6 +1418,8 @@ class TestHttp(LispTestCase):
                     body, kind = b'{"rates": [{"date": "2024-01-02", "rate": 5.3}], "ok": true, "none": null}', "json"
                 elif self.path.startswith("/data.csv"):
                     body, kind = b"date,rate\n01/02/2024,5.3\n01/03/2024,5.31\n", "csv"
+                elif self.path.startswith("/notes.csv"):
+                    body, kind = b'"A note, with a comma."\n\nDate,rate\n2024-01-02,5.3\n2024-01-03,NA\n', "csv"
                 elif self.path.startswith("/fred?") and "series_id=NOPE" in self.path:
                     self.send_response(400)
                     self.end_headers()
@@ -1493,6 +1495,13 @@ class TestHttp(LispTestCase):
                          '#("01/02/2024" "01/03/2024")')
         self.assertLispError('(http-get-csv "%s/data.csv" :text "nope")' % self.base,
                              "http-get-csv: :text names nope, which isn't a column of")
+
+    def test_csv_notes_above_the_header_and_missing_values(self):
+        self.assertShows('(http-get-csv "%s/notes.csv" :skip "Date" :missing "NA")' % self.base,
+                         '(("Date" . #(2024-01-02 2024-01-03)) ("rate" . #(5.3 nan)))')
+        self.assertShows('(http-get-csv "%s/notes.csv" #t 0 \'() :skip 2 :missing (list "NA"))' % self.base,
+                         '(("Date" . #(2024-01-02 2024-01-03)) ("rate" . #(5.3 nan)))')
+        self.assertLispError('(http-get-csv "%s/notes.csv" :skip "Day")' % self.base, "http-get-csv: no row of")
 
     def test_text_and_errors(self):
         self.assertIn("rates", self.show('(http-get-text "%s/data.json")' % self.base))

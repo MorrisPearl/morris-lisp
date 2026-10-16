@@ -46,6 +46,7 @@ that use all this are described in
   - [Trading days (the NYSE's calendar)](#trading-days-the-nyses-calendar)
   - [Day counts and cash flows](#day-counts-and-cash-flows)
 - [Statistical models](#statistical-models)
+  - [Yield curves (the Treasury's and the Fed's)](#yield-curves-the-treasurys-and-the-feds)
   - [Regression models](#regression-models)
   - [How good is a model? The measures, explained](#how-good-is-a-model-the-measures-explained)
   - [Linear programming](#linear-programming)
@@ -182,11 +183,12 @@ string keys (read it with `hash-table-ref`), an array becomes a list,
 ; e.g. (("2026-09-23" 3.87) ("2026-09-22" 3.87) ("2026-09-21" 3.85))
 ```
 
-#### `(http-get-csv url [has-header? cache-hours headers] [:text columns])`
+#### `(http-get-csv url [has-header? cache-hours headers] [:text columns] [:skip rows] [:missing texts])`
 The CSV file at `url`, as a table, read exactly as `load-csv` reads a file:
 `:text` names the columns to keep as strings, as written, such as zip
-codes, which would lose their leading zeros as numbers (see `load-csv`, in
-the language manual).
+codes, which would lose their leading zeros as numbers; `:skip` leaves out the
+notes above the header, and `:missing` names what is read as a blank, such as
+`"NA"` (see `load-csv`, in the language manual).
 
 ```lisp
 ; Zillow's home values by zip code: the zip is RegionName (RegionID is Zillow's own number)
@@ -2657,6 +2659,203 @@ how much the duration itself changes with the yield. Together, a change
 For the statistics of a vector -- mean, standard deviation, quantiles,
 correlation -- see "Vector math and statistics", in the
 [language manual](lisp_interpreter_reference.md#vector-math-and-statistics).
+
+### Yield curves (the Treasury's and the Fed's)
+
+(In `lib/yield_curves.lsp`; its functions work without loading it.) The yield
+curve of US Treasuries from two free sources, and the zero rates and forward
+rates that a model of interest rates starts from.
+
+- **The Treasury's par yield curve** (`treasury-par-curve`): every business day
+  since 1990, the yields of Treasuries at 1 month to 30 years. Official, and out the
+  same day.
+- **The Federal Reserve's fitted curve** (`gsw-curve`, by Gürkaynak, Sack, and
+  Wright): every day since 1961, one smooth curve of six numbers (a Svensson curve)
+  fitted to all the Treasuries' prices, and the zero, par, and forward rates it
+  gives at every maturity from 1 to 30 years. It has the long history and is smooth;
+  it is a research product, not an official release, so it lags by a few days and can
+  be revised.
+
+**The words.** A bond that pays a coupon every six months is a *par* bond if it is
+worth its face value: its coupon is then its *par yield*, which is what the
+Treasury publishes. What a zero-coupon bond that pays 1 at `t` years costs now is
+the *discount factor* `D(t)`; the rate it earns, `D(t) = exp(-z t)`, is the *zero
+rate* `z` (continuously compounded here, as the Fed's are). The rate for a period
+between two dates, agreed now, is a *forward rate*: money kept from `t1` to `t2`
+grows by `D(t1) / D(t2)`. A zero rate is an average of the forward rates before it.
+
+**Bootstrapping.** Par yields are not zero rates, but give them, a step of six months
+at a time: a par bond of 6 months is worth 1 with a coupon at its end, which gives
+`D(0.5)`; one of a year has a coupon at 6 months, which `D(0.5)` values, and the face
+and a coupon at a year, which gives `D(1)`; and so on, each found from those before
+it. The yield at a step the Treasury doesn't publish, 4 years say, is on a smooth
+curve through the ones it does (`interpolate` with `:smooth #t`, which never rises above
+or falls below the points it joins): with straight lines between them, the forward rates
+that come out jump where the lines meet. A bill of less than 6 months is priced as
+`1 / (1 + yield * years)`, as its yield is quoted.
+
+The numbers are decimals everywhere here: 0.043 is 4.3% (the Treasury and the Fed
+publish percents). They are stored in 32-bit numbers, so rates computed from them are
+good to about 0.01 basis point (one 10,000th of a percent).
+
+#### `(treasury-par-curve [:start-date d :end-date d :cache-hours h])`
+The Treasury's daily par yield curve as a table, the oldest day first: a `date`
+column, and a column for each maturity -- `1m`, `1.5m`, `2m`, `3m`, `4m`, `6m`, `1y`,
+`2y`, `3y`, `5y`, `7y`, `10y`, `20y`, `30y` -- of the yield as a decimal, `nan` on a
+day when the Treasury published none for a maturity (it hasn't always published every
+one: the 20-year is missing in the early 1990s and the 30-year in 2003, and the
+1-month, 2-month, 4-month, and 1.5-month came later). From `:start-date` to `:end-date`
+(a date, or `"YYYY-MM-DD"`); by default this year so far. Each year is a download from
+the Treasury's site, kept for `:cache-hours` (12).
+
+```lisp
+(define curve (treasury-par-curve :start-date (date 2020 1 1)))
+(plot-chart (list (list "10 years" (table-column curve "date") (table-column curve "10y"))
+                  (list "2 years" (table-column curve "date") (table-column curve "2y"))))
+(table-where curve "date" (date 2026 10 15))      ; one day's curve
+```
+
+#### `(par-curve-zeros years yields)`
+The zero curve that par yields give, as a table. `years` are the maturities, rising,
+and `yields` the par yield at each as decimals; a missing one (`nan`) is left out. The
+table has a row for each maturity of less than six months and for every six months to
+the last maturity, with the columns `years`; `par`, the yield given or on a smooth
+curve through those given (and flat beyond them); `discount`, what 1 paid then is worth now;
+and `zero`, `-ln(discount) / years`. A par curve that is 4% at every maturity has
+discount factors that are powers of `1.02`, each coupon being 2% of face:
+
+```lisp
+(define flat (par-curve-zeros (vector 0.5 30) (vector 0.04 0.04)))
+(table-row-count flat)                         ; => 60
+(vector-ref (table-column flat "discount") 1)  ; => 0.96116877
+(vector-ref (table-column flat "zero") 59)     ; => 0.039605256
+(define bills (par-curve-zeros (vector 0.25 0.5 1) (vector 0.04 0.04 0.05)))
+(table-column bills "years")                   ; => #(0.25 0.5 1.0)
+(table-column bills "discount")                ; => #(0.990099 0.98039216 0.95169777)
+```
+
+#### `(treasury-zero-curve curve [:date d])`
+The zero curve of the Treasury's par curve on a day, as `par-curve-zeros` makes it:
+`curve` is a table as `treasury-par-curve` makes, and the day the last in it on or
+before `:date` -- the latest, if none is given.
+
+```lisp
+(define zeros (treasury-zero-curve curve :date (date 2026 10 15)))
+(display-table zeros '(("par" ".3%") ("discount" ".5f") ("zero" ".3%")) :max-rows 20)
+```
+
+#### `(curve-forward-rates zero-curve [:months n])`
+The one-month forward rates of a zero curve, as a table, for each month to `:months`
+(360, thirty years): `months`, `discount`, and `forward`, the rate for the month that
+ends then, as a rate for a year with monthly interest -- a month's money grows by
+`1 + forward / 12`, so `discount[month - 1] / discount[month] = 1 + forward / 12` --
+which is how `sofr-forward-curve` and the other `sofr-` functions have their
+forward rates. `zero-curve` is any table with columns `years` and `zero`, such as
+`treasury-zero-curve` and `gsw-zero-curve` make; the zero rate of each month is on a
+smooth curve through those given. The forward rates that come from the Treasury's par yields
+are rougher than the Fed's smooth curve's, which is fitted to every Treasury: the Treasury
+publishes only three maturities past 7 years (10, 20, and 30), and a wiggle in its
+yields there, such as a 20-year yield higher than the 30-year, is a swing in the forward
+rates. The example's second chart shows both.
+
+```lisp
+(define flat-zeros (make-table "years" (vector 1 30) "zero" (vector 0.05 0.05)))
+(define forwards (curve-forward-rates flat-zeros :months 3))
+(table-column forwards "months")                          ; => #(1 2 3)
+(table-column forwards "discount")                        ; => #(0.995842 0.9917013 0.9875778)
+(vector-round (table-column forwards "forward") 4)        ; => #(0.0501 0.0501 0.0501)
+```
+
+#### `(gsw-curve [:start-date d :end-date d :cache-hours h])`
+The Fed's fitted curve as a table, the oldest day first, from `:start-date` to
+`:end-date` (all of it, if they aren't given: it begins in 1961). The columns are the
+`date`; `beta0`, `beta1`, `beta2`, `beta3`, `tau1`, and `tau2`, the six numbers of the
+Svensson curve (see `svensson-zero-rates`; the betas are decimals, the taus years);
+and, for each whole number of years from 1 to 30, what the curve gives there:
+`zero-1` ... `zero-30` (the zero rate, continuously compounded), `par-1` ... `par-30`
+(the par yield), `forward-1` ... `forward-30` (the instantaneous forward rate), and
+`year-forward-1`, `-4`, and `-9` (the rate for a year that starts that many years
+ahead). A number the Fed gives as `NA` is `nan`: the curve didn't reach 30 years until
+the 1980s. The file is one download of the whole history, 6 MB, kept for
+`:cache-hours` (12).
+
+```lisp
+(define fed (gsw-curve :start-date (date 2026 1 1)))
+(table-column fed "zero-10")                  ; the 10-year zero rate, each day this year
+(plot-chart (list (list "10-year zero rate" (table-column fed "date") (table-column fed "zero-10"))))
+```
+
+#### `(gsw-parameters curve [:date d])`
+The six numbers of the Svensson curve on a day, as a list `(beta0 beta1 beta2 beta3
+tau1 tau2)`, from the last day of `curve` (a table as `gsw-curve` makes) on or before
+`:date` -- the latest, if none is given.
+
+#### `(svensson-zero-rates parameters years)`, `(svensson-forward-rates parameters years)`
+The zero rates, and the instantaneous forward rates, of the Svensson curve with
+those `parameters` (a list, as `gsw-parameters` gives it), at `years` -- a vector, or one
+number. The curve is
+
+```text
+z(t) = beta0 + beta1 s(t/tau1) + beta2 (s(t/tau1) - e^(-t/tau1)) + beta3 (s(t/tau2) - e^(-t/tau2)),   s(x) = (1 - e^-x) / x
+f(t) = beta0 + beta1 e^(-t/tau1) + beta2 (t/tau1) e^(-t/tau1) + beta3 (t/tau2) e^(-t/tau2)
+```
+
+`beta0` is the rate for the longest maturities, `beta0 + beta1` the rate for the
+shortest, and the others add a hump and a second one, where the taus say. With the
+Fed's numbers for 2026-10-09, which are, as decimals, the following, the curve gives
+what the Fed publishes: zero rates of 4.4929%, 4.7593%, 4.9865%, 5.2514%, and 5.6402%
+at 1, 2, 5, 10, and 30 years, and forward rates of 4.8753%, 5.1860%, 5.8903%, and
+4.8251% at 1, 5, 10, and 30 years:
+
+```lisp
+(define parameters (list 0.0 0.0392393143398782 0.0493949592518691 0.170123153461406
+                         1.93134743096879 15.7551507296816))
+(svensson-zero-rates parameters (vector 1 2 5 10 30))     ; => #(0.044928584 0.047593325 0.049864825 0.052514374 0.05640215)
+(svensson-forward-rates parameters (vector 1 5 10 30))    ; => #(0.048753448 0.051859632 0.058902528 0.048251)
+(svensson-zero-rates parameters 10)                       ; => 0.0525143794928097
+```
+
+#### `(gsw-zero-curve curve [:date d :months n])`
+The Fed's zero curve on a day, as a table of `years` and `zero` for each month to
+`:months` (360): the Svensson curve of that day's parameters. `curve` is a table as
+`gsw-curve` makes, and the day the last in it on or before `:date`, the latest if
+none is given. It is what `curve-forward-rates` takes, for a smooth curve of
+forward rates:
+
+```lisp
+(define forwards (curve-forward-rates (gsw-zero-curve fed)))
+(table-column forwards "forward")             ; 360 months of forward rates
+```
+
+For a model of the short rate, such as the one `sofr-calibrate-model` fits, the
+forward rates are the starting curve: `(table-column forwards "forward")` is a vector
+of 360 monthly forward rates, in the form the `sofr-` functions take (the `cdr` of what
+`sofr-bootstrap-curve` returns, built from SOFR futures). Where
+the futures end, about 5 years out, the model's curve is flat; either of these curves,
+which go to 30 years, can take it from there (`extend-forward-curve`, below), in place of
+`sofr-extend-curve-with-treasury`'s seven yields. Neither is a SOFR curve: they are
+Treasury curves, and SOFR and Treasury rates differ by a spread that isn't here.
+
+#### `(extend-forward-curve forwards real-months longer-forwards [:blend-months n])`
+The forward rates of a curve that is only known to `real-months` -- the SOFR futures'
+curve, which is flat beyond the last futures contract -- carried on by those of a longer
+curve. `forwards` and `longer-forwards` are vectors of one-month forward rates, as long
+as each other (360, say), such as the `forward` column of `curve-forward-rates`. The
+result has `forwards` for the first `real-months`, then a straight-line change over
+`:blend-months` (12) to `longer-forwards`, so that there is no jump where they meet,
+and `longer-forwards` from then on. `sofr-extend-curve-with-treasury` does the same with
+the Treasury curve of seven yields.
+
+```lisp
+(define short (make-vector 360 0.04))       ; a curve known for 5 years, flat after
+(define long (make-vector 360 0.05))        ; the longer curve
+(define both (extend-forward-curve short 60 long :blend-months 12))
+(vector-ref both 59)                        ; => 0.04
+(vector-ref both 66)                        ; => 0.045
+(vector-ref both 72)                        ; => 0.05
+```
+
+`examples/yield_curve_example.lsp` draws the Treasury's and the Fed's curves for today.
 
 ### Regression models
 

@@ -1372,6 +1372,74 @@ class TestTradingCalendar(LispTestCase):
         self.assertLispError("(nyse-holidays 0)", "the year must be a whole number")
 
 
+class TestInterpolate(LispTestCase):
+
+    def test_a_line_through_the_points_flat_beyond_them(self):
+        self.assertShows("(interpolate 7.5 (vector 5 10 30) (vector 0.5 1 2))", "0.75")
+        self.assertShows("(interpolate (vector 1 5 20 40) (vector 5 10 30) (vector 0.5 1 2))", "#(0.5 0.5 1.5 2.0)")
+        self.assertShows("(interpolate 10 (vector 5 10 30) (vector 0.5 1 2))", "1.0")            # (at a point)
+        self.assertShows("(interpolate 3 (vector 5) (vector 0.5))", "0.5")                         # (one point: flat)
+        self.assertShows("(interpolate (vector) (vector 5 10) (vector 1 2))", "#()")
+        self.assertShows("(interpolate (vector 6 7) (vector 5 10) (vector 1 2))", "#(1.2 1.4)")
+        self.assertShows("(interpolate (vector (date 2026 1 3)) (vector (date 2026 1 1) (date 2026 1 5)) (vector 0 4))", "#(2.0)")
+
+    def test_a_smooth_curve_through_the_points_that_never_overshoots_them(self):
+        self.assertShows("(interpolate (vector 6 8 10 12 14) (vector 5 10 15) (vector 0 1 0) :smooth #t)", "#(0.36 0.84 1.0 0.84 0.36)")
+        self.assertShows("(interpolate (vector 1 5 7.5 10 20 40) (vector 5 10 30) (vector 0.5 1 2) :smooth #t)",
+                         "#(0.5 0.5 0.77410716 1.0 1.6535715 2.0)")
+        self.assertShows("(interpolate 10 (vector 5 10 30) (vector 0.5 1 2) :smooth #t)", "1.0")                  # (through the points)
+        self.assertShows("(interpolate (vector 6 7 8 9) (vector 5 10) (vector 1 2) :smooth #t)", "#(1.2 1.4 1.6 1.8)")   # (two points: a line)
+        self.assertShows("(interpolate (vector 6 7) (vector 5 10) (vector 1 2) :smooth #f)", "#(1.2 1.4)")
+        self.assertShows("(interpolate 3 (vector 5) (vector 0.5) :smooth #t)", "0.5")
+        self.assertShows("(interpolate (vector 2 7) (vector 0 5 10) (vector 1 1 1) :smooth #t)", "#(1.0 1.0)")         # (a level stretch)
+        # (flat beyond the ends, and at the bottom of a dip, where the slope is 0)
+        self.assertShows("(interpolate (vector 0 5 12) (vector 1 5 10) (vector 3 0 4) :smooth #t)", "#(3.0 0.0 4.0)")
+
+    def test_the_smooth_curve_is_the_one_scipy_calls_pchip(self):
+        try:
+            from scipy.interpolate import PchipInterpolator
+        except ImportError:
+            self.skipTest("scipy isn't installed")
+        rng = np.random.default_rng(7)
+        for trial in range(40):
+            n = int(rng.integers(2, 12))
+            xs = np.sort(rng.uniform(0, 30, n)) + np.arange(n) * 0.01
+            ys = rng.normal(0, 1, n).cumsum() if trial % 2 else np.sort(rng.normal(0, 1, n))
+            wanted = np.concatenate([rng.uniform(xs[0], xs[-1], 30), [xs[0] - 1, xs[-1] + 2]])
+            self.env[lisp_core.Symbol("wanted")] = lisp_vector_math.to_vector(wanted)
+            self.env[lisp_core.Symbol("xs")] = lisp_vector_math.to_vector(xs)
+            self.env[lisp_core.Symbol("ys")] = lisp_vector_math.to_vector(ys)
+            mine = self.run_lisp("(interpolate wanted xs ys :smooth #t)").items.astype(float)
+            expected = PchipInterpolator(xs, ys)(np.clip(wanted, xs[0], xs[-1]))             # (flat beyond the ends)
+            np.testing.assert_allclose(mine, expected, atol=2e-6 * (1 + np.abs(ys).max()), err_msg=str(trial))
+
+    def test_the_smooth_curve_does_not_go_above_or_below_the_points_it_joins_either_side(self):
+        rng = np.random.default_rng(8)
+        for trial in range(40):
+            xs = np.sort(rng.uniform(0, 30, 8)) + np.arange(8) * 0.01
+            ys = rng.normal(0, 1, 8)
+            wanted = np.linspace(xs[0], xs[-1], 400)
+            self.env[lisp_core.Symbol("wanted")] = lisp_vector_math.to_vector(wanted)
+            self.env[lisp_core.Symbol("xs")] = lisp_vector_math.to_vector(xs)
+            self.env[lisp_core.Symbol("ys")] = lisp_vector_math.to_vector(ys)
+            found = self.run_lisp("(interpolate wanted xs ys :smooth #t)").items.astype(float)
+            for i in range(7):                                                  # between each two points
+                inside = (wanted >= xs[i]) & (wanted <= xs[i + 1])
+                self.assertTrue((found[inside] <= max(ys[i], ys[i + 1]) + 1e-6).all(), (trial, i))
+                self.assertTrue((found[inside] >= min(ys[i], ys[i + 1]) - 1e-6).all(), (trial, i))
+
+    def test_what_it_will_not_take(self):
+        self.assertLispError("(interpolate 1 (vector 5 10) (vector 1 2) :smooth)", "after the first arguments come :name value pairs")
+        self.assertLispError("(interpolate 1 (vector 5 10) (vector 1 2) :rough #t)", ":rough isn't an option")
+        self.assertLispError("(interpolate 1 (vector 5 10) (vector 1))", "as many numbers as each other")
+        self.assertLispError("(interpolate 1 (vector) (vector))", "at least one")
+        self.assertLispError("(interpolate 1 (vector 10 5) (vector 1 2))", "xs must rise")
+        self.assertLispError("(interpolate 1 (vector 5 5) (vector 1 2))", "xs must rise")
+        self.assertLispError("(interpolate 1 (vector 5 nan) (vector 1 2))", "must not have a missing number")
+        self.assertLispError("(interpolate 1 (vector 5 10) (vector 1 nan))", "must not have a missing number")
+        self.assertLispError('(interpolate "a" (vector 5 10) (vector 1 2))', "x must be a number")
+
+
 class TestTablesOfBuiltins(unittest.TestCase):
 
     def test_no_name_is_in_two_tables_of_builtins(self):

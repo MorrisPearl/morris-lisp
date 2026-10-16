@@ -894,6 +894,26 @@ class TestCsvFiles(LispTestCase):
         self.assertLispError('(load-csv "%s" #t #t :text "fips")' % path, "expected at most 2 argument(s)")
         self.assertLispError('(load-csv "%s" :txt "fips")' % path, ":txt isn't an option")
 
+    def test_notes_above_the_header_are_skipped_and_texts_read_as_blank(self):
+        path = self.write("notes.csv", 'Note: "a, b"\n\nSeries,Date\nDate,a,b\n2024-01-02,1.5,NA\n2024-01-03, NA ,3\n')
+        self.assertShows('(load-csv "%s" :skip 3 :missing "NA")' % path,
+                         '(("Date" . #(2024-01-02 2024-01-03)) ("a" . #(1.5 nan)) ("b" . #(nan 3.0)))')
+        self.assertShows('(load-csv "%s" :skip "Date" :missing (list "NA"))' % path,           # (up to the header row's first cell)
+                         '(("Date" . #(2024-01-02 2024-01-03)) ("a" . #(1.5 nan)) ("b" . #(nan 3.0)))')
+        self.assertShows('(table-column (load-csv "%s" :skip "Date") "b")' % path, '#("NA" "3")')   # (without :missing, the "NA" makes the column text)
+        self.assertShows('(load-csv "%s" #f :skip 4 :missing "NA")' % path,
+                         '(("Column1" . #(2024-01-02 2024-01-03)) ("Column2" . #(1.5 nan)) ("Column3" . #(nan 3.0)))')
+        # a missing text is a blank in a :text column, too
+        self.assertShows('(table-column (load-csv "%s" :skip 3 :text "a" :missing "NA") "a")' % path, '#("1.5" ())')
+        self.assertLispError('(load-csv "%s" :skip "Dat")' % path, "no row of")
+        self.assertLispError('(load-csv "%s" :skip "Dat")' % path, "begins with Dat")
+        self.assertLispError('(load-csv "%s" :skip -1)' % path, ":skip must be a number of rows, or the text that the header row begins with")
+        self.assertLispError('(load-csv "%s" :skip 1.5)' % path, ":skip must be a number of rows")
+        self.assertLispError('(load-csv "%s" :skip #t)' % path, ":skip must be a number of rows")
+        self.assertLispError('(load-csv "%s" :skip 99)' % path, "is empty")
+        self.assertLispError('(load-csv "%s" :missing 5)' % path, ":missing must be a text, or a list of them, not 5")
+        self.assertLispError('(load-csv "%s" :missing (list "NA" 5))' % path, ":missing must be a text, or a list of them")
+
     def test_write_then_read_back(self):
         path = os.path.join(self.dir, "out.csv")
         self.run_lisp('''(write-columns-csv "%s" (make-table "id" (vector "a" "b")

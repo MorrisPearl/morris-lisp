@@ -62,34 +62,62 @@ def _column_vector(texts, as_text=False):
     return LispVector([LispString(t) if t != "" else NIL for t in stripped])
 
 
+def _texts(value, option, what, who):
+    """An option's value -- a text, or a list of them -- as a list of strings."""
+    if isinstance(value, str):
+        texts = [value]
+    elif value is NIL or isinstance(value, Pair):
+        texts = pairs_to_list(value)
+    else:
+        raise LispError("%s: :%s must be %s, or a list of them, not %s" % (who, option, what, to_display_string(value)))
+    for text in texts:
+        if not isinstance(text, str):
+            raise LispError("%s: :%s must be %s, or a list of them, not %s" % (who, option, what, to_display_string(text)))
+    return [str(text) for text in texts]
+
+
 def csv_arguments(arguments, most_positional, who):
     """load-csv's or http-get-csv's optional arguments: the positional ones,
-    before the first keyword (at most most_positional of them), as a list;
-    and the names of the :text columns, as a list of strings (none, if
-    :text isn't given). :text is a column's name, or a list of them."""
+    before the first keyword (at most most_positional of them), as a list; and
+    the keyword options, as a dict:
+      "text"     the names of the columns to keep as strings, a list (none, if :text isn't given)
+      "skip"     the rows above the header to leave out: a number, or the text its first cell is (0, if no :skip)
+      "missing"  the texts to read as blanks, a list (none, if :missing isn't given)"""
     first_keyword = next((i for i, a in enumerate(arguments) if isinstance(a, Keyword)), len(arguments))
     if first_keyword > most_positional:
         raise LispError("%s: expected at most %d argument(s) before the keyword options, not %d"
                         % (who, most_positional + 1, first_keyword + 1))
-    options = keyword_options(arguments[first_keyword:], ["text"], who)
-    names = options.get("text", NIL)
-    if isinstance(names, str):
-        names = [names]
-    elif names is NIL or isinstance(names, Pair):
-        names = pairs_to_list(names)
-    else:
-        raise LispError("%s: :text must be a column's name, or a list of them, not %s" % (who, to_display_string(names)))
-    for name in names:
-        if not isinstance(name, str):
-            raise LispError("%s: :text must be a column's name, or a list of them, not %s"
-                            % (who, to_display_string(name)))
-    return list(arguments[:first_keyword]), [str(name) for name in names]
+    options = keyword_options(arguments[first_keyword:], ["text", "skip", "missing"], who)
+    skip = options.get("skip", 0)
+    if isinstance(skip, bool) or not (isinstance(skip, (str, int)) and (isinstance(skip, str) or skip >= 0)):
+        raise LispError("%s: :skip must be a number of rows, or the text that the header row begins with, not %s"
+                        % (who, to_display_string(skip)))
+    return list(arguments[:first_keyword]), {
+        "text": _texts(options.get("text", NIL), "text", "a column's name", who),
+        "skip": str(skip) if isinstance(skip, str) else skip,
+        "missing": _texts(options.get("missing", NIL), "missing", "a text", who)}
 
 
-def table_from_csv_rows(rows, has_header, source, text_columns=(), who="load-csv"):
+def _rows_below(rows, skip, source, who):
+    """The rows from the header on: without the first `skip` rows, or the rows above the first one whose first cell is
+    the text skip."""
+    if isinstance(skip, int):
+        return rows[skip:]
+    for number, row in enumerate(rows):
+        if row and row[0].strip() == skip:
+            return rows[number:]
+    raise LispError("%s: no row of %s begins with %s" % (who, source, skip))
+
+
+def table_from_csv_rows(rows, has_header, source, options=None, who="load-csv"):
     """A table from the rows of a CSV file (lists of strings). `source`
-    names the file or URL in error messages. The columns named in
-    text_columns are strings, as written, whatever their values look like."""
+    names the file or URL in error messages. options is what csv_arguments
+    gives: the :text columns are strings, as written, whatever their values
+    look like; the :skip rows above the header are left out; and the :missing
+    texts are blanks."""
+    options = options or {"text": [], "skip": 0, "missing": []}
+    text_columns = options["text"]
+    rows = _rows_below(rows, options["skip"], source, who)
     if not rows:
         raise LispError("load-csv: %s is empty" % source)
     if has_header:
@@ -105,7 +133,9 @@ def table_from_csv_rows(rows, has_header, source, text_columns=(), who="load-csv
     if missing:
         raise LispError("%s: :text names %s, which %s a column of %s"
                         % (who, ", ".join(missing), "isn't" if len(missing) == 1 else "aren't", source))
-    padded = [row + [""] * (n_columns - len(row)) for row in data_rows]
+    blank = set(options["missing"])
+    padded = [[("" if cell.strip() in blank else cell) for cell in row] + [""] * (n_columns - len(row))
+              for row in data_rows]
     columns = []
     for c, name in enumerate(header):
         columns.append(Pair(LispString(name), _column_vector([row[c] for row in padded], name in text_columns)))
@@ -113,22 +143,25 @@ def table_from_csv_rows(rows, has_header, source, text_columns=(), who="load-csv
 
 
 def load_csv_fn(filename, *arguments):
-    """(load-csv filename [has-header?] [:text columns]) -- a CSV file as a
+    """(load-csv filename [has-header?] [:text columns] [:skip rows] [:missing texts]) -- a CSV file as a
     table: a list of (name . vector) columns, the same shape sqlite-query
     returns. A column of numbers becomes a numeric vector (blanks are NaN); a
     column of dates (YYYY-MM-DD or MM/DD/YYYY) becomes a vector of dates;
     anything else becomes a vector of strings (blanks are '()). The :text
     columns -- a name, or a list of names -- are strings as written, whatever
     they look like: zip codes, say, which would lose their leading zeros as
-    numbers. With has-header? #f, the columns are named Column1, Column2, ..."""
-    positional, text_columns = csv_arguments(arguments, 1, "load-csv")
+    numbers. With has-header? #f, the columns are named Column1, Column2, ... :skip
+    leaves out the rows above the header -- notes, say -- a number of them, or the text
+    that the header row begins with. :missing -- a text, or a list of them, such as "NA"
+    -- names what is read as a blank."""
+    positional, options = csv_arguments(arguments, 1, "load-csv")
     has_header = positional[0] if positional else True
     try:
         with open(str(filename), newline="") as f:
             rows = list(csv.reader(f))
     except OSError as e:
         raise LispError("load-csv: could not open %r: %s" % (str(filename), e))
-    return table_from_csv_rows(rows, has_header is not False, repr(str(filename)), text_columns)
+    return table_from_csv_rows(rows, has_header is not False, repr(str(filename)), options)
 
 
 def parse_column_pairs(name_value_pairs):

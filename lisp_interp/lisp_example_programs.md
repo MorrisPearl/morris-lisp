@@ -155,6 +155,7 @@ files in `examples/` and `lib/` from anywhere:
 | File | What it shows | Needs |
 |---|---|---|
 | `fred_example.lsp`, `sec_example.lsp`, `fdic_example.lsp`, `census_bls_example.lsp`, `bea_example.lsp` | one data source each | the source's key |
+| `yield_curve_example.lsp` | today's Treasury yield curve from the Treasury and from the Fed: zero rates and forward rates, charted | nothing: free downloads |
 | `map_example.lsp` | maps colored by a value | Census and BEA keys |
 | `plot_chart_example.lsp` | `plot-chart`: lines, symbols, bars, categories, two axes | nothing |
 
@@ -1353,6 +1354,14 @@ section for each is in the [library manual](lisp_library_reference.md#getting-da
 `census_bls_example.lsp` and `bea_example.lsp` show how the sources fit together: the
 data functions return **tables**, so a Census table and a BEA table can be matched on a
 shared key and charted, as `map_example.lsp` does.
+
+`yield_curve_example.lsp` needs no key: it downloads the Treasury's daily par yield curve and
+the Federal Reserve's fitted curve (`treasury-par-curve`, `gsw-curve`), works out the zero
+rates of each -- the Treasury's by bootstrapping its par yields, the Fed's from its six-number
+Svensson curve -- and charts them together, then the one-month forward rates a model of interest
+rates starts from. The Treasury's are rougher than the Fed's smooth ones, as the second chart
+shows. The functions are in the library manual's
+[Yield curves](lisp_library_reference.md#yield-curves-the-treasurys-and-the-feds) section.
 
 `plot_chart_example.lsp` needs nothing, and is a tour of `plot-chart` in eleven small
 charts: a monthly line over grouped quarterly bars on one date axis; stacked bars with
