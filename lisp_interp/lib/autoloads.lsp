@@ -57,6 +57,9 @@
   gsw-parameters gsw-zero-curve
   svensson-zero-rates svensson-forward-rates)
 
+; Options on the 10-year note future (ZN), as the rows the rate model is fitted to
+(lazy-load "note_options.lsp" note-option-rows)
+
 ; Call spreads: the best pair of calls to buy and sell (the bull-call kind of the above), and the order for it
 (lazy-load "call_spreads.lsp"
   call-spreads call-spreads-for-chain show-call-spreads call-spread-order plot-call-spreads)

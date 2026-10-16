@@ -22,6 +22,14 @@ three steps:
      the model's option prices match a set of real market option prices
      you supply (works with either option pricer above via `price_fn`).
 
+  3b. price_note_future_options_mc(...) / calibrate_note_options(...) /
+      calibrate_sofr_and_note_options(...)
+     A second way to price options on the 10-year note future, built for
+     fitting the model to real ZN options: it centers the paths on today's
+     Treasury curve, steps by the day, and fits relative volatility errors
+     (see "Step 3b" below). The last function fits it together with the
+     SOFR options.
+
 This module is deliberately free of any network/broker dependency -- it
 only ever sees plain numbers. Real market data (SOFR futures prices,
 option quotes) is fetched separately by sofr_market_data.py, which
@@ -33,6 +41,8 @@ starting with "SIMPLIFICATION:". Read those before using this for anything
 beyond learning / prototyping. No exotic libraries are used -- just numpy
 for arrays and plain Python loops, so every step can be traced by hand.
 """
+
+import math
 
 import numpy as np
 
@@ -1077,6 +1087,528 @@ def calibrate_sofr_model_nelder_mead(forward_rates, options, curve_real_months,
     a, sigma1, sigma2 = np.exp(best_log_params)
     theta_bar = _fit_sofr_theta_bar(forward_rates, curve_real_months, a=a)
     return float(a), theta_bar, float(sigma1), float(sigma2), float(best_error)
+
+
+# ---------------------------------------------------------------------------
+# Step 3b: options on the 10-year note future (ZN), and calibrating to them
+# ---------------------------------------------------------------------------
+#
+# WHY. SOFR futures options (step 2b) tell the model how much the SHORT rate
+# moves. A mortgage depends on the LONG end, and a 10-year note option says
+# how much that moves -- directly, instead of through the model's structure.
+# In this model the 10-year yield is about 10% short-rate factor and 90%
+# mean-reversion-level factor (at a = 1), so these options mostly pin down
+# sigma2, the volatility of the level factor. They say little about sigma1,
+# and nothing about b, since the options go out only a few months. So they
+# are best fit TOGETHER with the SOFR options (calibrate_sofr_and_note_options).
+#
+# THE IDEA. Simulate the model's two factors forward by Monte Carlo, from
+# them work out the price of a note at each option's expiry, and price the
+# option as the average discounted payoff over the paths. Then vary the
+# parameters until the model's prices are near the market's. Four things make
+# that work for a note future, and are different from the SOFR options above:
+#
+#   1. TODAY'S CURVE IS THE CENTER. The model's own starting curve
+#      (theta_bar and r0, blended exponentially) is too crude to match a
+#      note: on one real day it priced the 6% 10-year note at 99.3, where
+#      today's curve says 107.0 and the market's future said 105.6 -- a
+#      six-point error, many times the premium of an at-the-money option
+#      (about 0.9 points), which no volatility could fix. So the simulation
+#      here keeps only the DEVIATIONS of the factors from their expected paths
+#      (delta_r, delta_theta, which start at 0, and follow the same dynamics as
+#      _simulate_two_factor_paths(): theta_bar drops out), and adds them to
+#      the forward rates the market gives today:
+#           f(T, T+tau) = f_market(0, T+tau) + delta_theta * (1 - exp(-a tau))
+#                                            + delta_r * exp(-a tau)
+#      -- the model's randomness around the market's own forward curve.
+#
+#   2. THE NOTE. A future on the 10-year note is settled by delivering any of
+#      several notes, usually the cheapest, whose remaining maturity is not
+#      ten years but 6.5 to 8 (CME's specification for the 10-Year T-Note
+#      contract: at least 6 years 6 months and not more than 8 years from the
+#      first day of the delivery month). Its price moves like a note of about
+#      7 years' maturity, so the curve at 7 years, not at 10, is what matters.
+#      SIMPLIFICATION: the future is a single representative note of
+#      ctd_maturity_years (6.75) remaining at the option's expiry, with a
+#      coupon that makes it a par bond on the forward curve, rather than a
+#      basket with a cheapest-to-deliver switch.
+#
+#   3. THE FUTURE'S LEVEL. The note's model price is scaled, at each expiry, so
+#      that its average over the paths is the future's price today. A future
+#      is marked to market every day, so its price is a martingale: its
+#      expected value at any date is today's price. The one scale absorbs what
+#      isn't modeled -- the conversion factor, the basis, the carry, and the
+#      convexity -- leaving the model to say how widely the price is spread
+#      around it.
+#
+#   4. TIME IN DAYS. These options expire from one week to four months out,
+#      so the paths step by the day, and an option expires on its own day, not
+#      the month's end. (The monthly steps of the rest of this file would put
+#      a 36-day option's expiry at 30 days.) SIMPLIFICATION: like the other
+#      pricers here, these prices are European (the real options are American).
+#
+# CALIBRATING. The error is in volatility, not price: each option's error is
+# (model price - market price) / (its vega times its own volatility), the
+# relative error of its volatility (a normal -- Bachelier -- volatility, in
+# price points). That makes a 2-point option and a 0.1-point option, on
+# different instruments, comparable, and keeps far out-of-the-money options,
+# whose price barely depends on volatility, from counting: only the options
+# within moneyness_window standard deviations of the money are used.
+
+DAYS_PER_YEAR = 365.0
+DEFAULT_CTD_MATURITY_YEARS = 6.75
+
+
+def _normal_pdf(x):
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+
+def _normal_cdf(x):
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _bachelier_price(option_type, forward, strike, vol, years, discount):
+    """
+    The price of a European option on a forward price that moves as
+    Brownian motion (volatility `vol` in price points per year) -- Bachelier's
+    formula -- times `discount`, the discount factor to the option's expiry
+    (the premium is paid now). Used only to put prices on a common footing
+    (see CALIBRATING above), not to price the options in the model.
+    """
+    spread = vol * math.sqrt(years)
+    d = (forward - strike) / spread
+    intrinsic = (forward - strike) if option_type == 'call' else (strike - forward)
+    sign = 1.0 if option_type == 'call' else -1.0
+    return discount * (intrinsic * _normal_cdf(sign * d) + spread * _normal_pdf(d))
+
+
+def _bachelier_vega(forward, strike, vol, years, discount):
+    """How much the price changes for one point of volatility (see _bachelier_price)."""
+    spread = vol * math.sqrt(years)
+    return discount * math.sqrt(years) * _normal_pdf((forward - strike) / spread)
+
+
+def _implied_normal_vol(option_type, price, forward, strike, years, discount):
+    """
+    The volatility (price points per year) at which _bachelier_price() gives
+    `price`: found by bisection (the price rises with volatility), NaN where
+    none does -- a price at or below the option's intrinsic value, say.
+    """
+    intrinsic = discount * max((forward - strike) if option_type == 'call' else (strike - forward), 0.0)
+    if not price > intrinsic + 1e-9:
+        return float('nan')
+    high = max(abs(forward - strike), 1.0)
+    while _bachelier_price(option_type, forward, strike, high, years, discount) < price and high < 1e6:
+        high *= 2.0
+    return _bisection(lambda v: _bachelier_price(option_type, forward, strike, v, years, discount) - price,
+                      1e-9, high, tol=1e-10)
+
+
+def _market_discount_factors(forward_rates, years):
+    """
+    D(0, t) for each t in `years` (an array), from the monthly forward rates:
+    the product of 1 / (1 + f / 12) over the months, with the log of the
+    discount factor on a straight line between month ends. The curve must
+    reach as far as the latest t.
+    """
+    forward = np.asarray(forward_rates, dtype=float)
+    if np.max(years) * MONTHS_PER_YEAR > len(forward) + 1e-9:
+        raise ValueError(f"the forward curve ends at {len(forward) / MONTHS_PER_YEAR:.1f} years, "
+                         f"before the {np.max(years):.1f} years that are needed")
+    month_ends = np.arange(len(forward) + 1)
+    log_discount = np.concatenate(([0.0], np.cumsum(-np.log1p(forward / MONTHS_PER_YEAR))))
+    return np.exp(np.interp(np.asarray(years, dtype=float) * MONTHS_PER_YEAR, month_ends, log_discount))
+
+
+def _note_cash_flow_times(maturity_years):
+    """The times (years from the note's start date, rising) of a note's coupons: every six months back from its maturity."""
+    count = int(np.ceil(maturity_years * 2 - 1e-9))
+    return maturity_years - 0.5 * np.arange(count - 1, -1, -1)
+
+
+def _forward_par_coupon(forward_rates, expiry_years, maturity_years):
+    """
+    The coupon (an annual rate, paid semiannually) that makes a note of
+    maturity_years a par bond on the market's forward curve as of expiry_years
+    from now: the one for which its price there is 1.
+    """
+    times = _note_cash_flow_times(maturity_years)
+    discount = _market_discount_factors(forward_rates, expiry_years + times) / \
+        _market_discount_factors(forward_rates, [expiry_years])[0]
+    return float(2.0 * (1.0 - discount[-1]) / np.sum(discount))
+
+
+def _note_cash_flows(maturity_years, coupon):
+    """The note's cash flows per 100 of face, at _note_cash_flow_times()."""
+    flows = np.full(len(_note_cash_flow_times(maturity_years)), 100.0 * coupon / 2.0)
+    flows[-1] += 100.0
+    return flows
+
+
+def _note_prices_at_expiry(forward_rates, expiry_years, delta_r, delta_theta, a, maturity_years, coupon):
+    """
+    The price, per 100 of face, of a note of maturity_years remaining and the
+    given coupon, at expiry_years from now, for each Monte Carlo path (its
+    delta_r and delta_theta: numpy arrays).
+
+    Its discount factors come from the curve of the model (see THE IDEA above):
+    the market's forward rates for those dates, plus deviations that fade from
+    delta_r at the near end to delta_theta at the far end. With continuously
+    compounded forwards that is closed-form:
+        D(T, T+tau) = D_market(T, T+tau) * exp(-delta_theta * A(tau) - delta_r * B(tau))
+        B(tau) = (1 - exp(-a tau)) / a,        A(tau) = tau - B(tau)
+    (the integrals of exp(-a s) and of 1 - exp(-a s) over s from 0 to tau).
+    """
+    times = _note_cash_flow_times(maturity_years)
+    market = _market_discount_factors(forward_rates, expiry_years + times) / \
+        _market_discount_factors(forward_rates, [expiry_years])[0]
+    b_of_tau = -np.expm1(-a * times) / a
+    a_of_tau = times - b_of_tau
+    discount = market[None, :] * np.exp(-np.outer(delta_theta, a_of_tau) - np.outer(delta_r, b_of_tau))
+    return discount @ _note_cash_flows(maturity_years, coupon)
+
+
+def _note_duration(forward_rates, expiry_years, maturity_years, coupon):
+    """
+    The duration of the note at expiry_years, on the market's curve: the fraction by which its price falls for a
+    rise of 1 in all the (continuously compounded) forward rates -- the average time of its cash flows, weighted
+    by their present values.
+    """
+    times = _note_cash_flow_times(maturity_years)
+    present_values = _note_cash_flows(maturity_years, coupon) * _market_discount_factors(forward_rates, expiry_years + times)
+    return float(np.sum(present_values * times) / np.sum(present_values))
+
+
+def _simulate_deviations(expiry_days, sigma1, sigma2, a, b, n_paths, seed):
+    """
+    Monte Carlo paths of the deviations of the two factors from their expected
+    paths, a day at a time (Euler steps, as _simulate_two_factor_paths()
+    takes its monthly steps):
+        d(delta_r)     = a * (delta_theta - delta_r) * dt + sigma1 * sqrt(dt) * dW1
+        d(delta_theta) = -b * delta_theta * dt           + sigma2 * sqrt(dt) * dW2
+    Half the paths are the mirror images of the other half (antithetic), which
+    makes their average closer to its expected value.
+
+    Returns a dict from each day in expiry_days to (delta_r, delta_theta,
+    discount_adjustment) at the end of that day, each an array with an
+    entry per path. discount_adjustment = exp(-sum of delta_r * dt): what the
+    paths' deviations do to the market's discount factor to that day.
+    """
+    wanted = set(expiry_days)
+    rng = np.random.default_rng(seed)
+    half = (n_paths + 1) // 2
+    dt = 1.0 / DAYS_PER_YEAR
+    delta_r = np.zeros(2 * half)
+    delta_theta = np.zeros(2 * half)
+    integral = np.zeros(2 * half)
+    found = {}
+    for day in range(1, max(wanted) + 1):
+        z1 = rng.standard_normal(half)
+        z2 = rng.standard_normal(half)
+        z1 = np.concatenate([z1, -z1])
+        z2 = np.concatenate([z2, -z2])
+        integral += delta_r * dt
+        new_delta_r = delta_r + a * (delta_theta - delta_r) * dt + sigma1 * np.sqrt(dt) * z1
+        delta_theta = delta_theta - b * delta_theta * dt + sigma2 * np.sqrt(dt) * z2
+        delta_r = new_delta_r
+        if day in wanted:
+            found[day] = (delta_r.copy(), delta_theta.copy(), np.exp(-integral))
+    return found
+
+
+def _expiry_day(option):
+    """The option's expiry as a whole number of days from today (at least 1)."""
+    return max(1, int(round(option['expiry_years'] * DAYS_PER_YEAR)))
+
+
+def price_note_future_options_mc(forward_rates, options, sigma1, sigma2,
+                                  a=SHORT_RATE_REVERSION_SPEED, b=MEAN_LEVEL_REVERSION_SPEED,
+                                  n_paths=10000, seed=42,
+                                  ctd_maturity_years=DEFAULT_CTD_MATURITY_YEARS, ctd_coupon=None):
+    """
+    Monte Carlo prices of options on the 10-year note future, as an array with
+    a price per option, every price from the same Monte Carlo paths (a single
+    simulation to the latest expiry), so that the prices of different strikes
+    and expiries are made from the same random numbers. See THE IDEA above.
+
+    options: a list of dicts with keys
+        'type'          -- 'call' or 'put'
+        'strike'        -- strike, in futures price points (e.g. 105.5)
+        'expiry_years'  -- time from today until the option expires, in years
+                           (calendar days / 365)
+        'futures_price' -- today's price of the future the option is on
+    forward_rates: the market's monthly forward rates, the curve the paths
+        are centered on (use the Treasury's: see THE IDEA above).
+    a, b, sigma1, sigma2: the model's parameters (the short rate's mean
+        reversion speed, the level factor's, and their volatilities).
+    n_paths: the number of paths (even; an odd number is rounded up).
+    ctd_maturity_years, ctd_coupon: the representative note the future
+        is taken to be: its remaining maturity at the option's expiry, and
+        its coupon (by default the one that makes it a par bond on the
+        forward curve at that date).
+    """
+    prices = np.zeros(len(options))
+    days = [_expiry_day(o) for o in options]
+    found = _simulate_deviations(days, sigma1, sigma2, a, b, n_paths, seed)
+    for day in sorted(set(days)):
+        expiry_years = day / DAYS_PER_YEAR
+        delta_r, delta_theta, adjustment = found[day]
+        coupon = ctd_coupon if ctd_coupon is not None else _forward_par_coupon(
+            forward_rates, expiry_years, ctd_maturity_years)
+        note = _note_prices_at_expiry(forward_rates, expiry_years, delta_r, delta_theta, a, ctd_maturity_years, coupon)
+        relative = note / note.mean()                      # the future's price over today's: its average is 1
+        discount = _market_discount_factors(forward_rates, [expiry_years])[0] * adjustment
+        for i, option in enumerate(options):
+            if days[i] != day:
+                continue
+            futures = option['futures_price'] * relative
+            if option['type'] == 'call':
+                payoffs = np.maximum(futures - option['strike'], 0.0)
+            else:
+                payoffs = np.maximum(option['strike'] - futures, 0.0)
+            prices[i] = float(np.mean(discount * payoffs))
+    return prices
+
+
+def _market_view(forward_rates, option):
+    """
+    What the option's own market price says, as (discount, vol, weight,
+    moneyness): the discount factor to its expiry; its normal volatility
+    (price points per year); the weight that turns a price error into a
+    relative volatility error, 1 / (vega * volatility); and how far the strike
+    is from the future's price, in standard deviations of the price over
+    the option's life. Where the price has no volatility (see
+    _implied_normal_vol()), vol and weight are NaN and moneyness is infinite.
+    """
+    discount = _market_discount_factors(forward_rates, [option['expiry_years']])[0]
+    forward = option['futures_price']
+    vol = _implied_normal_vol(option['type'], option['market_price'], forward, option['strike'], option['expiry_years'], discount)
+    if not np.isfinite(vol):
+        return discount, float('nan'), float('nan'), float('inf')
+    vega = _bachelier_vega(forward, option['strike'], vol, option['expiry_years'], discount)
+    weight = 1.0 / (vega * vol)
+    moneyness = abs(forward - option['strike']) / (vol * math.sqrt(option['expiry_years']))
+    return discount, vol, weight, moneyness
+
+
+def _usable_note_options(forward_rates, options, min_expiry_years, moneyness_window):
+    """The options a calibration can use, with their weights: those that have a volatility, are at least min_expiry_years from expiry, and are within moneyness_window standard deviations of the money. Returns (options, weights)."""
+    usable, weights = [], []
+    for option in options:
+        if option['expiry_years'] < min_expiry_years:
+            continue
+        _, _, weight, moneyness = _market_view(forward_rates, option)
+        if np.isfinite(weight) and moneyness <= moneyness_window:
+            usable.append(option)
+            weights.append(weight)
+    return usable, np.array(weights)
+
+
+def note_option_comparison(forward_rates, options, sigma1, sigma2,
+                            a=SHORT_RATE_REVERSION_SPEED, b=MEAN_LEVEL_REVERSION_SPEED,
+                            n_paths=10000, seed=42,
+                            ctd_maturity_years=DEFAULT_CTD_MATURITY_YEARS, ctd_coupon=None):
+    """
+    The model's prices of the options next to their market prices (each option's
+    dict has 'market_price' too), as a list of dicts with the keys 'type',
+    'strike', 'expiry_years', 'futures_price', 'market_price', 'model_price',
+    'market_vol' and 'model_vol' (the normal volatility each price gives, in
+    price points per year), 'market_yield_vol' and 'model_yield_vol' (the same
+    as a volatility of the yield of the note the future is taken to be, in
+    basis points a year: the price volatility over the price and the note's
+    duration), 'duration', and 'error' (the relative error of the model's
+    volatility, (model_vol - market_vol) / market_vol).
+    """
+    prices = price_note_future_options_mc(forward_rates, options, sigma1, sigma2, a=a, b=b, n_paths=n_paths,
+                                          seed=seed, ctd_maturity_years=ctd_maturity_years, ctd_coupon=ctd_coupon)
+    rows = []
+    for option, price in zip(options, prices):
+        discount, market_vol, _, _ = _market_view(forward_rates, option)
+        model_vol = _implied_normal_vol(option['type'], float(price), option['futures_price'], option['strike'],
+                                         option['expiry_years'], discount)
+        coupon = ctd_coupon if ctd_coupon is not None else _forward_par_coupon(
+            forward_rates, option['expiry_years'], ctd_maturity_years)
+        duration = _note_duration(forward_rates, option['expiry_years'], ctd_maturity_years, coupon)
+        row = dict(option)
+        row.update({
+            'model_price': float(price), 'market_vol': market_vol, 'model_vol': model_vol, 'duration': duration,
+            'market_yield_vol': 1e4 * market_vol / (option['futures_price'] * duration),
+            'model_yield_vol': 1e4 * model_vol / (option['futures_price'] * duration),
+            'error': (model_vol - market_vol) / market_vol,
+        })
+        rows.append(row)
+    return rows
+
+
+def calibrate_note_options(forward_rates, options, fit=('sigma2',),
+                            a=SHORT_RATE_REVERSION_SPEED, b=MEAN_LEVEL_REVERSION_SPEED,
+                            sigma1=0.01, sigma2=0.01,
+                            n_paths=10000, seed=42,
+                            ctd_maturity_years=DEFAULT_CTD_MATURITY_YEARS, ctd_coupon=None,
+                            min_expiry_years=10.0 / DAYS_PER_YEAR, moneyness_window=2.0,
+                            max_iter=100):
+    """
+    Find the parameters in `fit` -- any of 'a', 'b', 'sigma1', 'sigma2' --
+    for which the model's prices of the options (see
+    price_note_future_options_mc(), whose options and other arguments
+    these are; each option also has a 'market_price') are as close to the
+    market's as possible, in the sense of CALIBRATING above: the root mean
+    square of the options' relative volatility errors. The parameters not in
+    `fit` keep the values given, which are also where the search of those that
+    are starts. It is a Nelder-Mead search (_nelder_mead()) in the logarithms of
+    the parameters, so none can go to 0 or below.
+
+    The same random numbers are used for every set of parameters tried, so
+    the Monte Carlo noise is the same at each, and the error is a smooth
+    function of the parameters; the price of that is that the fit has the
+    noise of those numbers in it. More paths make it less (the error of a price
+    falls as the square root of their number).
+
+    Only the options that are at least min_expiry_years from expiry and within
+    moneyness_window standard deviations of the money are used (see
+    CALIBRATING above).
+
+    Returns a dict with the keys 'a', 'b', 'sigma1', 'sigma2' (their values
+    at the best fit), 'error' (the root mean square relative volatility error
+    there), 'options_used', and 'evaluations' (how many sets of parameters
+    were tried).
+    """
+    for name in fit:
+        if name not in ('a', 'b', 'sigma1', 'sigma2'):
+            raise ValueError(f"fit is a list of 'a', 'b', 'sigma1', 'sigma2', not {name!r}")
+    if not fit:
+        raise ValueError("fit names no parameter to fit")
+    usable, weights = _usable_note_options(forward_rates, options, min_expiry_years, moneyness_window)
+    if not usable:
+        raise ValueError("no option can be used to calibrate: each needs a market price above its intrinsic value, "
+                         f"to be at least {min_expiry_years * DAYS_PER_YEAR:.0f} days from expiry and to be within "
+                         f"{moneyness_window} standard deviations of the money")
+    values = {'a': a, 'b': b, 'sigma1': sigma1, 'sigma2': sigma2}
+    market = np.array([o['market_price'] for o in usable])
+    evaluations = [0]
+
+    def error_with(parameters):
+        prices = price_note_future_options_mc(
+            forward_rates, usable, parameters['sigma1'], parameters['sigma2'], a=parameters['a'], b=parameters['b'],
+            n_paths=n_paths, seed=seed, ctd_maturity_years=ctd_maturity_years, ctd_coupon=ctd_coupon)
+        evaluations[0] += 1
+        return float(np.sqrt(np.mean(((prices - market) * weights) ** 2)))
+
+    def objective(log_values):
+        parameters = dict(values)
+        parameters.update({name: float(np.exp(x)) for name, x in zip(fit, log_values)})
+        return error_with(parameters)
+
+    best_log_values, best_error = _nelder_mead(objective, np.log([values[name] for name in fit]),
+                                                step=0.5, max_iter=max_iter, xtol=1e-4, ftol=1e-10)
+    result = dict(values)
+    result.update({name: float(np.exp(x)) for name, x in zip(fit, best_log_values)})
+    result.update({'error': float(best_error), 'options_used': len(usable), 'evaluations': evaluations[0]})
+    return result
+
+
+def calibrate_sofr_and_note_options(sofr_forward_rates, note_forward_rates, sofr_options, note_options, curve_real_months,
+                                     fit=('a', 'sigma1', 'sigma2'),
+                                     a=SHORT_RATE_REVERSION_SPEED, sigma1=0.01, sigma2=0.01,
+                                     sofr_paths=2000, note_paths=10000, seed=42,
+                                     ctd_maturity_years=DEFAULT_CTD_MATURITY_YEARS, ctd_coupon=None,
+                                     min_expiry_years=10.0 / DAYS_PER_YEAR, moneyness_window=2.0,
+                                     sofr_min_expiry_months=3, max_iter=150):
+    """
+    Calibrate the model to SOFR futures options (as calibrate_sofr_model()
+    does) AND to options on the 10-year note future (as
+    calibrate_note_options()) together: the short-rate options pin down a and
+    sigma1, the note options sigma2, and a and sigma1 together with sigma2
+    decide how far apart the two sets of options' volatilities are.
+
+    sofr_forward_rates: the SOFR curve, which the SOFR options' paths start
+        from (as in calibrate_sofr_model()); note_forward_rates: the curve the
+        note options' paths are centered on, the Treasury's (see THE IDEA above).
+    sofr_options: as for calibrate_sofr_model(), each also with
+        'underlying_price' (the SOFR future's price today), for weighing
+        its error as a volatility error; note_options: as for
+        calibrate_note_options(). The weights are those of CALIBRATING above, so
+        the two kinds of option -- one in price points of 100 less the rate, the
+        other of a note -- count alike. Each kind's error is the root mean
+        square of its options' errors, and the error that is minimized is
+        the square root of the two kinds' mean squares added, so that a
+        kind with a poor fit pulls the parameters towards itself in
+        proportion to how poor it is (the sum of the two root mean squares
+        would be least at the best fit of the kind that is steeper, and
+        ignore the other). curve_real_months is as for calibrate_sofr_model():
+        theta_bar is refit for each a it tries, as that function does.
+    sofr_min_expiry_months: the SOFR options with fewer months than this to
+        expiry are left out (3). A model whose volatilities are the same at
+        every date cannot match the very front of the market, where the Fed's
+        next move is nearly known and the volatility is a fifth of that at
+        a year out; such options would decide the fit by their large relative
+        errors, and push sigma1 to 0.
+    fit, a, sigma1, sigma2, ...: as for calibrate_note_options(), the
+        search being in the logarithms of the parameters in fit. b is not a
+        parameter here: the SOFR options' paths fix it at
+        MEAN_LEVEL_REVERSION_SPEED, and so do the note options'.
+
+    Returns a dict with 'a', 'sigma1', 'sigma2', 'theta_bar' (for the
+    SOFR model's paths, as calibrate_sofr_model() gives it), 'sofr_error' and
+    'note_error' (each family's root mean square relative volatility error,
+    at the best fit), 'error' (the square root of the sum of their squares),
+    'sofr_options_used',
+    'note_options_used', and 'evaluations'.
+    """
+    for name in fit:
+        if name not in ('a', 'sigma1', 'sigma2'):
+            raise ValueError(f"fit is a list of 'a', 'sigma1', 'sigma2', not {name!r}")
+    if not fit:
+        raise ValueError("fit names no parameter to fit")
+    sofr_usable, sofr_weights = [], []
+    for option in sofr_options:
+        if 'underlying_price' not in option:
+            raise ValueError("each SOFR option needs 'underlying_price', the SOFR future's price today")
+        years = option['expiry_months'] / MONTHS_PER_YEAR
+        view = dict(option, expiry_years=years, futures_price=option['underlying_price'])
+        _, _, weight, moneyness = _market_view(sofr_forward_rates, view)
+        long_enough = years >= min_expiry_years and option['expiry_months'] >= sofr_min_expiry_months
+        if long_enough and np.isfinite(weight) and moneyness <= moneyness_window:
+            sofr_usable.append(option)
+            sofr_weights.append(weight)
+    sofr_weights = np.array(sofr_weights)
+    note_usable, note_weights = _usable_note_options(note_forward_rates, note_options, min_expiry_years, moneyness_window)
+    if not sofr_usable or not note_usable:
+        raise ValueError(f"there are {len(sofr_usable)} SOFR options and {len(note_usable)} note options that can be "
+                         "used to calibrate; each kind needs some (see calibrate_note_options() for what makes one usable)")
+    values = {'a': a, 'sigma1': sigma1, 'sigma2': sigma2}
+    sofr_market = np.array([o['market_price'] for o in sofr_usable])
+    note_market = np.array([o['market_price'] for o in note_usable])
+    evaluations = [0]
+
+    def errors_with(parameters):
+        theta_bar = _fit_sofr_theta_bar(sofr_forward_rates, curve_real_months, a=parameters['a'])
+        sofr_prices = np.array([
+            price_sofr_future_option_mc(sofr_forward_rates, option, parameters['sigma1'], parameters['sigma2'], sofr_paths, seed,
+                                        a=parameters['a'], theta_bar=theta_bar)
+            for option in sofr_usable])
+        note_prices = price_note_future_options_mc(
+            note_forward_rates, note_usable, parameters['sigma1'], parameters['sigma2'], a=parameters['a'],
+            n_paths=note_paths, seed=seed, ctd_maturity_years=ctd_maturity_years, ctd_coupon=ctd_coupon)
+        evaluations[0] += 1
+        return (float(np.sqrt(np.mean(((sofr_prices - sofr_market) * sofr_weights) ** 2))),
+                float(np.sqrt(np.mean(((note_prices - note_market) * note_weights) ** 2))), theta_bar)
+
+    def objective(log_values):
+        parameters = dict(values)
+        parameters.update({name: float(np.exp(x)) for name, x in zip(fit, log_values)})
+        sofr_error, note_error, _ = errors_with(parameters)
+        return float(np.hypot(sofr_error, note_error))
+
+    best_log_values, best_error = _nelder_mead(objective, np.log([values[name] for name in fit]),
+                                                step=0.5, max_iter=max_iter, xtol=1e-4, ftol=1e-10)
+    result = dict(values)
+    result.update({name: float(np.exp(x)) for name, x in zip(fit, best_log_values)})
+    sofr_error, note_error, theta_bar = errors_with(result)
+    result.update({'theta_bar': theta_bar, 'sofr_error': sofr_error, 'note_error': note_error,
+                   'error': float(np.hypot(sofr_error, note_error)), 'sofr_options_used': len(sofr_usable),
+                   'note_options_used': len(note_usable), 'evaluations': evaluations[0]})
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -131,6 +131,7 @@ files in `examples/` and `lib/` from anywhere:
 | `sofr_monte_carlo_example.lsp` | calibrating the two-factor rate model to futures options, and simulating rates | tastytrade |
 | `oas_monte_carlo_example.lsp` | the whole option-adjusted-spread pipeline on made-up numbers | nothing (60 s) |
 | `oas_monte_carlo_live_example.lsp` | the same on live data, written to a report | tastytrade, FRED |
+| `note_option_example.lsp` | fitting the rate model to options on the 10-year note future: the model's prices next to the market's, and the volatility smile | tastytrade, the Treasury's curve |
 | `prepayment_demo.lsp` | loading pool data, a spline-logistic model, a held-out test, a chart | nothing |
 | `regression_kinds_example.lsp` | six kinds of regression on the same data, and cross-validation | nothing |
 | `stratify_example.lsp` | stratification tables of 5,000 made-up loans | nothing |
@@ -1340,6 +1341,16 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   **`sofr_floating_rate_example.lsp`**: the live-data end of the same pipelines.
   The Monte Carlo one calibrates the model to option prices by a shrinking grid
   search, which is slow (it says so, and turns its settings down for a quicker first run).
+- **`note_option_example.lsp`**: the same rate model, fitted to a different market: options on
+  the 10-year Treasury note future (ZN). The SOFR options show how much the short rate moves; a
+  mortgage depends on the long end, and these show how much that moves. It reads the options with
+  `note-option-rows`, finds the volatility of the model's long-end factor for which the model's
+  Monte Carlo prices are nearest the market's (`sofr-calibrate-note-options`), and prints the
+  model's prices and implied volatilities beside the market's (`sofr-note-option-comparison`),
+  then charts the volatility each price implies by strike: the market's is a smile, the
+  model's nearly flat. The library manual's
+  [Fitting the model to options on the 10-year note future](lisp_library_reference.md#fitting-the-model-to-options-on-the-10-year-note-future)
+  says how it works, and why the Treasury's curve, not SOFR's, is the one the paths are centered on.
 
 Most of these need the market open, for live bids and asks, and credentials; each file's
 header says which. The libraries behind them, and the functions they call, are in the
