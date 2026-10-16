@@ -7,7 +7,7 @@
 ; the LONG end, and a 10-year note option says how much that moves. The
 ; builtins sofr-calibrate-note-options, sofr-calibrate-jointly and
 ; sofr-note-option-comparison fit and check the model against those options:
-; see "Options on the 10-year note future" in lisp_library_reference.md.
+; see "Fitting the model to option prices", under "Interest rate paths", in lisp_library_reference.md.
 ; What this file does is the small step before them: the chain of options,
 ; as tastytrade-option-chain gives it, as the rows they read.
 ;
