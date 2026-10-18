@@ -87,6 +87,10 @@
   report-break-restart-page-numbers report-break-repeat-header report-break-field-set! report-break-header-set! report-break-footer-set!
   report-break-new-page-set! report-break-restart-page-numbers-set! report-break-repeat-header-set!)
 
+; The common widgets of a notebook, one call each (the others are made with make-widget)
+(lazy-load "widgets.lsp"
+  widget-slider widget-button widget-dropdown widget-checkbox widget-text widget-output widget-column widget-row)
+
 ; Templates of text and SQL
 (lazy-load "template.lsp"
   template-parse template-render template-render-sql sqlite-query-template sqlite-execute-template)

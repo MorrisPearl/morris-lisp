@@ -18,6 +18,8 @@ Differences from a Python kernel:
     running cell (see lisp_jupyter_debug.py). A debug hook that prints, and
     doesn't call (debug-repl), needs no widgets: see "Debugging" in
     lisp_interpreter_reference.md.
+  - Widgets (ipywidgets, and ipydatagrid's grid for editing a table) are drawn by
+    (display-widget w), or by a cell whose value is a widget (see lisp_widgets.py).
   - (abort) ends the cell with an "Aborted" error.
   - The history variables _, __, ___, and _N (the result of cell N) are
     set in the Lisp environment by hand (see _record_history), since
@@ -43,6 +45,7 @@ from lisp_core import LispAbort, LispError, NIL, Symbol, format_lisp_traceback, 
 import lisp_core
 import lisp_jupyter
 import lisp_jupyter_debug
+import lisp_widgets
 
 from ipykernel.ipkernel import IPythonKernel
 
@@ -111,11 +114,14 @@ class LispKernel(IPythonKernel):
 
         if not silent and result is not NIL:
             self._record_history(env, result)
-            self.send_response(self.iopub_socket, "execute_result", {
-                "execution_count": self.execution_count,
-                "data": {"text/plain": to_string(result)},
-                "metadata": {},
-            })
+            if lisp_widgets.is_widget(result):          # a cell whose value is a widget shows it, as in a Python notebook
+                lisp_jupyter._notebook_widget(result)
+            else:
+                self.send_response(self.iopub_socket, "execute_result", {
+                    "execution_count": self.execution_count,
+                    "data": {"text/plain": to_string(result)},
+                    "metadata": {},
+                })
 
         return {
             "status": "ok",

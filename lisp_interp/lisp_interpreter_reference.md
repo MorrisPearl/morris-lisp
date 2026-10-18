@@ -47,6 +47,7 @@ end.
     - [begin](#begin)
     - [lazy-load](#lazy-load)
   - [Variadic parameters](#variadic-parameters)
+  - [Optional arguments](#optional-arguments)
   - [Keyword arguments](#keyword-arguments)
   - [Local variables](#local-variables)
     - [let](#let)
@@ -101,6 +102,7 @@ end.
   - [The clock](#the-clock)
   - [Charting](#charting)
   - [Displaying tables](#displaying-tables)
+  - [Widgets in a notebook](#widgets-in-a-notebook)
   - [Input / output](#input--output)
   - [Saving variables](#saving-variables)
   - [Metaprogramming](#metaprogramming)
@@ -378,13 +380,15 @@ looks like.
 
 ### Variadic parameters
 
-A `lambda`/`define`/`defmacro` parameter list can take three shapes:
+A `lambda`/`define`/`defmacro` parameter list can take these shapes:
 
 | Form | Example | Meaning |
 |---|---|---|
 | Proper list | `(a b c)` | Fixed arity — exactly 3 arguments, as always |
 | Dotted list | `(a b . rest)` | `a` and `b` are fixed; `rest` collects every additional argument into a list (possibly empty) |
 | Bare symbol | `args` (no parens at all) | Every argument, with no fixed ones, collected into `args` |
+| `&rest` | `(a b &rest rest)` | The same as the dotted list, written as Common Lisp does (`&body` is the same) |
+| `&optional` | `(a &optional b (c 10))` | `a` is required; `b` and `c` may be left off, and are then `'()` and `10` |
 
 ```lisp
 (define (f a b . rest) (list a b rest))
@@ -393,6 +397,27 @@ A `lambda`/`define`/`defmacro` parameter list can take three shapes:
 (define sum-all (lambda nums (apply + nums)))
 (sum-all 1 2 3 4)              ; => 10
 ```
+
+### Optional arguments
+
+After the required parameters, `&optional` starts parameters that may be left off: each is a bare symbol (default `'()`) or
+`(name default-expr)`. They take the arguments after the required ones, in order, and a parameter with no argument gets its
+default, evaluated in a scope where the parameters before it are already bound. A rest parameter (`&rest`, or a dot) or `&key` can
+follow them, but not both:
+
+```lisp
+(define (f a &optional (b (* a 2)) c) (list a b c))
+(f 1)                           ; => (1 2 ())
+(f 1 5)                         ; => (1 5 ())
+(f 1 5 6)                       ; => (1 5 6)
+
+(define (g a &optional (b 10) &rest more) (list a b more))
+(g 1 2 3 4)                     ; => (1 2 (3 4))
+```
+
+Calling with too many arguments is an error that says how many are allowed (`expected 1 to 3 arguments, got 4`). With `&key` after
+`&optional`, the optional parameters take the first arguments, so a keyword is taken for an optional one if they are not all given:
+write the optional arguments, or use `&key` alone.
 
 This works identically for `defmacro` — a macro can take a variable number
 of arguments the same way a function can. Calling a fixed-arity function or
@@ -4456,6 +4481,98 @@ lsp`'s `(write-csv "mortgage_amortization_example.csv" *columns*)` call.
 ```lisp
 (write-columns-csv "out.csv" (list (list "rate" #(0.0435 0.041) 4) (cons "prices" #(10 20))))
 ```
+
+### Widgets in a notebook
+
+In a Jupyter notebook (the `morris_lisp` kernel) a program can show **widgets**: sliders, buttons, drop-down lists, text boxes and
+the rest of [ipywidgets](https://ipywidgets.readthedocs.io), which the user works with the mouse, and a **grid** that the user
+edits a table in ([ipydatagrid](https://github.com/bloomberg/ipydatagrid)). Moving a slider or clicking a button calls a Lisp
+function, which can work something out and show the result. The packages are `ipywidgets` and, for the grid, `ipydatagrid`
+(`pip install ipywidgets ipydatagrid`). A widget can be made and changed anywhere, but only a notebook can show one.
+
+A widget is a value that you pass to the functions below. A cell whose value is a widget shows it, as in a Python notebook;
+`display-widget` shows one from the middle of a cell.
+
+```lisp
+(define years (widget-slider 1 30 :value 15 :description "years"))
+(define out (widget-output))
+(widget-on-change years "value"
+                  (lambda (n) (display (format "{} years is {} months\n" n (* 12 n))))
+                  :output out)
+(display-widget (widget-column years out))
+```
+
+Moving the slider writes into `out`, the place on the page that `:output out` names. A function that a widget calls has no cell
+to write to, so what it displays (with `display`, `display-table`, a chart) would be lost without an output widget to put it in;
+the report of an error in it goes there too, and nothing stops. Without `:output` it goes to the notebook's log.
+
+#### The common widgets
+These are in `lib/widgets.lsp`, and are one call each. Each takes `:on-change f`, a function called with the new value, and
+`:output out` for what `f` displays. `:description` is the label beside the widget.
+
+| Call | Makes |
+|---|---|
+| `(widget-slider low high [:value v] [:step 1] [:description "label"])` | a slider: whole numbers if `low`, `high` and `:step` are whole, and decimals if not. The function is called when it is let go, or all the while it moves with `:continuous-update #t` |
+| `(widget-button "label" f [:output out] [:button-style "primary"])` | a button that calls `(f)`; the style is `"primary"`, `"success"`, `"info"`, `"warning"`, `"danger"` or `""` |
+| `(widget-dropdown options [:value v])` | a drop-down list of the `options`, a list of strings or numbers |
+| `(widget-checkbox [:value #f])` | a check box, whose value is `#t` or `#f` |
+| `(widget-text [:value ""] [:placeholder ""])` | a box to type in; the function is called when the user presses Enter |
+| `(widget-output)` | a place on the page for what functions display |
+| `(widget-column w1 w2 ...)`, `(widget-row w1 w2 ...)` | the widgets one above the other, or side by side |
+
+#### `(make-widget class [:name value ...])`
+Makes any widget of ipywidgets: `class` is its name, as a string, and the attributes come as keywords (`:button-style` is
+ipywidgets' `button_style`). This is how the rest are made, such as `"FloatText"`, `"DatePicker"`, `"ToggleButtons"`,
+`"Tab"`, `"HTML"`, `"Image"` or `"Layout"`; see ipywidgets' list of widgets for what each has. A list becomes a list (`:children
+(list a b)`), `'()` an empty one where `None` is not allowed, a hash table a dictionary (for `:style`), a symbol or a keyword its
+name. A class or an attribute that isn't there is an error that suggests the nearest.
+
+```lisp
+(define box (make-widget "FloatText" :value 2.5 :description "rate"))
+(widget-get box "value")                   ; => 2.5
+(widget-set! box "value" 3.0)
+(widget-get box "value")                   ; => 3.0
+```
+
+#### Reading, changing and reacting
+- `(widget-get w "attribute")` is what the widget holds: a slider's `"value"`, a drop-down's `"options"`, a box's `"children"`.
+  Strings come back as strings, lists as lists, `None` as `'()`.
+- `(widget-set! w "attribute" value)` changes it; the notebook shows the change, and a function that `widget-on-change` gave
+  for that attribute is called.
+- `(widget-on-change w "value" f [:output out])` calls `(f new-value)` whenever the attribute changes, whoever changed it.
+- `(widget-on-click button f [:output out])` calls `(f)` at each click.
+- `(widget-capture out thunk)` calls `(thunk)` with what it displays going into the output widget `out`, and returns its value.
+  `(widget-clear out)` empties an output widget.
+- `(widget-link a "value" b "value")` keeps two widgets' attributes the same, in the browser: moving one slider moves the other.
+- `(widget-close w)` takes it off the page. `(display-widget w)` shows it, below the cell.
+
+A function that a widget calls runs when the notebook is idle, one at a time, in the same environment as the cells: it sees the
+variables the cells define, and can define or change them, which the next cell sees.
+
+#### Editing a table: `table-grid`
+`(table-grid table [:editable #t] [:name value ...])` gives a grid of the table that the user can edit by double-clicking a cell,
+and sort and filter by the column headings. The other attributes of ipydatagrid's `DataGrid` are keywords, such as `:base-row-size 30`,
+`:selection-mode "cell"` or `:layout`. The whole table is sent to the browser, so a grid is for thousands of rows, not
+millions (`table-head`, `table-filter` show the rows of interest; more than 100,000 is an error).
+
+- `(grid-table grid)` is the table as it is now: the table the grid was made from, with the cells the user changed made new. A cell
+  that was not changed keeps its value exactly, and each column keeps its type (a column of whole numbers stays one, and a
+  decimal one stays decimal). A cell that has become something its column can't hold is an error that says which (`column
+  balance, row 0: "lots" is not a number`). A date column is edited as text, `2026-03-07`; a cleared number is missing.
+- `(grid-on-edit grid f [:output out])` calls `(f column row value)` each time the user changes a cell: the column's name, the
+  row's place in the table (from 0), and the new value.
+- `(grid-set-table! grid table)` shows another table in the grid, or the same one again to undo the edits.
+
+```lisp
+(define loans (make-table "id" (vector "a" "b" "c") "balance" #(100000 200000 300000) "rate" #(0.05 0.06 0.055)))
+(define grid (table-grid loans))
+(define out (widget-output))
+(grid-on-edit grid (lambda (column row value) (display (format "{} of loan {} is now {}\n" column row value))) :output out)
+(widget-column grid out (widget-button "Show the table" (lambda () (display-table (grid-table grid))) :output out))
+```
+
+`notebooks/widgets_example.ipynb` is a notebook that uses all of this: a mortgage payment worked out as sliders move, and a table
+of loans edited in a grid.
 
 ### Input / output
 

@@ -53,7 +53,7 @@
     :breaks (list (make-report-break :field "state" :header "## State {{state}}"
                                      :footer "**{{state}}**: {{loans}} loans, {{total:,.0f}}\n"))
     :report-footer "**All states**: {{loans}} loans, {{total:,.0f}}"))
-(display (format "\n{} page written to mortgage_report.md, :\n\n" (write-report mortgages "mortgage_report.md" mortgage-markdown)))
+(display (format "\n{} page written to mortgage_report.md:\n\n" (write-report mortgages "mortgage_report.md" mortgage-markdown)))
 (display (read-text-file "mortgage_report.md"))
 
 ; --- 2. Letters: one to each client, on a page of its own ---

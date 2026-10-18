@@ -1415,6 +1415,14 @@ from 1, and a variable (the month) that a template can say. The library manual's
 [Reports with control breaks](lisp_library_reference.md#reports-with-control-breaks) has everything a spec can say, and what
 each template can use.
 
+---
+
+`notebooks/widgets_example.ipynb` is a notebook for the `morris_lisp` kernel (it needs `ipywidgets` and `ipydatagrid`) that shows what
+widgets do: three sliders that work out a mortgage payment as they move, written with `widget-slider` and `widget-capture`; and a
+table of loans in an editable grid (`table-grid`), with a function that hears each edit (`grid-on-edit`) and a button that shows
+the table as the user has changed it (`grid-table`). The manual's [Widgets in a
+notebook](lisp_interpreter_reference.md#widgets-in-a-notebook) has everything the functions take.
+
 ## Writing an example
 
 The examples share conventions, which `CLAUDE.md` states as a purpose: *the software is

@@ -1,8 +1,8 @@
 """Output callbacks for running the interpreter in a Jupyter notebook, used
 by lisp_kernel.py (the "morris_lisp" kernel -- see install_lisp_kernel.py):
 charts are drawn inline with matplotlib, display-table shows a table (as
-Markdown), display-markdown renders Markdown, and display-html renders
-HTML. get_env() holds the one environment a kernel uses for its whole life.
+Markdown), display-markdown renders Markdown, display-html renders
+HTML, and display-widget draws a widget (see lisp_widgets.py). get_env() holds the one environment a kernel uses for its whole life.
 
 The tastytrade-* and sofr-calibration-data builtins work here too: a
 Jupyter kernel already has an asyncio event loop running, which
@@ -73,6 +73,12 @@ def _notebook_table(columns):
         print_table(columns, lambda text: print(text, end=""))
 
 
+def _notebook_widget(widget):
+    """display-widget -- the widget drawn in the output of the cell (an ipywidgets widget; the notebook's frontend
+    draws it)."""
+    _ipy_display(widget)
+
+
 def _notebook_markdown(text):
     """display-markdown -- rendered as Markdown (tables, headings, ...)
     via IPython.display.Markdown; plain text if IPython isn't available."""
@@ -104,6 +110,6 @@ def get_env():
     if _env is None:
         _env = make_global_env(output=_notebook_output, plot=_notebook_plot,
                                table=_notebook_table, markdown=_notebook_markdown,
-                               html=_notebook_html)
+                               html=_notebook_html, widget=_notebook_widget)
         load_init_file(_env)
     return _env

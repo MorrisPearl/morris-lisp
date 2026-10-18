@@ -362,6 +362,7 @@ class Procedure:
     """A user-defined function, made by `lambda` or `define`.
 
       params          the fixed parameter names
+      optional_specs  the &optional parameters, as (name, default_expr) pairs
       rest_param      for a variadic procedure, the name bound to a list of the
                       extra arguments; otherwise None (see parse_params)
       keyword_specs   the &key parameters, as (name, default_expr) pairs
@@ -371,8 +372,9 @@ class Procedure:
                       a variable scope, not a real call, so traces leave it out."""
 
     def __init__(self, params, body, env, rest_param=None, keyword_specs=None,
-                 name=None, is_scope=False):
+                 name=None, is_scope=False, optional_specs=None):
         self.params = params      # list of Symbol FIXED parameter names
+        self.optional_specs = optional_specs or []  # see parse_params()
         self.rest_param = rest_param
         self.keyword_specs = keyword_specs or []  # see parse_params()
         self.body = body          # list of body expressions
@@ -390,8 +392,9 @@ class Macro:
     argument expressions, and its body returns new code (the "expansion"),
     which is then evaluated in place of the call. See expand_macro()."""
 
-    def __init__(self, params, body, env, rest_param=None, keyword_specs=None, name=None):
+    def __init__(self, params, body, env, rest_param=None, keyword_specs=None, name=None, optional_specs=None):
         self.params = params
+        self.optional_specs = optional_specs or []  # see parse_params()
         self.rest_param = rest_param
         self.keyword_specs = keyword_specs or []  # see parse_params()
         self.body = body
@@ -605,45 +608,75 @@ def check_name(name):
     raise LispError("%s can't be used as a name -- a name must be a symbol%s" % (to_string(name), note))
 
 
+LAMBDA_LIST_MARKERS = (Symbol("&optional"), Symbol("&rest"), Symbol("&body"), Symbol("&key"))
+
+
+def parse_param_spec(spec):
+    """One &optional or &key parameter -- `x` or `(x default)` -- as (name, default_expr or None)."""
+    if isinstance(spec, Pair):
+        check_name(spec.car)
+        if not (spec.cdr is NIL or (isinstance(spec.cdr, Pair) and spec.cdr.cdr is NIL)):
+            raise LispError("a parameter with a default is (name default), not %s" % to_string(spec))
+        return spec.car, (spec.cdr.car if spec.cdr is not NIL else None)
+    check_name(spec)
+    return spec, None
+
+
 def parse_params(params_expr):
     """Split a lambda/define/defmacro parameter list into
-    (fixed_names, rest_name_or_None, keyword_specs):
+    (fixed_names, optional_specs, rest_name_or_None, keyword_specs):
 
       (a b c)               three fixed parameters
+      (a b &optional c (d 10))
+                            a and b fixed; c and d may be left off: c is then '(), and
+                            d is 10 (the default can use the parameters before it)
       (a b . rest)          a and b fixed; rest gets a list of any extra arguments
+      (a b &rest rest)      the same, written as Common Lisp does (&body is the same)
       args                  (a bare symbol) every argument, as a list
       (a b &key c (d 10))   a and b fixed; c and d are keyword parameters, passed
                             as :c value :d value in any order. c defaults to '(),
                             d to 10.
 
-    &key can't be combined with a rest parameter. Env.__init__ does the
+    The parts come in that order; &optional can be followed by a rest parameter or by
+    &key, but a rest parameter and &key can't be combined. Env.__init__ does the
     binding when the procedure is called."""
     if isinstance(params_expr, Symbol):
         check_name(params_expr)
-        return [], params_expr, []
-    fixed = []
+        return [], [], params_expr, []
+    fixed, optional_specs = [], []
     p = params_expr
-    while isinstance(p, Pair) and p.car != Symbol("&key"):
+    while isinstance(p, Pair) and p.car not in LAMBDA_LIST_MARKERS:
         check_name(p.car)
         fixed.append(p.car)
         p = p.cdr
+    if isinstance(p, Pair) and p.car == Symbol("&optional"):
+        p = p.cdr
+        while isinstance(p, Pair) and p.car not in LAMBDA_LIST_MARKERS:
+            optional_specs.append(parse_param_spec(p.car))
+            p = p.cdr
+    if isinstance(p, Pair) and p.car in (Symbol("&rest"), Symbol("&body")):
+        if not (isinstance(p.cdr, Pair) and p.cdr.cdr is NIL):
+            raise LispError("%s must be followed by one name, the list of the extra arguments, and nothing else"
+                            % p.car)
+        check_name(p.cdr.car)
+        return fixed, optional_specs, p.cdr.car, []
     if isinstance(p, Pair) and p.car == Symbol("&key"):
         keyword_specs = []
         p = p.cdr
         while isinstance(p, Pair):
-            spec = p.car
-            if isinstance(spec, Pair):
-                check_name(spec.car)
-                keyword_specs.append((spec.car, spec.cdr.car))
-            else:
-                check_name(spec)
-                keyword_specs.append((spec, None))
+            if p.car in LAMBDA_LIST_MARKERS:
+                raise LispError("%s is out of place in a parameter list: they come in the order "
+                                "&optional, then &rest or &key" % p.car)
+            keyword_specs.append(parse_param_spec(p.car))
             p = p.cdr
-        return fixed, None, keyword_specs
+        return fixed, optional_specs, None, keyword_specs
     if p is NIL:
-        return fixed, None, []
+        return fixed, optional_specs, None, []
+    if isinstance(p, Pair):
+        raise LispError("%s is out of place in a parameter list: they come in the order "
+                        "&optional, then &rest or &key" % p.car)
     check_name(p)
-    return fixed, p, []
+    return fixed, optional_specs, p, []
 
 
 # ---------------------------------------------------------------------------
@@ -661,28 +694,41 @@ class Env(dict):
     trace_emit = None
 
     def __init__(self, params=(), args=(), outer=None, rest_param=None,
-                 keyword_specs=None, default_eval=None):
+                 keyword_specs=None, default_eval=None, optional_specs=None):
         """Bind a call's arguments to its parameters.
 
-        `params` are the fixed parameter names. With rest_param, any extra
-        arguments are bound to it as a list; without it, the argument count must
-        match exactly. With keyword_specs, the arguments after the fixed ones
-        must be :name value pairs, and a keyword parameter that isn't passed gets
-        default_eval(default_expr, self) -- or '() if it has no default.
-        default_eval is eval_default for a procedure call (defaults are
-        evaluated) and raw_default for a macro (defaults stay as code)."""
+        `params` are the fixed parameter names, which take the first arguments.
+        Then come the optional_specs: each takes the next argument if there is
+        one, and otherwise default_eval(default_expr, self) -- or '() if it has
+        no default. After those, with rest_param, any extra arguments are
+        bound to it as a list; with keyword_specs, the arguments that are left
+        must be :name value pairs, and a keyword parameter that isn't passed
+        gets its default in the same way; with neither, there must be no more
+        arguments. default_eval is eval_default for a procedure call (defaults
+        are evaluated) and raw_default for a macro (defaults stay as code)."""
         super().__init__()
         self.outer = outer
         params = list(params)
         args = list(args)
+        optional_specs = optional_specs or []
+        n_fixed = len(params)
+        n_positional = n_fixed + len(optional_specs)
+        open_ended = bool(keyword_specs) or rest_param is not None
+        if len(args) < n_fixed:
+            raise LispError("expected %s%s, got %d"
+                            % ("at least " if open_ended or optional_specs else "", plural(n_fixed, "argument"), len(args)))
+        for p, a in zip(params, args[:n_fixed]):
+            self[p] = a
+        given = args[n_fixed:n_positional]
+        for place, (name, default_expr) in enumerate(optional_specs):
+            if place < len(given):
+                self[name] = given[place]
+            elif default_expr is not None:
+                self[name] = default_eval(default_expr, self)
+            else:
+                self[name] = NIL
+        tail = args[n_positional:]
         if keyword_specs:
-            n_fixed = len(params)
-            if len(args) < n_fixed:
-                raise LispError(
-                    "expected at least %s, got %d" % (plural(n_fixed, "argument"), len(args)))
-            for p, a in zip(params, args[:n_fixed]):
-                self[p] = a
-            tail = args[n_fixed:]
             if len(tail) % 2 != 0:
                 raise LispError(
                     "keyword arguments must come in :key value pairs, got a "
@@ -704,19 +750,11 @@ class Env(dict):
                 raise LispError(
                     "unknown keyword argument(s): %s"
                     % ", ".join(":%s" % n for n in supplied))
-        elif rest_param is None:
-            if len(params) != len(args):
-                raise LispError(
-                    "expected %s, got %d" % (plural(len(params), "argument"), len(args)))
-            for p, a in zip(params, args):
-                self[p] = a
-        else:
-            if len(args) < len(params):
-                raise LispError(
-                    "expected at least %s, got %d" % (plural(len(params), "argument"), len(args)))
-            for p, a in zip(params, args):
-                self[p] = a
-            self[rest_param] = list_to_pairs(args[len(params):])
+        elif rest_param is not None:
+            self[rest_param] = list_to_pairs(tail)
+        elif tail:
+            how_many = ("%d to %d arguments" % (n_fixed, n_positional)) if optional_specs else plural(n_fixed, "argument")
+            raise LispError("expected %s, got %d" % (how_many, len(args)))
 
     def find(self, name):
         """The innermost Env in which `name` is bound; an error if there's none."""
@@ -1103,7 +1141,8 @@ def bind_arguments(proc, args, default_eval):
     frame of its own. See Env.__init__ for default_eval."""
     try:
         return Env(proc.params, args, proc.env, rest_param=proc.rest_param,
-                   keyword_specs=proc.keyword_specs, default_eval=default_eval)
+                   keyword_specs=proc.keyword_specs, default_eval=default_eval,
+                   optional_specs=proc.optional_specs)
     except LispError as exc:
         if getattr(proc, "is_scope", False):
             raise
@@ -1413,9 +1452,10 @@ def eval_special_form(op, args, env, control_stack, value_stack):
     elif op == "defmacro":
         # (defmacro name params body...) -- params as in lambda (see parse_params).
         name = args.car
-        fixed, rest, keyword_specs = parse_params(args.cdr.car)
+        fixed, optional, rest, keyword_specs = parse_params(args.cdr.car)
         body = pairs_to_list(args.cdr.cdr)
-        env[name] = Macro(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs, name=name)
+        env[name] = Macro(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs, name=name,
+                          optional_specs=optional)
         value_stack.append(name)
 
     elif op == "if":
@@ -1431,10 +1471,10 @@ def eval_special_form(op, args, env, control_stack, value_stack):
             # (define (name params...) body...) -- params as in lambda.
             name = target.car
             check_name(name)
-            fixed, rest, keyword_specs = parse_params(target.cdr)
+            fixed, optional, rest, keyword_specs = parse_params(target.cdr)
             body = pairs_to_list(args.cdr)
             env[name] = Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs,
-                                  name=name)
+                                  name=name, optional_specs=optional)
             value_stack.append(name)
         else:
             name = target
@@ -1452,10 +1492,10 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         # See parse_params() for the forms params can take. %scope-lambda is what
         # the let macro (macros_init.lsp) turns into: the same Procedure, marked
         # is_scope.
-        fixed, rest, keyword_specs = parse_params(args.car)
+        fixed, optional, rest, keyword_specs = parse_params(args.car)
         body = pairs_to_list(args.cdr)
         value_stack.append(Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs,
-                                     is_scope=(op == "%scope-lambda")))
+                                     is_scope=(op == "%scope-lambda"), optional_specs=optional))
 
     elif op == "begin":
         push_sequence(pairs_to_list(args), env, control_stack, value_stack)
@@ -1939,20 +1979,26 @@ def pretty_print_string(expr):
     return "\n".join(lines)
 
 
-def _param_spec_from(params, rest_param, keyword_specs=()):
+def _param_spec_from(params, rest_param, keyword_specs=(), optional_specs=()):
     """Rebuild the source form of a parameter list from (params, rest_param,
-    keyword_specs) -- the reverse of parse_params()."""
+    keyword_specs, optional_specs) -- the reverse of parse_params()."""
+    def spec_items(specs):
+        return [Pair(name, Pair(default_expr, NIL)) if default_expr is not None else name
+                for name, default_expr in specs]
+
+    items = list(params)
+    if optional_specs:
+        items += [Symbol("&optional")] + spec_items(optional_specs)
     if keyword_specs:
-        key_items = [Symbol("&key")]
-        for name, default_expr in keyword_specs:
-            key_items.append(Pair(name, Pair(default_expr, NIL)) if default_expr is not None else name)
-        return list_to_pairs(list(params) + key_items)
+        return list_to_pairs(items + [Symbol("&key")] + spec_items(keyword_specs))
     if rest_param is None:
-        return list_to_pairs(params)
-    if not params:
+        return list_to_pairs(items)
+    if not items:
         return rest_param
+    if optional_specs:                  # (a &optional b &rest r): a dot could not follow &optional's items
+        return list_to_pairs(items + [Symbol("&rest"), rest_param])
     spec = rest_param
-    for p in reversed(params):
+    for p in reversed(items):
         spec = Pair(p, spec)
     return spec
 
@@ -1960,7 +2006,7 @@ def _param_spec_from(params, rest_param, keyword_specs=()):
 def reconstruct_procedure_source(proc, name=None):
     """(lambda (params...) body...) for a Procedure -- or, given a name,
     (define (name params...) body...)."""
-    param_spec = _param_spec_from(proc.params, proc.rest_param, proc.keyword_specs)
+    param_spec = _param_spec_from(proc.params, proc.rest_param, proc.keyword_specs, proc.optional_specs)
     body = list_to_pairs(proc.body)
     if name is not None:
         return Pair(Symbol("define"), Pair(Pair(name, param_spec), body))
@@ -1970,7 +2016,7 @@ def reconstruct_procedure_source(proc, name=None):
 def reconstruct_macro_source(macro, name=None):
     """(defmacro name (params...) body...) for a Macro. A Macro doesn't know
     the name it's bound to, so pass it in."""
-    param_spec = _param_spec_from(macro.params, macro.rest_param, macro.keyword_specs)
+    param_spec = _param_spec_from(macro.params, macro.rest_param, macro.keyword_specs, macro.optional_specs)
     body = list_to_pairs(macro.body)
     return Pair(Symbol("defmacro"),
                 Pair(name if name is not None else Symbol("<anonymous>"),

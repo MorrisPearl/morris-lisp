@@ -296,6 +296,58 @@ class TestVariadicAndKeywordArgs(LispTestCase):
         self.run_lisp("(define (f &key (b 10)) b)")
         self.assertLispError("(f 5 6)", "expected a keyword")
 
+    def test_rest_is_the_same_as_a_dot(self):
+        self.run_lisp("(define (f a &rest r) (list a r)) (define (g a &body r) (list a r))")
+        self.assertShows("(f 1 2 3)", "(1 (2 3))")
+        self.assertShows("(f 1)", "(1 ())")
+        self.assertShows("(g 1 2)", "(1 (2))")
+        self.assertShows("((lambda (&rest r) r) 1 2)", "(1 2)")
+        self.assertLispError("(f)", "expected at least 1")
+
+    def test_a_rest_marker_needs_exactly_one_name(self):
+        self.assertLispError("(define (f a &rest) a)", "&rest must be followed by one name")
+        self.assertLispError("(define (f a &rest r s) a)", "&rest must be followed by one name")
+
+    def test_optional_parameters_may_be_left_off_and_then_have_their_defaults(self):
+        self.run_lisp("(define (f a &optional (b (* a 2)) c) (list a b c))")
+        self.assertShows("(f 1)", "(1 2 ())")
+        self.assertShows("(f 1 5)", "(1 5 ())")
+        self.assertShows("(f 1 5 6)", "(1 5 6)")
+        self.assertLispError("(f)", "expected at least 1 argument, got 0")
+        self.assertLispError("(f 1 2 3 4)", "expected 1 to 3 arguments, got 4")
+
+    def test_optional_parameters_can_be_followed_by_a_rest_parameter_or_by_keywords(self):
+        self.run_lisp("(define (g a &optional (b 10) &rest more) (list a b more))"
+                      "(define (h a &optional (b 10) . more) (list a b more))"
+                      "(define (k a &optional (b 10) &key (c 3)) (list a b c))")
+        self.assertShows("(g 1)", "(1 10 ())")
+        self.assertShows("(g 1 2 3 4)", "(1 2 (3 4))")
+        self.assertShows("(h 1 2 3)", "(1 2 (3))")
+        self.assertShows("(k 1)", "(1 10 3)")
+        self.assertShows("(k 1 2 :c 4)", "(1 2 4)")
+        self.assertLispError("(k 1 2 :d 4)", "unknown keyword")
+
+    def test_optional_parameters_in_a_lambda_and_a_macro(self):
+        self.assertShows("((lambda (&optional (x 3)) x))", "3")
+        self.assertShows("((lambda (&optional (x 3)) x) 8)", "8")
+        self.run_lisp("(defmacro twice (a &optional (n 2)) `(* ,a ,n))")
+        self.assertShows("(twice 5)", "10")
+        self.assertShows("(twice 5 3)", "15")
+
+    def test_the_parts_of_a_parameter_list_come_in_order(self):
+        self.assertLispError("(define (f &key a &optional b) 1)", "out of place")
+        self.assertLispError("(define (f &rest r &optional b) 1)", "&rest must be followed by one name")
+        self.assertLispError("(define (f &optional (a 1 2)) 1)", "(name default)")
+
+    def test_a_procedure_with_optional_parameters_is_shown_as_it_was_written(self):
+        self.run_lisp("(define (f a &optional (b 2) c) a) (define (g a &optional b &rest r) a) (define (h a &optional b &key (c 1)) a)")
+        for name, text in (("f", "(define (f a &optional (b 2) c)"), ("g", "(define (g a &optional b &rest r)"),
+                           ("h", "(define (h a &optional b &key (c 1))")):
+            self.out.clear()
+            self.run_lisp("(pretty-print-function %s)" % name)
+            shown = " ".join(self.printed().split()).replace("( ", "(").replace(" )", ")")
+            self.assertIn(text, shown)
+
 
 class TestMacros(LispTestCase):
 

@@ -67,6 +67,7 @@ import lisp_tables
 import lisp_tastytrade
 import lisp_time_series
 import lisp_vector_math
+import lisp_widgets
 
 
 # ---------------------------------------------------------------------------
@@ -1859,14 +1860,14 @@ SHARED_BUILTIN_TABLES = (
     lisp_maps.BUILTINS, lisp_google.BUILTINS, lisp_schwab.BUILTINS, lisp_alpha_vantage.BUILTINS, lisp_http.BUILTINS,
     lisp_tastytrade.BUILTINS, lisp_futures.BUILTINS, lisp_rates.BUILTINS, lisp_simplex.BUILTINS,
     lisp_investment_paths.BUILTINS, lisp_portfolio.BUILTINS, lisp_finance.BUILTINS, lisp_options.BUILTINS,
-    lisp_clock.BUILTINS, lisp_calendar.BUILTINS,
+    lisp_clock.BUILTINS, lisp_calendar.BUILTINS, lisp_widgets.BUILTINS,
 )
 
 
-def make_global_env(output=None, plot=None, table=None, markdown=None, html=None):
+def make_global_env(output=None, plot=None, table=None, markdown=None, html=None, widget=None):
     """Build a fresh global environment holding every built-in procedure.
 
-    The five optional arguments say where this environment's output goes,
+    The six optional arguments say where this environment's output goes,
     so the same interpreter can run in the console, the GUI, or Jupyter:
       output    receives the text written by display/newline/print
       plot      receives each chart spec from the plot- functions (see lisp_charts)
@@ -1874,9 +1875,10 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
                 (name, cell texts, alignment) tuples
       markdown  receives each string from display-markdown
       html      receives the HTML from each display-html
+      widget    receives each widget from display-widget (only a notebook can show one)
     Any left out get the plain console behavior: print the text, print a
     one-line chart summary, print a text table, print the raw Markdown,
-    print display-html's plain text.
+    print display-html's plain text, and say that display-widget needs a notebook.
     """
     if output is None:
         output = lambda text: print(text, end="")
@@ -1886,6 +1888,9 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
         plot = lambda spec: out.write(lisp_charts.chart_summary_text(spec))
     if table is None:
         table = lambda columns: print_table(columns, out.write)
+    if widget is None:
+        def widget(w):
+            raise LispError("display-widget: only a Jupyter notebook (the morris_lisp kernel) can show a widget")
 
     env = Env()
     env.trace_emit = out.write      # verbose-mode trace lines go where display output does
@@ -1897,6 +1902,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     # Builtins that belong to this environment.
     env.update(make_output_builtins(out, markdown, html))
     env.update(make_display_table_builtin(out, table))
+    env.update(lisp_widgets.make_widget_builtins(widget))
     env.update(lisp_charts.make_chart_builtins(plot))
     env.update(make_eval_builtins(env, out))
     env.update(lisp_save.make_save_builtins(env))
