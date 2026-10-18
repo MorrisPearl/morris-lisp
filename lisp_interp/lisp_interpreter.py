@@ -87,7 +87,7 @@ functions for data, models, and investments are in lisp_library_reference.md)
   - macro expansion is remembered, so each macro call is expanded only once
   - variadic procedures (a b . rest) and CL-style &key keyword arguments
   - macros (defmacro), with macroexpand/macroexpand-1/gensym for writing them
-  - defstruct records with single inheritance (:include) and call-method
+  - defstruct records with single inheritance (:include), call-method and call-super
   - tail calls that run in constant stack space (see lisp_core.py)
   - call tracing, (verbose n), and Lisp-level stack traces on errors
   - a debugger: (break f) stops when a procedure is called, a debug hook

@@ -978,12 +978,49 @@ def call_method(accessor, instance, *args):
     return apply_proc(method, [instance] + list(args))
 
 
+def call_super(accessor, instance, *args):
+    """(call-super accessor instance arg...) -- from a method that overrides a
+    slot's default, call the method the parent type has for that slot: what the
+    slot would hold had the child not overridden it. `accessor` is the child's
+    own accessor for the slot (dog-speak, in dog's override of speak), which says
+    both whose override this is and which slot; the parent's version is called
+    with instance and the args, as call-method would. It is the parent's default
+    for the slot, evaluated again in the environment of the parent's defstruct."""
+    struct_type = getattr(accessor, "struct_type", None)
+    slot = getattr(accessor, "slot_name", None)
+    if struct_type is None:
+        raise LispError("call-super: expected a struct accessor, such as dog-speak in dog's override of speak, not %s"
+                        % (_brief(accessor),))
+    if not (isinstance(instance, LispStruct) and instance.struct_type.is_a(struct_type)):
+        raise LispError("call-super: expected an instance of %s, not %s" % (struct_type.name, _brief(instance)))
+    parent = struct_type.parent
+    if parent is None:
+        raise LispError("call-super: %s has no parent type, so %s-%s has no parent method"
+                        % (struct_type.name, struct_type.name, slot))
+    defaults = dict(parent.slots)
+    if slot not in defaults:
+        raise LispError("call-super: %s's parent, %s, has no slot %s: it is new in %s"
+                        % (struct_type.name, parent.name, slot, struct_type.name))
+    default = defaults[slot]
+    if default is None:
+        raise LispError("call-super: %s has no default for %s, so there is no parent method to call"
+                        % (parent.name, slot))
+    try:
+        method = seval(default, parent.env)
+    except LispError as e:
+        raise LispError("call-super: couldn't get %s's default for %s, which call-super evaluates by itself "
+                        "(a default that uses another slot can't be called as a super method): %s"
+                        % (parent.name, slot, e))
+    return apply_proc(method, [instance] + list(args))
+
+
 STRUCT_BUILTINS = {
     "%make-struct": make_struct_fn,
     "struct-ref": struct_ref,
     "struct-set!": struct_set,
     "struct-type-name": lambda s: s.struct_type.name,
     "call-method": call_method,
+    "call-super": call_super,
 }
 
 

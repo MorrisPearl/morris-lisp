@@ -3823,8 +3823,8 @@ type-specific `make-<name>`/`<name>-<slot>`/`<name>-<slot>-set!`/`<name>?`/
 `copy-<name>` names it generates. `struct?`, `struct-ref`, `struct-set!`,
 and `struct-type-name` work generically on any struct instance, by
 slot-name symbol, without needing to know its specific type; `call-method`
-(below) is a different kind of generic tool, for the "lambda in a slot"
-dispatch pattern struct inheritance enables — see its own entry. To use
+and `call-super` (below) are a different kind of generic tool, for the "lambda in a slot"
+dispatch pattern struct inheritance enables — see their own entries. To use
 *all* of an instance's slots inside a body as plain variables, see
 `with-struct`, under "Structs" in "Special forms and standard macros", above
 — it's a special form (it needs the struct's runtime slot list to know which
@@ -3895,33 +3895,46 @@ on the instance it's given:
 ```
 
 This genuinely dispatches per-instance (works through a mixed list of
-animals, one call site, no `dog`/`cat`-specific code anywhere), but it's
-missing two things a real `virtual` function gives you for free in a
-language like C++: there's no implicit "self" — you always pass `instance`
-by hand, as above — and there's no built-in way for an override to call
-its parent's *original* implementation (a "super" call). For the second
-one, since a slot's `default-expr` can be any expression, not just an
-inline `lambda`, the fix is to name the base implementation and have the
-override call it directly by name:
+animals, one call site, no `dog`/`cat`-specific code anywhere), but there's
+no implicit "self" — you always pass `instance` by hand, as above. An override
+that wants to build on its parent's version, rather than replace it, calls
+`call-super`, below.
+
+#### `(call-super accessor instance arg...)`
+From a method that overrides a slot's default, calls the method the *parent*
+type has for that slot — what the slot would hold had the child not
+overridden it — with `instance` and any `arg`s, as `call-method` would.
+`accessor` is the child's **own** accessor for the slot: `dog-speak`, in
+`dog`'s override of `speak`. It says both whose override this is and which slot,
+so the parent is found from where the override is written, not from the type
+of `instance`. That matters with more than two levels of inheritance: a
+`puppy` that includes `dog` includes `animal`, and `dog`'s override, running on
+a `puppy`, calls `animal`'s version, not its own again.
 
 ```lisp
-(define (animal-speak-default self)
-  (string-append (animal-name self) " makes a sound"))
-(defstruct animal (name "unknown") (speak animal-speak-default))
+(defstruct animal (name "unknown")
+  (speak (lambda (self) (string-append (animal-name self) " makes a sound"))))
+(defstruct (dog (:include animal
+                  (speak (lambda (self) (string-append (call-super dog-speak self) ", woof"))))))
+(defstruct (puppy (:include dog
+                    (speak (lambda (self) (string-append (call-super puppy-speak self) ", yip"))))))
 
-; NOT (define (dog-speak self) ...) -- that name collides with the
-; accessor defstruct generates for dog's OWN speak slot (dog-speak);
-; since default-expr symbols aren't evaluated until the constructor
-; actually runs, by which point the accessor has already taken that
-; name, dog-speak the function would be silently shadowed. Give the
-; override implementation a distinct name instead.
-(define (dog-speak-impl self)
-  (string-append (animal-speak-default self) ", specifically Woof!"))
-(defstruct (dog (:include animal (speak dog-speak-impl))))
-
-(call-method animal-speak (make-dog :name "Rex"))
-; => "Rex makes a sound, specifically Woof!"
+(call-method animal-speak (make-animal :name "Rex"))   ; => "Rex makes a sound"
+(call-method animal-speak (make-dog :name "Rex"))      ; => "Rex makes a sound, woof"
+(call-method animal-speak (make-puppy :name "Rex"))    ; => "Rex makes a sound, woof, yip"
 ```
+
+The parent's version is the parent type's default for the slot, evaluated by
+`call-super` in the environment where the parent's `defstruct` was evaluated:
+a `lambda`, or the name of a function, as above. A default that can only be
+worked out from the other slots of a particular instance (`(f (make-speaker
+name))`) can't be called this way, and `call-super` says so; and a `lambda` in
+a default is a function of its own arguments, with no access to the other
+slots' variables. It is an error if the type has no parent, if the slot is new
+in the child (the parent has nothing to call), if the parent has no default for
+it, or if `instance` isn't an instance of the type of `accessor`. A method
+given to a single instance (`(make-dog :speak f)`) can call `(call-super
+dog-speak self)` too: it goes to `dog`'s parent.
 
 ### Dates
 

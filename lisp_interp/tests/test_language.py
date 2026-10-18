@@ -817,6 +817,67 @@ class TestStructInheritance(LispTestCase):
           (defstruct acct (balance 100) (deposit (lambda (self n) (+ (acct-balance self) n))))""")
         self.assertShows("(call-method acct-deposit (make-acct) 5)", "105")
 
+    ANIMALS = """
+      (defstruct animal (name "unknown") (speak (lambda (self) (string-append (animal-name self) " makes a sound"))))
+      (defstruct (dog (:include animal (speak (lambda (self) (string-append (call-super dog-speak self) ", woof"))))))
+      (defstruct (puppy (:include dog (speak (lambda (self) (string-append (call-super puppy-speak self) ", yip"))))))
+      (defstruct (cat (:include animal)) (speak (lambda (self) "meow")))"""
+
+    def test_call_super_calls_the_parents_version_at_every_level_of_inheritance(self):
+        self.run_lisp(self.ANIMALS)
+        self.assertShows('(call-method animal-speak (make-animal :name "Rex"))', '"Rex makes a sound"')
+        self.assertShows('(call-method animal-speak (make-dog :name "Rex"))', '"Rex makes a sound, woof"')
+        self.assertShows('(call-method animal-speak (make-puppy :name "Rex"))', '"Rex makes a sound, woof, yip"')
+
+    def test_call_super_goes_from_the_type_the_override_is_in_not_the_type_of_the_instance(self):
+        # a puppy that does not override speak runs dog's, whose super is animal's (not dog's own again)
+        self.run_lisp(self.ANIMALS + """
+          (defstruct (pup (:include dog)))""")
+        self.assertShows('(call-method animal-speak (make-pup :name "Bit"))', '"Bit makes a sound, woof"')
+
+    def test_call_super_passes_the_instance_and_the_extra_arguments(self):
+        self.run_lisp("""
+          (defstruct acct (balance 100) (deposit (lambda (self n) (+ (acct-balance self) n))))
+          (defstruct (fee-acct (:include acct (deposit (lambda (self n) (- (call-super fee-acct-deposit self n) 1))))))""")
+        self.assertShows("(call-method fee-acct-deposit (make-fee-acct) 5)", "104")
+        self.assertShows("(call-super fee-acct-deposit (make-fee-acct :balance 10) 5)", "15")
+
+    def test_the_parents_version_can_be_a_named_function(self):
+        self.run_lisp("""
+          (define (base-speak self) "base")
+          (defstruct animal (speak base-speak))
+          (defstruct (dog (:include animal (speak (lambda (self) (string-append (call-super dog-speak self) "+dog"))))))""")
+        self.assertShows("(call-method animal-speak (make-dog))", '"base+dog"')
+
+    def test_a_method_given_to_one_instance_can_still_call_the_super_of_its_type(self):
+        self.run_lisp(self.ANIMALS)
+        self.assertShows('(call-method dog-speak (make-dog :name "Al" :speak (lambda (self) (string-append "custom, " (call-super dog-speak self)))))',
+                         '"custom, Al makes a sound"')
+
+    def test_call_super_is_given_a_struct_accessor_and_an_instance_of_its_type(self):
+        self.run_lisp(self.ANIMALS)
+        self.assertLispError("(call-super car (make-dog))", "expected a struct accessor")
+        self.assertLispError("(call-super 5 (make-dog))", "expected a struct accessor")
+        self.assertLispError("(call-super dog-speak (make-animal))", "expected an instance of dog")
+        self.assertLispError("(call-super dog-speak 3)", "expected an instance of dog")
+
+    def test_call_super_needs_a_parent_that_has_the_slot_and_a_default_for_it(self):
+        self.run_lisp(self.ANIMALS + """
+          (defstruct (fish (:include animal)) fins)
+          (defstruct bare speak)
+          (defstruct (shy (:include bare (speak (lambda (self) 1)))))""")
+        self.assertLispError('(call-super animal-speak (make-animal))', "animal has no parent type")
+        self.assertLispError("(call-super fish-fins (make-fish))", "has no slot fins")
+        self.assertLispError("(call-super shy-speak (make-shy))", "no default for speak")
+
+    def test_a_parent_default_that_needs_another_slot_cannot_be_called_as_a_super_method(self):
+        self.run_lisp("""
+          (defstruct thing (n 1) (f (if (> n 3) (lambda (self) "big") (lambda (self) "small"))))
+          (defstruct (sub (:include thing (f (lambda (self) (call-super sub-f self))))))""")
+        self.assertShows("(call-method thing-f (make-thing :n 5))", '"big"')
+        self.assertShows("(call-method thing-f (make-thing))", '"small"')
+        self.assertLispError("(call-method thing-f (make-sub))", "couldn't get thing's default for f")
+
 
 class TestWithStruct(LispTestCase):
     """(with-struct struct-expr body...) -- bind every slot as a variable."""

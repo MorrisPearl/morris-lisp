@@ -280,10 +280,16 @@ class LispStructType:
     `slots` is the complete, ordered list of (slot_name, default_expr)
     pairs: the parent's slots first (a child slot with the same name just
     replaces the parent's default), then the child's new ones. Everything
-    that uses a struct type reads `slots`; only is_a() looks at `parent`."""
+    that uses a struct type reads `slots`; only is_a() and call-super look at
+    `parent`.
 
-    def __init__(self, name, own_slots, parent=None):
+    `env` is the environment the defstruct was evaluated in, where call-super
+    evaluates this type's slot defaults (the constructor evaluates them in a
+    scope inside it)."""
+
+    def __init__(self, name, own_slots, parent=None, env=None):
         self.name = name              # Symbol
+        self.env = env
         self.parent = parent          # LispStructType or None
         self.own_slots = own_slots    # this type's own slot declarations, unmerged
         self.slots = LispStructType._merge_slots(parent, own_slots)
@@ -1385,7 +1391,7 @@ def define_struct(args, env):
         else:
             own_slots.append((spec, None))
         p = p.cdr
-    struct_type = LispStructType(type_name, own_slots, parent=parent_type)
+    struct_type = LispStructType(type_name, own_slots, parent=parent_type, env=env)
     slots = struct_type.slots
     env[Symbol("%%struct-type-%s" % type_name)] = struct_type  # for a later defstruct's :include
 
@@ -1404,6 +1410,8 @@ def define_struct(args, env):
             if not (isinstance(s, LispStruct) and s.struct_type.is_a(struct_type)):
                 raise LispError("%s-%s: not a %s: %r" % (type_name, slot_name, type_name, s))
             return s.values[slot_name]
+        accessor.struct_type = struct_type      # call-super needs to know whose slot this is
+        accessor.slot_name = slot_name
         return accessor
 
     def make_setter(slot_name):
