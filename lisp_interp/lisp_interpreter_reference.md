@@ -4375,6 +4375,25 @@ prints
 
 To show the columns in another order, use `table-select`; to show other
 rows, `table-filter`, `table-tail`, or `table-slice`.
+
+#### `(table-markdown table [formats])`
+The table as the text of a Markdown table, the one a notebook's `display-table` shows: a line of headings, a line that aligns
+the columns (`---:` for numbers, `:---` for text), and a line for each row, with `formats` as `display-table` takes them,
+every row, and the characters Markdown would read as something else backslashed. It is a string, for `display-markdown`, a
+file, or a report (`:markdown` in `report.lsp`).
+
+```lisp
+(display (table-markdown (make-table "a" #(1 2) "b" (vector "x" "y")) '(("a" ",.1f"))))
+```
+
+writes
+
+```
+| a | b |
+|---:|:---|
+| 1.0 | x |
+| 2.0 | y |
+```
 `display-table` has no knowledge of `defstruct` columns or any other
 structure; `lib/column_engine.lsp` is a small example library, built on
 `defstruct` and `&key`, that registers named `column` structs (each with

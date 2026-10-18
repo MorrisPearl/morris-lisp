@@ -79,11 +79,11 @@
   write-report write-report-html report-text make-report-spec report-spec? copy-report-spec make-report-break report-break?
   copy-report-break report-spec-report-header report-spec-report-footer report-spec-page-header
   report-spec-page-footer report-spec-page-lines report-spec-page-separator report-spec-detail report-spec-breaks
-  report-spec-summaries report-spec-running report-spec-variables report-spec-detail-order report-spec-presorted
+  report-spec-summaries report-spec-running report-spec-variables report-spec-detail-order report-spec-presorted report-spec-markdown report-spec-formats
   report-spec-report-header-set! report-spec-report-footer-set! report-spec-page-header-set!
   report-spec-page-footer-set! report-spec-page-lines-set! report-spec-page-separator-set! report-spec-detail-set!
   report-spec-breaks-set! report-spec-summaries-set! report-spec-running-set! report-spec-variables-set! report-spec-detail-order-set!
-  report-spec-presorted-set! report-break-field report-break-header report-break-footer report-break-new-page
+  report-spec-presorted-set! report-spec-markdown-set! report-spec-formats-set! report-break-field report-break-header report-break-footer report-break-new-page
   report-break-restart-page-numbers report-break-repeat-header report-break-field-set! report-break-header-set! report-break-footer-set!
   report-break-new-page-set! report-break-restart-page-numbers-set! report-break-repeat-header-set!)
 

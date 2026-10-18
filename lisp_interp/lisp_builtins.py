@@ -1609,15 +1609,9 @@ def make_display_table_builtin(out, show_table):
             raise LispError("display-table: :max-rows must be a whole number, 0 or more, or #f for every row, not %s"
                             % (_brief(max_rows),))
 
-        columns = lisp_tables.table_columns(lisp_tables.table_or_rows(data, "display-table"), "display-table")
-        specs = lisp_tables.format_specs(formats, "display-table")
-        n_rows = lisp_tables.row_count(columns)
-        shown = n_rows if max_rows is False else min(n_rows, max_rows)
-        cells = [(name, [cell_text(value, specs.get(name), name) for value in lisp_tables.column_values(v)[:shown]],
-                  column_alignment(v))
-                 for name, v in columns if specs.get(name) != lisp_tables.HIDDEN]
+        cells, n_rows, shown = table_cells(data, formats, "display-table", max_rows)
         if not cells:
-            out.write("(every column is hidden)\n" if columns else "(an empty table)\n")
+            out.write("(every column is hidden)\n" if n_rows is not None else "(an empty table)\n")
             return NIL
         show_table(cells)
         if shown < n_rows:
@@ -1625,10 +1619,33 @@ def make_display_table_builtin(out, show_table):
                       % (format(shown, ","), format(n_rows, ",")))
         return NIL
 
-    return {"display-table": display_table}
+    return {"display-table": display_table, "table-markdown": table_markdown}
 
 
-def cell_text(value, spec, column_name):
+def table_cells(data, formats, who, max_rows=False):
+    """The cells that display-table and table-markdown show, as (column name, the cells' text, alignment) tuples
+    (see make_display_table_builtin), for the first max_rows rows, or every row if it is #f. Returns them with the number of
+    rows the table has and the number shown; the number of rows is None for a table with no columns."""
+    columns = lisp_tables.table_columns(lisp_tables.table_or_rows(data, who), who)
+    specs = lisp_tables.format_specs(formats, who)
+    n_rows = lisp_tables.row_count(columns)
+    shown = n_rows if max_rows is False else min(n_rows, max_rows)
+    cells = [(name, [cell_text(value, specs.get(name), name, who) for value in lisp_tables.column_values(v)[:shown]],
+              column_alignment(v))
+             for name, v in columns if specs.get(name) != lisp_tables.HIDDEN]
+    return cells, (n_rows if columns else None), shown
+
+
+def table_markdown(data, formats=NIL):
+    """(table-markdown table [formats]) -- the table as the text of a Markdown table: a line of headings, a line that
+    aligns the columns (numbers right, text left), and a line for each row, laid out as display-table does."""
+    cells, n_rows, shown = table_cells(data, formats, "table-markdown")
+    if not cells:
+        raise LispError("table-markdown: %s" % ("every column is hidden" if n_rows is not None else "the table has no columns"))
+    return LispString(markdown_table(cells))
+
+
+def cell_text(value, spec, column_name, who="display-table"):
     """One table cell as text: blank if the value is missing (NaN, or '() in
     a column of strings or dates); laid out by spec if there is one (as
     format-value does it); otherwise as display shows it."""
@@ -1639,7 +1656,7 @@ def cell_text(value, spec, column_name):
     try:
         return str(format_value(value, spec))
     except LispError as e:
-        raise LispError("display-table: column %s: %s" % (column_name, e))
+        raise LispError("%s: column %s: %s" % (who, column_name, e))
 
 
 def column_alignment(v):

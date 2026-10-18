@@ -2183,6 +2183,8 @@ that is `'()` (the default) writes nothing, and one that is `""` writes a blank 
 | `:detail-order` | a list of columns to sort the rows of the innermost group by, after the break columns: `'("date")` |
 | `:presorted` | `#t` if the table is already in the order of the break columns (and `:detail-order`), and need not be sorted: for a large table that is, or that you sorted yourself |
 | `:variables` | a list of `(name value)`, such as `(list (list 'title "Mortgages") (list 'month "March"))`, for any template to use |
+| `:markdown` | `#t` to write the rows as Markdown tables instead of with a `:detail` template; see "A report in Markdown", below |
+| `:formats` | with `:markdown`, how the table's columns are laid out, as `display-table` takes them: `'(("balance" ",.2f") ("rate" ".3%") ("zip" hide))` |
 
 #### `(make-report-break :field column [:header template] [:footer template] [:new-page #t] [:restart-page-numbers #t] [:repeat-header #t])`
 One level of grouping: the rows with the same value of the column `:field` (a string, the name of a column of the table) are a
@@ -2251,6 +2253,34 @@ and `>` in the data are shown as themselves. It is written ten pages at a time, 
 
 ```lisp
 (write-report-html mortgages "mortgages.html" spec :title "Mortgages, October")
+```
+
+#### A report in Markdown
+With `:markdown #t` the rows are not written by a `:detail` template but as **Markdown tables**, laid out as `display-table`
+lays out a table: a heading for each column of the table, numbers right-aligned and text left-aligned, a blank cell for a
+missing value, and the characters that Markdown would read as something else (`|`, `*`, `_`, `$`, ...) shown as themselves.
+`:formats` says how the columns are laid out, as `display-table` takes them, and a column whose format is `hide` (or just
+`("state")`) is left out: the break columns, usually, since a group's header says them.
+
+Each run of rows is a table: the rows of a group between its header and its footer. Where nothing is written between one group
+and the next, they are one table. A blank line is written before and after each table, as Markdown needs. The headers and
+footers are templates as before, and are Markdown as you write them (`"## State {{state}}"`; `"**{{state}}**: {{loans}} loans"`);
+the values in them are written as they are. The summaries and the running totals are in them, but not in the tables.
+
+A Markdown report has no pages: `:page-lines`, `:page-header` and `:page-footer` are errors. A break's `:new-page #t` writes
+the `:page-separator` (`"---"`, a horizontal rule) between its groups. The report is a file for `write-report` (`.md`), or the string
+`report-text` gives, which a notebook shows with `(display-markdown ...)`. `write-report-html` does not take one. A group is
+formatted whole when it ends, so it has to fit in memory.
+
+```lisp
+(define markdown-spec
+  (make-report-spec
+    :markdown #t
+    :formats '(("state" hide) ("balance" ",.2f") ("rate" ".3%"))
+    :summaries (list (list "loans" 'count) (list "total" 'sum "balance"))
+    :breaks (list (make-report-break :field "state" :header "## State {{state}}"
+                                     :footer "{{loans}} loans, {{total:,.2f}}\n"))))
+(write-report mortgages "mortgages.md" markdown-spec)
 ```
 
 #### What it comes to

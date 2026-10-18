@@ -47,7 +47,8 @@
 (defstruct report-spec
   report-header report-footer
   page-header page-footer (page-lines #f) (page-separator "")
-  detail breaks summaries running variables detail-order (presorted #f))
+  detail breaks summaries running variables detail-order (presorted #f)
+  (markdown #f) formats)
 
 ; ---------------------------------------------------------------------------
 ; Small pieces
@@ -162,7 +163,19 @@
       (report-spec-running spec))
     (let ((page-lines (report-spec-page-lines spec)))
       (unless (or (null? page-lines) (eq? page-lines #f) (and (integer? page-lines) (> page-lines 2)))
-        (error "write-report: :page-lines is a whole number of lines above 2, or '() for no pages, not" page-lines)))))
+        (error "write-report: :page-lines is a whole number of lines above 2, or '() for no pages, not" page-lines)))
+    (if (report-spec-markdown spec)
+        (begin
+          (when (report--given? (report-spec-detail spec))
+            (error "write-report: a :markdown report writes its rows as a table, so it has no :detail template; :formats lays out the columns"))
+          (when (or (report--given? (report-spec-page-lines spec)) (report--given? (report-spec-page-header spec))
+                    (report--given? (report-spec-page-footer spec)))
+            (error "write-report: a :markdown report has no pages, so no :page-lines, :page-header or :page-footer"))
+          ; try the formats on a row now, so that a mistake in them is found before any of the file is written
+          (when (> (table-row-count table) 0)
+            (table-markdown (table-slice table 0 1) (report-spec-formats spec))))
+        (when (report--given? (report-spec-formats spec))
+          (error "write-report: :formats lays out the columns of a :markdown report, which this is not")))))
 
 ; ---------------------------------------------------------------------------
 ; The report
@@ -182,6 +195,8 @@ laid out twice: the first time to count them."
   (define variables (report-spec-variables spec))
   (define variable-names (map car variables))
   (define page-lines (if (null? (report-spec-page-lines spec)) #f (report-spec-page-lines spec)))
+  (define markdown (report-spec-markdown spec))
+  (define formats (report-spec-formats spec))
   (define sort-columns (append fields (report-spec-detail-order spec)))
   (define data (if (or (report-spec-presorted spec) (null? sort-columns)) table (table-sort table sort-columns)))
   (define rows (table-row-count data))
@@ -286,6 +301,7 @@ laid out twice: the first time to count them."
   (define sequence 0)                      ; which run of page numbers (a break that restarts them makes a new one)
   (define page-totals '())                 ; the last page number of each run, as the first pass finds them
   (define known-totals #f)                 ; the same, in the second
+  (define table-start #f)                  ; in a markdown report, where the rows of the table being written begin, or #f
   (define sink emit)
   (define finish-page end-page)
   (define (pages-in-run) (if known-totals (list-ref known-totals sequence) 0))
@@ -352,11 +368,27 @@ laid out twice: the first time to count them."
     "Makes room for this many lines on the page, by ending it if need be. Returns whether it did."
     (and page-lines (> (+ line-count lines footer-height) page-lines)
          (page-break #f)))
+  (define (flush-table)
+    "Writes the table of the rows since it began, if one has."
+    (when table-start
+      (emit-text (table-markdown (table-slice data table-start rows-written) formats) (+ 2 (- rows-written table-start)))
+      (set! table-start #f)))
+  (define (end-table)
+    "Ends the table being written, if there is one: markdown needs a blank line after it."
+    (when table-start
+      (flush-table)
+      (emit-text "" 1)))
+  (define (add-table-row place)
+    "A row of the table: the first row of a table begins it, after a blank line (markdown needs one before it too)."
+    (unless table-start
+      (when (> line-count 0) (emit-text "" 1))
+      (set! table-start place)))
   (define (write-block render-text)
     "Writes the text that (render-text) gives, unless it gives #f. It is written again if the page ends to make room
 for it: what it says may be the page's number."
     (let ((text (render-text)))
       (when text
+        (end-table)
         (let ((lines (report--lines text)))
           (when (room-for lines)
             (set! text (render-text))
@@ -405,10 +437,12 @@ for it: what it says may be the page's number."
     (let ((new-page-breaks (filter (lambda (break) break)
                                    (loop for l from level to depth collect (report-break-new-page (list-ref breaks (- l 1)))))))
       (unless (null? new-page-breaks)
+        (end-table)
         (page-break (not (null? (filter (lambda (l) (report-break-restart-page-numbers (list-ref breaks (- l 1))))
                                         (iota-from level depth)))))))
     (let ((headers (headers-from level)))
       (when headers
+        (end-table)
         (when (room-for (+ (report--lines headers) detail-height))
           (set! headers (headers-from level)))
         (emit-text headers (report--lines headers))
@@ -445,6 +479,8 @@ for it: what it says may be the page's number."
                (when detail-nodes
                  (set! repeat-through depth)
                  (write-block (lambda () (render-detail place))))
+               (when markdown
+                 (add-table-row place))
                (add-running place)
                (set! rows-written (+ place 1))))
     (when (and (> rows 0) (> depth 0))
@@ -453,6 +489,7 @@ for it: what it says may be the page's number."
     (when report-footer-nodes
       (set! repeat-through 0)
       (write-block (lambda () (render report-footer-nodes grand-bindings))))
+    (flush-table)
     (close-page)
     (set! page-totals (append page-totals (list page))))
 
@@ -593,6 +630,8 @@ a page by its number (the arrow keys work too). The pages are those of the repor
 has none), with its headers and footers; and a page separator is not written. Without JavaScript the page shows them all,
 one after another. Returns the number of pages. :title (\"Report\") is the title of the web page."
   (report--check-spec table spec)
+  (when (report-spec-markdown spec)
+    (error "write-report-html: a :markdown report is Markdown text, for write-report (and a notebook's display-markdown)"))
   (let ((spec (if (report-spec-page-lines spec)
                   spec
                   (let ((copy (copy-report-spec spec)))

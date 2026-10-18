@@ -1,14 +1,15 @@
 ; report_example.lsp
 ;
-; Two reports with control breaks, written to text files by lib/report.lsp, from made-up data (so it needs nothing):
+; Reports with control breaks, written to text files by lib/report.lsp, from made-up data (so it needs nothing):
 ;   1. a report of mortgages, with subtotals for each zip code, for each state, and a grand total, on pages that say
 ;      "page X of Y" and carry a running total, and a state's header repeated when it goes over to a new page; and
-;      the same report as a web page, with a bar at the bottom to go through its pages;
+;      the same report as a web page, with a bar at the bottom to go through its pages, and as Markdown tables;
 ;   2. a letter to each client, listing the client's transactions, with a total.
 ; The spec of a report is a value that holds its templates: what a page, a group and a row say, and which columns the
 ; groups are of. See "Reports with control breaks" in the library manual. Run it from the examples directory:
 ;   python3 ../lisp_interpreter.py report_example.lsp
-; It writes mortgage_report.txt, mortgage_report.html and client_letters.txt, and shows the text of two.
+; It writes mortgage_report.txt, mortgage_report.html, mortgage_report.md (the report as Markdown tables) and
+; client_letters.txt, and shows the text of three.
 
 (load "report.lsp")
 
@@ -42,6 +43,18 @@
 
 ; the same report as a web page: one page at a time, with a bar at the bottom to go to the next, the one before, or any page
 (display (format "\n{} pages written to mortgage_report.html: open it in a browser.\n\n" (write-report-html mortgages "mortgage_report.html" mortgage-report :title "Mortgage report")))
+
+;; the same again as Markdown: each group's rows are a table (laid out as display-table does it), under a heading for the state
+(define mortgage-markdown
+  (make-report-spec
+    :markdown #t
+    :formats '(("state" hide) ("balance" ",.0f") ("rate" ".2f"))
+    :summaries (list (list "loans" 'count) (list "total" 'sum "balance"))
+    :breaks (list (make-report-break :field "state" :header "## State {{state}}"
+                                     :footer "**{{state}}**: {{loans}} loans, {{total:,.0f}}\n"))
+    :report-footer "**All states**: {{loans}} loans, {{total:,.0f}}"))
+(display (format "\n{} page written to mortgage_report.md, :\n\n" (write-report mortgages "mortgage_report.md" mortgage-markdown)))
+(display (read-text-file "mortgage_report.md"))
 
 ; --- 2. Letters: one to each client, on a page of its own ---
 (define transactions

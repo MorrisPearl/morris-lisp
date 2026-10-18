@@ -721,3 +721,150 @@ class TestTheWebPage(ReportTestCase):
         self.run_lisp('(write-report-html big "nowhere" spec)')
         self.assertGreater(len(written), 3)
         self.assertEqual(len(self.PAGES.findall("".join(written))), 30)
+
+
+class TestMarkdown(ReportTestCase):
+    """:markdown #t writes each run of rows as a Markdown table, laid out as display-table lays out a table."""
+
+    BY_STATE_AND_ZIP = '''
+(define spec
+  (make-report-spec
+    :markdown #t
+    :formats '(("state" hide) ("zip" hide) ("balance" ",.2f") ("rate" ".1f"))
+    :summaries (list (list "loans" 'count) (list "total" 'sum "balance"))
+    :breaks (list (make-report-break :field "state" :header "## {{state}}"
+                                     :footer "{{state}}: {{loans}} loans, total {{total:,.2f}}\\n")
+                  (make-report-break :field "zip" :header "zip {{zip}}"))
+    :report-footer "All: {{loans}} loans, total {{total:,.2f}}"))
+'''
+
+    def test_each_group_of_rows_is_a_table_between_the_headers_and_footers(self):
+        self.run_lisp(self.BY_STATE_AND_ZIP)
+        self.assertEqual(self.text(), """## CA
+zip 90001
+
+| loan-id | balance | rate |
+|:---|---:|---:|
+| L2 | 200.00 | 6.0 |
+| L4 | 400.00 | 8.0 |
+
+zip 90002
+
+| loan-id | balance | rate |
+|:---|---:|---:|
+| L3 | 300.00 | 7.0 |
+
+CA: 3 loans, total 900.00
+
+## NY
+zip 10001
+
+| loan-id | balance | rate |
+|:---|---:|---:|
+| L1 | 100.00 | 5.0 |
+| L5 | 500.00 | 9.0 |
+
+NY: 2 loans, total 600.00
+
+All: 5 loans, total 1,500.00
+""")
+
+    def test_a_table_with_no_breaks_is_one_table_of_the_rows_in_order_with_nothing_before_it(self):
+        self.run_lisp('''(define spec (make-report-spec :markdown #t
+            :formats '(("state" hide) ("zip" hide) ("rate" hide) ("balance" ",.2f"))))''')
+        self.assertEqual(self.text(), """| loan-id | balance |
+|:---|---:|
+| L1 | 100.00 |
+| L2 | 200.00 |
+| L3 | 300.00 |
+| L4 | 400.00 |
+| L5 | 500.00 |
+""")
+
+    def test_groups_with_nothing_written_between_them_are_one_table(self):
+        self.run_lisp('''(define spec (make-report-spec :markdown #t
+            :formats '(("zip" hide) ("rate" hide) ("balance" hide))
+            :breaks (list (make-report-break :field "state"))))''')
+        self.assertEqual(self.text(), """| loan-id | state |
+|:---|:---|
+| L2 | CA |
+| L3 | CA |
+| L4 | CA |
+| L1 | NY |
+| L5 | NY |
+""")
+
+    def test_it_is_the_table_that_display_table_shows(self):
+        formats = '\'(("balance" ",.2f") ("rate" ".3%") ("zip" hide))'
+        shown = []
+        display = lisp_builtins.make_display_table_builtin(io.StringIO(), shown.append)["display-table"]
+        display(self.run_lisp("loans"), self.run_lisp(formats))
+        self.run_lisp("(define spec (make-report-spec :markdown #t :formats %s))" % formats)
+        self.assertEqual(self.text(), lisp_builtins.markdown_table(shown[0]) + "\n")
+
+    def test_what_markdown_would_read_as_something_else_is_escaped_in_the_cells(self):
+        self.run_lisp('''(define odd (make-table "name" (vector "a|b *c*" "$5 and $6")))
+          (define spec (make-report-spec :markdown #t))''')
+        self.assertEqual(self.text("spec", "odd"), "| name |\n|:---|\n| a\\|b \\*c\\* |\n| \\$5 and \\$6 |\n")
+
+    def test_a_missing_number_is_a_blank_cell(self):
+        self.run_lisp('''(define gaps (make-table "x" (vector 1.0 nan)))
+          (define spec (make-report-spec :markdown #t :formats '(("x" ".1f"))))''')
+        self.assertEqual(self.text("spec", "gaps"), "| x |\n|---:|\n| 1.0 |\n|  |\n")
+
+    def test_a_group_that_starts_a_new_page_ends_its_table_before_the_page_separator(self):
+        self.run_lisp(''' (define spec (make-report-spec :markdown #t :page-separator "---"
+            :formats '(("client" hide) ("amount" ".2f"))
+            :detail-order '("date")
+            :breaks (list (make-report-break :field "client" :new-page #t :header "Dear {{client}}"))))''')
+        self.assertEqual(self.text("spec", "transactions"), """Dear Amy
+
+| date | what | amount |
+|:---|:---|---:|
+| 2026-03-01 | gas | 40.00 |
+| 2026-03-02 | coffee | 4.50 |
+| 2026-03-09 | food | 20.00 |
+
+---
+Dear Zed
+
+| date | what | amount |
+|:---|:---|---:|
+| 2026-03-01 | books | 30.00 |
+| 2026-03-05 | rent | 100.00 |
+| 2026-03-20 | gift | 5.25 |
+---
+""")
+
+    def test_write_report_writes_it_to_a_file(self):
+        self.run_lisp(self.BY_STATE_AND_ZIP)
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "report.md")
+            self.assertEqual(self.run_lisp('(write-report loans "%s" spec)' % path), 1)
+            self.assertEqual(open(path, encoding="utf-8").read(), self.text())
+
+    def test_a_markdown_report_has_rows_of_a_table_not_a_template_and_no_pages(self):
+        self.assertLispError('(report-text loans (make-report-spec :markdown #t :detail "{{loan-id}}"))', "no :detail template")
+        for slot in (":page-lines 20", ':page-header "x"', ':page-footer "x"'):
+            self.assertLispError("(report-text loans (make-report-spec :markdown #t %s))" % slot, "has no pages")
+
+    def test_formats_are_for_a_markdown_report(self):
+        self.assertLispError('(report-text loans (make-report-spec :detail "{{loan-id}}" :formats \'(("zip" hide))))', "which this is not")
+
+    def test_a_mistake_in_the_formats_is_found_before_the_file_is_written(self):
+        self.run_lisp('''(define spec (make-report-spec :markdown #t :formats '(("balance" "nonsense"))))
+          (define hidden (make-report-spec :markdown #t :formats '(("loan-id") ("state") ("zip") ("balance") ("rate"))))''')
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "report.md")
+            self.assertLispError('(write-report loans "%s" spec)' % path, "balance")
+            self.assertLispError('(write-report loans "%s" hidden)' % path, "every column is hidden")
+            self.assertFalse(os.path.exists(path))
+
+    def test_it_is_not_for_the_web_page(self):
+        self.run_lisp("(define spec (make-report-spec :markdown #t))")
+        self.assertLispError('(write-report-html loans "/nonexistent/x.html" spec)', "write-report")
+
+    def test_table_markdown_is_a_string_of_the_tables_lines(self):
+        self.assertShows('(table-markdown (make-table "a" #(1 2) "b" (vector "x" "y")))',
+                         '"| a | b |\n|---:|:---|\n| 1 | x |\n| 2 | y |"')
+        self.assertLispError('(table-markdown loans \'(("loan-id") ("state") ("zip") ("balance") ("rate")))', "every column is hidden")
