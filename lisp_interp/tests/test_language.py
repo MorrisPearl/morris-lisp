@@ -23,6 +23,7 @@ class TestReader(LispTestCase):
         self.assertEqual(self.run_lisp(r'"a\nb"'), "a\nb")
         self.assertEqual(self.run_lisp(r'"a\tb"'), "a\tb")
         self.assertEqual(self.run_lisp(r'"a\rb"'), "a\rb")
+        self.assertEqual(self.run_lisp(r'"a\fb"'), "a\fb")
         self.assertEqual(self.run_lisp(r'"say \"hi\""'), 'say "hi"')
         self.assertEqual(self.run_lisp(r'"back\\slash"'), "back\\slash")
         self.assertTrue(lisp_core.is_true(self.run_lisp('(string? "x")')))

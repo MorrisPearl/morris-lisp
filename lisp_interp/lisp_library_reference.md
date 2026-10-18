@@ -41,6 +41,7 @@ that use all this are described in
   - [Schwab (your accounts)](#schwab-your-accounts)
   - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
   - [Google Sheets](#google-sheets)
+  - [Reports with control breaks](#reports-with-control-breaks)
 - [Dates and cash flows](#dates-and-cash-flows)
   - [Monthly time series](#monthly-time-series)
   - [Trading days (the NYSE's calendar)](#trading-days-the-nyses-calendar)
@@ -75,7 +76,8 @@ The functions for investment analysis, in the order an analysis uses them.
    web: "Downloading data from the web". Files: "SQLite", and `load-csv`
    (under "Input / output", in the language manual). Each gives a
    **table**, so they all work the same way after that. And the other way:
-   "Google Sheets" sends tables out, to a spreadsheet.
+   "Google Sheets" sends tables out, to a spreadsheet, and "Reports with
+   control breaks" writes a table as a text report, with totals for each group.
 2. **Tables and numbers.** In the language manual: "Tables", "Vectors",
    "Vector math and statistics" (`vector-drawdowns` is there), "Displaying
    tables", "Charting", and "Saving variables". Here: "Stratification
@@ -2097,6 +2099,126 @@ fails part way, the error says where the spreadsheet is, and that it isn't
 finished. A spreadsheet holds at most 10,000,000 cells in all; a long table
 is sent in pieces. Google limits how fast a program can make spreadsheets
 -- about 60 changes a minute -- which a few tables don't come near.
+
+### Reports with control breaks
+
+(In `lib/report.lsp`, with `lib/template.lsp`.) A table, possibly a large one, written as a text report: the rows are in
+**groups**, one inside another (by state, then by zip code within the state; or by client), and each group has a header
+before its rows and a footer after them, with the group's totals. The report has a header and a footer of its own, with the
+grand totals, and, if you ask for pages, each page has a header and a footer, with its page number and its own totals. What
+each of these says, and what each row says, is a **template** with `{{name}}` where a value goes; and which columns the
+groups are of is in the same **spec**, one value that holds it all. A report of mortgages, with subtotals for each zip code,
+for each state, and a grand total:
+
+```lisp
+(load "report.lsp")
+(define loans (make-table
+  "loan-id" (vector "L1" "L2" "L3" "L4" "L5")
+  "state"   (vector "NY" "CA" "CA" "CA" "NY")
+  "zip"     (vector "10001" "90001" "90002" "90001" "10001")
+  "balance" (vector 100.0 200.0 300.0 400.0 500.0)))
+
+(define spec
+  (make-report-spec
+    :report-header "Mortgages ({{loans}} loans)"
+    :detail "{{loan-id:<4}} {{zip:<6}} {{balance:>8,.2f}}"
+    :summaries (list (list "loans" 'count) (list "total" 'sum "balance"))
+    :breaks (list (make-report-break :field "state" :header "State {{state}}"
+                                     :footer "  {{state}} total: {{loans}} loans {{total:>9,.2f}}")
+                  (make-report-break :field "zip" :footer "    {{zip}}: {{total:>9,.2f}}"))
+    :report-footer "All: {{loans}} loans {{total:>9,.2f}}"))
+
+(display (report-text loans spec))       ; the report as a string: write-report writes it to a file
+```
+prints:
+```
+Mortgages (5 loans)
+State CA
+L2   90001    200.00
+L4   90001    400.00
+    90001:    600.00
+L3   90002    300.00
+    90002:    300.00
+  CA total: 3 loans    900.00
+State NY
+L1   10001    100.00
+L5   10001    500.00
+    10001:    600.00
+  NY total: 2 loans    600.00
+All: 5 loans  1,500.00
+```
+
+The rows were not in order: the table is sorted by the break columns first (`"state"`, then `"zip"`), and not changed.
+The groups' `:footer`s come out innermost first, and a group's `:header` outermost first. A letter to each client, with a list
+of the client's transactions and a total, on a page of its own with its own page numbers, is the same with one break, on
+`"client"`, that says `:new-page #t` and `:restart-page-numbers #t`: see `examples/report_example.lsp`, which makes this
+report and the mortgage report below it, on pages, from made-up tables.
+
+#### `(write-report table path spec)`, `(report-text table spec)`
+`write-report` writes the report of `table`, as `spec` says, to the text file at `path`, replacing what was there, and gives
+back the number of pages (1, if the spec has no `:page-lines`). It writes a thousand lines at a time, so a table of any size
+is written without the report being held: a table of 50,000 rows takes about five seconds, and its pages are in the file.
+`report-text` gives the report as one string, which is for a short one (to look at, or to test a spec on the first rows of a
+table: `(table-head loans 20)`). Neither changes `table`. They stop, before anything is written, if a template says a name that
+isn't there, or the spec says a column that isn't in the table.
+
+#### `(make-report-spec :slot value ...)`
+The spec of a report: a value whose slots are the templates and the choices of the report. Every slot is optional; a template
+that is `'()` (the default) writes nothing, and one that is `""` writes a blank line. A template is a string, which is what
+`template-render` takes (see `template.lsp`: `{{name}}`; `{{name:spec}}`, laid out as `format` lays a value out, such as
+`{{balance:>12,.2f}}`; `{{#each item in list}}`; `{{#if name}}`), and may be several lines (`\n`). The slots:
+
+| Slot | What it is |
+|---|---|
+| `:detail` | the template of each row of the table |
+| `:breaks` | a list of `make-report-break`s, the outermost group first |
+| `:summaries` | what is added up for each group, the whole report, and each page: a list of `(name function column)`, with the functions of `table-group-by` (`count`, `sum`, `mean`, `min`, `max`, `weighted-mean`, `median`, ...; see "Tables", in the language manual), such as `("total" sum "balance")` and `("wac" weighted-mean "rate" "balance")`. Each is a name in the templates: `{{total}}` |
+| `:report-header`, `:report-footer` | the templates at the start and at the end of the report; they have the totals of the whole report |
+| `:page-header`, `:page-footer` | the templates at the top and at the bottom of each page |
+| `:page-lines` | how many lines a page is, header and footer included; `'()` (the default) for no pages: the page header is then at the top of the report, and the page footer at the bottom |
+| `:page-separator` | a string written after each page: `"\f"`, a form feed, for a printer; `""` (the default), none |
+| `:detail-order` | a list of columns to sort the rows of the innermost group by, after the break columns: `'("date")` |
+| `:presorted` | `#t` if the table is already in the order of the break columns (and `:detail-order`), and need not be sorted: for a large table that is, or that you sorted yourself |
+| `:variables` | a list of `(name value)`, such as `(list (list 'title "Mortgages") (list 'month "March"))`, for any template to use |
+
+#### `(make-report-break :field column [:header template] [:footer template] [:new-page #t] [:restart-page-numbers #t])`
+One level of grouping: the rows with the same value of the column `:field` (a string, the name of a column of the table) are a
+group, within the group of the break before it. `:header` is written before a group's first row and `:footer` after its last.
+`:new-page #t` starts each of its groups on a new page (a letter to each client), and `:restart-page-numbers #t` too makes
+the first page of each group page 1. A group ends when the value of its column, or of a column of a break before it,
+changes in the sorted table. A break column may not have missing values (it is an error: which group would
+they be in?), and a table `:presorted` that is not in the order of its break columns is an error too.
+
+#### What a template can use
+A template may say only the names it has, and one that says another is an error, naming it and listing what it could have said:
+
+| Template | Its names |
+|---|---|
+| `:detail` | the columns of the table; `row-number` (the row's place in the report, from 1); `page`; the variables |
+| a break's `:header` and `:footer` | the columns of this break and of those before it (the group's values: `{{state}}`); the summaries, **of the group** (in a header, too: they are worked out before the report is written); `page`; the variables |
+| `:report-header`, `:report-footer` | the summaries of the whole report; `page`; the variables |
+| `:page-header` | the columns of every break, as of the first row on the page (the page's group); `page`; the variables |
+| `:page-footer` | the same, as of the last row, and the summaries **of the rows on the page** |
+
+Give the columns, the summaries and the variables different names: a template that says a name that is two of them
+gets one, and which is not something to depend on.
+
+#### How the pages are laid out
+A page has a header and a footer, and a row, a group header or a group footer goes where it fits: if the page does not have
+room for it and the page footer, the page ends, and the next page begins with its header. A group's header goes with its
+first row: the page ends before both. A page footer is at the bottom of the page: when what is on a page is shorter than the page (at the end of the
+report, before a group that starts a new page, or when the next thing is taller than what is left), blank lines are
+written before the footer. A template taller than a page goes on a page of its own. Nothing repeats a group's header on the next page, and the footer of a page
+that ends in the middle of a group is that page's, with its totals (`{{total}}` in a page footer is the page's).
+
+The first page starts when the report does, with the page header, then the report header; the page of a break that says
+`:new-page` starts before its group, except at the start of a page that has nothing yet but its header.
+
+#### What it comes to
+Each row is rendered once, at about a tenth of a millisecond when its template is only text and `{{name}}`s (which are
+compiled, before the rows are written); a template with `{{#each}}` or `{{#if}}` takes several times as long. The group
+totals are worked out first, by `table-group-by` on the whole table (a pass for each level of break), so a group's
+header can say them. Sorting is `table-sort`.
 
 ## Dates and cash flows
 

@@ -206,7 +206,7 @@ Jupyter alike — loads these Lisp files before doing anything else:
 |---|---|---|
 | Integer | `42`, `-7` | Python `int` |
 | Float | `3.14`, `-0.5`, `nan`, `inf` | Python `float`. `nan` ("not a number", the missing-value marker) and `inf` (infinity) are numbers too, so they can't be used as names (see below) |
-| String | `"hello"` | Double-quoted; `\n`, `\t`, `\r`, `\"`, `\\` escapes. A backslash before any other character is kept, as in Python, so a regular expression can be written as it is: `"\d+"`. The REPL prints a string the same way, in quotes and with `\"` and `\\` for a quote mark or backslash inside it, so what it prints can be typed back in (see `display`) |
+| String | `"hello"` | Double-quoted; `\n`, `\t`, `\r`, `\f` (a form feed, the page break of a printer), `\"`, `\\` escapes. A backslash before any other character is kept, as in Python, so a regular expression can be written as it is: `"\d+"`. The REPL prints a string the same way, in quotes and with `\"` and `\\` for a quote mark or backslash inside it, so what it prints can be typed back in (see `display`) |
 | Boolean | `#t`, `#f` | Everything except `#f` counts as true |
 | Symbol | `foo`, `list->vector` | Identifiers: anything that isn't read as a number or one of the types above |
 | quote | `'(a b c)` , `'(1 2 3)` , `'f`| Something that is not to be evaluated, but is treated as data |
@@ -4508,6 +4508,18 @@ the PyQt window.
 ```lisp
 (define name (read-line "Your name? "))
 (display (format "Hello, {}.\n" name))
+```
+
+#### `(write-text-file path text [append?])`, `(read-text-file path)`
+`write-text-file` writes the string `text` to the file at `path` (a leading `~`
+is your home folder), replacing what was there, or adding to the end of it if
+`append?` is `#t`. `read-text-file` gives the whole file back as one string. Both
+raise an error if the file can't be written or read.
+
+```lisp
+(write-text-file "notes.txt" "first\n")
+(write-text-file "notes.txt" "second\n" #t)
+(read-text-file "notes.txt")       ; => "first\nsecond\n"
 ```
 
 #### `(load "path.lsp")`

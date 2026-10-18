@@ -74,6 +74,19 @@
 ; Root finding and minimizing
 (lazy-load "solver.lsp" ridders nelder-mead)
 
+; Reports with control breaks: a table written as a text report, with a header, footer and totals for each group, and pages
+(lazy-load "report.lsp"
+  write-report report-text make-report-spec report-spec? copy-report-spec make-report-break report-break?
+  copy-report-break report-spec-report-header report-spec-report-footer report-spec-page-header
+  report-spec-page-footer report-spec-page-lines report-spec-page-separator report-spec-detail report-spec-breaks
+  report-spec-summaries report-spec-variables report-spec-detail-order report-spec-presorted
+  report-spec-report-header-set! report-spec-report-footer-set! report-spec-page-header-set!
+  report-spec-page-footer-set! report-spec-page-lines-set! report-spec-page-separator-set! report-spec-detail-set!
+  report-spec-breaks-set! report-spec-summaries-set! report-spec-variables-set! report-spec-detail-order-set!
+  report-spec-presorted-set! report-break-field report-break-header report-break-footer report-break-new-page
+  report-break-restart-page-numbers report-break-field-set! report-break-header-set! report-break-footer-set!
+  report-break-new-page-set! report-break-restart-page-numbers-set!)
+
 ; Templates of text and SQL
 (lazy-load "template.lsp"
   template-parse template-render template-render-sql sqlite-query-template sqlite-execute-template)

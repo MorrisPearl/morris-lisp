@@ -465,14 +465,8 @@ def tokenize(text):
         elif c == '#' and i + 1 < n and text[i + 1] == '(':
             tokens.append("#(")             # start of a vector literal
             i += 2
-        elif c in "()":
+        elif c in "()'`":
             tokens.append(c)
-            i += 1
-        elif c == "'":
-            tokens.append("'")
-            i += 1
-        elif c == '`':
-            tokens.append('`')
             i += 1
         elif c == ',':
             if i + 1 < n and text[i + 1] == '@':
@@ -486,10 +480,10 @@ def tokenize(text):
             buf = []
             while j < n and text[j] != '"':
                 if text[j] == '\\' and j + 1 < n:
-                    # \n, \t, \r, \", and \\ are escapes. A backslash before any
+                    # \n, \t, \r, \f, \", and \\ are escapes. A backslash before any
                     # other character is kept, as Python does, so that a
                     # regular expression such as "\d+" can be written as is.
-                    escapes = {'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\'}
+                    escapes = {'n': '\n', 't': '\t', 'r': '\r', 'f': '\f', '"': '"', '\\': '\\'}
                     buf.append(escapes.get(text[j + 1], '\\' + text[j + 1]))
                     j += 2
                 else:

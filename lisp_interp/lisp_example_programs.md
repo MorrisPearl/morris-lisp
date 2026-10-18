@@ -160,6 +160,7 @@ files in `examples/` and `lib/` from anywhere:
 | `yield_curve_example.lsp` | today's Treasury yield curve from the Treasury and from the Fed: zero rates and forward rates, charted | nothing: free downloads |
 | `map_example.lsp` | maps colored by a value | Census and BEA keys |
 | `plot_chart_example.lsp` | `plot-chart`: lines, symbols, bars, categories, two axes | nothing |
+| `report_example.lsp` | a table written as a text report with control breaks: mortgages with subtotals by zip code and state and a grand total, on pages; a letter to each client | nothing |
 
 ## Techniques, and where to see them
 
@@ -1399,6 +1400,17 @@ each place colored by a value (per capita income for every county, on a log scal
 symbol sized by one, with the states' borders drawn on top.
 
 ---
+
+`report_example.lsp` needs nothing: it writes two reports, `mortgage_report.txt` and `client_letters.txt`, from made-up
+tables, and shows them. A report is described by one value, a **spec**, made by `make-report-spec`, that holds its
+templates (a page's header and footer, a row, and the header and footer of each group and of the whole report, with
+`{{name}}` where a value goes) and the columns the groups are of (`make-report-break`); `write-report` does the rest. The
+mortgage report has two levels of break, the state and the zip code within it, each with a footer of its totals (a count, a
+sum, and a balance-weighted average rate), a header for the state, and a total for the whole report; its pages have a header
+and a footer with the page's own total. The letters have one level, the client, which starts a new page and numbers its pages
+from 1, and a variable (the month) that a template can say. The library manual's
+[Reports with control breaks](lisp_library_reference.md#reports-with-control-breaks) has everything a spec can say, and what
+each template can use.
 
 ## Writing an example
 

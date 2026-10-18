@@ -1120,6 +1120,23 @@ def string_join(strings, separator=" "):
                                           for x in sequence_items(strings, "string-join")))
 
 
+def write_text_file(path, text, append=False):
+    """(write-text-file path text [append?]) -- write the string `text` to
+    the file at `path` (a leading ~ is your home folder), replacing what was
+    there, or adding to the end of it if append? is #t. Returns '()."""
+    if not isinstance(text, LispString):
+        raise LispError("write-text-file: the text must be a string, not %s" % to_display_string(text))
+    with open(os.path.expanduser(str(path)), "a" if is_true(append) else "w", encoding="utf-8") as f:
+        f.write(str(text))
+    return NIL
+
+
+def read_text_file(path):
+    """(read-text-file path) -- the whole file at `path` as one string."""
+    with open(os.path.expanduser(str(path)), encoding="utf-8") as f:
+        return LispString(f.read())
+
+
 def read_line(prompt=""):
     """(read-line [prompt]) -- a line typed by the user, as a string (without
     the newline), after showing prompt; #f at the end of the input (Ctrl-D
@@ -1218,6 +1235,8 @@ STRING_BUILTINS = {
     "string-trim": lambda s: LispString(str(s).strip()),
     "string-join": string_join,
     "read-line": read_line,
+    "write-text-file": write_text_file,
+    "read-text-file": read_text_file,
     "format": lisp_format,
     "format-value": format_value,
 }
