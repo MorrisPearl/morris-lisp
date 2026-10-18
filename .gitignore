@@ -28,6 +28,7 @@ lisp_interp/**/rate_model_paths.png
 lisp_interp/**/rate_paths_curve.png
 lisp_interp/**/rate_paths_fan.png
 lisp_interp/**/mortgage_report.txt
+lisp_interp/**/mortgage_report.html
 lisp_interp/**/client_letters.txt
 lisp_interp/**/synthetic_mbs_pools.csv
 lisp_interp/**/mortgage_amortization_example.csv

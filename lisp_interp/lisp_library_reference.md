@@ -2107,7 +2107,9 @@ is sent in pieces. Google limits how fast a program can make spreadsheets
 before its rows and a footer after them, with the group's totals. The report has a header and a footer of its own, with the
 grand totals, and, if you ask for pages, each page has a header and a footer, with its page number and its own totals. What
 each of these says, and what each row says, is a **template** with `{{name}}` where a value goes; and which columns the
-groups are of is in the same **spec**, one value that holds it all. A report of mortgages, with subtotals for each zip code,
+groups are of is in the same **spec**, one value that holds it all. Pages can say "page X of Y", carry running totals, and
+repeat a group's header when it goes over a page; and the report can be written as a web page, to go through a page at a time.
+A report of mortgages, with subtotals for each zip code,
 for each state, and a grand total:
 
 ```lisp
@@ -2158,7 +2160,7 @@ report and the mortgage report below it, on pages, from made-up tables.
 `write-report` writes the report of `table`, as `spec` says, to the text file at `path`, replacing what was there, and gives
 back the number of pages (1, if the spec has no `:page-lines`). It writes a thousand lines at a time, so a table of any size
 is written without the report being held: a table of 50,000 rows takes about five seconds, and its pages are in the file.
-`report-text` gives the report as one string, which is for a short one (to look at, or to test a spec on the first rows of a
+`write-report-html`, below, writes it as a web page. `report-text` gives the report as one string, which is for a short one (to look at, or to test a spec on the first rows of a
 table: `(table-head loans 20)`). Neither changes `table`. They stop, before anything is written, if a template says a name that
 isn't there, or the spec says a column that isn't in the table.
 
@@ -2173,6 +2175,7 @@ that is `'()` (the default) writes nothing, and one that is `""` writes a blank 
 | `:detail` | the template of each row of the table |
 | `:breaks` | a list of `make-report-break`s, the outermost group first |
 | `:summaries` | what is added up for each group, the whole report, and each page: a list of `(name function column)`, with the functions of `table-group-by` (`count`, `sum`, `mean`, `min`, `max`, `weighted-mean`, `median`, ...; see "Tables", in the language manual), such as `("total" sum "balance")` and `("wac" weighted-mean "rate" "balance")`. Each is a name in the templates: `{{total}}` |
+| `:running` | running totals: a list of `(name sum column [scope])` and `(name count [scope])`, such as `("so-far" sum "balance")`: what has been added up to a point in the report, from the start of the report, or, if the scope is a break's column (`"state"`) from the start of the group of that break, or, if it is `page`, from the start of the page. Each is a name in the templates: `{{so-far}}`; see "Running totals", below |
 | `:report-header`, `:report-footer` | the templates at the start and at the end of the report; they have the totals of the whole report |
 | `:page-header`, `:page-footer` | the templates at the top and at the bottom of each page |
 | `:page-lines` | how many lines a page is, header and footer included; `'()` (the default) for no pages: the page header is then at the top of the report, and the page footer at the bottom |
@@ -2181,11 +2184,13 @@ that is `'()` (the default) writes nothing, and one that is `""` writes a blank 
 | `:presorted` | `#t` if the table is already in the order of the break columns (and `:detail-order`), and need not be sorted: for a large table that is, or that you sorted yourself |
 | `:variables` | a list of `(name value)`, such as `(list (list 'title "Mortgages") (list 'month "March"))`, for any template to use |
 
-#### `(make-report-break :field column [:header template] [:footer template] [:new-page #t] [:restart-page-numbers #t])`
+#### `(make-report-break :field column [:header template] [:footer template] [:new-page #t] [:restart-page-numbers #t] [:repeat-header #t])`
 One level of grouping: the rows with the same value of the column `:field` (a string, the name of a column of the table) are a
 group, within the group of the break before it. `:header` is written before a group's first row and `:footer` after its last.
 `:new-page #t` starts each of its groups on a new page (a letter to each client), and `:restart-page-numbers #t` too makes
-the first page of each group page 1. A group ends when the value of its column, or of a column of a break before it,
+the first page of each group page 1. `:repeat-header #t` writes the group's header again at the top of each page that the
+group goes over onto, with `{{continued}}` true in it (and false when the header is first written), so a header can say
+`State {{state}}{{#if continued}} (continued){{/if}}`. A group ends when the value of its column, or of a column of a break before it,
 changes in the sorted table. A break column may not have missing values (it is an error: which group would
 they be in?), and a table `:presorted` that is not in the order of its break columns is an error too.
 
@@ -2194,31 +2199,66 @@ A template may say only the names it has, and one that says another is an error,
 
 | Template | Its names |
 |---|---|
-| `:detail` | the columns of the table; `row-number` (the row's place in the report, from 1); `page`; the variables |
-| a break's `:header` and `:footer` | the columns of this break and of those before it (the group's values: `{{state}}`); the summaries, **of the group** (in a header, too: they are worked out before the report is written); `page`; the variables |
-| `:report-header`, `:report-footer` | the summaries of the whole report; `page`; the variables |
-| `:page-header` | the columns of every break, as of the first row on the page (the page's group); `page`; the variables |
+| `:detail` | the columns of the table; `row-number` (the row's place in the report, from 1); `page` and `pages`; the running totals; the variables |
+| a break's `:header` and `:footer` | the columns of this break and of those before it (the group's values: `{{state}}`); the summaries, **of the group** (in a header, too: they are worked out before the report is written); `page` and `pages`; the running totals; the variables; and, in a header only, `continued` |
+| `:report-header`, `:report-footer` | the summaries of the whole report; `page` and `pages`; the running totals; the variables |
+| `:page-header` | the columns of every break, as of the first row on the page (the page's group); `page` and `pages`; the running totals; the variables |
 | `:page-footer` | the same, as of the last row, and the summaries **of the rows on the page** |
 
 Give the columns, the summaries and the variables different names: a template that says a name that is two of them
 gets one, and which is not something to depend on.
+
+#### Page X of Y
+`{{page}}` is the number of the page, and `{{pages}}` the number of pages: `Page {{page}} of {{pages}}`. Any template may say
+either. A group that says `:restart-page-numbers` starts a new run of page numbers, and `{{pages}}` is the number of pages in
+the run: each letter of a report of letters can say "page 2 of 2", though the report has more pages. A report that says
+`{{pages}}` is laid out twice, the first time to count the pages and write nothing: it takes twice as long.
+
+#### Running totals
+A running total is what has been added up to a point in the report. The `:running` slot lists them, each with a name:
+`("so-far" sum "balance")` adds the column up from the first row of the report, `("in-state" sum "balance" "state")` from the
+first row of each state, `("on-page" sum "balance" page)` from the first row of each page, and `("n" count "state")` counts the
+rows. A **row** says the total through itself, so a detail of `{{balance}} {{in-state}}` shows a statement's running
+balance. Everywhere else it is the total at that point, before what comes after: a **group header** says the total before the
+group (0, if the total is of that group's break, or one inside it), a **group footer** through its last row, a **page header**
+what was brought forward from the pages before (and 0, if the total is of the page), a **page footer** what is carried forward,
+and the **report footer** the total of all. A missing value adds nothing to a sum.
 
 #### How the pages are laid out
 A page has a header and a footer, and a row, a group header or a group footer goes where it fits: if the page does not have
 room for it and the page footer, the page ends, and the next page begins with its header. A group's header goes with its
 first row: the page ends before both. A page footer is at the bottom of the page: when what is on a page is shorter than the page (at the end of the
 report, before a group that starts a new page, or when the next thing is taller than what is left), blank lines are
-written before the footer. A template taller than a page goes on a page of its own. Nothing repeats a group's header on the next page, and the footer of a page
-that ends in the middle of a group is that page's, with its totals (`{{total}}` in a page footer is the page's).
+written before the footer. A template taller than a page goes on a page of its own. The footer of a page that ends in the middle of a group is that page's, with
+its totals (`{{total}}` in a page footer is the page's). A break that says `:repeat-header` has its header written again at the
+top of the next page, after the page header, if its group goes on there: when the page begins with a row of it, or with the
+footer of a group inside it. A page that begins with the group's own footer, or with a new group, does not repeat it.
 
 The first page starts when the report does, with the page header, then the report header; the page of a break that says
 `:new-page` starts before its group, except at the start of a page that has nothing yet but its header.
+
+#### `(write-report-html table path spec [:title "Report"])`
+Writes the report as a web page, to the file at `path`, replacing what was there, and gives back the number of pages. The
+page shows one page of the report at a time, in a fixed-width font, with a bar at the bottom: **First**, **Previous**, the
+number of the page, to type a page's number in, **of** the number of pages, **Next** and **Last**. The arrow keys, Page Up
+and Page Down, Home and End work too, and the address of the page says which page (`report.html#p3`), so a link or a bookmark
+goes to it. The pages are those of the text report, line for line, with `{{page}}`, `{{pages}}`, the running totals and the
+repeated headers: the spec's `:page-lines` says how long a page is (50, if it has none), and `:page-separator` is not
+written. The page is one file, with nothing to load, and fits a phone, a dark mode and, printed, every page in turn; where
+the browser cannot run its script, it shows all the pages, one after another. The text is made safe for the web: `&`, `<`
+and `>` in the data are shown as themselves. It is written ten pages at a time, as `write-report` writes a thousand lines.
+`:title` is the title of the web page. `examples/report_example.lsp` writes the mortgage report both ways.
+
+```lisp
+(write-report-html mortgages "mortgages.html" spec :title "Mortgages, October")
+```
 
 #### What it comes to
 Each row is rendered once, at about a tenth of a millisecond when its template is only text and `{{name}}`s (which are
 compiled, before the rows are written); a template with `{{#each}}` or `{{#if}}` takes several times as long. The group
 totals are worked out first, by `table-group-by` on the whole table (a pass for each level of break), so a group's
-header can say them. Sorting is `table-sort`.
+header can say them. Sorting is `table-sort`. A report that says `{{pages}}` takes twice as long, and running totals add
+a little to each row.
 
 ## Dates and cash flows
 

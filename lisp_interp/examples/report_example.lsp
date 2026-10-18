@@ -1,12 +1,14 @@
 ; report_example.lsp
 ;
 ; Two reports with control breaks, written to text files by lib/report.lsp, from made-up data (so it needs nothing):
-;   1. a report of mortgages, with subtotals for each zip code, for each state, and a grand total, on pages;
+;   1. a report of mortgages, with subtotals for each zip code, for each state, and a grand total, on pages that say
+;      "page X of Y" and carry a running total, and a state's header repeated when it goes over to a new page; and
+;      the same report as a web page, with a bar at the bottom to go through its pages;
 ;   2. a letter to each client, listing the client's transactions, with a total.
 ; The spec of a report is a value that holds its templates: what a page, a group and a row say, and which columns the
 ; groups are of. See "Reports with control breaks" in the library manual. Run it from the examples directory:
 ;   python3 ../lisp_interpreter.py report_example.lsp
-; It writes mortgage_report.txt and client_letters.txt, and shows them.
+; It writes mortgage_report.txt, mortgage_report.html and client_letters.txt, and shows the text of two.
 
 (load "report.lsp")
 
@@ -23,12 +25,13 @@
 (define mortgage-report
   (make-report-spec
     :page-lines 26
-    :page-header "MORTGAGE REPORT                                  page {{page}}\n--------------------------------------------------"
-    :page-footer "(this page: {{loans}} loans, {{total:,.0f}})"
-    :detail "{{loan-id:<6}} {{zip:<7}} {{balance:>12,.0f}} {{rate:>6.2f}}%"
+    :page-header "MORTGAGE REPORT                      page {{page}} of {{pages}}\nloan   zip           balance    rate  running in state\n----------------------------------------------------------"
+    :page-footer "(this page: {{loans}} loans, {{total:,.0f}}; so far {{so-far:,.0f}})"
+    :detail "{{loan-id:<6}} {{zip:<7}} {{balance:>12,.0f}} {{rate:>6.2f}}% {{in-state:>12,.0f}}"
     :summaries (list (list "loans" 'count) (list "total" 'sum "balance") (list "wac" 'weighted-mean "rate" "balance"))
-    :breaks (list (make-report-break :field "state"
-                                     :header "\nSTATE {{state}}"
+    :running (list (list "so-far" 'sum "balance") (list "in-state" 'sum "balance" "state"))
+    :breaks (list (make-report-break :field "state" :repeat-header #t
+                                     :header "\nSTATE {{state}}{{#if continued}} (continued){{/if}}"
                                      :footer "  {{state}}: {{loans}} loans {{total:>13,.0f}} at {{wac:.3f}}%")
                   (make-report-break :field "zip"
                                      :footer "    zip {{zip}}: {{loans}} loans {{total:>13,.0f}}"))
@@ -36,6 +39,9 @@
 
 (display (format "{} pages written to mortgage_report.txt\n\n" (write-report mortgages "mortgage_report.txt" mortgage-report)))
 (display (read-text-file "mortgage_report.txt"))
+
+; the same report as a web page: one page at a time, with a bar at the bottom to go to the next, the one before, or any page
+(display (format "\n{} pages written to mortgage_report.html: open it in a browser.\n\n" (write-report-html mortgages "mortgage_report.html" mortgage-report :title "Mortgage report")))
 
 ; --- 2. Letters: one to each client, on a page of its own ---
 (define transactions

@@ -2,6 +2,7 @@
 by hand, and the expected text is written out in full."""
 
 import os
+import re
 import tempfile
 
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
@@ -393,13 +394,22 @@ class TestTheExample(LispTestCase):
         with in_a_temporary_folder() as folder:
             lisp_core.run_file(os.path.join(EXAMPLES, "report_example.lsp"), self.env)
             report = open(os.path.join(folder, "mortgage_report.txt")).read()
+            web_page = open(os.path.join(folder, "mortgage_report.html")).read()
             letters = open(os.path.join(folder, "client_letters.txt")).read()
         shown = self.printed()
         self.assertIn("3 pages written to mortgage_report.txt", shown)
         lines = report.rstrip("\n").split("\n")
         self.assertEqual(len(lines), 78)                                   # three pages of 26 lines
+        # (the 30 loans, 12 and 11 and 7 to a page: a page 2 and a page 3 start with a repeated header; their balances add up as the pages go)
         self.assertEqual([line for line in lines if line.startswith("(this page")],
-                         ["(this page: 12 loans, 2,280,000)", "(this page: 14 loans, 2,685,000)", "(this page: 4 loans, 840,000)"])
+                         ["(this page: 12 loans, 2,280,000; so far 2,280,000)", "(this page: 11 loans, 2,109,000; so far 4,389,000)",
+                          "(this page: 7 loans, 1,416,000; so far 5,805,000)"])
+        self.assertEqual([line for line in lines if line.startswith("MORTGAGE REPORT")],
+                         ["MORTGAGE REPORT                      page %d of 3" % page for page in (1, 2, 3)])
+        self.assertEqual([line for line in lines if "(continued)" in line], ["STATE NY (continued)", "STATE TX (continued)"])
+        self.assertIn("3 pages written to mortgage_report.html", shown)
+        self.assertEqual(re.findall(r"<section class='page' id='p(\d)'>", web_page), ["1", "2", "3"])
+        self.assertIn("<title>Mortgage report</title>", web_page)
         self.assertIn("ALL STATES: 30 loans     5,805,000 at 6.283%", report)   # 150 + 153 + ... + 237 thousand
         for state, count, total in (("CA", 10, "1,935,000"), ("NY", 10, "1,905,000"), ("TX", 10, "1,965,000")):
             self.assertIn("  %s: %d loans     %s at" % (state, count, total), report)
@@ -482,3 +492,232 @@ class TestWhatTheMutationRunAsked(ReportTestCase):
         self.run_lisp('''(define spec (make-report-spec :page-lines 3 :detail "{{loan-id}}"
             :breaks (list (make-report-break :field "state" :footer "{{state}} p{{page}}"))))''')
         self.assertEqual(self.text(), "L2\nL3\nL4\nCA p2\nL1\nL5\nNY p3\n\n\n")
+
+
+class TestPageXOfY(ReportTestCase):
+
+    def test_a_page_may_say_how_many_pages_there_are(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 4 :page-header "p{{page}}/{{pages}}" :detail "{{loan-id}}"))''')
+        # a page is a header and three rows: five loans make two, and the second ends with a blank line
+        self.assertEqual(self.text(), "p1/2\nL1\nL2\nL3\np2/2\nL4\nL5\n\n")
+
+    def test_a_footer_and_a_group_header_may_say_it_too(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 5 :page-footer "{{page}} of {{pages}}" :detail "{{loan-id}}"
+            :breaks (list (make-report-break :field "state" :header "{{state}} of {{pages}}"))))''')
+        # CA: header and three rows on page 1 and the footer; NY's header and first row fit nowhere on it: page 2 has all of NY
+        self.assertEqual(self.text(), "CA of 2\nL2\nL3\nL4\n1 of 2\nNY of 2\nL1\nL5\n\n2 of 2\n")
+
+    def test_the_pages_of_a_run_of_page_numbers_are_those_of_that_run(self):
+        self.run_lisp(TRANSACTIONS)
+        self.run_lisp('''(define letters (make-report-spec :page-lines 3 :page-header "{{client}} p{{page}}/{{pages}}"
+            :detail "{{what}}" :detail-order '("date")
+            :breaks (list (make-report-break :field "client" :new-page #t :restart-page-numbers #t))))''')
+        # two pages for each client, though there are four pages in all
+        self.assertEqual(self.text("letters", "transactions"),
+                         "Amy p1/2\ngas\ncoffee\nAmy p2/2\nfood\n\nZed p1/2\nbooks\nrent\nZed p2/2\ngift\n\n")
+
+    def test_each_run_of_page_numbers_has_its_own_total(self):
+        self.run_lisp('''(define uneven (make-table "who" (vector "A" "B" "A" "A") "what" (vector "x1" "y1" "x2" "x3")))
+          (define spec (make-report-spec :page-lines 3 :page-header "{{who}} p{{page}}/{{pages}}" :detail "{{what}}"
+            :breaks (list (make-report-break :field "who" :new-page #t :restart-page-numbers #t))))''')
+        # A has three rows, two to a page: two pages; B has one: one page
+        self.assertEqual(self.text("spec", "uneven"), "A p1/2\nx1\nx2\nA p2/2\nx3\n\nB p1/1\ny1\n\n")
+
+    def test_the_pages_are_counted_by_a_first_pass_that_writes_nothing(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 4 :page-header "{{pages}}" :detail "{{loan-id}}"))''')
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "report.txt")
+            self.assertEqual(self.run_lisp('(write-report loans "%s" spec)' % path), 2)       # (the pages, not twice the pages)
+            self.assertEqual(open(path).read(), "2\nL1\nL2\nL3\n2\nL4\nL5\n\n")
+
+    def test_without_pages_in_a_template_there_is_one_pass_only(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 4 :detail "{{loan-id}}"))''')
+        seen = []
+        original = self.env[lisp_core.Symbol("write-text-file")]
+        self.env[lisp_core.Symbol("write-text-file")] = lambda path, text, append=False: seen.append(str(text))
+        self.run_lisp('(write-report loans "nowhere" spec)')
+        self.assertEqual("".join(seen).count("L1"), 1)
+
+
+class TestRunningTotals(ReportTestCase):
+
+    def test_a_running_total_in_a_row_includes_the_row_and_restarts_in_its_scope(self):
+        self.run_lisp('''(define spec (make-report-spec
+            :running (list (list "all" 'sum "balance") (list "st" 'sum "balance" "state") (list "n" 'count "state"))
+            :report-header "begin {{all:.0f}}"
+            :detail "{{loan-id}} {{all:.0f}} {{st:.0f}} {{n}}"
+            :breaks (list (make-report-break :field "state" :header "{{state}} start {{all:.0f}} {{st:.0f}} {{n}}"
+                                             :footer "{{state}} end {{all:.0f}} {{st:.0f}} {{n}}"))
+            :report-footer "end {{all:.0f}}"))''')
+        self.assertEqual(self.text(), "begin 0\nCA start 0 0 0\nL2 200 200 1\nL3 500 500 2\nL4 900 900 3\nCA end 900 900 3\n"
+                                      "NY start 900 0 0\nL1 1000 100 1\nL5 1500 600 2\nNY end 1500 600 2\nend 1500\n")
+
+    def test_a_total_of_an_outer_group_goes_on_through_the_groups_inside_it(self):
+        self.run_lisp('''(define spec (make-report-spec :running (list (list "st" 'sum "balance" "state") (list "zp" 'sum "balance" "zip"))
+            :detail "{{loan-id}} {{st:.0f}} {{zp:.0f}}"
+            :breaks (list (make-report-break :field "state") (make-report-break :field "zip"))))''')
+        # CA's zips: L2 and L4, then L3: the state's total goes on, and the zip's starts again; NY: L1 and L5
+        self.assertEqual(self.text(), "L2 200 200\nL4 600 600\nL3 900 300\nL1 100 100\nL5 600 600\n")
+
+    def test_a_template_with_if_says_the_same_running_total_as_one_without(self):
+        self.run_lisp('''(define spec (make-report-spec :running (list (list "so-far" 'sum "balance"))
+            :detail "{{#if loan-id}}{{loan-id}}: {{so-far:.0f}}{{/if}}"))''')
+        self.assertEqual(self.text(), "L1: 100\nL2: 300\nL3: 600\nL4: 1,000\nL5: 1,500\n".replace("1,000", "1000").replace("1,500", "1500"))
+
+    def test_a_page_has_the_total_brought_forward_and_carried_forward_and_one_that_starts_again(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 5
+            :running (list (list "all" 'sum "balance") (list "pg" 'sum "balance" 'page))
+            :page-header "h {{all:.0f}} {{pg:.0f}}" :page-footer "f {{all:.0f}} {{pg:.0f}}"
+            :detail "{{loan-id}} {{all:.0f}} {{pg:.0f}}"))''')
+        self.assertEqual(self.text(), "h 0 0\nL1 100 100\nL2 300 300\nL3 600 600\nf 600 600\n"
+                                      "h 600 0\nL4 1000 400\nL5 1500 900\n\nf 1500 900\n")
+
+    def test_a_missing_value_adds_nothing(self):
+        self.run_lisp('''(define holes (make-table "x" (vector 1.0 nan 3.0)))
+          (define spec (make-report-spec :running (list (list "so-far" 'sum "x")) :detail "{{so-far:.0f}}"))''')
+        self.assertEqual(self.text(table="holes"), "1\n1\n4\n")
+
+    def test_a_running_total_is_one_of_the_templates_names_everywhere(self):
+        self.run_lisp('''(define spec (make-report-spec :running (list (list "so-far" 'sum "balance"))
+            :page-header "{{so-far}}" :page-footer "{{so-far}}" :report-header "{{so-far}}" :report-footer "{{so-far}}"
+            :breaks (list (make-report-break :field "state" :header "{{so-far}}" :footer "{{so-far}}"))
+            :detail "{{so-far}}"))''')
+        self.text()
+
+    def test_the_running_totals_are_checked(self):
+        for spec, fragment in (
+                ('(list (list "x" (quote mean) "balance"))', "a running total is (name sum column [scope])"),
+                ('(list (list "x" (quote sum) "nothing"))', "the running total x needs a column of the table"),
+                ('(list (list "x" (quote sum) "balance" "zip"))', "the scope of the running total x is page or the column of a break"),
+                ('(list (list "x" (quote count) "zip"))', "the scope of the running total x"),
+                ('(list "x")', "a running total is")):
+            self.run_lisp('(define spec (make-report-spec :running %s :breaks (list (make-report-break :field "state"))))' % spec)
+            self.assertLispError("(report-text loans spec)", fragment)
+
+
+class TestRepeatedHeaders(ReportTestCase):
+
+    def test_a_group_that_goes_over_a_page_has_its_header_again_saying_so(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 6 :detail "{{loan-id}}"
+            :breaks (list (make-report-break :field "state" :repeat-header #t
+                                             :header "{{state}}{{#if continued}} cont{{/if}}"))))''')
+        self.assertEqual(self.text(), "CA\nL2\nL3\nL4\nNY\nL1\nNY cont\nL5\n\n\n\n\n")
+
+    def test_a_header_that_is_not_to_be_repeated_is_not(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 6 :detail "{{loan-id}}"
+            :breaks (list (make-report-break :field "state" :header "{{state}}"))))''')
+        # the second page has only the row that did not fit, and five blank lines
+        self.assertEqual(self.text(), "CA\nL2\nL3\nL4\nNY\nL1\nL5\n\n\n\n\n\n")
+
+    def test_a_new_group_that_starts_a_page_has_its_own_header_only(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 5 :detail "{{loan-id}}"
+            :breaks (list (make-report-break :field "state" :repeat-header #t
+                                             :header "{{state}}{{#if continued}} cont{{/if}}"))))''')
+        self.assertEqual(self.text(), "CA\nL2\nL3\nL4\n\nNY\nL1\nL5\n\n\n")
+
+    def test_a_page_that_starts_with_a_footer_does_not_repeat_the_header_of_the_group_it_ends(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 4 :detail "{{loan-id}}"
+            :breaks (list (make-report-break :field "state" :repeat-header #t :header "{{state}}{{#if continued}} cont{{/if}}"
+                                             :footer "end {{state}}"))))''')
+        self.assertEqual(self.text(), "CA\nL2\nL3\nL4\nend CA\nNY\nL1\nL5\nend NY\n\n\n\n")
+
+    def test_a_page_that_starts_with_the_footer_of_an_inner_group_repeats_the_header_of_the_outer_one(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 3 :detail "{{loan-id}}"
+            :breaks (list (make-report-break :field "state" :repeat-header #t :header "{{state}}{{#if continued}} cont{{/if}}")
+                          (make-report-break :field "zip" :footer "z{{zip}}"))))''')
+        # Page 2 starts with the footer of CA's first zip, and CA goes on after it: so CA's header is there again. Page 3
+        # starts with the footer of the last zip of CA, and nothing of CA goes on after it. Page 4 starts with a row of NY.
+        self.assertEqual(self.text(), "CA\nL2\nL4\nCA cont\nz90001\nL3\nz90002\nNY\nL1\nNY cont\nL5\nz10001\n")
+
+    def test_a_group_that_starts_a_page_inside_another_repeats_the_outer_header_only(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 8 :detail "{{loan-id}}"
+            :breaks (list (make-report-break :field "state" :repeat-header #t :header "{{state}}{{#if continued}} cont{{/if}}")
+                          (make-report-break :field "zip" :new-page #t :header "z{{zip}}"))))''')
+        self.assertEqual(self.text(), "CA\nz90001\nL2\nL4\n" + "\n" * 4 + "CA cont\nz90002\nL3\n" + "\n" * 5 + "NY\nz10001\nL1\nL5\n" + "\n" * 4)
+
+    def test_continued_is_a_name_of_a_header_only(self):
+        self.run_lisp('(define spec (make-report-spec :breaks (list (make-report-break :field "state" :footer "{{continued}}"))))')
+        self.assertLispError("(report-text loans spec)", "footer of the break on state uses {{continued}}")
+
+
+class TestTheWebPage(ReportTestCase):
+
+    PAGES = re.compile(r"<section class='page' id='p(\d+)'><pre>(.*?)</pre></section>", re.S)
+
+    def page(self, spec="spec", table="loans", title=None):
+        """The web page of the report, as text, and the number of pages that write-report-html gives back."""
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "report.html")
+            extra = "" if title is None else ' :title "%s"' % title
+            pages = self.run_lisp('(write-report-html %s "%s" %s%s)' % (table, path, spec, extra))
+            return open(path, encoding="utf-8").read(), pages
+
+    def test_each_page_of_the_report_is_a_section_of_the_page_in_order(self):
+        self.run_lisp(TestPages.PAGED)
+        html, pages = self.page()
+        self.assertEqual(pages, 2)
+        found = self.PAGES.findall(html)
+        self.assertEqual([number for number, _ in found], ["1", "2"])
+        # the pages are those of the text report, line for line
+        self.assertEqual("\n".join(text for _, text in found) + "\n", self.text())
+
+    def test_the_page_has_the_bar_to_go_through_the_pages_and_a_script_for_it(self):
+        self.run_lisp(TestPages.PAGED)
+        html, _ = self.page()
+        self.assertTrue(html.startswith("<!DOCTYPE html>"))
+        self.assertTrue(html.rstrip().endswith("</html>"))
+        for name in ("first", "previous", "next", "last", "number", "total"):
+            self.assertIn("id='%s'" % name, html)
+        self.assertIn("<script>", html)
+        self.assertIn("ArrowRight", html)                      # the keys work
+        self.assertLess(html.index("<main>"), html.index("<nav>"))
+        self.assertLess(html.index("id='p2'"), html.index("<nav>"))      # the bar is at the bottom, after the pages
+        self.assertIn("position: fixed", html)
+        self.assertIn("@media print", html)                  # printed, every page, one after another
+        self.assertIn(".js .page { display: none; }", html)    # (without the script, every page shows)
+
+    def test_the_title_and_the_text_are_made_safe_for_the_web(self):
+        self.run_lisp('''(define odd (make-table "name" (vector "A<B & C" "x>y")))
+          (define spec (make-report-spec :detail "{{name}}"))''')
+        html, _ = self.page("spec", "odd", title="Loans & <more>")
+        self.assertIn("<title>Loans &amp; &lt;more&gt;</title>", html)
+        self.assertIn("A&lt;B &amp; C\nx&gt;y", html)
+        self.assertNotIn("A<B", html)
+
+    def test_a_report_with_no_page_length_is_in_pages_of_fifty_lines_and_the_spec_is_not_changed(self):
+        self.run_lisp('''(define long (make-table "n" (list->vector (iota 120))))
+          (define spec (make-report-spec :detail "{{n:.0f}}"))''')
+        html, pages = self.page("spec", "long")
+        found = self.PAGES.findall(html)
+        self.assertEqual(pages, 3)
+        self.assertEqual([len(text.split("\n")) for _, text in found], [50, 50, 50])
+        self.assertTrue(found[0][1].startswith("0\n1\n2\n"))
+        self.assertTrue(found[2][1].endswith("119" + "\n" * 30))           # 20 rows and thirty blank lines
+        self.assertShows("(report-spec-page-lines spec)", "#f")
+
+    def test_the_page_separator_is_not_written(self):
+        self.run_lisp(TestPages.PAGED.replace(":page-lines 12", ':page-lines 12 :page-separator "\\f"'))
+        html, _ = self.page()
+        self.assertNotIn("\f", html)
+
+    def test_page_x_of_y_and_running_totals_are_in_the_web_page_too(self):
+        self.run_lisp('''(define spec (make-report-spec :page-lines 4 :page-header "{{page}}/{{pages}}" :detail "{{loan-id}} {{so-far:.0f}}"
+            :running (list (list "so-far" 'sum "balance"))))''')
+        html, _ = self.page()
+        self.assertEqual([text for _, text in self.PAGES.findall(html)], ["1/2\nL1 100\nL2 300\nL3 600", "2/2\nL4 1000\nL5 1500\n"])
+
+    def test_the_arguments_are_checked_before_the_file_is_written(self):
+        self.assertLispError('(write-report-html 5 "/nonexistent/x.html" (make-report-spec))', "must be a table")
+        self.run_lisp('(define spec (make-report-spec :detail "{{typo}}"))')
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "report.html")
+            self.assertLispError('(write-report-html loans "%s" spec)' % path, "the detail uses {{typo}}")
+
+    def test_a_long_report_is_written_in_pieces(self):
+        self.run_lisp('''(define big (make-table "x" (make-vector 3000 1.0)))
+          (define spec (make-report-spec :detail "{{x:.0f}}" :page-lines 100))''')
+        written = []
+        self.env[lisp_core.Symbol("write-text-file")] = lambda path, text, append=False: written.append(str(text))
+        self.run_lisp('(write-report-html big "nowhere" spec)')
+        self.assertGreater(len(written), 3)
+        self.assertEqual(len(self.PAGES.findall("".join(written))), 30)

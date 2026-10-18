@@ -1406,8 +1406,11 @@ tables, and shows them. A report is described by one value, a **spec**, made by 
 templates (a page's header and footer, a row, and the header and footer of each group and of the whole report, with
 `{{name}}` where a value goes) and the columns the groups are of (`make-report-break`); `write-report` does the rest. The
 mortgage report has two levels of break, the state and the zip code within it, each with a footer of its totals (a count, a
-sum, and a balance-weighted average rate), a header for the state, and a total for the whole report; its pages have a header
-and a footer with the page's own total. The letters have one level, the client, which starts a new page and numbers its pages
+sum, and a balance-weighted average rate), a header for the state that is written again, saying "(continued)", where a state
+goes over to a new page, and a total for the whole report; its pages say "page X of Y", have a footer with the page's own
+total and the running total so far, and each row shows the running total of its state. `write-report-html` writes the same
+report as a web page (`mortgage_report.html`: open it in a browser) that shows a page at a time, with a bar at the bottom to
+go to the next page, the one before, or any page. The letters have one level, the client, which starts a new page and numbers its pages
 from 1, and a variable (the month) that a template can say. The library manual's
 [Reports with control breaks](lisp_library_reference.md#reports-with-control-breaks) has everything a spec can say, and what
 each template can use.
