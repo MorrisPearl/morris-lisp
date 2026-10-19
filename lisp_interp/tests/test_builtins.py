@@ -75,6 +75,55 @@ class TestCommonLispListFunctions(LispTestCase):
         self.assertShows("(list (gcd) (lcm))", "(0 1)")
         self.assertLispError("(gcd 1.5 3)", "gcd: expected whole numbers, got 1.5")
 
+    def test_vector_update_replaces_an_element_by_an_operation_on_it(self):
+        self.run_lisp("(define v (vector 10 20 30))")
+        self.assertShows("(vector-update! v 1 + 5)", "25")                 # (the new value)
+        self.assertShows("v", "#(10 25 30)")
+        self.assertShows("(vector-update! v 0 max 99)", "99")
+        self.assertShows("(vector-update! v 2 (lambda (x) (* x x)))", "900")
+        self.assertShows("(vector-update! v 2 - 100)", "800")
+        self.assertShows("(vector-update! v 0 (lambda (x a b) (+ x a b)) 1 2)", "102")
+        self.assertShows("v", "#(102 25 800)")
+
+    def test_vector_update_evaluates_the_vector_and_the_index_once(self):
+        self.run_lisp("""(define v (vector 1 2 3)) (define calls 0)
+          (define (next-index) (incf calls) 1)
+          (define (the-vector) (incf calls) v)""")
+        self.assertShows("(vector-update! (the-vector) (next-index) + 10)", "12")
+        self.assertShows("calls", "2")
+        self.assertShows("v", "#(1 12 3)")
+
+    def test_vector_update_keeps_the_names_of_the_program_free(self):
+        self.run_lisp("(define v (vector 1 2 3))")
+        self.assertShows("(let ((new-value 5) (i 0)) (vector-update! v i + new-value) (list v i new-value))", "(#(6 2 3) 0 5)")
+
+    def test_vector_update_turns_a_vector_of_whole_numbers_into_decimals_when_it_must(self):
+        self.run_lisp("(define v (vector 1 2 3))")
+        self.run_lisp("(vector-update! v 0 + 0.5)")
+        self.assertShows("v", "#(1.5 2.0 3.0)")
+
+    def test_vector_update_works_on_a_vector_of_strings(self):
+        self.run_lisp('(define v (vector "a" "b"))')
+        self.run_lisp('(vector-update! v 1 string-append "!")')
+        self.assertShows("v", '#("a" "b!")')
+
+    def test_vector_increment_adds_one_or_the_amount_given(self):
+        self.run_lisp("(define counts (vector 0 0 0))")
+        self.assertShows("(vector-increment! counts 1)", "1")
+        self.assertShows("(vector-increment! counts 1)", "2")
+        self.assertShows("(vector-increment! counts 2 5)", "5")
+        self.assertShows("(vector-increment! counts 0 -3)", "-3")
+        self.assertShows("counts", "#(-3 2 5)")
+        # in a loop
+        self.run_lisp("(define hist (make-vector 3 0)) (dolist (x '(0 2 2 1 2)) (vector-increment! hist x))")
+        self.assertShows("hist", "#(1 1 3)")
+
+    def test_vector_update_errors_come_from_vector_ref_and_vector_set(self):
+        self.run_lisp("(define v (vector 1 2 3))")
+        self.assertLispError("(vector-update! v 5 + 1)", "vector-ref")
+        self.assertLispError("(vector-update! 5 0 + 1)", "vector-ref")
+        self.assertLispError("(vector-increment! v 0 \"a\")", "+")
+
     def test_push_pop_incf_decf(self):
         self.run_lisp("(define stack '())")
         self.assertShows("(push 1 stack)", "(1)")

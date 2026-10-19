@@ -2902,6 +2902,24 @@ Mutates element `i` to `x` in place. Returns `'()`.
 v                               ; => #(1 99 3)
 ```
 
+#### `(vector-update! v i op arg...)`, `(vector-increment! v i [n])`
+Standard macros that change one element of a vector by an operation on it. `vector-update!` replaces element `i` of `v` with
+`(op element arg...)` and returns the new value; `op` is written where a function's name would be: `+`, `max`, or a
+`(lambda ...)`. `v` and `i` are evaluated once each, so `(vector-update! (f) (g) + 1)` calls `f` and `g` once. `vector-increment!` is
+the commonest case: it adds `n` (1 unless given) to the element, as `incf` does to a variable. Both return the new value.
+
+```lisp
+(define v (vector 10 20 30))
+(vector-update! v 1 + 5)                          ; => 25
+(vector-update! v 0 max 99)                       ; => 99
+(vector-update! v 2 (lambda (x) (* x x)))         ; => 900
+v                                                 ; => #(99 25 900)
+(define counts (make-vector 3 0))
+(vector-increment! counts 2)                      ; => 1
+(vector-increment! counts 2 4)                    ; => 5
+counts                                            ; => #(0 0 5)
+```
+
 #### `(vector-length v)`
 Number of elements.
 
