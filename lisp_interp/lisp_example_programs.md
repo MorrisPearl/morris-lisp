@@ -1422,6 +1422,7 @@ widgets do: three sliders that work out a mortgage payment as they move, written
 table of loans in an editable grid (`table-grid`), with a function that hears each edit (`grid-on-edit`) and a button that shows
 the table as the user has changed it (`grid-table`). The manual's [Widgets in a
 notebook](lisp_interpreter_reference.md#widgets-in-a-notebook) has everything the functions take.
+The last section of the notebook is a grid of CMO tranches: click one, and a panel of tabs opens under it (a floater's cap, the bands of a PAC, a split), with fields to fill in and a **Go** button, made by `widget-actions`.
 
 ## Writing an example
 

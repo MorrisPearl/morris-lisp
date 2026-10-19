@@ -64,3 +64,130 @@ it moves: when it is let go, unless :continuous-update is #t (when it is called 
 (define (widget-row &rest widgets)
   "The widgets side by side."
   (make-widget "HBox" :children widgets))
+
+; ---------------------------------------------------------------------------
+; Showing and hiding
+; ---------------------------------------------------------------------------
+
+(define (widget-visible widget shown)
+  "Shows the widget if shown is #t, and hides it (it takes no room on the page) if #f."
+  (widget-set! (widget-get widget "layout") "display" (if shown '() "none")))
+
+; ---------------------------------------------------------------------------
+; A panel of actions, to ask the user what to do and with what
+; ---------------------------------------------------------------------------
+;
+; An action panel is a set of tabs (or an accordion), one for each thing the user might do. Each has some fields to fill in
+; (a floater's cap, the bands of a PAC) and a button to press when ready. It is one widget, which goes in a column with others, and
+; hides and shows like any other. What the button does is the function the panel was given: (on-go action answers), with the
+; title of the tab and the answers on it, as a list of (field-name . value). What that function displays goes below the tabs.
+;
+; The pages are a list, each (title item ...); an item is a field, (name kind label default [options]), or a string, which is
+; a line of text to explain the fields. The kinds of field:
+;
+;   number     a decimal number, such as 8.5
+;   integer    a whole number
+;   text       a line of text
+;   checkbox   a box to check; its value is #t or #f
+;   dropdown   a choice from the options, a list of strings or numbers
+;
+;   (define panel
+;     (widget-actions
+;       (list (list "Floater cap" "The most the coupon can reach."
+;                   (list "cap" 'number "Cap %" 8.5)
+;                   (list "index" 'dropdown "Index" "SOFR" (list "SOFR" "Term SOFR")))
+;             (list "PAC bands" (list "low" 'number "Low PSA" 100) (list "high" 'number "High PSA" 300)))
+;       :on-go (lambda (action answers) (display (list action answers)))))
+
+(define (widget--style)
+  "A style that lets a label be as long as it is."
+  (let ((style (make-hash-table)))
+    (hash-table-set! style "description_width" "initial")
+    style))
+
+(define (widget--field spec)
+  "The widget for one field spec, (name kind label default [options]), as (name . widget)."
+  (let* ((name (list-ref spec 0))
+         (kind (list-ref spec 1))
+         (label (list-ref spec 2))
+         (default (list-ref spec 3))
+         (options (if (> (length spec) 4) (list-ref spec 4) '())))
+    (cons name
+          (cond ((eq? kind 'number)   (make-widget "FloatText" :value default :description label :style (widget--style)))
+                ((eq? kind 'integer)  (make-widget "IntText" :value default :description label :style (widget--style)))
+                ((eq? kind 'text)     (make-widget "Text" :value default :description label :style (widget--style)))
+                ((eq? kind 'checkbox) (make-widget "Checkbox" :value default :description label :style (widget--style)))
+                ((eq? kind 'dropdown) (make-widget "Dropdown" :options options :value default :description label :style (widget--style)))
+                (else (error (format "widget-actions: the field {} is of kind {}, which is not one of number, integer, text, checkbox, dropdown"
+                                     name kind)))))))
+
+(define (widget-actions--answers fields)
+  "The answers on a page: a list of (field-name . value)."
+  (map (lambda (field) (cons (car field) (widget-get (cdr field) "value"))) fields))
+
+(define (widget-actions--page page button on-go output)
+  "One page of the panel: (title . fields), and the widget that holds it."
+  (let* ((title (car page))
+         (entries (map (lambda (item) (if (string? item)
+                                          (cons #f (make-widget "HTML" :value item))
+                                          (widget--field item)))
+                       (cdr page)))
+         (fields (filter (lambda (entry) (string? (car entry))) entries))
+         (go (widget-button button
+                            (lambda ()
+                              (widget-clear output)
+                              (on-go title (widget-actions--answers fields)))
+                            :output output :button-style "primary")))
+    (list (cons title fields)
+          (widget-column (make-widget "VBox" :children (map cdr entries)) go))))
+
+(define (widget-actions pages &key on-go (style "tabs") (button "Go") (heading ""))
+  "A panel with a page for each of the pages, as tabs (:style \"tabs\") or as an accordion (:style \"accordion\"), each with the
+fields it says and a button, :button (\"Go\"). Pressing the button calls (on-go title answers). :heading is a line of HTML above
+the pages (see widget-actions-heading)."
+  (unless (procedure? on-go)
+    (error "widget-actions: :on-go is the function to call when a button is pressed, (lambda (action answers) ...)"))
+  (let* ((output (widget-output))
+         (heading-widget (make-widget "HTML" :value heading))
+         (built (map (lambda (page) (widget-actions--page page button on-go output)) pages))
+         (container (make-widget (if (equal? style "accordion") "Accordion" "Tab")
+                                 :children (map cadr built)
+                                 :titles (map car pages)))
+         (panel (widget-column heading-widget container output)))
+    (widget-set-tag! panel (list (map car built) container heading-widget))
+    panel))
+
+(define (widget-actions--tag panel who)
+  (let ((tag (widget-tag panel)))
+    (when (null? tag)
+      (error (format "{}: expected a panel made by widget-actions" who)))
+    tag))
+
+(define (widget-actions--fields panel title)
+  "The (name . widget) fields of a page of the panel."
+  (let ((page (assoc title (car (widget-actions--tag panel "widget-actions")))))
+    (unless page
+      (error (format "widget-actions: the panel has no page {}" title)))
+    (cdr page)))
+
+(define (widget-actions-heading panel text)
+  "Changes the line of HTML above the pages: what the panel is for, such as the tranche chosen."
+  (widget-set! (caddr (widget-actions--tag panel "widget-actions-heading")) "value" text))
+
+(define (widget-actions-set! panel title name value)
+  "Puts a value in a field of a page, such as a default that depends on what was chosen."
+  (let ((field (assoc name (widget-actions--fields panel title))))
+    (unless field
+      (error (format "widget-actions-set!: the page {} has no field {}" title name)))
+    (widget-set! (cdr field) "value" value)))
+
+(define (widget-actions-answers panel title)
+  "What is in the fields of a page now, as a list of (field-name . value)."
+  (widget-actions--answers (widget-actions--fields panel title)))
+
+(define (widget-actions-select panel title)
+  "Brings a page to the front."
+  (let ((place (position title (map car (car (widget-actions--tag panel "widget-actions-select"))))))
+    (unless place
+      (error (format "widget-actions-select: the panel has no page {}" title)))
+    (widget-set! (cadr (widget-actions--tag panel "widget-actions-select")) "selected_index" place)))

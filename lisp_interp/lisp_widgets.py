@@ -27,6 +27,7 @@ from lisp_core import (
 )
 from lisp_tables import column_values, make_table_value, table_columns
 
+GRID_ROWS_SHOWN = 15           # a grid is this many rows tall at most (it scrolls), unless it is given a :layout
 EDIT_ROWS_LIMIT = 100_000       # table-grid sends the whole table to the browser: more rows than this is a mistake
 
 
@@ -198,6 +199,18 @@ def widget_set(widget, name, value):
         setattr(widget, python, setting_for(trait, value))
     except (TraitError, TypeError, ValueError) as e:
         raise LispError("widget-set!: %s" % e)
+    return NIL
+
+
+def widget_tag(widget):
+    """(widget-tag w) -- the value attached to the widget by widget-set-tag!, or '() if there is none."""
+    return getattr(check_widget(widget, "widget-tag"), "_lisp_tag", NIL)
+
+
+def widget_set_tag(widget, value):
+    """(widget-set-tag! w value) -- attaches any Lisp value to the widget, for a function that is given the widget to find
+    what it needs (the fields of a panel, say). The notebook never sees it."""
+    check_widget(widget, "widget-set-tag!")._lisp_tag = value
     return NIL
 
 
@@ -435,6 +448,11 @@ def table_grid(table, *arguments):
     for name, value in (("editable", True), ("auto_fit_columns", True)):      # (the usual choices, unless given)
         if name not in given:
             settings.append((name, value))
+    if "layout" not in given:           # tall enough for the rows (up to GRID_ROWS_SHOWN of them), and not a good deal taller
+        row_size = given.get("base_row_size", 20)
+        header_size = given.get("base_column_header_size", 20)
+        height = header_size + min(rows, GRID_ROWS_SHOWN) * row_size + 20
+        settings.append(("layout", _ipywidgets("table-grid").Layout(height="%dpx" % height)))
     frame, kinds = table_to_frame(table, "table-grid")
     grid = _grid_of(ipydatagrid, frame, settings)
     grid._lisp_table = table
@@ -525,6 +543,8 @@ BUILTINS = {
     "make-widget": make_widget,
     "widget-get": widget_get,
     "widget-set!": widget_set,
+    "widget-tag": widget_tag,
+    "widget-set-tag!": widget_set_tag,
     "widget-close": widget_close,
     "widget-link": widget_link,
     "widget-on-change": widget_on_change,

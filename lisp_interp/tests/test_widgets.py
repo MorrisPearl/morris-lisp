@@ -181,6 +181,114 @@ class TestWidgets(LispTestCase):
         self.assertEqual(self.run_lisp('(widget-text :value "x" :placeholder "p")').placeholder, "p")
 
 
+@unittest.skipIf(ipywidgets is None, "ipywidgets is needed")
+class TestActionPanel(LispTestCase):
+    """widget-actions: tabs (or an accordion) of fields, each with a button that calls the function with the page and its answers."""
+
+    PANEL = '''
+      (define heard (list))
+      (define panel
+        (widget-actions
+          (list (list "Floater cap" "The most the coupon can reach."
+                      (list "cap" 'number "Cap %" 8.5)
+                      (list "index" 'dropdown "Index" "SOFR" (list "SOFR" "Term SOFR")))
+                (list "PAC bands" (list "low" 'integer "Low PSA" 100) (list "high" 'integer "High PSA" 300)
+                      (list "lock" 'checkbox "Lock" #f) (list "note" 'text "Note" "")))
+          :on-go (lambda (action answers) (display (list action answers)))
+          :heading "<b>Tranche A</b>"))'''
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('(load "widgets.lsp")')
+        self.run_lisp(self.PANEL)
+        self.panel = self.env[lisp_core.Symbol("panel")]
+
+    def tabs(self):
+        return self.panel.children[1]
+
+    def fields(self, page):
+        """The widgets of a page, above its button."""
+        return self.tabs().children[page].children[0].children
+
+    def go(self, page):
+        """Press the button of a page; return what the function displayed."""
+        self.out.clear()
+        self.tabs().children[page].children[1].click()
+        return self.printed()
+
+    def test_the_panel_is_a_heading_the_tabs_and_a_place_for_output(self):
+        heading, tabs, output = self.panel.children
+        self.assertEqual(heading.value, "<b>Tranche A</b>")
+        self.assertIsInstance(tabs, ipywidgets.Tab)
+        self.assertEqual(tabs.titles, ("Floater cap", "PAC bands"))
+        self.assertIsInstance(output, ipywidgets.Output)
+        self.assertEqual([page.children[1].description for page in tabs.children], ["Go", "Go"])
+
+    def test_an_accordion_and_another_button_label_can_be_asked_for(self):
+        self.run_lisp('''(define a (widget-actions (list (list "One") (list "Two")) :style "accordion" :button "Do it" :on-go (lambda (a b) 1)))''')
+        accordion = self.env[lisp_core.Symbol("a")].children[1]
+        self.assertIsInstance(accordion, ipywidgets.Accordion)
+        self.assertEqual(accordion.titles, ("One", "Two"))
+        self.assertEqual(accordion.children[0].children[1].description, "Do it")
+
+    def test_the_button_calls_the_function_with_the_page_and_its_answers(self):
+        self.assertEqual(self.go(0), '("Floater cap" (("cap" . 8.5) ("index" . "SOFR")))')
+        self.assertEqual(self.go(1), '("PAC bands" (("low" . 100) ("high" . 300) ("lock" . #f) ("note" . "")))')
+
+    def test_the_answers_are_what_the_user_has_put_in_the_fields(self):
+        fields = self.fields(0)                                    # (the text, the cap, the index)
+        self.assertEqual(len(fields), 3)
+        fields[1].value = 9.25
+        fields[2].value = "Term SOFR"
+        self.assertEqual(self.go(0), '("Floater cap" (("cap" . 9.25) ("index" . "Term SOFR")))')
+
+    def test_a_string_in_a_page_is_a_line_of_text_not_a_field(self):
+        text = self.fields(0)[0]
+        self.assertIsInstance(text, ipywidgets.HTML)
+        self.assertEqual(text.value, "The most the coupon can reach.")
+        self.assertShows('(widget-actions-answers panel "Floater cap")', '(("cap" . 8.5) ("index" . "SOFR"))')
+
+    def test_the_fields_have_the_kind_of_widget_that_was_asked_for(self):
+        self.assertEqual([type(f).__name__ for f in self.fields(1)], ["IntText", "IntText", "Checkbox", "Text"])
+        self.assertEqual([type(f).__name__ for f in self.fields(0)], ["HTML", "FloatText", "Dropdown"])
+        self.assertEqual(self.fields(0)[1].description, "Cap %")
+
+    def test_a_field_can_be_set_the_heading_changed_a_page_brought_to_the_front_and_the_panel_hidden(self):
+        self.run_lisp('(widget-actions-set! panel "PAC bands" "low" 150)')
+        self.assertShows('(widget-actions-answers panel "PAC bands")', '(("low" . 150) ("high" . 300) ("lock" . #f) ("note" . ""))')
+        self.run_lisp('(widget-actions-heading panel "<b>Tranche B</b>")')
+        self.assertEqual(self.panel.children[0].value, "<b>Tranche B</b>")
+        self.run_lisp('(widget-actions-select panel "PAC bands")')
+        self.assertEqual(self.tabs().selected_index, 1)
+        self.run_lisp("(widget-visible panel #f)")
+        self.assertEqual(self.panel.layout.display, "none")
+        self.run_lisp("(widget-visible panel #t)")
+        self.assertIsNone(self.panel.layout.display)
+
+    def test_what_the_function_displays_goes_to_the_panels_own_output_and_an_error_in_it_is_reported_there_too(self):
+        self.run_lisp('(define bad (widget-actions (list (list "Go on" (list "n" \'number "n" 1))) :on-go (lambda (action answers) (error "boom"))))')
+        bad = self.env[lisp_core.Symbol("bad")]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bad.children[1].children[0].children[1].click()          # (the Go button of the first page)
+        self.assertIn("Error: boom", out.getvalue())
+
+    def test_the_arguments_are_checked(self):
+        self.assertLispError('(widget-actions (list (list "a")))', ":on-go is the function")
+        self.assertLispError('(widget-actions (list (list "a" (list "x" (quote colour) "X" 1))) :on-go (lambda (a b) 1))', "kind colour")
+        self.assertLispError('(widget-actions-answers panel "Nope")', "no page Nope")
+        self.assertLispError('(widget-actions-set! panel "PAC bands" "zzz" 1)', "no field zzz")
+        self.assertLispError('(widget-actions-select panel "Nope")', "no page Nope")
+        self.assertLispError('(widget-actions-heading (make-widget "VBox") "x")', "made by widget-actions")
+
+    def test_a_widget_can_be_given_a_value_to_carry(self):
+        self.run_lisp('(define w (make-widget "IntSlider"))')
+        self.assertShows("(widget-tag w)", "()")
+        self.run_lisp('(widget-set-tag! w (list 1 "two"))')
+        self.assertShows("(widget-tag w)", '(1 "two")')
+        self.assertLispError("(widget-tag 5)", "expected a widget")
+
+
 @unittest.skipIf(ipydatagrid is None, "ipydatagrid is needed")
 class TestTableGrid(LispTestCase):
 
@@ -317,6 +425,13 @@ class TestTableGrid(LispTestCase):
         self.assertEqual(grid.base_row_size, 40)
         self.assertTrue(grid.auto_fit_columns)
         self.assertLispError("(table-grid t :nonsense 1)", "no attribute")
+
+    def test_a_grid_is_as_tall_as_its_rows_up_to_fifteen_unless_it_is_given_a_layout(self):
+        self.assertEqual(self.grid.layout.height, "100px")             # three rows: a heading, three rows and some room
+        self.assertEqual(self.run_lisp("(table-grid t :base-row-size 30)").layout.height, "130px")
+        self.run_lisp('(define long (make-table "x" (vector-range 100)))')
+        self.assertEqual(self.run_lisp("(table-grid long)").layout.height, "340px")
+        self.assertEqual(self.run_lisp('(table-grid t :layout (make-widget "Layout" :height "50px"))').layout.height, "50px")
 
     def test_the_arguments_are_checked(self):
         self.assertLispError("(table-grid 5)", "not a table")

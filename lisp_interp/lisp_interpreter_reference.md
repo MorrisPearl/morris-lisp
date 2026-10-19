@@ -4569,11 +4569,67 @@ around it. The common widgets of `lib/widgets.lsp` take `:on-change`, which has 
 A function that a widget calls runs when the notebook is idle, one at a time, in the same environment as the cells: it sees the
 variables the cells define, and can define or change them, which the next cell sees.
 
+#### Asking what to do: `widget-actions`
+`(widget-actions pages :on-go f [:style "tabs"] [:button "Go"] [:heading ""])` makes a **panel** of questions that sits inline in
+the notebook: a tab (or, with `:style "accordion"`, a section) for each thing the user might do, with the fields that thing needs
+and a button to press when ready. It is one widget, so it goes in a column with others, and hides and shows like any widget. When a
+button is pressed, `(f title answers)` is called with the title of its page and the answers on that page, as a list of
+`(field-name . value)`. What `f` displays appears under the tabs, in an output widget the panel has of its own, and is cleared
+at the next press; an error in `f` is reported there.
+
+`pages` is a list, each page `(title item ...)`. An item is a **field**, `(name kind label default [options])`, or a string, which
+is a line of text that explains the fields. The kinds of field are `number` (a decimal), `integer`, `text`, `checkbox` (the value
+is `#t` or `#f`) and `dropdown` (a choice from the `options`, a list of strings or numbers).
+
+```lisp
+(define panel
+  (widget-actions
+    (list (list "Floater cap" "The most the coupon can reach."
+                (list "cap"   'number "Cap %" 8.5)
+                (list "index" 'dropdown "Index" "SOFR" (list "SOFR" "Term SOFR")))
+          (list "PAC bands"
+                (list "low"  'integer "Lower band (PSA)" 100)
+                (list "high" 'integer "Upper band (PSA)" 300)))
+    :heading "<b>Tranche A-1</b>"
+    :on-go (lambda (action answers) (display (list action answers)))))
+```
+
+Pressing **Go** on the first page, as it is, displays `("Floater cap" (("cap" . 8.5) ("index" . "SOFR")))`. The functions that
+go with a panel:
+
+- `(widget-actions-heading panel "<b>Tranche B</b>")` changes the line of HTML above the tabs: what the panel is about.
+- `(widget-actions-set! panel "Floater cap" "cap" 9.2)` puts a value in a field of a page: a default that depends on what was chosen.
+- `(widget-actions-answers panel "Floater cap")` is what is in the fields of a page now, as the button would give it.
+- `(widget-actions-select panel "PAC bands")` brings a page to the front.
+- `(widget-visible panel #f)` hides a widget (`#t` shows it again).
+
+To make the choice of a row of a table start it, put the panel under the grid and have the click change it:
+
+```lisp
+(define chosen '())
+(define grid (table-grid tranches :editable #f))
+(grid-on-click grid
+  (lambda (column row value)
+    (set! chosen row)
+    (widget-actions-heading panel (format "<b>Tranche {}</b>" (vector-ref (table-column tranches "name") row)))
+    (widget-visible panel #t)))
+(widget-visible panel #f)
+(widget-column grid panel)
+```
+
+`widget-tag` and `widget-set-tag!` (below) are how a panel finds its fields: any Lisp value can be attached to a widget this way.
+`notebooks/widgets_example.ipynb` has a worked example, a grid of tranches with a panel for what to do with the one clicked.
+
+#### Attaching a value to a widget
+`(widget-set-tag! w value)` attaches any Lisp value to a widget, and `(widget-tag w)` gives it back (`'()` if there is none). The
+notebook doesn't see it; it is for a function that is given the widget to find what it needs.
+
 #### Editing a table: `table-grid`
 `(table-grid table [:editable #t] [:name value ...])` gives a grid of the table that the user can edit by double-clicking a cell,
 and sort and filter by the column headings. The other attributes of ipydatagrid's `DataGrid` are keywords, such as `:base-row-size 30`,
 `:selection-mode "cell"` or `:layout`. The whole table is sent to the browser, so a grid is for thousands of rows, not
-millions (`table-head`, `table-filter` show the rows of interest; more than 100,000 is an error).
+millions (`table-head`, `table-filter` show the rows of interest; more than 100,000 is an error). A grid is as tall as its rows, up to
+15 of them (it scrolls after that), unless it is given a `:layout`.
 
 - `(grid-table grid)` is the table as it is now: the table the grid was made from, with the cells the user changed made new. A cell
   that was not changed keeps its value exactly, and each column keeps its type (a column of whole numbers stays one, and a

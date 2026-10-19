@@ -89,7 +89,8 @@
 
 ; The common widgets of a notebook, one call each (the others are made with make-widget)
 (lazy-load "widgets.lsp"
-  widget-slider widget-button widget-dropdown widget-checkbox widget-text widget-output widget-column widget-row)
+  widget-slider widget-button widget-dropdown widget-checkbox widget-text widget-output widget-column widget-row widget-visible
+  widget-actions widget-actions-heading widget-actions-set! widget-actions-answers widget-actions-select)
 
 ; Templates of text and SQL
 (lazy-load "template.lsp"
