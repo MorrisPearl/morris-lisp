@@ -4,6 +4,10 @@ __pycache__/
 .ipynb_checkpoints/
 .claude/*
 lisp_interp/Untitled*.ipynb
+lisp_interp/*/Untitled*.ipynb
+/*/Untitled*.ipynb
+
+lisp_interp/notebooks/.virtual_documents/
 
 
 .DS_Store
