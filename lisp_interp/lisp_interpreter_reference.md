@@ -4552,12 +4552,19 @@ name. A class or an attribute that isn't there is an error that suggests the nea
   Strings come back as strings, lists as lists, `None` as `'()`.
 - `(widget-set! w "attribute" value)` changes it; the notebook shows the change, and a function that `widget-on-change` gave
   for that attribute is called.
-- `(widget-on-change w "value" f [:output out])` calls `(f new-value)` whenever the attribute changes, whoever changed it.
-- `(widget-on-click button f [:output out])` calls `(f)` at each click.
+- `(widget-on-change w "value" f [:output out] [:context x])` calls `(f new-value)` whenever the attribute changes, whoever
+  changed it.
+- `(widget-on-click button f [:output out] [:context x])` calls `(f)` at each click.
 - `(widget-capture out thunk)` calls `(thunk)` with what it displays going into the output widget `out`, and returns its value.
   `(widget-clear out)` empties an output widget.
 - `(widget-link a "value" b "value")` keeps two widgets' attributes the same, in the browser: moving one slider moves the other.
 - `(widget-close w)` takes it off the page. `(display-widget w)` shows it, below the cell.
+
+**`:context x`**, on any of the functions that register a function (`widget-on-change`, `widget-on-click`, `grid-on-edit`,
+`grid-on-click`), is passed to it as its last argument, so that one function can serve several widgets and tell which called
+it: `(widget-on-click a f :context "a")` and `(widget-on-click b f :context "b")` call `(f "a")` and `(f "b")`. Without
+`:context` the function is called without it. (A function that is written inside the call can also just use the variables
+around it. The common widgets of `lib/widgets.lsp` take `:on-change`, which has no context.)
 
 A function that a widget calls runs when the notebook is idle, one at a time, in the same environment as the cells: it sees the
 variables the cells define, and can define or change them, which the next cell sees.
@@ -4572,8 +4579,12 @@ millions (`table-head`, `table-filter` show the rows of interest; more than 100,
   that was not changed keeps its value exactly, and each column keeps its type (a column of whole numbers stays one, and a
   decimal one stays decimal). A cell that has become something its column can't hold is an error that says which (`column
   balance, row 0: "lots" is not a number`). A date column is edited as text, `2026-03-07`; a cleared number is missing.
-- `(grid-on-edit grid f [:output out])` calls `(f column row value)` each time the user changes a cell: the column's name, the
-  row's place in the table (from 0), and the new value.
+- `(grid-on-edit grid f [:output out] [:context x])` calls `(f column row value)` each time the user changes a cell: the
+  column's name, the row's place in the table (from 0), and the new value; and `x` after them, if there is a `:context`.
+- `(grid-on-click grid f [:output out] [:context x])` calls `(f column row value)` each time the user clicks a cell of the
+  table (not a heading): the column's name, the row's place in the table, and the value in the cell. Clicking is also how a cell is
+  chosen to be edited, so an edit is a click too. The row is the cell's place in the table you made the grid from, whatever
+  order the user has sorted the grid into (and the same goes for `grid-on-edit`).
 - `(grid-set-table! grid table)` shows another table in the grid, or the same one again to undo the edits.
 
 ```lisp

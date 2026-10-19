@@ -86,6 +86,13 @@ class TestWidgets(LispTestCase):
             python_function()
         return self.printed() + printed.getvalue()
 
+    def test_the_context_is_passed_as_the_last_argument_if_one_is_given(self):
+        self.run_lisp('(define b (make-widget "Button")) (define s (make-widget "IntSlider"))'
+                      '(widget-on-click b (lambda (where) (display (list "clicked" where))) :context "the button")'
+                      '(widget-on-change s "value" (lambda (v where) (display (list v where))) :context (list 1 2))')
+        self.assertEqual(self.capture(self.env[lisp_core.Symbol("b")].click), '("clicked" "the button")')
+        self.assertEqual(self.printing('(widget-set! s "value" 4)'), '(4 (1 2))')
+
     def test_a_click_calls_the_function(self):
         self.run_lisp('(define b (make-widget "Button")) (widget-on-click b (lambda () (display "clicked")))')
         self.assertEqual(self.capture(self.env[lisp_core.Symbol("b")].click), "clicked")
@@ -112,7 +119,8 @@ class TestWidgets(LispTestCase):
         self.assertEqual(entered, ["in", "out"])
         self.assertIn("Error: boom", shown)
         self.assertLispError('(widget-on-click b (lambda () 1) :output 5)', "Output widget")
-        self.assertLispError('(widget-on-click b (lambda () 1) :out out)', "only option")
+        self.assertLispError('(widget-on-click b (lambda () 1) :out out)', "isn't an option")
+        self.assertLispError('(widget-on-click b (lambda () 1) :output)', ":name value pairs")
 
     def test_widget_capture_runs_a_function_inside_the_output_widget_and_widget_clear_empties_it(self):
         self.run_lisp('(define out (make-widget "Output"))')
@@ -250,6 +258,51 @@ class TestTableGrid(LispTestCase):
         self.edit(2, 3, "2026-12-25")
         self.edit(0, 0, "zz")
         self.assertEqual(self.printed(), '("bal" 1 250.5)("d" 2 2026-12-25)("id" 0 "zz")')
+
+    def test_the_context_of_grid_on_edit_is_the_last_argument_so_one_function_can_tell_the_grids_apart(self):
+        self.run_lisp('(define other (table-grid (make-table "k" #(1 2))))')
+        other = self.env[lisp_core.Symbol("other")]
+        self.run_lisp('(define (heard column row value where) (display (list where column row value)))'
+                      '(grid-on-edit g heard :context "loans")(grid-on-edit other heard :context "others")')
+        self.out.clear()
+        self.edit(1, 1, 250.5)
+        other._DataGrid__handle_custom_msg(None, {"event_type": "cell-changed", "row": 0, "column_index": 0, "value": 9}, [])
+        self.assertEqual(self.printed(), '("loans" "bal" 1 250.5)("others" "k" 0 9)')
+
+    def click(self, row, column_index, value, primary_key_row=None, region="body"):
+        """The message the browser sends when the user clicks a cell."""
+        columns = list(self.grid.data.columns)
+        self.grid._DataGrid__handle_custom_msg(None, {
+            "event_type": "cell-click", "region": region, "column": columns[column_index] if column_index >= 0 else None,
+            "column_index": column_index, "row": row, "primary_key_row": row if primary_key_row is None else primary_key_row,
+            "cell_value": value}, [])
+
+    def test_grid_on_click_is_called_with_the_column_the_row_and_the_value_of_the_cell_clicked(self):
+        self.run_lisp('(grid-on-click g (lambda (column row value) (display (list column row value))))')
+        self.out.clear()
+        self.click(1, 1, 200.0)
+        self.click(2, 0, "c")
+        self.click(0, 3, "2026-01-05")
+        self.assertEqual(self.printed(), '("bal" 1 200.0)("id" 2 "c")("d" 0 2026-01-05)')
+
+    def test_grid_on_click_says_the_place_in_the_table_when_the_grid_is_sorted_and_ignores_the_headings(self):
+        self.run_lisp('(grid-on-click g (lambda (column row value) (display (list column row value))))')
+        self.out.clear()
+        self.click(0, 1, 300.25, primary_key_row=2)           # (the top row of a grid sorted the other way round)
+        self.click(0, 1, None, region="column-header")
+        self.click(1, -1, None, region="row-header")
+        self.click(0, -1, None, region="corner-header")
+        self.assertEqual(self.printed(), '("bal" 2 300.25)')
+
+    def test_grid_on_click_takes_a_context_and_an_output_widget(self):
+        self.run_lisp('(grid-on-click g (lambda (column row value where) (display (list where row))) :context "loans")')
+        self.out.clear()
+        self.click(1, 1, 200.0)
+        self.assertEqual(self.printed(), '("loans" 1)')
+        self.assertLispError("(grid-on-click g (lambda () 1) :output 5)", "Output widget")
+        self.assertLispError("(grid-on-click g (lambda () 1) :where 5)", "isn't an option")
+        self.assertLispError("(grid-on-click 5 (lambda () 1))", "made by table-grid")
+        self.assertLispError("(grid-on-click g 5)", "expected a function")
 
     def test_grid_set_table_shows_another_table_and_forgets_the_edits(self):
         self.edit(0, 0, "zz")

@@ -234,23 +234,36 @@ def output_widget(output, who):
     return output
 
 
-def output_option(options, who):
-    """The Output widget of the :output option, or None."""
-    if len(options) % 2 or (options and options[0] != Keyword(":output")):
-        raise LispError("%s: the only option is :output, an Output widget" % who)
-    return output_widget(options[1], who) if options else None
+def callback_options(options, who, allowed=("output",)):
+    """The :output and :context options of a function that registers a callback, as a dict: "output" is the Output widget
+    (or None) and, if :context was given, "context" is the value it was given."""
+    if len(options) % 2:
+        raise LispError("%s: after the function come :name value pairs; the options are %s"
+                        % (who, ", ".join(":" + name for name in allowed)))
+    found = {"output": None}
+    for key, value in zip(options[::2], options[1::2]):
+        name = str(key)[1:] if isinstance(key, Keyword) else None
+        if name not in allowed:
+            raise LispError("%s: %s isn't an option -- the options are %s"
+                            % (who, _brief(key), ", ".join(":" + name for name in allowed)))
+        found[name] = output_widget(value, who) if name == "output" else value
+    return found
 
 
-def callback(function, output, convert):
-    """The Python function that calls a Lisp one: with what convert makes of the arguments it is given. What the Lisp function
-    displays, and the report of an error in it, go to the Output widget, if there is one."""
+def callback(function, options, convert):
+    """The Python function that calls a Lisp one: with the arguments that convert makes of those it is given (or not at all, if
+    it gives None), and the :context option's value after them, if there is one. What the Lisp function displays, and the report
+    of an error in it, go to the Output widget of the options, if there is one."""
     if not (callable(function) or isinstance(function, Procedure)):
         raise LispError("expected a function to call, not %s" % _brief(function))
+    output = options["output"]
 
     def call(*arguments):
         with (output if output is not None else contextlib.nullcontext()):
             try:
-                apply_proc(function, convert(*arguments))
+                converted = convert(*arguments)
+                if converted is not None:
+                    apply_proc(function, converted + ([options["context"]] if "context" in options else []))
             except LispAbort:
                 print("Aborted")
             except Exception as e:
@@ -259,22 +272,23 @@ def callback(function, output, convert):
 
 
 def widget_on_change(widget, name, function, *options):
-    """(widget-on-change w "value" f [:output out]) -- calls (f new-value) when the attribute changes, whether the user
-    changed it or widget-set! did."""
+    """(widget-on-change w "value" f [:output out] [:context x]) -- calls (f new-value) when the attribute changes, whether the
+    user changed it or widget-set! did; with :context x, x is a second argument."""
     check_widget(widget, "widget-on-change")
     python = trait_name(name, "widget-on-change")
     check_trait_name(type(widget), python, "widget-on-change")
-    run = callback(function, output_option(options, "widget-on-change"), lambda change: [to_lisp(change["new"])])
+    run = callback(function, callback_options(options, "widget-on-change", ("output", "context")), lambda change: [to_lisp(change["new"])])
     widget.observe(run, names=python)
     return NIL
 
 
 def widget_on_click(button, function, *options):
-    """(widget-on-click button f [:output out]) -- calls (f) each time the button is clicked."""
+    """(widget-on-click button f [:output out] [:context x]) -- calls (f) each time the button is clicked; with :context x, calls
+    (f x)."""
     check_widget(button, "widget-on-click")
     if not hasattr(button, "on_click"):
         raise LispError("widget-on-click: a %s has no click; a Button does" % type(button).__name__)
-    run = callback(function, output_option(options, "widget-on-click"), lambda *_: [])
+    run = callback(function, callback_options(options, "widget-on-click", ("output", "context")), lambda *_: [])
     button.on_click(run)
     return NIL
 
@@ -462,8 +476,9 @@ def grid_set_table(grid, table):
 
 
 def grid_on_edit(grid, function, *options):
-    """(grid-on-edit grid f [:output out]) -- calls (f column row value) each time the user changes a cell: the column's name,
-    the row's place in the table (from 0), and the new value."""
+    """(grid-on-edit grid f [:output out] [:context x]) -- calls (f column row value) each time the user changes a cell: the
+    column's name, the row's place in the table (from 0), and the new value. With :context x, x comes after them, as a fourth
+    argument, which can say which grid it is."""
     check_grid(grid, "grid-on-edit")
 
     def convert(cell):
@@ -471,7 +486,26 @@ def grid_on_edit(grid, function, *options):
         kind = grid._lisp_kinds.get(column, "text")
         return [LispString(column), row, read_cell(cell["value"], kind, column, row)]
 
-    grid.on_cell_change(callback(function, output_option(options, "grid-on-edit"), convert))
+    grid.on_cell_change(callback(function, callback_options(options, "grid-on-edit", ("output", "context")), convert))
+    return NIL
+
+
+def grid_on_click(grid, function, *options):
+    """(grid-on-click grid f [:output out] [:context x]) -- calls (f column row value) each time the user clicks a cell of
+    the table (not a heading): the column's name, the row's place in the table (from 0, whatever order the grid is sorted
+    in), and the value in the cell. With :context x, x comes after them."""
+    check_grid(grid, "grid-on-click")
+
+    def convert(cell):
+        if cell["region"] != "body":
+            return None
+        column = str(cell["column"])
+        row = cell["primary_key_row"]
+        row = int(row) if isinstance(row, (int, float, np.integer)) else int(cell["row"])
+        kind = grid._lisp_kinds.get(column, "text")
+        return [LispString(column), row, read_cell(cell["cell_value"], kind, column, row)]
+
+    grid.on_cell_click(callback(function, callback_options(options, "grid-on-click", ("output", "context")), convert))
     return NIL
 
 
@@ -501,4 +535,5 @@ BUILTINS = {
     "grid-table": grid_table,
     "grid-set-table!": grid_set_table,
     "grid-on-edit": grid_on_edit,
+    "grid-on-click": grid_on_click,
 }
