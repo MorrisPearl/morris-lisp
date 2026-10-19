@@ -529,7 +529,7 @@ def moves_of(log_returns, who):
                         % (who, MINIMUM_HISTORY, len(log_returns)))
     moves = log_returns - log_returns.mean()
     long_run = float(np.mean(moves ** 2))
-    if long_run == 0:
+    if long_run == 0 or np.ptp(log_returns) == 0:          # (the average of equal numbers may not be exactly that number)
         raise LispError("%s: the returns are all the same, so there is no volatility to model" % who)
     down_share = float(np.sum(moves[moves < 0] ** 2) / np.sum(moves ** 2))
     return moves, long_run, down_share

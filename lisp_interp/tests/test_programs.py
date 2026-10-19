@@ -1529,7 +1529,7 @@ class TestExampleScripts(unittest.TestCase):
         out = self.results["sql_example.lsp"].stdout
         for expected in ["9 rows added", "West           4  1425000.0", "AK         0", "2 rows changed", "1 row deleted",
                          "sql: loans.state can't be used here",
-                         "750.0   15666  0.16380148", "(5 rows)", "#(0.1561 0.1594 0.1638 0.1609)", "800.0  0.16094743"]:
+                         "750.0   15666  0.16380147836078132", "(5 rows)", "#(0.1561 0.1594 0.1638 0.1609)", "800.0  0.16094742424242423"]:
             self.assertIn(expected, out)
 
     def test_the_parser_example_reads_a_calculator_and_a_settings_file(self):

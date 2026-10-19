@@ -111,8 +111,14 @@ class LispTestCase(unittest.TestCase):
             "the debug REPL asked for input -- use run_with_input to answer it"))
         patcher.start()
         self.addCleanup(patcher.stop)
+        lisp_core.set_vector_precision("double")       # the precision of vectors is process-wide too: every test starts in the default
+        self.addCleanup(lisp_core.set_vector_precision, "double")
         self.out = []
         self.env = lisp_builtins.make_global_env(output=self.out.append)
+
+    def use_single_precision(self):
+        """From here to the end of the test, vectors are made in single precision (float32, int32)."""
+        lisp_core.set_vector_precision("single")
 
     @staticmethod
     def stop_profiling():

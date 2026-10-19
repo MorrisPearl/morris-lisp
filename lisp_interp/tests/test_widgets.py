@@ -337,9 +337,19 @@ class TestTableGrid(LispTestCase):
         self.edit(0, 2, 9)
         table = self.run_lisp("(grid-table g)")
         types = {str(p.car): p.cdr.items.dtype for p in lisp_core.pairs_to_list(table)}
-        self.assertEqual(str(types["bal"]), "float32")
-        self.assertEqual(str(types["n"]), "int32")
+        self.assertEqual(str(types["bal"]), "float64")
+        self.assertEqual(str(types["n"]), "int64")
         self.assertEqual(str(types["id"]), "object")
+
+    def test_a_column_keeps_its_single_precision_type_too(self):
+        self.use_single_precision()
+        self.run_lisp(self.TABLE)
+        self.run_lisp("(define g1 (table-grid t))")
+        grid = self.env[lisp_core.Symbol("g1")]
+        grid._DataGrid__handle_custom_msg(None, {"event_type": "cell-changed", "row": 0, "column_index": 1, "value": 5.5}, [])
+        table = self.run_lisp("(grid-table g1)")
+        types = {str(p.car): p.cdr.items.dtype for p in lisp_core.pairs_to_list(table)}
+        self.assertEqual((str(types["bal"]), str(types["n"])), ("float32", "int32"))
 
     def test_a_missing_value_is_an_empty_cell_and_stays_missing_unless_it_is_edited(self):
         self.run_lisp('(define m (make-table "x" #(1.5 2.5) "s" (vector "a" "b")))')

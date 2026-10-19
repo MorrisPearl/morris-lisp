@@ -1589,7 +1589,7 @@ class TestCallSpreads(OptionChainTestCase):
     def reference(self, rows, expected, prices="bid-ask", min_oi=1, min_volume=1, min_cost=0.0, day=OptionChainTestCase.DAY):
         """Every spread, from the definition, in plain Python: (long symbol, short symbol, long strike, short
         strike, cost, worth, profit, ratio, breakeven, max-profit)."""
-        f32 = lambda x: float(np.float32(x))
+        f32 = lambda x: float(lisp_core.LispVector.FLOAT_DTYPE(x))             # (as a vector stores it)
         usable = lambda r: (r["type"] == "Call" and r["expiration"] == day and r["bid"] > 0 and r["ask"] > 0 and
                             (0 if r["open_interest"] != r["open_interest"] else r["open_interest"]) >= min_oi and
                             (0 if r["volume"] != r["volume"] else r["volume"]) >= min_volume)
@@ -1951,7 +1951,7 @@ class TestPortfolio(LispTestCase):
     def make_covariance(self, matrix=None, names=("X", "Y", "Z")):
         matrix = np.array(matrix or self.COVARIANCE)
         self.env[lisp_core.Symbol("cov")] = lisp_portfolio.matrix_table(list(names), matrix)
-        return np.array(matrix, dtype=np.float32).astype(float)        # (as a vector stores it)
+        return np.array(matrix, dtype=lisp_core.LispVector.FLOAT_DTYPE).astype(float)        # (as a vector stores it)
 
     def test_minimum_variance_weights_are_the_formula_s(self):
         matrix = self.make_covariance()

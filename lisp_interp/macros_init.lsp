@@ -16,6 +16,7 @@
 ;   (unless test body...)
 ;   (push item variable), (pop variable), (incf variable [n]), (decf variable [n])
 ;   (vector-update! v i op arg...), (vector-increment! v i [n])
+;   (with-vector-precision mode body...)
 ;   (case key-expr ((key...) body...)... [(else body...)])
 ;   (destructuring-bind pattern expression body...)
 ;   (lazy-load file name...)
@@ -485,7 +486,8 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
   `(begin (set! ,variable (- ,variable ,(if (null? n) 1 (car n)))) ,variable))
 
 ;   (vector-update! v i op arg...)
-; Replaces element i of the vector v with (op element arg...), and returns the new value. v and i are evaluated once each,
+; Replaces element i of the vector v with (op element arg...), and returns the new value of the element (as the vector holds
+; it: a single-precision vector rounds it). v and i are evaluated once each,
 ; so (vector-update! (f) (g) + 1) calls f and g once, which writing out (vector-set! (f) (g) (+ (vector-ref (f) (g)) 1)) would
 ; not. op is anything that can be called, written where a function's name would be: +, max, or a (lambda ...).
 ;
@@ -499,10 +501,20 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
     `(let ((,v ,vector) (,i ,index))
        (let ((,new-value (,op (vector-ref ,v ,i) ,@args)))
          (vector-set! ,v ,i ,new-value)
-         ,new-value))))
+         (vector-ref ,v ,i)))))
 
 (defmacro vector-increment! (vector index . n)
   `(vector-update! ,vector ,index + ,(if (null? n) 1 (car n))))
+
+;   (with-vector-precision mode body...)
+; Runs the body with the vectors that it makes in the precision mode, 'double or 'single (see set-vector-precision!), and puts the
+; precision back afterwards, however the body ends:
+;
+;   (with-vector-precision 'single (load-csv "history.csv"))   ; a big table, at half the memory
+(defmacro with-vector-precision (mode . body)
+  (let ((before (gensym)))
+    `(let ((,before (set-vector-precision! ,mode)))
+       (unwind-protect (begin ,@body) (set-vector-precision! ,before)))))
 
 ; (case key-expr clause...)
 ; Evaluates key-expr once, finds the first clause whose keys include its

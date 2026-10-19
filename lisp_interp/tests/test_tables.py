@@ -146,6 +146,7 @@ class TestTables(LispTestCase):
                          '(list (list "lo" \'min "s") (list "hi" \'max "s"))) "hi")', '#("b" ())')
 
     def test_group_by(self):
+        self.use_single_precision()           # (to show the numbers as float32 holds them)
         self.run_lisp("""
           (define g (table-group-by loans "state"
                        (list (list "n" 'count) (list "upb" 'sum "balance")
@@ -575,7 +576,7 @@ class TestSaveVariables(LispTestCase):
         for name in ("v-float", "v-int", "v-bits", "v-text", "v-dates"):            # stored the same way
             symbol = lisp_core.Symbol(name)
             self.assertEqual(self.later[symbol].items.dtype, self.env[symbol].items.dtype, name)
-        self.assertEqual(self.later[lisp_core.Symbol("v-float")].items[2], np.float32(0.1))
+        self.assertEqual(self.later[lisp_core.Symbol("v-float")].items[2], 0.1)
         self.assertEqual(self.run_lisp("(list (hash-table-ref h 'NY) (hash-table-ref h (date 2024 1 1)) (point? p)"
                                        " (point-x p) (row-ref (cadr rows) \"start\") (table? loans) (table? pairs))",
                                        env=self.later),

@@ -75,6 +75,41 @@ class TestCommonLispListFunctions(LispTestCase):
         self.assertShows("(list (gcd) (lcm))", "(0 1)")
         self.assertLispError("(gcd 1.5 3)", "gcd: expected whole numbers, got 1.5")
 
+    def test_vectors_are_made_in_double_precision_unless_single_is_asked_for(self):
+        self.assertShows("(vector-precision)", "double")
+        self.assertEqual(self.run_lisp("(vector 0.1 2)").items.dtype, np.float64)
+        self.assertEqual(self.run_lisp("(vector 3 4)").items.dtype, np.int64)
+        self.run_lisp("(define v (vector 100000000.0 0.0))")
+        self.run_lisp("(vector-increment! v 0 1234.56)")
+        self.assertShows("(vector-ref v 0)", "100001234.56")                  # (single precision would have lost the cents)
+        self.assertShows("(vector-ref (vector 4.01) 0)", "4.01")
+
+    def test_set_vector_precision_changes_the_vectors_made_after_it_and_says_what_it_was(self):
+        self.assertShows("(set-vector-precision! 'single)", "double")
+        self.assertShows("(vector-precision)", "single")
+        self.assertEqual(self.run_lisp("(vector 0.1 2)").items.dtype, np.float32)
+        self.assertEqual(self.run_lisp("(vector 3 4)").items.dtype, np.int32)
+        self.assertEqual(self.run_lisp("(vector 1 0 1)").items.dtype, np.int8)
+        self.assertShows("(vector-ref (vector 4.01) 0)", "4.01")              # (as float32 holds it)
+        self.assertShows("(set-vector-precision! \"double\")", "single")      # (a string will do)
+        self.run_lisp("(define old (vector 1.5))")
+        self.run_lisp("(set-vector-precision! 'single)")
+        self.assertEqual(self.run_lisp("old").items.dtype, np.float64)         # (a vector keeps the precision it was made in)
+        self.assertLispError("(set-vector-precision! 'triple)", "double or single, not triple")
+        self.assertLispError("(set-vector-precision! 5)", "'double or 'single")
+
+    def test_single_precision_rounds_each_update_of_an_element(self):
+        self.run_lisp("(set-vector-precision! 'single) (define v (vector 100000000.0 0.0))")
+        self.assertShows("(vector-increment! v 0 1234.56)", "100001230.0")
+
+    def test_with_vector_precision_puts_the_precision_back(self):
+        self.assertEqual(self.run_lisp("(with-vector-precision 'single (vector 0.5 1.5))").items.dtype, np.float32)
+        self.assertShows("(vector-precision)", "double")
+        self.assertLispError("(with-vector-precision 'single (error \"boom\"))", "boom")
+        self.assertShows("(vector-precision)", "double")
+        self.assertShows("(with-vector-precision 'double (with-vector-precision 'single (vector-precision)))", "single")
+        self.assertShows("(vector-precision)", "double")
+
     def test_vector_update_replaces_an_element_by_an_operation_on_it(self):
         self.run_lisp("(define v (vector 10 20 30))")
         self.assertShows("(vector-update! v 1 + 5)", "25")                 # (the new value)
@@ -1433,11 +1468,13 @@ class TestInterpolate(LispTestCase):
         self.assertShows("(interpolate (vector (date 2026 1 3)) (vector (date 2026 1 1) (date 2026 1 5)) (vector 0 4))", "#(2.0)")
 
     def test_a_smooth_curve_through_the_points_that_never_overshoots_them(self):
-        self.assertShows("(interpolate (vector 6 8 10 12 14) (vector 5 10 15) (vector 0 1 0) :smooth #t)", "#(0.36 0.84 1.0 0.84 0.36)")
-        self.assertShows("(interpolate (vector 1 5 7.5 10 20 40) (vector 5 10 30) (vector 0.5 1 2) :smooth #t)",
-                         "#(0.5 0.5 0.77410716 1.0 1.6535715 2.0)")
+        np.testing.assert_allclose(self.run_lisp("(interpolate (vector 6 8 10 12 14) (vector 5 10 15) (vector 0 1 0) :smooth #t)").items,
+                                   [0.36, 0.84, 1.0, 0.84, 0.36], atol=1e-12)
+        np.testing.assert_allclose(self.run_lisp("(interpolate (vector 1 5 7.5 10 20 40) (vector 5 10 30) (vector 0.5 1 2) :smooth #t)").items,
+                                   [0.5, 0.5, 0.77410714, 1.0, 1.65357143, 2.0], atol=1e-8)
         self.assertShows("(interpolate 10 (vector 5 10 30) (vector 0.5 1 2) :smooth #t)", "1.0")                  # (through the points)
-        self.assertShows("(interpolate (vector 6 7 8 9) (vector 5 10) (vector 1 2) :smooth #t)", "#(1.2 1.4 1.6 1.8)")   # (two points: a line)
+        np.testing.assert_allclose(self.run_lisp("(interpolate (vector 6 7 8 9) (vector 5 10) (vector 1 2) :smooth #t)").items,
+                                   [1.2, 1.4, 1.6, 1.8], atol=1e-12)                                          # (two points: a line)
         self.assertShows("(interpolate (vector 6 7) (vector 5 10) (vector 1 2) :smooth #f)", "#(1.2 1.4)")
         self.assertShows("(interpolate 3 (vector 5) (vector 0.5) :smooth #t)", "0.5")
         self.assertShows("(interpolate (vector 2 7) (vector 0 5 10) (vector 1 1 1) :smooth #t)", "#(1.0 1.0)")         # (a level stretch)

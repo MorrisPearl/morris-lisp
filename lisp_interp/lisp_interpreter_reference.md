@@ -996,7 +996,8 @@ and binds into the current environment:
   evaluated once per call, in an environment where earlier slots are
   already bound (so later defaults can refer to them), if that slot's
   keyword wasn't supplied.
-- `<name>-<slot>` — an accessor, for each slot.
+- `<name>-<slot>` — an accessor, for each slot. A slot is declared once: naming it twice (including once in `:include` and
+  again in the slot list) is an error.
 - `<name>-<slot>-set!` — a setter, for each slot (slots are mutable).
 - `<name>?` — a predicate.
 - `copy-<name>` — a shallow copy: a new, independent struct with the same
@@ -2829,8 +2830,8 @@ as little as 1 byte per element, depending on what's actually in it:
 | What the vector holds | dtype | bytes/element | vs. a Python list |
 |---|---|---|---|
 | Only the integers 0 and/or 1 (a flag column) | `int8` | 1 | 32x smaller |
-| Plain integers, not all 0/1 | `int32` | 4 | 8x smaller |
-| At least one non-integer number | `float32` | 4 | 8x smaller |
+| Plain integers, not all 0/1 | `int64` (`int32` in single precision) | 8 (4) | 4x (8x) smaller |
+| At least one non-integer number | `float64` (`float32` in single precision) | 8 (4) | 4x (8x) smaller |
 | Any string or date (text or date columns, or a mix) | `object` | ~32 | no change |
 
 A vector's dtype is picked automatically the moment it's built, from
@@ -2844,29 +2845,28 @@ pre-allocates a column with `(make-vector n initial-value)` and fills it in
 row by row, long before the real range of values it'll end up holding is
 known.
 
-**Precision: `float32`, not `float64`.** A `float32` element carries about
-7 significant decimal digits — plenty for a residential-mortgage-scale
-dollar figure (comfortably under $1,000,000) or a rate/ratio that only
-ever needs 3-4 significant figures, which is what this default is tuned
-for, but *not* enough to distinguish amounts to the penny once a single
-figure reaches into the tens of millions (e.g. a pool-level balance total).
-A value only ever loses precision once, at the moment it's written into a
-vector — every read and every downstream computation after that (including
-`linear-regression`/`logistic-regression`'s own fitting, which works from
-full-precision numbers pulled back out of the vector) happens at full
-double precision, same as always; the compact storage doesn't compound
-error across computations. A value read back out of a vector (by
-`vector-ref`, `table-row`, ...) comes back as the short decimal the
-`float32` holds — `0.964`, not the `0.9639999866485596` it would widen to.
+**Precision: double by default, single on request.** A `float64` element carries about 15 significant decimal digits: the cents
+of a balance in the billions, and an update in place, such as `vector-increment!` on a running balance, that doesn't lose
+anything it can see. A `float32` element carries about 7 — a dollar figure under $1,000,000 to the cent, but not a
+figure in the tens of millions — at half the memory, which is what a very large table of loans or of prices wants. Vectors are made in
+**double precision** unless you ask for **single**:
 
-If a dataset needs more precision than this default gives — dollar figures
-in the billions, say — the fix is a one-line, interpreter-wide change in
-`lisp_core.py` itself, not something adjustable from Lisp code:
-`FLOAT_DTYPE`/`INT_DTYPE`/`BOOL_INT_DTYPE` are the first three lines of the
-`LispVector` class definition. Changing `FLOAT_DTYPE = np.float32` to
-`np.float64` there reverts every vector in the interpreter to full double
-precision, at the original 4x-smaller-than-a-list memory savings instead of
-8x/32x.
+```lisp
+(vector-precision)                         ; => double
+(set-vector-precision! 'single)            ; => double   -- it says what it was
+(vector-precision)                         ; => single
+(set-vector-precision! 'double)
+(with-vector-precision 'single             ; the body's vectors are single; afterwards it is as it was
+  (vector 1.5 2.5))
+```
+
+`set-vector-precision!` changes the vectors made from then on, and returns the precision that was in force, to put back;
+`with-vector-precision` does that for a body, and puts it back however the body ends. A vector keeps the precision it was made
+with, so one made before the change stays as it was. A single-precision vector holds a number to about 7 digits at the moment it is
+written, and an update in place rounds again each time, so a total built up by many updates can drift: use single only for data
+read and analyzed, not for a running balance. A value read back from a single-precision vector (by `vector-ref`, `table-row`, ...)
+comes back as the short decimal the `float32` holds, `0.964`, not the `0.9639999866485596` it widens to. The examples in
+this manual show numbers to about 7 digits; the interpreter prints a double in full (`0.9611687812379853`).
 
 #### `(vector a b ...)`, `#(a b ...)`
 Builds a vector from its arguments. `#(...)` is reader syntax for a vector
@@ -3062,7 +3062,7 @@ values** (so `vector-mean` is the average of the values that are present).
 In a vector of strings or dates, `'()` plays the same role.
 
 **Results** are stored like any other vector (see "Vectors", above): whole
-numbers stay integers, anything with a fraction is `float32`, and a
+numbers stay integers, anything with a fraction is a decimal (a `float64`, unless single precision is asked for), and a
 comparison gives a vector of `0` and `1`.
 
 #### Arithmetic
@@ -4918,8 +4918,8 @@ saved slot that the struct type no longer has is an error. A table's rows
 ((tranche-f senior) 2)                            ; => 6, from the default
 ```
 
-- A vector comes back stored the same way: float32 numbers stay float32,
-  whole numbers stay whole numbers.
+- A vector comes back stored the same way: whole numbers stay whole numbers, and decimals are stored in the precision in
+  force when the variables are loaded.
 - Values are saved as copies. Two variables that held the same list hold
   two equal lists after loading. A list or struct that holds itself can't
   be saved.

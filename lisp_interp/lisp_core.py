@@ -140,9 +140,13 @@ class LispVector:
     Python list) and so the vector math builtins can use numpy.
 
     DTYPE POLICY: the three *_DTYPE attributes below set how every vector
-    stores its numbers. The defaults suit loan-level mortgage data: float32
-    keeps about 7 significant digits, enough for balances under $1,000,000
-    and for rates. Set FLOAT_DTYPE = np.float64 if you need more precision.
+    stores its numbers, and set_vector_precision() changes them. By default
+    (double precision) a vector with a non-integer number is float64 and one
+    of whole numbers int64: about 15 significant digits, enough for the cents
+    of a balance in the billions. Single precision (float32, int32) keeps
+    about 7 significant digits, which suits loan-level data with a great many
+    rows, where a vector of a million numbers takes 4 MB and not 8. It applies
+    to the vectors made afterwards; a vector keeps the dtype it was made with.
     A vector holding strings or dates is stored as Python objects.
 
     Two rules for code that uses `items`:
@@ -154,8 +158,8 @@ class LispVector:
       2. A numpy slice is a view, not a copy. The constructor always copies
          what it's given, so no two vectors ever share storage."""
 
-    FLOAT_DTYPE = np.float32     # any vector containing a non-integer number
-    INT_DTYPE = np.int32         # an all-integer vector, not all 0/1
+    FLOAT_DTYPE = np.float64     # any vector containing a non-integer number
+    INT_DTYPE = np.int64         # an all-integer vector, not all 0/1
     BOOL_INT_DTYPE = np.int8     # an all-integer vector of ONLY 0 and/or 1
 
     def __init__(self, items):
@@ -187,6 +191,27 @@ class LispVector:
 
     def __repr__(self):
         return to_string(self)
+
+
+VECTOR_PRECISIONS = {"double": (np.float64, np.int64), "single": (np.float32, np.int32)}
+
+
+def vector_precision():
+    """The name of the precision new vectors are made in: "double" or "single"."""
+    for name, (float_dtype, _) in VECTOR_PRECISIONS.items():
+        if LispVector.FLOAT_DTYPE == float_dtype:
+            return name
+    return "double"
+
+
+def set_vector_precision(name):
+    """Make the vectors made from now on "double" (float64, int64) or "single" (float32, int32) precision. Returns
+    the name of the precision that was in force."""
+    if name not in VECTOR_PRECISIONS:
+        raise LispError("the precision of a vector is double or single, not %s" % (name,))
+    before = vector_precision()
+    LispVector.FLOAT_DTYPE, LispVector.INT_DTYPE = VECTOR_PRECISIONS[name]
+    return before
 
 
 def _lisp_scalar(x):
@@ -1391,6 +1416,12 @@ def define_struct(args, env):
         else:
             own_slots.append((spec, None))
         p = p.cdr
+    seen = set()
+    for slot_name, _ in own_slots:
+        if slot_name in seen:
+            raise LispError("defstruct: the slot %s of %s is given twice -- a slot is declared once (an inherited slot's "
+                            "default is changed in :include or by naming it, not both)" % (slot_name, type_name))
+        seen.add(slot_name)
     struct_type = LispStructType(type_name, own_slots, parent=parent_type, env=env)
     slots = struct_type.slots
     env[Symbol("%%struct-type-%s" % type_name)] = struct_type  # for a later defstruct's :include

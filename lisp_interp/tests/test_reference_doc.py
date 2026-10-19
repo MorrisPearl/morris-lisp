@@ -4,6 +4,7 @@ programs) must still be what the interpreter gives; and every link between and w
 go somewhere. support.py says how to run them."""
 
 import importlib.util
+import math
 
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
 
@@ -116,11 +117,26 @@ def _blocks_by_section(text):
     return found
 
 
+_DECIMAL = re.compile(r"-?\d+\.\d+(?:e[-+]?\d+)?")
+
+
+def _same_up_to_digits(actual, documented):
+    """Whether two printed values are the same but for the last digits of their decimal numbers: the manual shows 0.96116877
+    where the interpreter, in double precision, prints 0.9611687812379853. Everything else (the whole numbers, the strings, the
+    shape) has to be the same, and each decimal is to within 1 part in 100,000."""
+    a, b = _DECIMAL.findall(actual), _DECIMAL.findall(documented)
+    if not a or len(a) != len(b) or _DECIMAL.sub("#", actual) != _DECIMAL.sub("#", documented):
+        return False
+    return all(math.isclose(float(x), float(y), rel_tol=1e-5, abs_tol=1e-9) for x, y in zip(a, b))
+
+
 def _doc_value_matches(actual, documented):
-    """Exact, or exact followed by explanatory prose ('3  -- because ...')."""
+    """Exact, or exact followed by explanatory prose ('3  -- because ...'), or the same to the digits shown."""
     if documented == actual:
         return True
-    return documented.startswith(actual) and documented[len(actual):len(actual) + 1] in (" ", ",", "\t")
+    if documented.startswith(actual) and documented[len(actual):len(actual) + 1] in (" ", ",", "\t"):
+        return True
+    return _same_up_to_digits(actual, documented)
 
 
 def _fresh_env():

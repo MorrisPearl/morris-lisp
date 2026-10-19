@@ -799,6 +799,14 @@ class TestStructInheritance(LispTestCase):
     def test_including_an_undefined_parent_is_an_error(self):
         self.assertLispError("(defstruct (child (:include nonexistent)) a)", "not a known struct type")
 
+    def test_a_slot_declared_twice_is_an_error(self):
+        self.assertLispError("(defstruct coll rate (balance 100) balance)", "the slot balance of coll is given twice")
+        self.run_lisp("(defstruct animal (name 1) (legs 4))")
+        self.assertLispError("(defstruct (bird (:include animal (legs 2))) (legs 3))", "the slot legs of bird is given twice")
+        self.assertLispError("(defstruct (bird (:include animal (legs 2) (legs 3))))", "the slot legs of bird is given twice")
+        self.run_lisp("(defstruct (spider (:include animal)) (legs 8))")           # (naming an inherited slot once is allowed)
+        self.assertShows("(spider-legs (make-spider))", "8")
+
     def test_unsupported_defstruct_option_is_an_error(self):
         self.assertLispError("(defstruct (child (:bogus 1)) a)", "unsupported option")
 

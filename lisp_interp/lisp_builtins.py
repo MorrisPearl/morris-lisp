@@ -32,7 +32,7 @@ from lisp_core import (
     get_verbose_level, is_true, keyword_options,
     list_to_pairs, pairs_to_list, parse, pretty_print_string,
     reconstruct_macro_source, reconstruct_procedure_source, run_file, seval,
-    set_verbose_level, throw_to, to_display_string, to_string, parse_date_text,
+    set_verbose_level, set_vector_precision, throw_to, to_display_string, to_string, parse_date_text, vector_precision,
 )
 import lisp_alpha_vantage
 import lisp_bea
@@ -1443,7 +1443,23 @@ def vectors_map(f, vec_list, default=_NO_DEFAULT):
     return LispVector(result)
 
 
+def lisp_vector_precision():
+    """(vector-precision) -- double or single: the precision the vectors made now are stored in. See set-vector-precision!."""
+    return Symbol(vector_precision())
+
+
+def lisp_set_vector_precision(mode):
+    """(set-vector-precision! 'double) or (set-vector-precision! 'single) -- the precision of the vectors made from now on:
+    double is float64 (about 15 digits, the default) and single float32 (about 7 digits, half the memory). A vector made
+    before keeps the precision it was made with. Returns the precision that was in force, to put back."""
+    if not isinstance(mode, (Symbol, LispString)):
+        raise LispError("set-vector-precision!: the precision is 'double or 'single, not %s" % (_brief(mode),))
+    return Symbol(set_vector_precision(str(mode)))
+
+
 VECTOR_BUILTINS = {
+    "vector-precision": lisp_vector_precision,
+    "set-vector-precision!": lisp_set_vector_precision,
     "vector": make_vector_fn,
     "make-vector": make_vector,
     "vector-ref": vector_ref,

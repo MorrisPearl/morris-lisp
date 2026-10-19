@@ -1804,6 +1804,7 @@ class TestGoogleSheets(LispTestCase):
         self.assertEqual(values[3]["data"][1]["values"][-1][0], "total")
 
     def test_values_of_every_kind(self):
+        self.use_single_precision()           # (the share column is float32: 0.1 must come out as 0.1)
         self.save_a_sign_in()
         self.env[lisp_core.Symbol("t")] = lisp_core.list_to_pairs([
             lisp_core.Pair(lisp_core.LispString("when"), lisp_core.LispVector([lisp_core.LispDate(2024, 1, 2),

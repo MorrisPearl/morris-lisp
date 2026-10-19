@@ -503,7 +503,7 @@ class TestAgainstAPlainCalculation(OptionSpreadsTestCase):
                   stock_price=104.0):
         """{(symbols of the position's options): (strikes, prices, cost, max-loss, max-profit, worth, profit, ratio,
         breakeven-1, breakeven-2)}, as the definition gives them."""
-        f32 = lambda x: float(np.float32(x))
+        f32 = lambda x: float(lisp_core.LispVector.FLOAT_DTYPE(x))             # (as a vector stores it)
         zero = lambda x: 0 if x != x else x
         counts = lambda r: zero(r["open_interest"]) >= min_oi and zero(r["volume"]) >= min_volume
         usable = [r for r in rows if r["bid"] > 0 and r["ask"] == r["ask"] and r["ask"] > 0 and counts(r)]
