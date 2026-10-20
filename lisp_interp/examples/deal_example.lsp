@@ -38,3 +38,27 @@
 (display "\nThe first months of the slow deal, the principal each node is paid:\n")
 (display-table (table-head (deal-principal-table slow) 3)
                '(("POOL" ",.0f") ("A" ",.0f") ("B" ",.0f") ("A1" ",.0f") ("A2" ",.0f") ("B1" ",.0f") ("B2" ",.0f")))
+
+; --- A PAC and its companion ---
+; The PAC is as big as the pool pays at both of two speeds (month by month the least of the two, added up), and is paid on the
+; schedule of that least: it is paid its schedule first, then the companion is paid what is over, then the PAC the rest. At
+; any speed between the two the PAC is paid exactly on schedule, and the companion takes up the difference.
+(define (build-pac psa)
+  (let* ((pool (collateral-from-psa "POOL" 250000000 6.25 :term 360 :psa psa))
+         (deal (start-deal (format "PAC {}/{}" 100 300) pool)))
+    (deal-pac! deal "POOL" "PAC" "COMP" 100 300)         ; the two speeds: 100% and 300% PSA
+    (deal-run! deal)
+    deal))
+
+(define (pac-balance-at deal month) (vector-ref (node-balance (get-node deal "PAC")) month))
+(define (pac-schedule-at deal month) (vector-ref (pac-split-schedule (node-split (get-node deal "POOL"))) month))
+
+(define pac-deal (build-pac 100))
+(display (format "\nThe PAC is {:,.0f} of the pool's 250,000,000, and the companion {:,.0f}.\n"
+                 (pac-balance-at pac-deal 0) (vector-ref (node-balance (get-node pac-deal "COMP")) 0)))
+(display "                         at month 60, the PAC owes\n")
+(display "Speed (PSA)  companion paid off    by schedule     in fact\n")
+(dolist (psa '(50 100 200 300 600))
+  (let ((deal (build-pac psa)))
+    (display (format "{:>10}  {:>17}  {:>13,.0f}  {:>11,.0f}\n" psa (month-paid-off deal "COMP")
+                     (pac-schedule-at deal 60) (pac-balance-at deal 60)))))

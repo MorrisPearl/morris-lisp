@@ -161,7 +161,7 @@ files in `examples/` and `lib/` from anywhere:
 | `map_example.lsp` | maps colored by a value | Census and BEA keys |
 | `plot_chart_example.lsp` | `plot-chart`: lines, symbols, bars, categories, two axes | nothing |
 | `report_example.lsp` | a table written as a text report with control breaks: mortgages with subtotals by zip code and state and a grand total, on pages; a letter to each client | nothing |
-| `deal_example.lsp` | a structured deal as a tree: a pool of mortgages divided by sequential and pro-rata splits into bonds, run at two prepayment speeds | nothing |
+| `deal_example.lsp` | a structured deal as a tree: a pool of mortgages divided by sequential and pro-rata splits into bonds, run at two prepayment speeds; and a PAC with its companion | nothing |
 
 ## Techniques, and where to see them
 
@@ -1432,7 +1432,9 @@ month, is the root, and **splits** divide the principal among tranches, which ca
 Here the pool goes to two tranches in order (`deal-sequential!`), the first to two bonds in order, and the second to two in proportion
 to what each is owed (`deal-pro-rata!`). The program builds the deal for a slow and for a fast prepayment speed, runs it
 (`deal-run!`), checks that the principal adds up in every month (`deal-check`), and shows the month each bond is paid off and the
-first months' principal in a table. The library manual's [Structured
+first months' principal in a table. A second part divides a pool into a PAC and its companion (`deal-pac!`), sized from the pool at
+100% and 300% PSA, and shows what the PAC owes after five years by schedule and in fact at five speeds: exactly on schedule at any
+speed between the two, and off it outside. The library manual's [Structured
 deals](lisp_library_reference.md#structured-deals-a-tree-of-tranches) says what each part is and how to make another kind of split.
 
 ## Writing an example

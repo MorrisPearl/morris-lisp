@@ -152,6 +152,177 @@ class TestSplits(DealTestCase):
         np.testing.assert_allclose(self.principal("A"), [30, 20, 0, 0])               # (paid as a sequential split pays)
 
 
+class TestThePac(DealTestCase):
+    """A PAC and its companion: sized from the collateral at two speeds, and paid on the schedule that gives."""
+
+    def a_hand_made_pac(self, principal, size, schedule):
+        """A pool that pays this principal, and a PAC of this size on this schedule (the balances at the start of each month), with
+        the companion for the rest: the schedule is given, not worked out."""
+        total = sum(principal)
+        owed = [total - sum(principal[:t]) for t in range(len(principal) + 1)]
+        numbers = lambda values: " ".join(repr(float(v)) for v in values)
+        self.run_lisp('(define pool (make-collateral :name "POOL" :balance (vector %s) :principal (vector %s)))'
+                      % (numbers(owed), numbers(principal)))
+        self.run_lisp('(define deal (start-deal "demo" pool))')
+        self.run_lisp('(deal-add-tranche! deal "PAC" %r) (deal-add-tranche! deal "COMP" %r)' % (float(size), float(total - size)))
+        self.run_lisp('''(deal-add-split! deal "POOL" (make-pac-split :children '("PAC" "COMP") :low-psa 100 :high-psa 300
+                          :schedule (vector %s) :calculate-sizes no-sizes))''' % numbers(schedule))
+        self.run_lisp("(deal-run! deal)")
+
+    def test_the_pac_is_paid_its_schedule_and_the_companion_what_is_over(self):
+        self.a_hand_made_pac([20, 40, 10, 50], 60, [60, 40, 20, 10, 0])
+        np.testing.assert_allclose(self.principal("PAC"), [20, 20, 10, 10])
+        np.testing.assert_allclose(self.principal("COMP"), [0, 20, 0, 40])
+        np.testing.assert_allclose(self.balance("PAC"), [60, 40, 20, 10, 0])
+        self.assertShows("(deal-check deal)", "#t")
+
+    def test_the_pac_is_paid_more_than_its_schedule_when_the_companion_is_paid_off(self):
+        self.a_hand_made_pac([60, 40, 20], 100, [100, 70, 40, 0])
+        np.testing.assert_allclose(self.principal("COMP"), [20, 0, 0])           # (it is only 20, and is paid first)
+        np.testing.assert_allclose(self.principal("PAC"), [40, 40, 20])         # (30, and then the 10 over; then it is ahead of schedule)
+        np.testing.assert_allclose(self.balance("PAC"), [100, 60, 20, 0])
+        self.assertShows("(deal-check deal)", "#t")
+
+    def test_a_pac_that_is_behind_its_schedule_catches_up_before_the_companion_is_paid(self):
+        self.a_hand_made_pac([5, 5, 50, 20], 50, [50, 30, 10, 0, 0])             # (the pool pays less than the schedule at first)
+        np.testing.assert_allclose(self.principal("PAC"), [5, 5, 40, 0])         # (month 3: 20 to be on schedule, 10 more to catch up)
+        np.testing.assert_allclose(self.principal("COMP"), [0, 0, 10, 20])
+        self.assertShows("(deal-check deal)", "#t")
+
+    def test_pay_child_will_not_pay_a_child_below_the_floor_it_is_given(self):
+        self.a_pool_paying(30.0, 4)
+        self.run_lisp('(deal-add-tranche! deal "A" 50.0)')
+        self.assertShows('(pay-child! (get-node deal "A") 0 30.0 40.0)', "20.0")      # (only 10 of it: down to 40)
+        self.assertShows('(vector-ref (node-principal (get-node deal "A")) 0)', "10.0")
+        self.assertShows('(pay-child! (get-node deal "A") 0 30.0 45.0)', "30.0")      # (it is at 40 now, below the floor)
+        self.assertShows('(pay-child! (get-node deal "A") 0 100.0)', "60.0")          # (no floor: it is paid off, with 40 to go)
+
+    # --- sized from the collateral ---
+
+    def pool_principal(self, psa, balance=100000000.0, rate=6.5, term=360, age=0):
+        flows = self.run_lisp("(pool-cash-flows %r %r %d %d %d)" % (balance, rate, term, age, psa))
+        return np.array(lisp_core.pairs_to_list(flows)[0].items)
+
+    def a_pac_deal(self, psa, low=100, high=300, age=0):
+        self.run_lisp('''(define pool (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :age %d :psa %d))
+                         (define deal (start-deal "pac" pool))
+                         (deal-pac! deal "POOL" "PAC" "COMP" %d %d)''' % (age, psa, low, high))
+
+    def schedule(self):
+        return self.vector('(pac-split-schedule (node-split (get-node deal "POOL")))')
+
+    def test_the_pac_is_as_big_as_the_least_the_pool_pays_at_the_two_speeds_added_up(self):
+        self.a_pac_deal(200)
+        least = np.minimum(self.pool_principal(100), self.pool_principal(300))
+        self.assertAlmostEqual(self.balance("PAC")[0], least.sum(), places=4)
+        self.assertAlmostEqual(self.balance("COMP")[0], 100000000.0 - least.sum(), places=4)
+        self.assertGreater(least.sum(), 0.5e8)                                    # (a good deal of the pool)
+        self.assertLess(least.sum(), 1e8)
+
+    def test_the_schedule_is_the_balance_the_pac_has_after_each_months_least(self):
+        self.a_pac_deal(200)
+        schedule = self.schedule()
+        least = np.minimum(self.pool_principal(100), self.pool_principal(300))
+        self.assertEqual(len(schedule), 361)
+        self.assertAlmostEqual(schedule[0], least.sum(), places=4)
+        np.testing.assert_allclose(schedule[1:], schedule[:-1] - least, atol=1e-6)
+        self.assertAlmostEqual(schedule[-1], 0.0, places=4)
+
+    def test_the_sizes_follow_the_age_of_the_loans(self):
+        self.a_pac_deal(200, age=36)
+        least = np.minimum(self.pool_principal(100, age=36), self.pool_principal(300, age=36))
+        self.assertAlmostEqual(self.balance("PAC")[0], least.sum(), places=4)
+        self.assertEqual(len(self.balance("PAC")), 325)                           # 360 - 36 months, and one
+
+    def test_at_any_speed_between_the_two_the_pac_is_on_schedule_every_month(self):
+        for psa in (100, 150, 200, 250, 300):
+            with self.subTest(psa=psa):
+                self.a_pac_deal(psa)
+                self.run_lisp("(deal-run! deal)")
+                np.testing.assert_allclose(self.balance("PAC"), self.schedule(), atol=1e-5)
+                self.assertShows("(deal-check deal)", "#t")
+                self.assertAlmostEqual(self.balance("COMP")[-1], 0.0, places=4)
+
+    def test_faster_than_the_bands_the_pac_gets_ahead_of_its_schedule_and_slower_it_falls_behind(self):
+        self.a_pac_deal(800)
+        schedule = self.schedule()
+        self.run_lisp("(deal-run! deal)")
+        self.assertTrue((self.balance("PAC") <= schedule + 1e-5).all())
+        self.assertTrue((self.balance("PAC") < schedule - 1.0).any())            # (ahead of it, once the companion is paid off)
+        self.assertShows("(deal-check deal)", "#t")
+        self.a_pac_deal(40)
+        schedule = self.schedule()
+        self.run_lisp("(deal-run! deal)")
+        self.assertGreater(self.balance("PAC")[24], schedule[24] + 1.0)          # (behind it)
+        self.assertShows("(deal-check deal)", "#t")
+        self.assertAlmostEqual(self.balance("PAC")[-1], 0.0, places=4)           # (and the pool pays it all in the end)
+
+    def test_a_pac_and_its_companion_can_be_divided_again(self):
+        self.a_pac_deal(200)
+        size = self.balance("PAC")[0]
+        self.run_lisp('''(deal-sequential! deal "PAC" (list (list "P1" 20000000.0) (list "P2" (- %r 20000000.0))))
+                         (deal-pro-rata! deal "COMP" (list (list "C1" 10000000.0) (list "C2" (- %r 10000000.0))))
+                         (deal-run! deal)''' % (float(size), 1e8 - float(size)))
+        self.assertShows("(deal-check deal)", "#t")
+        leaves = sum(self.principal(n) for n in ("P1", "P2", "C1", "C2"))
+        np.testing.assert_allclose(leaves, self.principal("POOL"), rtol=1e-12, atol=1e-5)
+
+    # --- what it won't take ---
+
+    def test_a_pac_needs_the_collateral_two_speeds_and_names_of_its_own(self):
+        self.a_pac_deal(200)
+        self.assertLispError('(deal-pac! deal "POOL" "X" "Y" 100 300)', "POOL already has a split")
+        self.assertLispError('(deal-pac! deal "PAC" "X" "Y" 100 300)', "a PAC split divides the collateral")
+        self.run_lisp('(define pool (collateral-from-psa "POOL" 100.0 6.5)) (define deal (start-deal "d" pool))')
+        self.assertLispError('(deal-pac! deal "POOL" "A" "A" 100 300)', "different names")
+        self.assertLispError('(deal-pac! deal "POOL" "A" "POOL" 100 300)', "already has a node called POOL")
+        self.assertLispError('(deal-pac! deal "POOL" "A" "B" 300 100)', "speeds must be from the lower to the higher")
+        self.assertLispError('(deal-pac! deal "POOL" "A" "B" 0 100)', "speeds must be from the lower to the higher")
+        self.assertShows("(deal-names deal)", '("POOL")')                               # (nothing was added)
+        self.run_lisp('(define hand (make-collateral :name "H" :balance (vector 10.0 0.0) :principal (vector 10.0)))'
+                      ' (define deal (start-deal "d" hand))')
+        self.assertLispError('(deal-pac! deal "H" "A" "B" 100 300)', "made by collateral-from-psa")
+
+    def test_a_pac_split_has_two_children_the_pac_and_the_companion(self):
+        self.run_lisp('(define pool (collateral-from-psa "POOL" 100.0 6.5)) (define deal (start-deal "d" pool))')
+        self.run_lisp('(deal-add-tranche! deal "A" 0.0) (deal-add-tranche! deal "B" 0.0) (deal-add-tranche! deal "C" 0.0)')
+        self.assertLispError("""(deal-add-split! deal "POOL" (make-pac-split :children '("A" "B" "C") :low-psa 100 :high-psa 300))""",
+                             "has two children: the PAC and the companion")
+
+
+class TestSizesAreWorkedOutBySplits(DealTestCase):
+    """Every split has a calculate-sizes: a sequential split works nothing out, and another kind can."""
+
+    def test_a_split_that_works_out_the_sizes_of_its_children_sets_their_balances(self):
+        self.a_pool_paying(30.0, 4)
+        self.run_lisp("""
+          (define (half-and-half split deal parent)
+            (let ((half (/ (vector-ref (node-balance parent) 0) 2)))
+              (list half half)))
+          (defstruct (halves-split (:include sequential-split)) (calculate-sizes half-and-half))
+          (deal-add-tranche! deal "A" 0.0)
+          (deal-add-tranche! deal "B" 0.0)
+          (deal-add-split! deal "POOL" (make-halves-split :children '("A" "B")))
+          (deal-run! deal)""")
+        np.testing.assert_allclose(self.balance("A"), [60, 30, 0, 0, 0])
+        np.testing.assert_allclose(self.balance("B"), [60, 60, 60, 30, 0])
+        self.assertShows("(deal-check deal)", "#t")
+
+    def test_the_sizes_a_split_works_out_must_add_up_to_the_parent(self):
+        self.a_pool_paying(30.0, 4)
+        self.run_lisp("""
+          (define (too-small split deal parent) (list 10.0 10.0))
+          (defstruct (small-split (:include sequential-split)) (calculate-sizes too-small))
+          (deal-add-tranche! deal "A" 0.0)
+          (deal-add-tranche! deal "B" 0.0)""")
+        self.assertLispError("""(deal-add-split! deal "POOL" (make-small-split :children '("A" "B")))""", "add up to 20.0, and POOL has 120.0")
+
+    def test_a_sequential_split_leaves_the_sizes_as_they_were_made(self):
+        self.a_pool_paying(30.0, 4)
+        self.run_lisp("""(define split (make-sequential-split :children '("A" "B")))""")
+        self.assertShows("(call-method split-calculate-sizes split deal pool)", "()")
+
+
 class TestARandomDeal(DealTestCase):
     """A pool of mortgages and a deal of several levels: whatever the speed, the rules of a deal hold."""
 

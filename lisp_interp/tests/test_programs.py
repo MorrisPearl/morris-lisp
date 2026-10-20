@@ -1537,7 +1537,9 @@ class TestExampleScripts(unittest.TestCase):
         out = self.results["deal_example.lsp"].stdout
         for expected in ["Demo, 100% PSA: the principal adds up in every month: #t", "A1  is paid off in month  57",
                          "A2  is paid off in month 148", "Demo, 400% PSA: the principal adds up in every month: #t",
-                         "A1  is paid off in month  27", "237,210", "B1  is paid off in month 360"]:
+                         "A1  is paid off in month  27", "237,210", "B1  is paid off in month 360",
+                         "The PAC is 162,827,265 of the pool's 250,000,000", "300                101     98,475,185   98,475,185",
+                         "600                 33     98,475,185   46,471,481", "50                360     98,475,185  121,287,872"]:
             self.assertIn(expected, out)
 
     def test_the_parser_example_reads_a_calculator_and_a_settings_file(self):

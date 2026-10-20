@@ -6833,9 +6833,12 @@ same three vectors as a list. To use your own cash flows, make the node yourself
 - `(deal-sequential! deal parent-name children)` and `(deal-pro-rata! deal parent-name children)` add the `children`, a list of
   `(name balance)`, as tranches under the parent, and divide the parent's principal among them in that way. The children's balances
   must add up to the parent's. Nothing is added if there is something wrong.
+- `(deal-pac! deal parent-name pac-name companion-name low-psa high-psa)` divides the collateral into a PAC and its companion: see
+  "A PAC and its companion", below.
 - `(deal-add-tranche! deal name balance)` and `(deal-add-split! deal parent-name split)` are what these do: add a tranche, and
   divide a node by a split among the tranches it names, which are already in the deal. `(make-sequential-split :children names)`
-  and `(make-pro-rata-split :children names)` make the splits.
+  and `(make-pro-rata-split :children names)` make the splits. If the split works out the sizes of its children (see
+  `calculate-sizes`, below), `deal-add-split!` sets their balances from that.
 - `(get-node deal name)` is the node called `name`; `(deal-names deal)` are all the names, in the order they were added;
   `(deal-leaves deal)` are the bonds.
 
@@ -6861,12 +6864,52 @@ equal if they are within `deal-tolerance`, a billionth, of the pool's balance.) 
 
 `A` is paid the 30 of month 1, and 20 of month 2, when it is paid off; `B` gets the other 10 of month 2, and then everything.
 
+#### A PAC and its companion
+`(deal-pac! deal "POOL" "PAC" "COMP" 100 300)` divides the collateral into a PAC and its companion. Its **size** is worked out from
+the collateral at the two prepayment speeds, 100% and 300% PSA: the pool is run at each speed, the least of the two principal
+payments is taken month by month, and the PAC is the sum of those. That is what the pool pays at *both* speeds, so it can promise
+it. The companion is the rest of the pool. The PAC's **schedule**, `(pac-split-schedule split)`, is the balance it is to have at the
+start of each month: its size, less the least of each month so far.
+
+Each month the PAC split pays, with the principal the pool paid:
+1. the PAC, like a sequential split, but only **down to its scheduled balance**: as much as it takes to bring its balance to what the
+   schedule says it is to be after this month, not the whole of what it owes;
+2. the companion, like a sequential split, what is left; and
+3. the PAC, like a sequential split, what is then left.
+
+So at any speed between the two the PAC is paid exactly its schedule, and the companion takes up the difference. If the pool pays
+less than the schedule, the PAC is behind and is paid first to catch up. If more, the companion is paid off sooner, and then the PAC
+takes what is over, ahead of its schedule. A PAC split divides the collateral (made by `collateral-from-psa`, which knows the rate
+and term it needs to run at the two speeds), and its two children are the PAC and the companion, in that order. The PAC and the
+companion can be divided again.
+
+```lisp
+(define pool (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa 200))
+(define deal (start-deal "PAC demo" pool))
+(deal-pac! deal "POOL" "PAC" "COMP" 100 300)
+(deal-run! deal)
+(format "{:.1f}%" (* 100 (/ (vector-ref (node-balance (get-node deal "PAC")) 0) 1e8)))   ; => "64.9%"
+(vector-max (abs (- (node-balance (get-node deal "PAC")) (pac-split-schedule (node-split pool)))))   ; => 0.0
+(deal-check deal)                                                                         ; => #t
+```
+
+At 200% PSA, between the two speeds, the PAC is never off its schedule. (`deal-pac!` is made of `pac-calculate-sizes`, which works out
+the size and the schedule, and `pac-pay-principal`, the rule above: the two functions in the slots of `pac-split`.)
+
 #### Another kind of split
-A split is a struct, and the function in its `pay-principal` slot is what makes a kind of split what it is.
+A split is a struct with two functions in its slots, which are what make a kind of split what it is.
+
 `(pay-principal split deal parent t)` divides the principal that `parent` was paid in month `t` among the split's children, by
-calling `(pay-child! child t cash)` for each one it pays, which pays the child what it is still owed (`(node-owed child t)`) up to the
-`cash`, and returns the cash left. It does not call the splits of the children: `deal-run!` walks the tree, so each kind of
-split does only its own part. A new kind includes `split`, or one of the kinds there are, and puts its function in the slot;
+calling `(pay-child! child t cash [floor])` for each one it pays, which pays the child what it is still owed (`(node-owed child t)`)
+up to the `cash`, but not so that it owes less than the `floor` (0 unless given, so that it is paid off), and returns the cash left.
+It does not call the splits of the children: `deal-run!` walks the tree, so each kind of split does only its own part.
+
+`(calculate-sizes split deal parent)` works out how big the children are, as a list of their starting balances in the order of the
+children, or `'()` if it is not for the split to say, which is what a sequential or a pro-rata split does: the sizes are as the children
+were made. `deal-add-split!` calls it, sets the balances, and checks that they add up to the parent's. A PAC split sizes its PAC
+from the collateral; a floater and inverse floater split will size them from a cap.
+
+A new kind includes `split`, or one of the kinds there are, and puts its functions in the slots;
 `call-super` calls the function of the kind it extends:
 
 ```lisp
