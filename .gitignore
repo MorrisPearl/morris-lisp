@@ -15,22 +15,9 @@ lisp_interp/notebooks/.virtual_documents/
 */spy_holdings.csv
 */spy_holdings.xlsx
 	
-lisp_interp/**/prepayment_incentive_curve.png
-lisp_interp/**/regression_kinds.png
-lisp_interp/**/regression_more.png
-lisp_interp/**/call_spread_profit.png
-lisp_interp/**/option_spreads_profit.png
-lisp_interp/**/option_spreads_compared.png
-lisp_interp/**/option_positions_profit.png
-lisp_interp/**/option_positions_hedged.png
-lisp_interp/**/option_payoff_condor.png
-lisp_interp/**/option_payoffs_*.png
-lisp_interp/**/yield_curve_zero.png
-lisp_interp/**/yield_curve_forward.png
-lisp_interp/**/note_option_smile.png
-lisp_interp/**/rate_model_paths.png
-lisp_interp/**/rate_paths_curve.png
-lisp_interp/**/rate_paths_fan.png
+lisp_interp/**/*.png
+# we don't need any .png output in the repository.
+
 lisp_interp/**/mortgage_report.txt
 lisp_interp/**/mortgage_report.html
 lisp_interp/**/mortgage_report.md
