@@ -1492,6 +1492,7 @@ class TestExampleScripts(unittest.TestCase):
         "sql_example.lsp",
         "parser_example.lsp",
         "option_payoffs_example.lsp",
+        "deal_example.lsp",
     ]
     SLOW_EXAMPLES = [
         "dolist_vectors_map_example.lsp",
@@ -1530,6 +1531,13 @@ class TestExampleScripts(unittest.TestCase):
         for expected in ["9 rows added", "West           4  1425000.0", "AK         0", "2 rows changed", "1 row deleted",
                          "sql: loans.state can't be used here",
                          "750.0   15666  0.16380147836078132", "(5 rows)", "#(0.1561 0.1594 0.1638 0.1609)", "800.0  0.16094742424242423"]:
+            self.assertIn(expected, out)
+
+    def test_the_deal_example_pays_the_bonds_off_in_order_and_faster_when_prepayments_are_faster(self):
+        out = self.results["deal_example.lsp"].stdout
+        for expected in ["Demo, 100% PSA: the principal adds up in every month: #t", "A1  is paid off in month  57",
+                         "A2  is paid off in month 148", "Demo, 400% PSA: the principal adds up in every month: #t",
+                         "A1  is paid off in month  27", "237,210", "B1  is paid off in month 360"]:
             self.assertIn(expected, out)
 
     def test_the_parser_example_reads_a_calculator_and_a_settings_file(self):

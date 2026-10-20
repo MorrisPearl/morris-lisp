@@ -63,6 +63,7 @@ that use all this are described in
   - [Call spreads](#call-spreads)
   - [Option spreads](#option-spreads)
   - [Portfolios](#portfolios)
+  - [Structured deals (a tree of tranches)](#structured-deals-a-tree-of-tranches)
 
 ## Where things are
 
@@ -6795,3 +6796,84 @@ up, paths of a year that grow at the interest rate, and the value of a
        (iota 1000)))
 (vector-quantile (list->vector ends) #(0.05 0.5 0.95))
 ```
+
+### Structured deals (a tree of tranches)
+
+(In `lib/deal.lsp`, loaded when you call one of its functions.) A deal is modeled as a **tree**. The root is the collateral, a
+pool of mortgages that pays principal each month. A **split** divides what a node was paid among its children, in order
+(*sequential*) or in proportion to what each is still owed (*pro-rata*), and a child can be divided again, to any depth, until the
+leaves, which are the bonds that trade:
+
+```
+POOL (the collateral) -- sequential --> A -- sequential --> A1, A2
+                                        B -- pro-rata ----> B1, B2
+```
+
+This is the principal of the deal. The interest and the losses go through the same tree by rules of their own, and are to come.
+Everything is in **double precision**: `start-deal` refuses single (see `set-vector-precision!`), because a bond of hundreds of
+millions has to keep its cents.
+
+#### The nodes
+A **node** (`defstruct node`) has a `name`; a `balance` vector, one element a month and one more, where `balance[t]` is what the node
+owes at the start of month `t` (0 is the start of the deal); a `principal` vector, where `principal[t]` is what it is paid in month
+`t`, by the pool or by its parent's split; and a `split`, the one that divides it among its children, if it has one. A
+`collateral` and a `tranche` include `node`, so `node-balance`, `node-principal` and `node-split` work on either. A tranche with
+no split is a **bond**, a leaf; one with a split passes on what it is paid.
+
+#### `(collateral-from-psa name balance rate [:term 360] [:age 0] [:psa 100])`
+The collateral node for a pool of level-pay mortgages with this balance, this annual `rate` in percent, and a `term` and `age` in
+months, prepaying at `psa` percent of the PSA curve (100 is the standard curve, 0 none; see `prepayment_model.lsp`). It has its
+cash flows worked out, for the `term - age` months to run: the principal and interest it pays, and its balance, as
+`collateral-principal`, `collateral-interest` and `collateral-balance`. `(pool-cash-flows balance rate term age psa)` gives the
+same three vectors as a list. To use your own cash flows, make the node yourself:
+`(make-collateral :name "POOL" :balance balances :principal principals)`.
+
+#### Building a deal
+- `(start-deal name collateral)` makes a deal whose root is the collateral.
+- `(deal-sequential! deal parent-name children)` and `(deal-pro-rata! deal parent-name children)` add the `children`, a list of
+  `(name balance)`, as tranches under the parent, and divide the parent's principal among them in that way. The children's balances
+  must add up to the parent's. Nothing is added if there is something wrong.
+- `(deal-add-tranche! deal name balance)` and `(deal-add-split! deal parent-name split)` are what these do: add a tranche, and
+  divide a node by a split among the tranches it names, which are already in the deal. `(make-sequential-split :children names)`
+  and `(make-pro-rata-split :children names)` make the splits.
+- `(get-node deal name)` is the node called `name`; `(deal-names deal)` are all the names, in the order they were added;
+  `(deal-leaves deal)` are the bonds.
+
+#### Running it, and looking at it
+`(deal-run! deal)` works out, month by month, what each node is paid and what it owes. Each month it walks down the tree: the
+split of the root divides what the pool paid, then each child's split divides what that child was paid, and so on to the
+leaves. It can be run again. `(deal-check deal)` is `#t` if the principal adds up, and an error that says where if not: in every
+month, what the children of a split were paid adds up to what the parent was paid, and no balance has gone below 0. (Amounts are
+equal if they are within `deal-tolerance`, a billionth, of the pool's balance.) `(deal-principal-table deal)` and
+`(deal-balance-table deal)` are tables with a row for each month and a column for each node, to show with `display-table`.
+
+```lisp
+(define pool (make-collateral :name "POOL" :balance #(120.0 90.0 60.0 30.0 0.0) :principal #(30.0 30.0 30.0 30.0)))
+(define deal (start-deal "Demo" pool))
+(deal-sequential! deal "POOL" '(("A" 50.0) ("B" 70.0)))
+(deal-run! deal)
+(node-principal (get-node deal "A"))        ; => #(30.0 20.0 0.0 0.0)
+(node-principal (get-node deal "B"))        ; => #(0.0 10.0 30.0 30.0)
+(node-balance (get-node deal "B"))          ; => #(70.0 70.0 60.0 30.0 0.0)
+(deal-check deal)                           ; => #t
+(deal-leaves deal)                          ; => ("A" "B")
+```
+
+`A` is paid the 30 of month 1, and 20 of month 2, when it is paid off; `B` gets the other 10 of month 2, and then everything.
+
+#### Another kind of split
+A split is a struct, and the function in its `pay-principal` slot is what makes a kind of split what it is.
+`(pay-principal split deal parent t)` divides the principal that `parent` was paid in month `t` among the split's children, by
+calling `(pay-child! child t cash)` for each one it pays, which pays the child what it is still owed (`(node-owed child t)`) up to the
+`cash`, and returns the cash left. It does not call the splits of the children: `deal-run!` walks the tree, so each kind of
+split does only its own part. A new kind includes `split`, or one of the kinds there are, and puts its function in the slot;
+`call-super` calls the function of the kind it extends:
+
+```lisp
+(defstruct (noting-split (:include sequential-split))
+  (pay-principal (lambda (self deal parent t)
+                   (display (format "month {}: dividing {}\n" t (vector-ref (node-principal parent) t)))
+                   (call-super noting-split-pay-principal self deal parent t))))
+```
+
+`examples/deal_example.lsp` builds a deal of two levels and runs it at two prepayment speeds.

@@ -92,6 +92,25 @@
   widget-slider widget-button widget-dropdown widget-checkbox widget-text widget-output widget-column widget-row widget-visible
   widget-actions widget-actions-heading widget-actions-set! widget-actions-answers widget-actions-select)
 
+; Structured deals as a tree: a pool, divided by splits into tranches (see "Structured deals" in lisp_library_reference.md)
+(lazy-load "deal.lsp"
+  start-deal collateral-from-psa deal-sequential! deal-pro-rata! deal-split! deal-add-tranche! deal-add-split!
+  deal-add-node! get-node deal-run! deal-check deal-principal-table deal-balance-table deal-leaves pool-cash-flows
+  node-owed pay-child! check-all-paid! walk-principal! sequential-pay-principal pro-rata-pay-principal deal-size
+  deal-children-names collateral-age collateral-age-set! collateral-balance collateral-balance-set! collateral-interest
+  collateral-interest-set! collateral-name collateral-name-set! collateral-principal collateral-principal-set!
+  collateral-psa collateral-psa-set! collateral-rate collateral-rate-set! collateral-split collateral-split-set!
+  collateral-term collateral-term-set! collateral? copy-collateral copy-deal copy-node copy-pro-rata-split
+  copy-sequential-split copy-split copy-tranche deal-name deal-name-set! deal-names deal-names-set! deal-nodes
+  deal-nodes-set! deal-periods deal-periods-set! deal-root deal-root-set! deal? make-collateral make-deal make-node
+  make-pro-rata-split make-sequential-split make-split make-tranche node-balance node-balance-set! node-name
+  node-name-set! node-principal node-principal-set! node-split node-split-set! node? pro-rata-split-children
+  pro-rata-split-children-set! pro-rata-split-pay-principal pro-rata-split-pay-principal-set! pro-rata-split?
+  sequential-split-children sequential-split-children-set! sequential-split-pay-principal
+  sequential-split-pay-principal-set! sequential-split? split-children split-children-set! split-pay-principal
+  split-pay-principal-set! split? tranche-balance tranche-balance-set! tranche-name tranche-name-set! tranche-principal
+  tranche-principal-set! tranche-split tranche-split-set! tranche?)
+
 ; Templates of text and SQL
 (lazy-load "template.lsp"
   template-parse template-render template-render-sql sqlite-query-template sqlite-execute-template)

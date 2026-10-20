@@ -161,6 +161,7 @@ files in `examples/` and `lib/` from anywhere:
 | `map_example.lsp` | maps colored by a value | Census and BEA keys |
 | `plot_chart_example.lsp` | `plot-chart`: lines, symbols, bars, categories, two axes | nothing |
 | `report_example.lsp` | a table written as a text report with control breaks: mortgages with subtotals by zip code and state and a grand total, on pages; a letter to each client | nothing |
+| `deal_example.lsp` | a structured deal as a tree: a pool of mortgages divided by sequential and pro-rata splits into bonds, run at two prepayment speeds | nothing |
 
 ## Techniques, and where to see them
 
@@ -1423,6 +1424,16 @@ table of loans in an editable grid (`table-grid`), with a function that hears ea
 the table as the user has changed it (`grid-table`). The manual's [Widgets in a
 notebook](lisp_interpreter_reference.md#widgets-in-a-notebook) has everything the functions take.
 The last section of the notebook is a grid of CMO tranches: click one, and a panel of tabs opens under it (a floater's cap, the bands of a PAC, a split), with fields to fill in and a **Go** button, made by `widget-actions`.
+
+---
+
+`deal_example.lsp` needs nothing. It models a structured deal as a tree: the collateral, a pool of mortgages that pays principal each
+month, is the root, and **splits** divide the principal among tranches, which can be divided again until the bonds at the leaves.
+Here the pool goes to two tranches in order (`deal-sequential!`), the first to two bonds in order, and the second to two in proportion
+to what each is owed (`deal-pro-rata!`). The program builds the deal for a slow and for a fast prepayment speed, runs it
+(`deal-run!`), checks that the principal adds up in every month (`deal-check`), and shows the month each bond is paid off and the
+first months' principal in a table. The library manual's [Structured
+deals](lisp_library_reference.md#structured-deals-a-tree-of-tranches) says what each part is and how to make another kind of split.
 
 ## Writing an example
 
