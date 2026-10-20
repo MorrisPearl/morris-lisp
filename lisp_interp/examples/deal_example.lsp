@@ -62,3 +62,24 @@
   (let ((deal (build-pac psa)))
     (display (format "{:>10}  {:>17}  {:>13,.0f}  {:>11,.0f}\n" psa (month-paid-off deal "COMP")
                      (pac-schedule-at deal 60) (pac-balance-at deal 60)))))
+
+; --- A second PAC, under the first one's companion ---
+; A PAC is sized from what its parent is paid, whether the parent is the collateral or not, so the companion of the first PAC can be
+; divided in the same way, for a narrower range of speeds. The deal is run at each of the two speeds, down to the parent, to find
+; out what the parent is paid.
+(define (build-two-pacs psa)
+  (let* ((pool (collateral-from-psa "POOL" 250000000 6.25 :term 360 :psa psa))
+         (deal (start-deal "Two PACs" pool)))
+    (deal-pac! deal "POOL" "PAC1" "COMP1" 100 300)
+    (deal-pac! deal "COMP1" "PAC2" "COMP2" 150 250)
+    (deal-run! deal)
+    deal))
+
+(define (miss deal pac owner)
+  (vector-max (abs (- (node-balance (get-node deal pac)) (pac-split-schedule (node-split (get-node deal owner)))))))
+
+(display "\nTwo PACs: PAC1 is paid on schedule at 100% to 300% PSA, and PAC2, out of the companion, at 150% to 250%.\n")
+(display "Speed (PSA)   PAC1 is off its schedule by at most   PAC2 is off its schedule by at most\n")
+(dolist (psa '(120 200 280))
+  (let ((deal (build-two-pacs psa)))
+    (display (format "{:>10}   {:>35,.0f}   {:>35,.0f}\n" psa (miss deal "PAC1" "POOL") (miss deal "PAC2" "COMP1")))))

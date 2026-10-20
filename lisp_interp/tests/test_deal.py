@@ -269,10 +269,9 @@ class TestThePac(DealTestCase):
 
     # --- what it won't take ---
 
-    def test_a_pac_needs_the_collateral_two_speeds_and_names_of_its_own(self):
+    def test_a_pac_needs_two_speeds_names_of_its_own_and_a_collateral_that_can_be_run_at_them(self):
         self.a_pac_deal(200)
         self.assertLispError('(deal-pac! deal "POOL" "X" "Y" 100 300)', "POOL already has a split")
-        self.assertLispError('(deal-pac! deal "PAC" "X" "Y" 100 300)', "a PAC split divides the collateral")
         self.run_lisp('(define pool (collateral-from-psa "POOL" 100.0 6.5)) (define deal (start-deal "d" pool))')
         self.assertLispError('(deal-pac! deal "POOL" "A" "A" 100 300)', "different names")
         self.assertLispError('(deal-pac! deal "POOL" "A" "POOL" 100 300)', "already has a node called POOL")
@@ -282,12 +281,81 @@ class TestThePac(DealTestCase):
         self.run_lisp('(define hand (make-collateral :name "H" :balance (vector 10.0 0.0) :principal (vector 10.0)))'
                       ' (define deal (start-deal "d" hand))')
         self.assertLispError('(deal-pac! deal "H" "A" "B" 100 300)', "made by collateral-from-psa")
+        self.assertShows("(deal-names deal)", '("H")')
 
     def test_a_pac_split_has_two_children_the_pac_and_the_companion(self):
         self.run_lisp('(define pool (collateral-from-psa "POOL" 100.0 6.5)) (define deal (start-deal "d" pool))')
         self.run_lisp('(deal-add-tranche! deal "A" 0.0) (deal-add-tranche! deal "B" 0.0) (deal-add-tranche! deal "C" 0.0)')
         self.assertLispError("""(deal-add-split! deal "POOL" (make-pac-split :children '("A" "B" "C") :low-psa 100 :high-psa 300))""",
                              "has two children: the PAC and the companion")
+
+
+class TestAPacUnderAnotherNode(DealTestCase):
+    """The PAC is sized from what its parent is paid, whether the parent is the collateral or not: a second PAC, from the first one's
+    companion. The deal is run at each speed, down to the parent."""
+
+    def pool_principal(self, psa):
+        flows = self.run_lisp("(pool-cash-flows 100000000.0 6.5 360 0 %d)" % psa)
+        return np.array(lisp_core.pairs_to_list(flows)[0].items)
+
+    def two_pacs(self, psa, first=(100, 300), second=(150, 250)):
+        self.run_lisp('''(define pool (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa %d))
+                         (define deal (start-deal "two pacs" pool))
+                         (deal-pac! deal "POOL" "PAC1" "COMP1" %d %d)
+                         (deal-pac! deal "COMP1" "PAC2" "COMP2" %d %d)
+                         (deal-run! deal)''' % ((psa,) + first + second))
+
+    def schedule(self, owner):
+        return self.vector('(pac-split-schedule (node-split (get-node deal "%s")))' % owner)
+
+    def test_the_principal_of_a_node_at_another_speed_is_found_by_running_the_deal_down_to_it(self):
+        self.two_pacs(200)
+        np.testing.assert_allclose(self.vector('(deal-principal-at deal "POOL" 150)'), self.pool_principal(150), rtol=1e-12)
+        schedule1 = self.schedule("POOL")
+        pac1 = schedule1[:-1] - schedule1[1:]                                      # (what the PAC is paid at any speed in its bands)
+        for psa in (100, 180, 300):
+            np.testing.assert_allclose(self.vector('(deal-principal-at deal "PAC1" %d)' % psa), pac1, atol=1e-5)
+            np.testing.assert_allclose(self.vector('(deal-principal-at deal "COMP1" %d)' % psa), self.pool_principal(psa) - pac1,
+                                       atol=1e-5)
+
+    def test_it_does_not_change_the_deal(self):
+        self.two_pacs(200)
+        before = {name: (self.principal(name).copy(), self.balance(name).copy()) for name in ("POOL", "PAC1", "COMP1", "PAC2", "COMP2")}
+        self.run_lisp('(deal-principal-at deal "COMP2" 400)')
+        for name, (principal, balance) in before.items():
+            np.testing.assert_array_equal(self.principal(name), principal)
+            np.testing.assert_array_equal(self.balance(name), balance)
+        self.assertShows("(deal-names deal)", '("POOL" "PAC1" "COMP1" "PAC2" "COMP2")')
+
+    def test_the_second_pac_is_as_big_as_the_least_its_parent_is_paid_at_the_two_speeds(self):
+        self.two_pacs(200)
+        pac1 = self.schedule("POOL")
+        pac1 = pac1[:-1] - pac1[1:]
+        least = np.minimum(self.pool_principal(150) - pac1, self.pool_principal(250) - pac1)
+        self.assertAlmostEqual(self.balance("PAC2")[0], least.sum(), places=3)
+        self.assertAlmostEqual(self.balance("COMP2")[0], self.balance("COMP1")[0] - least.sum(), places=3)
+        schedule2 = self.schedule("COMP1")
+        self.assertAlmostEqual(schedule2[0], least.sum(), places=3)
+        np.testing.assert_allclose(schedule2[1:], schedule2[:-1] - least, atol=1e-5)
+
+    def test_each_pac_is_on_schedule_at_the_speeds_of_its_own_bands(self):
+        for psa in (150, 200, 250):                                               # (in the bands of both)
+            with self.subTest(psa=psa):
+                self.two_pacs(psa)
+                np.testing.assert_allclose(self.balance("PAC1"), self.schedule("POOL"), atol=1e-5)
+                np.testing.assert_allclose(self.balance("PAC2"), self.schedule("COMP1"), atol=1e-5)
+                self.assertShows("(deal-check deal)", "#t")
+        for psa in (110, 290):                                                    # (in the first only)
+            with self.subTest(psa=psa):
+                self.two_pacs(psa)
+                np.testing.assert_allclose(self.balance("PAC1"), self.schedule("POOL"), atol=1e-5)
+                self.assertGreater(np.abs(self.balance("PAC2") - self.schedule("COMP1")).max(), 1000.0)
+                self.assertShows("(deal-check deal)", "#t")
+
+    def test_the_leaves_of_a_deal_of_two_pacs_add_up_to_the_pool(self):
+        self.two_pacs(130)
+        total = sum(self.principal(name) for name in ("PAC1", "PAC2", "COMP2"))
+        np.testing.assert_allclose(total, self.principal("POOL"), rtol=1e-12, atol=1e-5)
 
 
 class TestSizesAreWorkedOutBySplits(DealTestCase):

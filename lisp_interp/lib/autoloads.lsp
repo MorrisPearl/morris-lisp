@@ -94,7 +94,7 @@
 
 ; Structured deals as a tree: a pool, divided by splits into tranches (see "Structured deals" in lisp_library_reference.md)
 (lazy-load "deal.lsp"
-  start-deal collateral-from-psa deal-sequential! deal-pro-rata! deal-pac! deal-split! deal-add-tranche! deal-add-split!
+  start-deal collateral-from-psa deal-sequential! deal-pro-rata! deal-pac! deal-principal-at deal-split! deal-add-tranche! deal-add-split!
   deal-add-node! get-node deal-run! deal-check deal-principal-table deal-balance-table deal-leaves pool-cash-flows
   node-owed pay-child! check-all-paid! walk-principal! sequential-pay-principal pro-rata-pay-principal pac-pay-principal
   pac-calculate-sizes no-sizes deal-size deal-children-names deal-check-total collateral-age collateral-age-set!

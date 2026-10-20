@@ -1434,7 +1434,8 @@ to what each is owed (`deal-pro-rata!`). The program builds the deal for a slow 
 (`deal-run!`), checks that the principal adds up in every month (`deal-check`), and shows the month each bond is paid off and the
 first months' principal in a table. A second part divides a pool into a PAC and its companion (`deal-pac!`), sized from the pool at
 100% and 300% PSA, and shows what the PAC owes after five years by schedule and in fact at five speeds: exactly on schedule at any
-speed between the two, and off it outside. The library manual's [Structured
+speed between the two, and off it outside; and a second PAC out of the first one's companion, sized from what the companion is paid at
+two narrower speeds. The library manual's [Structured
 deals](lisp_library_reference.md#structured-deals-a-tree-of-tranches) says what each part is and how to make another kind of split.
 
 ## Writing an example

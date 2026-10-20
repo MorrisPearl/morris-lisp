@@ -175,9 +175,9 @@ the next."
   (deal-split! deal parent-name (lambda (names) (make-pro-rata-split :children names)) children))
 
 (define (deal-pac! deal parent-name pac-name companion-name low-psa high-psa)
-  "Divides the collateral into a PAC and its companion. The PAC is as big as the collateral pays at both of the speeds, low-psa and
-high-psa (percents of the PSA curve), and is paid on the schedule of the least it pays at them. Nothing is added if there is
-something wrong."
+  "Divides the parent, the collateral or another node, into a PAC and its companion. The PAC is as big as the parent is paid when
+the collateral prepays at both of the speeds, low-psa and high-psa (percents of the PSA curve), and is paid on the schedule of the
+least it is paid at them. Nothing is added if there is something wrong."
   (let ((parent (get-node deal parent-name)))
     (unless (null? (node-split parent))
       (error (format "{} already has a split" parent-name)))
@@ -187,7 +187,7 @@ something wrong."
     (when (equal? pac-name companion-name)
       (error "the PAC and the companion are called by different names"))
     (let ((split (make-pac-split :children (list pac-name companion-name) :low-psa low-psa :high-psa high-psa)))
-      (pac-calculate-sizes split deal parent)             ; (to find out now if it can be done: it is done again below)
+      (pac-check-arguments split deal)
       (deal-add-tranche! deal pac-name 0.0)
       (deal-add-tranche! deal companion-name 0.0)
       (deal-add-split! deal parent-name split))))
@@ -245,9 +245,10 @@ that it is paid off). Returns the cash left."
     (for-each (lambda (child share) (pay-child! child t share)) children shares)
     (check-all-paid! parent t (- cash to-pay) deal)))
 
-; A PAC and its companion. The PAC is paid on a schedule, which is the least the collateral pays in each month at two prepayment
-; speeds, so it is paid that, if the collateral pays at any speed between them, and the companion is paid what is over, or goes
-; without. The children are the PAC and then the companion. The schedule is the balance the PAC is to have at the start of each
+; A PAC and its companion. The PAC is paid on a schedule, which is the least its parent pays in each month when the collateral
+; prepays at either of two speeds, so it is paid that, if the collateral pays at any speed between them, and the companion is paid
+; what is over, or goes without. The parent is the collateral or any node below it (a second PAC, under the first one's companion).
+; The children are the PAC and then the companion. The schedule is the balance the PAC is to have at the start of each
 ; month; it is worked out, with the sizes, when the split is added: see pac-calculate-sizes.
 (define (pac-pay-principal split deal parent t)
   "Pays the PAC down to the balance it is scheduled to have, then the companion, and then what is left to the PAC."
@@ -259,21 +260,47 @@ that it is paid off). Returns the cash left."
     (set! cash (pay-child! pac t cash))
     (check-all-paid! parent t cash deal)))
 
-(define (pac-calculate-sizes split deal parent)
-  "The size of the PAC is what the collateral pays at both of the two speeds, month by month the least of the two, added up; the
-companion is the rest. Sets the schedule of the PAC, its balance at the start of each month, from that size, less the least each
-month. Returns (PAC-size companion-size)."
-  (unless (and (collateral? parent) (not (null? (collateral-rate parent))))
-    (error "a PAC split divides the collateral, made by collateral-from-psa: it works out the PAC from the collateral at two speeds"))
+(define (deal-principal-at deal name psa)
+  "The principal that the node called name would be paid in each month, as a vector, if the collateral prepaid at psa percent of
+the PSA curve: the collateral is run at that speed, and the deal, as it is now, down to the node. The deal itself is not
+changed: it is run on copies of its nodes."
+  (let ((root (get-node deal (deal-root deal))))
+    (unless (and (collateral? root) (not (null? (collateral-rate root))))
+      (error "the deal's collateral was not made by collateral-from-psa, so it cannot be run at another speed"))
+    (let ((flows (pool-cash-flows (vector-ref (node-balance root) 0) (collateral-rate root) (collateral-term root)
+                                  (collateral-age root) psa))
+          (copy (make-deal :name (deal-name deal) :root (deal-root deal) :periods (deal-periods deal))))
+      (dolist (node-name (deal-names deal))
+        (let ((node (copy-node (get-node deal node-name))))
+          (node-balance-set! node (vector-copy (node-balance node)))
+          (node-principal-set! node (vector-copy (node-principal node)))
+          (deal-add-node! copy node)))
+      (let ((pool (get-node copy (deal-root deal))))
+        (node-principal-set! pool (car flows)))                 ; (the balances are worked out again by the run)
+      (deal-run! copy)
+      (node-principal (get-node copy name)))))
+
+(define (pac-check-arguments split deal)
+  "An error if a PAC split could not be sized: it has two children, its two speeds go from the lower to the higher, and the
+collateral can be run at another speed."
   (unless (= (length (split-children split)) 2)
     (error "a PAC split has two children: the PAC and the companion"))
   (unless (< 0 (pac-split-low-psa split) (pac-split-high-psa split))
     (error (format "the PAC's speeds must be from the lower to the higher, above 0, not {} and {}"
                    (pac-split-low-psa split) (pac-split-high-psa split))))
+  (let ((root (get-node deal (deal-root deal))))
+    (unless (and (collateral? root) (not (null? (collateral-rate root))))
+      (error "the deal's collateral was not made by collateral-from-psa, so it cannot be run at another speed"))))
+
+(define (pac-calculate-sizes split deal parent)
+  "The size of the PAC is what the parent pays at both of the two speeds of the collateral, month by month the least of the two,
+added up; the companion is the rest. (What the parent pays is found by running the deal at each speed: see deal-principal-at.)
+Sets the schedule of the PAC, its balance at the start of each month, from that size, less the least each month. Returns
+(PAC-size companion-size)."
+  (pac-check-arguments split deal)
   (let* ((balance (vector-ref (node-balance parent) 0))
-         (pays (lambda (psa) (car (pool-cash-flows balance (collateral-rate parent) (collateral-term parent) (collateral-age parent) psa))))
-         (slow (pays (pac-split-low-psa split)))
-         (fast (pays (pac-split-high-psa split)))
+         (slow (deal-principal-at deal (node-name parent) (pac-split-low-psa split)))
+         (fast (deal-principal-at deal (node-name parent) (pac-split-high-psa split)))
          (least (vector-where (< slow fast) slow fast))
          (size (vector-sum least))
          (schedule (make-vector (+ (vector-length least) 1) size)))
