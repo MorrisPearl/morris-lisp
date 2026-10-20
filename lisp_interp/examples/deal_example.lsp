@@ -121,3 +121,36 @@
 (deal-run! two-groups)
 (display (format "\nTwo pieces of collateral, {}; the bonds are {}; the principal and the interest add up: {}\n"
                  (string-join (deal-roots two-groups) " and ") (string-join (deal-leaves two-groups) ", ") (deal-check two-groups)))
+
+; --- A Z bond, and an accretion directed bond ---
+; A Z bond is not paid its interest: what it is owed is added to its balance, and paid, as principal, to the bonds ahead of it. That is
+; why the interest is worked out before the principal. With :accretion-to, one bond is paid what the Z bond accrues first.
+(define (build-z accretion-to)
+  (let* ((pool (collateral-from-psa "POOL" 100000000 6.0 :term 360 :psa 150))
+         (deal (start-deal "Z" pool)))
+    (deal-sequential! deal "POOL" '(("A" 30000000) ("B" 30000000) ("Z" 40000000 z)) :accretion-to accretion-to)
+    (deal-run! deal)
+    deal))
+
+(define (first-month deal table-of name) (vector-ref (table-column (table-of deal) name) 0))
+
+(define z-deal (build-z '()))
+(define adb-deal (build-z "B"))
+(display (format "\nIn the first month Z accrues {:,.0f}, which is not paid to it as interest. It is paid, as principal:\n"
+                 (first-month z-deal deal-accrual-table "Z")))
+(display (format "  to A, in order: A {:,.0f}, B {:,.0f}\n" (first-month z-deal deal-principal-table "A") (first-month z-deal deal-principal-table "B")))
+(display (format "  with B directed: A {:,.0f}, B {:,.0f}\n" (first-month adb-deal deal-principal-table "A") (first-month adb-deal deal-principal-table "B")))
+(display (format "Z is paid off in month {}, and A in month {}; the principal and the interest add up: {}\n"
+                 (month-paid-off z-deal "Z") (month-paid-off z-deal "A") (deal-check z-deal)))
+
+; --- Interest-only and principal-only bonds ---
+; An IO has a notional balance that follows the PO's, and is paid the coupon on it; the PO is paid the principal. Either can be divided.
+(define strips (start-deal "Strips" (collateral-from-psa "POOL" 100000000 6.0 :term 360 :psa 150)))
+(deal-io-po! strips "POOL" "IO" "PO")
+(deal-sequential! strips "PO" '(("PO1" 40000000) ("PO2" 60000000)))
+(deal-run! strips)
+(display (format "\nThe IO's notional balance falls from {:,.0f} to {:,.0f} after a year; its first month's interest is {:,.0f}, and the PO's principal {:,.0f}.\n"
+                 (vector-ref (node-balance (get-node strips "IO")) 0) (vector-ref (node-balance (get-node strips "IO")) 12)
+                 (first-month strips deal-interest-table "IO") (first-month strips deal-principal-table "PO")))
+(display (format "PO1 is paid off in month {}, and PO2 in month {}; the principal and the interest add up: {}\n"
+                 (month-paid-off strips "PO1") (month-paid-off strips "PO2") (deal-check strips)))

@@ -155,7 +155,7 @@ class TestTheSplitsAreMethods(DealTestCase):
 
     def test_the_verbs_are_generic_functions_with_a_method_for_each_kind_of_split(self):
         self.assertShows("(generic-function? pay-principal)", "#t")
-        self.assertShows("(generic-function-methods pay-principal)", "(sequential-split pro-rata-split pac-split)")
+        self.assertShows("(generic-function-methods pay-principal)", "(sequential-split pro-rata-split io-po-split pac-split)")
 
     def test_a_split_of_no_kind_that_pays_cannot_be_run(self):
         self.a_pool_paying(30.0, 4)
@@ -408,7 +408,7 @@ class TestSizesAreWorkedOutBySplits(DealTestCase):
         self.a_pool_paying(30.0, 4)
         self.run_lisp("""(define split (make-sequential-split :children '("A" "B")))""")
         self.assertShows("(calculate-sizes split deal pool)", "()")
-        self.assertShows("(generic-function-methods calculate-sizes)", "(split floater-inverse-split premium-discount-split pac-split)")
+        self.assertShows("(generic-function-methods calculate-sizes)", "(split floater-inverse-split premium-discount-split io-po-split pac-split)")
 
 
 class TestARandomDeal(DealTestCase):

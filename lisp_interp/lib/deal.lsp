@@ -56,11 +56,14 @@
 ; The structs
 ; ---------------------------------------------------------------------------
 
-(defstruct node name balance principal interest coupon (split '()))
+(defstruct node name balance principal interest accrual coupon (split '())
+  (z-flag #f)                ; a Z (accrual) bond: its interest is not paid but added to its balance, and pays the bonds ahead of it
+  (notional-flag #f)         ; an interest-only bond: a notional balance that follows another's, interest, and no principal
+  (follows '()) (share 1.0)) ; the name of the node whose balance a notional bond follows, and what share of it
 (defstruct (collateral (:include node)) rate term age psa)   ; (rate, term, age and psa are those collateral-from-psa made it from)
 (defstruct (tranche (:include node)))
 (defstruct split children)                                                 ; (a kind of split is a type that includes this one)
-(defstruct (sequential-split (:include split)))
+(defstruct (sequential-split (:include split)) (accretion-to '()))   ; (the bond that what the Z bonds accrue is paid to first)
 (defstruct (pro-rata-split (:include split)))
 (defstruct (pac-split (:include split)) low-psa high-psa schedule)
 ; the floater and the inverse floater are paid principal pro rata, so that their sizes stay in the proportion that makes their
@@ -68,6 +71,9 @@
 (defstruct (floater-inverse-split (:include pro-rata-split)) cap margin index-name leverage constant)
 ; the premium bond has the higher coupon than the parent, and the discount bond a lower, and the sizes make them, together, the parent's
 (defstruct (premium-discount-split (:include pro-rata-split)) premium-coupon discount-coupon)
+; an interest-only bond and a principal-only bond: both are as big as the parent, the IO's balance is a notional one that follows the
+; PO's, the PO is paid all the principal, and the coupon of the parent, less io-coupon, is the PO's ('() is all of it the IO's)
+(defstruct (io-po-split (:include split)) (io-coupon '()))
 (defstruct deal name (nodes (make-hash-table)) (names '()) (roots '()) periods (index '()))
 
 (defgeneric pay-principal (split deal parent t)
@@ -78,6 +84,8 @@
   "The sizes of the split's children, a list in their order, or '() if the split does not work them out.")
 (defgeneric assign-coupons (split deal parent)
   "Gives the children of the split their coupons.")
+(defgeneric check-split (split deal parent)
+  "An error if the split cannot divide the parent: its children, which are in the deal, are not as the kind of split needs.")
 
 (defmethod calculate-sizes ((split split) deal parent)
   "The children are as big as they were made."
@@ -160,6 +168,8 @@ does."
   "Adds a node to the deal, which has no node of that name yet."
   (when (hash-table-ref (deal-nodes deal) (node-name node))
     (error (format "the deal already has a node called {}" (node-name node))))
+  (unless (vector? (node-accrual node))
+    (node-accrual-set! node (make-vector (deal-periods deal) 0.0)))
   (hash-table-set! (deal-nodes deal) (node-name node) node)
   (deal-names-set! deal (append (deal-names deal) (list (node-name node))))
   node)
@@ -169,9 +179,11 @@ does."
   (or (hash-table-ref (deal-nodes deal) name)
       (error (format "the deal has no node called {} (it has {})" name (string-join (deal-names deal) " ")))))
 
-(define (deal-add-tranche! deal name balance)
-  "Adds a tranche with this starting balance to the deal. It is paid by its parent's split: see deal-add-split!."
-  (deal-add-node! deal (make-tranche :name name
+(define (deal-add-tranche! deal name balance &key (z #f) (notional #f) (follows '()))
+  "Adds a tranche with this starting balance to the deal. It is paid by its parent's split: see deal-add-split!. :z #t makes it a Z
+bond, which accrues its interest, and :notional #t an interest-only bond, which is a notional balance that follows (:follows) the
+balance of another node."
+  (deal-add-node! deal (make-tranche :name name :z-flag z :notional-flag notional :follows follows
                                      :balance (let ((balances (make-vector (+ (deal-periods deal) 1) 0.0)))
                                                 (vector-set! balances 0 balance)
                                                 balances)
@@ -181,7 +193,8 @@ does."
 (define (deal-add-split! deal parent-name split)
   "Makes the split divide the parent among the children it names, which are tranches already in the deal. A node has one split,
 and its children's balances add up to its own: the split works them out, if it is of a kind that does (see calculate-sizes). The
-children are given their coupons (see assign-coupons)."
+children are given their coupons (see assign-coupons). The children of a notional (interest-only) bond are notional too, and follow
+it, each in the share of it that it is."
   (let ((parent (get-node deal parent-name)))
     (unless (null? (node-split parent))
       (error (format "{} already has a split" parent-name)))
@@ -191,11 +204,22 @@ children are given their coupons (see assign-coupons)."
       (get-node deal name)
       (when (or (member name (deal-roots deal)) (member name (deal-children-names deal)))
         (error (format "{} is already paid by a split: a node is paid by one split, and the collateral by none" name))))
+    (check-split split deal parent)
     (let ((sizes (calculate-sizes split deal parent)))
       (unless (null? sizes)
         (for-each (lambda (name size) (vector-set! (node-balance (get-node deal name)) 0 size)) (split-children split) sizes)))
     (deal-check-total deal parent-name
-                      (apply + (map (lambda (name) (vector-ref (node-balance (get-node deal name)) 0)) (split-children split))))
+                      (apply + (map (lambda (name) (vector-ref (node-balance (get-node deal name)) 0))
+                                    (filter (lambda (name) (not (member (node-follows (get-node deal name)) (split-children split))))
+                                            (split-children split)))))
+    (when (node-notional-flag parent)
+      (dolist (name (split-children split))
+        (let ((child (get-node deal name)))
+          (node-notional-flag-set! child #t)
+          (node-follows-set! child parent-name)
+          (node-share-set! child (if (= (vector-ref (node-balance parent) 0) 0.0)
+                                     0.0
+                                     (/ (vector-ref (node-balance child) 0) (vector-ref (node-balance parent) 0)))))))
     (assign-coupons split deal parent)
     (node-split-set! parent split)
     split))
@@ -206,81 +230,23 @@ children are given their coupons (see assign-coupons)."
     (unless (<= (abs (- total expected)) (* deal-tolerance (deal-size deal)))
       (error (format "the children of {} have balances that add up to {}, and {} has {}" parent-name total parent-name expected)))))
 
-(define (deal-split! deal parent-name make-the-split children)
-  "Adds a tranche for each of the children, (name balance), and divides the parent among them by the split that
-(make-the-split names) makes. Nothing is added if there is something wrong."
-  (let ((parent (get-node deal parent-name)))
-    (unless (null? (node-split parent))
-      (error (format "{} already has a split" parent-name)))
-    (dolist (child children)
-      (when (hash-table-ref (deal-nodes deal) (car child))
-        (error (format "the deal already has a node called {}" (car child)))))
-    (unless (= (length (remove-duplicates (map car children))) (length children))
-      (error (format "the children of {} are not all called by different names" parent-name)))
-    (deal-check-total deal parent-name (apply + (map cadr children))))
-  (dolist (child children)
-    (deal-add-tranche! deal (car child) (cadr child)))
-  (deal-add-split! deal parent-name (make-the-split (map car children))))
+(define (deal-add-children-and-split! deal parent-name tranches split)
+  "Adds the tranches, each (name balance :z ... :notional ... :follows ...), and divides the parent among them by the split. If
+something is wrong none of it is added."
+  (deal-check-new-children deal parent-name (map car tranches))
+  (dolist (tranche tranches)
+    (apply deal-add-tranche! deal tranche))
+  (catch-error (deal-add-split! deal parent-name split)
+    (message)
+    (dolist (tranche tranches)
+      (deal-forget-node! deal (car tranche)))
+    (error message))
+  split)
 
-(define (deal-sequential! deal parent-name children)
-  "Adds the children, a list of (name balance), and pays the parent's principal to them in order: the first until it is paid, then
-the next."
-  (deal-split! deal parent-name (lambda (names) (make-sequential-split :children names)) children))
-
-(define (deal-pro-rata! deal parent-name children)
-  "Adds the children, a list of (name balance), and pays the parent's principal to them in proportion to what each still owes."
-  (deal-split! deal parent-name (lambda (names) (make-pro-rata-split :children names)) children))
-
-(define (deal-pac! deal parent-name pac-name companion-name low-psa high-psa)
-  "Divides the parent, the collateral or another node, into a PAC and its companion. The PAC is as big as the parent is paid when
-the collateral prepays at both of the speeds, low-psa and high-psa (percents of the PSA curve), and is paid on the schedule of the
-least it is paid at them. Nothing is added if there is something wrong."
-  (let ((parent (get-node deal parent-name)))
-    (unless (null? (node-split parent))
-      (error (format "{} already has a split" parent-name)))
-    (dolist (name (list pac-name companion-name))
-      (when (hash-table-ref (deal-nodes deal) name)
-        (error (format "the deal already has a node called {}" name))))
-    (when (equal? pac-name companion-name)
-      (error "the PAC and the companion are called by different names"))
-    (let ((split (make-pac-split :children (list pac-name companion-name) :low-psa low-psa :high-psa high-psa)))
-      (pac-check-arguments split deal parent)
-      (deal-add-tranche! deal pac-name 0.0)
-      (deal-add-tranche! deal companion-name 0.0)
-      (deal-add-split! deal parent-name split))))
-
-(define (deal-floater-inverse! deal parent-name floater-name inverse-name &key cap (margin 0.0) (index-name '()))
-  "Divides the parent, which has a fixed coupon, into a floater and an inverse floater. The floater's coupon is the index plus the
-margin, to the cap, and the inverse floater's is what makes the two, together, pay the parent's coupon whatever the index is: the
-floater is as big as the parent's coupon is of the cap, and the inverse floater is the rest. Their principal is paid pro rata,
-which keeps them in that proportion. The cap is a decimal (0.09 is 9%), above the parent's coupon, and the margin is a decimal
-(0.005 is half a percent) below it. The index is a number for each month given to deal-run!, with :index; index-name is for whoever
-reads it, and the index is clamped at 0. Nothing is added if there is something wrong."
-  (let ((parent (get-node deal parent-name)))
-    (deal-check-new-children deal parent-name (list floater-name inverse-name))
-    (when (null? cap)
-      (error "deal-floater-inverse!: give the :cap of the floater, a decimal such as 0.09"))
-    (floater-inverse-sizes (vector-ref (node-balance parent) 0) (parent-coupon-rate parent "a floater and inverse floater") cap margin)
-    (deal-add-tranche! deal floater-name 0.0)
-    (deal-add-tranche! deal inverse-name 0.0)
-    (deal-add-split! deal parent-name
-                     (make-floater-inverse-split :children (list floater-name inverse-name) :cap cap :margin margin
-                                                 :index-name index-name))))
-
-(define (deal-premium-discount! deal parent-name premium-name discount-name &key premium-coupon discount-coupon)
-  "Divides the parent, which has a fixed coupon, into a premium bond, with a coupon above the parent's, and a discount bond, with a
-coupon below it, by the sizes that make the two, together, pay the parent's coupon. Their principal is paid pro rata, which keeps them
-in that proportion. The coupons are decimals (0.08 is 8%). Nothing is added if there is something wrong."
-  (let ((parent (get-node deal parent-name)))
-    (deal-check-new-children deal parent-name (list premium-name discount-name))
-    (when (or (null? premium-coupon) (null? discount-coupon))
-      (error "deal-premium-discount!: give the :premium-coupon and the :discount-coupon, decimals such as 0.08 and 0.04"))
-    (premium-discount-sizes (vector-ref (node-balance parent) 0) (parent-coupon-rate parent "a premium and discount") premium-coupon discount-coupon)
-    (deal-add-tranche! deal premium-name 0.0)
-    (deal-add-tranche! deal discount-name 0.0)
-    (deal-add-split! deal parent-name
-                     (make-premium-discount-split :children (list premium-name discount-name)
-                                                  :premium-coupon premium-coupon :discount-coupon discount-coupon))))
+(define (deal-forget-node! deal name)
+  "Takes a node out of the deal again: for what was added and then could not be used."
+  (hash-table-remove! (deal-nodes deal) name)
+  (deal-names-set! deal (filter (lambda (n) (not (equal? n name))) (deal-names deal))))
 
 (define (deal-check-new-children deal parent-name names)
   "An error unless the parent is in the deal with no split yet, and the names are new and different: for a split that adds tranches."
@@ -291,6 +257,66 @@ in that proportion. The coupons are decimals (0.08 is 8%). Nothing is added if t
       (error (format "the deal already has a node called {}" name))))
   (unless (= (length (remove-duplicates names)) (length names))
     (error (format "the children of {} are not all called by different names" parent-name))))
+
+(define (child-tranche child)
+  "The arguments of deal-add-tranche! for a child given as (name balance) or (name balance z): the Z bonds are those marked z."
+  (cond ((= (length child) 2) (list (car child) (cadr child)))
+        ((and (= (length child) 3) (eq? (caddr child) 'z)) (list (car child) (cadr child) :z #t))
+        (else (error (format "a child is (name balance), or (name balance z) for a Z bond, not {}" child)))))
+
+(define (deal-split! deal parent-name make-the-split children)
+  "Adds a tranche for each of the children, (name balance) or (name balance z), and divides the parent among them by the split that
+(make-the-split names) makes. Nothing is added if there is something wrong."
+  (deal-add-children-and-split! deal parent-name (map child-tranche children) (make-the-split (map car children))))
+
+(define (deal-sequential! deal parent-name children &key (accretion-to '()))
+  "Adds the children, a list of (name balance), and pays the parent's principal to them in order: the first until it is paid, then
+the next. A child written (name balance z) is a Z bond: its interest is not paid but added to its balance, and what it accrues is paid,
+as principal, to the bonds in the order, and the Z bond is paid, in its place in the order, what is left. :accretion-to is the
+name of a bond that is paid what the Z bonds accrue first, before the order: an accretion directed bond."
+  (deal-split! deal parent-name (lambda (names) (make-sequential-split :children names :accretion-to accretion-to)) children))
+
+(define (deal-pro-rata! deal parent-name children)
+  "Adds the children, a list of (name balance), and pays the parent's principal to them in proportion to what each still owes."
+  (deal-split! deal parent-name (lambda (names) (make-pro-rata-split :children names)) children))
+
+(define (deal-pac! deal parent-name pac-name companion-name low-psa high-psa)
+  "Divides the parent, the collateral or another node, into a PAC and its companion. The PAC is as big as the parent is paid when
+the collateral prepays at both of the speeds, low-psa and high-psa (percents of the PSA curve), and is paid on the schedule of the
+least it is paid at them. Nothing is added if there is something wrong."
+  (deal-add-children-and-split! deal parent-name (list (list pac-name 0.0) (list companion-name 0.0))
+                                (make-pac-split :children (list pac-name companion-name) :low-psa low-psa :high-psa high-psa)))
+
+(define (deal-floater-inverse! deal parent-name floater-name inverse-name &key cap (margin 0.0) (index-name '()))
+  "Divides the parent, which has a fixed coupon, into a floater and an inverse floater. The floater's coupon is the index plus the
+margin, to the cap, and the inverse floater's is what makes the two, together, pay the parent's coupon whatever the index is: the
+floater is as big as the parent's coupon is of the cap, and the inverse floater is the rest. Their principal is paid pro rata,
+which keeps them in that proportion. The cap is a decimal (0.09 is 9%), above the parent's coupon, and the margin is a decimal
+(0.005 is half a percent) below it. The index is a number for each month given to deal-run!, with :index; index-name is for whoever
+reads it, and the index is clamped at 0. Nothing is added if there is something wrong."
+  (when (null? cap)
+    (error "deal-floater-inverse!: give the :cap of the floater, a decimal such as 0.09"))
+  (deal-add-children-and-split! deal parent-name (list (list floater-name 0.0) (list inverse-name 0.0))
+                                (make-floater-inverse-split :children (list floater-name inverse-name) :cap cap :margin margin
+                                                            :index-name index-name)))
+
+(define (deal-premium-discount! deal parent-name premium-name discount-name &key premium-coupon discount-coupon)
+  "Divides the parent, which has a fixed coupon, into a premium bond, with a coupon above the parent's, and a discount bond, with a
+coupon below it, by the sizes that make the two, together, pay the parent's coupon. Their principal is paid pro rata, which keeps them
+in that proportion. The coupons are decimals (0.08 is 8%). Nothing is added if there is something wrong."
+  (when (or (null? premium-coupon) (null? discount-coupon))
+    (error "deal-premium-discount!: give the :premium-coupon and the :discount-coupon, decimals such as 0.08 and 0.04"))
+  (deal-add-children-and-split! deal parent-name (list (list premium-name 0.0) (list discount-name 0.0))
+                                (make-premium-discount-split :children (list premium-name discount-name)
+                                                             :premium-coupon premium-coupon :discount-coupon discount-coupon)))
+
+(define (deal-io-po! deal parent-name io-name po-name &key (io-coupon '()))
+  "Divides the parent into an interest-only bond and a principal-only bond. Both are as big as the parent: the PO is paid all of the
+parent's principal, and the IO has a notional balance that follows the PO's, and no principal. The IO is paid the parent's coupon on its
+notional balance, and the PO none, unless :io-coupon (a decimal) is given, when the IO is paid that, and the PO the rest of the parent's
+coupon. The parent may be any node but a Z bond, an IO or a PO. Nothing is added if there is something wrong."
+  (deal-add-children-and-split! deal parent-name (list (list io-name 0.0 :notional #t :follows po-name) (list po-name 0.0))
+                                (make-io-po-split :children (list io-name po-name) :io-coupon io-coupon)))
 
 (define (deal-size deal)
   "The balance of all the collateral, which the tolerance is a fraction of."
@@ -355,14 +381,19 @@ not the same at every index."
     rate))
 
 (define (pay-child-interest! deal child t cash)
-  "Pays the child, in month t, the interest it is owed, up to the cash. Returns the cash left."
-  (let ((amount (min cash (node-interest-due deal child t))))
-    (vector-increment! (node-interest child) t amount)
-    (- cash amount)))
+  "Pays the child, in month t, the interest it is owed, up to the cash. Returns the cash left. A Z bond is not paid it: what it is owed
+is added to its balance, as its accrual, which is paid as principal (see the sequential split), and the cash, which it takes, is
+left, to be paid so."
+  (if (node-z-flag child)
+      (begin (vector-set! (node-accrual child) t (node-interest-due deal child t))
+             (- cash (node-interest-due deal child t)))
+      (let ((amount (min cash (node-interest-due deal child t))))
+        (vector-increment! (node-interest child) t amount)
+        (- cash amount))))
 
 (defmethod pay-interest ((split split) deal parent t)
-  "Pays each child, in order, the interest it is owed. A structure of bonds that is right owes exactly what the parent was paid, so
-it is an error if there is some left, or not enough."
+  "Pays each child, in order, the interest it is owed (a Z bond accrues it). A structure of bonds that is right owes exactly what the
+parent was paid, so it is an error if there is some left, or not enough."
   (let* ((cash (vector-ref (node-interest parent) t))
          (owed (apply + (map (lambda (name) (node-interest-due deal (get-node deal name) t)) (split-children split))))
          (tolerance (* deal-tolerance (deal-size deal))))
@@ -435,8 +466,9 @@ the index, to 0."
 ; ---------------------------------------------------------------------------
 
 (define (node-owed child t)
-  "What a node can still be paid in month t: its balance then, less what it has been paid this month so far."
-  (max 0.0 (- (vector-ref (node-balance child) t) (vector-ref (node-principal child) t))))
+  "What a node can still be paid in month t: its balance then, and what it accrues this month if it is a Z bond, less what it has been
+paid this month so far."
+  (max 0.0 (- (+ (vector-ref (node-balance child) t) (vector-ref (node-accrual child) t)) (vector-ref (node-principal child) t))))
 
 (define (pay-child! child t cash &optional (floor 0.0))
   "Pays the child, in month t, what it is owed, up to the cash, but not so that it owes less than the floor (0 unless given, so
@@ -451,10 +483,16 @@ that it is paid off). Returns the cash left."
     (error (format "the split of {} has {} of principal left over in month {}: its children are all paid" (node-name parent) cash t))))
 
 (defmethod pay-principal ((split sequential-split) deal parent t)
-  "Pays the children in order."
-  (let ((cash (vector-ref (node-principal parent) t)))
-    (dolist (name (split-children split))
-      (set! cash (pay-child! (get-node deal name) t cash)))
+  "Pays the children in order. What the Z bonds accrue this month is paid too, as principal: first to the bond it is directed to, if
+there is one, and then in the order."
+  (let* ((children (map (lambda (name) (get-node deal name)) (split-children split)))
+         (accrued (apply + (map (lambda (child) (vector-ref (node-accrual child) t)) children)))
+         (cash (vector-ref (node-principal parent) t)))
+    (unless (null? (sequential-split-accretion-to split))
+      (set! accrued (pay-child! (get-node deal (sequential-split-accretion-to split)) t accrued)))
+    (set! cash (+ cash accrued))
+    (dolist (child children)
+      (set! cash (pay-child! child t cash)))
     (check-all-paid! parent t cash deal)))
 
 (defmethod pay-principal ((split pro-rata-split) deal parent t)
@@ -466,6 +504,80 @@ that it is paid off). Returns the cash left."
          (shares (map (lambda (child) (if (> total-owed 0.0) (* to-pay (/ (node-owed child t) total-owed)) 0.0)) children)))
     (for-each (lambda (child share) (pay-child! child t share)) children shares)
     (check-all-paid! parent t (- cash to-pay) deal)))
+
+; What a split can divide. A Z bond has its accrual to be paid, which only a sequential split does, so a Z bond is a child of one, and
+; is not itself divided (the accrual of its children is not modeled); and a Z bond is paid principal, which a notional bond has none of.
+(define (deal-parent-of deal name)
+  "The node whose split has the node called name as a child, or #f for the collateral and a tranche that has not been given a parent."
+  (find-if (lambda (node) (and (not (null? (node-split node))) (member name (split-children (node-split node)))))
+           (map (lambda (n) (get-node deal n)) (deal-names deal))))
+
+(define (deal-po? deal node)
+  "Whether the node is the principal-only bond of an IO/PO split: its second child."
+  (let ((parent (deal-parent-of deal (node-name node))))
+    (and parent (io-po-split? (node-split parent)) (equal? (node-name node) (cadr (split-children (node-split parent)))))))
+
+(define (check-parent-not-z parent)
+  (when (node-z-flag parent)
+    (error (format "{} is a Z bond, which is not divided: it accrues interest, and the accrual of its children is not modeled" (node-name parent)))))
+
+(defmethod check-split ((split split) deal parent)
+  "A split of any kind can divide a node that is not a Z bond, into bonds that are not Z bonds."
+  (check-parent-not-z parent)
+  (dolist (name (split-children split))
+    (when (node-z-flag (get-node deal name))
+      (error (format "{} is a Z bond, which can only be the child of a sequential split" name)))))
+
+(defmethod check-split ((split sequential-split) deal parent)
+  "A sequential split can have Z bonds as children, unless the parent is an IO or a PO. The bond the accretion is directed to is one of
+the children, and not a Z bond."
+  (check-parent-not-z parent)
+  (when (and (or (node-notional-flag parent) (deal-po? deal parent))
+             (some (lambda (name) (node-z-flag (get-node deal name))) (split-children split)))
+    (error (format "{} is an IO or a PO, which is not divided into a Z bond" (node-name parent))))
+  (let ((directed (sequential-split-accretion-to split)))
+    (unless (null? directed)
+      (unless (member directed (split-children split))
+        (error (format "the accretion is directed to {}, which is not one of the children {}" directed (string-join (split-children split) " "))))
+      (when (node-z-flag (get-node deal directed))
+        (error (format "the accretion is directed to {}, which is a Z bond: it is paid to the bonds that are not" directed))))))
+
+(defmethod check-split ((split io-po-split) deal parent)
+  "An IO/PO split divides a bond that is not a Z bond, an IO or a PO, into an IO that follows the PO, and the PO."
+  (call-next-method)
+  (when (node-notional-flag parent)
+    (error (format "{} is an interest-only bond, which is not divided into an IO and a PO" (node-name parent))))
+  (when (deal-po? deal parent)
+    (error (format "{} is a principal-only bond, which is not divided into an IO and a PO" (node-name parent))))
+  (unless (= (length (split-children split)) 2)
+    (error "an IO/PO split has two children: the IO and the PO"))
+  (let ((io (get-node deal (car (split-children split))))
+        (po (get-node deal (cadr (split-children split)))))
+    (unless (and (node-notional-flag io) (equal? (node-follows io) (node-name po)) (not (node-notional-flag po)))
+      (error "the IO of an IO/PO split is a notional bond that follows the PO (see deal-io-po!)"))))
+
+(defmethod calculate-sizes ((split io-po-split) deal parent)
+  "Both are as big as the parent: the PO is the parent's balance, and the IO's notional balance is that."
+  (let ((balance (vector-ref (node-balance parent) 0)))
+    (list balance balance)))
+
+(defmethod assign-coupons ((split io-po-split) deal parent)
+  "The IO is paid the parent's coupon (or :io-coupon), on the notional balance, and the PO the rest of it, which is none, if the IO has
+all of it."
+  (let ((io-coupon (io-po-split-io-coupon split))
+        (parent-coupon (node-coupon parent)))
+    (if (null? io-coupon)
+        (begin (node-coupon-set! (get-node deal (car (split-children split))) parent-coupon)
+               (node-coupon-set! (get-node deal (cadr (split-children split))) (constant-coupon 0.0)))
+        (begin (node-coupon-set! (get-node deal (car (split-children split))) (constant-coupon io-coupon))
+               (node-coupon-set! (get-node deal (cadr (split-children split)))
+                                 (lambda (index) (max 0.0 (- (parent-coupon index) io-coupon))))))))
+
+(defmethod pay-principal ((split io-po-split) deal parent t)
+  "Pays all of the principal to the PO: the IO has none."
+  (let ((cash (vector-ref (node-principal parent) t)))
+    (set! cash (pay-child! (get-node deal (cadr (split-children split))) t cash))
+    (check-all-paid! parent t cash deal)))
 
 ; A PAC and its companion. The PAC is paid on a schedule, which is the least its parent pays in each month when the collateral
 ; prepays at either of two speeds, so it is paid that, if the collateral pays at any speed between them, and the companion is paid
@@ -495,21 +607,26 @@ collateral-from-psa."
 
 (define (deal-principal-at deal name psa)
   "The principal that the node called name would be paid in each month, as a vector, if the collateral of its tree prepaid at psa
-percent of the PSA curve: the collateral is run at that speed, and the tree, as it is now, down to the node. The deal itself is not
-changed: it is run on copies of the nodes of the tree. (The interest is not worked out: until there are bonds that accrue interest,
-the principal does not depend on it.)"
+percent of the PSA curve: the collateral is run at that speed, and the tree, as it is now, with its interest (a Z bond's accrual is
+paid as principal), down to the node. The deal itself is not changed: it is run on copies of the nodes of the tree, at the index it was
+last run with, or at 0 if it was not."
   (let* ((root (deal-collateral-for deal name))
          (flows (pool-cash-flows (vector-ref (node-balance root) 0) (collateral-rate root) (collateral-term root)
                                  (collateral-age root) psa))
-         (copy (make-deal :name (deal-name deal) :periods (deal-periods deal))))
+         (copy (make-deal :name (deal-name deal) :periods (deal-periods deal)
+                          :index (if (null? (deal-index deal)) (make-vector (deal-periods deal) 0.0) (deal-index deal)))))
     (dolist (node-name (deal-tree-names deal (node-name root)))
       (let ((node (copy-node (get-node deal node-name))))
         (node-balance-set! node (vector-copy (node-balance node)))
         (node-principal-set! node (vector-copy (node-principal node)))
+        (node-interest-set! node (vector-copy (node-interest node)))
+        (node-accrual-set! node (vector-copy (node-accrual node)))
         (deal-add-node! copy node)))
     (deal-roots-set! copy (list (node-name root)))
-    (node-principal-set! (get-node copy (node-name root)) (car flows))      ; (the balances are worked out again by the run)
-    (deal-run-months! copy #f)
+    (let ((pool (get-node copy (node-name root))))       ; (the balances are worked out again by the run)
+      (node-principal-set! pool (car flows))
+      (node-interest-set! pool (cadr flows)))
+    (deal-run-months! copy)
     (node-principal (get-node copy name))))
 
 (define (pac-check-arguments split deal parent)
@@ -563,26 +680,34 @@ Sets the schedule of the PAC, its balance at the start of each month, from that 
         ((and (vector? index) (>= (vector-length index) (deal-periods deal))) (deal-index-set! deal index))
         (else (error (format "the index is a number, or a vector with a number for each of the {} months, not {}" (deal-periods deal) index)))))
 
-(define (deal-run-months! deal with-interest)
+(define (deal-run-months! deal)
   "Month by month, the interest and then the principal that each node is paid, and the balance it has next. The interest comes first
-because an accrual bond is paid, in principal, what it accrues. Only collateral that has a coupon has its interest paid on."
+because a Z bond is paid, in principal, what it accrues. Only collateral that has a coupon has its interest paid on. A balance is
+its last, and what it accrues, less what it is paid; a notional balance is a share of the balance that it follows."
   (dolist (name (deal-names deal))
     (let ((node (get-node deal name)))
+      (vector-fill! (node-accrual node) 0.0)
       (unless (member name (deal-roots deal))
         (vector-fill! (node-principal node) 0.0)
         (vector-fill! (node-interest node) 0.0))))
   (loop for t from 0 below (deal-periods deal)
         do (begin
-             (when with-interest
-               (dolist (root (deal-roots deal))
-                 (unless (null? (node-coupon (get-node deal root)))
-                   (walk-interest! deal (get-node deal root) t))))
+             (dolist (root (deal-roots deal))
+               (unless (null? (node-coupon (get-node deal root)))
+                 (walk-interest! deal (get-node deal root) t)))
              (dolist (root (deal-roots deal))
                (walk-principal! deal (get-node deal root) t))
              (dolist (name (deal-names deal))
                (let ((node (get-node deal name)))
-                 (vector-set! (node-balance node) (+ t 1)
-                              (- (vector-ref (node-balance node) t) (vector-ref (node-principal node) t)))))))
+                 (unless (node-notional-flag node)
+                   (vector-set! (node-balance node) (+ t 1)
+                                (- (+ (vector-ref (node-balance node) t) (vector-ref (node-accrual node) t))
+                                   (vector-ref (node-principal node) t))))))
+             (dolist (name (deal-names deal))             ; (the notional bonds, after the bonds they follow: those are before them)
+               (let ((node (get-node deal name)))
+                 (when (node-notional-flag node)
+                   (vector-set! (node-balance node) (+ t 1)
+                                (* (node-share node) (vector-ref (node-balance (get-node deal (node-follows node))) (+ t 1)))))))))
   deal)
 
 (define (deal-run! deal &key (index '()))
@@ -590,7 +715,7 @@ because an accrual bond is paid, in principal, what it accrues. Only collateral 
 what the coupons that float are of: a vector with a number for each month, or one number for every month (0.04 is 4%). It can be run
 again, with another index or after a change."
   (deal-set-index! deal index)
-  (deal-run-months! deal #t))
+  (deal-run-months! deal))
 
 ; ---------------------------------------------------------------------------
 ; Looking at it
@@ -598,30 +723,43 @@ again, with another index or after a change."
 
 (define (deal-check deal)
   "#t if the principal and the interest of the deal add up, or an error that says where they do not: in every month, what the
-children of a split were paid adds up to what the parent was paid, no balance has gone below 0, and every node that has a coupon was
-paid exactly the interest it was owed. (The amounts are equal to within deal-tolerance of the collateral.)"
+children of a split were paid adds up to what the parent was paid (and a Z bond's accrual is paid as principal), no balance has gone
+below 0, every node with a coupon was paid, or accrued, exactly the interest it was owed, and a notional bond has no principal and
+is its share of the balance it follows. (The amounts are equal to within deal-tolerance of the collateral.)"
   (let ((tolerance (* deal-tolerance (deal-size deal))))
     (dolist (name (deal-names deal))
       (let* ((node (get-node deal name))
-             (split (node-split node)))
+             (split (node-split node))
+             (children (if (null? split) '() (map (lambda (child) (get-node deal child)) (split-children split)))))
         (loop for t from 0 to (deal-periods deal)
               do (when (< (vector-ref (node-balance node) t) (- tolerance))
                    (error (format "{} owes {} in month {}: it has been paid more than it was owed" name (vector-ref (node-balance node) t) t))))
+        (when (node-notional-flag node)
+          (loop for t from 0 to (deal-periods deal)
+                do (let ((followed (* (node-share node) (vector-ref (node-balance (get-node deal (node-follows node))) t))))
+                     (when (> (abs (- (vector-ref (node-balance node) t) followed)) tolerance)
+                       (error (format "the notional balance of {} is {} in month {}, and it is to be {} of {}, which is {}"
+                                      name (vector-ref (node-balance node) t) t (node-share node) (node-follows node) followed)))))
+          (loop for t from 0 below (deal-periods deal)
+                do (when (> (abs (vector-ref (node-principal node) t)) tolerance)
+                     (error (format "{} is a notional bond, and was paid {} of principal in month {}" name (vector-ref (node-principal node) t) t)))))
         (unless (null? split)
           (loop for t from 0 below (deal-periods deal)
-                do (let ((paid (apply + (map (lambda (child) (vector-ref (node-principal (get-node deal child)) t)) (split-children split)))))
-                     (when (> (abs (- paid (vector-ref (node-principal node) t))) tolerance)
-                       (error (format "the children of {} were paid {} in month {}, and {} was paid {} (has deal-run! been called?)"
-                                      name paid t name (vector-ref (node-principal node) t)))))))
+                do (let ((paid (apply + (map (lambda (child) (vector-ref (node-principal child) t)) children)))
+                         (accrued (apply + (map (lambda (child) (vector-ref (node-accrual child) t)) children))))
+                     (when (> (abs (- paid (+ (vector-ref (node-principal node) t) accrued))) tolerance)
+                       (error (format "the children of {} were paid {} in month {}, and {} was paid {} and its Z bonds accrued {} (has deal-run! been called?)"
+                                      name paid t name (vector-ref (node-principal node) t) accrued))))))
         (unless (null? (node-coupon node))
           (loop for t from 0 below (deal-periods deal)
-                do (let ((due (node-interest-due deal node t)) (paid (vector-ref (node-interest node) t)))
+                do (let ((due (node-interest-due deal node t))
+                         (paid (+ (vector-ref (node-interest node) t) (vector-ref (node-accrual node) t))))
                      (when (> (abs (- due paid)) tolerance)
                        (error (format "{} was paid {:.6g} of interest in month {}, and it is owed {:.6g} (has deal-run! been called?)"
                                       name paid t due)))))
           (unless (null? split)
             (loop for t from 0 below (deal-periods deal)
-                  do (let ((paid (apply + (map (lambda (child) (vector-ref (node-interest (get-node deal child)) t)) (split-children split)))))
+                  do (let ((paid (apply + (map (lambda (child) (+ (vector-ref (node-interest child) t) (vector-ref (node-accrual child) t))) children))))
                        (when (> (abs (- paid (vector-ref (node-interest node) t))) tolerance)
                          (error (format "the children of {} were paid {:.6g} of interest in month {}, and {} was paid {:.6g}"
                                         name paid t name (vector-ref (node-interest node) t))))))))))
@@ -640,6 +778,10 @@ paid exactly the interest it was owed. (The amounts are equal to within deal-tol
 (define (deal-interest-table deal)
   "A table of the interest paid in each month, one row for a month from 1, with a column for each node."
   (deal-table-of deal 1 (deal-periods deal) node-interest))
+
+(define (deal-accrual-table deal)
+  "A table of what each node accrues in each month, one row for a month from 1: a Z bond's interest, which is added to its balance."
+  (deal-table-of deal 1 (deal-periods deal) node-accrual))
 
 (define (deal-coupon-table deal)
   "A table of the coupon of each node in each month, a decimal, at the index the deal was run with (nothing for a node without one)."

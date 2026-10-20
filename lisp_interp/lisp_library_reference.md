@@ -6805,7 +6805,7 @@ pool of mortgages that pays interest and principal each month. A **split** divid
 depth, until the leaves, which are the bonds that trade:
 
 ```
-POOL (the collateral) -- sequential --> A -- sequential --> A1, A2
+POOL (the collateral) -- sequential --> A -- sequential --> A1, A2, Z (an accrual bond)
                                         B -- floater and inverse floater --> B1, B2
 ```
 
@@ -6817,9 +6817,9 @@ millions has to keep its cents.
 #### The nodes
 A **node** (`defstruct node`) has a `name`; a `balance` vector, one element a month and one more, where `balance[t]` is what the node
 owes at the start of month `t` (0 is the start of the deal); a `principal` vector, where `principal[t]` is what it is paid in month
-`t`, by the pool or by its parent's split; an `interest` vector, in the same way; a `coupon`; and a `split`, the one that divides it
+`t`, by the pool or by its parent's split; an `interest` vector, in the same way; an `accrual` vector; a `coupon`; and a `split`, the one that divides it
 among its children, if it has one. A `collateral` and a `tranche` include `node`, so `node-balance`, `node-principal`,
-`node-interest`, `node-coupon` and `node-split` work on either. A tranche with no split is a **bond**, a leaf; one with a split
+`node-interest`, `node-accrual`, `node-coupon` and `node-split` work on either. A tranche with no split is a **bond**, a leaf; one with a split
 passes on what it is paid.
 
 The **coupon** is a function of the index, `(coupon index)`, which gives the annual rate of interest that the node is owed, a decimal
@@ -6843,15 +6843,19 @@ month, and the coupon the interest is at: `(make-collateral :name "POOL" :balanc
 - `(start-deal name collateral)` makes a deal whose root is the collateral. `(deal-add-collateral! deal collateral)` adds another piece of
   collateral, the root of a tree of its own; it pays for as many months as the first (pad the vectors with zeros if need be).
   `(deal-roots deal)` are the names of the roots, and `(deal-root-of deal name)` the root of the tree a node is in.
-- `(deal-sequential! deal parent-name children)` and `(deal-pro-rata! deal parent-name children)` add the `children`, a list of
-  `(name balance)`, as tranches under the parent, and divide the parent's principal among them in that way. The children's balances
-  must add up to the parent's. Nothing is added if there is something wrong.
+- `(deal-sequential! deal parent-name children [:accretion-to name])` and `(deal-pro-rata! deal parent-name children)` add the
+  `children`, a list of `(name balance)`, as tranches under the parent, and divide the parent's principal among them in that way. The
+  children's balances must add up to the parent's. A child written `(name balance z)` in a sequential split is a Z bond: see "Z bonds",
+  below. Nothing is added if there is something wrong.
+- `(deal-io-po! deal parent-name io-name po-name [:io-coupon c])` divides a node into an interest-only and a principal-only bond: see
+  "Interest-only and principal-only bonds", below.
 - `(deal-pac! deal parent-name pac-name companion-name low-psa high-psa)` divides the parent, the collateral or another node, into
   a PAC and its companion: see "A PAC and its companion", below.
 - `(deal-floater-inverse! deal parent-name floater-name inverse-name :cap c [:margin m] [:index-name "SOFR"])` and
   `(deal-premium-discount! deal parent-name premium-name discount-name :premium-coupon p :discount-coupon d)` divide a node with a
   fixed coupon into two bonds with coupons that float or differ: see "Coupons and interest", below.
-- `(deal-add-tranche! deal name balance)` and `(deal-add-split! deal parent-name split)` are what these do: add a tranche, and
+- `(deal-add-tranche! deal name balance [:z #t] [:notional #t] [:follows name])` and `(deal-add-split! deal parent-name split)` are what
+  these do: add a tranche, and
   divide a node by a split among the tranches it names, which are already in the deal. `(make-sequential-split :children names)`
   and `(make-pro-rata-split :children names)` make the splits. If the split works out the sizes of its children (see
   `calculate-sizes`, below), `deal-add-split!` sets their balances from that.
@@ -6868,7 +6872,7 @@ change. `(deal-check deal)` is `#t` if the principal and the interest add up, an
 the children of a split were paid, of each, adds up to what the parent was paid, no balance has gone below 0, and every node with a
 coupon was paid exactly the interest it was owed. (Amounts are equal if they are within `deal-tolerance`, a billionth, of the
 collateral's balance.) `(deal-principal-table deal)`, `(deal-interest-table deal)`, `(deal-coupon-table deal)` (the coupon of each node
-each month, at the index the deal was run with) and `(deal-balance-table deal)` are tables with a row for each month and a column
+each month, at the index the deal was run with), `(deal-accrual-table deal)` (what each Z bond accrues) and `(deal-balance-table deal)` are tables with a row for each month and a column
 for each node, to show with `display-table`.
 
 ```lisp
@@ -6944,8 +6948,38 @@ with an `:index`.
 bond with a coupon above `B`'s and a bond with a coupon below it, in the sizes that make the two pay `B`'s coupon together (the premium
 bond is `B (c - d) / (p - d)`), and pays them principal pro rata.
 
+#### Z bonds
+A Z bond (an accrual bond) is not paid its interest: what it is owed is added to its balance, as its **accrual**, and is paid, as
+principal, to the bonds that are paid ahead of it. Each month `balance[t+1] = balance[t] + accrual - principal`. It is a child of a
+sequential split, written `(name balance z)`: `(deal-sequential! deal "X" '(("A" 40.0) ("B" 30.0) ("Z" 30.0 z)))`. The sequential
+split pays what its Z bonds accrue, with the principal its parent was paid, to its children in order, a Z bond too, in its place in
+the order (so a Z bond is last, usually, and is paid when the bonds before it are paid off), and a Z bond is owed, in a month, what it
+accrues in it. That is why the interest is worked out before the principal. The accrual is neither the parent's interest nor its
+principal, so the parent's balance and its interest are as they were: what the children are paid, in principal, is the parent's and the
+accrual, and what they are paid in interest, with the accrual, is the parent's.
+
+**An accretion directed bond** is paid what the Z bonds accrue first, before the order: `(deal-sequential! deal "X" '(("A" 40.0) ("B" 30.0)
+("Z" 30.0 z)) :accretion-to "B")`. `B` is paid the accrual, up to what it is owed, and then the order is as before, `B` in its place.
+
+A Z bond can only be a child of a sequential split, because only that pays an accrual, and it is not itself divided. An IO or a PO
+is not divided into a Z bond, because it has no principal.
+
+#### Interest-only and principal-only bonds
+`(deal-io-po! deal "X" "IO" "PO")` divides a node into an **interest-only** bond and a **principal-only** bond, each as big as the
+node. The PO is paid all of the principal the node was paid, and none of the interest; the IO is paid all the interest, on a **notional
+balance**, and none of the principal. The notional balance of the IO is a balance, but it follows another's: it is the balance of the PO
+(of the node, which is the same), and declines as the PO is paid. A tranche with `notional-flag` is such a bond. The IO is left out when a
+node's children are added up to its balance, and has no principal; `deal-check` checks both. The IO has the coupon of the node, so that a
+floating coupon has a floating IO; `:io-coupon 0.05` makes a partial strip, an IO that is paid 5%, and a PO that is paid the rest of the
+node's coupon.
+
+The node may be anything but a Z bond, an IO or a PO: the collateral, a PAC, a floater. The IO and the PO can be divided in turn, in any
+way, except into a Z bond: a PO in order, say, or in proportion, and an IO in parts of its notional balance (the children of an IO are
+notional bonds too, each following the IO, and a share of it that is its size: `(deal-sequential! deal "IO" '(("IO1" 40.0) ("IO2" 60.0)))`
+makes one with 40% of the notional, and one with 60%).
+
 #### Another kind of split
-A split is a struct, a type that includes `split`, and what makes a kind of split what it is are its **methods** of four generic
+A split is a struct, a type that includes `split`, and what makes a kind of split what it is are its **methods** of five generic
 functions (see `defgeneric` and `defmethod` in the language manual): `(generic-function-methods pay-principal)` lists the kinds there are.
 
 `(pay-principal split deal parent t)` divides the principal that `parent` was paid in month `t` among the split's children, by
@@ -6956,7 +6990,9 @@ It does not call the splits of the children: `deal-run!` walks the tree, so each
 `(pay-interest split deal parent t)` does the same for the interest: `(pay-child-interest! deal child t cash)` pays the child the interest
 it is owed (`(node-interest-due deal child t)`), up to the cash, and returns the cash left. The method for `split`, any kind, pays the
 children in order, and it is an error if there is some left or not enough; a kind of split that differs overrides it. `(assign-coupons
-split deal parent)` gives the children their coupons, which for a split of any kind are the parent's.
+split deal parent)` gives the children their coupons, which for a split of any kind are the parent's. `(check-split split deal parent)`
+is an error if the split cannot divide the parent: a Z bond is only a child of a sequential split, and an IO/PO split needs an IO that
+follows its PO.
 
 `(calculate-sizes split deal parent)` works out how big the children are, as a list of their starting balances in the order of the
 children, or `'()` if it is not for the split to say, which is what the method for `split`, any kind, does: the sizes are as the children

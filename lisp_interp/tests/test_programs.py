@@ -1544,7 +1544,11 @@ class TestExampleScripts(unittest.TestCase):
                          "200                                     0                                     0",
                          "B, 100,000,000 at 6.25%, is divided into a floater of 69,444,444", "0.00%    0.500%   19.318%      6.250%   #t",
                          "12.00%    9.000%    0.000%      6.250%   #t",
-                         "Two pieces of collateral, G1 and G2; the bonds are S1, S2, T1, T2; the principal and the interest add up: #t"]:
+                         "Two pieces of collateral, G1 and G2; the bonds are S1, S2, T1, T2; the principal and the interest add up: #t",
+                         "In the first month Z accrues 200,000", "to A, in order: A 299,551, B 0", "with B directed: A 99,551, B 200,000",
+                         "Z is paid off in month 360, and A in month 41",
+                         "The IO's notional balance falls from 100,000,000 to 97,136,865 after a year; its first month's interest is 500,000",
+                         "PO1 is paid off in month 70, and PO2 in month 360"]:
             self.assertIn(expected, out)
 
     def test_the_parser_example_reads_a_calculator_and_a_settings_file(self):
