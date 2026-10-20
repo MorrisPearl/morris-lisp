@@ -6800,41 +6800,57 @@ up, paths of a year that grow at the interest rate, and the value of a
 ### Structured deals (a tree of tranches)
 
 (In `lib/deal.lsp`, loaded when you call one of its functions.) A deal is modeled as a **tree**. The root is the collateral, a
-pool of mortgages that pays principal each month. A **split** divides what a node was paid among its children, in order
-(*sequential*) or in proportion to what each is still owed (*pro-rata*), and a child can be divided again, to any depth, until the
-leaves, which are the bonds that trade:
+pool of mortgages that pays interest and principal each month. A **split** divides what a node was paid among its children, in order
+(*sequential*) or in proportion to what each is still owed (*pro-rata*) and so on, and a child can be divided again, to any
+depth, until the leaves, which are the bonds that trade:
 
 ```
 POOL (the collateral) -- sequential --> A -- sequential --> A1, A2
-                                        B -- pro-rata ----> B1, B2
+                                        B -- floater and inverse floater --> B1, B2
 ```
 
-This is the principal of the deal. The interest and the losses go through the same tree by rules of their own, and are to come.
-Everything is in **double precision**: `start-deal` refuses single (see `set-vector-precision!`), because a bond of hundreds of
+A deal can have **more than one piece of collateral**, each the root of a tree of its own. This is the interest and the principal of
+the deal. The losses go through the same tree by rules of their own, and are to come. The cash flows of the collateral are taken as
+they are: its coupon is the interest it pays, and it is up to whatever made them whether there are fees. Everything is in **double precision**: `start-deal` refuses single (see `set-vector-precision!`), because a bond of hundreds of
 millions has to keep its cents.
 
 #### The nodes
 A **node** (`defstruct node`) has a `name`; a `balance` vector, one element a month and one more, where `balance[t]` is what the node
 owes at the start of month `t` (0 is the start of the deal); a `principal` vector, where `principal[t]` is what it is paid in month
-`t`, by the pool or by its parent's split; and a `split`, the one that divides it among its children, if it has one. A
-`collateral` and a `tranche` include `node`, so `node-balance`, `node-principal` and `node-split` work on either. A tranche with
-no split is a **bond**, a leaf; one with a split passes on what it is paid.
+`t`, by the pool or by its parent's split; an `interest` vector, in the same way; a `coupon`; and a `split`, the one that divides it
+among its children, if it has one. A `collateral` and a `tranche` include `node`, so `node-balance`, `node-principal`,
+`node-interest`, `node-coupon` and `node-split` work on either. A tranche with no split is a **bond**, a leaf; one with a split
+passes on what it is paid.
+
+The **coupon** is a function of the index, `(coupon index)`, which gives the annual rate of interest that the node is owed, a decimal
+(0.06 is 6%), for a month in which the index is `index`; a twelfth of it is owed on the node's balance at the start of the month.
+`(constant-coupon 0.06)` is a coupon that is 6% whatever the index. The collateral's coupon is constant; a split gives its children
+coupons when it is added, which are the parent's, for most kinds of split, and for a floater and an inverse floater are formulas.
+Collateral with no coupon makes a deal of principal only.
 
 #### `(collateral-from-psa name balance rate [:term 360] [:age 0] [:psa 100])`
 The collateral node for a pool of level-pay mortgages with this balance, this annual `rate` in percent, and a `term` and `age` in
 months, prepaying at `psa` percent of the PSA curve (100 is the standard curve, 0 none; see `prepayment_model.lsp`). It has its
 cash flows worked out, for the `term - age` months to run: the principal and interest it pays, and its balance, as
 `collateral-principal`, `collateral-interest` and `collateral-balance`. `(pool-cash-flows balance rate term age psa)` gives the
-same three vectors as a list. To use your own cash flows, make the node yourself:
-`(make-collateral :name "POOL" :balance balances :principal principals)`.
+same three vectors as a list. The pool pays its interest at its rate, so its coupon is `(constant-coupon (/ rate 100))`. To use your own
+cash flows, make the node yourself, with the balance (one element more than the months), the principal and the interest for each
+month, and the coupon the interest is at: `(make-collateral :name "POOL" :balance balances :principal principals :interest interests
+:coupon (constant-coupon 0.06))`. The cash flows only have to be right for the splits to divide: where they come from does not matter.
+(Collateral that is to be run at another speed, as a PAC needs, is made by `collateral-from-psa`.)
 
 #### Building a deal
-- `(start-deal name collateral)` makes a deal whose root is the collateral.
+- `(start-deal name collateral)` makes a deal whose root is the collateral. `(deal-add-collateral! deal collateral)` adds another piece of
+  collateral, the root of a tree of its own; it pays for as many months as the first (pad the vectors with zeros if need be).
+  `(deal-roots deal)` are the names of the roots, and `(deal-root-of deal name)` the root of the tree a node is in.
 - `(deal-sequential! deal parent-name children)` and `(deal-pro-rata! deal parent-name children)` add the `children`, a list of
   `(name balance)`, as tranches under the parent, and divide the parent's principal among them in that way. The children's balances
   must add up to the parent's. Nothing is added if there is something wrong.
 - `(deal-pac! deal parent-name pac-name companion-name low-psa high-psa)` divides the parent, the collateral or another node, into
   a PAC and its companion: see "A PAC and its companion", below.
+- `(deal-floater-inverse! deal parent-name floater-name inverse-name :cap c [:margin m] [:index-name "SOFR"])` and
+  `(deal-premium-discount! deal parent-name premium-name discount-name :premium-coupon p :discount-coupon d)` divide a node with a
+  fixed coupon into two bonds with coupons that float or differ: see "Coupons and interest", below.
 - `(deal-add-tranche! deal name balance)` and `(deal-add-split! deal parent-name split)` are what these do: add a tranche, and
   divide a node by a split among the tranches it names, which are already in the deal. `(make-sequential-split :children names)`
   and `(make-pro-rata-split :children names)` make the splits. If the split works out the sizes of its children (see
@@ -6843,12 +6859,17 @@ same three vectors as a list. To use your own cash flows, make the node yourself
   `(deal-leaves deal)` are the bonds.
 
 #### Running it, and looking at it
-`(deal-run! deal)` works out, month by month, what each node is paid and what it owes. Each month it walks down the tree: the
-split of the root divides what the pool paid, then each child's split divides what that child was paid, and so on to the
-leaves. It can be run again. `(deal-check deal)` is `#t` if the principal adds up, and an error that says where if not: in every
-month, what the children of a split were paid adds up to what the parent was paid, and no balance has gone below 0. (Amounts are
-equal if they are within `deal-tolerance`, a billionth, of the pool's balance.) `(deal-principal-table deal)` and
-`(deal-balance-table deal)` are tables with a row for each month and a column for each node, to show with `display-table`.
+`(deal-run! deal [:index index])` works out, month by month, what each node is paid and what it owes. Each month it walks down each
+tree, first for the **interest** and then for the **principal** (because an accrual bond, which is to come, is paid in principal what
+it accrues): the split of the root divides what the pool paid, then each child's split divides what that child was paid, and so on
+to the leaves; and then each node's balance for next month is worked out. The `:index` is what coupons that float are of: a
+vector with a number for each month, or one number for every month (0.04 is 4%). It can be run again, with another index or after a
+change. `(deal-check deal)` is `#t` if the principal and the interest add up, and an error that says where if not: in every month, what
+the children of a split were paid, of each, adds up to what the parent was paid, no balance has gone below 0, and every node with a
+coupon was paid exactly the interest it was owed. (Amounts are equal if they are within `deal-tolerance`, a billionth, of the
+collateral's balance.) `(deal-principal-table deal)`, `(deal-interest-table deal)`, `(deal-coupon-table deal)` (the coupon of each node
+each month, at the index the deal was run with) and `(deal-balance-table deal)` are tables with a row for each month and a column
+for each node, to show with `display-table`.
 
 ```lisp
 (define pool (make-collateral :name "POOL" :balance #(120.0 90.0 60.0 30.0 0.0) :principal #(30.0 30.0 30.0 30.0)))
@@ -6902,8 +6923,29 @@ needs to run it at another speed. A PAC split has two children, the PAC and the 
 At 200% PSA, between the two speeds, the PAC is never off its schedule. (`deal-pac!` is made of two methods for `pac-split`:
 `calculate-sizes`, which works out the size and the schedule, and `pay-principal`, the rule above.)
 
+#### Coupons and interest
+Each month a node is owed a twelfth of its coupon, on its balance at the start of the month, and is paid it out of what its parent was
+paid: the split of the parent divides the parent's interest as it divides its principal. In a deal that is right, what the children are
+owed adds up to exactly what the parent was paid, whatever the index is: a split that finds some interest left over, or not enough,
+says so (`the split of POOL was paid 1.2 of interest in month 0, and its children are owed 1.7 (there is not enough)`). The coupons of
+a split's children are given when the split is added, by `assign-coupons`: for most kinds they are the parent's.
+
+**A floater and an inverse floater.** `(deal-floater-inverse! deal "B" "F" "I" :cap 0.09 :margin 0.005 :index-name "SOFR")` divides
+`B`, which has a fixed coupon `c`, into a floater `F` and an inverse floater `I`. The floater's coupon is the index plus the margin, to
+the cap; the inverse floater's is a constant less a multiple of the index, to 0. They are sized, and their formulas worked out, so that
+together they pay `B`'s coupon on `B`'s balance at every index: with the balance `B` and the cap `C`, the floater is `B c / C`, the
+inverse floater is the rest, the leverage of the inverse floater is floater / inverse floater, and its constant is the leverage times
+`(C - margin)`. (These are slots of the split, `floater-inverse-split-leverage` and `-constant`.) The cap has to be above the coupon, and
+the margin from 0 up to the cap; the index is taken as 0 if it is negative. The two are paid principal **pro rata**, which keeps them in
+the proportion that makes this so. The index name is for whoever reads it, and nothing uses it yet. A deal with a floater has to be run
+with an `:index`.
+
+**A premium and a discount.** `(deal-premium-discount! deal "B" "P" "D" :premium-coupon 0.09 :discount-coupon 0.05)` divides `B` into a
+bond with a coupon above `B`'s and a bond with a coupon below it, in the sizes that make the two pay `B`'s coupon together (the premium
+bond is `B (c - d) / (p - d)`), and pays them principal pro rata.
+
 #### Another kind of split
-A split is a struct, a type that includes `split`, and what makes a kind of split what it is are its **methods** of two generic
+A split is a struct, a type that includes `split`, and what makes a kind of split what it is are its **methods** of four generic
 functions (see `defgeneric` and `defmethod` in the language manual): `(generic-function-methods pay-principal)` lists the kinds there are.
 
 `(pay-principal split deal parent t)` divides the principal that `parent` was paid in month `t` among the split's children, by
@@ -6911,10 +6953,16 @@ calling `(pay-child! child t cash [floor])` for each one it pays, which pays the
 up to the `cash`, but not so that it owes less than the `floor` (0 unless given, so that it is paid off), and returns the cash left.
 It does not call the splits of the children: `deal-run!` walks the tree, so each kind of split does only its own part.
 
+`(pay-interest split deal parent t)` does the same for the interest: `(pay-child-interest! deal child t cash)` pays the child the interest
+it is owed (`(node-interest-due deal child t)`), up to the cash, and returns the cash left. The method for `split`, any kind, pays the
+children in order, and it is an error if there is some left or not enough; a kind of split that differs overrides it. `(assign-coupons
+split deal parent)` gives the children their coupons, which for a split of any kind are the parent's.
+
 `(calculate-sizes split deal parent)` works out how big the children are, as a list of their starting balances in the order of the
 children, or `'()` if it is not for the split to say, which is what the method for `split`, any kind, does: the sizes are as the children
 were made. `deal-add-split!` calls it, sets the balances, and checks that they add up to the parent's. A PAC split sizes its PAC
-from what its parent is paid at two speeds; a floater and inverse floater split will size them from a cap.
+from what its parent is paid at two speeds, a floater and inverse floater split from a cap, and a premium and discount split from the
+two coupons.
 
 A new kind includes `split`, or one of the kinds there are, and has methods of its own; `(call-next-method)` calls the method of the kind
 that it extends. This one does what a sequential split does, and says what it is dividing:

@@ -83,3 +83,41 @@
 (dolist (psa '(120 200 280))
   (let ((deal (build-two-pacs psa)))
     (display (format "{:>10}   {:>35,.0f}   {:>35,.0f}\n" psa (miss deal "PAC1" "POOL") (miss deal "PAC2" "COMP1")))))
+
+; --- Interest: a floater and an inverse floater ---
+; Each bond has a coupon, a function of the index, and is paid a twelfth of it on its balance each month, before the principal. A
+; floater and an inverse floater are sized, from the cap, so that together they pay the coupon of the bond they are divided out of,
+; whatever the index is.
+(define (build-floating index)
+  (let* ((pool (collateral-from-psa "POOL" 250000000 6.25 :term 360 :psa 150))
+         (deal (start-deal "Floating" pool)))
+    (deal-sequential! deal "POOL" '(("A" 150000000) ("B" 100000000)))
+    (deal-floater-inverse! deal "B" "F" "I" :cap 0.09 :margin 0.005 :index-name "SOFR")
+    (deal-run! deal :index index)
+    deal))
+
+(define (first-month-coupon deal name) (vector-ref (table-column (deal-coupon-table deal) name) 0))
+(define (first-balance deal name) (vector-ref (node-balance (get-node deal name)) 0))
+
+(define floating (build-floating 0.03))
+(display (format "\nB, {:,.0f} at {:.2%}, is divided into a floater of {:,.0f} (the index plus 0.5%, to 9%) and an inverse floater of {:,.0f}.\n"
+                 (first-balance floating "B") (first-month-coupon floating "B") (first-balance floating "F") (first-balance floating "I")))
+(display "Index    floater   inverse   the two together\n")
+(dolist (index '(0.0 0.03 0.05 0.08 0.12))
+  (let* ((deal (build-floating index))
+         (floater (first-month-coupon deal "F"))
+         (inverse (first-month-coupon deal "I"))
+         (together (/ (+ (* floater (first-balance deal "F")) (* inverse (first-balance deal "I"))) (first-balance deal "B"))))
+    (display (format "{:>5.2%}  {:>8.3%}  {:>8.3%}  {:>10.3%}   {}\n" index floater inverse together (deal-check deal)))))
+
+; --- More than one piece of collateral ---
+; Each piece is the root of a tree of its own.
+(define group1 (collateral-from-psa "G1" 100000000 6.0 :term 360 :psa 150))
+(define group2 (collateral-from-psa "G2" 50000000 7.0 :term 360 :psa 150))
+(define two-groups (start-deal "Two groups" group1))
+(deal-add-collateral! two-groups group2)
+(deal-sequential! two-groups "G1" '(("S1" 60000000) ("S2" 40000000)))
+(deal-pro-rata! two-groups "G2" '(("T1" 20000000) ("T2" 30000000)))
+(deal-run! two-groups)
+(display (format "\nTwo pieces of collateral, {}; the bonds are {}; the principal and the interest add up: {}\n"
+                 (string-join (deal-roots two-groups) " and ") (string-join (deal-leaves two-groups) ", ") (deal-check two-groups)))

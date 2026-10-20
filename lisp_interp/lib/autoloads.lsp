@@ -94,22 +94,35 @@
 
 ; Structured deals as a tree: a pool, divided by splits into tranches (see "Structured deals" in lisp_library_reference.md)
 (lazy-load "deal.lsp"
-  start-deal collateral-from-psa deal-sequential! deal-pro-rata! deal-pac! deal-principal-at deal-split! deal-add-tranche!
-  deal-add-split! deal-add-node! get-node deal-run! deal-check deal-principal-table deal-balance-table deal-leaves
-  pool-cash-flows node-owed pay-child! check-all-paid! walk-principal! deal-size deal-children-names deal-check-total
-  collateral-age collateral-age-set! collateral-balance collateral-balance-set! collateral-interest
-  collateral-interest-set! collateral-name collateral-name-set! collateral-principal collateral-principal-set!
-  collateral-psa collateral-psa-set! collateral-rate collateral-rate-set! collateral-split collateral-split-set!
-  collateral-term collateral-term-set! collateral? copy-collateral copy-deal copy-node copy-pac-split copy-pro-rata-split
-  copy-sequential-split copy-split copy-tranche deal-name deal-name-set! deal-names deal-names-set! deal-nodes
-  deal-nodes-set! deal-periods deal-periods-set! deal-root deal-root-set! deal? make-collateral make-deal make-node
-  make-pac-split make-pro-rata-split make-sequential-split make-split make-tranche node-balance node-balance-set!
-  node-name node-name-set! node-principal node-principal-set! node-split node-split-set! node? pac-split-children
-  pac-split-children-set! pac-split-high-psa pac-split-high-psa-set! pac-split-low-psa pac-split-low-psa-set!
-  pac-split-schedule pac-split-schedule-set! pac-split? pro-rata-split-children pro-rata-split-children-set!
-  pro-rata-split? sequential-split-children sequential-split-children-set! sequential-split? split-children
-  split-children-set! split? tranche-balance tranche-balance-set! tranche-name tranche-name-set! tranche-principal
-  tranche-principal-set! tranche-split tranche-split-set! tranche? pac-check-arguments)
+  start-deal deal-add-collateral! collateral-from-psa constant-coupon deal-sequential! deal-pro-rata! deal-pac!
+  deal-floater-inverse! deal-premium-discount! deal-split! deal-add-tranche! deal-add-split! deal-add-node! get-node
+  deal-run! deal-check deal-principal-table deal-interest-table deal-coupon-table deal-balance-table deal-leaves
+  deal-root-of deal-tree-names deal-index-at pool-cash-flows node-owed pay-child! pay-child-interest! node-coupon-rate
+  node-interest-due check-all-paid! walk-principal! walk-interest! deal-principal-at deal-size deal-children-names
+  collateral-age collateral-age-set! collateral-balance collateral-balance-set! collateral-coupon collateral-coupon-set!
+  collateral-interest collateral-interest-set! collateral-name collateral-name-set! collateral-principal
+  collateral-principal-set! collateral-psa collateral-psa-set! collateral-rate collateral-rate-set! collateral-split
+  collateral-split-set! collateral-term collateral-term-set! collateral? copy-collateral copy-deal
+  copy-floater-inverse-split copy-node copy-pac-split copy-premium-discount-split copy-pro-rata-split
+  copy-sequential-split copy-split copy-tranche deal-check-new-children deal-check-total deal-collateral-for deal-index
+  deal-index-set! deal-name deal-name-set! deal-names deal-names-set! deal-nodes deal-nodes-set! deal-periods
+  deal-periods-set! deal-roots deal-roots-set! deal-run-months! deal-set-index! deal-table-of deal? floater-inverse-sizes
+  floater-inverse-split-cap floater-inverse-split-cap-set! floater-inverse-split-children
+  floater-inverse-split-children-set! floater-inverse-split-constant floater-inverse-split-constant-set!
+  floater-inverse-split-index-name floater-inverse-split-index-name-set! floater-inverse-split-leverage
+  floater-inverse-split-leverage-set! floater-inverse-split-margin floater-inverse-split-margin-set!
+  floater-inverse-split? index-rate make-collateral make-deal make-floater-inverse-split make-node make-pac-split
+  make-premium-discount-split make-pro-rata-split make-sequential-split make-split make-tranche node-balance
+  node-balance-set! node-coupon node-coupon-set! node-interest node-interest-set! node-name node-name-set! node-principal
+  node-principal-set! node-split node-split-set! node? pac-check-arguments pac-split-children pac-split-children-set!
+  pac-split-high-psa pac-split-high-psa-set! pac-split-low-psa pac-split-low-psa-set! pac-split-schedule
+  pac-split-schedule-set! pac-split? parent-coupon-rate premium-discount-sizes premium-discount-split-children
+  premium-discount-split-children-set! premium-discount-split-discount-coupon premium-discount-split-discount-coupon-set!
+  premium-discount-split-premium-coupon premium-discount-split-premium-coupon-set! premium-discount-split?
+  pro-rata-split-children pro-rata-split-children-set! pro-rata-split? sequential-split-children
+  sequential-split-children-set! sequential-split? split-children split-children-set! split? tranche-balance
+  tranche-balance-set! tranche-coupon tranche-coupon-set! tranche-interest tranche-interest-set! tranche-name
+  tranche-name-set! tranche-principal tranche-principal-set! tranche-split tranche-split-set! tranche?)
 
 ; Templates of text and SQL
 (lazy-load "template.lsp"

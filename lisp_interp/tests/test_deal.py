@@ -408,7 +408,7 @@ class TestSizesAreWorkedOutBySplits(DealTestCase):
         self.a_pool_paying(30.0, 4)
         self.run_lisp("""(define split (make-sequential-split :children '("A" "B")))""")
         self.assertShows("(calculate-sizes split deal pool)", "()")
-        self.assertShows("(generic-function-methods calculate-sizes)", "(split pac-split)")
+        self.assertShows("(generic-function-methods calculate-sizes)", "(split floater-inverse-split premium-discount-split pac-split)")
 
 
 class TestARandomDeal(DealTestCase):

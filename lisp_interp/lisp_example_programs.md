@@ -1435,7 +1435,9 @@ to what each is owed (`deal-pro-rata!`). The program builds the deal for a slow 
 first months' principal in a table. A second part divides a pool into a PAC and its companion (`deal-pac!`), sized from the pool at
 100% and 300% PSA, and shows what the PAC owes after five years by schedule and in fact at five speeds: exactly on schedule at any
 speed between the two, and off it outside; and a second PAC out of the first one's companion, sized from what the companion is paid at
-two narrower speeds. The library manual's [Structured
+two narrower speeds. The interest goes down the same tree: the program divides a bond into a floater and an inverse floater, sized from a cap
+so that the two pay the bond's coupon whatever the index is, and shows their coupons at five levels of the index. And a last deal has two
+pieces of collateral, each the root of a tree of its own. The library manual's [Structured
 deals](lisp_library_reference.md#structured-deals-a-tree-of-tranches) says what each part is and how to make another kind of split.
 
 ## Writing an example

@@ -1541,7 +1541,10 @@ class TestExampleScripts(unittest.TestCase):
                          "The PAC is 162,827,265 of the pool's 250,000,000", "300                101     98,475,185   98,475,185",
                          "600                 33     98,475,185   46,471,481", "50                360     98,475,185  121,287,872",
                          "Two PACs: PAC1 is paid on schedule", "120                                     0                            16,663,232",
-                         "200                                     0                                     0"]:
+                         "200                                     0                                     0",
+                         "B, 100,000,000 at 6.25%, is divided into a floater of 69,444,444", "0.00%    0.500%   19.318%      6.250%   #t",
+                         "12.00%    9.000%    0.000%      6.250%   #t",
+                         "Two pieces of collateral, G1 and G2; the bonds are S1, S2, T1, T2; the principal and the interest add up: #t"]:
             self.assertIn(expected, out)
 
     def test_the_parser_example_reads_a_calculator_and_a_settings_file(self):
