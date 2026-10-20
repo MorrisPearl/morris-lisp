@@ -154,3 +154,49 @@
                  (first-month strips deal-interest-table "IO") (first-month strips deal-principal-table "PO")))
 (display (format "PO1 is paid off in month {}, and PO2 in month {}; the principal and the interest add up: {}\n"
                  (month-paid-off strips "PO1") (month-paid-off strips "PO2") (deal-check strips)))
+
+; --- Losses, and interest shortfalls ---
+; A loss is balance written off, with no cash. A sequential split writes down its last bond first; a split made with :losses 'pro-rata
+; shares a loss by what each bond has left. Here the B bonds go first, from the bottom up, and then the A bonds share what is left.
+; The pool is given by its cash flows (in millions): where they come from does not matter to the deal.
+(define (monthly-flows balance coupon principals losses)
+  (let ((balances (list balance)))
+    (loop for p in principals for l in losses
+          do (push (- (car balances) p l) balances))
+    (list (list->vector (reverse balances))
+          (list->vector (map (lambda (b) (* b (/ coupon 12.0))) (reverse (cdr balances))))
+          (list->vector principals)
+          (list->vector losses))))
+
+(define (lossy-deal losses-of-a-and-b)
+  (let* ((flows (monthly-flows 100.0 0.06 '(20.0 20.0 15.0 10.0 10.0) '(0.0 25.0 0.0 0.0 0.0)))
+         (pool (make-collateral :name "POOL" :balance (car flows) :interest (cadr flows) :principal (caddr flows)
+                                :loss (cadddr flows) :coupon (constant-coupon 0.06)))
+         (deal (start-deal "Losses" pool)))
+    (deal-sequential! deal "POOL" '(("A" 80.0) ("B" 20.0)))
+    (deal-sequential! deal "A" '(("A1" 50.0) ("A2" 30.0)) :losses losses-of-a-and-b)
+    (deal-sequential! deal "B" '(("B1" 15.0) ("B2" 5.0)))
+    (deal-run! deal)
+    deal))
+
+(define lossy (lossy-deal 'pro-rata))
+(define (written-down deal name) (vector-ref (table-column (deal-loss-table deal) name) 1))
+(display (format "\nThe pool loses 25 in the second month. B2 is written down by {}, B1 by {}, and the A bonds share the other {}: A1 {}, A2 {}.\n"
+                 (written-down lossy "B2") (written-down lossy "B1") (written-down lossy "A") (written-down lossy "A1") (written-down lossy "A2")))
+(define lossy-in-order (lossy-deal 'reverse))
+(display (format "With the A bonds written down from the bottom up, too, A2 takes all of it: A1 {}, A2 {}. The principal and the interest add up: {}\n"
+                 (written-down lossy-in-order "A1") (written-down lossy-in-order "A2") (deal-check lossy-in-order)))
+
+; If the interest the pool pays is less than the bonds are owed, the deal has to be started with :shortfalls #t: the bonds that go without are owed
+; what they were not paid, with interest at their coupon, and are paid it when there is cash.
+(define short-pool (make-collateral :name "POOL" :balance #(100.0 80.0 60.0 40.0 20.0 0.0) :principal #(20.0 20.0 20.0 20.0 20.0)
+                                    :interest #(0.45 0.4 0.35 0.2 0.1) :coupon (constant-coupon 0.06)))
+(define short-deal (start-deal "Shortfalls" short-pool :shortfalls #t))
+(deal-sequential! short-deal "POOL" '(("S" 80.0) ("J" 20.0)))
+(deal-run! short-deal)
+(define (month-of deal table-of name month) (vector-ref (table-column (table-of deal) name) month))
+(display (format "\nThe pool pays 0.45 of interest in the first month, and the bonds are owed 0.5. S is paid {:.3f}, and J {:.3f}, which is a shortfall of {:.3f}.\n"
+                 (month-of short-deal deal-interest-table "S" 0) (month-of short-deal deal-interest-table "J" 0)
+                 (month-of short-deal deal-shortfall-table "J" 0)))
+(display (format "The pool pays 0.4 in the second month: S is paid its 0.3 and J the other 0.1, of the 0.15025 it is owed (0.1, and the 0.05 carried with a month's interest), so J is short by {:.5f}. The principal and the interest add up: {}\n"
+                 (month-of short-deal deal-shortfall-table "J" 1) (deal-check short-deal)))

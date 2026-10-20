@@ -1548,7 +1548,11 @@ class TestExampleScripts(unittest.TestCase):
                          "In the first month Z accrues 200,000", "to A, in order: A 299,551, B 0", "with B directed: A 99,551, B 200,000",
                          "Z is paid off in month 360, and A in month 41",
                          "The IO's notional balance falls from 100,000,000 to 97,136,865 after a year; its first month's interest is 500,000",
-                         "PO1 is paid off in month 70, and PO2 in month 360"]:
+                         "PO1 is paid off in month 70, and PO2 in month 360",
+                         "The pool loses 25 in the second month. B2 is written down by 5.0, B1 by 15.0, and the A bonds share the other 5.0: A1 1.25, A2 3.75.",
+                         "A2 takes all of it: A1 0.0, A2 5.0. The principal and the interest add up: #t",
+                         "S is paid 0.400, and J 0.050, which is a shortfall of 0.050.",
+                         "so J is short by 0.05025"]:
             self.assertIn(expected, out)
 
     def test_the_parser_example_reads_a_calculator_and_a_settings_file(self):

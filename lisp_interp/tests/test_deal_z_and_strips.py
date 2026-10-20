@@ -203,9 +203,9 @@ class TestInterestOnlyAndPrincipalOnly(StripsTestCase):
 
     def test_deal_check_finds_a_notional_bond_that_has_principal_or_is_not_what_it_follows(self):
         self.a_strip()
-        self.run_lisp('(vector-set! (node-balance (get-node deal "IO")) 2 49.0)')
-        self.assertLispError("(deal-check deal)", "the notional balance of IO is 49.0 in month 2")
-        self.run_lisp("(deal-run! deal)")
+        self.run_lisp('(node-share-set! (get-node deal "IO") 0.9)')
+        self.assertLispError("(deal-check deal)", "the notional balance of IO is 100.0 in month 0, and it is to be 0.9 of PO")
+        self.run_lisp('(node-share-set! (get-node deal "IO") 1.0) (deal-run! deal)')
         self.run_lisp('(vector-increment! (node-principal (get-node deal "IO")) 1 1.0) (vector-increment! (node-principal (get-node deal "PO")) 1 -1.0)')
         self.assertLispError("(deal-check deal)", "IO is a notional bond, and was paid 1.0 of principal in month 1")
 

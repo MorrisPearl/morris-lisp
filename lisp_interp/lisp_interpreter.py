@@ -70,7 +70,8 @@ lisp_core.py imports none of the other files, so it can be read on its own.
     tools/                build_pool_dataset.py (Freddie Mac data -> CSV)
 
 WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md; the
-functions for data, models, and investments are in lisp_library_reference.md)
+functions for data, models, and investments are in lisp_library_reference.md, and the
+structured-deal (CMO) model of lib/deal.lsp is in lisp_cmo_manual.md)
   - integers, floats, strings, symbols, keywords (:name), booleans, lists
   - vectors of numbers, strings, and/or dates, #(1 2 3), backed by numpy
     arrays so a vector of millions of numbers stays compact

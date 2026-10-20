@@ -10,11 +10,12 @@ once. Several of the programs are after chapters of Peter Norvig's classic
 this interpreter, and the notes say where its rules (`#f` is the only false,
 vectors hold only numbers, strings, and dates) change what the book does.
 
-There are three documents. The **language manual**,
+There are four documents. The **language manual**,
 [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the
 syntax, the special forms and macros, and the general builtins. The **library
 manual**, [lisp_library_reference.md](lisp_library_reference.md), covers
-getting data, models, and investments. **This one is about the programs**: the
+getting data, models, and investments, and the **CMO manual**, [lisp_cmo_manual.md](lisp_cmo_manual.md), covers the structured-deal model.
+**This one is about the programs**: the
 language and library documents say what each function does; this says how
 whole programs are put together out of them. A section name in quotes is a
 section of the language manual, unless it says otherwise.
@@ -1427,7 +1428,7 @@ The last section of the notebook is a grid of CMO tranches: click one, and a pan
 
 ---
 
-`deal_example.lsp` needs nothing. It models a structured deal as a tree: the collateral, a pool of mortgages that pays principal each
+`deal_example.lsp` needs nothing. It models a structured deal as a tree (the model is described in the [CMO manual](lisp_cmo_manual.md)): the collateral, a pool of mortgages that pays principal each
 month, is the root, and **splits** divide the principal among tranches, which can be divided again until the bonds at the leaves.
 Here the pool goes to two tranches in order (`deal-sequential!`), the first to two bonds in order, and the second to two in proportion
 to what each is owed (`deal-pro-rata!`). The program builds the deal for a slow and for a fast prepayment speed, runs it
@@ -1437,9 +1438,10 @@ first months' principal in a table. A second part divides a pool into a PAC and 
 speed between the two, and off it outside; and a second PAC out of the first one's companion, sized from what the companion is paid at
 two narrower speeds. The interest goes down the same tree: the program divides a bond into a floater and an inverse floater, sized from a cap
 so that the two pay the bond's coupon whatever the index is, and shows their coupons at five levels of the index. A bond that accrues (a Z bond) pays the bonds before it,
-and a bond is divided into an interest-only and a principal-only bond. And a last deal has two pieces of collateral, each the root of
-a tree of its own. The library manual's [Structured
-deals](lisp_library_reference.md#structured-deals-a-tree-of-tranches) says what each part is and how to make another kind of split.
+and a bond is divided into an interest-only and a principal-only bond. A deal has two pieces of collateral, each the root of
+a tree of its own. And a last part has a pool that **loses** balance, written down from the bottom up (the B bonds), and then shared by what the A bonds have
+left, and a pool that pays less **interest** than the bonds are owed, so that a bond has a shortfall, carried with interest. The
+[CMO manual](lisp_cmo_manual.md) says what each part is and how to make another kind of split.
 
 ## Writing an example
 

@@ -67,6 +67,7 @@ EXAMPLES = os.path.join(HERE, "examples")
 REFERENCE_DOC = os.path.join(HERE, "lisp_interpreter_reference.md")
 LIBRARY_DOC = os.path.join(HERE, "lisp_library_reference.md")
 EXAMPLES_DOC = os.path.join(HERE, "lisp_example_programs.md")
+CMO_DOC = os.path.join(HERE, "lisp_cmo_manual.md")
 
 
 # ---------------------------------------------------------------------------

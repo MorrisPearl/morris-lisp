@@ -100,7 +100,7 @@ class TestInterest(InterestTestCase):
         self.assertLispError("(deal-check deal)", "A was paid 1 of interest in month 0, and it is owed 0.5")
         self.run_lisp("(deal-run! deal)")
         self.run_lisp('(node-coupon-set! (get-node deal "A") (constant-coupon 0.24))')
-        self.assertLispError("(deal-check deal)", "A was paid 0.5 of interest in month 0, and it is owed 1 (has deal-run!")
+        self.assertLispError("(deal-check deal)", "the coupons of the children of POOL do not add up to its own: they are owed 1.7 in month 0, and it 1.2")
 
     def test_a_node_without_a_coupon_in_a_deal_that_has_one_is_an_error(self):
         self.a_deal()

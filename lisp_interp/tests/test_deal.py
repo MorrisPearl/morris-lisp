@@ -165,7 +165,7 @@ class TestTheSplitsAreMethods(DealTestCase):
 
     def test_a_split_has_only_its_children_as_data(self):
         self.run_lisp("""(define s (make-pac-split :children '("A" "B") :low-psa 100 :high-psa 300))""")
-        self.assertShows("s", '#S(pac-split :children ("A" "B") :low-psa 100 :high-psa 300 :schedule ())')
+        self.assertShows("s", '#S(pac-split :children ("A" "B") :loss-rule reverse :low-psa 100 :high-psa 300 :schedule ())')
 
 
 class TestThePac(DealTestCase):

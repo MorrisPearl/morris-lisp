@@ -66,7 +66,8 @@ class LispKernel(IPythonKernel):
         "Every cell is plain Lisp source. Charts render inline; "
         "(display-table ...) renders as a table.\n"
         "See lisp_interpreter_reference.md for the language and its general builtins,\n"
-        "lisp_library_reference.md for data, models, and investments, and\n"
+        "lisp_library_reference.md for data, models, and investments,\n"
+        "lisp_cmo_manual.md for the structured-deal (CMO) model, and\n"
         "lisp_example_programs.md for programs to read."
     )
 

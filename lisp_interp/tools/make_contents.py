@@ -1,6 +1,7 @@
 """Rebuild the "## Contents" list at the top of each document --
 lisp_interpreter_reference.md (the language), lisp_library_reference.md
-(the library), and lisp_example_programs.md (the example programs) -- from its
+(the library), lisp_example_programs.md (the example programs), and
+lisp_cmo_manual.md (the CMO model) -- from its
 headings: every ## and ### heading, plus each form's short #### heading in
 "Special forms and standard macros". The links are to GitHub's anchors for
 the headings. Run it after adding or renaming a section:
@@ -13,7 +14,7 @@ import re
 
 HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 MANUALS = [os.path.join(HERE, "lisp_interpreter_reference.md"), os.path.join(HERE, "lisp_library_reference.md"),
-           os.path.join(HERE, "lisp_example_programs.md")]
+           os.path.join(HERE, "lisp_example_programs.md"), os.path.join(HERE, "lisp_cmo_manual.md")]
 
 
 def anchor_of(title):
