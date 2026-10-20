@@ -3954,6 +3954,52 @@ it, or if `instance` isn't an instance of the type of `accessor`. A method
 given to a single instance (`(make-dog :speak f)`) can call `(call-super
 dog-speak self)` too: it goes to `dog`'s parent.
 
+#### `(defgeneric name (parameter...) [documentation])`, `(defmethod name ((parameter type) parameter...) body...)`
+Generic functions, as in Common Lisp: a function whose **method** is chosen by the type of its first argument. `defmethod` adds
+a method for a struct type (made by `defstruct`), written like a function whose first parameter says its type,
+`((shape circle) ...)`. Calling the function runs the method for the type of the first argument; if it has none, the method for the type
+that its type includes (see `defstruct`), and so on up. A method for the type `t`, or whose first parameter has no type, is for any other
+argument, and the last resort. The other parameters are a function's, with `&optional`, `&key` and `&rest`. If no method
+applies, the error says what the function has methods for.
+
+```lisp
+(defstruct shape (name "shape"))
+(defstruct (circle (:include shape)) (r 1))
+(defstruct (square (:include shape)) (side 1))
+
+(defmethod area ((s circle)) (* 3 (circle-r s) (circle-r s)))
+(defmethod area ((s square)) (* (square-side s) (square-side s)))
+
+(area (make-circle :r 2))                  ; => 12
+(map area (list (make-circle) (make-square :side 5)))   ; => (3 25)
+(generic-function-methods area)            ; => (circle square)
+```
+
+A function's methods are added one at a time, each next to its own type, and the function is made by the first `defmethod`, or by
+`defgeneric`, which says so and may say what the parameters are and what it is for. `defgeneric` of a function that is generic
+leaves it, with its methods, as it is; of a function that is not (a stand-in that `lazy-load` made, say), it makes it generic.
+`defmethod` of a function that is not generic is an error. A method is found by the *name* of the type, so a type defined again
+keeps its methods.
+
+**`(call-next-method)`**, in the body of a method, calls the method for the type that this one's type includes, with the arguments
+this method was given, or with others if it is given some (all of them: `(call-next-method s 10)`). **`(next-method-p)`** is `#t` if there
+is such a method. They are the way that a method builds on the one it extends:
+
+```lisp
+(defmethod label ((s shape)) (string-append "shape " (shape-name s)))
+(defmethod label ((s circle)) (string-append "circle, " (call-next-method)))
+(label (make-circle :name "c"))            ; => "circle, shape c"
+(label (make-square :name "q"))            ; => "shape q"
+```
+
+`(generic-function? f)` is `#t` for a generic function, and `(generic-function-methods f)` lists the types it has methods for, in the
+order they were defined (`t` is the method for any argument). A generic function is called like any function, and can be passed
+to `map`; a method that calls itself or another in tail position runs in constant stack space.
+
+This is one way to have behavior that depends on a type; the other, in the sections above, is a function held in a slot, called with
+`call-method`, which can be different for each instance. Methods keep the type's data (its slots) to data, and the functions
+together by what they are for: use them when a number of types each have their own version of several functions.
+
 ### Dates
 
 #### `(date year month day)`

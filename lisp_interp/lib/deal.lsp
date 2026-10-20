@@ -25,15 +25,16 @@
 ; one element longer), and principal[t] is what it is paid in month t: what the pool pays, or what its parent's split gave it. A
 ; collateral and a tranche are nodes. A tranche with no split is a bond; with one, it passes on what it is paid.
 ;
-; A split (the struct split) names its children and has two functions, which are what make one kind of split different from
-; another. (pay-principal split deal parent t) divides the principal of month t that the parent was paid among its children,
-; by calling (pay-child! child t cash [floor]) for each child it pays, which pays what the child still owes, down to the floor
-; (0 unless given), up to the cash, and returns the cash left. The function does not call the splits of the children: deal-run!
-; walks the tree, so every kind of split does only its own part. (calculate-sizes split deal parent) works out how big the
-; children are, as a list of balances in the order of the children, or '() if it is not for the split to say (the sizes are
-; those the children were given): a PAC split sizes the PAC from the collateral at two prepayment speeds. To make another
-; kind of split, include split and put your functions in the slots, as sequential-split, pro-rata-split and pac-split do;
-; call-super gets at the functions of the kind you extend.
+; A split (the struct split) names its children, and what is different about one kind of split from another is its methods, of
+; two generic functions (see defgeneric and defmethod). (pay-principal split deal parent t) divides the principal of month t that
+; the parent was paid among its children, by calling (pay-child! child t cash [floor]) for each child it pays, which pays what
+; the child still owes, down to the floor (0 unless given), up to the cash, and returns the cash left. The method does not call
+; the splits of the children: deal-run! walks the tree, so every kind of split does only its own part. (calculate-sizes split
+; deal parent) works out how big the children are, as a list of balances in the order of the children, or '() if it is not for
+; the split to say (the sizes are those the children were given, which is what the method for split, any kind, does): a PAC split
+; sizes the PAC from its parent at two prepayment speeds. To make another kind of split, include split (or a kind there is) and
+; write its methods, as sequential-split, pro-rata-split and pac-split have; (call-next-method) calls the method of the kind
+; that it extends.
 ;
 ; A deal is made in double precision (cents of a balance of hundreds of millions are not kept in single), and sums are checked to
 ; within deal-tolerance of the pool's balance, which is not an amount of money but a fraction of the pool.
@@ -49,12 +50,20 @@
 (defstruct node name balance principal (split '()))
 (defstruct (collateral (:include node)) rate term age psa interest)
 (defstruct (tranche (:include node)))
-(define (no-sizes split deal parent)
-  "The calculate-sizes of a split whose children are as big as they were made: it works out nothing."
-  '())
-
-(defstruct split children pay-principal (calculate-sizes no-sizes))
+(defstruct split children)                                                 ; (a kind of split is a type that includes this one)
+(defstruct (sequential-split (:include split)))
+(defstruct (pro-rata-split (:include split)))
+(defstruct (pac-split (:include split)) low-psa high-psa schedule)
 (defstruct deal name (nodes (make-hash-table)) (names '()) root periods)
+
+(defgeneric pay-principal (split deal parent t)
+  "Divides the principal of month t that the parent was paid among the children of the split: see the top of the file.")
+(defgeneric calculate-sizes (split deal parent)
+  "The sizes of the split's children, a list in their order, or '() if the split does not work them out.")
+
+(defmethod calculate-sizes ((split split) deal parent)
+  "The children are as big as they were made."
+  '())
 
 ; ---------------------------------------------------------------------------
 ; The collateral
@@ -135,7 +144,7 @@ and its children's balances add up to its own: the split works them out, if it i
       (get-node deal name)
       (when (or (equal? name (deal-root deal)) (member name (deal-children-names deal)))
         (error (format "{} is already paid by a split: a node is paid by one split, and the collateral by none" name))))
-    (let ((sizes (call-method split-calculate-sizes split deal parent)))
+    (let ((sizes (calculate-sizes split deal parent)))
       (unless (null? sizes)
         (for-each (lambda (name size) (vector-set! (node-balance (get-node deal name)) 0 size)) (split-children split) sizes)))
     (deal-check-total deal parent-name
@@ -228,14 +237,14 @@ that it is paid off). Returns the cash left."
   (when (> cash (* deal-tolerance (deal-size deal)))
     (error (format "the split of {} has {} of principal left over in month {}: its children are all paid" (node-name parent) cash t))))
 
-(define (sequential-pay-principal split deal parent t)
+(defmethod pay-principal ((split sequential-split) deal parent t)
   "Pays the children in order."
   (let ((cash (vector-ref (node-principal parent) t)))
     (dolist (name (split-children split))
       (set! cash (pay-child! (get-node deal name) t cash)))
     (check-all-paid! parent t cash deal)))
 
-(define (pro-rata-pay-principal split deal parent t)
+(defmethod pay-principal ((split pro-rata-split) deal parent t)
   "Pays each child its share of the principal, in proportion to what it still owes."
   (let* ((cash (vector-ref (node-principal parent) t))
          (children (map (lambda (name) (get-node deal name)) (split-children split)))
@@ -249,8 +258,8 @@ that it is paid off). Returns the cash left."
 ; prepays at either of two speeds, so it is paid that, if the collateral pays at any speed between them, and the companion is paid
 ; what is over, or goes without. The parent is the collateral or any node below it (a second PAC, under the first one's companion).
 ; The children are the PAC and then the companion. The schedule is the balance the PAC is to have at the start of each
-; month; it is worked out, with the sizes, when the split is added: see pac-calculate-sizes.
-(define (pac-pay-principal split deal parent t)
+; month; it is worked out, with the sizes, when the split is added: see the calculate-sizes method of pac-split.
+(defmethod pay-principal ((split pac-split) deal parent t)
   "Pays the PAC down to the balance it is scheduled to have, then the companion, and then what is left to the PAC."
   (let ((pac (get-node deal (car (split-children split))))
         (companion (get-node deal (cadr (split-children split))))
@@ -292,7 +301,7 @@ collateral can be run at another speed."
     (unless (and (collateral? root) (not (null? (collateral-rate root))))
       (error "the deal's collateral was not made by collateral-from-psa, so it cannot be run at another speed"))))
 
-(define (pac-calculate-sizes split deal parent)
+(defmethod calculate-sizes ((split pac-split) deal parent)
   "The size of the PAC is what the parent pays at both of the two speeds of the collateral, month by month the least of the two,
 added up; the companion is the rest. (What the parent pays is found by running the deal at each speed: see deal-principal-at.)
 Sets the schedule of the PAC, its balance at the start of each month, from that size, less the least each month. Returns
@@ -309,16 +318,11 @@ Sets the schedule of the PAC, its balance at the start of each month, from that 
     (pac-split-schedule-set! split schedule)
     (list size (- balance size))))
 
-(defstruct (sequential-split (:include split)) (pay-principal sequential-pay-principal))
-(defstruct (pro-rata-split (:include split)) (pay-principal pro-rata-pay-principal))
-(defstruct (pac-split (:include split)) low-psa high-psa schedule
-  (pay-principal pac-pay-principal) (calculate-sizes pac-calculate-sizes))
-
 (define (walk-principal! deal node t)
   "Divides what the node was paid in month t among its children, and then what each of them was paid among theirs, to the leaves."
   (let ((split (node-split node)))
     (unless (null? split)
-      (call-method split-pay-principal split deal node t)
+      (pay-principal split deal node t)
       (dolist (name (split-children split))
         (walk-principal! deal (get-node deal name) t)))))
 

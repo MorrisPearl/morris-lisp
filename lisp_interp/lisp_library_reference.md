@@ -6899,11 +6899,12 @@ needs to run it at another speed. A PAC split has two children, the PAC and the 
 (deal-check deal)                                                                         ; => #t
 ```
 
-At 200% PSA, between the two speeds, the PAC is never off its schedule. (`deal-pac!` is made of `pac-calculate-sizes`, which works out
-the size and the schedule, and `pac-pay-principal`, the rule above: the two functions in the slots of `pac-split`.)
+At 200% PSA, between the two speeds, the PAC is never off its schedule. (`deal-pac!` is made of two methods for `pac-split`:
+`calculate-sizes`, which works out the size and the schedule, and `pay-principal`, the rule above.)
 
 #### Another kind of split
-A split is a struct with two functions in its slots, which are what make a kind of split what it is.
+A split is a struct, a type that includes `split`, and what makes a kind of split what it is are its **methods** of two generic
+functions (see `defgeneric` and `defmethod` in the language manual): `(generic-function-methods pay-principal)` lists the kinds there are.
 
 `(pay-principal split deal parent t)` divides the principal that `parent` was paid in month `t` among the split's children, by
 calling `(pay-child! child t cash [floor])` for each one it pays, which pays the child what it is still owed (`(node-owed child t)`)
@@ -6911,18 +6912,22 @@ up to the `cash`, but not so that it owes less than the `floor` (0 unless given,
 It does not call the splits of the children: `deal-run!` walks the tree, so each kind of split does only its own part.
 
 `(calculate-sizes split deal parent)` works out how big the children are, as a list of their starting balances in the order of the
-children, or `'()` if it is not for the split to say, which is what a sequential or a pro-rata split does: the sizes are as the children
+children, or `'()` if it is not for the split to say, which is what the method for `split`, any kind, does: the sizes are as the children
 were made. `deal-add-split!` calls it, sets the balances, and checks that they add up to the parent's. A PAC split sizes its PAC
 from what its parent is paid at two speeds; a floater and inverse floater split will size them from a cap.
 
-A new kind includes `split`, or one of the kinds there are, and puts its functions in the slots;
-`call-super` calls the function of the kind it extends:
+A new kind includes `split`, or one of the kinds there are, and has methods of its own; `(call-next-method)` calls the method of the kind
+that it extends. This one does what a sequential split does, and says what it is dividing:
 
 ```lisp
-(defstruct (noting-split (:include sequential-split))
-  (pay-principal (lambda (self deal parent t)
-                   (display (format "month {}: dividing {}\n" t (vector-ref (node-principal parent) t)))
-                   (call-super noting-split-pay-principal self deal parent t))))
+(defstruct (noting-split (:include sequential-split)))
+
+(defmethod pay-principal ((split noting-split) deal parent t)
+  (display (format "month {}: dividing {}\n" t (vector-ref (node-principal parent) t)))
+  (call-next-method))
 ```
+
+A kind with data of its own (a PAC has `low-psa`, `high-psa` and its `schedule`) has slots for it. A method is looked up by the kind of the
+first argument, so a method for `sequential-split` is also the method for `noting-split`, until it has one of its own.
 
 `examples/deal_example.lsp` builds a deal of two levels and runs it at two prepayment speeds.

@@ -887,6 +887,130 @@ class TestStructInheritance(LispTestCase):
         self.assertLispError("(call-method thing-f (make-sub))", "couldn't get thing's default for f")
 
 
+class TestGenericFunctions(LispTestCase):
+    """defgeneric and defmethod: a function whose method is chosen by the type of its first argument, as Common Lisp's generic
+    functions are (with the one argument that chooses, and the struct types of defstruct to choose among)."""
+
+    SHAPES = """
+      (defstruct shape (name "shape"))
+      (defstruct (circle (:include shape)) (r 1))
+      (defstruct (unit-circle (:include circle)))
+      (defstruct (square (:include shape)) (side 1))
+      (defmethod area ((s circle)) (* 3 (circle-r s) (circle-r s)))
+      (defmethod area ((s square)) (* (square-side s) (square-side s)))"""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp(self.SHAPES)
+
+    def test_the_method_is_chosen_by_the_type_of_the_first_argument(self):
+        self.assertShows("(area (make-circle :r 2))", "12")
+        self.assertShows("(area (make-square :side 5))", "25")
+        self.assertShows("(map area (list (make-circle) (make-square :side 2)))", "(3 4)")
+
+    def test_a_type_that_includes_another_has_its_methods_unless_it_has_its_own(self):
+        self.assertShows("(area (make-unit-circle :r 2))", "12")
+        self.run_lisp("(defmethod area ((s unit-circle)) 99)")
+        self.assertShows("(area (make-unit-circle))", "99")
+        self.assertShows("(area (make-circle))", "3")
+
+    def test_a_method_for_t_or_for_no_type_is_for_any_other_argument(self):
+        self.run_lisp('(defmethod describe-it (x) "something") (defmethod describe-it ((s shape)) "a shape")'
+                      '(defmethod describe-it ((x t)) "something else")')
+        self.assertShows("(describe-it 5)", '"something else"')
+        self.assertShows("(describe-it (make-square))", '"a shape"')
+        self.assertShows("(describe-it (list 1 2))", '"something else"')
+
+    def test_call_next_method_calls_the_method_of_the_type_this_one_extends(self):
+        self.run_lisp("""
+          (defmethod label ((s shape)) (string-append "shape " (shape-name s)))
+          (defmethod label ((s circle)) (string-append "circle, " (call-next-method)))
+          (defmethod label ((s unit-circle)) (string-append "unit " (call-next-method)))""")
+        self.assertShows('(label (make-unit-circle :name "u"))', '"unit circle, shape u"')
+        self.assertShows('(label (make-circle :name "c"))', '"circle, shape c"')
+        self.assertShows('(label (make-square :name "q"))', '"shape q"')
+
+    def test_call_next_method_may_be_given_other_arguments_and_the_method_may_have_options(self):
+        self.run_lisp("""
+          (defmethod scaled ((s shape) k &optional (plus 0)) (+ (* k 10) plus))
+          (defmethod scaled ((s circle) k &optional (plus 0)) (call-next-method s (+ k 1) (+ plus 100)))
+          (defmethod keyed ((s shape) &key (a 1) (b 2)) (list a b))
+          (defmethod gathered ((s shape) &rest more) more)""")
+        self.assertShows("(scaled (make-circle) 1)", "120")
+        self.assertShows("(scaled (make-square) 1 5)", "15")
+        self.assertShows("(keyed (make-square) :b 7)", "(1 7)")
+        self.assertShows("(gathered (make-square) 1 2 3)", "(1 2 3)")
+
+    def test_next_method_p_says_whether_there_is_one(self):
+        self.run_lisp("""
+          (defmethod chain ((s shape)) (next-method-p))
+          (defmethod chain ((s circle)) (list (next-method-p) (call-next-method)))""")
+        self.assertShows("(chain (make-circle))", "(#t #f)")
+
+    def test_call_next_method_from_inside_a_lambda_in_the_method(self):
+        self.run_lisp("""
+          (defmethod total ((s shape)) 1)
+          (defmethod total ((s circle)) (apply + (map (lambda (k) (+ k (call-next-method))) '(10 20))))""")
+        self.assertShows("(total (make-circle))", "32")
+
+    def test_without_a_next_method_call_next_method_is_an_error(self):
+        self.assertLispError("(begin (defmethod only ((s shape)) (call-next-method)) (only (make-square)))",
+                             "there is no next method for only")
+
+    def test_a_method_in_tail_position_runs_in_constant_stack_space(self):
+        self.run_lisp("(defmethod count-down ((s shape) n) (if (= n 0) 'done (count-down s (- n 1))))")
+        self.assertShows("(count-down (make-square) 100000)", "done")
+
+    def test_an_error_in_a_method_shows_the_generic_functions_name_in_the_trace(self):
+        self.run_lisp("(defmethod broken ((s shape)) (error \"bad\"))")
+        with self.assertRaises(lisp_core.LispError) as raised:
+            self.run_lisp("(broken (make-square))")
+        self.assertIn("broken", lisp_core.format_lisp_traceback(raised.exception))
+
+    def test_a_method_defined_again_replaces_the_old_one(self):
+        self.run_lisp("(defmethod area ((s square)) 0)")
+        self.assertShows("(area (make-square :side 9))", "0")
+        self.assertShows("(generic-function-methods area)", "(circle square)")
+
+    def test_a_struct_defined_again_keeps_its_methods(self):
+        self.run_lisp("(defstruct (circle (:include shape)) (r 1) (extra 0))")
+        self.assertShows("(area (make-circle :r 3))", "27")
+
+    def test_the_generic_function_is_a_value(self):
+        self.assertShows("(generic-function? area)", "#t")
+        self.assertShows("(generic-function? car)", "#f")
+        self.assertShows("(procedure? area)", "#t")
+        self.assertShows("(generic-function-methods area)", "(circle square)")
+        self.assertShows("area", "#<generic-function area>")
+        self.run_lisp("(defmethod anything ((x t)) 1) (defmethod anything ((s square)) 2)")
+        self.assertShows("(generic-function-methods anything)", "(t square)")
+
+    def test_defgeneric_makes_the_function_and_keeps_its_methods_when_it_is_evaluated_again(self):
+        self.run_lisp("(defgeneric area (shape)) (defgeneric perimeter (shape))")
+        self.assertShows("(area (make-square :side 2))", "4")                    # (still there)
+        self.assertShows("(generic-function-methods perimeter)", "()")
+        self.assertLispError("(perimeter (make-square))", "there is no method for a square (it has methods for nothing yet)")
+
+    def test_defgeneric_replaces_a_function_that_is_not_generic_but_defmethod_will_not(self):
+        self.run_lisp("(define (stand-in x) 'stand-in)")
+        self.assertLispError("(defmethod stand-in ((s square)) 1)", "already a function that is not generic")
+        self.run_lisp("(defgeneric stand-in (x)) (defmethod stand-in ((s square)) 1)")
+        self.assertShows("(stand-in (make-square))", "1")
+
+    def test_what_a_generic_function_wont_take(self):
+        self.assertLispError("(area)", "called with at least one argument")
+        self.assertLispError("(area 5)", "area: there is no method for 5 (it has methods for circle, square)")
+        self.assertLispError("(area (make-shape))", "there is no method for a shape")
+        self.assertLispError("(defmethod area ((s nonsense)) 1)", "nonsense is not a struct type")
+        self.assertLispError("(defmethod area ((s 5)) 1)", "5 is not a struct type")
+        self.assertLispError("(defmethod area ((s circle extra)) 1)", "the first parameter is (name type)")
+        self.assertLispError("(defmethod area)", "expected (defmethod name")
+        self.assertLispError("(defmethod area x 1)", "expected (defmethod name")
+        self.assertLispError("(defgeneric)", "expected (defgeneric name")
+        self.assertLispError("(generic-function-methods 5)", "expected a generic function")
+        self.assertLispError("(area (make-circle) 5)", "expected 1 argument")           # (the method's own parameters)
+
+
 class TestWithStruct(LispTestCase):
     """(with-struct struct-expr body...) -- bind every slot as a variable."""
 

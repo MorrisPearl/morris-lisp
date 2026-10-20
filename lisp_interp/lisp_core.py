@@ -436,6 +436,47 @@ class Macro:
         return "#<macro>"
 
 
+class GenericFunction:
+    """A function whose method is chosen by the type of its first argument (defgeneric, defmethod): each defmethod adds a
+    method for a struct type, and calling the function runs the method of the type of the first argument, or if there is none, of
+    the type it includes (see defstruct), and so on up; a method for any argument (the type t) is the last resort. Inside a method,
+    (call-next-method) calls the method of the type that it extends.
+
+    `methods` maps the name of a struct type (a type is found by its name, so that defining it again keeps its methods), or None
+    for t, to the Procedure that is its method."""
+
+    def __init__(self, name):
+        self.name = name
+        self.methods = {}
+
+    def applicable(self, args):
+        """The methods that apply to a call with these arguments, the most specific first."""
+        if not args:
+            raise LispError("%s: a generic function is called with at least one argument, whose type chooses the method"
+                            % self.name)
+        found = []
+        if isinstance(args[0], LispStruct):
+            struct_type = args[0].struct_type
+            while struct_type is not None:
+                method = self.methods.get(str(struct_type.name))
+                if method is not None:
+                    found.append(method)
+                struct_type = struct_type.parent
+        if None in self.methods:
+            found.append(self.methods[None])
+        if not found:
+            what = ("a %s" % args[0].struct_type.name) if isinstance(args[0], LispStruct) else _brief(args[0])
+            raise LispError("%s: there is no method for %s (it has methods for %s)"
+                            % (self.name, what, ", ".join("t" if k is None else k for k in self.methods) or "nothing yet"))
+        return found
+
+    def __call__(self, *args):
+        return apply_method(self.applicable(list(args)), list(args))
+
+    def __repr__(self):
+        return "#<generic-function %s>" % (self.name,)
+
+
 class LispError(Exception):
     """Raised for any error in a Lisp program: reading, evaluating, or in a builtin."""
     pass
@@ -1210,7 +1251,7 @@ def bind_arguments(proc, args, default_eval):
 SPECIAL_FORMS = {
     "quote", "if", "define", "set!", "lambda", "begin", "cond", "and", "or",
     "defmacro", "quasiquote", "breakpoint", "defstruct", "catch-error",
-    "unwind-protect", "catch", "with-struct", "%scope-lambda", "backtrace",
+    "unwind-protect", "catch", "with-struct", "%scope-lambda", "backtrace", "defgeneric", "defmethod",
 }
 
 
@@ -1471,6 +1512,57 @@ def define_struct(args, env):
     return type_name
 
 
+def define_generic(args, env):
+    """(defgeneric name (parameter...) [documentation]) -- makes name a generic function, if it is not one yet (a function of that name
+    that is not generic, such as a lazy-load's stand-in, is replaced; a generic function, with its methods, is kept). The
+    parameters are for whoever reads it. Returns the name."""
+    if not (isinstance(args, Pair) and isinstance(args.car, Symbol) and isinstance(args.cdr, Pair)):
+        raise LispError("defgeneric: expected (defgeneric name (parameter...)), such as (defgeneric area (shape))")
+    name = args.car
+    check_name(name)
+    if not isinstance(env.lookup_or_none(name), GenericFunction):
+        env[name] = GenericFunction(name)
+    return name
+
+
+def define_method(args, env):
+    """(defmethod name ((parameter type) parameter...) body...) -- adds a method to the generic function called name (making it,
+    if there is no function of that name yet): the method that is called when the first argument is an instance of the struct
+    type, or of a type that includes it and has no method of its own. A first parameter written without a type, or of type t,
+    is the method for any other argument. Inside the body, (call-next-method) calls the method of the type this one extends. The
+    other parameters are as lambda's. Returns the name."""
+    if not (isinstance(args, Pair) and isinstance(args.car, Symbol) and isinstance(args.cdr, Pair)
+            and isinstance(args.cdr.car, Pair)):
+        raise LispError("defmethod: expected (defmethod name ((parameter type) parameter...) body...), "
+                        "such as (defmethod area ((shape circle)) ...)")
+    name, parameters, body = args.car, args.cdr.car, pairs_to_list(args.cdr.cdr)
+    check_name(name)
+    first = parameters.car
+    if isinstance(first, Pair):
+        variable, kind = first.car, (first.cdr.car if isinstance(first.cdr, Pair) else None)
+        if kind is None or first.cdr.cdr is not NIL:
+            raise LispError("defmethod: the first parameter is (name type), not %s" % to_string(first))
+    else:
+        variable, kind = first, Symbol("t")
+    if kind == Symbol("t"):
+        key = None
+    elif isinstance(kind, Symbol) and env.lookup_or_none(Symbol("%%struct-type-%s" % kind)) is not None:
+        key = str(kind)
+    else:
+        raise LispError("defmethod: %s is not a struct type (see defstruct), or t, so %s can have no method for it"
+                        % (to_string(kind), name))
+    fixed, optional, rest, keyword_specs = parse_params(Pair(variable, parameters.cdr))
+    method = Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs, name=name, optional_specs=optional)
+    generic = env.lookup_or_none(name)
+    if generic is None:
+        generic = env[name] = GenericFunction(name)
+    elif not isinstance(generic, GenericFunction):
+        raise LispError("defmethod: %s is already a function that is not generic; (defgeneric %s (...)) makes it one"
+                        % (name, name))
+    generic.methods[key] = method
+    return name
+
+
 def eval_special_form(op, args, env, control_stack, value_stack):
     """Handle one of the special forms in SPECIAL_FORMS by pushing whatever
     control frames are needed to carry out its evaluation."""
@@ -1550,6 +1642,12 @@ def eval_special_form(op, args, env, control_stack, value_stack):
 
     elif op == "defstruct":
         value_stack.append(define_struct(args, env))
+
+    elif op == "defgeneric":
+        value_stack.append(define_generic(args, env))
+
+    elif op == "defmethod":
+        value_stack.append(define_method(args, env))
 
     elif op == "backtrace":
         # (backtrace) prints the current chain of calls, as an error report would.
@@ -1721,8 +1819,12 @@ def _run_eval_loop(control_stack, value_stack):
             collected = [value_stack.pop() for _ in range(nargs + 1)]
             collected.reverse()
             proc, arg_values = collected[0], collected[1:]
+            new_env = None
+            if isinstance(proc, GenericFunction):           # the method for the first argument's type is called, as a procedure is
+                proc, new_env = bind_method(proc.applicable(arg_values), arg_values)
             if isinstance(proc, Procedure):
-                new_env = bind_arguments(proc, arg_values, eval_default)
+                if new_env is None:
+                    new_env = bind_arguments(proc, arg_values, eval_default)
                 if not proc.is_scope:
                     # Leave a CALL frame under the body, naming this call for traces. If
                     # the top of the stack is already a CALL frame, nothing is waiting for
@@ -1830,6 +1932,29 @@ def _run_eval_loop(control_stack, value_stack):
             raise LispError("unknown control frame: %r" % (tag,))
 
     return value_stack.pop()
+
+
+def bind_method(methods, args):
+    """The first of the applicable methods, and the scope of a call of it with these arguments: its parameters bound, and also
+    call-next-method (which calls the next of the methods, with the same arguments, or with others if it is given some) and
+    next-method-p (whether there is a next method)."""
+    method, rest = methods[0], methods[1:]
+    new_env = bind_arguments(method, args, eval_default)
+
+    def call_next_method(*new_args):
+        if not rest:
+            raise LispError("call-next-method: there is no next method for %s" % (method.name,))
+        return apply_method(rest, list(new_args) if new_args else args)
+
+    new_env[Symbol("call-next-method")] = call_next_method
+    new_env[Symbol("next-method-p")] = lambda: bool(rest)
+    return method, new_env
+
+
+def apply_method(methods, args):
+    """Calls the first of the applicable methods with these arguments (used where the evaluator itself is not calling it)."""
+    method, new_env = bind_method(methods, args)
+    return eval_body(method.body, new_env, call=(method, args))
 
 
 def eval_body(body, env, call=None):

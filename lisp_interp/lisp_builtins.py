@@ -25,7 +25,7 @@ import sys
 import numpy as np
 
 from lisp_core import (
-    Env, Keyword, LispAbort, LispDate, LispError, LispHashTable, LispString, LispStruct,
+    Env, GenericFunction, Keyword, LispAbort, LispDate, LispError, LispHashTable, LispString, LispStruct,
     LispVector, Macro, NIL, Pair, Procedure, Symbol,
     _brief, _date_from_pydate, _lisp_scalar, _vector_widen_for,
     apply_proc, builtin_names, check_numbers, lisp_equal, plural, check_vector_elements, expand_macro, gensym,
@@ -1014,7 +1014,17 @@ def call_super(accessor, instance, *args):
     return apply_proc(method, [instance] + list(args))
 
 
+def generic_function_methods(generic):
+    """(generic-function-methods f) -- the types that the generic function f has a method for, as symbols (t is the method for
+    any argument), in the order the methods were defined."""
+    if not isinstance(generic, GenericFunction):
+        raise LispError("generic-function-methods: expected a generic function (see defgeneric), not %s" % (_brief(generic),))
+    return list_to_pairs([Symbol("t" if key is None else key) for key in generic.methods])
+
+
 STRUCT_BUILTINS = {
+    "generic-function?": lambda x: isinstance(x, GenericFunction),
+    "generic-function-methods": generic_function_methods,
     "%make-struct": make_struct_fn,
     "struct-ref": struct_ref,
     "struct-set!": struct_set,

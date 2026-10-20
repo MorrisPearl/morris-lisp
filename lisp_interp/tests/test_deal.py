@@ -135,21 +135,37 @@ class TestSplits(DealTestCase):
             np.testing.assert_allclose(self.principal(name), first[name])
         np.testing.assert_allclose(self.principal("POOL"), [25] * 4)             # (the pool's own flows are as they were)
 
-    def test_a_kind_of_split_of_your_own_is_a_function_in_the_slot_and_call_super_gets_at_the_one_it_extends(self):
+    def test_a_kind_of_split_of_your_own_is_a_type_with_methods_and_call_next_method_gets_at_the_one_it_extends(self):
         self.a_pool_paying(30.0, 4)
         self.run_lisp("""
           (define calls '())
-          (defstruct (noting-split (:include sequential-split))
-            (pay-principal (lambda (self deal parent t)
-                             (push t calls)
-                             (call-super noting-split-pay-principal self deal parent t))))
-          (define pool-node (get-node deal "POOL"))
+          (defstruct (noting-split (:include sequential-split)))
+          (defmethod pay-principal ((split noting-split) deal parent t)
+            (push t calls)
+            (call-next-method))
           (deal-add-tranche! deal "A" 50.0)
           (deal-add-tranche! deal "B" 70.0)
           (deal-add-split! deal "POOL" (make-noting-split :children '("A" "B")))
           (deal-run! deal)""")
         self.assertShows("(reverse calls)", "(0 1 2 3)")
         np.testing.assert_allclose(self.principal("A"), [30, 20, 0, 0])               # (paid as a sequential split pays)
+
+
+class TestTheSplitsAreMethods(DealTestCase):
+
+    def test_the_verbs_are_generic_functions_with_a_method_for_each_kind_of_split(self):
+        self.assertShows("(generic-function? pay-principal)", "#t")
+        self.assertShows("(generic-function-methods pay-principal)", "(sequential-split pro-rata-split pac-split)")
+
+    def test_a_split_of_no_kind_that_pays_cannot_be_run(self):
+        self.a_pool_paying(30.0, 4)
+        self.run_lisp('(deal-add-tranche! deal "A" 120.0)')
+        self.run_lisp("""(deal-add-split! deal "POOL" (make-split :children '("A")))""")
+        self.assertLispError("(deal-run! deal)", "pay-principal: there is no method for a split")
+
+    def test_a_split_has_only_its_children_as_data(self):
+        self.run_lisp("""(define s (make-pac-split :children '("A" "B") :low-psa 100 :high-psa 300))""")
+        self.assertShows("s", '#S(pac-split :children ("A" "B") :low-psa 100 :high-psa 300 :schedule ())')
 
 
 class TestThePac(DealTestCase):
@@ -165,8 +181,11 @@ class TestThePac(DealTestCase):
                       % (numbers(owed), numbers(principal)))
         self.run_lisp('(define deal (start-deal "demo" pool))')
         self.run_lisp('(deal-add-tranche! deal "PAC" %r) (deal-add-tranche! deal "COMP" %r)' % (float(size), float(total - size)))
-        self.run_lisp('''(deal-add-split! deal "POOL" (make-pac-split :children '("PAC" "COMP") :low-psa 100 :high-psa 300
-                          :schedule (vector %s) :calculate-sizes no-sizes))''' % numbers(schedule))
+        # (a PAC split that is given its schedule: it pays as a PAC does, and works out no sizes)
+        self.run_lisp("""(defstruct (given-pac-split (:include pac-split)))
+                         (defmethod calculate-sizes ((split given-pac-split) deal parent) '())""")
+        self.run_lisp('''(deal-add-split! deal "POOL" (make-given-pac-split :children '("PAC" "COMP") :low-psa 100 :high-psa 300
+                          :schedule (vector %s)))''' % numbers(schedule))
         self.run_lisp("(deal-run! deal)")
 
     def test_the_pac_is_paid_its_schedule_and_the_companion_what_is_over(self):
@@ -359,15 +378,15 @@ class TestAPacUnderAnotherNode(DealTestCase):
 
 
 class TestSizesAreWorkedOutBySplits(DealTestCase):
-    """Every split has a calculate-sizes: a sequential split works nothing out, and another kind can."""
+    """Every kind of split has a calculate-sizes method (the one for split, any kind, works nothing out), and another kind can."""
 
     def test_a_split_that_works_out_the_sizes_of_its_children_sets_their_balances(self):
         self.a_pool_paying(30.0, 4)
         self.run_lisp("""
-          (define (half-and-half split deal parent)
+          (defstruct (halves-split (:include sequential-split)))
+          (defmethod calculate-sizes ((split halves-split) deal parent)
             (let ((half (/ (vector-ref (node-balance parent) 0) 2)))
               (list half half)))
-          (defstruct (halves-split (:include sequential-split)) (calculate-sizes half-and-half))
           (deal-add-tranche! deal "A" 0.0)
           (deal-add-tranche! deal "B" 0.0)
           (deal-add-split! deal "POOL" (make-halves-split :children '("A" "B")))
@@ -379,8 +398,8 @@ class TestSizesAreWorkedOutBySplits(DealTestCase):
     def test_the_sizes_a_split_works_out_must_add_up_to_the_parent(self):
         self.a_pool_paying(30.0, 4)
         self.run_lisp("""
-          (define (too-small split deal parent) (list 10.0 10.0))
-          (defstruct (small-split (:include sequential-split)) (calculate-sizes too-small))
+          (defstruct (small-split (:include sequential-split)))
+          (defmethod calculate-sizes ((split small-split) deal parent) (list 10.0 10.0))
           (deal-add-tranche! deal "A" 0.0)
           (deal-add-tranche! deal "B" 0.0)""")
         self.assertLispError("""(deal-add-split! deal "POOL" (make-small-split :children '("A" "B")))""", "add up to 20.0, and POOL has 120.0")
@@ -388,7 +407,8 @@ class TestSizesAreWorkedOutBySplits(DealTestCase):
     def test_a_sequential_split_leaves_the_sizes_as_they_were_made(self):
         self.a_pool_paying(30.0, 4)
         self.run_lisp("""(define split (make-sequential-split :children '("A" "B")))""")
-        self.assertShows("(call-method split-calculate-sizes split deal pool)", "()")
+        self.assertShows("(calculate-sizes split deal pool)", "()")
+        self.assertShows("(generic-function-methods calculate-sizes)", "(split pac-split)")
 
 
 class TestARandomDeal(DealTestCase):
