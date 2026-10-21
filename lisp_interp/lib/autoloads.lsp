@@ -156,8 +156,13 @@
   average-life-split-loss-rule-set! average-life-split? collateral-from-pieces collateral-pieces
   collateral-pieces-set! collateral-speed collateral-speed-set! copy-average-life-split coupon-at coupon-less
   deal-average-life deal-average-life! deal-first-payment deal-first-payment-set! deal-payment-date deal-payment-dates
-  deal-principal-now deal-run-copy interest-at-coupon make-average-life-split range-life solve-for-size collateral-wac
-  collateral-wac-set!)
+  deal-principal-now deal-run-copy make-average-life-split range-life solve-for-size collateral-wac
+  collateral-wac-set! collateral-table collateral-table-pieces deal-add-view! deal-assign-all-coupons!
+  deal-assign-coupons-below! deal-change! deal-changed! deal-closing-date deal-closing-date-set! deal-collateral
+  deal-collateral-set! deal-flows-table deal-generate-collateral! deal-install-collateral! deal-pad-flows
+  deal-pricing-flows deal-pricing-speed deal-pricing-speed-set! deal-put-collateral-flows! deal-ran deal-ran-set!
+  deal-root-pieces deal-set-closing-date! deal-set-collateral! deal-set-first-payment! deal-set-periods!
+  deal-set-pricing-speed! deal-speed-for deal-summary-months deal-views deal-views-set! new-deal padded pieces-coupon)
 
 ; Building a deal by clicking in a notebook (see "Building a deal by clicking" in lisp_cmo_manual.md)
 (lazy-load "deal_builder.lsp"
@@ -174,18 +179,19 @@
   deal-gui-form-for deal-gui-keep! deal-gui-offer-to-change! deal-gui-offer-to-divide! deal-gui-put-away!
   deal-gui-show-delete! form-children-text form-decimal-to-percent show-plan-effect split-form-describe
   split-form-describe-set! split-form-label split-form-label-set! without-traceback average-lives-of form-lives
-  form-lives-text)
+  form-lives-text bonds deal-gui-flows deal-gui-flows-set! deal-gui-show-flows! deal-gui-table show-node-flows)
 
-; Starting a new deal in a notebook: a grid for the collateral and the pricing speed (see lisp_cmo_manual.md)
-(lazy-load "new_deal.lsp"
-  copy-new-deal-gui make-new-deal-gui new-deal new-deal-create new-deal-deal new-deal-empty-pieces
-  new-deal-empty-speed new-deal-gui-collateral-name new-deal-gui-collateral-name-set! new-deal-gui-deal
-  new-deal-gui-deal-set! new-deal-gui-first-payment new-deal-gui-first-payment-set! new-deal-gui-forms
-  new-deal-gui-forms-set! new-deal-gui-messages new-deal-gui-messages-set! new-deal-gui-name new-deal-gui-name-set!
-  new-deal-gui-page new-deal-gui-page-set! new-deal-gui-pieces-grid new-deal-gui-pieces-grid-set! new-deal-gui-setup
-  new-deal-gui-setup-set! new-deal-gui-speed-grid new-deal-gui-speed-grid-set! new-deal-gui-speed-type
-  new-deal-gui-speed-type-set! new-deal-gui-variable new-deal-gui-variable-set! new-deal-gui? new-deal-pieces
-  new-deal-show new-deal-speed new-deal-years-rows show-collateral-flows grid-column-widths)
+; Views of a deal in a notebook: its collateral, and its dates and pricing speed (see lisp_cmo_manual.md)
+(lazy-load "deal_views.lsp"
+  collateral collateral-gui-deal collateral-gui-deal-set! collateral-gui-grid collateral-gui-grid-set!
+  collateral-gui-messages collateral-gui-messages-set! collateral-gui-page collateral-gui-page-set!
+  collateral-gui-pieces collateral-gui-rows collateral-gui-rows-set! collateral-gui-show collateral-gui-table
+  collateral-gui-update collateral-gui? copy-collateral-gui copy-info-gui date-from-text date-to-text
+  grid-column-widths info info-gui-closing info-gui-closing-set! info-gui-deal info-gui-deal-set!
+  info-gui-first-payment info-gui-first-payment-set! info-gui-messages info-gui-messages-set! info-gui-name
+  info-gui-name-set! info-gui-show info-gui-speed-grid info-gui-speed-grid-set! info-gui-speed-type
+  info-gui-speed-type-set! info-gui-update info-gui? info-speed-from-grid info-speed-table make-collateral-gui
+  make-info-gui show-collateral-flows)
 
 ; Templates of text and SQL
 (lazy-load "template.lsp"

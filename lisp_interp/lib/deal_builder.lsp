@@ -3,16 +3,19 @@
 ; Builds a deal by clicking, in a Jupyter notebook. A deal begins as the collateral alone, its cash flows, and is divided into
 ; tranches one split at a time:
 ;
-;   (define pool (collateral-from-psa "POOL" 100000000 6.5 :term 360 :age 0 :psa 150))
-;   (define deal (start-deal "Demo 2026-1" pool))
-;   (deal-builder deal)
+;   (define deal (new-deal "Demo 2026-1" :first-payment (date 2026 11 25)
+;                            :collateral '((100000000 6.5 6.0 360) (50000000 7.5 6.5 240 12))))
+;   (bonds deal)
 ;
 ; The last line shows a grid with a row for each tranche of the deal (to begin with, one: the collateral). Click a tranche, and a
 ; panel opens under the grid with a tab (or an accordion section, with :style "accordion") for each kind of split that can divide
 ; it, and the fields that kind needs: the names and balances of the children of a sequential split, the two speeds of a PAC, the cap
 ; of a floater. Fill in a tab, and there are two buttons: one calculates the sizes of the tranches and shows them, and the other adds
 ; the tranches to the deal. The new tranches appear in the grid under the one that was divided, so that the rows are the tree of the
-; deal, depth first (see deal-outline). Nothing is run: deal-run! is still called, when the deal is ready.
+; deal, depth first (see deal-outline). Beside the split is a column, cash flows: click view in it, and the cash flows of that tranche are shown under the
+; grid, year by year, from a run of the deal at the pricing speed (the deal is run first, if it has changed since the last run). (bonds deal) is the name
+; for this view of a deal, with (collateral deal) and (info deal) (see deal_views.lsp): they can be shown at the same time, in different cells, and each
+; shows what is changed in the others.
 ;
 ; Click a tranche that has been divided, and the panel shows its split, with the fields as they were filled in. Change them, and
 ; the buttons calculate and make the change: the tranches of the split are worked out again, and so are those under them, to the
@@ -36,9 +39,9 @@
 ; in the deal, or '() if there is no way to say (the fields keep their defaults); plan: (plan parent answers) is the split-plan for
 ; dividing the parent as the answers say, answers a list of (field-name . value), or an error that says what is wrong.
 
-(defstruct deal-gui deal forms grid panel messages delete-row delete-button confirm-button cancel-button (chosen '()) (names '()))
-; the deal being built, the split-forms, the widgets, the name of the tranche chosen ('() if none), and the names of the tranches in
-; the rows of the grid
+(defstruct deal-gui deal forms grid flows panel messages delete-row delete-button confirm-button cancel-button (chosen '()) (names '()))
+; the deal being built, the split-forms, the widgets (the grid, the place under it for the cash flows of a tranche, the panel, ...), the name of
+; the tranche chosen ('() if none), and the names of the tranches in the rows of the grid
 
 ; ---------------------------------------------------------------------------
 ; Reading what was typed
@@ -292,11 +295,42 @@ who clicked a button has typed something that cannot be used, and the message sa
   "Shows a line under the panel."
   (widget-capture (deal-gui-messages gui) (lambda () (display text))))
 
-(define (deal-gui-refresh! gui)
-  "Shows the tranches of the deal as they are now."
+(define (deal-gui-table gui)
+  "The table for the grid: the outline of the deal, with a column beside the split to click to see the cash flows of a tranche."
   (let ((entries (deal-outline-entries (deal-gui-deal gui))))
-    (deal-gui-names-set! gui (map car entries))
-    (grid-set-table! (deal-gui-grid gui) (deal-outline (deal-gui-deal gui)))))
+    (append (deal-outline (deal-gui-deal gui))
+            (list (cons "cash flows" (list->vector (map (lambda (entry) "view") entries)))))))
+
+(define (deal-gui-refresh! gui)
+  "Shows the tranches of the deal as they are now, and puts away what was being done to one of them: the deal has changed."
+  (deal-gui-names-set! gui (map car (deal-outline-entries (deal-gui-deal gui))))
+  (grid-set-table! (deal-gui-grid gui) (deal-gui-table gui))
+  (widget-clear (deal-gui-flows gui))
+  (deal-gui-put-away! gui))
+
+(define (show-node-flows deal name)
+  "Shows the cash flows of the tranche called name, from the last run of the deal: what it is, its average life, and a table with a row for the first month and
+the end of each year."
+  (let* ((node (get-node deal name))
+         (principal (node-principal node)))
+    (cond ((= (deal-periods deal) 0)
+           (display (format "{} has no cash flows: the deal has no collateral yet. It is entered with (collateral deal).\n" name)))
+          (else
+           (display (format "{}: {:,.2f} to begin with{}, {}.\n" name (vector-ref (node-balance node) 0)
+                            (if (> (vector-sum principal) 0.0) (format ", with an average life of {:.2f} years" (average-life principal)) "")
+                            (if (speed-curve? (deal-ran deal)) (format "run at {}" (describe-speed (deal-ran deal))) "run")))
+           (display-table (deal-flows-table deal name :months (deal-summary-months (deal-periods deal)))
+                          '(("balance" ",.2f") ("principal" ",.2f") ("interest" ",.2f") ("accrual" ",.2f") ("loss" ",.2f") ("shortfall" ",.2f"))
+                          :max-rows #f)))))
+
+(define (deal-gui-show-flows! gui row)
+  "The user clicked view for a tranche: its cash flows are shown under the grid. The deal is run first, at the pricing speed, if it has changed since the last run."
+  (let ((deal (deal-gui-deal gui))
+        (name (list-ref (deal-gui-names gui) row)))
+    (widget-clear (deal-gui-flows gui))
+    (unless (deal-ran deal)
+      (deal-run! deal :index (deal-index deal)))
+    (widget-capture (deal-gui-flows gui) (lambda () (show-node-flows deal name)))))
 
 (define (deal-gui-show-delete! gui asking)
   "Shows the row under the panel with the button that takes away the split (asking is button) or the two that ask whether to (sure),
@@ -319,13 +353,17 @@ or none of them if asking is the empty list."
 (define (deal-gui-offer-to-divide! gui node)
   "The chosen tranche is not divided: the panel has the defaults of each tab, to divide it."
   (let ((panel (deal-gui-panel gui)))
-    (widget-actions-heading panel (format "Divide <b>{}</b>, which has a balance of {:,.2f}, by:" (node-name node) (vector-ref (node-balance node) 0)))
-    (widget-actions-button-label! panel 1 "Add the tranches to the deal")
-    (dolist (form (deal-gui-forms gui))
-      (dolist (default ((split-form-defaults form) node))
-        (widget-actions-set! panel (split-form-title form) (car default) (cdr default))))
-    (widget-visible panel #t)
-    (deal-gui-show-delete! gui '())))
+    (deal-gui-show-delete! gui '())
+    (if (= (vector-ref (node-balance node) 0) 0.0)
+        (begin (widget-visible panel #f)
+               (deal-gui-say gui (format "{} has no balance, so it cannot be divided yet: the collateral is entered with (collateral deal).\n" (node-name node))))
+        (begin
+          (widget-actions-heading panel (format "Divide <b>{}</b>, which has a balance of {:,.2f}, by:" (node-name node) (vector-ref (node-balance node) 0)))
+          (widget-actions-button-label! panel 1 "Add the tranches to the deal")
+          (dolist (form (deal-gui-forms gui))
+            (dolist (default ((split-form-defaults form) node))
+              (widget-actions-set! panel (split-form-title form) (car default) (cdr default))))
+          (widget-visible panel #t)))))
 
 (define (deal-gui-offer-to-change! gui node)
   "The chosen tranche is divided: the panel shows its split, to change, and the button to take the split away."
@@ -370,10 +408,10 @@ or none of them if asking is the empty list."
     ((split-form-plan form) (deal-gui-parent gui) answers)))
 
 (define (average-lives-of trial names)
-  "The average life, in years, of each of the nodes of the trial deal, a list: found by running a copy of the deal, at the speed of its collateral.
+  "The average life, in years, of each of the nodes of the trial deal, a list: found by running a copy of the deal, at the pricing speed.
 nan for a node that is paid no principal, such as an interest-only bond."
-  (let* ((root (get-node trial (deal-root-of trial (car names))))
-         (run (deal-run-copy trial (node-name root) (list (node-principal root) (node-interest root)) #t)))
+  (let* ((root-name (deal-root-of trial (car names)))
+         (run (deal-run-copy trial root-name (deal-pricing-flows trial root-name) #t)))
     (map (lambda (name)
            (let ((principal (node-principal (get-node run name))))
              (if (> (vector-sum principal) 0.0) (average-life principal) nan)))
@@ -415,8 +453,6 @@ below the chosen one would be is shown."
     (if adding
         (deal-add-plan! (deal-gui-deal gui) (node-name parent) plan)
         (deal-replace-split! (deal-gui-deal gui) (node-name parent) plan))
-    (deal-gui-refresh! gui)
-    (deal-gui-put-away! gui)
     (deal-gui-say gui (if adding
                           (format "Added {} under {}, by a {} split. Click a tranche to divide it, or to change its split.\n"
                                   children (node-name parent) (split-label (split-plan-split plan)))
@@ -437,8 +473,6 @@ below the chosen one would be is shown."
   "The button that confirms: takes away the split and everything under it."
   (let* ((parent (deal-gui-parent gui))
          (gone (deal-delete-split! (deal-gui-deal gui) (node-name parent))))
-    (deal-gui-refresh! gui)
-    (deal-gui-put-away! gui)
     (widget-clear (deal-gui-messages gui))
     (deal-gui-say gui (format "Took away the split of {}, and {}. {} is not divided.\n" (node-name parent) (string-join gone ", ") (node-name parent)))))
 
@@ -459,12 +493,14 @@ below the chosen one would be is shown."
     button))
 
 (define (deal-builder deal &key (forms (standard-split-forms)) (style "tabs"))
-  "A grid of the tranches of the deal, to click one and divide it, or to change its split or take it away, and the panel to say how:
-see the top of the file. :style is \"tabs\" or \"accordion\", for the panel. Returns the widget, which a cell of a notebook shows; the
-deal is the one given, and is changed as tranches are added."
+  "A grid of the tranches of the deal, to click one and divide it, or to change its split or take it away, and the panel to say how, and a column beside the
+split to click to see the cash flows of a tranche: see the top of the file. :style is \"tabs\" or \"accordion\", for the panel. Returns the widget, which a cell
+of a notebook shows; the deal is the one given, and is changed as tranches are added. It shows the changes made to the deal elsewhere, which another view
+of it can make at the same time."
   (let* ((messages (widget-output))
-         (gui (make-deal-gui :deal deal :forms forms :messages messages :names (map car (deal-outline-entries deal))))
-         (grid (table-grid (deal-outline deal) :editable #f :selection-mode "row"))
+         (flows (widget-output))
+         (gui (make-deal-gui :deal deal :forms forms :messages messages :flows flows :names (map car (deal-outline-entries deal))))
+         (grid (table-grid (deal-gui-table gui) :editable #f :selection-mode "row"))
          (panel (widget-actions (map (lambda (form) (append (list (split-form-title form) (split-form-help form)) (split-form-fields form)))
                                      forms)
                                 :style style
@@ -482,6 +518,14 @@ deal is the one given, and is changed as tranches are added."
     (deal-gui-delete-button-set! gui delete-button)
     (deal-gui-confirm-button-set! gui confirm-button)
     (deal-gui-cancel-button-set! gui cancel-button)
-    (grid-on-click grid (lambda (column row value) (without-traceback (lambda () (deal-gui-choose! gui row)))) :output messages)
+    (grid-on-click grid
+                   (lambda (column row value)
+                     (without-traceback (lambda () (if (equal? column "cash flows") (deal-gui-show-flows! gui row) (deal-gui-choose! gui row)))))
+                   :output messages)
     (deal-gui-put-away! gui)
-    (widget-column grid panel delete-row messages)))
+    (deal-add-view! deal '(tranches) (lambda () (deal-gui-refresh! gui)))
+    (widget-column grid flows panel delete-row messages)))
+
+(define (bonds deal &key (forms (standard-split-forms)) (style "tabs"))
+  "The grid of the tranches of the deal, to divide them, and to see their cash flows: see deal-builder, which this is."
+  (deal-builder deal :forms forms :style style))

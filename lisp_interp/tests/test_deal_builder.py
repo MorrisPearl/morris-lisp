@@ -37,7 +37,7 @@ class BuilderCase(LispTestCase):
     def use(self, ui):
         """The clicks and the buttons that follow are those of this builder."""
         self.ui = ui
-        self.panel, self.delete_row, self.messages = ui.children[1:]
+        self.flows, self.panel, self.delete_row, self.messages = ui.children[1:]
         self.tabs = self.panel.children[1]
 
     def start(self, name, options=""):
@@ -134,7 +134,7 @@ class TestDealBuilder(BuilderCase):
     # -- the start ----------------------------------------------------------------
 
     def test_a_new_deal_is_a_grid_with_one_row_the_collateral_and_a_panel_that_is_put_away(self):
-        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split"])
+        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows"])
         self.assertEqual(self.names(), ["POOL"])
         self.assertEqual(self.grid.data["balance"][0], 100000000.0)
         self.assertTrue(self.hidden())
@@ -157,7 +157,7 @@ class TestDealBuilder(BuilderCase):
 
     def test_an_accordion_instead_of_tabs_can_be_asked_for(self):
         self.run_lisp('(define accordion-ui (deal-builder deal :style "accordion"))')
-        panel = self.env[lisp_core.Symbol("accordion-ui")].children[1]
+        panel = self.env[lisp_core.Symbol("accordion-ui")].children[2]               # (under the grid, and the place for cash flows)
         self.assertIsInstance(panel.children[1], ipywidgets.Accordion)
         self.assertEqual(len(panel.children[1].children), 7)
 

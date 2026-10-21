@@ -43,7 +43,7 @@ general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is 
   - [What is not modeled](#what-is-not-modeled)
 - [Checking a deal](#checking-a-deal)
 - [Making another kind of split](#making-another-kind-of-split)
-- [Starting a deal in a notebook](#starting-a-deal-in-a-notebook)
+- [The deal object, and its views in a notebook](#the-deal-object-and-its-views-in-a-notebook)
 - [Building a deal by clicking](#building-a-deal-by-clicking)
 - [An example program](#an-example-program)
 
@@ -169,7 +169,9 @@ collateral with no coupon makes a deal of principal only, and one with no loss h
 needs, is made by `collateral-from-psa`, which knows the rate and the term.)
 
 `(start-deal name collateral [:shortfalls #t])` makes a deal whose root is the collateral, and `(deal-add-collateral! deal collateral)` adds
-another piece, the root of a tree of its own. It pays for as many months as the first: pad the vectors with zeros if need be.
+another piece, the root of a tree of its own. It pays for as many months as the first: pad the vectors with zeros if need be. This is a deal whose
+collateral is **cash flows** that it was given. A deal can instead have the **data** of its collateral, the balances, wacs and coupons that the cash flows are worked out
+from, and that is a deal made by `new-deal` (see "The deal object, and its views in a notebook").
 
 ### Pieces of collateral, and the pricing speed
 
@@ -300,8 +302,11 @@ has), for looking at what the change would make, and for the error if it cannot 
 
 ### Running a deal, and looking at it
 
-`(deal-run! deal [:index index])` works out what each node is paid, and owes, in every month. It can be run again, with another index, or after a
-change. `(deal-check deal)` is `#t` if everything adds up, and an error that says where if not (see "Checking a deal").
+`(deal-run! deal [speed] [:index index])` works out what each node is paid, and owes, in every month. It can be run again, with another index, or after a
+change. `speed` is a prepayment speed, made by `prepayment-speed`: a deal that has the data of its collateral (made by `new-deal`) has the cash flows of it worked out
+again at that speed, every time it is run, and then the tree is run; without one it is run at the pricing speed of the deal. (A deal started with collateral made by
+`collateral-from-psa` or `collateral-from-pieces` can be given a speed too; the cash flows of collateral that was given as they are cannot be worked out at another one.)
+`(deal-check deal)` is `#t` if everything adds up, and an error that says where if not (see "Checking a deal").
 
 The results are the vectors of the nodes, and tables, with a row for each month (from 1; the balances from 0) and a column for each node, to show
 with `display-table`: `(deal-principal-table deal)`, `(deal-interest-table deal)`, `(deal-accrual-table deal)`, `(deal-loss-table deal)`,
@@ -622,32 +627,101 @@ extends. This one does what a sequential split does, and says what it is dividin
 A kind with data of its own (a PAC has `low-psa`, `high-psa` and its `schedule`) has slots for it. A method is looked up by the kind of the first
 argument, so a method for `sequential-split` is also the method for `noting-split`, until it has one of its own.
 
-## Starting a deal in a notebook
+## The deal object, and its views in a notebook
 
-`lib/new_deal.lsp` starts a deal in a notebook, from the collateral:
+A deal in a notebook is an object, `(new-deal name ...)`, that has the **data** of its collateral, and the tranches of its tree, and a few other things, and that is looked
+at, and changed, in **views**, each in a cell of its own. The views of one deal can all be shown at once, and what is changed in one is shown in the others.
 
 ```lisp
-(define start (new-deal "Demo 2026-1" (date 2026 11 25) :variable 'deal))
-(display-widget start)
+(define deal (new-deal "Demo 2026-1" :first-payment (date 2026 11 25) :closing-date (date 2026 11 20)
+                       :speed (prepayment-speed 'psa 150)
+                       :collateral '((100000000.0 6.5 6.0 360) (50000000.0 7.5 6.5 240 12))))
+(deal-size deal)                                     ; => 150000000.0
+(deal-periods deal)                                  ; => 360
+(deal-sequential! deal "POOL" '(("A" 90000000.0) ("B" 60000000.0)))
+(deal-run! deal)
+(vector-ref (node-principal (get-node deal "POOL")) 0)    ; => 332955.9512527855
+(describe-speed (deal-ran deal))                     ; => "PSA 150"
+(deal-run! deal (prepayment-speed 'psa 300))
+(vector-ref (node-principal (get-node deal "POOL")) 0)    ; => 490518.1687694521
+(deal-check deal)                                    ; => #t
 ```
 
-`(new-deal name first-payment [:rows 8] [:variable 'deal] [:collateral-name "POOL"] [:forms forms])` shows a page with a **grid of collateral**, a row for each piece (`:rows` of them
-to begin with, empty): its balance, its wac in percent (the weighted average coupon of the loans), its pass-through coupon in percent (what the investors are paid: the wac
-less the fees, so no more than the wac), its wam (the months that are left) and its age (the months the loans have gone, 0 if new). Double-click a cell to type in it. A row with no balance is left out. Under it is the **pricing speed**: a type (PSA, CPR or SMM) and a grid of pieces, each *from*, *to* and *months*, which is
-a speed that goes in a straight line from one to the other and is *to* in the last of the months (see "Pieces of collateral, and the pricing speed"); the last
-piece has 0 months, for the rest of the time, and one row with the same speed twice is a single speed (it begins as 100 PSA). The first row is always a piece, and any
-other row with nothing in it is left out.
+**What a deal has.**
 
-- **Show the cash flows** adds up the cash flows of the pieces at the speed and shows them: how many pieces there are, the balance, the wac, the pass-through coupon, the wam, the average life of the
-  collateral and the speed in words, and a table with a row for the first month and the end of each year (the payment date, the balance, the principal and the interest paid to the
-  investors, the speed of the month, and the wac and the pass-through coupon of the pool, the rates that the loans' interest and the investors' interest are of the balance,
-  which change as the pieces with the higher rates pay off).
-- **Create the deal** makes the collateral of the pieces (`collateral-from-pieces`) and the deal (`start-deal`, with the first payment date), and the deal builder (see
-  "Building a deal by clicking") takes the place of the grids. The deal is the value of `(new-deal-deal start)`, which is `'()` until the button has been pressed, and, with
-  `:variable 'deal`, of the variable `deal` as soon as it is made.
+- The **collateral**, as data: a table with a row for each piece, the columns `balance`, `wac`, `coupon`, `wam` and `age` (see "Pieces of collateral, and the pricing speed"),
+  which `(collateral-table pieces)` makes from a list of pieces, and a table of your own, from a file, say, can be (it does not need the `age`). `:collateral` of
+  `new-deal` is a table or a list of pieces, and `(deal-set-collateral! deal collateral)` changes it later: the cash flows are worked out again, and the tranches below are
+  too. The collateral can be left out, and given later: a deal with none has no months to run for.
+- The **tranches**, by name, which always begin with one, the special tranche that is the cash flows of the collateral, the root of the tree (it is called `POOL`, or
+  `:collateral-name`). They are divided as before, with the builders and the plans.
+- The **pricing speed** (`:speed`, 100 PSA to begin with, and `(deal-set-pricing-speed! deal speed)`): a prepayment speed, made by `prepayment-speed`, with a type, PSA, CPR or SMM, and
+  a single number or linear pieces. It is what the cash flows of the collateral are, and what the sizes of the tranches that depend on them are worked out at (a bond sized by
+  its average life, say); `deal-run!` is given the speed to run at, which is another matter, and does not change the sizes.
+- The **first payment date** (month 1, `(deal-set-first-payment! deal date)`), the **closing date** (`(deal-set-closing-date! deal date)`) and the **name**.
 
-What is wrong with what was typed is said under the buttons: no collateral, a wac below 0, a pass-through coupon above the wac, a wam that is not a whole number of months, a speed that goes from one value
-to another with no months to do it in. `notebooks/new_deal.ipynb` is a notebook that does this.
+**What changing the collateral does.** The cash flows of the collateral are worked out at the pricing speed, and the deal runs for as many months as its longest piece (every
+tranche has its vectors made as long). The tranches below are given their sizes and coupons again, from the top down, as in "Changing a split, and taking one away": a tranche
+whose size was given keeps the share of its parent that it was, and one whose size is worked out (a PAC, a floater, a bond sized by its average life) has it worked out again.
+It is tried on a copy first, so that if anything below cannot be worked out, an error says what, and the deal is as it was. The same goes for a change of the pricing speed.
+
+```lisp
+(deal-set-collateral! deal '((200000000.0 6.5 6.0 360)))
+(deal-size deal)                                     ; => 200000000.0
+(vector-ref (node-balance (get-node deal "A")) 0)    ; => 120000000.0
+```
+
+**A floater from pieces.** The collateral pays interest at the pass-through coupon of its pieces, and if they all have the same one it is a **fixed coupon**, whatever their wacs are,
+so a floater and an inverse floater, or a premium and a discount bond, can be made of it. If the coupons differ, the coupon changes from month to month as the pieces pay off, and a split
+that needs a fixed coupon says so.
+
+```lisp
+(define two (new-deal "Two" :collateral '((100000000.0 6.5 6.0 360) (50000000.0 7.5 6.0 240 12))))
+(deal-floater-inverse! two "POOL" "F" "I" :cap 0.0975)
+(vector-ref (node-balance (get-node two "F")) 0)     ; => 92307692.3076923
+(deal-ran two)                                       ; => #f
+(deal-run! two :index 0.04)
+(describe-speed (deal-ran two))                      ; => "PSA 100"
+```
+
+`(deal-ran deal)` is `#f` if the deal has been changed since it was run, and otherwise the speed that it was run at.
+
+**The cash flows of a tranche.** `(deal-flows-table deal name [:months list])` is a table of what a tranche was paid and owed in the last run, a row for each month (or for the months
+in the list): the month, the payment date, if the deal has a first payment date, the balance at the start of the month, the principal, the interest, and what it accrues, is written down by or
+carries as a shortfall, if it ever does. `(deal-summary-months periods)` is the months to show when all of them are too many: the first, the last of each year, and the last.
+
+```lisp
+(map car (deal-flows-table deal "A"))                ; => ("month" "payment date" "balance" "principal" "interest")
+(deal-summary-months 30)                             ; => (1 12 24 30)
+```
+
+**The views.** Each is a function that returns a widget, which a cell of a notebook shows (see "Widgets in a notebook"):
+
+```lisp
+(define deal (new-deal "Demo 2026-1" :first-payment (date 2026 11 25)))
+(display-widget (info deal))          ; the name, the dates and the pricing speed
+(display-widget (collateral deal))    ; the pieces of collateral, to type in
+(display-widget (bonds deal))         ; the tranches, to divide them, and to look at their cash flows
+```
+
+- `(collateral deal [:rows 8])` (in `lib/deal_views.lsp`) is a **grid** of the collateral, a row for each piece, and empty rows to type in: its balance, its wac in percent (the weighted
+  average coupon of the loans), its pass-through coupon in percent (what the investors are paid: the wac less the fees, so no more than the wac), its wam (the months that are left) and its age
+  (the months the loans have gone, 0 if new). Double-click a cell to type in it. A row with no balance is left out. **Show the cash flows** adds up the cash flows of the pieces that are
+  in the grid, at the pricing speed, and shows them: how many pieces there are, the balance, the wac, the pass-through coupon, the wam, the average life and the speed in words, and a table
+  with a row for the first month and the end of each year (the payment date, the balance, the principal, the interest paid to the investors, the speed of the month, and the wac and the
+  pass-through coupon of the pool, which change as the pieces with the higher rates pay off). **Update the deal** gives the deal what is in the grid (`deal-set-collateral!`).
+- `(info deal)` is a few fields: the name, the closing date, the first payment date (written `2026-11-25`, or left blank), and the pricing speed, a type (PSA, CPR or SMM) and a grid of
+  pieces, each *from*, *to* and *months*, which is a speed that goes in a straight line from one to the other and is *to* in the last of the months; the last piece has 0 months, for the rest of
+  the time, and one row with the same speed twice is a single speed. The first row is always a piece, and any other row with nothing in it is left out. **Update the deal** gives the deal
+  what is typed, and nothing is changed if something is wrong.
+- `(bonds deal)` is the grid of the tranches (see "Building a deal by clicking"), with a column beside the split to click for the cash flows of a tranche.
+
+What is wrong with what was typed is said as a line under the buttons: no collateral, a wac below 0, a pass-through coupon above the wac, a wam that is not a whole number of months, a date that is not
+one, a speed that goes from one value to another with no months to do it in, a split below that cannot be worked out again. `notebooks/new_deal.ipynb` is a notebook with the three views.
+
+**How the views are told.** A view is added to a deal with `(deal-add-view! deal kinds refresh)`: `kinds` is a list of the symbols `collateral`, `tranches` and `info`, and `(refresh)` is
+called, to show the deal as it is now, whenever the deal changes in one of those kinds. `(deal-changed! deal kind ...)` says that it has: the functions that change a deal call it, and
+an error in a view is said, and does not undo the change. A deal that has changed has not been run since: `deal-ran` is `#f`. The views of a notebook are made this way, and so can others be.
 
 ## Building a deal by clicking
 
@@ -655,13 +729,13 @@ to another with no months to do it in. `notebooks/new_deal.ipynb` is a notebook 
 a notebook") by clicking, instead of by writing the builders. The deal begins as the collateral alone, one tranche with the cash flows of the pool:
 
 ```lisp
-(define pool (collateral-from-psa "POOL" 100000000 6.5 :term 360 :age 0 :psa 150))
-(define deal (start-deal "Demo 2026-1" pool))
-(display-widget (deal-builder deal))
+(define deal (new-deal "Demo 2026-1" :first-payment (date 2026 11 25) :collateral '((100000000.0 6.5 6.0 360))))
+(display-widget (bonds deal))
 ```
 
-`(deal-builder deal [:style "tabs"] [:forms forms])` makes a **grid** with a row for each tranche of the deal (the rows of `deal-outline`: name, balance,
-and the kind of split), and a panel under it.
+`(bonds deal [:style "tabs"] [:forms forms])` (also called `deal-builder`) makes a **grid** with a row for each tranche of the deal (the rows of `deal-outline`: name, balance,
+and the kind of split, and a column of *view*, to look at the cash flows), and a panel under it. It is a view of the deal, like `(collateral deal)` and `(info deal)`: it can be shown
+at the same time as they are, and shows what they change (the balance of the collateral, the sizes below it).
 
 - **Click a tranche that is not divided**, and the panel has a tab (or, with `:style "accordion"`, a section) for each kind of split: **Sequential**, **Average life**,
   **Pro rata**, **PAC**, **Floater/inverse**, **Premium/discount** and **IO/PO**, each with the fields that kind needs, and names to start with that are made from the
@@ -680,10 +754,14 @@ and the kind of split), and a panel under it.
   them, to the leaves. Another tab will change the split to a split of another kind, with the same tranches or others.
 - **Take away this split, and all under it** is under the panel whenever a tranche that is divided is chosen. It says which tranches would go, and asks; **Yes**
   takes them away (`deal-delete-split!`), and **No** keeps them.
+- **Click *view*, in the column of cash flows beside the split**, and the cash flows of that tranche are shown under the grid: what it is, its average life, the speed that the deal was
+  run at, and a table (see `deal-flows-table`) with a row for the first month and the end of each year. The deal is run first, at the pricing speed, if it has changed since it was last run (or if
+  it was never); a deal that was run by hand, with `(deal-run! deal speed)`, shows that run, until it changes. A floater needs the index, so a deal with one must have been run with `:index`
+  (the same index is used when it is run again).
 
 What is wrong is shown as a line under the buttons, with no traceback: the names that are in the deal already, balances that do not add up, a cap below the coupon,
-a tranche left out that has a split under it. The deal is the one that was given, and is changed as the buttons are pressed: nothing has been run, so `deal-run!` and
-`deal-check` are for when it is built. `notebooks/deal_builder.ipynb` is a notebook that does this.
+a tranche left out that has a split under it. The deal is the one that was given, and is changed as the buttons are pressed: `deal-run!` and `deal-check` are for when it is built (and
+the cash flows column runs it). `notebooks/deal_builder.ipynb` is a notebook that does this.
 
 **A form of your own.** Each tab is a `split-form`, made by `make-split-form`, with these slots:
 
@@ -711,7 +789,7 @@ kind of split", has a `split-label` method, and a form with that label):
             (let ((half (/ (vector-ref (node-balance parent) 0) 2.0)))
               (sequential-plan (list (list (cdr (assoc "first" answers)) half)
                                      (list (cdr (assoc "second" answers)) half)))))))
-(display-widget (deal-builder deal :forms (append (standard-split-forms) (list halves))))
+(display-widget (bonds deal :forms (append (standard-split-forms) (list halves))))
 ```
 
 ## An example program

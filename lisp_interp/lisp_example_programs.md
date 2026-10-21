@@ -1426,10 +1426,11 @@ the table as the user has changed it (`grid-table`). The manual's [Widgets in a
 notebook](lisp_interpreter_reference.md#widgets-in-a-notebook) has everything the functions take.
 The last section of the notebook is a grid of CMO tranches: click one, and a panel of tabs opens under it (a floater's cap, the bands of a PAC, a split), with fields to fill in and a **Go** button, made by `widget-actions`.
 
-`notebooks/new_deal.ipynb` starts a deal (the [CMO manual](lisp_cmo_manual.md#starting-a-deal-in-a-notebook) says how): a grid to type the collateral in, a row for each piece (balance, wac, pass-through coupon, wam,
-age), the pricing speed (PSA, CPR or SMM, one number or linear pieces such as "5 CPR for a year, then to 20 CPR over two years"), a button that shows the cash flows of the pieces added up, and a
-button that creates the deal, with the deal builder in the place of the grids. A tab of the builder divides a tranche into bonds in order by **average life**: give the life of all but one, and the
-sizes are found.
+`notebooks/new_deal.ipynb` is a deal object in three views, each in a cell (the [CMO manual](lisp_cmo_manual.md#the-deal-object-and-its-views-in-a-notebook) says how): `(info deal)` for the name, the dates and
+the pricing speed (PSA, CPR or SMM, one number or linear pieces such as "5 CPR for a year, then to 20 CPR over two years"); `(collateral deal)`, a grid to type the collateral in, a row for each
+piece (balance, wac, pass-through coupon, wam, age), with a button that shows the cash flows of the pieces added up and one that gives the deal what is typed; and `(bonds deal)`, the grid of the
+tranches to divide them, with a column to click for the cash flows of each. They show the same deal at the same time, and what is changed in one is shown in the others. A tab of the builder divides
+a tranche into bonds in order by **average life**: give the life of all but one, and the sizes are found.
 
 `notebooks/deal_builder.ipynb` builds a CMO deal by clicking (the [CMO manual](lisp_cmo_manual.md#building-a-deal-by-clicking) says how): it begins with one tranche, the collateral, in a
 grid; click a tranche to divide it, with a tab for each kind of split (sequential, pro rata, PAC, floater and inverse floater, premium and discount, IO and PO) and the fields it needs; one
