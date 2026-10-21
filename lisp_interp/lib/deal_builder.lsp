@@ -117,9 +117,30 @@ line can leave its balance out: that child is what is left of the parent's."
                     (split-children split))
                "\n"))
 
+(define (form-lives text)
+  "The children written in text, one to a line, as the list that average-life-plan takes: (name years), or (name) for the one that has no
+average life, and is what is left."
+  (let ((lines (filter (lambda (line) (not (null? (string-split line)))) (string-split text "\n"))))
+    (when (null? lines)
+      (error "write the tranches, one to a line: a name and the average life it is to have, in years, and for one of them no life"))
+    (map (lambda (line)
+           (let ((words (string-split line)))
+             (when (> (length words) 2)
+               (error (format "a line is a name and the average life, in years, not \"{}\"" line)))
+             (if (= (length words) 1)
+                 (list (car words))
+                 (list (car words) (form-number (cadr words) (format "the average life of {}" (car words)))))))
+         lines)))
+
+(define (form-lives-text deal split)
+  "The children of the split written as form-lives reads them: a name and its life, or only the name for the one that has none."
+  (string-join (map (lambda (name life) (if (null? life) name (format "{} {}" name life)))
+                    (split-children split) (average-life-split-lives split))
+               "\n"))
+
 (define (form-coupon-percent parent)
   "The coupon of the parent, in percent, or 0 if it has none: for the values to start the fields with."
-  (if (null? (node-coupon parent)) 0.0 (* 100.0 ((node-coupon parent) 0.0))))
+  (if (null? (node-coupon parent)) 0.0 (* 100.0 (coupon-at (node-coupon parent) 0.0 0))))
 
 ; ---------------------------------------------------------------------------
 ; The forms
@@ -146,6 +167,19 @@ line can leave its balance out: that child is what is left of the parent's."
               (sequential-plan (form-children (form-answer answers "tranches") parent)
                                :accretion-to (form-optional-name answers "accretion")
                                :losses (form-losses answers))))
+    (make-split-form
+      :title "Average life"
+      :label "sequential by average life"
+      :help "One tranche to a line: its name and the average life, in years, that it is to have. One tranche, anywhere in the list, has no life: it is what is left. They are paid in order, and are made the sizes that have the lives, at the pricing speed."
+      :fields (list (list "tranches" 'textarea "Tranches" "")
+                    (list "losses" 'dropdown "Losses" "reverse" form-loss-rules))
+      :defaults (lambda (parent) (list (cons "tranches" (format "{}1 2\n{}2 5\n{}3" (node-name parent) (node-name parent) (node-name parent)))))
+      :describe (lambda (deal split)
+                  (list (cons "tranches" (form-lives-text deal split))
+                        (cons "losses" (format "{}" (split-loss-rule split)))))
+      :plan (lambda (parent answers)
+              (average-life-plan (form-lives (form-answer answers "tranches"))
+                                 :losses (form-losses answers))))
     (make-split-form
       :title "Pro rata"
       :label "pro rata"
@@ -335,9 +369,19 @@ or none of them if asking is the empty list."
   (let ((form (find-if (lambda (form) (equal? (split-form-title form) title)) (deal-gui-forms gui))))
     ((split-form-plan form) (deal-gui-parent gui) answers)))
 
+(define (average-lives-of trial names)
+  "The average life, in years, of each of the nodes of the trial deal, a list: found by running a copy of the deal, at the speed of its collateral.
+nan for a node that is paid no principal, such as an interest-only bond."
+  (let* ((root (get-node trial (deal-root-of trial (car names))))
+         (run (deal-run-copy trial (node-name root) (list (node-principal root) (node-interest root)) #t)))
+    (map (lambda (name)
+           (let ((principal (node-principal (get-node run name))))
+             (if (> (vector-sum principal) 0.0) (average-life principal) nan)))
+         names)))
+
 (define (show-plan-effect deal trial parent-name)
   "Shows what the nodes below the parent are in the trial deal, which has a plan applied to it: their balances, and what each is of its
-own parent's, and what they are in the deal itself (a node that is new has no balance there)."
+own parent's, their average lives, and what they are in the deal itself (a node that is new has no balance there)."
   (let* ((entries (cdr (deal-outline-below trial parent-name 0)))
          (names (map car entries))
          (balance-in (lambda (a-deal name) (vector-ref (node-balance (get-node a-deal name)) 0)))
@@ -349,10 +393,11 @@ own parent's, and what they are in the deal itself (a node that is new has no ba
          (columns (append (list "tranche" (list->vector indented))
                           (if (some (lambda (value) (= value value)) was) (list "was" (list->vector was)) '())      ; (a node that is new has no balance, nan, which is not equal to itself)
                           (list "balance" (list->vector (map (lambda (name) (balance-in trial name)) names))
-                                "share of its parent" (list->vector share)))))
+                                "share of its parent" (list->vector share)
+                                "average life" (list->vector (average-lives-of trial names))))))
     (display (format "{} ({:,.2f}) divided by a {} split into:\n" parent-name (balance-in trial parent-name)
                      (split-label (node-split (get-node trial parent-name)))))
-    (display-table (apply make-table columns) '(("was" ",.2f") ("balance" ",.2f") ("share of its parent" ".2%")))))
+    (display-table (apply make-table columns) '(("was" ",.2f") ("balance" ",.2f") ("share of its parent" ".2%") ("average life" ".2f")))))
 
 (define (deal-gui-show-sizes! gui title answers)
   "The button that shows the sizes: the plan is tried on a copy of the deal, so that what is wrong with it is said, and what the tranches

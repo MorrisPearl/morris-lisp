@@ -408,6 +408,14 @@ class TestTableGrid(LispTestCase):
         grid._DataGrid__handle_custom_msg(None, {"event_type": "cell-changed", "row": 0, "column_index": 0, "value": None}, [])
         self.assertShows('(vector-nan? (table-column (grid-table h) "x"))', "#(1 0)")
 
+    def test_a_column_of_zeros_and_ones_takes_any_whole_number_typed_in_it(self):
+        """A vector of 0s and 1s is stored in the smallest integers (it is a mask as well): a grid of one must not refuse 360."""
+        self.run_lisp('(define zeros (table-grid (make-table "wam" (make-vector 3 0) "flag" (vector 1 0 1))))')
+        grid = self.env[lisp_core.Symbol("zeros")]
+        grid._DataGrid__handle_custom_msg(None, {"event_type": "cell-changed", "row": 1, "column_index": 0, "value": 360}, [])
+        grid._DataGrid__handle_custom_msg(None, {"event_type": "cell-changed", "row": 2, "column_index": 1, "value": 1000}, [])
+        self.assertShows("(grid-table zeros)", '(("wam" . #(0 360 0)) ("flag" . #(1 0 1000)))')
+
     def test_a_value_that_does_not_fit_its_column_is_an_error_that_says_where(self):
         self.edit(0, 1, "lots")
         self.assertLispError("(grid-table g)", "column bal, row 0")

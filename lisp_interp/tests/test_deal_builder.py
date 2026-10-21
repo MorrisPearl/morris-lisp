@@ -138,7 +138,7 @@ class TestDealBuilder(BuilderCase):
         self.assertEqual(self.names(), ["POOL"])
         self.assertEqual(self.grid.data["balance"][0], 100000000.0)
         self.assertTrue(self.hidden())
-        self.assertEqual(list(self.tabs.titles), ["Sequential", "Pro rata", "PAC", "Floater/inverse", "Premium/discount", "IO/PO"])
+        self.assertEqual(list(self.tabs.titles), ["Sequential", "Average life", "Pro rata", "PAC", "Floater/inverse", "Premium/discount", "IO/PO"])
         self.assertEqual(self.messages.__class__.__name__, "Output")
 
     def test_a_tranche_clicked_is_the_parent_of_the_split_and_the_fields_start_with_names_made_from_it(self):
@@ -146,6 +146,7 @@ class TestDealBuilder(BuilderCase):
         self.assertFalse(self.hidden())
         self.assertEqual(self.panel.children[0].value, "Divide <b>POOL</b>, which has a balance of 100,000,000.00, by:")
         self.assertEqual(self.field("Sequential", "Tranches").value, "POOL1\nPOOL2")
+        self.assertEqual(self.field("Average life", "Tranches").value, "POOL1 2\nPOOL2 5\nPOOL3")
         self.assertEqual(self.field("PAC", "PAC").value, "POOL-PAC")
         self.assertEqual(self.field("PAC", "Companion").value, "POOL-COMP")
         self.assertEqual(self.field("Floater/inverse", "Floater").value, "POOL-F")
@@ -158,7 +159,7 @@ class TestDealBuilder(BuilderCase):
         self.run_lisp('(define accordion-ui (deal-builder deal :style "accordion"))')
         panel = self.env[lisp_core.Symbol("accordion-ui")].children[1]
         self.assertIsInstance(panel.children[1], ipywidgets.Accordion)
-        self.assertEqual(len(panel.children[1].children), 6)
+        self.assertEqual(len(panel.children[1].children), 7)
 
     # -- a sequential split ----------------------------------------------------------
 
@@ -275,6 +276,60 @@ class TestDealBuilder(BuilderCase):
         self.assertEqual(self.names(), ["POOL", "A", "B"])
 
     # -- the other kinds of split --------------------------------------------------------
+
+    def test_the_sizes_shown_have_the_average_life_of_each_tranche(self):
+        self.click(0)
+        self.fill("Sequential", {"Tranches": "A 30,000,000\nB"})
+        shown = self.calculate("Sequential")
+        self.assertIn("average life", shown)
+        self.assertRegex(shown, r"A\s+30,000,000.00\s+30.00%\s+\d+\.\d\d")
+
+    def test_an_interest_only_bond_has_no_average_life_in_the_sizes_shown(self):
+        self.click(0)
+        shown = self.calculate("IO/PO")
+        self.assertNotIn("Error", shown)
+        io_row = next(line for line in shown.splitlines() if line.startswith("POOL-IO"))
+        po_row = next(line for line in shown.splitlines() if line.startswith("POOL-PO"))
+        self.assertRegex(po_row, r"\d+\.\d\d\s*$")                         # (the PO has one)
+        self.assertNotRegex(io_row, r"\d+\.\d\d\s*$")                      # (the IO is paid no principal, and has none)
+
+    def test_an_average_life_split_is_sized_from_the_lives_and_the_tranche_that_has_none_is_what_is_left(self):
+        self.click(0)
+        self.fill("Average life", {"Tranches": "A1 2\nA2 5\nA3"})
+        shown = self.calculate("Average life")
+        self.assertIn("divided by a sequential by average life split into:", shown)
+        for text in ("2.00", "5.00", "average life"):
+            self.assertIn(text, shown)
+        self.assertEqual(self.names(), ["POOL"])                                  # (only looked at)
+        self.assertIn("Added A1, A2, A3 under POOL, by a sequential by average life split", self.add("Average life"))
+        self.assertEqual(self.names(), ["POOL", "A1", "A2", "A3"])
+        self.assertAlmostEqual(self.balance("A1") + self.balance("A2") + self.balance("A3"), 100000000.0, places=3)
+        self.run_lisp("(deal-run! deal)")
+        self.assertAlmostEqual(self.run_lisp('(deal-average-life deal "A1")'), 2.0, places=8)
+        self.assertAlmostEqual(self.run_lisp('(deal-average-life deal "A2")'), 5.0, places=8)
+        self.assertShows("(deal-check deal)", "#t")
+
+    def test_the_tranche_with_no_life_can_be_anywhere_in_the_list(self):
+        self.click(0)
+        self.fill("Average life", {"Tranches": "A1 1.5\nA2\nA3 12"})
+        self.add("Average life")
+        self.run_lisp("(deal-run! deal)")
+        self.assertAlmostEqual(self.run_lisp('(deal-average-life deal "A1")'), 1.5, places=8)
+        self.assertAlmostEqual(self.run_lisp('(deal-average-life deal "A3")'), 12.0, places=8)
+
+    def test_what_is_wrong_with_the_lives_is_said(self):
+        self.click(0)
+        for tranches, message in (("A1 2\nA2 5", "all but one of its children"),
+                                  ("A1\nA2", "all but one of its children"),
+                                  ("A1 two\nA2", "two is not a number, for the average life of A1"),
+                                  ("A1 2 3\nA2", "a line is a name and the average life"),
+                                  ("A1 40\nA2", "A1 cannot have an average life of 40 years"),
+                                  ("  \n", "write the tranches, one to a line")):
+            with self.subTest(tranches=tranches):
+                self.fill("Average life", {"Tranches": tranches})
+                self.assertIn(message, self.calculate("Average life"))
+                self.assertIn(message, self.add("Average life"))
+                self.assertEqual(self.names(), ["POOL"])
 
     def test_a_pro_rata_split_pays_in_proportion_and_has_its_own_loss_rule(self):
         self.click(0)
@@ -456,18 +511,20 @@ class TestChangingAndTakingAwayInTheBuilder(BuilderCase):
         self.assertEqual(self.panel.children[0].value, "Divide <b>B</b>, which has a balance of 40,000,000.00, by:")
 
     def test_the_split_of_each_kind_is_as_it_was_made_and_changing_nothing_changes_nothing(self):
-        self.run_lisp('''
-          (deal-sequential! deal "POOL" '(("S" 20000000.0) ("R" 20000000.0) ("C" 20000000.0) ("F" 20000000.0) ("D" 10000000.0) ("O" 10000000.0)))
-          (deal-sequential! deal "S" '(("S1" 5000000.0) ("S2" 5000000.0) ("SZ" 10000000.0 z)) :accretion-to "S1" :losses 'forward)
-          (deal-pro-rata! deal "R" '(("R1" 12000000.0) ("R2" 8000000.0)))
+        self.run_lisp("""
+          (deal-sequential! deal "POOL" '(("L" 40000000.0) ("S" 10000000.0) ("R" 10000000.0) ("C" 20000000.0) ("F" 10000000.0) ("D" 5000000.0) ("O" 5000000.0)))
+          (deal-average-life! deal "L" '(("L1" 1.0) ("L2") ("L3" 5.0)))
+          (deal-sequential! deal "S" '(("S1" 2500000.0) ("S2" 2500000.0) ("SZ" 5000000.0 z)) :accretion-to "S1" :losses 'forward)
+          (deal-pro-rata! deal "R" '(("R1" 6000000.0) ("R2" 4000000.0)))
           (deal-pac! deal "C" "C1" "C2" 90 250 :losses 'pro-rata)
           (deal-floater-inverse! deal "F" "F1" "F2" :cap 0.092 :margin 0.0075)
           (deal-premium-discount! deal "D" "D1" "D2" :premium-coupon 0.07 :discount-coupon 0.0525)
-          (deal-io-po! deal "O" "O1" "O2" :io-coupon 0.02)''')
+          (deal-io-po! deal "O" "O1" "O2" :io-coupon 0.02)""")
         self.start_over()
         expected = {
-            "S": ("Sequential", {"Tranches": "S1 5000000.0\nS2 5000000.0\nSZ 10000000.0 z", "Accretion directed to": "S1", "Losses": "forward"}),
-            "R": ("Pro rata", {"Tranches": "R1 12000000.0\nR2 8000000.0", "Losses": "pro-rata"}),
+            "S": ("Sequential", {"Tranches": "S1 2500000.0\nS2 2500000.0\nSZ 5000000.0 z", "Accretion directed to": "S1", "Losses": "forward"}),
+            "L": ("Average life", {"Tranches": "L1 1.0\nL2\nL3 5.0", "Losses": "reverse"}),
+            "R": ("Pro rata", {"Tranches": "R1 6000000.0\nR2 4000000.0", "Losses": "pro-rata"}),
             "C": ("PAC", {"PAC": "C1", "Companion": "C2", "Low speed (PSA)": 90, "High speed (PSA)": 250, "Losses": "pro-rata"}),
             "F": ("Floater/inverse", {"Floater": "F1", "Inverse floater": "F2", "Cap %": 9.2, "Margin %": 0.75}),
             "D": ("Premium/discount", {"Premium bond": "D1", "Discount bond": "D2", "Premium coupon %": 7.0, "Discount coupon %": 5.25}),

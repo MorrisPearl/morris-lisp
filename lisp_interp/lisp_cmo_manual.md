@@ -24,6 +24,7 @@ general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is 
   - [Amounts, and what is equal](#amounts-and-what-is-equal)
 - [Building a deal](#building-a-deal)
   - [The collateral](#the-collateral)
+  - [Pieces of collateral, and the pricing speed](#pieces-of-collateral-and-the-pricing-speed)
   - [Dividing a node](#dividing-a-node)
   - [Plans, and looking before adding](#plans-and-looking-before-adding)
   - [Changing a split, and taking one away](#changing-a-split-and-taking-one-away)
@@ -35,12 +36,14 @@ general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is 
   - [A premium and a discount](#a-premium-and-a-discount)
   - [Z bonds, and accretion directed bonds](#z-bonds-and-accretion-directed-bonds)
   - [Interest-only and principal-only bonds](#interest-only-and-principal-only-bonds)
+  - [Sequential by average life](#sequential-by-average-life)
 - [Losses and shortfalls](#losses-and-shortfalls)
   - [Losses](#losses)
   - [Interest shortfalls](#interest-shortfalls)
   - [What is not modeled](#what-is-not-modeled)
 - [Checking a deal](#checking-a-deal)
 - [Making another kind of split](#making-another-kind-of-split)
+- [Starting a deal in a notebook](#starting-a-deal-in-a-notebook)
 - [Building a deal by clicking](#building-a-deal-by-clicking)
 - [An example program](#an-example-program)
 
@@ -167,6 +170,55 @@ needs, is made by `collateral-from-psa`, which knows the rate and the term.)
 
 `(start-deal name collateral [:shortfalls #t])` makes a deal whose root is the collateral, and `(deal-add-collateral! deal collateral)` adds
 another piece, the root of a tree of its own. It pays for as many months as the first: pad the vectors with zeros if need be.
+
+### Pieces of collateral, and the pricing speed
+
+A pool is often several pieces, each with its own balance, coupon and maturity, that prepay at one speed. `(collateral-from-pieces name pieces speed)`
+makes one collateral node of them: each piece is projected at the speed, and the cash flows are added up, month by month, so that the collateral pays what they
+pay together. A **piece** is `(balance wac wam [age])`: the balance now, the weighted average coupon in percent, the weighted average maturity (the months that
+are left) and the age (the months the loans have gone, 0 if left out), which is what the PSA curve rises with. A piece with no balance is left out. The collateral
+has as many months as its longest piece.
+
+A **speed** has a type, which says what its number means, and a number that can change with time: `(prepayment-speed type spec)`. The types are `psa` (150 is 150% of
+the standard curve, 0 to 6 CPR over 30 months of age, which is the curve of `prepayment_model.lsp`), `cpr` (the annual rate of prepayment, in percent) and
+`smm` (the share of what is left that prepays in a month, in percent). The `spec` is one number, which is the speed in every month, or a list of linear
+pieces, each `(from to months)`: the speed goes in a straight line from `from` to `to`, and is `to` in the last of the months, so that the next piece starts from
+there; a piece with no months, `(from to)` with the two the same, is for the rest of the time; and after the last piece the speed holds. The months are counted
+from the first payment, and are the same for every piece of collateral. The PSA curve itself is `(prepayment-speed 'cpr '((0 6 30)))`, 0.2 CPR in the first
+month and 6 CPR in the thirtieth.
+
+```lisp
+(speed-values (prepayment-speed 'cpr '((5 5 3) (5 20 3))) 9)    ; => #(5.0 5.0 5.0 10.0 15.0 20.0 20.0 20.0 20.0)
+(describe-speed (prepayment-speed 'cpr '((5 5 3) (5 20 3))))    ; => "CPR: 5 for 3 months, then from 5 to 20 over 3 months"
+(describe-speed (prepayment-speed 'psa 150))                     ; => "PSA 150"
+```
+
+The speed of the pieces is the **pricing speed** of the deal: it is what the cash flows of the collateral are, and what the average lives of an average-life split are
+worked out at. A PAC is still sized at the two PSA speeds it is given, by projecting each of the pieces at them (see `deal-principal-at`).
+
+```lisp
+(define pieces '((100000000.0 6.0 360) (50000000.0 7.0 240 12)))
+(define pool (collateral-from-pieces "POOL" pieces (prepayment-speed 'psa 150)))
+(vector-ref (node-balance pool) 0)             ; => 150000000.0
+(vector-ref (node-principal pool) 0)           ; => 347773.9772172784
+(collateral-rate pool)                          ; => 6.333333333333333
+```
+
+The collateral pays interest at the rate that the interest is of the balance in each month, so its **coupon is a vector**, one rate for each month (`(pool-coupons interest
+balances)`), that changes as the pieces with the higher coupons pay off or prepay: 6.33% in the first month here, and 6.16% in the two hundredth. A coupon is a
+function of the index, or a vector like this one (`(coupon-at coupon index month)`); the bonds under the collateral have it too, so a sequential split, a pro-rata
+split, a PAC and an IO/PO split all work. A floater and an inverse floater, and a premium and a discount bond, are made from a fixed coupon, and say so if the
+collateral has not got one. `(project-pieces pieces speed)` is the three vectors the collateral is made of (principal, interest, balance), and
+`(project-pool balance rate months smms)` those of one pool that prepays by the monthly mortality of each month.
+
+**The dates.** `(start-deal name collateral :first-payment (date 2026 11 25))` gives the deal the date of its first payment, which is month 1. `(deal-payment-date deal month)`
+is the date of a month, and `(deal-payment-dates deal)` a vector of them, the same day of each month (the end of the month, in one that is shorter).
+
+```lisp
+(define deal (start-deal "Demo" pool :first-payment (date 2026 11 25)))
+(vector-ref (deal-payment-dates deal) 1)       ; => 2026-12-25
+(vector-ref (deal-payment-dates deal) 359)     ; => 2056-10-25
+```
 
 ### Dividing a node
 
@@ -391,6 +443,39 @@ into a Z bond: a PO in order, say, or in proportion, and an IO in parts of its n
 following the IO, in the share of it that is its size: `(deal-sequential! deal "IO" '(("IO1" 40.0) ("IO2" 60.0)))` makes one with 40% of the
 notional, and one with 60%).
 
+### Sequential by average life
+
+The **average life** of a bond is the time, in years, that each dollar of its principal is outstanding, on average: the months in which it is paid, the first payment
+being month 1, each weighted by the amount paid in it, over 12. `(average-life principal)` is that of a vector of principal, and `(deal-average-life deal name)` that
+of a node, after `deal-run!`.
+
+```lisp
+(average-life (vector 50.0 0.0 0.0 50.0))      ; => 0.20833333333333334
+```
+
+A **sequential split by average life** is a sequential split that works out the sizes of its children, from the average lives that they are to have: the user gives the
+average life of every child but one, and the one that is not given one is what is left of the parent. `(deal-average-life! deal parent-name children [:losses rule])`
+adds it: `children` is a list of `(name years)`, in the order that they are paid in, and one of them is `(name)`. It can be first, in the middle or last. The split
+is a child of `sequential-split` (`average-life-split`, with the lives in `average-life-split-lives`): it pays in order, as a sequential split does, and has no Z bonds.
+
+```lisp
+(define pool (collateral-from-pieces "POOL" '((100000000.0 6.0 360) (50000000.0 7.0 240 12)) (prepayment-speed 'psa 150)))
+(define deal (start-deal "Demo" pool :first-payment (date 2026 11 25)))
+(deal-average-life! deal "POOL" '(("A1" 2.0) ("A2" 5.0) ("A3")))
+(vector-ref (node-balance (get-node deal "A1")) 0)        ; => 36980402.10543777
+(vector-ref (node-balance (get-node deal "A3")) 0)        ; => 76689806.9439642
+(deal-run! deal)
+(deal-average-life deal "A2")                              ; => 5.000000000000001
+```
+
+How it is done: a bigger child is outstanding longer, so the average life of a child grows with its size, and the sizes are found by halving the range. The principal of a child
+that comes k-th is the principal of the parent, as it is paid at the pricing speed (found by running the splits above it on a copy of the deal: `deal-principal-now`), between
+the total of the sizes of the ones before it and that total and its own size. The children before the one that is not given a life are found from the front, each from where the one
+before it ended, and the children after it from the back, each to where the one after it begins. A life that the cash flows cannot give is an error, that says
+what they can (the first child of a pool cannot have more than the pool's own average life, and the last cannot have less than its own last month), and so are lives that
+leave nothing for the one that is left. The sizes are worked out again whenever the parent's are, so that the lives still hold after a change above (see "Changing a
+split, and taking one away"). The lives are of the principal that the parent is paid at the pricing speed, so they are the lives of the bonds at that speed, not at any other.
+
 ## Losses and shortfalls
 
 Both apply to some deals only. A deal with no losses has none, and a deal is only run with shortfalls if it asks for them.
@@ -530,6 +615,32 @@ extends. This one does what a sequential split does, and says what it is dividin
 A kind with data of its own (a PAC has `low-psa`, `high-psa` and its `schedule`) has slots for it. A method is looked up by the kind of the first
 argument, so a method for `sequential-split` is also the method for `noting-split`, until it has one of its own.
 
+## Starting a deal in a notebook
+
+`lib/new_deal.lsp` starts a deal in a notebook, from the collateral:
+
+```lisp
+(define start (new-deal "Demo 2026-1" (date 2026 11 25) :variable 'deal))
+(display-widget start)
+```
+
+`(new-deal name first-payment [:rows 8] [:variable 'deal] [:collateral-name "POOL"] [:forms forms])` shows a page with a **grid of collateral**, a row for each piece (`:rows` of them
+to begin with, empty): its balance, its wac in percent, its wam (the months that are left) and its age (the months the loans have gone, 0 if new). Double-click a cell
+to type in it. A row with no balance is left out. Under it is the **pricing speed**: a type (PSA, CPR or SMM) and a grid of pieces, each *from*, *to* and *months*, which is
+a speed that goes in a straight line from one to the other and is *to* in the last of the months (see "Pieces of collateral, and the pricing speed"); the last
+piece has 0 months, for the rest of the time, and one row with the same speed twice is a single speed (it begins as 100 PSA). The first row is always a piece, and any
+other row with nothing in it is left out.
+
+- **Show the cash flows** adds up the cash flows of the pieces at the speed and shows them: how many pieces there are, the balance, the wac, the wam, the average life of the
+  collateral and the speed in words, and a table with a row for the first month and the end of each year (the payment date, the balance, the principal and interest, the
+  speed of the month and the rate that the interest is of the balance).
+- **Create the deal** makes the collateral of the pieces (`collateral-from-pieces`) and the deal (`start-deal`, with the first payment date), and the deal builder (see
+  "Building a deal by clicking") takes the place of the grids. The deal is the value of `(new-deal-deal start)`, which is `'()` until the button has been pressed, and, with
+  `:variable 'deal`, of the variable `deal` as soon as it is made.
+
+What is wrong with what was typed is said under the buttons: no collateral, a wac below 0, a wam that is not a whole number of months, a speed that goes from one value
+to another with no months to do it in. `notebooks/new_deal.ipynb` is a notebook that does this.
+
 ## Building a deal by clicking
 
 `lib/deal_builder.lsp` is a way to build a deal in a Jupyter notebook (the `morris_lisp` kernel, with `ipywidgets` and `ipydatagrid`; see "Widgets in
@@ -544,13 +655,14 @@ a notebook") by clicking, instead of by writing the builders. The deal begins as
 `(deal-builder deal [:style "tabs"] [:forms forms])` makes a **grid** with a row for each tranche of the deal (the rows of `deal-outline`: name, balance,
 and the kind of split), and a panel under it.
 
-- **Click a tranche that is not divided**, and the panel has a tab (or, with `:style "accordion"`, a section) for each kind of split: **Sequential**, **Pro rata**,
-  **PAC**, **Floater/inverse**, **Premium/discount** and **IO/PO**, each with the fields that kind needs, and names to start with that are made from the
+- **Click a tranche that is not divided**, and the panel has a tab (or, with `:style "accordion"`, a section) for each kind of split: **Sequential**, **Average life**,
+  **Pro rata**, **PAC**, **Floater/inverse**, **Premium/discount** and **IO/PO**, each with the fields that kind needs, and names to start with that are made from the
   tranche's. The tranches of a sequential or a pro-rata split are written one to a line, the name and the balance (`A1 60,000,000`), with `z`
-  after the balance for a Z bond, and the last can leave its balance out and be what is left. A PAC has two speeds, a floater and an inverse floater a cap and a
+  after the balance for a Z bond, and the last can leave its balance out and be what is left. Those of an average-life split are written the name and the average
+  life in years (`A1 2`), and the one that has none (`A3`), which can be anywhere, is what is left. A PAC has two speeds, a floater and an inverse floater a cap and a
   margin (in percent), a premium and a discount bond their coupons, and an IO and a PO an IO coupon, or none, for the parent's.
 - **Calculate the sizes** shows what the tranches would be, as a table, without changing the deal: the tranches of the split and any under them, their balances,
-  and the share of their parents' that each is. It is the plan applied to a copy of the deal (`deal-trial-of-plan`), so what is wrong with the fields is said here,
+  the share of their parents' that each is, and their average lives, at the pricing speed (a copy of the deal is run to find them). It is the plan applied to a copy of the deal (`deal-trial-of-plan`), so what is wrong with the fields is said here,
   and what would be wrong when the tranches are added is too.
 - **Add the tranches to the deal** adds them (`deal-add-plan!`). They appear in the grid under the tranche that was divided, so that the rows are the tree of the
   deal, depth first, and the panel is put away.

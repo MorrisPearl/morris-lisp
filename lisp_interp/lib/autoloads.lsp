@@ -93,6 +93,12 @@
   widget-actions widget-actions-heading widget-actions-set! widget-actions-answers widget-actions-select
   widget-actions-clear widget-actions-button-label!)
 
+; Prepayment speeds that change with time, and the cash flows of pieces of collateral (see "The collateral" in lisp_cmo_manual.md)
+(lazy-load "prepayment_speed.lsp"
+  collateral-piece-check collateral-pieces-in-use copy-speed-curve make-speed-curve pool-coupons prepayment-speed
+  project-pieces project-pool speed-curve-pieces speed-curve-pieces-set! speed-curve-type speed-curve-type-set!
+  speed-curve? speed-in-month speed-piece-of speed-smms speed-values describe-speed)
+
 ; Structured deals as a tree: a pool, divided by splits into tranches (see lisp_cmo_manual.md)
 (lazy-load "deal.lsp"
   start-deal deal-add-collateral! collateral-from-psa constant-coupon deal-sequential! deal-pro-rata! deal-pac!
@@ -144,7 +150,13 @@
   floater-inverse-plan io-po-plan make-split-plan pac-plan premium-discount-plan pro-rata-plan sequential-plan
   split-plan-sizes split-plan-split split-plan-split-set! split-plan-tranches split-plan-tranches-set! split-plan?
   deal-ancestors deal-delete-split! deal-install-plan! deal-replace-split! deal-resize-below! deal-size-split!
-  deal-trial-copy deal-trial-of-plan deal-update-tranche!)
+  deal-trial-copy deal-trial-of-plan deal-update-tranche! average-life average-life-plan average-life-sizes
+  average-life-split-accretion-to average-life-split-accretion-to-set! average-life-split-children
+  average-life-split-children-set! average-life-split-lives average-life-split-lives-set! average-life-split-loss-rule
+  average-life-split-loss-rule-set! average-life-split? collateral-from-pieces collateral-pieces
+  collateral-pieces-set! collateral-speed collateral-speed-set! copy-average-life-split coupon-at coupon-less
+  deal-average-life deal-average-life! deal-first-payment deal-first-payment-set! deal-payment-date deal-payment-dates
+  deal-principal-now deal-run-copy interest-at-coupon make-average-life-split range-life solve-for-size)
 
 ; Building a deal by clicking in a notebook (see "Building a deal by clicking" in lisp_cmo_manual.md)
 (lazy-load "deal_builder.lsp"
@@ -160,7 +172,19 @@
   deal-gui-delete! deal-gui-delete-button deal-gui-delete-button-set! deal-gui-delete-row deal-gui-delete-row-set!
   deal-gui-form-for deal-gui-keep! deal-gui-offer-to-change! deal-gui-offer-to-divide! deal-gui-put-away!
   deal-gui-show-delete! form-children-text form-decimal-to-percent show-plan-effect split-form-describe
-  split-form-describe-set! split-form-label split-form-label-set! without-traceback)
+  split-form-describe-set! split-form-label split-form-label-set! without-traceback average-lives-of form-lives
+  form-lives-text)
+
+; Starting a new deal in a notebook: a grid for the collateral and the pricing speed (see lisp_cmo_manual.md)
+(lazy-load "new_deal.lsp"
+  copy-new-deal-gui make-new-deal-gui new-deal new-deal-create new-deal-deal new-deal-empty-pieces
+  new-deal-empty-speed new-deal-gui-collateral-name new-deal-gui-collateral-name-set! new-deal-gui-deal
+  new-deal-gui-deal-set! new-deal-gui-first-payment new-deal-gui-first-payment-set! new-deal-gui-forms
+  new-deal-gui-forms-set! new-deal-gui-messages new-deal-gui-messages-set! new-deal-gui-name new-deal-gui-name-set!
+  new-deal-gui-page new-deal-gui-page-set! new-deal-gui-pieces-grid new-deal-gui-pieces-grid-set! new-deal-gui-setup
+  new-deal-gui-setup-set! new-deal-gui-speed-grid new-deal-gui-speed-grid-set! new-deal-gui-speed-type
+  new-deal-gui-speed-type-set! new-deal-gui-variable new-deal-gui-variable-set! new-deal-gui? new-deal-pieces
+  new-deal-show new-deal-speed new-deal-years-rows show-collateral-flows)
 
 ; Templates of text and SQL
 (lazy-load "template.lsp"

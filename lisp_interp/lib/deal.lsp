@@ -55,7 +55,7 @@
 ; within deal-tolerance of the pool's balance, which is not an amount of money but a fraction of the pool.
 ;
 
-(require "prepayment_model.lsp")
+(require "prepayment_speed.lsp")
 
 (define deal-tolerance 1e-9)       ; how close, as a fraction of the pool's balance, amounts that should be equal must be
 
@@ -68,7 +68,9 @@
   (notional-flag #f)         ; an interest-only bond: a notional balance that follows another's, interest, and no principal
   (follows '()) (share 1.0)) ; the name of the node whose balance a notional bond follows, and what share of it
 
-(defstruct (collateral (:include node)) rate term age psa)   ; (rate, term, age and psa are those collateral-from-psa made it from)
+(defstruct (collateral (:include node)) rate term age psa pieces speed)
+; (rate, term, age and psa are those collateral-from-psa made it from; pieces and speed are what collateral-from-pieces did: the pieces,
+; each (balance wac wam age), and the speed they prepay at, which is the pricing speed of the deal)
 
 (defstruct (tranche (:include node)))
 
@@ -91,7 +93,11 @@
 ; PO's, the PO is paid all the principal, and the coupon of the parent, less io-coupon, is the PO's ('() is all of it the IO's)
 (defstruct (io-po-split (:include split)) (io-coupon '()))
 
-(defstruct deal name (nodes (make-hash-table)) (names '()) (roots '()) periods (index '()) (shortfalls #f))
+; a sequential split that works out the sizes of its children from the average lives that they are to have, in years, for each child in order
+; ('() for the one child that is not given one, which is what is left of the parent)
+(defstruct (average-life-split (:include sequential-split)) lives)
+
+(defstruct deal name (nodes (make-hash-table)) (names '()) (roots '()) periods (index '()) (shortfalls #f) (first-payment '()))
 
 (defgeneric pay-principal (split deal parent t)
   "Divides the principal of month t that the parent was paid among the children of the split: see the top of the file.")
@@ -135,22 +141,8 @@
   "The cash flows of a pool of level-pay mortgages, with the PSA prepayment speed: (principal interest balance), each a vector,
    the first two one element a month and the balance one longer. balance is the balance now, rate the annual rate in percent, term
    the number of months the loans began with and age the months they have gone, so the pool has term - age months to run."
-  (let* ((months (- term age))
-         (monthly-rate (/ rate 1200.0))
-         (principal (make-vector months 0.0))
-         (interest (make-vector months 0.0))
-         (balances (make-vector (+ months 1) 0.0)))
-    (vector-set! balances 0 balance)
-    (loop for t from 0 below months
-          do (let* ((owed (vector-ref balances t))
-                    (interest-due (* owed monthly-rate))
-                    (scheduled (min owed (- (payment monthly-rate (- months t) owed) interest-due)))
-                    (prepaid (* (smm-from-cpr (cpr (+ age t) psa)) (- owed scheduled)))
-                    (paid (min owed (+ scheduled prepaid))))
-               (vector-set! interest t interest-due)
-               (vector-set! principal t paid)
-               (vector-set! balances (+ t 1) (- owed paid))))
-    (list principal interest balances)))
+  (let ((months (- term age)))
+    (project-pool balance rate months (speed-smms (prepayment-speed 'psa psa) age months))))
 
 (define (collateral-from-psa name balance rate &key (term 360) (age 0) (psa 100))
   "The collateral node for a pool: its balance, its rate in percent, its term and age in months, and its prepayment speed in
@@ -163,19 +155,38 @@
     (make-collateral :name name :balance (caddr flows) :principal (car flows) :interest (cadr flows)
                      :coupon (constant-coupon (/ rate 100.0)) :rate rate :term term :age age :psa psa)))
 
+(define (collateral-from-pieces name pieces speed)
+  "The collateral node for several pieces of collateral, each (balance wac wam [age]): the balance, the weighted average coupon in percent, the
+   months that are left and the months that have gone (0 if left out), prepaying at the speed (see prepayment-speed), which is the pricing speed
+   of the deal. Each piece has its cash flows worked out, and they are added together, month by month, so that the collateral pays what
+   they pay. Its coupon is the rate that interest is of the balance in each month, a decimal for the year, so that it changes as the
+   pieces with the higher coupons prepay or pay off (it is a vector, one rate for each month: see node-coupon-rate). A piece with no
+   balance is left out. A PAC is sized from the pieces at other speeds (see deal-principal-at)."
+  (let* ((used (collateral-pieces-in-use pieces))
+         (flows (project-pieces used speed))
+         (total (apply + (map car used))))
+    (make-collateral :name name :balance (caddr flows) :principal (car flows) :interest (cadr flows)
+                     :coupon (pool-coupons (cadr flows) (caddr flows))
+                     :rate (/ (apply + (map (lambda (piece) (* (car piece) (cadr piece))) used)) total)
+                     :pieces used :speed speed)))
+
 ; ---------------------------------------------------------------------------
 ; Building a deal
 ; ---------------------------------------------------------------------------
 
-(define (start-deal name collateral &key (shortfalls #f))
+(define (start-deal name collateral &key (shortfalls #f) (first-payment '()))
   "A deal whose root is the collateral. (More collateral, each the root of a tree of its own, is added by deal-add-collateral!.) With
    :shortfalls #t the interest that is not enough to pay what the bonds are owed is a shortfall of the bonds that go without, carried
-   forward, instead of an error: see \"Losses and shortfalls\", in the library manual."
+   forward, instead of an error: see \"Losses and shortfalls\", in the CMO manual. :first-payment is the date of the first payment, which
+   month 1 is (deal-payment-dates gives them all), and is not needed to run the deal."
   (unless (eq? (vector-precision) 'double)
     (error "start-deal: a deal is made in double precision: (set-vector-precision! 'double)"))
   (unless (collateral? collateral)
     (error (format "start-deal: the collateral is made by collateral-from-psa or make-collateral, not {}" collateral)))
-  (let ((deal (make-deal :name name :periods (vector-length (node-principal collateral)) :shortfalls shortfalls)))
+  (unless (or (null? first-payment) (date? first-payment))
+    (error (format "start-deal: :first-payment is a date, such as (date 2026 11 25), not {}" first-payment)))
+  (let ((deal (make-deal :name name :periods (vector-length (node-principal collateral)) :shortfalls shortfalls
+                         :first-payment first-payment)))
     (deal-add-collateral! deal collateral)
     deal))
 
@@ -191,6 +202,19 @@
   (deal-add-node! deal collateral)
   (deal-roots-set! deal (append (deal-roots deal) (list (node-name collateral))))
   collateral)
+
+(define (deal-payment-date deal month)
+  "The date of the payment of the month (1 is the first payment, on :first-payment of start-deal, and 2 the month after it, and so on)."
+  (when (null? (deal-first-payment deal))
+    (error "the deal has no first payment date: give start-deal :first-payment, a date"))
+  (date-add-months (deal-first-payment deal) (- month 1)))
+
+(define (deal-payment-dates deal)
+  "The dates of the payments of the deal, a vector with a date for each month: the first payment, and the same day of each month after it."
+  (let ((dates (make-vector (deal-periods deal) (deal-payment-date deal 1))))
+    (loop for month from 2 to (deal-periods deal)
+          do (vector-set! dates (- month 1) (deal-payment-date deal month)))
+    dates))
 
 (define (deal-add-node! deal node)
   "Adds a node to the deal, which has no node of that name yet."
@@ -364,6 +388,18 @@
   (make-split-plan :tranches (list (list io-name 0.0 :notional #t :follows po-name) (list po-name 0.0))
                    :split (make-io-po-split :children (list io-name po-name) :io-coupon io-coupon)))
 
+(define (average-life-plan children &key (losses 'reverse))
+  "The plan of a sequential split whose sizes are worked out from the average lives, in years, that the children are to have: see
+deal-average-life!. The children are (name years), in the order that they are paid in, and one of them is (name), with no average life: it is
+what is left of the parent."
+  (dolist (child children)
+    (unless (and (list? child) (<= 1 (length child) 2))
+      (error (format "a child is (name years), or (name) for the one that is what is left, not {}" child))))
+  (make-split-plan :tranches (map (lambda (child) (list (car child) 0.0)) children)
+                   :split (make-average-life-split :children (map car children)
+                                                   :lives (map (lambda (child) (if (= (length child) 2) (cadr child) '())) children)
+                                                   :loss-rule losses)))
+
 (define (deal-sequential! deal parent-name children &key (accretion-to '()) (losses 'reverse))
   "Adds the children, a list of (name balance), and pays the parent's principal to them in order: the first until it is paid, then
    the next. A child written (name balance z) is a Z bond: its interest is not paid but added to its balance, and what it accrues is paid,
@@ -406,6 +442,110 @@
    notional balance, and the PO none, unless :io-coupon (a decimal) is given, when the IO is paid that, and the PO the rest of the parent's
    coupon. The parent may be any node but a Z bond, an IO or a PO. Nothing is added if there is something wrong."
   (deal-add-plan! deal parent-name (io-po-plan io-name po-name :io-coupon io-coupon)))
+
+; ---------------------------------------------------------------------------
+; Average life, and a split that is sized by it
+; ---------------------------------------------------------------------------
+;
+; The average life of a bond is the time, in years, that each dollar of its principal is outstanding, on average: the months in which it is paid,
+; the first payment being month 1, each weighted by what is paid in it, over 12. A sequential split pays what its parent is paid to its first child
+; until it is paid off, then to the second, and so on, so the principal of the child that comes k-th is that of the parent between the total of the
+; sizes of the ones before it and that total and its own size: a bigger child is outstanding longer. An average-life split is given the average
+; lives of its children, all but one of them, and finds the sizes. Those before the one that is not given a life are found from the front,
+; each from where the one before it ended, and those after it from the back, each to where the one after it began, and it is what is between.
+
+(define (average-life principal)
+  "The average life, in years, of the principal paid in each month, a vector (the first element is month 1): the months weighted by the amounts,
+over 12. An error if nothing is paid."
+  (let ((weighted 0.0)
+        (paid 0.0))
+    (loop for t from 0 below (vector-length principal)
+          do (begin (set! weighted (+ weighted (* (+ t 1) (vector-ref principal t))))
+                    (set! paid (+ paid (vector-ref principal t)))))
+    (when (<= paid 0.0)
+      (error "no principal is paid: it has no average life (has deal-run! been called?)"))
+    (/ weighted (* 12.0 paid))))
+
+(define (deal-average-life deal name)
+  "The average life, in years, of the node called name, from what it was paid by the last deal-run!."
+  (average-life (node-principal (get-node deal name))))
+
+(define (range-life cum low high)
+  "The average life, in years, of the principal in the range from low to high of what has been paid in all: cum is the total paid by the end
+of each month (the running total of the principal, a vector), and what is in the range is what a child is paid whose sizes begin where low is."
+  (let ((weighted 0.0)
+        (before 0.0))
+    (loop for t from 0 below (vector-length cum)
+          do (let* ((through (vector-ref cum t))
+                    (paid (max 0.0 (- (min through high) (max before low)))))
+               (set! weighted (+ weighted (* paid (+ t 1))))
+               (set! before through)))
+    (/ weighted (* 12.0 (- high low)))))
+
+(define (solve-for-size life-of target low high rising what)
+  "The size from low to high at which (life-of size) is the target, found by halving the range: life-of rises with the size if rising is #t, and
+otherwise falls. An error, that says what the life can be, if the target is not to be had."
+  (let ((at-low (life-of low))
+        (at-high (life-of high)))
+    (unless (<= (min at-low at-high) target (max at-low at-high))
+      (error (format "{} cannot have an average life of {} years: with the principal that is left to it it can have from {:.4f} to {:.4f}"
+                     what target (min at-low at-high) (max at-low at-high))))
+    (loop repeat 100
+          do (let ((middle (/ (+ low high) 2.0)))
+               (if (eq? (< (life-of middle) target) rising)
+                   (set! low middle)
+                   (set! high middle))))
+    (/ (+ low high) 2.0)))
+
+(define (average-life-sizes cum total lives names)
+  "The sizes of the children, a list in their order, whose average lives are those in lives ('() for the one child that is not given one, which is
+what is left of total), when they are paid in order out of the principal whose running total is cum."
+  (let* ((count (length lives))
+         (free (position '() lives))
+         (sizes (make-vector count 0.0))
+         (floor (* total 1e-9)))
+    (let ((begins 0.0))                                                            ; (the ones before the free one: from the front)
+      (loop for i from 0 below free
+            do (let ((size (solve-for-size (lambda (size) (range-life cum begins (+ begins size))) (list-ref lives i)
+                                           floor (- total begins) #t (list-ref names i))))
+                 (vector-set! sizes i size)
+                 (set! begins (+ begins size)))))
+    (let ((ends total))                                                            ; (and the ones after it: from the back)
+      (loop for i from (- count 1) downto (+ free 1)
+            do (let ((size (solve-for-size (lambda (size) (range-life cum (- ends size) ends)) (list-ref lives i)
+                                           floor ends #f (list-ref names i))))
+                 (vector-set! sizes i size)
+                 (set! ends (- ends size)))))
+    (let ((left (- total (apply + (vector->list sizes)))))
+      (when (<= left (* total 1e-9))
+        (error (format "the average lives leave nothing for {}, which is what is left of the {:,.2f} that is divided" (list-ref names free) total)))
+      (vector-set! sizes free left))
+    (vector->list sizes)))
+
+(defmethod check-split ((split average-life-split) deal parent)
+  "A split by average life has a life, above 0, for each child but one, and no Z bonds."
+  (call-next-method)
+  (let ((lives (average-life-split-lives split)))
+    (unless (= (length lives) (length (split-children split)))
+      (error "an average-life split has a life, or '() for the one that is what is left, for each child"))
+    (unless (= (length (filter null? lives)) 1)
+      (error "an average-life split has all but one of its children given an average life: the one that is not is what is left of the parent"))
+    (dolist (life lives)
+      (unless (or (null? life) (and (number? life) (> life 0)))
+        (error (format "an average life is a number of years above 0, not {}" life))))
+    (dolist (name (split-children split))
+      (when (node-z-flag (get-node deal name))
+        (error (format "{} is a Z bond: the sizes of an average-life split are worked out from the principal each is paid, and a Z bond is paid a part of its own accrual" name))))))
+
+(defmethod calculate-sizes ((split average-life-split) deal parent)
+  "The sizes that give the children their average lives, at the speed that the collateral has now: the principal that the parent is paid is found
+by running the splits above it (see deal-principal-now), and is divided in order."
+  (let* ((cum (vector-cumsum (deal-principal-now deal (node-name parent))))
+         (total (vector-ref (node-balance parent) 0)))
+    (when (> (abs (- (vector-ref cum (- (vector-length cum) 1)) total)) (* deal-tolerance (deal-size deal)))
+      (error (format "{} is paid {:,.2f} of principal in all, and its balance is {:,.2f}: the sizes by average life need all of it to be paid"
+                     (node-name parent) (vector-ref cum (- (vector-length cum) 1)) total)))
+    (average-life-sizes cum total (average-life-split-lives split) (split-children split))))
 
 ; ---------------------------------------------------------------------------
 ; Changing a split, and taking one away
@@ -512,6 +652,14 @@
         (deal-forget-node! deal name))
       below)))
 
+(define (deal-average-life! deal parent-name children &key (losses 'reverse))
+  "Adds the children, a list of (name years), and pays the parent's principal to them in order, as deal-sequential! does, but the sizes of the
+   children are not given: they are worked out so that each has the average life that it is given, at the speed that the collateral has now (its pricing
+   speed). One child is (name), with no average life: it is what is left of the parent. It can be first, in the middle or last. The average life
+   of a bond is the months in which it is paid principal, from 1 for the first payment, each weighted by the amount paid, over 12. Nothing is added
+   if there is something wrong, such as an average life that the cash flows cannot give. :losses is as in deal-sequential!."
+  (deal-add-plan! deal parent-name (average-life-plan children :losses losses)))
+
 (define (deal-size deal)
   "The balance of all the collateral, which the tolerance is a fraction of."
   (apply + (map (lambda (name) (vector-ref (node-balance (get-node deal name)) 0)) (deal-roots deal))))
@@ -548,11 +696,22 @@
   (let ((index (deal-index deal)))
     (if (null? index) '() (vector-ref index t))))
 
+(define (coupon-at coupon index t)
+  "The annual rate of interest, a decimal, that a coupon is in month t (from 0), at the index of the month: a coupon is a function of the
+   index, or a vector with a rate for each month (the coupon of collateral made of pieces, which is not the same every month)."
+  (if (vector? coupon) (vector-ref coupon t) (coupon index)))
+
+(define (coupon-less coupon rate)
+  "The coupon that is what is left of the coupon when the rate is taken from it, but not below 0: a function of the index, or a vector, as the coupon is."
+  (if (vector? coupon)
+      (vector-map (lambda (each) (max 0.0 (- each rate))) coupon)
+      (lambda (index) (max 0.0 (- (coupon index) rate)))))
+
 (define (node-coupon-rate deal node t)
   "The annual rate of interest that a node is owed in month t, a decimal: its coupon, at the index of the month."
   (when (null? (node-coupon node))
     (error (format "{} has no coupon: the collateral needs one (see constant-coupon)" (node-name node))))
-  ((node-coupon node) (deal-index-at deal t)))
+  (coupon-at (node-coupon node) (deal-index-at deal t) t))
 
 (define (node-interest-due deal node t)
   "The interest that a node is owed in month t: a twelfth of its coupon, of its balance at the start of the month."
@@ -569,6 +728,9 @@
 not the same at every index."
   (when (null? (node-coupon parent))
     (error (format "{} has no coupon, which {} split divides: the collateral needs one (see constant-coupon)" (node-name parent) what)))
+  (when (vector? (node-coupon parent))
+    (error (format "the coupon of {} is not the same every month (it is that of pieces of collateral with coupons of their own), and {} split divides a node with a fixed coupon"
+                   (node-name parent) what)))
   (let ((rate ((node-coupon parent) 0.0)))
     (unless (= rate ((node-coupon parent) 0.05))
       (error (format "the coupon of {} floats, and {} split divides a node with a fixed coupon" (node-name parent) what)))
@@ -848,7 +1010,7 @@ the children, and not a Z bond."
                (node-coupon-set! (get-node deal (cadr (split-children split))) (constant-coupon 0.0)))
         (begin (node-coupon-set! (get-node deal (car (split-children split))) (constant-coupon io-coupon))
                (node-coupon-set! (get-node deal (cadr (split-children split)))
-                                 (lambda (index) (max 0.0 (- (parent-coupon index) io-coupon))))))))
+                                 (coupon-less parent-coupon io-coupon))))))
 
 (defmethod pay-principal ((split io-po-split) deal parent t)
   "Pays all of the principal to the PO: the IO has none."
@@ -874,13 +1036,13 @@ the children, and not a Z bond."
 
 (define (deal-collateral-for deal name)
   "The collateral at the root of the tree that the node called name is in, which has to be one that can be run at another speed: made by
-collateral-from-psa."
+collateral-from-psa or collateral-from-pieces."
   (let ((root-name (deal-root-of deal name)))
     (unless root-name
       (error (format "{} is not in a tree of the deal: it has not been given a parent" name)))
     (let ((root (get-node deal root-name)))
-      (when (null? (collateral-rate root))
-        (error (format "the collateral {} was not made by collateral-from-psa, so it cannot be run at another speed" root-name)))
+      (when (and (null? (collateral-rate root)) (null? (collateral-pieces root)))
+        (error (format "the collateral {} was not made by collateral-from-psa or collateral-from-pieces, so it cannot be run at another speed" root-name)))
       root)))
 
 (define (deal-ancestors deal name)
@@ -890,21 +1052,16 @@ collateral-from-psa."
         (append (deal-ancestors deal (node-name parent)) (list (node-name parent)))
         '())))
 
-(define (deal-principal-at deal name psa)
-  "The principal that the node called name would be paid in each month, as a vector, if the collateral of its tree prepaid at psa
-   percent of the PSA curve: the collateral is run at that speed, and the tree, as it is now, with its interest (a Z bond's accrual is
-   paid as principal), down to the node: the splits above it, that is; what it and the nodes beside it are divided into is not
-   in it (and need not be as it should be, in a deal that is being changed). The deal itself is not changed: it is run on copies
-   of the nodes of the tree, at the index it was last run with, or at 0 if it was not."
-  (let* ((root (deal-collateral-for deal name))
-         (above (deal-ancestors deal name))
-         (flows (pool-cash-flows (vector-ref (node-balance root) 0) (collateral-rate root) (collateral-term root)
-                                 (collateral-age root) psa))
+(define (deal-run-copy deal root-name flows keep)
+  "A copy of the tree of the collateral called root-name, run with the cash flows (principal interest) that the collateral is given, at the
+   index the deal was last run with, or 0. The copy has its own vectors, so that the deal is not changed. Only the splits of the nodes named in
+   keep are in it (or all of them, if keep is #t): a node that is not in it is a bond in the copy, whatever it is divided into."
+  (let* ((root (get-node deal root-name))
          (copy (make-deal :name (deal-name deal) :periods (deal-periods deal)
                           :index (if (null? (deal-index deal)) (make-vector (deal-periods deal) 0.0) (deal-index deal)))))
-    (dolist (node-name (deal-tree-names deal (node-name root)))
+    (dolist (node-name (deal-tree-names deal root-name))
       (let ((node (copy-node (get-node deal node-name))))
-        (unless (member node-name above)      ; (a node that is not above the node is a bond here: what it divides is no matter)
+        (unless (or (eq? keep #t) (member node-name keep))
           (node-split-set! node '()))
         (node-balance-set! node (vector-copy (node-balance node)))
         (node-principal-set! node (vector-copy (node-principal node)))
@@ -913,13 +1070,44 @@ collateral-from-psa."
         (node-loss-set! node (vector-copy (node-loss node)))
         (node-shortfall-set! node (vector-copy (node-shortfall node)))
         (deal-add-node! copy node)))
-    (deal-roots-set! copy (list (node-name root)))
-    (let ((pool (get-node copy (node-name root))))       ; (the balances are worked out again by the run)
+    (deal-roots-set! copy (list root-name))
+    (let ((pool (get-node copy root-name)))              ; (the balances are worked out again by the run)
       (node-principal-set! pool (car flows))
       (node-interest-set! pool (cadr flows))
       (node-loss-set! pool (make-vector (deal-periods deal) 0.0)))      ; (a PAC's schedule is of the cash flows, without losses)
     (deal-run-months! copy)
-    (node-principal (get-node copy name))))
+    copy))
+
+(define (deal-principal-at deal name psa)
+  "The principal that the node called name would be paid in each month, as a vector, if the collateral of its tree prepaid at psa
+   percent of the PSA curve: the collateral is run at that speed (each of its pieces, if it is made of pieces), and the tree, as it is now,
+   with its interest (a Z bond's accrual is paid as principal), down to the node: the splits above it, that is; what it and the nodes beside
+   it are divided into is not in it (and need not be as it should be, in a deal that is being changed). The deal itself is not changed: it is
+   run on copies of the nodes of the tree, at the index it was last run with, or at 0 if it was not."
+  (let* ((root (deal-collateral-for deal name))
+         (flows (if (null? (collateral-pieces root))
+                    (pool-cash-flows (vector-ref (node-balance root) 0) (collateral-rate root) (collateral-term root) (collateral-age root) psa)
+                    (project-pieces (collateral-pieces root) (prepayment-speed 'psa psa))))
+         (interest (if (vector? (node-coupon root))
+                       (interest-at-coupon (caddr flows) (node-coupon root))     ; (what the bonds are owed, at this speed)
+                       (cadr flows))))
+    (node-principal (get-node (deal-run-copy deal (node-name root) (list (car flows) interest) (deal-ancestors deal name)) name))))
+
+(define (interest-at-coupon balances coupon)
+  "The interest that the balances (at the start of each month) pay at a coupon that is a vector of rates, one for each month: a vector."
+  (let ((interest (make-vector (vector-length coupon) 0.0)))
+    (loop for t from 0 below (vector-length coupon)
+          do (vector-set! interest t (* (vector-ref balances t) (/ (vector-ref coupon t) 12.0))))
+    interest))
+
+(define (deal-principal-now deal name)
+  "The principal that the node called name is paid in each month, as a vector, at the speed that the collateral has now (its own cash flows): found by
+   running the splits above it on a copy of the deal, so that it does not have to have been run."
+  (let ((root-name (deal-root-of deal name)))
+    (unless root-name
+      (error (format "{} is not in a tree of the deal: it has not been given a parent" name)))
+    (let ((root (get-node deal root-name)))
+      (node-principal (get-node (deal-run-copy deal root-name (list (node-principal root) (node-interest root)) (deal-ancestors deal name)) name)))))
 
 (define (pac-check-arguments split deal parent)
   "An error if a PAC split could not be sized: it has two children, its two speeds go from the lower to the higher, and the
@@ -1100,6 +1288,7 @@ collateral-from-psa."
 (defmethod split-label ((split floater-inverse-split)) "floater and inverse floater")
 (defmethod split-label ((split premium-discount-split)) "premium and discount")
 (defmethod split-label ((split io-po-split)) "IO and PO")
+(defmethod split-label ((split average-life-split)) "sequential by average life")
 
 (define (deal-outline-below deal name depth)
   "The node called name and the nodes under it, depth first, as a list of (name . depth): its own depth is given, and each child's is one more."

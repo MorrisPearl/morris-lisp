@@ -427,6 +427,8 @@ def table_from_frame(table, baseline, current, kinds, who):
             made.append((name, vector))
             continue
         items = vector.items.copy()
+        if items.dtype == LispVector.BOOL_INT_DTYPE:          # (a column of 0s and 1s is stored in the smallest integers, which cannot hold what is typed)
+            items = items.astype(LispVector.INT_DTYPE)
         for place in np.flatnonzero(changed):
             value = read_cell(now.iloc[place], kinds[name], name, int(place))
             try:
