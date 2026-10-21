@@ -6,8 +6,9 @@
 ;   (define start (new-deal "Demo 2026-1" (date 2026 11 25) :variable 'deal))
 ;   start
 ;
-; The first thing shown is a grid of the collateral, a row for each piece: the balance, the wac (the weighted average coupon, in percent),
-; the wam (the months that are left) and the age (the months the loans have gone, 0 for new loans), which is what a PSA speed rises with. A
+; The first thing shown is a grid of the collateral, a row for each piece: the balance, the wac (the weighted average coupon of the loans, in
+; percent, which they are paid off at), the pass-through coupon (in percent, what the investors in the pool are paid: the wac less fees), the wam
+; (the months that are left) and the age (the months the loans have gone, 0 for new loans), which is what a PSA speed rises with. A
 ; row with no balance is left out. Under it is the pricing speed: a type (PSA, CPR or SMM) and a grid of pieces, each from, to and months, which
 ; is a speed that goes in a straight line from one to the other, and is `to` in the last of the months (see prepayment_speed.lsp); the months of the
 ; last piece are 0 for "from here on", and one row with both speeds the same is a single speed. **Show the cash flows** adds up the cash flows
@@ -31,6 +32,7 @@
   "The table of the collateral with that many rows with nothing in them."
   (make-table "balance" (make-vector rows 0.0)
               "wac" (make-vector rows 0.0)
+              "coupon" (make-vector rows 0.0)
               "wam" (make-vector rows 0)
               "age" (make-vector rows 0)))
 
@@ -50,15 +52,16 @@
     table))
 
 (define (new-deal-pieces gui)
-  "The pieces of collateral in the grid, as a list of (balance wac wam age): a row with no balance is left out."
+  "The pieces of collateral in the grid, as a list of (balance wac coupon wam age): a row with no balance is left out."
   (let* ((table (grid-table (new-deal-gui-pieces-grid gui)))
          (balances (table-column table "balance"))
          (wacs (table-column table "wac"))
+         (coupons (table-column table "coupon"))
          (wams (table-column table "wam"))
          (ages (table-column table "age")))
     (loop for i from 0 below (vector-length balances)
           when (> (vector-ref balances i) 0.0)
-          collect (list (vector-ref balances i) (vector-ref wacs i) (vector-ref wams i) (vector-ref ages i)))))
+          collect (list (vector-ref balances i) (vector-ref wacs i) (vector-ref coupons i) (vector-ref wams i) (vector-ref ages i)))))
 
 (define (new-deal-speed gui)
   "The speed that is typed: the type that is chosen, and the pieces in the grid. The first row is always a piece; of the others, one with
@@ -84,27 +87,34 @@ nothing in it is left out. A piece with 0 months is for the rest of the time."
     (if (member months rows) rows (append rows (list months)))))
 
 (define (show-collateral-flows pieces curve first-payment)
-  "Shows the cash flows of the pieces of collateral at the speed, added up: the totals, and a row for the first month and the end of each year."
+  "Shows the cash flows of the pieces of collateral at the speed, added up: the totals, and a row for the first month and the end of each year,
+with the interest that the investors are paid, and the rate that it is of the balance (the pass-through coupon) beside the rate that the loans pay
+(the wac), month by month: they change as the pieces with the higher rates pay off."
   (let* ((flows (project-pieces pieces curve))
          (principal (car flows))
          (interest (cadr flows))
          (balances (caddr flows))
          (months (vector-length principal))
          (speeds (speed-values curve months))
+         (wacs (pool-coupons (cadddr flows) balances))
+         (coupons (pool-coupons interest balances))
          (rows (new-deal-years-rows months))
          (used (collateral-pieces-in-use pieces))
-         (total (apply + (map car used))))
-    (display (format "{} pieces, {:,.2f}, with a wac of {:.4f}% and a wam of {} months, paying for {} months; its average life is {:.2f} years at {}.\n"
-                     (length used) total (/ (apply + (map (lambda (piece) (* (car piece) (cadr piece))) used)) total)
-                     (apply max (map caddr used)) months (average-life principal) (describe-speed curve)))
+         (total (apply + (map car used)))
+         (average (lambda (field) (/ (apply + (map (lambda (piece) (* (car piece) (field piece))) used)) total)))
+         (at (lambda (vector) (list->vector (map (lambda (month) (vector-ref vector (- month 1))) rows)))))
+    (display (format "{} pieces, {:,.2f}, with a wac of {:.4f}%, a pass-through coupon of {:.4f}% and a wam of {} months, paying for {} months; its average life is {:.2f} years at {}.\n"
+                     (length used) total (average cadr) (average caddr) (apply max (map piece-wam used)) months (average-life principal)
+                     (describe-speed curve)))
     (display-table (make-table "month" (list->vector rows)
                                "payment date" (list->vector (map (lambda (month) (date-add-months first-payment (- month 1))) rows))
-                               "balance" (list->vector (map (lambda (month) (vector-ref balances (- month 1))) rows))
-                               "principal" (list->vector (map (lambda (month) (vector-ref principal (- month 1))) rows))
-                               "interest" (list->vector (map (lambda (month) (vector-ref interest (- month 1))) rows))
-                               "speed" (list->vector (map (lambda (month) (vector-ref speeds (- month 1))) rows))
-                               "coupon" (list->vector (map (lambda (month) (let ((balance (vector-ref balances (- month 1)))) (if (= balance 0.0) 0.0 (* 100.0 (/ (* 12.0 (vector-ref interest (- month 1))) balance))))) rows)))
-                   '(("balance" ",.2f") ("principal" ",.2f") ("interest" ",.2f") ("speed" ".2f") ("coupon" ".4f")) :max-rows #f)))
+                               "balance" (at balances)
+                               "principal" (at principal)
+                               "interest" (at interest)
+                               "speed" (at speeds)
+                               "wac" (at (vector-map (lambda (rate) (* 100.0 rate)) wacs))
+                               "coupon" (at (vector-map (lambda (rate) (* 100.0 rate)) coupons)))
+                   '(("balance" ",.2f") ("principal" ",.2f") ("interest" ",.2f") ("speed" ".2f") ("wac" ".4f") ("coupon" ".4f")) :max-rows #f)))
 
 (define (new-deal-show gui)
   "The button that shows the cash flows of the collateral that is typed, at the speed that is typed."
@@ -141,14 +151,14 @@ of when it is created. The deal builder is for the forms (see deal-builder). Ret
     (error (format "new-deal: the first payment is a date, such as (date 2026 11 25), not {}" first-payment)))
   (let* ((messages (widget-output))
          (pieces-grid (table-grid (new-deal-empty-pieces rows) :editable #t
-                                  :column-widths (grid-column-widths '(("balance" 140) ("wac" 80) ("wam" 80) ("age" 80)))))
+                                  :column-widths (grid-column-widths '(("balance" 140) ("wac" 80) ("coupon" 80) ("wam" 80) ("age" 80)))))
          (speed-grid (table-grid (new-deal-empty-speed 4) :editable #t
                                  :column-widths (grid-column-widths '(("from" 80) ("to" 80) ("months" 80)))))
          (speed-type (widget-dropdown (list "PSA" "CPR" "SMM") :value "PSA" :description "Speed is"))
          (gui (make-new-deal-gui :name name :first-payment first-payment :collateral-name collateral-name :variable variable :forms forms
                                  :pieces-grid pieces-grid :speed-grid speed-grid :speed-type speed-type :messages messages))
          (setup (widget-column
-                  (make-widget "HTML" :value "<b>Collateral</b>: a row for each piece, with its balance, its wac (the weighted average coupon, in percent), its wam (the months that are left) and its age (the months the loans have gone, 0 if new). A row with no balance is left out. Double-click a cell to change it.")
+                  (make-widget "HTML" :value "<b>Collateral</b>: a row for each piece, with its balance, its wac (the weighted average coupon of the loans, in percent), its pass-through coupon (in percent, what the investors are paid: the wac less the fees taken out, so no more than the wac), its wam (the months that are left) and its age (the months the loans have gone, 0 if new). A row with no balance is left out. Double-click a cell to change it.")
                   pieces-grid
                   (make-widget "HTML" :value "<b>Pricing speed</b>: the type, and a row for each piece of the speed: it goes in a straight line from <i>from</i> to <i>to</i>, and is <i>to</i> in the last of its <i>months</i>; the last piece has 0 months, for the rest of the time. One row with the same speed twice is a single speed.")
                   speed-type

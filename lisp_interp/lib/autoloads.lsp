@@ -97,7 +97,7 @@
 (lazy-load "prepayment_speed.lsp"
   collateral-piece-check collateral-pieces-in-use copy-speed-curve make-speed-curve pool-coupons prepayment-speed
   project-pieces project-pool speed-curve-pieces speed-curve-pieces-set! speed-curve-type speed-curve-type-set!
-  speed-curve? speed-in-month speed-piece-of speed-smms speed-values describe-speed)
+  speed-curve? speed-in-month speed-piece-of speed-smms speed-values describe-speed piece-age piece-wam)
 
 ; Structured deals as a tree: a pool, divided by splits into tranches (see lisp_cmo_manual.md)
 (lazy-load "deal.lsp"
@@ -156,7 +156,8 @@
   average-life-split-loss-rule-set! average-life-split? collateral-from-pieces collateral-pieces
   collateral-pieces-set! collateral-speed collateral-speed-set! copy-average-life-split coupon-at coupon-less
   deal-average-life deal-average-life! deal-first-payment deal-first-payment-set! deal-payment-date deal-payment-dates
-  deal-principal-now deal-run-copy interest-at-coupon make-average-life-split range-life solve-for-size)
+  deal-principal-now deal-run-copy interest-at-coupon make-average-life-split range-life solve-for-size collateral-wac
+  collateral-wac-set!)
 
 ; Building a deal by clicking in a notebook (see "Building a deal by clicking" in lisp_cmo_manual.md)
 (lazy-load "deal_builder.lsp"
@@ -184,7 +185,7 @@
   new-deal-gui-page new-deal-gui-page-set! new-deal-gui-pieces-grid new-deal-gui-pieces-grid-set! new-deal-gui-setup
   new-deal-gui-setup-set! new-deal-gui-speed-grid new-deal-gui-speed-grid-set! new-deal-gui-speed-type
   new-deal-gui-speed-type-set! new-deal-gui-variable new-deal-gui-variable-set! new-deal-gui? new-deal-pieces
-  new-deal-show new-deal-speed new-deal-years-rows show-collateral-flows)
+  new-deal-show new-deal-speed new-deal-years-rows show-collateral-flows grid-column-widths)
 
 ; Templates of text and SQL
 (lazy-load "template.lsp"

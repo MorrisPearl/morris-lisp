@@ -68,9 +68,10 @@
   (notional-flag #f)         ; an interest-only bond: a notional balance that follows another's, interest, and no principal
   (follows '()) (share 1.0)) ; the name of the node whose balance a notional bond follows, and what share of it
 
-(defstruct (collateral (:include node)) rate term age psa pieces speed)
+(defstruct (collateral (:include node)) rate term age psa pieces speed wac)
 ; (rate, term, age and psa are those collateral-from-psa made it from; pieces and speed are what collateral-from-pieces did: the pieces,
-; each (balance wac wam age), and the speed they prepay at, which is the pricing speed of the deal)
+; each (balance wac coupon wam age), and the speed they prepay at, which is the pricing speed of the deal; rate is then the average pass-through
+; coupon of the pieces, and wac their average wac, both in percent)
 
 (defstruct (tranche (:include node)))
 
@@ -141,8 +142,9 @@
   "The cash flows of a pool of level-pay mortgages, with the PSA prepayment speed: (principal interest balance), each a vector,
    the first two one element a month and the balance one longer. balance is the balance now, rate the annual rate in percent, term
    the number of months the loans began with and age the months they have gone, so the pool has term - age months to run."
-  (let ((months (- term age)))
-    (project-pool balance rate months (speed-smms (prepayment-speed 'psa psa) age months))))
+  (let* ((months (- term age))
+         (flows (project-pool balance rate rate months (speed-smms (prepayment-speed 'psa psa) age months))))
+    (list (car flows) (cadr flows) (caddr flows))))
 
 (define (collateral-from-psa name balance rate &key (term 360) (age 0) (psa 100))
   "The collateral node for a pool: its balance, its rate in percent, its term and age in months, and its prepayment speed in
@@ -156,18 +158,22 @@
                      :coupon (constant-coupon (/ rate 100.0)) :rate rate :term term :age age :psa psa)))
 
 (define (collateral-from-pieces name pieces speed)
-  "The collateral node for several pieces of collateral, each (balance wac wam [age]): the balance, the weighted average coupon in percent, the
-   months that are left and the months that have gone (0 if left out), prepaying at the speed (see prepayment-speed), which is the pricing speed
-   of the deal. Each piece has its cash flows worked out, and they are added together, month by month, so that the collateral pays what
-   they pay. Its coupon is the rate that interest is of the balance in each month, a decimal for the year, so that it changes as the
-   pieces with the higher coupons prepay or pay off (it is a vector, one rate for each month: see node-coupon-rate). A piece with no
-   balance is left out. A PAC is sized from the pieces at other speeds (see deal-principal-at)."
+  "The collateral node for several pieces of collateral, each (balance wac coupon wam [age]): the balance, the weighted average coupon of the
+   loans (the wac) and the pass-through coupon, both in percent, the months that are left and the months that have gone (0 if left out),
+   prepaying at the speed (see prepayment-speed), which is the pricing speed of the deal. Each piece has its cash flows worked out, and they
+   are added together, month by month, so that the collateral pays what they pay: the principal that the loans at their wac pay, and the
+   interest at the pass-through coupon, which is what the investors are paid (the rest of what the loans pay, the difference between the wac and
+   the pass-through coupon, is the fees that are taken out, and is not modeled). Its coupon is the rate that the interest it pays is of the
+   balance in each month, a decimal for the year, so that it changes as the pieces with the higher coupons prepay or pay off (it is a vector,
+   one rate for each month: see node-coupon-rate). A piece with no balance is left out. A PAC is sized from the pieces at other speeds (see
+   deal-principal-at). Its rate is the average pass-through coupon of the pieces, by their balances, and its wac their average wac."
   (let* ((used (collateral-pieces-in-use pieces))
          (flows (project-pieces used speed))
          (total (apply + (map car used))))
     (make-collateral :name name :balance (caddr flows) :principal (car flows) :interest (cadr flows)
                      :coupon (pool-coupons (cadr flows) (caddr flows))
-                     :rate (/ (apply + (map (lambda (piece) (* (car piece) (cadr piece))) used)) total)
+                     :rate (/ (apply + (map (lambda (piece) (* (car piece) (caddr piece))) used)) total)
+                     :wac (/ (apply + (map (lambda (piece) (* (car piece) (cadr piece))) used)) total)
                      :pieces used :speed speed)))
 
 ; ---------------------------------------------------------------------------

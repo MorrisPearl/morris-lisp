@@ -80,22 +80,22 @@ class TestSpeeds(PiecesCase):
 class TestProjecting(PiecesCase):
 
     def test_a_pool_of_one_piece_is_the_pool_of_the_psa_function(self):
-        flows = self.flows("(project-pieces '((100000.0 6.0 360)) (prepayment-speed 'psa 150))")
+        flows = self.flows("(project-pieces '((100000.0 6.0 6.0 360)) (prepayment-speed 'psa 150))")
         old = self.flows("(pool-cash-flows 100000.0 6.0 360 0 150)")
         for new_vector, old_vector in zip(flows, old):
             np.testing.assert_allclose(new_vector, old_vector, rtol=1e-12)
 
     def test_the_age_of_a_piece_is_where_it_is_on_the_psa_curve(self):
-        flows = self.flows("(project-pieces '((100000.0 6.0 348 12)) (prepayment-speed 'psa 100))")
+        flows = self.flows("(project-pieces '((100000.0 6.0 6.0 348 12)) (prepayment-speed 'psa 100))")
         old = self.flows("(pool-cash-flows 100000.0 6.0 360 12 100)")
         np.testing.assert_allclose(flows[0], old[0], rtol=1e-12)
 
     def test_the_cash_flows_of_the_pieces_are_added_together_month_by_month(self):
         self.run_lisp("""(define speed (prepayment-speed 'cpr '((4 12 12))))
-                         (define one (project-pieces '((100000.0 6.0 360)) speed))
-                         (define two (project-pieces '((50000.0 7.5 180 24)) speed))
-                         (define both (project-pieces '((100000.0 6.0 360) (50000.0 7.5 180 24)) speed))""")
-        for part in range(3):
+                         (define one (project-pieces '((100000.0 6.0 5.5 360)) speed))
+                         (define two (project-pieces '((50000.0 7.5 7.0 180 24)) speed))
+                         (define both (project-pieces '((100000.0 6.0 5.5 360) (50000.0 7.5 7.0 180 24)) speed))""")
+        for part in range(4):
             first = self.vector("(list-ref one %d)" % part)
             second = self.vector("(list-ref two %d)" % part)
             second = np.concatenate([second, np.zeros(len(first) - len(second))])       # (the shorter piece is paid off: nothing after it)
@@ -103,7 +103,7 @@ class TestProjecting(PiecesCase):
             np.testing.assert_allclose(total, first + second, rtol=1e-12, atol=1e-9)
 
     def test_the_balance_is_what_there_was_less_what_was_paid(self):
-        principal, interest, balance = self.flows("(project-pieces '((100000.0 6.0 360) (50000.0 7.0 120)) (prepayment-speed 'psa 200))")
+        principal, interest, balance, gross = self.flows("(project-pieces '((100000.0 6.0 5.5 360) (50000.0 7.0 6.5 120)) (prepayment-speed 'psa 200))")
         self.assertEqual((len(principal), len(interest), len(balance)), (360, 360, 361))
         np.testing.assert_allclose(balance[1:], balance[:-1] - principal, atol=1e-6)
         self.assertEqual(balance[0], 150000.0)
@@ -111,33 +111,60 @@ class TestProjecting(PiecesCase):
         self.assertAlmostEqual(principal.sum(), 150000.0, places=6)
 
     def test_a_piece_with_no_balance_is_an_empty_row_and_is_left_out(self):
-        np.testing.assert_allclose(self.vector("(car (project-pieces '((100000.0 6.0 360) (0 0 0) (0.0 5.0 12)) (prepayment-speed 'psa 100)))"),
-                                   self.vector("(car (project-pieces '((100000.0 6.0 360)) (prepayment-speed 'psa 100)))"))
+        np.testing.assert_allclose(self.vector("(car (project-pieces '((100000.0 6.0 6.0 360) (0 0 0 0) (0.0 5.0 5.0 12)) (prepayment-speed 'psa 100)))"),
+                                   self.vector("(car (project-pieces '((100000.0 6.0 6.0 360)) (prepayment-speed 'psa 100)))"))
 
     def test_what_is_wrong_with_a_piece_is_said(self):
         for src, message in (("'()", "there is no collateral"),
-                             ("'((0 0 0))", "there is no collateral"),
-                             ("'((100000.0 -1.0 360))", "the wac of a piece of collateral is in percent"),
-                             ("'((100000.0 6.0 0))", "the wam of a piece of collateral is the months that are left"),
-                             ("'((100000.0 6.0 12.5))", "the wam of a piece of collateral is the months that are left"),
-                             ("'((100000.0 6.0 12 -1))", "the age of a piece of collateral"),
-                             ("'((-5.0 6.0 12))", "the balance of a piece of collateral is from 0"),
-                             ("'((100000.0 6.0))", "a piece of collateral is (balance wac wam [age])"),
-                             ("'((100000.0 6.0 12 3 4))", "a piece of collateral is (balance wac wam [age])"),
-                             ("'((a b c))", "a piece of collateral is (balance wac wam [age])")):
+                             ("'((0 0 0 0))", "there is no collateral"),
+                             ("'((100000.0 -1.0 -1.0 360))", "the wac of a piece of collateral is in percent"),
+                             ("'((100000.0 6.0 -0.5 360))", "the pass-through coupon of a piece of collateral is in percent, from 0"),
+                             ("'((100000.0 6.0 6.5 360))", "the pass-through coupon of a piece of collateral, 6.5, is above its wac, 6.0"),
+                             ("'((100000.0 6.0 5.5 0))", "the wam of a piece of collateral is the months that are left"),
+                             ("'((100000.0 6.0 5.5 12.5))", "the wam of a piece of collateral is the months that are left"),
+                             ("'((100000.0 6.0 5.5 12 -1))", "the age of a piece of collateral"),
+                             ("'((-5.0 6.0 5.5 12))", "the balance of a piece of collateral is from 0"),
+                             ("'((100000.0 6.0 360))", "a piece of collateral is (balance wac coupon wam [age])"),
+                             ("'((100000.0 6.0 5.5))", "a piece of collateral is (balance wac coupon wam [age])"),
+                             ("'((100000.0 6.0 5.5 12 3 4))", "a piece of collateral is (balance wac coupon wam [age])"),
+                             ("'((a b c d))", "a piece of collateral is (balance wac coupon wam [age])")):
             with self.subTest(pieces=src):
                 self.assertLispError("(project-pieces %s (prepayment-speed 'psa 100))" % src, message)
 
+    def test_a_piece_in_the_old_form_with_the_age_and_no_coupon_is_not_taken_for_one_with_a_coupon(self):
+        """(balance wac wam age) has a wam where the coupon is: 240 is no pass-through coupon of a loan at 7."""
+        self.assertLispError("(project-pieces '((50000000.0 7.0 240 12)) (prepayment-speed 'psa 100))", "is above its wac")
+
+    def test_the_interest_is_at_the_pass_through_coupon_and_the_principal_is_what_the_wac_pays(self):
+        """Loans at 6.0 that are passed through at 5.5 pay the investors 5.5 on the balance, and pay off as loans at 6.0 do."""
+        same = self.flows("(project-pieces '((100000.0 6.0 6.0 360)) (prepayment-speed 'psa 150))")
+        passed = self.flows("(project-pieces '((100000.0 6.0 5.5 360)) (prepayment-speed 'psa 150))")
+        np.testing.assert_allclose(passed[0], same[0])                               # (the same principal, and the same balances)
+        np.testing.assert_allclose(passed[2], same[2])
+        np.testing.assert_allclose(passed[1], same[1] * 5.5 / 6.0, rtol=1e-12)       # (interest at 5.5 on the balance)
+        np.testing.assert_allclose(passed[3], same[1], rtol=1e-12)                   # (what the loans pay is interest at 6.0)
+        self.assertAlmostEqual(passed[1][0], 100000.0 * 0.055 / 12)
+        self.assertAlmostEqual(passed[3][0], 100000.0 * 0.06 / 12)
+
+    def test_the_wac_and_the_pass_through_coupon_of_a_pool_are_the_interest_over_the_balance_month_by_month(self):
+        self.run_lisp("""(define flows (project-pieces '((100000.0 6.0 5.0 360) (100000.0 8.0 7.0 120)) (prepayment-speed 'psa 100)))
+                         (define wacs (pool-coupons (cadddr flows) (caddr flows)))
+                         (define coupons (pool-coupons (cadr flows) (caddr flows)))""")
+        self.assertAlmostEqual(self.vector("wacs")[0], 0.07)
+        self.assertAlmostEqual(self.vector("coupons")[0], 0.06)
+        self.assertAlmostEqual(self.vector("wacs")[300], 0.06, places=4)             # (only the loans at 6, passed through at 5, are left)
+        self.assertAlmostEqual(self.vector("coupons")[300], 0.05, places=4)
+
     def test_a_pool_that_has_all_prepaid_has_no_coupon_after_that(self):
         """At 100 SMM everything is paid in the first month: the balance is 0 from the second, and its rate is 0, not an error."""
-        self.run_lisp("""(define flows (project-pieces '((1000.0 6.0 12)) (prepayment-speed 'smm 100)))
+        self.run_lisp("""(define flows (project-pieces '((1000.0 6.0 6.0 12)) (prepayment-speed 'smm 100)))
                          (define rates (pool-coupons (cadr flows) (caddr flows)))""")
         rates = self.vector("rates")
         self.assertAlmostEqual(rates[0], 0.06)
         self.assertEqual(list(rates[1:]), [0.0] * 11)
 
     def test_the_coupon_of_a_pool_is_the_interest_over_the_balance_month_by_month(self):
-        self.run_lisp("""(define flows (project-pieces '((100000.0 5.0 360) (100000.0 7.0 120)) (prepayment-speed 'psa 100)))
+        self.run_lisp("""(define flows (project-pieces '((100000.0 5.0 5.0 360) (100000.0 7.0 7.0 120)) (prepayment-speed 'psa 100)))
                          (define rates (pool-coupons (cadr flows) (caddr flows)))""")
         rates = self.vector("rates")
         self.assertAlmostEqual(rates[0], 0.06)                                    # (half at 5% and half at 7%)
@@ -149,7 +176,7 @@ class TestProjecting(PiecesCase):
 
 class TestACollateralOfPieces(PiecesCase):
 
-    PIECES = "'((100000000.0 6.0 360) (50000000.0 7.0 240 12))"
+    PIECES = "'((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12))"
 
     def make(self, speed="(prepayment-speed 'psa 150)"):
         self.run_lisp("(define pool (collateral-from-pieces \"POOL\" %s %s))" % (self.PIECES, speed))
@@ -163,12 +190,13 @@ class TestACollateralOfPieces(PiecesCase):
         np.testing.assert_allclose(self.vector("(node-balance pool)"), flows[2])
         self.assertShows("(deal-size deal)", "150000000.0")
         self.assertShows("(vector-length (node-principal pool))", "360")
-        self.assertShows("(collateral-pieces pool)", "((100000000.0 6.0 360) (50000000.0 7.0 240 12))")
+        self.assertShows("(collateral-pieces pool)", "((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12))")
         self.assertShows("(speed-curve-type (collateral-speed pool))", "psa")
 
-    def test_the_rate_it_shows_is_the_average_coupon_by_balance(self):
+    def test_the_rate_it_shows_is_the_average_pass_through_coupon_by_balance_and_the_wac_the_average_wac(self):
         self.make()
-        self.assertAlmostEqual(self.run_lisp("(collateral-rate pool)"), (100 * 6.0 + 50 * 7.0) / 150)
+        self.assertAlmostEqual(self.run_lisp("(collateral-rate pool)"), (100 * 5.5 + 50 * 6.5) / 150)
+        self.assertAlmostEqual(self.run_lisp("(collateral-wac pool)"), (100 * 6.0 + 50 * 7.0) / 150)
 
     def test_its_coupon_is_the_rate_of_each_month_and_what_it_owes_is_what_it_pays(self):
         self.make()

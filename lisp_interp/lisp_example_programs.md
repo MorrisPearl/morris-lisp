@@ -1426,7 +1426,7 @@ the table as the user has changed it (`grid-table`). The manual's [Widgets in a
 notebook](lisp_interpreter_reference.md#widgets-in-a-notebook) has everything the functions take.
 The last section of the notebook is a grid of CMO tranches: click one, and a panel of tabs opens under it (a floater's cap, the bands of a PAC, a split), with fields to fill in and a **Go** button, made by `widget-actions`.
 
-`notebooks/new_deal.ipynb` starts a deal (the [CMO manual](lisp_cmo_manual.md#starting-a-deal-in-a-notebook) says how): a grid to type the collateral in, a row for each piece (balance, wac, wam,
+`notebooks/new_deal.ipynb` starts a deal (the [CMO manual](lisp_cmo_manual.md#starting-a-deal-in-a-notebook) says how): a grid to type the collateral in, a row for each piece (balance, wac, pass-through coupon, wam,
 age), the pricing speed (PSA, CPR or SMM, one number or linear pieces such as "5 CPR for a year, then to 20 CPR over two years"), a button that shows the cash flows of the pieces added up, and a
 button that creates the deal, with the deal builder in the place of the grids. A tab of the builder divides a tranche into bonds in order by **average life**: give the life of all but one, and the
 sizes are found.

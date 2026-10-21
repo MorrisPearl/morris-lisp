@@ -175,9 +175,10 @@ another piece, the root of a tree of its own. It pays for as many months as the 
 
 A pool is often several pieces, each with its own balance, coupon and maturity, that prepay at one speed. `(collateral-from-pieces name pieces speed)`
 makes one collateral node of them: each piece is projected at the speed, and the cash flows are added up, month by month, so that the collateral pays what they
-pay together. A **piece** is `(balance wac wam [age])`: the balance now, the weighted average coupon in percent, the weighted average maturity (the months that
-are left) and the age (the months the loans have gone, 0 if left out), which is what the PSA curve rises with. A piece with no balance is left out. The collateral
-has as many months as its longest piece.
+pay together. A **piece** is `(balance wac coupon wam [age])`: the balance now; the **wac**, the weighted average coupon of the loans, in percent, which is what the
+borrowers pay and what pays the loans off; the **pass-through coupon**, in percent, which is what the investors in the pool are paid, the wac less the fees that are
+taken out (so it is no more than the wac: it is an error if it is); the **wam**, the weighted average maturity, the months that are left; and the age, the months the loans have gone
+(0 if left out), which is what the PSA curve rises with. A piece with no balance is left out. The collateral has as many months as its longest piece.
 
 A **speed** has a type, which says what its number means, and a number that can change with time: `(prepayment-speed type spec)`. The types are `psa` (150 is 150% of
 the standard curve, 0 to 6 CPR over 30 months of age, which is the curve of `prepayment_model.lsp`), `cpr` (the annual rate of prepayment, in percent) and
@@ -197,19 +198,25 @@ The speed of the pieces is the **pricing speed** of the deal: it is what the cas
 worked out at. A PAC is still sized at the two PSA speeds it is given, by projecting each of the pieces at them (see `deal-principal-at`).
 
 ```lisp
-(define pieces '((100000000.0 6.0 360) (50000000.0 7.0 240 12)))
+(define pieces '((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12)))
 (define pool (collateral-from-pieces "POOL" pieces (prepayment-speed 'psa 150)))
 (vector-ref (node-balance pool) 0)             ; => 150000000.0
 (vector-ref (node-principal pool) 0)           ; => 347773.9772172784
-(collateral-rate pool)                          ; => 6.333333333333333
+(vector-ref (node-interest pool) 0)            ; => 729166.6666666666
+(collateral-rate pool)                          ; => 5.833333333333333
+(collateral-wac pool)                           ; => 6.333333333333333
 ```
 
+Each piece pays off as loans at its wac do, and pays the investors interest at its pass-through coupon on its balance, so the collateral's principal is the loans' and its interest
+is the investors': 729,166.67 in the first month, which is 5.8333% of 150,000,000 for a month (the loans pay 791,666.67, at 6.3333%; the difference is the fees, which
+are not modeled). `collateral-rate` is the average pass-through coupon of the pieces, by their balances, and `collateral-wac` their average wac.
+
 The collateral pays interest at the rate that the interest is of the balance in each month, so its **coupon is a vector**, one rate for each month (`(pool-coupons interest
-balances)`), that changes as the pieces with the higher coupons pay off or prepay: 6.33% in the first month here, and 6.16% in the two hundredth. A coupon is a
+balances)`), that changes as the pieces with the higher coupons pay off or prepay: 5.83% in the first month here, and 5.66% in the two hundredth. A coupon is a
 function of the index, or a vector like this one (`(coupon-at coupon index month)`); the bonds under the collateral have it too, so a sequential split, a pro-rata
 split, a PAC and an IO/PO split all work. A floater and an inverse floater, and a premium and a discount bond, are made from a fixed coupon, and say so if the
-collateral has not got one. `(project-pieces pieces speed)` is the three vectors the collateral is made of (principal, interest, balance), and
-`(project-pool balance rate months smms)` those of one pool that prepays by the monthly mortality of each month.
+collateral has not got one. `(project-pieces pieces speed)` is the vectors the collateral is made of (principal, interest, balance, and the interest that the loans pay, at the wac), and
+`(project-pool balance wac coupon months smms)` those of one pool that prepays by the monthly mortality of each month.
 
 **The dates.** `(start-deal name collateral :first-payment (date 2026 11 25))` gives the deal the date of its first payment, which is month 1. `(deal-payment-date deal month)`
 is the date of a month, and `(deal-payment-dates deal)` a vector of them, the same day of each month (the end of the month, in one that is shorter).
@@ -459,7 +466,7 @@ adds it: `children` is a list of `(name years)`, in the order that they are paid
 is a child of `sequential-split` (`average-life-split`, with the lives in `average-life-split-lives`): it pays in order, as a sequential split does, and has no Z bonds.
 
 ```lisp
-(define pool (collateral-from-pieces "POOL" '((100000000.0 6.0 360) (50000000.0 7.0 240 12)) (prepayment-speed 'psa 150)))
+(define pool (collateral-from-pieces "POOL" '((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12)) (prepayment-speed 'psa 150)))
 (define deal (start-deal "Demo" pool :first-payment (date 2026 11 25)))
 (deal-average-life! deal "POOL" '(("A1" 2.0) ("A2" 5.0) ("A3")))
 (vector-ref (node-balance (get-node deal "A1")) 0)        ; => 36980402.10543777
@@ -625,20 +632,21 @@ argument, so a method for `sequential-split` is also the method for `noting-spli
 ```
 
 `(new-deal name first-payment [:rows 8] [:variable 'deal] [:collateral-name "POOL"] [:forms forms])` shows a page with a **grid of collateral**, a row for each piece (`:rows` of them
-to begin with, empty): its balance, its wac in percent, its wam (the months that are left) and its age (the months the loans have gone, 0 if new). Double-click a cell
-to type in it. A row with no balance is left out. Under it is the **pricing speed**: a type (PSA, CPR or SMM) and a grid of pieces, each *from*, *to* and *months*, which is
+to begin with, empty): its balance, its wac in percent (the weighted average coupon of the loans), its pass-through coupon in percent (what the investors are paid: the wac
+less the fees, so no more than the wac), its wam (the months that are left) and its age (the months the loans have gone, 0 if new). Double-click a cell to type in it. A row with no balance is left out. Under it is the **pricing speed**: a type (PSA, CPR or SMM) and a grid of pieces, each *from*, *to* and *months*, which is
 a speed that goes in a straight line from one to the other and is *to* in the last of the months (see "Pieces of collateral, and the pricing speed"); the last
 piece has 0 months, for the rest of the time, and one row with the same speed twice is a single speed (it begins as 100 PSA). The first row is always a piece, and any
 other row with nothing in it is left out.
 
-- **Show the cash flows** adds up the cash flows of the pieces at the speed and shows them: how many pieces there are, the balance, the wac, the wam, the average life of the
-  collateral and the speed in words, and a table with a row for the first month and the end of each year (the payment date, the balance, the principal and interest, the
-  speed of the month and the rate that the interest is of the balance).
+- **Show the cash flows** adds up the cash flows of the pieces at the speed and shows them: how many pieces there are, the balance, the wac, the pass-through coupon, the wam, the average life of the
+  collateral and the speed in words, and a table with a row for the first month and the end of each year (the payment date, the balance, the principal and the interest paid to the
+  investors, the speed of the month, and the wac and the pass-through coupon of the pool, the rates that the loans' interest and the investors' interest are of the balance,
+  which change as the pieces with the higher rates pay off).
 - **Create the deal** makes the collateral of the pieces (`collateral-from-pieces`) and the deal (`start-deal`, with the first payment date), and the deal builder (see
   "Building a deal by clicking") takes the place of the grids. The deal is the value of `(new-deal-deal start)`, which is `'()` until the button has been pressed, and, with
   `:variable 'deal`, of the variable `deal` as soon as it is made.
 
-What is wrong with what was typed is said under the buttons: no collateral, a wac below 0, a wam that is not a whole number of months, a speed that goes from one value
+What is wrong with what was typed is said under the buttons: no collateral, a wac below 0, a pass-through coupon above the wac, a wam that is not a whole number of months, a speed that goes from one value
 to another with no months to do it in. `notebooks/new_deal.ipynb` is a notebook that does this.
 
 ## Building a deal by clicking

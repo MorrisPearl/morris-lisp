@@ -8,7 +8,7 @@ from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mo
 
 class AverageLifeCase(LispTestCase):
 
-    PIECES = "'((100000000.0 6.0 360) (50000000.0 7.0 240 12))"
+    PIECES = "'((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12))"
 
     def setUp(self):
         super().setUp()

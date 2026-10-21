@@ -13,9 +13,12 @@
 ;   (prepayment-speed 'cpr '((5 5 12) (5 20 24)))        ; 5 CPR for a year, then to 20 CPR over two years, and 20 CPR after that
 ;   (prepayment-speed 'psa '((0 100 30)))                ; 0 PSA in month 0 to 100 PSA in month 30, and 100 after: a ramp
 ;
-; A piece of collateral is (balance wac wam [age]): the balance now, the weighted average coupon in percent, the weighted average
-; maturity, the months that are left (so that a pool of 30-year loans that have gone for a year is 348), and the age, the months the
-; loans have gone, which is what the PSA curve is a rise with (0 if left out). (project-pieces pieces speed) adds up the cash flows of all of them.
+; A piece of collateral is (balance wac coupon wam [age]): the balance now, the weighted average coupon of the loans (the wac, which
+; the borrowers pay and which pays the loans off) and the pass-through coupon (which the investors in the pool are paid), both in percent
+; (the pass-through coupon is the wac less the fees that are taken out, so it is no more), the weighted average maturity, the months
+; that are left (so that a pool of 30-year loans that have gone for a year is 348), and the age, the months the loans have gone, which is what
+; the PSA curve is a rise with (0 if left out). (project-pieces pieces speed) adds up the cash flows of all of them: what is paid to the
+; investors is the interest at the pass-through coupon, and the principal is what the loans at their wac pay.
 
 (require "prepayment_model.lsp")
 
@@ -98,33 +101,50 @@ them begins: a vector. A PSA speed is a multiple of the PSA curve at the age tha
                                 (else (min 1.0 (/ (vector-ref speeds t) 100.0))))))
     smms))
 
-(define (project-pool balance rate months smms)
-  "The cash flows of a pool of level-pay mortgages that prepays by the single monthly mortality of each month: (principal interest balance), each
-a vector, the first two one element a month and the balance one longer. balance is what is owed now, rate the annual rate in percent, months
-the months that are left, and smms a vector with a decimal for each of them."
-  (let ((monthly-rate (/ rate 1200.0))
+(define (project-pool balance wac coupon months smms)
+  "The cash flows of a pool of level-pay mortgages that prepays by the single monthly mortality of each month: (principal interest balance
+gross-interest), each a vector, the first two and the last one element a month and the balance one longer. balance is what is owed now,
+wac the annual rate of the loans in percent, which they are paid off at, and gross-interest is the interest that they pay; coupon is the annual
+pass-through rate in percent, and interest what is paid to the investors at it. months is the months that are left, and smms a vector with a
+decimal for each of them."
+  (let ((monthly-wac (/ wac 1200.0))
+        (monthly-coupon (/ coupon 1200.0))
         (principal (make-vector months 0.0))
         (interest (make-vector months 0.0))
+        (gross (make-vector months 0.0))
         (balances (make-vector (+ months 1) 0.0)))
     (vector-set! balances 0 balance)
     (loop for t from 0 below months
           do (let* ((owed (vector-ref balances t))
-                    (interest-due (* owed monthly-rate))
-                    (scheduled (min owed (- (payment monthly-rate (- months t) owed) interest-due)))
+                    (interest-due (* owed monthly-wac))
+                    (scheduled (min owed (- (payment monthly-wac (- months t) owed) interest-due)))
                     (prepaid (* (vector-ref smms t) (- owed scheduled)))
                     (paid (min owed (+ scheduled prepaid))))
-               (vector-set! interest t interest-due)
+               (vector-set! gross t interest-due)
+               (vector-set! interest t (* owed monthly-coupon))
                (vector-set! principal t paid)
                (vector-set! balances (+ t 1) (- owed paid))))
-    (list principal interest balances)))
+    (list principal interest balances gross)))
+
+(define (piece-wam piece)
+  "The wam of a piece of collateral, (balance wac coupon wam [age])."
+  (cadddr piece))
+
+(define (piece-age piece)
+  "The age of a piece of collateral, (balance wac coupon wam [age]): 0 if it is left out."
+  (if (= (length piece) 5) (list-ref piece 4) 0))
 
 (define (collateral-piece-check piece)
-  "An error unless the piece is (balance wac wam [age]) of numbers that can be projected."
-  (unless (and (list? piece) (<= 3 (length piece) 4) (every number? piece))
-    (error (format "a piece of collateral is (balance wac wam [age]), numbers, not {}" piece)))
-  (let ((wac (cadr piece)) (wam (caddr piece)) (age (if (= (length piece) 4) (cadddr piece) 0)))
+  "An error unless the piece is (balance wac coupon wam [age]) of numbers that can be projected."
+  (unless (and (list? piece) (<= 4 (length piece) 5) (every number? piece))
+    (error (format "a piece of collateral is (balance wac coupon wam [age]), numbers, not {}" piece)))
+  (let ((wac (cadr piece)) (coupon (caddr piece)) (wam (piece-wam piece)) (age (piece-age piece)))
     (when (< wac 0)
       (error (format "the wac of a piece of collateral is in percent, from 0, not {}" wac)))
+    (when (< coupon 0)
+      (error (format "the pass-through coupon of a piece of collateral is in percent, from 0, not {}" coupon)))
+    (when (> coupon wac)
+      (error (format "the pass-through coupon of a piece of collateral, {}, is above its wac, {}: it is the wac less the fees that are taken out" coupon wac)))
     (unless (and (integer? wam) (> wam 0))
       (error (format "the wam of a piece of collateral is the months that are left, a whole number above 0, not {}" wam)))
     (unless (and (integer? age) (>= age 0))
@@ -139,31 +159,33 @@ the months that are left, and smms a vector with a decimal for each of them."
       (when (< (car piece) 0)
         (error (format "the balance of a piece of collateral is from 0, not {}" (car piece)))))
     (when (null? used)
-      (error "there is no collateral: a piece of collateral is (balance wac wam [age])"))
+      (error "there is no collateral: a piece of collateral is (balance wac coupon wam [age])"))
     used))
 
 (define (project-pieces pieces curve)
-  "The cash flows of all the pieces of collateral at the speed, added together: (principal interest balance), each a vector, as
-project-pool gives, as long as the longest piece. A piece is (balance wac wam [age]); one with no balance is left out."
+  "The cash flows of all the pieces of collateral at the speed, added together: (principal interest balance gross-interest), each a vector, as
+project-pool gives, as long as the longest piece. A piece is (balance wac coupon wam [age]); one with no balance is left out."
   (let* ((used (collateral-pieces-in-use pieces))
-         (months (apply max (map caddr used)))
+         (months (apply max (map piece-wam used)))
          (principal (make-vector months 0.0))
          (interest (make-vector months 0.0))
+         (gross (make-vector months 0.0))
          (balances (make-vector (+ months 1) 0.0)))
     (dolist (piece used)
-      (let* ((wam (caddr piece))
-             (age (if (= (length piece) 4) (cadddr piece) 0))
-             (flows (project-pool (car piece) (cadr piece) wam (speed-smms curve age wam))))
+      (let* ((wam (piece-wam piece))
+             (flows (project-pool (car piece) (cadr piece) (caddr piece) wam (speed-smms curve (piece-age piece) wam))))
         (loop for t from 0 below wam
               do (begin (vector-update! principal t + (vector-ref (car flows) t))
-                        (vector-update! interest t + (vector-ref (cadr flows) t))))
+                        (vector-update! interest t + (vector-ref (cadr flows) t))
+                        (vector-update! gross t + (vector-ref (cadddr flows) t))))
         (loop for t from 0 to wam
               do (vector-update! balances t + (vector-ref (caddr flows) t)))))
-    (list principal interest balances)))
+    (list principal interest balances gross)))
 
 (define (pool-coupons interest balances)
   "The rate of interest of the pool in each month, a decimal for the year: twelve times the interest over the balance at the start
-of the month, or 0 in a month with no balance. It is what a pool of pieces with different coupons pays, as one, month by month."
+of the month, or 0 in a month with no balance. It is what a pool of pieces with different coupons pays, as one, month by month (of the
+interest that is paid to the investors, the pass-through rate, or of the interest that the loans pay, the wac)."
   (let ((rates (make-vector (vector-length interest) 0.0)))
     (loop for t from 0 below (vector-length interest)
           do (unless (= (vector-ref balances t) 0.0)

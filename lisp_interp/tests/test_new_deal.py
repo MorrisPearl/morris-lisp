@@ -42,8 +42,8 @@ class TestNewDeal(LispTestCase):
         """Type a value in a cell of a grid, the message the browser sends."""
         grid._DataGrid__handle_custom_msg(None, {"event_type": "cell-changed", "row": row, "column_index": list(grid.data.columns).index(column), "value": value}, [])
 
-    def piece(self, row, balance, wac, wam, age=0):
-        for column, value in (("balance", balance), ("wac", wac), ("wam", wam), ("age", age)):
+    def piece(self, row, balance, wac, coupon, wam, age=0):
+        for column, value in (("balance", balance), ("wac", wac), ("coupon", coupon), ("wam", wam), ("age", age)):
             self.edit(self.pieces_grid, row, column, value)
 
     def speed_row(self, row, start, end, months):
@@ -58,15 +58,15 @@ class TestNewDeal(LispTestCase):
         return self.printed() + printed.getvalue()
 
     def two_pieces(self):
-        self.piece(0, 100000000.0, 6.0, 360)
-        self.piece(1, 50000000.0, 7.0, 240, 12)
+        self.piece(0, 100000000.0, 6.0, 5.5, 360)
+        self.piece(1, 50000000.0, 7.0, 6.5, 240, 12)
 
     # -- the start ----------------------------------------------------------------
 
     def test_the_page_has_a_grid_of_empty_pieces_and_a_speed_of_100_psa(self):
         self.assertIn("Demo 2026-1", self.heading.value)
         self.assertIn("2026-11-25", self.heading.value)
-        self.assertEqual(list(self.pieces_grid.data.columns), ["balance", "wac", "wam", "age"])
+        self.assertEqual(list(self.pieces_grid.data.columns), ["balance", "wac", "coupon", "wam", "age"])
         self.assertEqual(len(self.pieces_grid.data), 8)
         self.assertEqual(self.pieces_grid.data["balance"].sum(), 0)
         self.assertEqual(self.speed_type.value, "PSA")
@@ -91,13 +91,13 @@ class TestNewDeal(LispTestCase):
         self.two_pieces()
         shown = self.press(self.show_button)
         self.assertIn("2 pieces, 150,000,000.00", shown)
-        self.assertIn("a wac of 6.3333%", shown)
+        self.assertIn("a wac of 6.3333%, a pass-through coupon of 5.8333%", shown)
         self.assertIn("a wam of 360 months", shown)
         self.assertIn("at PSA 100.0.", shown)
-        for text in ("payment date", "2026-11-25", "2027-10-25", "balance", "principal", "interest", "speed", "coupon", "100.00"):
+        for text in ("payment date", "2026-11-25", "2027-10-25", "balance", "principal", "interest", "speed", "wac", "coupon", "100.00"):
             self.assertIn(text, shown)
-        flows = lisp_core.pairs_to_list(self.run_lisp("(project-pieces '((100000000.0 6.0 360) (50000000.0 7.0 240 12)) (prepayment-speed 'psa 100))"))
-        life = self.run_lisp("(average-life (car (project-pieces '((100000000.0 6.0 360) (50000000.0 7.0 240 12)) (prepayment-speed 'psa 100))))")
+        flows = lisp_core.pairs_to_list(self.run_lisp("(project-pieces '((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12)) (prepayment-speed 'psa 100))"))
+        life = self.run_lisp("(average-life (car (project-pieces '((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12)) (prepayment-speed 'psa 100))))")
         self.assertIn("average life is %.2f years" % life, shown)
         self.assertIn("{:,.2f}".format(flows[2].items[11]), shown)                       # (the balance at the start of month 12, the last row of the first year)
         self.assertNotIn("rows --", shown)                                               # (every row is shown)
@@ -125,7 +125,7 @@ class TestNewDeal(LispTestCase):
         self.assertNotIn("Error", shown)
 
     def test_the_last_month_is_shown_when_it_is_not_the_end_of_a_year(self):
-        self.piece(0, 1000000.0, 6.0, 30)
+        self.piece(0, 1000000.0, 6.0, 5.5, 30)
         shown = self.press(self.show_button)
         for month in ("1 ", "12 ", "24 ", "30 "):
             self.assertRegex(shown, r"\n\s*" + month)
@@ -133,20 +133,30 @@ class TestNewDeal(LispTestCase):
 
     def test_a_row_with_no_balance_is_left_out_and_nothing_typed_is_said(self):
         self.assertIn("there is no collateral", self.press(self.show_button))
-        self.piece(3, 80000000.0, 5.5, 360)                      # (a row in the middle of the empty ones)
+        self.piece(3, 80000000.0, 5.5, 5.0, 360)                      # (a row in the middle of the empty ones)
         self.assertIn("1 pieces, 80,000,000.00", self.press(self.show_button))
 
     def test_what_is_wrong_with_the_collateral_or_the_speed_is_said(self):
-        self.piece(0, 100000000.0, -1.0, 360)
+        self.piece(0, 100000000.0, -1.0, -1.0, 360)
         self.assertIn("the wac of a piece of collateral is in percent", self.press(self.show_button))
-        self.piece(0, 100000000.0, 6.0, 360)
+        self.piece(0, 100000000.0, 6.0, 5.5, 360)
         self.edit(self.speed_grid, 0, "from", 100.0)
         self.edit(self.speed_grid, 0, "to", 200.0)
         self.assertIn("goes on for ever is one speed", self.press(self.show_button))
         self.assertShows("(new-deal-deal start)", "()")
 
+    def test_a_pass_through_coupon_above_the_wac_is_said(self):
+        self.piece(0, 100000000.0, 6.0, 6.5, 360)
+        self.assertIn("the pass-through coupon of a piece of collateral, 6.5, is above its wac, 6.0", self.press(self.show_button))
+        self.assertShows("(new-deal-deal start)", "()")
+
+    def test_the_wac_and_the_pass_through_coupon_are_shown_side_by_side_month_by_month(self):
+        self.two_pieces()
+        shown = self.press(self.show_button)
+        self.assertRegex(shown, r"\b1\s+2026-11-25\s+[\d,\.]+\s+[\d,\.]+\s+[\d,\.]+\s+100\.00\s+6\.3333\s+5\.8333")    # (the wac, 6.3333, and the coupon, 5.8333, of the pool)
+
     def test_a_value_that_is_not_a_whole_number_of_months_is_said_by_the_grid(self):
-        self.piece(0, 100000000.0, 6.0, 360)
+        self.piece(0, 100000000.0, 6.0, 5.5, 360)
         self.edit(self.pieces_grid, 0, "wam", 12.5)
         shown = self.press(self.show_button)
         self.assertIn("wam", shown)
@@ -165,10 +175,10 @@ class TestNewDeal(LispTestCase):
         self.assertShows("(deal-names deal)", '("POOL")')
         self.assertShows("(deal-first-payment deal)", "2026-11-25")
         self.assertShows('(vector-ref (deal-payment-dates deal) 1)', "2026-12-25")
-        self.run_lisp("(define direct (collateral-from-pieces \"POOL\" '((100000000.0 6.0 360) (50000000.0 7.0 240 12)) (prepayment-speed 'psa 150)))")
+        self.run_lisp("(define direct (collateral-from-pieces \"POOL\" '((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12)) (prepayment-speed 'psa 150)))")
         np.testing.assert_allclose(self.run_lisp('(node-principal (get-node deal "POOL"))').items, self.run_lisp("(node-principal direct)").items)
         np.testing.assert_allclose(self.run_lisp('(node-interest (get-node deal "POOL"))').items, self.run_lisp("(node-interest direct)").items)
-        self.assertShows('(collateral-pieces (get-node deal "POOL"))', "((100000000.0 6.0 360 0) (50000000.0 7.0 240 12))")
+        self.assertShows('(collateral-pieces (get-node deal "POOL"))', "((100000000.0 6.0 5.5 360 0) (50000000.0 7.0 6.5 240 12))")
 
     def test_the_speed_that_was_typed_is_the_pricing_speed_of_the_collateral(self):
         self.two_pieces()
