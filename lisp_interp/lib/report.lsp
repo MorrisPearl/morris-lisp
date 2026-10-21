@@ -40,7 +40,7 @@
 ; row's template. Output is written to the file a thousand lines at a time, so a report
 ; of any length is written without holding it.
 
-(load "template.lsp")
+(require "template.lsp")
 
 (defstruct report-break field header footer (new-page #f) (restart-page-numbers #f) (repeat-header #f))
 

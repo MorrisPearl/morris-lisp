@@ -4634,16 +4634,17 @@ A function that a widget calls runs when the notebook is idle, one at a time, in
 variables the cells define, and can define or change them, which the next cell sees.
 
 #### Asking what to do: `widget-actions`
-`(widget-actions pages :on-go f [:style "tabs"] [:button "Go"] [:heading ""])` makes a **panel** of questions that sits inline in
+`(widget-actions pages :on-go f [:buttons buttons] [:style "tabs"] [:button "Go"] [:heading ""])` makes a **panel** of questions that sits inline in
 the notebook: a tab (or, with `:style "accordion"`, a section) for each thing the user might do, with the fields that thing needs
 and a button to press when ready. It is one widget, so it goes in a column with others, and hides and shows like any widget. When a
 button is pressed, `(f title answers)` is called with the title of its page and the answers on that page, as a list of
 `(field-name . value)`. What `f` displays appears under the tabs, in an output widget the panel has of its own, and is cleared
-at the next press; an error in `f` is reported there.
+at the next press; an error in `f` is reported there. A page can have **several buttons**, with `:buttons`, a list of `(label . f)`, each
+function called as `:on-go` is, instead of `:on-go` and `:button`: the last is the main one, and every button is as wide as its label.
 
 `pages` is a list, each page `(title item ...)`. An item is a **field**, `(name kind label default [options])`, or a string, which
-is a line of text that explains the fields. The kinds of field are `number` (a decimal), `integer`, `text`, `checkbox` (the value
-is `#t` or `#f`) and `dropdown` (a choice from the `options`, a list of strings or numbers).
+is a line of text that explains the fields. The kinds of field are `number` (a decimal), `integer`, `text`, `textarea` (several lines of
+text), `checkbox` (the value is `#t` or `#f`) and `dropdown` (a choice from the `options`, a list of strings or numbers).
 
 ```lisp
 (define panel
@@ -4665,6 +4666,9 @@ go with a panel:
 - `(widget-actions-set! panel "Floater cap" "cap" 9.2)` puts a value in a field of a page: a default that depends on what was chosen.
 - `(widget-actions-answers panel "Floater cap")` is what is in the fields of a page now, as the button would give it.
 - `(widget-actions-select panel "PAC bands")` brings a page to the front.
+- `(widget-actions-clear panel)` empties what the buttons have displayed under the tabs.
+- `(widget-actions-button-label! panel 1 "Change the split")` changes the label of a button (the first is number 0) on every page: for a panel that is used for
+  two things, such as adding something and changing it.
 - `(widget-visible panel #f)` hides a widget (`#t` shows it again).
 
 To make the choice of a row of a table start it, put the panel under the grid and have the click change it:
@@ -4693,7 +4697,9 @@ notebook doesn't see it; it is for a function that is given the widget to find w
 and sort and filter by the column headings. The other attributes of ipydatagrid's `DataGrid` are keywords, such as `:base-row-size 30`,
 `:selection-mode "cell"` or `:layout`. The whole table is sent to the browser, so a grid is for thousands of rows, not
 millions (`table-head`, `table-filter` show the rows of interest; more than 100,000 is an error). A grid is as tall as its rows, up to
-15 of them (it scrolls after that), unless it is given a `:layout`.
+15 of them (it scrolls after that), unless it is given a `:layout`, and each column is as wide as its heading and the text of its first
+thousand rows (ipydatagrid's own `:auto-fit-columns #t` fits the headings only, and cuts off a cell that is longer; a `:column-widths`,
+a hash table of column name to pixels, is used as it is).
 
 - `(grid-table grid)` is the table as it is now: the table the grid was made from, with the cells the user changed made new. A cell
   that was not changed keeps its value exactly, and each column keeps its type (a column of whole numbers stays one, and a
@@ -4705,7 +4711,8 @@ millions (`table-head`, `table-filter` show the rows of interest; more than 100,
   table (not a heading): the column's name, the row's place in the table, and the value in the cell. Clicking is also how a cell is
   chosen to be edited, so an edit is a click too. The row is the cell's place in the table you made the grid from, whatever
   order the user has sorted the grid into (and the same goes for `grid-on-edit`).
-- `(grid-set-table! grid table)` shows another table in the grid, or the same one again to undo the edits.
+- `(grid-set-table! grid table)` shows another table in the grid, or the same one again to undo the edits. A grid that is as tall as its rows
+  becomes as tall as the rows of the new table, and one with the columns as wide as their text has them as wide as the text of the new one.
 
 ```lisp
 (define loans (make-table "id" (vector "a" "b" "c") "balance" #(100000 200000 300000) "rate" #(0.05 0.06 0.055)))
@@ -4817,6 +4824,17 @@ says where it looked.
 
 ```lisp
 (load "column_engine.lsp")     ; from lib/: defstruct column, register-column, ... now defined
+```
+
+#### `(require "path.lsp")`
+Loads the file as `load` does (it is looked for in the same places), unless it has been loaded already in this session -- by `load`,
+by `require`, or by the first call of a `lazy-load` function of it -- and then does nothing. It is for a library that needs
+another, so that the second does not load the first again: loading a file again defines its structs again, as new types, and what was
+made of the old ones (a deal, a list of spreads) is not one of them. The libraries in `lib/` use it for the libraries they need.
+Returns `'()`.
+
+```lisp
+(require "option_spreads.lsp")     ; the first time: loads it. After that, or after a call of one of its functions: nothing
 ```
 
 #### `(redirect-output "path.txt" [append?])`

@@ -36,7 +36,7 @@
 ;   (option-positions-for-chain chain (date 2026 11 17) 99.0
 ;                               :underlying "CLZ6" :contract-size 1000 :unit "barrel")
 
-(load "option_spreads.lsp")
+(require "option_spreads.lsp")
 
 (defstruct position-comparison
   stock             ; the underlying's symbol: the stock's, or the future's

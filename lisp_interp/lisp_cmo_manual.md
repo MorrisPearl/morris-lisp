@@ -25,6 +25,8 @@ general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is 
 - [Building a deal](#building-a-deal)
   - [The collateral](#the-collateral)
   - [Dividing a node](#dividing-a-node)
+  - [Plans, and looking before adding](#plans-and-looking-before-adding)
+  - [Changing a split, and taking one away](#changing-a-split-and-taking-one-away)
   - [Running a deal, and looking at it](#running-a-deal-and-looking-at-it)
 - [The kinds of split](#the-kinds-of-split)
   - [Sequential, and pro rata](#sequential-and-pro-rata)
@@ -39,6 +41,7 @@ general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is 
   - [What is not modeled](#what-is-not-modeled)
 - [Checking a deal](#checking-a-deal)
 - [Making another kind of split](#making-another-kind-of-split)
+- [Building a deal by clicking](#building-a-deal-by-clicking)
 - [An example program](#an-example-program)
 
 ## A deal in a few lines
@@ -183,6 +186,59 @@ size they are to be (`calculate-sizes`), and checking that the children's balanc
 (`assign-coupons`). The splits are made by `make-sequential-split`, `make-pro-rata-split` and so on, which take `:children` and the kind's own
 slots. A split is added only after the splits above it, because sizes and coupons go from the top down.
 
+### Plans, and looking before adding
+
+A builder is two steps, and the steps can be taken apart. A **plan**, a `split-plan`, is what is to be added under a parent: the tranches (each
+the arguments of `deal-add-tranche!`) and the split that divides the parent among them. Each kind of split has a function that makes its plan, with
+the arguments of its builder: `(sequential-plan children [:accretion-to name] [:losses rule])`, `(pro-rata-plan children [:losses rule])`,
+`(pac-plan pac-name companion-name low-psa high-psa [:losses rule])`, `(floater-inverse-plan floater-name inverse-name :cap c [:margin m])`,
+`(premium-discount-plan premium-name discount-name :premium-coupon p :discount-coupon d)` and `(io-po-plan io-name po-name [:io-coupon c])`.
+`(deal-add-plan! deal parent-name plan)` adds one, and `(deal-sequential! deal parent children)` is `(deal-add-plan! deal parent (sequential-plan
+children))`, and so on. Nothing is added if there is something wrong.
+
+The reason for two steps is to look in between. `(split-plan-sizes deal parent plan)` is the balances the plan's tranches would have, as a list in their
+order, without changing the deal (a PAC and its companion are sized from what the parent is paid at the two speeds, a floater and an inverse floater
+from the cap, and the others are as they were given):
+
+```lisp
+(define deal (start-deal "Demo" (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa 150)))
+(define plan (floater-inverse-plan "F" "I" :cap 0.0975))
+(split-plan-sizes deal (get-node deal "POOL") plan)     ; => (66666666.66666667 33333333.33333333)
+(deal-names deal)                                       ; => ("POOL")
+(deal-add-plan! deal "POOL" plan)
+(deal-names deal)                                       ; => ("POOL" "F" "I")
+```
+
+A plan for a kind of split of your own is made with `(make-split-plan :tranches tranches :split split)`.
+
+### Changing a split, and taking one away
+
+`(deal-replace-split! deal parent-name plan)` changes the split that divides a node, to the one in the plan, which is made with the same functions.
+The tranches that the plan names and the deal has already stay, with what is under them; those that it names and the deal has not are new; and a
+tranche that was in the split and is not in the plan is left out, if it has nothing under it (if it is divided, it must have its split taken away
+first: it is an error). Then everything is worked out again, from the top down: the children of the split are given their sizes and their coupons,
+and so are the children of the splits below them, and so on to the leaves, because what a split works out depends on the size and the coupon of its
+parent. A PAC under a floater is sized again when the floater's cap changes. A split that was given the sizes of its children (a sequential or a pro-rata
+split, whose sizes are not worked out) keeps each in the share of its parent that it was. The change is tried on a copy of the deal first, so that if
+anything is wrong, in the new split or in any split below it, an error says what, and the deal is as it was.
+
+`(deal-delete-split! deal parent-name)` takes away the split of a node, and every node below it, to any depth. The node is a bond again, and can be
+divided in another way. It returns the names that were taken away.
+
+```lisp
+(define deal (start-deal "Demo" (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa 150)))
+(deal-sequential! deal "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
+(deal-floater-inverse! deal "A" "AF" "AI" :cap 0.095)
+(deal-pac! deal "AF" "AP" "AC" 100 300)
+(deal-replace-split! deal "POOL" (sequential-plan '(("A" 70000000.0) ("B" 30000000.0))))
+(vector-ref (node-balance (get-node deal "AF")) 0)       ; => 47894736.84210526
+(deal-delete-split! deal "A")                            ; => ("AF" "AP" "AC" "AI")
+(deal-names deal)                                        ; => ("POOL" "A" "B")
+```
+
+`(deal-trial-of-plan deal parent-name plan)` is that copy: the deal with the plan applied to the node (added, if it has no split, and replacing its split, if it
+has), for looking at what the change would make, and for the error if it cannot be made. The deal itself is not changed.
+
 ### Running a deal, and looking at it
 
 `(deal-run! deal [:index index])` works out what each node is paid, and owes, in every month. It can be run again, with another index, or after a
@@ -192,6 +248,25 @@ The results are the vectors of the nodes, and tables, with a row for each month 
 with `display-table`: `(deal-principal-table deal)`, `(deal-interest-table deal)`, `(deal-accrual-table deal)`, `(deal-loss-table deal)`,
 `(deal-shortfall-table deal)`, `(deal-coupon-table deal)` (the coupon of each node in each month, at the index the deal was run with) and
 `(deal-balance-table deal)`.
+
+`(deal-outline deal)` is a table of the deal itself, a row for each node, each below its parent and before the node after it (depth first: the collateral, what
+it is divided into, what each of those is divided into), with the name indented by how far down the tree it is, the balance it starts with, to the cent,
+and the kind of split that divides it (`split-label`), if any. It is the picture that a deal builder shows (see "Building a deal by clicking"):
+
+```text
+tranche         balance  split
+--------  --------------  ---------------------------
+POOL      100,000,000.00  sequential
+  A        60,000,000.00  floater and inverse floater
+    AF     41,052,631.58  PAC and companion
+      AP   19,736,607.91
+      AC   21,316,023.67
+    AI     18,947,368.42
+  B        40,000,000.00
+```
+
+`(deal-outline-entries deal)` is the same order as a list of `(name . depth)`. `(split-label split)` is a generic function, like `pay-principal`,
+that says in a few words what kind of split it is; a kind of your own has the label of the kind it includes, unless it has a method of its own.
 
 ## The kinds of split
 
@@ -439,6 +514,7 @@ split (see `defgeneric` and `defmethod` in the language manual). `(generic-funct
 - `(assign-coupons split deal parent)` gives the children their coupons, which for a split of any kind are the parent's.
 - `(check-split split deal parent)` is an error if the split cannot divide the parent: a Z bond is only a child of a sequential split, and an IO/PO
   split needs an IO that follows its PO.
+- `(split-label split)` says in a few words what kind of split it is (`"sequential"`, `"PAC and companion"`), for the outline of the deal and the deal builder.
 
 A new kind includes `split`, or one of the kinds there are, and has methods of its own; `(call-next-method)` calls the method of the kind that it
 extends. This one does what a sequential split does, and says what it is dividing:
@@ -453,6 +529,70 @@ extends. This one does what a sequential split does, and says what it is dividin
 
 A kind with data of its own (a PAC has `low-psa`, `high-psa` and its `schedule`) has slots for it. A method is looked up by the kind of the first
 argument, so a method for `sequential-split` is also the method for `noting-split`, until it has one of its own.
+
+## Building a deal by clicking
+
+`lib/deal_builder.lsp` is a way to build a deal in a Jupyter notebook (the `morris_lisp` kernel, with `ipywidgets` and `ipydatagrid`; see "Widgets in
+a notebook") by clicking, instead of by writing the builders. The deal begins as the collateral alone, one tranche with the cash flows of the pool:
+
+```lisp
+(define pool (collateral-from-psa "POOL" 100000000 6.5 :term 360 :age 0 :psa 150))
+(define deal (start-deal "Demo 2026-1" pool))
+(display-widget (deal-builder deal))
+```
+
+`(deal-builder deal [:style "tabs"] [:forms forms])` makes a **grid** with a row for each tranche of the deal (the rows of `deal-outline`: name, balance,
+and the kind of split), and a panel under it.
+
+- **Click a tranche that is not divided**, and the panel has a tab (or, with `:style "accordion"`, a section) for each kind of split: **Sequential**, **Pro rata**,
+  **PAC**, **Floater/inverse**, **Premium/discount** and **IO/PO**, each with the fields that kind needs, and names to start with that are made from the
+  tranche's. The tranches of a sequential or a pro-rata split are written one to a line, the name and the balance (`A1 60,000,000`), with `z`
+  after the balance for a Z bond, and the last can leave its balance out and be what is left. A PAC has two speeds, a floater and an inverse floater a cap and a
+  margin (in percent), a premium and a discount bond their coupons, and an IO and a PO an IO coupon, or none, for the parent's.
+- **Calculate the sizes** shows what the tranches would be, as a table, without changing the deal: the tranches of the split and any under them, their balances,
+  and the share of their parents' that each is. It is the plan applied to a copy of the deal (`deal-trial-of-plan`), so what is wrong with the fields is said here,
+  and what would be wrong when the tranches are added is too.
+- **Add the tranches to the deal** adds them (`deal-add-plan!`). They appear in the grid under the tranche that was divided, so that the rows are the tree of the
+  deal, depth first, and the panel is put away.
+- **Click a tranche that is divided**, and the panel shows its split, with the fields as it was made: its tab is in front, with the tranches, the speeds, the cap
+  that it has. Change them, and **Calculate the sizes** shows what is under the split as it is, and as it would be (a column, *was*, for the tranches that are
+  in the deal already), and **Change the split** makes the change (`deal-replace-split!`): the tranches of the split are worked out again, and so are those under
+  them, to the leaves. Another tab will change the split to a split of another kind, with the same tranches or others.
+- **Take away this split, and all under it** is under the panel whenever a tranche that is divided is chosen. It says which tranches would go, and asks; **Yes**
+  takes them away (`deal-delete-split!`), and **No** keeps them.
+
+What is wrong is shown as a line under the buttons, with no traceback: the names that are in the deal already, balances that do not add up, a cap below the coupon,
+a tranche left out that has a split under it. The deal is the one that was given, and is changed as the buttons are pressed: nothing has been run, so `deal-run!` and
+`deal-check` are for when it is built. `notebooks/deal_builder.ipynb` is a notebook that does this.
+
+**A form of your own.** Each tab is a `split-form`, made by `make-split-form`, with these slots:
+
+| Slot | Is |
+|---|---|
+| `:title` | the title of the tab |
+| `:label` | what `split-label` says of the splits that it makes: the tab that is shown for a split that is in the deal is the one with its label |
+| `:help` | a line of HTML above the fields |
+| `:fields` | the fields, each `(name kind label default [options])`: see `widget-actions` in the language manual (`number`, `integer`, `text`, `textarea`, `checkbox`, `dropdown`) |
+| `:defaults` | `(lambda (parent) ...)`: a list of `(field-name . value)` to put in the fields when the tranche `parent` is chosen |
+| `:describe` | `(lambda (deal split) ...)`: the list of `(field-name . value)` that makes a split that is in the deal; without it a tab shows its defaults for a split that is changed |
+| `:plan` | `(lambda (parent answers) ...)`: the plan that divides the node `parent` as the answers, a list of `(field-name . value)`, say, or an error that says what is wrong |
+
+`(standard-split-forms)` is the list that is used without `:forms`, and a form of your own is added to it (a kind of split of your own, with its methods, as in "Making another
+kind of split", has a `split-label` method, and a form with that label):
+
+```lisp
+(define halves
+  (make-split-form
+    :title "Halves" :label "sequential" :help "Two tranches of half each."
+    :fields (list (list "first" 'text "First" "") (list "second" 'text "Second" ""))
+    :defaults (lambda (parent) (list (cons "first" (string-append (node-name parent) "-1"))
+                                     (cons "second" (string-append (node-name parent) "-2"))))
+    :plan (lambda (parent answers)
+            (let ((half (/ (vector-ref (node-balance parent) 0) 2.0)))
+              (sequential-plan (list (list (cdr (assoc "first" answers)) half)
+                                     (list (cdr (assoc "second" answers)) half)))))))
+(display-widget (deal-builder deal :forms (append (standard-split-forms) (list halves))))
+```
 
 ## An example program
 

@@ -210,10 +210,14 @@ class TestActionPanel(LispTestCase):
         """The widgets of a page, above its button."""
         return self.tabs().children[page].children[0].children
 
-    def go(self, page):
-        """Press the button of a page; return what the function displayed."""
+    def buttons(self, page):
+        """The buttons of a page, in a row below its fields."""
+        return self.tabs().children[page].children[1].children
+
+    def go(self, page, button=0):
+        """Press a button of a page; return what the function displayed."""
         self.out.clear()
-        self.tabs().children[page].children[1].click()
+        self.buttons(page)[button].click()
         return self.printed()
 
     def test_the_panel_is_a_heading_the_tabs_and_a_place_for_output(self):
@@ -222,14 +226,14 @@ class TestActionPanel(LispTestCase):
         self.assertIsInstance(tabs, ipywidgets.Tab)
         self.assertEqual(tabs.titles, ("Floater cap", "PAC bands"))
         self.assertIsInstance(output, ipywidgets.Output)
-        self.assertEqual([page.children[1].description for page in tabs.children], ["Go", "Go"])
+        self.assertEqual([page.children[1].children[0].description for page in tabs.children], ["Go", "Go"])
 
     def test_an_accordion_and_another_button_label_can_be_asked_for(self):
         self.run_lisp('''(define a (widget-actions (list (list "One") (list "Two")) :style "accordion" :button "Do it" :on-go (lambda (a b) 1)))''')
         accordion = self.env[lisp_core.Symbol("a")].children[1]
         self.assertIsInstance(accordion, ipywidgets.Accordion)
         self.assertEqual(accordion.titles, ("One", "Two"))
-        self.assertEqual(accordion.children[0].children[1].description, "Do it")
+        self.assertEqual(accordion.children[0].children[1].children[0].description, "Do it")
 
     def test_the_button_calls_the_function_with_the_page_and_its_answers(self):
         self.assertEqual(self.go(0), '("Floater cap" (("cap" . 8.5) ("index" . "SOFR")))')
@@ -270,16 +274,61 @@ class TestActionPanel(LispTestCase):
         bad = self.env[lisp_core.Symbol("bad")]
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            bad.children[1].children[0].children[1].click()          # (the Go button of the first page)
+            bad.children[1].children[0].children[1].children[0].click()          # (the Go button of the first page)
         self.assertIn("Error: boom", out.getvalue())
 
     def test_the_arguments_are_checked(self):
         self.assertLispError('(widget-actions (list (list "a")))', ":on-go is the function")
+        self.assertLispError('(widget-actions (list (list "a")) :buttons (list))', ":on-go is the function")
         self.assertLispError('(widget-actions (list (list "a" (list "x" (quote colour) "X" 1))) :on-go (lambda (a b) 1))', "kind colour")
         self.assertLispError('(widget-actions-answers panel "Nope")', "no page Nope")
         self.assertLispError('(widget-actions-set! panel "PAC bands" "zzz" 1)', "no field zzz")
         self.assertLispError('(widget-actions-select panel "Nope")', "no page Nope")
         self.assertLispError('(widget-actions-heading (make-widget "VBox") "x")', "made by widget-actions")
+
+    def test_a_page_can_have_several_buttons_each_with_its_own_function(self):
+        self.run_lisp('''(define several
+                         (widget-actions
+                           (list (list "One" (list "n" 'integer "n" 5)) (list "Two" (list "s" 'text "s" "x")))
+                           :buttons (list (cons "Look" (lambda (action answers) (display (list "look" action answers))))
+                                          (cons "Do" (lambda (action answers) (display (list "do" action answers)))))))''')
+        self.panel = self.env[lisp_core.Symbol("several")]
+        self.assertEqual([[b.description for b in self.buttons(page)] for page in (0, 1)], [["Look", "Do"], ["Look", "Do"]])
+        self.assertEqual([b.button_style for b in self.buttons(0)], ["", "primary"])         # (the last is the main one)
+        self.assertEqual(self.go(0, 0), '("look" "One" (("n" . 5)))')
+        self.assertEqual(self.go(1, 1), '("do" "Two" (("s" . "x")))')
+
+    def test_the_output_is_cleared_before_each_button_and_by_widget_actions_clear(self):
+        self.run_lisp('''(define says (widget-actions (list (list "One"))
+                                         :buttons (list (cons "A" (lambda (t a) (display "a"))) (cons "B" (lambda (t a) (display "b"))))))''')
+        panel = self.env[lisp_core.Symbol("says")]
+        output = panel.children[2]
+        with mock.patch.object(type(output), "clear_output") as clear:
+            panel.children[1].children[0].children[1].children[0].click()
+            panel.children[1].children[0].children[1].children[1].click()
+            self.assertEqual(clear.call_count, 2)
+            self.run_lisp("(widget-actions-clear says)")
+            self.assertEqual(clear.call_count, 3)
+        self.assertLispError('(widget-actions-clear (make-widget "VBox"))', "made by widget-actions")
+
+    def test_the_label_of_a_button_can_be_changed_on_every_page(self):
+        self.run_lisp('''(define labels (widget-actions (list (list "One") (list "Two"))
+                                         :buttons (list (cons "A" (lambda (t a) 1)) (cons "B" (lambda (t a) 2)))))
+                         (widget-actions-button-label! labels 1 "Change")''')
+        tabs = self.env[lisp_core.Symbol("labels")].children[1]
+        self.assertEqual([[b.description for b in page.children[1].children] for page in tabs.children], [["A", "Change"], ["A", "Change"]])
+        self.assertLispError('(widget-actions-button-label! labels 2 "Nope")', "no button number 2")
+        self.assertLispError('(widget-actions-button-label! (make-widget "VBox") 0 "x")', "made by widget-actions")
+
+    def test_a_textarea_field_is_several_lines_of_text(self):
+        self.run_lisp('''(define lines (widget-actions (list (list "Names" (list "names" 'textarea "Names" "A1\\nA2")))
+                                                      :on-go (lambda (action answers) (display answers))))''')
+        panel = self.env[lisp_core.Symbol("lines")]
+        area = panel.children[1].children[0].children[0].children[0]
+        self.assertIsInstance(area, ipywidgets.Textarea)
+        self.assertEqual(area.value, "A1\nA2")
+        area.value = "B1\nB2\nB3"
+        self.assertShows('(widget-actions-answers lines "Names")', '(("names" . "B1\nB2\nB3"))')
 
     def test_a_widget_can_be_given_a_value_to_carry(self):
         self.run_lisp('(define w (make-widget "IntSlider"))')
@@ -442,6 +491,15 @@ class TestTableGrid(LispTestCase):
         self.run_lisp('(define long (make-table "x" (vector-range 100)))')
         self.assertEqual(self.run_lisp("(table-grid long)").layout.height, "340px")
         self.assertEqual(self.run_lisp('(table-grid t :layout (make-widget "Layout" :height "50px"))').layout.height, "50px")
+
+    def test_a_grid_that_is_as_tall_as_its_rows_becomes_as_tall_as_the_rows_of_a_new_table(self):
+        self.run_lisp('(grid-set-table! g (make-table "x" (vector-range 100)))')
+        self.assertEqual(self.grid.layout.height, "340px")
+        self.run_lisp('(grid-set-table! g (make-table "x" (vector-range 2)))')
+        self.assertEqual(self.grid.layout.height, "80px")
+        self.run_lisp('(define fixed (table-grid t :layout (make-widget "Layout" :height "50px")))')
+        self.run_lisp('(grid-set-table! fixed (make-table "x" (vector-range 100)))')
+        self.assertEqual(self.env[lisp_core.Symbol("fixed")].layout.height, "50px")         # (a height that was asked for stays)
 
     def test_the_arguments_are_checked(self):
         self.assertLispError("(table-grid 5)", "not a table")

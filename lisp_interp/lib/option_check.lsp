@@ -69,7 +69,7 @@
 ;   (define checked (check-option-prices creds "SPY" :rate 0.04))
 ;   (show-option-check checked)
 
-(load "vol_smile.lsp")
+(require "vol_smile.lsp")
 
 (define (option-check--tree-dividends schedule start-date)
   "A dividend schedule (as dividend-schedule makes it) as the table of time,

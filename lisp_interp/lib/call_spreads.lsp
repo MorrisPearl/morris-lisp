@@ -76,7 +76,7 @@
 ; Or, for a chain you have already, from Schwab or tastytrade:
 ;   (call-spreads-for-chain chain (date 2026 11 20) 765)
 
-(load "option_spreads.lsp")
+(require "option_spreads.lsp")
 
 ; ---------------------------------------------------------------------------
 ; Finding the spreads

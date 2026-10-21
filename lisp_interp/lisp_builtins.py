@@ -1772,7 +1772,7 @@ def markdown_table(columns):
 
 
 def make_eval_builtins(env, out):
-    """eval, macroexpand-1, macroexpand, print-macroexpansion, and load --
+    """eval, macroexpand-1, macroexpand, print-macroexpansion, load, and require --
     each works in `env`, the top-level environment."""
 
     def lisp_eval(expr):
@@ -1805,11 +1805,26 @@ def make_eval_builtins(env, out):
         out.write(pretty_print_string(lisp_macroexpand(form)) + "\n")
         return NIL
 
+    loaded = set()                      # the files that have been loaded into this environment, by load or require
+
     def lisp_load(path):
         """(load "file.lsp") -- evaluate every form in a file, in the top-level
         environment, as if you'd typed them. See find_lisp_file for where it
         looks for the file."""
-        run_file(find_lisp_file(path), env)
+        found = find_lisp_file(path)
+        run_file(found, env)
+        loaded.add(found)
+        return NIL
+
+    def lisp_require(path):
+        """(require "file.lsp") -- load the file, unless it has been loaded already, by
+        load, by require or by a lazy-load. For a library that needs another: loading a
+        library twice makes its structs new types, and what was made of the old ones
+        is no longer one of them."""
+        found = find_lisp_file(path)
+        if found not in loaded:
+            run_file(found, env)
+            loaded.add(found)
         return NIL
 
     return {
@@ -1818,6 +1833,7 @@ def make_eval_builtins(env, out):
         "macroexpand": lisp_macroexpand,
         "print-macroexpansion": lisp_print_macroexpansion,
         "load": lisp_load,
+        "require": lisp_require,
     }
 
 

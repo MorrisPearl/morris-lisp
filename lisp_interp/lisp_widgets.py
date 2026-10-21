@@ -28,6 +28,9 @@ from lisp_core import (
 from lisp_tables import column_values, make_table_value, table_columns
 
 GRID_ROWS_SHOWN = 15           # a grid is this many rows tall at most (it scrolls), unless it is given a :layout
+GRID_CHARACTER_WIDTH = 8       # pixels that a character of the text of a grid takes (a little more than it does)
+GRID_COLUMN_PADDING = 24       # pixels of room around the widest text of a column
+GRID_ROWS_MEASURED = 1000      # the rows whose text is measured to make the columns wide enough
 EDIT_ROWS_LIMIT = 100_000       # table-grid sends the whole table to the browser: more rows than this is a mistake
 
 
@@ -445,20 +448,37 @@ def table_grid(table, *arguments):
                         "(table-head, table-filter)" % (format(rows, ","), format(EDIT_ROWS_LIMIT, ",")))
     settings = keyword_settings(arguments, "table-grid")
     given = dict(settings)
-    for name, value in (("editable", True), ("auto_fit_columns", True)):      # (the usual choices, unless given)
-        if name not in given:
-            settings.append((name, value))
-    if "layout" not in given:           # tall enough for the rows (up to GRID_ROWS_SHOWN of them), and not a good deal taller
-        row_size = given.get("base_row_size", 20)
-        header_size = given.get("base_column_header_size", 20)
-        height = header_size + min(rows, GRID_ROWS_SHOWN) * row_size + 20
-        settings.append(("layout", _ipywidgets("table-grid").Layout(height="%dpx" % height)))
+    if "editable" not in given:                                               # (the usual choice, unless given)
+        settings.append(("editable", True))
+    fitted_by_us = "auto_fit_columns" not in given and "column_widths" not in given
+    sizes = None                        # (the sizes that make the height, if the grid is to be as tall as its rows)
+    if "layout" not in given:
+        sizes = (given.get("base_row_size", 20), given.get("base_column_header_size", 20))
+        settings.append(("layout", _ipywidgets("table-grid").Layout(height=height_for_rows(rows, *sizes))))
     frame, kinds = table_to_frame(table, "table-grid")
+    if fitted_by_us:        # (the grid's own fit is to the headings, and cuts off a cell that is longer: the columns are as wide as their text)
+        settings += [("auto_fit_columns", False), ("column_widths", column_widths_for(frame))]
     grid = _grid_of(ipydatagrid, frame, settings)
     grid._lisp_table = table
     grid._lisp_baseline = frame.copy()
     grid._lisp_kinds = kinds
+    grid._lisp_sizes = sizes
+    grid._lisp_fitted = fitted_by_us
     return grid
+
+
+def column_widths_for(frame):
+    """The width in pixels of each column of the frame that shows all of its heading and of its cells (those of the first rows)."""
+    widths = {}
+    for name in frame.columns:
+        texts = [str(name)] + [str(value) for value in frame[name].iloc[:GRID_ROWS_MEASURED]]
+        widths[name] = max(len(text) for text in texts) * GRID_CHARACTER_WIDTH + GRID_COLUMN_PADDING
+    return widths
+
+
+def height_for_rows(rows, row_size, header_size):
+    """The height of a grid of this many rows: tall enough for them (up to GRID_ROWS_SHOWN of them), and not a good deal taller."""
+    return "%dpx" % (header_size + min(rows, GRID_ROWS_SHOWN) * row_size + 20)
 
 
 def _grid_of(ipydatagrid, frame, settings):
@@ -485,11 +505,17 @@ def grid_table(grid):
 
 
 def grid_set_table(grid, table):
-    """(grid-set-table! grid table) -- shows another table in the grid (or the same one again, undoing the edits)."""
+    """(grid-set-table! grid table) -- shows another table in the grid (or the same one again, undoing the edits). A grid that
+    is as tall as its rows becomes as tall as the rows of the new table, and one with the columns as wide as their text has them as wide
+    as the text of the new table."""
     check_grid(grid, "grid-set-table!")
     frame, kinds = table_to_frame(table, "grid-set-table!")
     grid.data = frame
     grid._lisp_table, grid._lisp_baseline, grid._lisp_kinds = table, frame.copy(), kinds
+    if grid._lisp_sizes is not None:                  # (a grid that is as tall as its rows is as tall as the new ones)
+        grid.layout.height = height_for_rows(len(frame), *grid._lisp_sizes)
+    if grid._lisp_fitted:                             # (and its columns are as wide as the text of the new ones)
+        grid.column_widths = column_widths_for(frame)
     return NIL
 
 

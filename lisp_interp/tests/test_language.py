@@ -1364,6 +1364,49 @@ class TestMetaprogrammingAndIO(LispTestCase):
         with self.assertRaises(Exception):
             self.run_lisp('(load "/definitely/not/here.lsp")')
 
+    def test_require_loads_a_file_the_first_time_and_load_always_loads_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "counted.lsp")
+            with open(path, "w") as f:
+                f.write('(set! loads (+ loads 1))\n')
+            self.run_lisp("(define loads 0)")
+            self.assertShows('(require "%s")' % path, "()")
+            self.run_lisp('(require "%s") (require "%s")' % (path, path))
+            self.assertShows("loads", "1")
+            self.run_lisp('(load "%s")' % path)                        # (load is asked to, so it does)
+            self.assertShows("loads", "2")
+            self.run_lisp('(require "%s")' % path)
+            self.assertShows("loads", "2")
+
+    def test_require_does_not_load_what_load_has_loaded_or_a_lazy_load_has(self):
+        """Loading a library again makes its structs new types, and what was made of the old ones is not one of them."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "thing.lsp")
+            with open(path, "w") as f:
+                f.write("(defstruct thing size) (define (make) (make-thing :size 3))\n")
+            self.run_lisp('(lazy-load "%s" make thing-size)' % path)
+            self.run_lisp("(define t (make))")                         # (loads the file)
+            self.run_lisp('(require "%s")' % path)                     # (a library that needs it)
+            self.assertShows("(thing-size t)", "3")
+            self.assertShows("(thing? t)", "#t")
+            self.run_lisp('(load "%s")' % path)                        # (while load does make them new)
+            self.assertLispError("(thing-size t)", "thing")
+
+    def test_each_environment_has_its_own_files_loaded(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "one.lsp")
+            with open(path, "w") as f:
+                f.write("(define one 1)\n")
+            self.run_lisp('(require "%s")' % path)
+            other = lisp_builtins.make_global_env(output=lambda text: None)
+            self.run_lisp('(require "%s")' % path, env=other)
+            self.assertShows("one", "1")
+            self.assertEqual(self.run_lisp("one", env=other), 1)
+
+    def test_require_of_a_missing_file_is_an_error(self):
+        self.assertLispError('(require "/definitely/not/here.lsp")', "there's no file")
+        self.assertLispError('(require "definitely_not_here.lsp")', "can't find definitely_not_here.lsp")
+
     def test_redirect_output_sends_display_to_a_file_until_reset(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "log.txt")

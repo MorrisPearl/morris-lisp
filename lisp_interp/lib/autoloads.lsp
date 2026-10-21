@@ -90,12 +90,13 @@
 ; The common widgets of a notebook, one call each (the others are made with make-widget)
 (lazy-load "widgets.lsp"
   widget-slider widget-button widget-dropdown widget-checkbox widget-text widget-output widget-column widget-row widget-visible
-  widget-actions widget-actions-heading widget-actions-set! widget-actions-answers widget-actions-select)
+  widget-actions widget-actions-heading widget-actions-set! widget-actions-answers widget-actions-select
+  widget-actions-clear widget-actions-button-label!)
 
-; Structured deals as a tree: a pool, divided by splits into tranches (see "Structured deals" in lisp_library_reference.md)
+; Structured deals as a tree: a pool, divided by splits into tranches (see lisp_cmo_manual.md)
 (lazy-load "deal.lsp"
   start-deal deal-add-collateral! collateral-from-psa constant-coupon deal-sequential! deal-pro-rata! deal-pac!
-  deal-floater-inverse! deal-premium-discount! deal-io-po! deal-split! deal-add-tranche! deal-add-split! deal-add-node!
+  deal-floater-inverse! deal-premium-discount! deal-io-po! deal-add-tranche! deal-add-split! deal-add-node!
   deal-forget-node! get-node deal-run! deal-check deal-principal-table deal-interest-table deal-accrual-table
   deal-loss-table deal-shortfall-table deal-coupon-table deal-balance-table deal-leaves deal-root-of deal-parent-of
   deal-po? deal-tree-names deal-index-at pool-cash-flows node-owed node-remaining pay-child! write-down-child!
@@ -109,36 +110,57 @@
   collateral-share-set! collateral-shortfall collateral-shortfall-set! collateral-split collateral-split-set!
   collateral-term collateral-term-set! collateral-z-flag collateral-z-flag-set! collateral? copy-collateral copy-deal
   copy-floater-inverse-split copy-io-po-split copy-node copy-pac-split copy-premium-discount-split copy-pro-rata-split
-  copy-sequential-split copy-split copy-tranche deal-add-children-and-split! deal-check-new-children deal-check-total
-  deal-collateral-for deal-index deal-index-set! deal-name deal-name-set! deal-names deal-names-set! deal-nodes
-  deal-nodes-set! deal-periods deal-periods-set! deal-roots deal-roots-set! deal-run-months! deal-set-index!
-  deal-shortfalls deal-shortfalls-set! deal-table-of deal? floater-inverse-sizes floater-inverse-split-cap
+  copy-sequential-split copy-split copy-tranche deal-check-new-children deal-check-total deal-collateral-for
+  deal-index deal-index-set! deal-name deal-name-set! deal-names deal-names-set! deal-nodes deal-nodes-set!
+  deal-periods deal-periods-set! deal-roots deal-roots-set! deal-run-months! deal-set-index! deal-shortfalls
+  deal-shortfalls-set! deal-table-of deal? floater-inverse-sizes floater-inverse-split-cap
   floater-inverse-split-cap-set! floater-inverse-split-children floater-inverse-split-children-set!
   floater-inverse-split-constant floater-inverse-split-constant-set! floater-inverse-split-index-name
   floater-inverse-split-index-name-set! floater-inverse-split-leverage floater-inverse-split-leverage-set!
   floater-inverse-split-loss-rule floater-inverse-split-loss-rule-set! floater-inverse-split-margin
   floater-inverse-split-margin-set! floater-inverse-split? index-rate interest-carried io-po-split-children
   io-po-split-children-set! io-po-split-io-coupon io-po-split-io-coupon-set! io-po-split-loss-rule
-  io-po-split-loss-rule-set! io-po-split? make-collateral make-deal make-floater-inverse-split make-io-po-split make-node
-  make-pac-split make-premium-discount-split make-pro-rata-split make-sequential-split make-split make-tranche
-  node-accrual node-accrual-set! node-balance node-balance-set! node-coupon node-coupon-set! node-follows
-  node-follows-set! node-interest node-interest-set! node-loss node-loss-set! node-name node-name-set! node-notional-flag
-  node-notional-flag-set! node-principal node-principal-set! node-share node-share-set! node-shortfall node-shortfall-set!
-  node-split node-split-set! node-z-flag node-z-flag-set! node? pac-check-arguments pac-split-children
-  pac-split-children-set! pac-split-high-psa pac-split-high-psa-set! pac-split-loss-rule pac-split-loss-rule-set!
-  pac-split-low-psa pac-split-low-psa-set! pac-split-schedule pac-split-schedule-set! pac-split? parent-coupon-rate
-  premium-discount-sizes premium-discount-split-children premium-discount-split-children-set!
-  premium-discount-split-discount-coupon premium-discount-split-discount-coupon-set! premium-discount-split-loss-rule
-  premium-discount-split-loss-rule-set! premium-discount-split-premium-coupon premium-discount-split-premium-coupon-set!
-  premium-discount-split? pro-rata-split-children pro-rata-split-children-set! pro-rata-split-loss-rule
-  pro-rata-split-loss-rule-set! pro-rata-split? sequential-split-accretion-to sequential-split-accretion-to-set!
-  sequential-split-children sequential-split-children-set! sequential-split-loss-rule sequential-split-loss-rule-set!
-  sequential-split? split-children split-children-set! split-loss-rule split-loss-rule-set! split? tranche-accrual
-  tranche-accrual-set! tranche-balance tranche-balance-set! tranche-coupon tranche-coupon-set! tranche-follows
-  tranche-follows-set! tranche-interest tranche-interest-set! tranche-loss tranche-loss-set! tranche-name
-  tranche-name-set! tranche-notional-flag tranche-notional-flag-set! tranche-principal tranche-principal-set!
-  tranche-share tranche-share-set! tranche-shortfall tranche-shortfall-set! tranche-split tranche-split-set!
-  tranche-z-flag tranche-z-flag-set! tranche?)
+  io-po-split-loss-rule-set! io-po-split? make-collateral make-deal make-floater-inverse-split make-io-po-split
+  make-node make-pac-split make-premium-discount-split make-pro-rata-split make-sequential-split make-split
+  make-tranche node-accrual node-accrual-set! node-balance node-balance-set! node-coupon node-coupon-set! node-follows
+  node-follows-set! node-interest node-interest-set! node-loss node-loss-set! node-name node-name-set!
+  node-notional-flag node-notional-flag-set! node-principal node-principal-set! node-share node-share-set!
+  node-shortfall node-shortfall-set! node-split node-split-set! node-z-flag node-z-flag-set! node? pac-check-arguments
+  pac-split-children pac-split-children-set! pac-split-high-psa pac-split-high-psa-set! pac-split-loss-rule
+  pac-split-loss-rule-set! pac-split-low-psa pac-split-low-psa-set! pac-split-schedule pac-split-schedule-set!
+  pac-split? parent-coupon-rate premium-discount-sizes premium-discount-split-children
+  premium-discount-split-children-set! premium-discount-split-discount-coupon
+  premium-discount-split-discount-coupon-set! premium-discount-split-loss-rule premium-discount-split-loss-rule-set!
+  premium-discount-split-premium-coupon premium-discount-split-premium-coupon-set! premium-discount-split?
+  pro-rata-split-children pro-rata-split-children-set! pro-rata-split-loss-rule pro-rata-split-loss-rule-set!
+  pro-rata-split? sequential-split-accretion-to sequential-split-accretion-to-set! sequential-split-children
+  sequential-split-children-set! sequential-split-loss-rule sequential-split-loss-rule-set! sequential-split?
+  split-children split-children-set! split-loss-rule split-loss-rule-set! split? tranche-accrual tranche-accrual-set!
+  tranche-balance tranche-balance-set! tranche-coupon tranche-coupon-set! tranche-follows tranche-follows-set!
+  tranche-interest tranche-interest-set! tranche-loss tranche-loss-set! tranche-name tranche-name-set!
+  tranche-notional-flag tranche-notional-flag-set! tranche-principal tranche-principal-set! tranche-share
+  tranche-share-set! tranche-shortfall tranche-shortfall-set! tranche-split tranche-split-set! tranche-z-flag
+  tranche-z-flag-set! tranche? copy-split-plan deal-add-plan! deal-outline deal-outline-below deal-outline-entries
+  floater-inverse-plan io-po-plan make-split-plan pac-plan premium-discount-plan pro-rata-plan sequential-plan
+  split-plan-sizes split-plan-split split-plan-split-set! split-plan-tranches split-plan-tranches-set! split-plan?
+  deal-ancestors deal-delete-split! deal-install-plan! deal-replace-split! deal-resize-below! deal-size-split!
+  deal-trial-copy deal-trial-of-plan deal-update-tranche!)
+
+; Building a deal by clicking in a notebook (see "Building a deal by clicking" in lisp_cmo_manual.md)
+(lazy-load "deal_builder.lsp"
+  copy-deal-gui copy-split-form deal-builder deal-gui-choose! deal-gui-chosen deal-gui-chosen-set! deal-gui-deal
+  deal-gui-deal-set! deal-gui-forms deal-gui-forms-set! deal-gui-grid deal-gui-grid-set! deal-gui-messages
+  deal-gui-messages-set! deal-gui-names deal-gui-names-set! deal-gui-panel deal-gui-panel-set! deal-gui-parent
+  deal-gui-plan deal-gui-refresh! deal-gui-say deal-gui-show-sizes! deal-gui? form-answer form-children
+  form-coupon-percent form-line form-losses form-name form-number form-optional-name form-percent-to-decimal
+  make-deal-gui make-split-form split-form-defaults split-form-defaults-set! split-form-fields split-form-fields-set!
+  split-form-help split-form-help-set! split-form-plan split-form-plan-set! split-form-title split-form-title-set!
+  split-form? standard-split-forms deal-gui-apply! deal-gui-ask-whether-to-delete! deal-gui-button
+  deal-gui-cancel-button deal-gui-cancel-button-set! deal-gui-confirm-button deal-gui-confirm-button-set!
+  deal-gui-delete! deal-gui-delete-button deal-gui-delete-button-set! deal-gui-delete-row deal-gui-delete-row-set!
+  deal-gui-form-for deal-gui-keep! deal-gui-offer-to-change! deal-gui-offer-to-divide! deal-gui-put-away!
+  deal-gui-show-delete! form-children-text form-decimal-to-percent show-plan-effect split-form-describe
+  split-form-describe-set! split-form-label split-form-label-set! without-traceback)
 
 ; Templates of text and SQL
 (lazy-load "template.lsp"

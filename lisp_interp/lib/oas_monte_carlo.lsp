@@ -25,7 +25,7 @@
 ;
 ; oas_monte_carlo_example.lsp runs it all, from the rate curve to the OAS.
 
-(load "prepayment_model.lsp")
+(require "prepayment_model.lsp")
 
 ; --- 1. historical-volatility cross-check --------------------------------
 

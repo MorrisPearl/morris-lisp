@@ -1426,6 +1426,11 @@ the table as the user has changed it (`grid-table`). The manual's [Widgets in a
 notebook](lisp_interpreter_reference.md#widgets-in-a-notebook) has everything the functions take.
 The last section of the notebook is a grid of CMO tranches: click one, and a panel of tabs opens under it (a floater's cap, the bands of a PAC, a split), with fields to fill in and a **Go** button, made by `widget-actions`.
 
+`notebooks/deal_builder.ipynb` builds a CMO deal by clicking (the [CMO manual](lisp_cmo_manual.md#building-a-deal-by-clicking) says how): it begins with one tranche, the collateral, in a
+grid; click a tranche to divide it, with a tab for each kind of split (sequential, pro rata, PAC, floater and inverse floater, premium and discount, IO and PO) and the fields it needs; one
+button calculates the sizes of the new tranches and shows them, and another adds them to the deal, under their parent in the grid. Click a tranche that is divided to change its split (what is
+under it is worked out again), or to take the split, and everything under it, away.
+
 ---
 
 `deal_example.lsp` needs nothing. It models a structured deal as a tree (the model is described in the [CMO manual](lisp_cmo_manual.md)): the collateral, a pool of mortgages that pays principal each
