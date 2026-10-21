@@ -3,7 +3,7 @@
 
 import numpy as np
 
-from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
+from deal_support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, LispTestCase, and the deals the tests make
 
 
 class AverageLifeCase(LispTestCase):
@@ -14,7 +14,7 @@ class AverageLifeCase(LispTestCase):
         super().setUp()
         self.run_lisp('''(load "deal.lsp")
                          (define (make-deal-of &key (speed (prepayment-speed 'psa 150)))
-                           (start-deal "Demo" (collateral-from-pieces "POOL" %s speed) :first-payment (date 2026 11 25)))
+                           (new-deal "Demo" :collateral %s :speed speed :first-payment (date 2026 11 25)))
                          (define deal (make-deal-of))''' % self.PIECES)
 
     def life(self, name):
@@ -168,14 +168,12 @@ class TestSizingByAverageLife(AverageLifeCase):
         self.assertLispError('(deal-add-split! deal "POOL" (split-plan-split plan))', "A1 is a Z bond")
 
     def test_the_parent_has_to_be_paid_in_full_for_the_lives_to_mean_anything(self):
-        self.run_lisp('''(define bare (make-collateral :name "POOL" :balance (vector 100.0 40.0 0.0) :principal (vector 30.0 30.0)
-                                                      :interest (vector 0.0 0.0) :coupon (constant-coupon 0.05)))
-                         (define short (start-deal "Short" bare))''')
+        self.run_lisp(hand_deal([100.0, 40.0, 0.0], [30.0, 30.0], interest=[0.0, 0.0], coupon=0.05, name="Short", variable="short"))
         self.assertLispError('''(deal-average-life! short "POOL" '(("A1" 1.0) ("A2")))''', "is paid 60.00 of principal in all, and its balance is 100.00")
 
-    def test_a_deal_with_no_pieces_works_too(self):
-        self.run_lisp('''(define deal (start-deal "Plain" (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa 150)))
-                         (deal-average-life! deal "POOL" '(("A1" 2.0) ("A2" 5.0) ("A3")))''')
+    def test_a_deal_of_one_pool_works_too(self):
+        self.run_lisp("(define deal %s)" % psa_deal("Plain", 100000000.0, 6.5, psa=150))
+        self.run_lisp("""(deal-average-life! deal "POOL" '(("A1" 2.0) ("A2" 5.0) ("A3")))""")
         self.assertAlmostEqual(self.lives_after_run(("A1",))[0], 2.0, places=8)
 
     def test_the_sizes_a_plan_would_have_are_shown_without_changing_the_deal(self):

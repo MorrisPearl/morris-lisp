@@ -90,10 +90,6 @@ class TestTheCollateralView(ViewsCase):
         self.assertEqual(len(grid.data), 12)                                 # (nine pieces, and three to type in)
         self.assertEqual(len(self.widget("(collateral deal :rows 20)").children[1].data), 20)
 
-    def test_a_deal_that_was_started_with_cash_flows_has_no_collateral_data_to_show(self):
-        self.run_lisp('(define old (start-deal "Old" (collateral-from-psa "POOL" 1000000.0 6.0 :term 24)))')
-        self.assertLispError("(collateral old)", "the deal was started with the cash flows of its collateral")
-
     def test_the_cash_flows_of_what_is_in_the_grid_are_shown_at_the_pricing_speed_without_changing_the_deal(self):
         self.view()
         self.piece(self.grid, 1, 80000000.0, 7.0, 6.0, 180)                  # (changed in the grid, not in the deal)
@@ -261,10 +257,6 @@ class TestTheInfoView(ViewsCase):
         self.run_lisp("(deal-set-pricing-speed! deal (prepayment-speed 'smm '((0.5 0.5 6))))")
         self.assertEqual(self.speed_type.value, "SMM")
         self.assertEqual(list(self.speed_grid.data.iloc[0]), [0.5, 0.5, 6])
-
-    def test_a_deal_with_no_pricing_speed_has_no_info_to_show(self):
-        self.run_lisp('(define old (start-deal "Old" (collateral-from-psa "POOL" 1000000.0 6.0 :term 24)))')
-        self.assertLispError("(info old)", "the deal has no pricing speed")
 
 
 class TestTheBondsView(ViewsCase):

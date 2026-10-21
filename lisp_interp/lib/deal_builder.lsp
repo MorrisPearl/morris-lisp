@@ -410,8 +410,7 @@ or none of them if asking is the empty list."
 (define (average-lives-of trial names)
   "The average life, in years, of each of the nodes of the trial deal, a list: found by running a copy of the deal, at the pricing speed.
 nan for a node that is paid no principal, such as an interest-only bond."
-  (let* ((root-name (deal-root-of trial (car names)))
-         (run (deal-run-copy trial root-name (deal-pricing-flows trial root-name) #t)))
+  (let ((run (deal-run-copy trial (deal-pricing-flows trial) #t)))
     (map (lambda (name)
            (let ((principal (node-principal (get-node run name))))
              (if (> (vector-sum principal) 0.0) (average-life principal) nan)))

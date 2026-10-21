@@ -101,35 +101,32 @@
 
 ; Structured deals as a tree: a pool, divided by splits into tranches (see lisp_cmo_manual.md)
 (lazy-load "deal.lsp"
-  start-deal deal-add-collateral! collateral-from-psa constant-coupon deal-sequential! deal-pro-rata! deal-pac!
-  deal-floater-inverse! deal-premium-discount! deal-io-po! deal-add-tranche! deal-add-split! deal-add-node!
-  deal-forget-node! get-node deal-run! deal-check deal-principal-table deal-interest-table deal-accrual-table
-  deal-loss-table deal-shortfall-table deal-coupon-table deal-balance-table deal-leaves deal-root-of deal-parent-of
-  deal-po? deal-tree-names deal-index-at pool-cash-flows node-owed node-remaining pay-child! write-down-child!
-  settle-interest! node-interest-owed node-coupon-rate node-interest-due check-all-paid! check-all-written-down!
-  walk-principal! walk-interest! walk-losses! deal-principal-at deal-size deal-children-names check-loss-rule
-  check-parent-not-z child-tranche collateral-accrual collateral-accrual-set! collateral-age collateral-age-set!
-  collateral-balance collateral-balance-set! collateral-coupon collateral-coupon-set! collateral-follows
-  collateral-follows-set! collateral-interest collateral-interest-set! collateral-loss collateral-loss-set!
-  collateral-name collateral-name-set! collateral-notional-flag collateral-notional-flag-set! collateral-principal
-  collateral-principal-set! collateral-psa collateral-psa-set! collateral-rate collateral-rate-set! collateral-share
-  collateral-share-set! collateral-shortfall collateral-shortfall-set! collateral-split collateral-split-set!
-  collateral-term collateral-term-set! collateral-z-flag collateral-z-flag-set! collateral? copy-collateral copy-deal
-  copy-floater-inverse-split copy-io-po-split copy-node copy-pac-split copy-premium-discount-split copy-pro-rata-split
-  copy-sequential-split copy-split copy-tranche deal-check-new-children deal-check-total deal-collateral-for
+  constant-coupon deal-sequential! deal-pro-rata! deal-pac! deal-floater-inverse! deal-premium-discount! deal-io-po!
+  deal-add-tranche! deal-add-split! deal-add-node! deal-forget-node! get-node deal-run! deal-check
+  deal-principal-table deal-interest-table deal-accrual-table deal-loss-table deal-shortfall-table deal-coupon-table
+  deal-balance-table deal-leaves deal-parent-of deal-po? deal-tree-names deal-index-at node-owed node-remaining
+  pay-child! write-down-child! settle-interest! node-interest-owed node-coupon-rate node-interest-due check-all-paid!
+  check-all-written-down! walk-principal! walk-interest! walk-losses! deal-principal-at deal-size deal-children-names
+  check-loss-rule check-parent-not-z child-tranche collateral-accrual collateral-accrual-set! collateral-balance
+  collateral-balance-set! collateral-coupon collateral-coupon-set! collateral-follows collateral-follows-set!
+  collateral-interest collateral-interest-set! collateral-loss collateral-loss-set! collateral-name
+  collateral-name-set! collateral-notional-flag collateral-notional-flag-set! collateral-principal
+  collateral-principal-set! collateral-share collateral-share-set! collateral-shortfall collateral-shortfall-set!
+  collateral-split collateral-split-set! collateral-z-flag collateral-z-flag-set! collateral? copy-collateral
+  copy-deal copy-floater-inverse-split copy-io-po-split copy-node copy-pac-split copy-premium-discount-split
+  copy-pro-rata-split copy-sequential-split copy-split copy-tranche deal-check-new-children deal-check-total
   deal-index deal-index-set! deal-name deal-name-set! deal-names deal-names-set! deal-nodes deal-nodes-set!
-  deal-periods deal-periods-set! deal-roots deal-roots-set! deal-run-months! deal-set-index! deal-shortfalls
-  deal-shortfalls-set! deal-table-of deal? floater-inverse-sizes floater-inverse-split-cap
-  floater-inverse-split-cap-set! floater-inverse-split-children floater-inverse-split-children-set!
-  floater-inverse-split-constant floater-inverse-split-constant-set! floater-inverse-split-index-name
-  floater-inverse-split-index-name-set! floater-inverse-split-leverage floater-inverse-split-leverage-set!
-  floater-inverse-split-loss-rule floater-inverse-split-loss-rule-set! floater-inverse-split-margin
-  floater-inverse-split-margin-set! floater-inverse-split? index-rate interest-carried io-po-split-children
-  io-po-split-children-set! io-po-split-io-coupon io-po-split-io-coupon-set! io-po-split-loss-rule
-  io-po-split-loss-rule-set! io-po-split? make-collateral make-deal make-floater-inverse-split make-io-po-split
-  make-node make-pac-split make-premium-discount-split make-pro-rata-split make-sequential-split make-split
-  make-tranche node-accrual node-accrual-set! node-balance node-balance-set! node-coupon node-coupon-set! node-follows
-  node-follows-set! node-interest node-interest-set! node-loss node-loss-set! node-name node-name-set!
+  deal-periods deal-periods-set! deal-run-months! deal-set-index! deal-shortfalls deal-shortfalls-set! deal-table-of
+  deal? floater-inverse-sizes floater-inverse-split-cap floater-inverse-split-cap-set! floater-inverse-split-children
+  floater-inverse-split-children-set! floater-inverse-split-constant floater-inverse-split-constant-set!
+  floater-inverse-split-index-name floater-inverse-split-index-name-set! floater-inverse-split-leverage
+  floater-inverse-split-leverage-set! floater-inverse-split-loss-rule floater-inverse-split-loss-rule-set!
+  floater-inverse-split-margin floater-inverse-split-margin-set! floater-inverse-split? index-rate interest-carried
+  io-po-split-children io-po-split-children-set! io-po-split-io-coupon io-po-split-io-coupon-set!
+  io-po-split-loss-rule io-po-split-loss-rule-set! io-po-split? make-collateral make-deal make-floater-inverse-split
+  make-io-po-split make-node make-pac-split make-premium-discount-split make-pro-rata-split make-sequential-split
+  make-split make-tranche node-accrual node-accrual-set! node-balance node-balance-set! node-coupon node-coupon-set!
+  node-follows node-follows-set! node-interest node-interest-set! node-loss node-loss-set! node-name node-name-set!
   node-notional-flag node-notional-flag-set! node-principal node-principal-set! node-share node-share-set!
   node-shortfall node-shortfall-set! node-split node-split-set! node-z-flag node-z-flag-set! node? pac-check-arguments
   pac-split-children pac-split-children-set! pac-split-high-psa pac-split-high-psa-set! pac-split-loss-rule
@@ -153,16 +150,16 @@
   deal-trial-copy deal-trial-of-plan deal-update-tranche! average-life average-life-plan average-life-sizes
   average-life-split-accretion-to average-life-split-accretion-to-set! average-life-split-children
   average-life-split-children-set! average-life-split-lives average-life-split-lives-set! average-life-split-loss-rule
-  average-life-split-loss-rule-set! average-life-split? collateral-from-pieces collateral-pieces
-  collateral-pieces-set! collateral-speed collateral-speed-set! copy-average-life-split coupon-at coupon-less
+  average-life-split-loss-rule-set! average-life-split? copy-average-life-split coupon-at coupon-less
   deal-average-life deal-average-life! deal-first-payment deal-first-payment-set! deal-payment-date deal-payment-dates
-  deal-principal-now deal-run-copy make-average-life-split range-life solve-for-size collateral-wac
-  collateral-wac-set! collateral-table collateral-table-pieces deal-add-view! deal-assign-all-coupons!
-  deal-assign-coupons-below! deal-change! deal-changed! deal-closing-date deal-closing-date-set! deal-collateral
-  deal-collateral-set! deal-flows-table deal-generate-collateral! deal-install-collateral! deal-pad-flows
-  deal-pricing-flows deal-pricing-speed deal-pricing-speed-set! deal-put-collateral-flows! deal-ran deal-ran-set!
-  deal-root-pieces deal-set-closing-date! deal-set-collateral! deal-set-first-payment! deal-set-periods!
-  deal-set-pricing-speed! deal-speed-for deal-summary-months deal-views deal-views-set! new-deal padded pieces-coupon)
+  deal-principal-now deal-run-copy make-average-life-split range-life solve-for-size collateral-table
+  collateral-table-pieces deal-add-view! deal-assign-all-coupons! deal-assign-coupons-below! deal-change!
+  deal-changed! deal-closing-date deal-closing-date-set! deal-collateral deal-collateral-set! deal-flows-table
+  deal-generate-collateral! deal-install-collateral! deal-pad-flows deal-pricing-flows deal-pricing-speed
+  deal-pricing-speed-set! deal-put-collateral-flows! deal-ran deal-ran-set! deal-set-closing-date!
+  deal-set-collateral! deal-set-first-payment! deal-set-periods! deal-set-pricing-speed! deal-summary-months
+  deal-views deal-views-set! new-deal padded pieces-coupon deal-check-collateral deal-in-tree? deal-pieces deal-root
+  deal-root-set!)
 
 ; Building a deal by clicking in a notebook (see "Building a deal by clicking" in lisp_cmo_manual.md)
 (lazy-load "deal_builder.lsp"

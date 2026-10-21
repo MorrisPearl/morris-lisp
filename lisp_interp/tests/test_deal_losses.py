@@ -3,15 +3,15 @@ shortfalls, interest that is less than the bonds are owed. Every deal here is wo
 
 import numpy as np
 
-from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
+from deal_support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, LispTestCase, and the deals the tests make
 from test_deal import DealTestCase
 
 
 class LossTestCase(DealTestCase):
 
-    def collateral(self, principal, loss=None, interest=None, coupon=0.12, name="POOL", balance=None):
-        """Collateral that pays this principal and loses this each month, with the balances that follow, and (unless it is given) interest
-        at the coupon on them, as the variable pool."""
+    def a_deal(self, principal, loss=None, interest=None, shortfalls=False, coupon=0.12, balance=None):
+        """A deal, called deal, whose collateral pays this principal and loses this each month, with the balances that follow, and (unless it
+        is given) interest at the coupon on them, as the variable pool."""
         loss = loss or [0.0] * len(principal)
         if balance is None:
             balance = [sum(principal) + sum(loss)]
@@ -19,14 +19,7 @@ class LossTestCase(DealTestCase):
         for p, l in zip(principal, loss):
             balances.append(balances[-1] - p - l)
         interest = interest or [b * coupon / 12 for b in balances[:-1]]
-        numbers = lambda values: " ".join(repr(float(v)) for v in values)
-        self.run_lisp('''(define %s (make-collateral :name "%s" :balance (vector %s) :principal (vector %s) :loss (vector %s)
-                           :interest (vector %s) :coupon (constant-coupon %r)))''' % (
-            name.lower(), name, numbers(balances), numbers(principal), numbers(loss), numbers(interest), coupon))
-
-    def a_deal(self, principal, loss=None, interest=None, shortfalls=False, **options):
-        self.collateral(principal, loss, interest, **options)
-        self.run_lisp('(define deal (start-deal "demo" pool%s))' % (" :shortfalls #t" if shortfalls else ""))
+        self.run_lisp(hand_deal(balances, principal, interest=interest, coupon=coupon, loss=loss, shortfalls=shortfalls))
 
     def losses(self, name):
         return self.vector('(node-loss (get-node deal "%s"))' % name)
@@ -159,13 +152,10 @@ class TestLosses(LossTestCase):
         self.assertShows("(deal-check deal)", "#t")
 
     def test_a_pacs_size_is_of_the_cash_flows_of_the_collateral_without_its_losses(self):
-        self.run_lisp('''(define plain (collateral-from-psa "POOL" 100000000.0 6.0 :term 360 :psa 200))
-                         (define lossy (collateral-from-psa "POOL" 100000000.0 6.0 :term 360 :psa 200))
-                         (define loss (make-vector 360 0.0))
+        self.run_lisp("(define a %s) (define b %s)" % (psa_deal("a", 100000000.0, 6.0, psa=200), psa_deal("b", 100000000.0, 6.0, psa=200)))
+        self.run_lisp('''(define loss (make-vector 360 0.0))
                          (vector-set! loss 5 1000000.0)
-                         (node-loss-set! lossy loss)
-                         (define a (start-deal "a" plain))
-                         (define b (start-deal "b" lossy))
+                         (node-loss-set! (get-node b "POOL") loss)
                          (deal-pac! a "POOL" "PAC" "COMP" 100 300)
                          (deal-pac! b "POOL" "PAC" "COMP" 100 300)''')
         self.assertAlmostEqual(self.run_lisp('(vector-ref (node-balance (get-node a "PAC")) 0)'),
@@ -180,13 +170,10 @@ class TestLosses(LossTestCase):
         self.assertShows("(deal-check deal)", "#t")
 
     def test_the_losses_of_the_collateral_do_not_change_what_a_pac_is_sized_from(self):
-        self.run_lisp('''(define plain (collateral-from-psa "POOL" 100000000.0 6.0 :term 360 :psa 200))
-                         (define lossy (collateral-from-psa "POOL" 100000000.0 6.0 :term 360 :psa 200))
-                         (define loss (make-vector 360 0.0))
+        self.run_lisp("(define a %s) (define b %s)" % (psa_deal("a", 100000000.0, 6.0, psa=200), psa_deal("b", 100000000.0, 6.0, psa=200)))
+        self.run_lisp('''(define loss (make-vector 360 0.0))
                          (vector-set! loss 30 20000000.0)
-                         (node-loss-set! lossy loss)
-                         (define a (start-deal "a" plain))
-                         (define b (start-deal "b" lossy))
+                         (node-loss-set! (get-node b "POOL") loss)
                          (deal-pro-rata! a "POOL" '(("X" 50000000.0) ("Y" 50000000.0)) :losses 'reverse)
                          (deal-pro-rata! b "POOL" '(("X" 50000000.0) ("Y" 50000000.0)) :losses 'reverse)
                          (deal-pac! a "X" "PAC" "COMP" 100 300)
@@ -217,16 +204,10 @@ class TestLosses(LossTestCase):
         self.assertLispError("""(deal-pro-rata! deal "POOL" '(("A" 80.0) ("B" 20.0)) :losses 5)""", "the loss rule of a split")
 
     def test_a_loss_that_the_bonds_have_not_enough_left_to_take_is_an_error(self):
-        self.collateral([20.0, 20.0], [5.0, 0.0], balance=[40.0])
-        self.run_lisp('(define deal (start-deal "d" pool))')
+        self.a_deal([20.0, 20.0], [5.0, 0.0], balance=[40.0])
         self.run_lisp("""(deal-sequential! deal "POOL" '(("A" 30.0) ("B" 10.0)))""")
         self.run_lisp('(vector-set! (node-loss pool) 0 50.0)')                         # (more than the pool had)
         self.assertLispError("(deal-run! deal)", "was allocated a loss of 30 that its children, which have too little left, cannot take, in month 0")
-
-    def test_the_loss_of_the_collateral_is_for_the_months_of_the_deal(self):
-        self.collateral([20.0, 20.0], [0.0, 0.0], balance=[40.0])
-        self.run_lisp("(node-loss-set! pool (vector 1.0 2.0 3.0))")
-        self.assertLispError('(start-deal "d" pool)', "POOL has a loss for 3 months, and the deal has 2")
 
 
 class TestShortfalls(LossTestCase):

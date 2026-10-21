@@ -5,7 +5,7 @@ what the buttons display goes to the test's output."""
 
 import unittest
 
-from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
+from deal_support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, LispTestCase, and the deals the tests make
 
 try:
     import ipywidgets
@@ -22,7 +22,9 @@ except ImportError:
 class BuilderCase(LispTestCase):
     """A deal, its builder, and the helpers that click and fill in and press as the user does."""
 
-    POOL = '(collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa 150)'
+    def pool_deal(self, name):
+        """Lisp for a deal of one pool of 100 million at 6.5%, which prepays at 150 PSA."""
+        return psa_deal(name, 100000000.0, 6.5, psa=150)
 
     def setUp(self):
         super().setUp()
@@ -43,7 +45,7 @@ class BuilderCase(LispTestCase):
     def start(self, name, options=""):
         """Make a deal called name, in the Lisp variable of that name, and its builder; the clicks and the buttons that follow are its."""
         self.deal_name = name
-        self.run_lisp('(define %s (start-deal "%s" %s)) (define %s-ui (deal-builder %s %s))' % (name, name, self.POOL, name, name, options))
+        self.run_lisp('(define %s %s) (define %s-ui (deal-builder %s %s))' % (name, self.pool_deal(name), name, name, options))
         self.use(self.env[lisp_core.Symbol(name + "-ui")])
 
     # -- doing what the user does ----------------------------------------------
@@ -340,8 +342,8 @@ class TestDealBuilder(BuilderCase):
         self.assertShows('(pro-rata-split? (node-split (get-node deal "POOL")))', "#t")
 
     def test_a_pac_is_sized_from_the_two_speeds_as_deal_pac_does(self):
-        self.run_lisp('''(define other (start-deal "Other" %s))
-                         (deal-pac! other "POOL" "P" "C" 90 250)''' % self.POOL)
+        self.run_lisp('''(define other %s)
+                         (deal-pac! other "POOL" "P" "C" 90 250)''' % self.pool_deal("Other"))
         self.click(0)
         self.fill("PAC", {"PAC": "P", "Companion": "C", "Low speed (PSA)": 90, "High speed (PSA)": 250})
         shown = self.calculate("PAC")
@@ -367,8 +369,8 @@ class TestDealBuilder(BuilderCase):
         self.assertShows("(deal-names deal)", '("POOL")')
 
     def test_a_floater_and_inverse_floater_are_sized_from_the_cap(self):
-        self.run_lisp('''(define other (start-deal "Other" %s))
-                         (deal-floater-inverse! other "POOL" "F" "I" :cap 0.09 :margin 0.005)''' % self.POOL)
+        self.run_lisp('''(define other %s)
+                         (deal-floater-inverse! other "POOL" "F" "I" :cap 0.09 :margin 0.005)''' % self.pool_deal("Other"))
         self.click(0)
         self.fill("Floater/inverse", {"Floater": "F", "Inverse floater": "I", "Cap %": 9.0, "Margin %": 0.5})
         self.assertIn("divided by a floater and inverse floater split into:", self.calculate("Floater/inverse"))
@@ -412,18 +414,7 @@ class TestDealBuilder(BuilderCase):
         self.assertIn("lots is not a number, for the coupon of the IO", self.add("IO/PO"))
         self.assertShows("(deal-names deal)", '("POOL")')
 
-    # -- deals with more than one collateral, and forms of your own ------------------------------
-
-    def test_every_collateral_is_a_row_with_the_tranches_under_it(self):
-        self.run_lisp('''(deal-add-collateral! deal (collateral-from-psa "POOL2" 50000000.0 5.5 :term 360 :psa 100))
-                         (define two (deal-builder deal))''')
-        self.use(self.env[lisp_core.Symbol("two")])
-        self.assertEqual(self.names(), ["POOL", "POOL2"])
-        self.click(1)
-        self.assertIn("<b>POOL2</b>", self.panel.children[0].value)
-        self.fill("Sequential", {"Tranches": "X 20000000\nY"})
-        self.add("Sequential")
-        self.assertEqual(self.rows(), ["POOL", "POOL2", "  X", "  Y"])
+    # -- forms of your own ------------------------------
 
     def test_forms_of_your_own_replace_the_standard_ones(self):
         self.run_lisp('''
@@ -564,10 +555,10 @@ class TestChangingAndTakingAwayInTheBuilder(BuilderCase):
         self.assertIn("Changed the split of A: it is a floater and inverse floater split into AF, AI, and what is under them is worked out again.", shown)
         self.assertEqual(self.rows(), ["POOL", "  A", "    AF", "      AP", "      AC", "    AI", "  B"])
         self.assertEqual(self.grid.data["balance"][2], 39000000.0)
-        self.run_lisp('''(define direct (start-deal "Direct" %s))
+        self.run_lisp('''(define direct %s)
                          (deal-sequential! direct "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
                          (deal-floater-inverse! direct "A" "AF" "AI" :cap 0.10)
-                         (deal-pac! direct "AF" "AP" "AC" 100 300)''' % self.POOL)
+                         (deal-pac! direct "AF" "AP" "AC" 100 300)''' % self.pool_deal("Direct"))
         self.assertEqual(self.signature("deal"), self.signature("direct"))
         self.assertTrue(self.hidden())
         self.assertEqual(self.shown_buttons(), [])

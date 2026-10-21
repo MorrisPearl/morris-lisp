@@ -3,7 +3,7 @@ by hand: the collateral pays 20 or 25 of principal a month, and interest at 12% 
 
 import numpy as np
 
-from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
+from deal_support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, LispTestCase, and the deals the tests make
 from test_deal_interest import InterestTestCase
 
 
@@ -83,9 +83,8 @@ class TestZBonds(StripsTestCase):
         self.assertLispError("(deal-check deal)", "the children of POOL were paid")
 
     def test_a_pac_is_sized_from_what_its_parent_is_paid_with_the_accrual_of_a_z_bond_beside_it(self):
-        self.run_lisp('''(define pool (collateral-from-psa "POOL" 300000000.0 6.0 :term 360 :psa 200))
-                         (define deal (start-deal "pac and z" pool))
-                         (deal-sequential! deal "POOL" (list (list "Q" 200000000.0) (list "Z" 100000000.0 'z)))
+        self.run_lisp("(define deal %s)" % psa_deal("pac and z", 300000000.0, 6.0, psa=200))
+        self.run_lisp('''(deal-sequential! deal "POOL" (list (list "Q" 200000000.0) (list "Z" 100000000.0 'z)))
                          (deal-pac! deal "Q" "PQ" "CQ" 100 300)
                          (deal-run! deal)''')
         self.assertShows("(deal-check deal)", "#t")
@@ -93,9 +92,8 @@ class TestZBonds(StripsTestCase):
         np.testing.assert_allclose(self.balance("PQ"), schedule, atol=1e-4)        # (on schedule at 200: the accrual is in the sizes)
 
     def test_the_principal_at_another_speed_leaves_the_accruals_of_the_deal_as_they_were(self):
-        self.run_lisp('''(define pool (collateral-from-psa "POOL" 300000000.0 6.0 :term 360 :psa 200))
-                         (define deal (start-deal "z" pool))
-                         (deal-sequential! deal "POOL" (list (list "Q" 200000000.0) (list "Z" 100000000.0 'z)))
+        self.run_lisp("(define deal %s)" % psa_deal("z", 300000000.0, 6.0, psa=200))
+        self.run_lisp('''(deal-sequential! deal "POOL" (list (list "Q" 200000000.0) (list "Z" 100000000.0 'z)))
                          (deal-run! deal)''')
         before = {n: (self.accrual(n).copy(), self.principal(n).copy(), self.interest(n).copy(), self.balance(n).copy())
                   for n in ("POOL", "Q", "Z")}
@@ -188,17 +186,16 @@ class TestInterestOnlyAndPrincipalOnly(StripsTestCase):
         self.assertShows("(deal-check deal)", "#t")
 
     def test_the_collateral_a_pac_and_a_floater_can_each_be_divided_into_an_io_and_a_po(self):
-        self.run_lisp('''(define pool (collateral-from-psa "POOL" 200000000.0 6.0 :term 360 :psa 200))
-                         (define deal (start-deal "strips" pool))
-                         (deal-pac! deal "POOL" "PAC" "COMP" 100 300)
+        self.run_lisp("(define deal %s)" % psa_deal("strips", 200000000.0, 6.0, psa=200))
+        self.run_lisp('''(deal-pac! deal "POOL" "PAC" "COMP" 100 300)
                          (deal-io-po! deal "PAC" "PIO" "PPO")
                          (deal-io-po! deal "COMP" "CIO" "CPO")
                          (deal-run! deal)''')
         self.assertShows("(deal-check deal)", "#t")
         total = self.interest("PIO") + self.interest("CIO")
         np.testing.assert_allclose(total, self.interest("POOL"), rtol=1e-10, atol=1e-6)
-        self.run_lisp('(define whole (start-deal "whole" (collateral-from-psa "P" 100000000.0 6.0 :term 360 :psa 100))) '
-                      '(deal-io-po! whole "P" "IO" "PO") (deal-run! whole)')
+        self.run_lisp("(define whole %s)" % psa_deal("whole", 100000000.0, 6.0, psa=100))
+        self.run_lisp('(deal-io-po! whole "POOL" "IO" "PO") (deal-run! whole)')
         self.assertShows("(deal-check whole)", "#t")
 
     def test_deal_check_finds_a_notional_bond_that_has_principal_or_is_not_what_it_follows(self):
@@ -238,9 +235,8 @@ class TestInterestOnlyAndPrincipalOnly(StripsTestCase):
 class TestAZAndAStripTogether(StripsTestCase):
 
     def test_a_po_split_in_order_and_a_z_bond_beside_it(self):
-        self.run_lisp('''(define pool (collateral-from-psa "POOL" 300000000.0 6.0 :term 360 :psa 150))
-                         (define deal (start-deal "z and strip" pool))
-                         (deal-sequential! deal "POOL" (list (list "X" 200000000.0) (list "Z" 100000000.0 'z)))
+        self.run_lisp("(define deal %s)" % psa_deal("z and strip", 300000000.0, 6.0, psa=150))
+        self.run_lisp('''(deal-sequential! deal "POOL" (list (list "X" 200000000.0) (list "Z" 100000000.0 'z)))
                          (deal-io-po! deal "X" "XIO" "XPO")
                          (deal-sequential! deal "XPO" (list (list "S1" 120000000.0) (list "S2" 80000000.0)))
                          (deal-run! deal)''')

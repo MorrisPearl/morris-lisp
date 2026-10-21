@@ -5,7 +5,7 @@ paid what they were owed, no more."""
 
 import numpy as np
 
-from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
+from deal_support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, LispTestCase, and the deals the tests make
 
 
 class DealTestCase(LispTestCase):
@@ -25,17 +25,23 @@ class DealTestCase(LispTestCase):
 
     def a_pool_paying(self, amount=30.0, months=4):
         """A pool that pays this principal each month, for this many, in a deal called deal."""
-        balances = " ".join(repr(float(amount * (months - t))) for t in range(months + 1))
-        self.run_lisp('(define pool (make-collateral :name "POOL" :balance (vector %s) :principal (make-vector %d %r)))'
-                      % (balances, months, float(amount)))
-        self.run_lisp('(define deal (start-deal "demo" pool))')
+        self.run_lisp(level_pool(amount, months))
+
+    def pool_principal(self, psa, balance=100000000.0, rate=6.5, term=360, age=0):
+        """The principal that a pool of loans pays each month, at this many percent of the PSA curve."""
+        flows = self.run_lisp("(project-pieces %s (prepayment-speed 'psa %d))" % (pool_of(balance, rate, term, age), psa))
+        return np.array(lisp_core.pairs_to_list(flows)[0].items)
 
 
 class TestThePool(DealTestCase):
+    """The cash flows of pieces of collateral (project-pieces, in lib/prepayment_speed.lsp), which are those of the root of a deal."""
+
+    def flows(self, pieces, speed):
+        result = self.run_lisp("(project-pieces (quote %s) %s)" % (pieces, speed))
+        return [np.array(v.items) for v in lisp_core.pairs_to_list(result)]
 
     def test_with_no_prepayment_it_is_a_level_payment_loan(self):
-        flows = self.run_lisp("(pool-cash-flows 1200.0 12.0 12 0 0)")
-        principal, interest, balance = [np.array(v.items) for v in lisp_core.pairs_to_list(flows)]
+        principal, interest, balance, _ = self.flows("((1200.0 12.0 12.0 12))", "(prepayment-speed 'psa 0)")
         payment = 1200 * 0.01 / (1 - 1.01 ** -12)
         owed = 1200.0
         for t in range(12):
@@ -48,10 +54,9 @@ class TestThePool(DealTestCase):
         self.assertEqual((len(principal), len(interest), len(balance)), (12, 12, 13))
 
     def test_a_pool_with_prepayments_pays_off_what_it_owes_sooner(self):
-        slow = self.run_lisp('(pool-cash-flows 100000.0 6.0 360 0 100)')
-        fast = self.run_lisp('(pool-cash-flows 100000.0 6.0 360 0 300)')
-        (slow_principal, _, slow_balance), (fast_principal, _, fast_balance) = [
-            [np.array(v.items) for v in lisp_core.pairs_to_list(flows)] for flows in (slow, fast)]
+        slow = self.flows("((100000.0 6.0 6.0 360))", "(prepayment-speed 'psa 100)")
+        fast = self.flows("((100000.0 6.0 6.0 360))", "(prepayment-speed 'psa 300)")
+        (slow_principal, _, slow_balance, _), (fast_principal, _, fast_balance, _) = slow, fast
         for principal, balance in ((slow_principal, slow_balance), (fast_principal, fast_balance)):
             self.assertAlmostEqual(principal.sum(), 100000.0, places=6)
             np.testing.assert_allclose(balance[1:], balance[:-1] - principal, atol=1e-8)
@@ -61,8 +66,7 @@ class TestThePool(DealTestCase):
         self.assertGreater(fast_principal[30], slow_principal[30])
 
     def test_the_prepayment_speed_follows_the_age_of_the_loans(self):
-        flows = self.run_lisp("(pool-cash-flows 100000.0 6.0 360 24 100)")
-        principal = np.array(lisp_core.pairs_to_list(flows)[0].items)
+        principal = self.flows("((100000.0 6.0 6.0 336 24))", "(prepayment-speed 'psa 100)")[0]
         self.assertEqual(len(principal), 336)                                   # 360 - 24 months to run
         monthly = 0.005
         payment = 100000 * monthly / (1 - (1 + monthly) ** -336)
@@ -71,19 +75,16 @@ class TestThePool(DealTestCase):
         smm = 1 - (1 - cpr) ** (1 / 12)
         self.assertAlmostEqual(principal[0], scheduled + smm * (100000 - scheduled), places=8)
 
-    def test_the_collateral_node_holds_the_flows(self):
-        self.run_lisp('(define pool (collateral-from-psa "POOL" 1000000.0 5.5 :term 120 :age 6 :psa 200))')
-        self.assertShows("(collateral? pool)", "#t")
-        self.assertShows("(node? pool)", "#t")
-        self.assertShows("(list (collateral-rate pool) (collateral-term pool) (collateral-age pool) (collateral-psa pool))", "(5.5 120 6 200)")
-        self.assertEqual(len(self.vector("(node-principal pool)")), 114)
-        self.assertEqual(len(self.vector("(node-balance pool)")), 115)
-        self.assertEqual(len(self.vector("(collateral-interest pool)")), 114)
-        self.assertEqual(self.vector("(node-balance pool)")[0], 1000000.0)
-
-    def test_the_age_must_be_less_than_the_term(self):
-        self.assertLispError('(collateral-from-psa "POOL" 100.0 5.0 :term 120 :age 120)', "the age 120 must be from 0 up to the term 120")
-        self.assertLispError('(collateral-from-psa "POOL" 100.0 5.0 :age -1)', "must be from 0")
+    def test_the_root_of_a_deal_holds_the_flows(self):
+        self.run_lisp("(define deal %s)" % psa_deal("d", 1000000.0, 5.5, term=120, age=6, psa=200))
+        self.assertShows('(collateral? (get-node deal "POOL"))', "#t")
+        self.assertShows('(node? (get-node deal "POOL"))', "#t")
+        self.assertShows("(deal-root deal)", '"POOL"')
+        self.assertEqual(len(self.vector('(node-principal (get-node deal "POOL"))')), 114)
+        self.assertEqual(len(self.vector('(node-balance (get-node deal "POOL"))')), 115)
+        self.assertEqual(len(self.vector('(node-interest (get-node deal "POOL"))')), 114)
+        self.assertEqual(self.vector('(node-balance (get-node deal "POOL"))')[0], 1000000.0)
+        self.assertShows('((node-coupon (get-node deal "POOL")) (quote ()))', "0.055")
 
 
 class TestSplits(DealTestCase):
@@ -176,10 +177,7 @@ class TestThePac(DealTestCase):
         the companion for the rest: the schedule is given, not worked out."""
         total = sum(principal)
         owed = [total - sum(principal[:t]) for t in range(len(principal) + 1)]
-        numbers = lambda values: " ".join(repr(float(v)) for v in values)
-        self.run_lisp('(define pool (make-collateral :name "POOL" :balance (vector %s) :principal (vector %s)))'
-                      % (numbers(owed), numbers(principal)))
-        self.run_lisp('(define deal (start-deal "demo" pool))')
+        self.run_lisp(hand_deal(owed, principal))
         self.run_lisp('(deal-add-tranche! deal "PAC" %r) (deal-add-tranche! deal "COMP" %r)' % (float(size), float(total - size)))
         # (a PAC split that is given its schedule: it pays as a PAC does, and works out no sizes)
         self.run_lisp("""(defstruct (given-pac-split (:include pac-split)))
@@ -218,14 +216,9 @@ class TestThePac(DealTestCase):
 
     # --- sized from the collateral ---
 
-    def pool_principal(self, psa, balance=100000000.0, rate=6.5, term=360, age=0):
-        flows = self.run_lisp("(pool-cash-flows %r %r %d %d %d)" % (balance, rate, term, age, psa))
-        return np.array(lisp_core.pairs_to_list(flows)[0].items)
-
     def a_pac_deal(self, psa, low=100, high=300, age=0):
-        self.run_lisp('''(define pool (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :age %d :psa %d))
-                         (define deal (start-deal "pac" pool))
-                         (deal-pac! deal "POOL" "PAC" "COMP" %d %d)''' % (age, psa, low, high))
+        self.run_lisp("(define deal %s)" % psa_deal("pac", 100000000.0, 6.5, age=age, psa=psa))
+        self.run_lisp('(deal-pac! deal "POOL" "PAC" "COMP" %d %d)' % (low, high))
 
     def schedule(self):
         return self.vector('(pac-split-schedule (node-split (get-node deal "POOL")))')
@@ -291,19 +284,18 @@ class TestThePac(DealTestCase):
     def test_a_pac_needs_two_speeds_names_of_its_own_and_a_collateral_that_can_be_run_at_them(self):
         self.a_pac_deal(200)
         self.assertLispError('(deal-pac! deal "POOL" "X" "Y" 100 300)', "POOL already has a split")
-        self.run_lisp('(define pool (collateral-from-psa "POOL" 100.0 6.5)) (define deal (start-deal "d" pool))')
+        self.run_lisp("(define deal %s)" % psa_deal("d", 100.0, 6.5))
         self.assertLispError('(deal-pac! deal "POOL" "A" "A" 100 300)', "different names")
         self.assertLispError('(deal-pac! deal "POOL" "A" "POOL" 100 300)', "already has a node called POOL")
         self.assertLispError('(deal-pac! deal "POOL" "A" "B" 300 100)', "speeds must be from the lower to the higher")
         self.assertLispError('(deal-pac! deal "POOL" "A" "B" 0 100)', "speeds must be from the lower to the higher")
         self.assertShows("(deal-names deal)", '("POOL")')                               # (nothing was added)
-        self.run_lisp('(define hand (make-collateral :name "H" :balance (vector 10.0 0.0) :principal (vector 10.0)))'
-                      ' (define deal (start-deal "d" hand))')
-        self.assertLispError('(deal-pac! deal "H" "A" "B" 100 300)', "made by collateral-from-psa")
-        self.assertShows("(deal-names deal)", '("H")')
+        self.run_lisp('(define empty (new-deal "d"))')
+        self.assertLispError('(deal-pac! empty "POOL" "A" "B" 100 300)', "the deal has no collateral")
+        self.assertShows("(deal-names empty)", '("POOL")')
 
     def test_a_pac_split_has_two_children_the_pac_and_the_companion(self):
-        self.run_lisp('(define pool (collateral-from-psa "POOL" 100.0 6.5)) (define deal (start-deal "d" pool))')
+        self.run_lisp("(define deal %s)" % psa_deal("d", 100.0, 6.5))
         self.run_lisp('(deal-add-tranche! deal "A" 0.0) (deal-add-tranche! deal "B" 0.0) (deal-add-tranche! deal "C" 0.0)')
         self.assertLispError("""(deal-add-split! deal "POOL" (make-pac-split :children '("A" "B" "C") :low-psa 100 :high-psa 300))""",
                              "has two children: the PAC and the companion")
@@ -313,16 +305,11 @@ class TestAPacUnderAnotherNode(DealTestCase):
     """The PAC is sized from what its parent is paid, whether the parent is the collateral or not: a second PAC, from the first one's
     companion. The deal is run at each speed, down to the parent."""
 
-    def pool_principal(self, psa):
-        flows = self.run_lisp("(pool-cash-flows 100000000.0 6.5 360 0 %d)" % psa)
-        return np.array(lisp_core.pairs_to_list(flows)[0].items)
-
     def two_pacs(self, psa, first=(100, 300), second=(150, 250)):
-        self.run_lisp('''(define pool (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa %d))
-                         (define deal (start-deal "two pacs" pool))
-                         (deal-pac! deal "POOL" "PAC1" "COMP1" %d %d)
+        self.run_lisp("(define deal %s)" % psa_deal("two pacs", 100000000.0, 6.5, psa=psa))
+        self.run_lisp('''(deal-pac! deal "POOL" "PAC1" "COMP1" %d %d)
                          (deal-pac! deal "COMP1" "PAC2" "COMP2" %d %d)
-                         (deal-run! deal)''' % ((psa,) + first + second))
+                         (deal-run! deal)''' % (first + second))
 
     def schedule(self, owner):
         return self.vector('(pac-split-schedule (node-split (get-node deal "%s")))' % owner)
@@ -415,14 +402,13 @@ class TestARandomDeal(DealTestCase):
     """A pool of mortgages and a deal of several levels: whatever the speed, the rules of a deal hold."""
 
     def build(self, psa, age=0):
+        self.run_lisp("(define deal %s)" % psa_deal("Random", 250000000.0, 6.25, age=age, psa=psa))
         self.run_lisp('''
-          (define pool (collateral-from-psa "POOL" 250000000.0 6.25 :term 360 :age %d :psa %d))
-          (define deal (start-deal "Random" pool))
           (deal-sequential! deal "POOL" '(("SR" 150000000.0) ("JR" 100000000.0)))
           (deal-sequential! deal "SR" '(("S1" 40000000.0) ("S2" 70000000.0) ("S3" 40000000.0)))
           (deal-pro-rata! deal "JR" '(("J1" 30000000.0) ("J2" 70000000.0)))
           (deal-sequential! deal "S3" '(("S3A" 15000000.0) ("S3B" 25000000.0)))
-          (deal-run! deal)''' % (age, psa))
+          (deal-run! deal)''')
 
     def test_what_the_leaves_are_paid_adds_up_to_what_the_pool_pays_every_month(self):
         for psa, age in ((0, 0), (100, 0), (250, 0), (150, 30), (600, 12)):
@@ -508,14 +494,12 @@ class TestWhatTheDealWontTake(DealTestCase):
         self.assertLispError('(deal-add-split! deal "POOL" (make-sequential-split :children (list)))', "has no children")
 
     def test_a_deal_is_made_in_double_precision(self):
-        self.a_pool_paying(30.0, 4)
         self.use_single_precision()
-        self.assertLispError('(start-deal "x" pool)', "a deal is made in double precision")
+        self.assertLispError('(new-deal "x")', "a deal is made in double precision")
 
     def test_principal_that_no_child_can_be_paid_is_an_error(self):
-        self.run_lisp('''(define pool (make-collateral :name "POOL" :balance (vector 100.0 40.0 0.0) :principal (vector 60.0 80.0)))
-                         (define deal (start-deal "demo" pool))
-                         (deal-sequential! deal "POOL" '(("A" 100.0)))''')
+        self.run_lisp(hand_deal([100.0, 40.0, 0.0], [60.0, 80.0]))
+        self.run_lisp("""(deal-sequential! deal "POOL" '(("A" 100.0)))""")
         self.assertLispError("(deal-run! deal)", "the split of POOL has 40.0 of principal left over in month 1")
 
     def test_deal_check_finds_principal_that_does_not_add_up(self):
@@ -537,9 +521,8 @@ class TestTheLibraryIsThereWithoutLoadingIt(LispTestCase):
 
     def test_the_functions_are_there_when_the_autoloads_are_loaded(self):
         self.run_lisp('(load "autoloads.lsp")')
+        self.run_lisp("(define deal %s)" % psa_deal("d", 1000000.0, 6.0, term=24))
         self.run_lisp("""
-          (define pool (collateral-from-psa "POOL" 1000000.0 6.0 :term 24 :psa 100))
-          (define deal (start-deal "d" pool))
           (deal-sequential! deal "POOL" '(("A" 400000.0) ("B" 600000.0)))
           (deal-run! deal)""")
         self.assertShows("(deal-check deal)", "#t")

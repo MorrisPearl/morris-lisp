@@ -10,11 +10,11 @@ class DealChangesCase(LispTestCase):
     LIBRARY = '''
       (load "deal.lsp")
 
-      (define (collateral) (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa 150))
+      (define (a-deal name) (new-deal name :collateral '((100000000.0 6.5 6.5 360)) :speed (prepayment-speed 'psa 150)))
 
       ; POOL -> A, B;  A -> floater AF and inverse AI;  AF -> PAC AP and companion AC
       (define (make-demo &key (a 60000000.0) (b 40000000.0) (cap 0.095))
-        (let ((deal (start-deal "Demo" (collateral))))
+        (let ((deal (a-deal "Demo")))
           (deal-sequential! deal "POOL" (list (list "A" a) (list "B" b)))
           (deal-floater-inverse! deal "A" "AF" "AI" :cap cap)
           (deal-pac! deal "AF" "AP" "AC" 100 300)
@@ -137,7 +137,7 @@ class TestReplacingASplit(DealChangesCase):
     def test_a_split_below_that_cannot_be_worked_out_again_stops_the_whole_change(self):
         """A premium and discount split of a bond with a coupon between theirs, divided again, so that the change of the coupons
         of the first makes the second impossible."""
-        self.run_lisp('''(define deal (start-deal "Demo" (collateral)))
+        self.run_lisp('''(define deal (a-deal "Demo"))
                          (deal-sequential! deal "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
                          (deal-premium-discount! deal "A" "AP" "AD" :premium-coupon 0.08 :discount-coupon 0.05)
                          (deal-premium-discount! deal "AP" "AP1" "AP2" :premium-coupon 0.09 :discount-coupon 0.07)''')
@@ -150,7 +150,7 @@ class TestReplacingASplit(DealChangesCase):
         self.assertEqual(self.run_lisp('(split-children (node-split (get-node deal "AP")))').car, "AP1")
 
     def test_a_split_that_was_given_the_sizes_of_its_children_keeps_the_share_of_the_parent_that_each_was(self):
-        self.run_lisp('''(define deal (start-deal "Demo" (collateral)))
+        self.run_lisp('''(define deal (a-deal "Demo"))
                          (deal-sequential! deal "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
                          (deal-sequential! deal "A" '(("A1" 40000000.0) ("A2" 20000000.0)))
                          (deal-replace-split! deal "POOL" (sequential-plan '(("A" 75000000.0) ("B" 25000000.0))))''')
@@ -159,7 +159,7 @@ class TestReplacingASplit(DealChangesCase):
         self.assertShows("(run-and-check deal)", "#t")
 
     def test_a_node_whose_children_have_no_balance_cannot_have_them_scaled(self):
-        self.run_lisp('''(define deal (start-deal "Demo" (collateral)))
+        self.run_lisp('''(define deal (a-deal "Demo"))
                          (deal-sequential! deal "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
                          (deal-sequential! deal "A" '(("A1" 40000000.0) ("A2" 20000000.0)))
                          (vector-set! (node-balance (get-node deal "A1")) 0 0.0)
@@ -167,12 +167,12 @@ class TestReplacingASplit(DealChangesCase):
         self.assertLispError('''(deal-replace-split! deal "POOL" (sequential-plan '(("A" 75000000.0) ("B" 25000000.0))))''', "have no balance to scale")
 
     def test_the_children_of_an_interest_only_bond_follow_it_when_it_changes_size(self):
-        self.run_lisp('''(define deal (start-deal "Demo" (collateral)))
+        self.run_lisp('''(define deal (a-deal "Demo"))
                          (deal-sequential! deal "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
                          (deal-io-po! deal "B" "BIO" "BPO")
                          (deal-sequential! deal "BPO" '(("P1" 25000000.0) ("P2" 15000000.0)))
                          (deal-replace-split! deal "POOL" (sequential-plan '(("A" 50000000.0) ("B" 50000000.0))))
-                         (define direct (start-deal "Direct" (collateral)))
+                         (define direct (a-deal "Direct"))
                          (deal-sequential! direct "POOL" '(("A" 50000000.0) ("B" 50000000.0)))
                          (deal-io-po! direct "B" "BIO" "BPO")
                          (deal-sequential! direct "BPO" '(("P1" 31250000.0) ("P2" 18750000.0)))''')
@@ -182,21 +182,21 @@ class TestReplacingASplit(DealChangesCase):
     def test_the_children_that_are_left_out_may_be_gone_when_the_new_split_is_sized(self):
         """A PAC is sized from what its parent is paid, which is found by running the deal: the old split of the parent, whose
         children are no longer there, must not be in the way."""
-        self.run_lisp("""(define deal (start-deal "Demo" (collateral)))
+        self.run_lisp("""(define deal (a-deal "Demo"))
                          (deal-sequential! deal "POOL" '(("X" 60000000.0) ("Y" 40000000.0)))
                          (deal-replace-split! deal "POOL" (pac-plan "P" "C" 100 300))
-                         (define direct (start-deal "Demo" (collateral)))
+                         (define direct (a-deal "Demo"))
                          (deal-pac! direct "POOL" "P" "C" 100 300)""")
         self.assertShows("(deal-names deal)", '("POOL" "P" "C")')
         self.assertEqual(self.signature("deal"), self.signature("direct"))
 
     def test_the_children_of_a_split_of_an_interest_only_bond_follow_it_when_it_changes_size(self):
-        self.run_lisp("""(define deal (start-deal "Demo" (collateral)))
+        self.run_lisp("""(define deal (a-deal "Demo"))
                          (deal-sequential! deal "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
                          (deal-io-po! deal "B" "BIO" "BPO")
                          (deal-sequential! deal "BIO" '(("IO1" 25000000.0) ("IO2" 15000000.0)))
                          (deal-replace-split! deal "POOL" (sequential-plan '(("A" 50000000.0) ("B" 50000000.0))))
-                         (define direct (start-deal "Direct" (collateral)))
+                         (define direct (a-deal "Direct"))
                          (deal-sequential! direct "POOL" '(("A" 50000000.0) ("B" 50000000.0)))
                          (deal-io-po! direct "B" "BIO" "BPO")
                          (deal-sequential! direct "BIO" '(("IO1" 31250000.0) ("IO2" 18750000.0)))""")
@@ -205,24 +205,13 @@ class TestReplacingASplit(DealChangesCase):
         self.assertShows("(list (run-and-check deal) (run-and-check direct))", "(#t #t)")
 
     def test_a_z_bond_can_be_made_and_unmade_by_a_change(self):
-        self.run_lisp('''(define deal (start-deal "Demo" (collateral)))
+        self.run_lisp('''(define deal (a-deal "Demo"))
                          (deal-sequential! deal "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
                          (deal-replace-split! deal "POOL" (sequential-plan '(("A" 60000000.0) ("B" 40000000.0 z))))''')
         self.assertShows('(node-z-flag (get-node deal "B"))', "#t")
         self.assertShows("(run-and-check deal)", "#t")
         self.run_lisp('''(deal-replace-split! deal "POOL" (sequential-plan '(("A" 60000000.0) ("B" 40000000.0))))''')
         self.assertShows('(node-z-flag (get-node deal "B"))', "#f")
-        self.assertShows("(run-and-check deal)", "#t")
-
-    def test_a_deal_with_two_collaterals_changes_only_the_tree_of_the_split(self):
-        self.run_lisp('''(define deal (make-demo))
-                         (deal-add-collateral! deal (collateral-from-psa "POOL2" 50000000.0 5.5 :term 360 :psa 100))
-                         (deal-sequential! deal "POOL2" '(("X" 30000000.0) ("Y" 20000000.0)))''')
-        other = self.signature()
-        self.run_lisp('''(deal-replace-split! deal "POOL" (sequential-plan '(("A" 70000000.0) ("B" 30000000.0))))''')
-        self.assertIn('"POOL2" 5000000000', self.signature())
-        self.assertIn('("X" 3000000000', self.signature())
-        self.assertNotEqual(self.signature(), other)
         self.assertShows("(run-and-check deal)", "#t")
 
 
@@ -297,7 +286,7 @@ class TestTakingASplitAway(DealChangesCase):
     def test_it_is_the_same_as_a_deal_that_never_had_it(self):
         self.run_lisp('''(define deal (make-demo))
                          (deal-delete-split! deal "A")
-                         (define direct (start-deal "Demo" (collateral)))
+                         (define direct (a-deal "Demo"))
                          (deal-sequential! direct "POOL" '(("A" 60000000.0) ("B" 40000000.0)))''')
         self.assertEqual(self.signature("deal"), self.signature("direct"))
 
@@ -316,14 +305,6 @@ class TestTakingASplitAway(DealChangesCase):
                          (deal-floater-inverse! deal "A" "AF" "AI" :cap 0.095)
                          (deal-pac! deal "AF" "AP" "AC" 100 300)''')
         self.assertEqual(self.signature("deal"), self.signature("(make-demo)"))
-
-    def test_the_tree_of_another_collateral_is_left_alone(self):
-        self.run_lisp('''(define deal (make-demo))
-                         (deal-add-collateral! deal (collateral-from-psa "POOL2" 50000000.0 5.5 :term 360 :psa 100))
-                         (deal-sequential! deal "POOL2" '(("X" 30000000.0) ("Y" 20000000.0)))
-                         (deal-delete-split! deal "POOL")''')
-        self.assertShows("(deal-names deal)", '("POOL" "POOL2" "X" "Y")')
-        self.assertShows("(run-and-check deal)", "#t")
 
     def test_a_node_with_no_split_has_none_to_take_away(self):
         self.run_lisp("(define deal (make-demo))")
@@ -352,14 +333,14 @@ class TestPlansAndTheOutline(DealChangesCase):
     def test_adding_a_plan_is_what_the_builder_of_that_kind_does(self):
         for kind, (builder, plan) in self.BUILDERS.items():
             with self.subTest(kind=kind):
-                self.run_lisp('(define built (start-deal "Demo" (collateral))) (define planned (start-deal "Demo" (collateral)))')
+                self.run_lisp('(define built (a-deal "Demo")) (define planned (a-deal "Demo"))')
                 self.run_lisp(builder % "built")
                 self.run_lisp('(deal-add-plan! planned "POOL" %s)' % plan)
                 self.assertEqual(self.signature("built"), self.signature("planned"))
                 self.assertShows("(list (run-and-check built) (run-and-check planned))", "(#t #t)")
 
     def test_the_sizes_of_a_plan_are_those_it_would_have_and_the_deal_is_not_changed(self):
-        self.run_lisp('(define deal (start-deal "Demo" (collateral)))')
+        self.run_lisp('(define deal (a-deal "Demo"))')
         before = self.signature()
         parent = '(get-node deal "POOL")'
         self.assertShows('(split-plan-sizes deal %s (sequential-plan (list (list "A" 1.0) (list "B" 2.0))))' % parent, "(1.0 2.0)")
@@ -373,7 +354,7 @@ class TestPlansAndTheOutline(DealChangesCase):
         self.assertShows("(deal-names deal)", '("POOL")')
 
     def test_a_plan_that_cannot_be_added_adds_nothing(self):
-        self.run_lisp('(define deal (start-deal "Demo" (collateral)))')
+        self.run_lisp('(define deal (a-deal "Demo"))')
         self.assertLispError('(deal-add-plan! deal "POOL" (sequential-plan (list (list "A" 50000000.0) (list "B" 30000000.0))))', "add up to 80000000.0")
         self.assertLispError('(deal-add-plan! deal "POOL" (floater-inverse-plan "F" "I"))', "give the :cap")
         self.assertLispError('(deal-add-plan! deal "POOL" (premium-discount-plan "P" "D" :premium-coupon 0.08))', "give the :premium-coupon and the :discount-coupon")
@@ -397,12 +378,6 @@ class TestPlansAndTheOutline(DealChangesCase):
         self.run_lisp("(define deal (make-demo))")
         balances = self.run_lisp("(table-column (deal-outline deal) \"balance\")")
         self.assertEqual(float(balances.items[2]), round(60000000.0 * 0.065 / 0.095, 2))
-
-    def test_every_collateral_starts_a_tree_in_the_outline(self):
-        self.run_lisp('''(define deal (make-demo))
-                         (deal-add-collateral! deal (collateral-from-psa "POOL2" 50000000.0 5.5 :term 360 :psa 100))
-                         (deal-sequential! deal "POOL2" '(("X" 30000000.0) ("Y" 20000000.0)))''')
-        self.assertShows("(map car (deal-outline-entries deal))", '("POOL" "A" "AF" "AP" "AC" "AI" "B" "POOL2" "X" "Y")')
 
     def test_a_split_of_a_kind_of_your_own_is_labelled_split_unless_it_says_otherwise(self):
         self.run_lisp('''(defstruct (my-split (:include split)))

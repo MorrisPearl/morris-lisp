@@ -1,9 +1,9 @@
 """Prepayment speeds that change with time, the cash flows of pieces of collateral added together, and a deal made of them
-(lib/prepayment_speed.lsp, and collateral-from-pieces, deal-payment-dates and the coupon that is a vector, in lib/deal.lsp)."""
+(lib/prepayment_speed.lsp, and new-deal, deal-payment-dates and the coupon that is a vector, in lib/deal.lsp)."""
 
 import numpy as np
 
-from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
+from deal_support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, LispTestCase, and the deals the tests make
 
 
 class PiecesCase(LispTestCase):
@@ -79,16 +79,14 @@ class TestSpeeds(PiecesCase):
 
 class TestProjecting(PiecesCase):
 
-    def test_a_pool_of_one_piece_is_the_pool_of_the_psa_function(self):
-        flows = self.flows("(project-pieces '((100000.0 6.0 6.0 360)) (prepayment-speed 'psa 150))")
-        old = self.flows("(pool-cash-flows 100000.0 6.0 360 0 150)")
-        for new_vector, old_vector in zip(flows, old):
-            np.testing.assert_allclose(new_vector, old_vector, rtol=1e-12)
-
-    def test_the_age_of_a_piece_is_where_it_is_on_the_psa_curve(self):
-        flows = self.flows("(project-pieces '((100000.0 6.0 6.0 348 12)) (prepayment-speed 'psa 100))")
-        old = self.flows("(pool-cash-flows 100000.0 6.0 360 12 100)")
-        np.testing.assert_allclose(flows[0], old[0], rtol=1e-12)
+    def test_a_pool_of_one_piece_is_a_pool_whose_prepayments_follow_the_psa_curve_from_its_age(self):
+        principal, interest, balance, gross = self.flows("(project-pieces '((100000.0 6.0 6.0 348 12)) (prepayment-speed 'psa 100))")
+        monthly = 0.005
+        payment = 100000 * monthly / (1 - (1 + monthly) ** -348)
+        scheduled = payment - 100000 * monthly
+        smm = 1 - (1 - 0.06 * 12 / 30) ** (1 / 12)                                  # (12 months of the 30-month ramp)
+        self.assertAlmostEqual(principal[0], scheduled + smm * (100000 - scheduled), places=8)
+        self.assertEqual(len(principal), 348)
 
     def test_the_cash_flows_of_the_pieces_are_added_together_month_by_month(self):
         self.run_lisp("""(define speed (prepayment-speed 'cpr '((4 12 12))))
@@ -174,13 +172,13 @@ class TestProjecting(PiecesCase):
         self.assertEqual(len(rates), 360)
 
 
-class TestACollateralOfPieces(PiecesCase):
+class TestADealOfPieces(PiecesCase):
 
     PIECES = "'((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12))"
 
     def make(self, speed="(prepayment-speed 'psa 150)"):
-        self.run_lisp("(define pool (collateral-from-pieces \"POOL\" %s %s))" % (self.PIECES, speed))
-        self.run_lisp('(define deal (start-deal "Demo" pool :first-payment (date 2026 11 25)))')
+        self.run_lisp('''(define deal (new-deal "Demo" :collateral %s :speed %s :first-payment (date 2026 11 25)))
+                         (define pool (get-node deal "POOL"))''' % (self.PIECES, speed))
 
     def test_the_collateral_pays_what_the_pieces_pay(self):
         self.make()
@@ -190,13 +188,7 @@ class TestACollateralOfPieces(PiecesCase):
         np.testing.assert_allclose(self.vector("(node-balance pool)"), flows[2])
         self.assertShows("(deal-size deal)", "150000000.0")
         self.assertShows("(vector-length (node-principal pool))", "360")
-        self.assertShows("(collateral-pieces pool)", "((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12))")
-        self.assertShows("(speed-curve-type (collateral-speed pool))", "psa")
-
-    def test_the_rate_it_shows_is_the_average_pass_through_coupon_by_balance_and_the_wac_the_average_wac(self):
-        self.make()
-        self.assertAlmostEqual(self.run_lisp("(collateral-rate pool)"), (100 * 5.5 + 50 * 6.5) / 150)
-        self.assertAlmostEqual(self.run_lisp("(collateral-wac pool)"), (100 * 6.0 + 50 * 7.0) / 150)
+        self.assertShows("(speed-curve-type (deal-pricing-speed deal))", "psa")
 
     def test_its_coupon_is_the_rate_of_each_month_and_what_it_owes_is_what_it_pays(self):
         self.make()
@@ -253,15 +245,14 @@ class TestACollateralOfPieces(PiecesCase):
         flat = self.vector("(car (project-pieces %s (prepayment-speed 'cpr 4)))" % self.PIECES)
         self.assertGreater(self.vector("(node-principal pool)")[24:36].sum(), flat[24:36].sum())
 
-    def test_a_pieces_collateral_that_is_not_made_by_the_functions_cannot_be_run_at_another_speed(self):
-        self.run_lisp('''(define bare (make-collateral :name "POOL" :balance (vector 100.0 0.0) :principal (vector 100.0) :interest (vector 0.0)
-                                                      :coupon (constant-coupon 0.05)))
-                         (define bare-deal (start-deal "Bare" bare))
-                         (deal-sequential! bare-deal "POOL" '(("A" 60.0) ("B" 40.0)))''')
-        self.assertLispError('(deal-pac! bare-deal "A" "P" "C" 100 300)', "was not made by collateral-from-psa or collateral-from-pieces")
+    def test_a_deal_with_no_collateral_cannot_be_run_at_a_speed(self):
+        self.run_lisp('(define bare (new-deal "Bare"))')
+        self.assertLispError("(deal-run! bare (prepayment-speed 'psa 100))", "the deal has no collateral")
+        self.assertLispError('(deal-pac! bare "POOL" "P" "C" 100 300)', "the deal has no collateral")
 
     def test_what_the_collateral_needs_is_checked(self):
-        self.assertLispError("(collateral-from-pieces \"POOL\" '() (prepayment-speed 'psa 100))", "there is no collateral")
+        self.run_lisp('(define bare (new-deal "Bare"))')
+        self.assertLispError("(deal-set-collateral! bare '())", "there is no collateral")
 
     def test_the_principal_of_a_node_at_the_speed_it_has_now_is_what_the_run_pays_it(self):
         self.make()
@@ -276,8 +267,7 @@ class TestACollateralOfPieces(PiecesCase):
 class TestTheFirstPaymentDate(PiecesCase):
 
     def make(self, options=""):
-        self.run_lisp('''(define pool (collateral-from-psa "POOL" 1000000.0 6.0 :term 24 :psa 100))
-                         (define deal (start-deal "Demo" pool %s))''' % options)
+        self.run_lisp("(define deal %s)" % psa_deal("Demo", 1000000.0, 6.0, term=24, options=options))
 
     def test_the_payments_are_on_the_same_day_of_each_month_from_the_first(self):
         self.make(":first-payment (date 2026 11 25)")
@@ -298,7 +288,7 @@ class TestTheFirstPaymentDate(PiecesCase):
         self.assertLispError("(deal-payment-dates deal)", "the deal has no first payment date")
 
     def test_it_is_a_date(self):
-        self.assertLispError('(start-deal "x" (collateral-from-psa "POOL" 1000000.0 6.0 :term 24) :first-payment "2026-11-25")', "is a date")
+        self.assertLispError('(new-deal "x" :first-payment "2026-11-25")', "is a date")
 
 
 class TestCoupons(PiecesCase):

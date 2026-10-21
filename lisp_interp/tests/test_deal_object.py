@@ -39,7 +39,7 @@ class TestMakingADeal(DealObjectCase):
     def test_a_new_deal_has_one_tranche_the_cash_flows_of_its_collateral_which_has_none_yet(self):
         self.run_lisp('(define deal (new-deal "Demo"))')
         self.assertShows("(deal-names deal)", '("POOL")')
-        self.assertShows("(deal-roots deal)", '("POOL")')
+        self.assertShows("(deal-root deal)", '"POOL"')
         self.assertShows("(deal-periods deal)", "0")
         self.assertShows("(deal-size deal)", "0.0")
         self.assertShows("(collateral? (get-node deal \"POOL\"))", "#t")
@@ -72,8 +72,6 @@ class TestMakingADeal(DealObjectCase):
         np.testing.assert_allclose(self.vector('(node-principal (get-node deal "POOL"))'), flows[0])
         np.testing.assert_allclose(self.vector('(node-interest (get-node deal "POOL"))'), flows[1])
         np.testing.assert_allclose(self.vector('(node-balance (get-node deal "POOL"))'), flows[2])
-        self.assertAlmostEqual(self.run_lisp('(collateral-rate (get-node deal "POOL"))'), (100 * 6.0 + 50 * 6.5) / 150)
-        self.assertAlmostEqual(self.run_lisp('(collateral-wac (get-node deal "POOL"))'), (100 * 6.5 + 50 * 7.5) / 150)
         self.assertShows("(deal-check deal)", "#t")
 
     def test_the_collateral_is_a_table_that_can_come_from_a_list_of_pieces_or_anywhere(self):
@@ -92,12 +90,6 @@ class TestMakingADeal(DealObjectCase):
         self.assertLispError('(collateral-table-pieces (make-table "balance" (vector 1.0) "wac" (vector 6.0)))', "has no column coupon")
         self.assertLispError("(collateral-table '((1 2 3)))", "a piece of collateral is (balance wac coupon wam [age])")
         self.assertLispError('(new-deal "Demo" :collateral (make-table "x" (vector 1.0)))', "has no column balance")
-
-    def test_a_deal_started_with_cash_flows_has_no_data_to_give_collateral_to_and_a_deal_with_data_has_one_collateral(self):
-        self.run_lisp('(define old (start-deal "Old" (collateral-from-psa "POOL" 1000000.0 6.0 :term 24)))')
-        self.assertLispError("(deal-set-collateral! old '((1000.0 6.0 6.0 12)))", "was started with the cash flows of its collateral")
-        self.make()
-        self.assertLispError('(deal-add-collateral! deal (collateral-from-psa "P2" 1000000.0 6.0 :term 360))', "has one collateral")
 
     def test_the_dates_are_checked_and_each_payment_has_its_date(self):
         self.make()
@@ -132,19 +124,6 @@ class TestOneCouponWhateverTheWacs(DealObjectCase):
         self.make()
         self.assertShows('(vector? (node-coupon (get-node deal "POOL")))', "#t")
         self.assertLispError('(deal-floater-inverse! deal "POOL" "F" "I" :cap 0.09)', "is not the same every month")
-
-    def test_the_same_goes_for_the_node_that_collateral_from_pieces_makes(self):
-        self.run_lisp('''(define pool (collateral-from-pieces "POOL" '((100000000.0 6.5 6.0 360) (50000000.0 7.5 6.0 240 12)) (prepayment-speed 'psa 150)))
-                         (define old (start-deal "Old" pool))
-                         (deal-floater-inverse! old "POOL" "F" "I" :cap 0.0975)''')
-        self.assertShows("(begin (deal-run! old :index 0.04) (deal-check old))", "#t")
-
-    def test_a_vector_coupon_that_is_the_same_every_month_is_a_fixed_coupon_to_a_split_that_needs_one(self):
-        self.run_lisp('''(define pool (make-collateral :name "POOL" :balance (vector 1000000.0 500000.0 0.0) :principal (vector 500000.0 500000.0)
-                                                       :interest (vector 5000.0 2500.0) :coupon (vector 0.06 0.06)))
-                         (define old (start-deal "Old" pool))
-                         (deal-floater-inverse! old "POOL" "F" "I" :cap 0.0975)''')
-        self.assertAlmostEqual(self.run_lisp('(vector-ref (node-balance (get-node old "F")) 0)'), 1000000.0 * 0.06 / 0.0975, places=4)
 
 
 class TestRunningADeal(DealObjectCase):
@@ -213,24 +192,6 @@ class TestRunningADeal(DealObjectCase):
                     "(deal-run! deal :index 0.04 :index 0.05)"):
             with self.subTest(src=src):
                 self.assertLispError(src, "expected (deal-run! deal [speed] [:index index])")
-
-    def test_a_deal_started_with_collateral_from_psa_can_be_run_at_another_speed_too(self):
-        self.run_lisp('''(define old (start-deal "Old" (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa 100)))
-                         (deal-sequential! old "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
-                         (deal-run! old (prepayment-speed 'psa 250))
-                         (define direct (start-deal "Direct" (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa 250)))
-                         (deal-sequential! direct "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
-                         (deal-run! direct)''')
-        np.testing.assert_allclose(self.vector('(node-principal (get-node old "A"))'), self.vector('(node-principal (get-node direct "A"))'), rtol=1e-12)
-        self.assertShows("(deal-check old)", "#t")
-
-    def test_collateral_whose_cash_flows_were_given_cannot_be_run_at_a_speed(self):
-        self.run_lisp('''(define bare (make-collateral :name "POOL" :balance (vector 100.0 0.0) :principal (vector 100.0) :interest (vector (/ (* 100.0 0.05) 12.0))
-                                                      :coupon (constant-coupon 0.05)))
-                         (define old (start-deal "Old" bare))''')
-        self.assertLispError("(deal-run! old (prepayment-speed 'psa 100))", "was given its cash flows, so they cannot be worked out at another speed")
-        self.run_lisp("(deal-run! old)")                          # (it is run as it was)
-        self.assertShows("(deal-check old)", "#t")
 
     def test_a_deal_with_no_collateral_yet_runs_without_months(self):
         self.run_lisp('(define deal (new-deal "Demo"))')

@@ -111,10 +111,8 @@ with the interest that the investors are paid, and the rate that it is of the ba
 
 (define (collateral deal &key (rows 8))
   "A grid of the collateral of the deal, to change it, and buttons to show its cash flows and to give the deal what is typed: see the top of the file. The
-deal must be one made by new-deal. :rows is how many rows the grid has at least. Returns the widget, which a cell of a notebook shows. It shows the changes
+:rows is how many rows the grid has at least. Returns the widget, which a cell of a notebook shows. It shows the changes
 made to the collateral of the deal elsewhere."
-  (when (null? (deal-collateral deal))
-    (error "collateral: the deal was started with the cash flows of its collateral: a deal made by new-deal has the data of it, to show and change"))
   (let* ((messages (widget-output))
          (gui (make-collateral-gui :deal deal :messages messages :rows rows))
          (grid (table-grid (collateral-gui-table gui) :editable #t
@@ -189,8 +187,6 @@ nothing in it is left out; a piece with 0 months is for the rest of the time."
   "A few fields for the name of the deal, the date of its closing, the date of its first payment, which is month 1, and its pricing speed, which is what the cash flows
 of the collateral are, and what the sizes of tranches that depend on them are worked out at, and a button to give the deal what is typed: see the top of the file.
 Returns the widget, which a cell of a notebook shows. It shows the changes made to the deal elsewhere."
-  (when (null? (deal-pricing-speed deal))
-    (error "info: the deal has no pricing speed: a deal made by new-deal has one, and a deal started with collateral can be given one by deal-set-pricing-speed!"))
   (let* ((messages (widget-output))
          (name (make-widget "Text" :description "Name" :style (widget--style) :layout (make-widget "Layout" :width "28em")))
          (closing (make-widget "Text" :description "Closing date" :placeholder "YYYY-MM-DD" :style (widget--style)))

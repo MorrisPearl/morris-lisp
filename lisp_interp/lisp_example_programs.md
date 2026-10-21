@@ -1440,7 +1440,7 @@ under it is worked out again), or to take the split, and everything under it, aw
 ---
 
 `deal_example.lsp` needs nothing. It models a structured deal as a tree (the model is described in the [CMO manual](lisp_cmo_manual.md)): the collateral, a pool of mortgages that pays principal each
-month, is the root, and **splits** divide the principal among tranches, which can be divided again until the bonds at the leaves.
+month, is the root (the pool is data, a table of pieces of collateral, and its cash flows are worked out at a prepayment speed: `new-deal`), and **splits** divide the principal among tranches, which can be divided again until the bonds at the leaves.
 Here the pool goes to two tranches in order (`deal-sequential!`), the first to two bonds in order, and the second to two in proportion
 to what each is owed (`deal-pro-rata!`). The program builds the deal for a slow and for a fast prepayment speed, runs it
 (`deal-run!`), checks that the principal adds up in every month (`deal-check`), and shows the month each bond is paid off and the
@@ -1449,10 +1449,9 @@ first months' principal in a table. A second part divides a pool into a PAC and 
 speed between the two, and off it outside; and a second PAC out of the first one's companion, sized from what the companion is paid at
 two narrower speeds. The interest goes down the same tree: the program divides a bond into a floater and an inverse floater, sized from a cap
 so that the two pay the bond's coupon whatever the index is, and shows their coupons at five levels of the index. A bond that accrues (a Z bond) pays the bonds before it,
-and a bond is divided into an interest-only and a principal-only bond. A deal has two pieces of collateral, each the root of
-a tree of its own. And a last part has a pool that **loses** balance, written down from the bottom up (the B bonds), and then shared by what the A bonds have
-left, and a pool that pays less **interest** than the bonds are owed, so that a bond has a shortfall, carried with interest. The
-[CMO manual](lisp_cmo_manual.md) says what each part is and how to make another kind of split.
+and a bond is divided into an interest-only and a principal-only bond. And a deal made of two pieces of collateral with different pass-through
+coupons, which has a coupon that falls as the piece with the higher coupon is paid off, is run at two speeds. The
+[CMO manual](lisp_cmo_manual.md) says what each part is and how to make another kind of split, and how losses and shortfalls are divided.
 
 ## Writing an example
 

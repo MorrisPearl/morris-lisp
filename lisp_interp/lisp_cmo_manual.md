@@ -58,11 +58,11 @@ POOL (the collateral) -- sequential --> A -- sequential --> A1, A2, Z (an accrua
                                         B -- floater and inverse floater --> B1, B2
 ```
 
-The pool here pays 30 of principal each month for four months, and is divided into a bond `A`, which is paid first, and `B`:
+The pool here is a toy, a piece of collateral of 120 at 0% that does not prepay, so it pays 30 of principal each month for four months. It is divided into a bond
+`A`, which is paid first, and `B`:
 
 ```lisp
-(define pool (make-collateral :name "POOL" :balance #(120.0 90.0 60.0 30.0 0.0) :principal #(30.0 30.0 30.0 30.0)))
-(define deal (start-deal "Demo" pool))
+(define deal (new-deal "Demo" :collateral '((120.0 0.0 0.0 4)) :speed (prepayment-speed 'cpr 0)))
 (deal-sequential! deal "POOL" '(("A" 50.0) ("B" 70.0)))
 (deal-run! deal)
 (node-principal (get-node deal "A"))        ; => #(30.0 20.0 0.0 0.0)
@@ -75,8 +75,9 @@ The pool here pays 30 of principal each month for four months, and is divided in
 `A` is paid the 30 of month 1, and 20 of month 2, when it is paid off; `B` gets the other 10 of month 2, and then everything. `deal-check`
 says that the principal adds up, in every month and at every split.
 
-A deal can have **more than one piece of collateral**, each the root of a tree of its own. All of it is in **double precision**:
-`start-deal` refuses single (see `set-vector-precision!`), because a bond of hundreds of millions has to keep its cents.
+The collateral is **data**, a table with a row for each **piece** of it (see "Pieces of collateral, and the pricing speed"), and the root of the tree is the cash
+flows that the pieces pay together at a prepayment speed. All of it is in **double precision**: `new-deal` refuses single (see `set-vector-precision!`), because a bond
+of hundreds of millions has to keep its cents.
 
 ## The parts of a deal
 
@@ -98,8 +99,8 @@ A **node** (`defstruct node`) has
 
 A `collateral` and a `tranche` include `node`, so `node-balance`, `node-principal` and the rest work on either. A tranche with no split is a
 **bond**, a leaf; one with a split passes on what it is paid. `(get-node deal name)` is the node called `name`; `(deal-names deal)` are all the
-names, in the order they were added; `(deal-leaves deal)` are the bonds; `(deal-roots deal)` are the names of the collateral, and
-`(deal-root-of deal name)` is the collateral at the root of the tree a node is in.
+names, in the order they were added; `(deal-leaves deal)` are the bonds; `(deal-root deal)` is the name of the collateral, the root of the tree, and
+`(deal-in-tree? deal name)` is `#f` for a tranche that has been added and not yet given a parent.
 
 ### Splits
 
@@ -129,7 +130,7 @@ says so. There is one index; a floater's `:index-name` is for whoever reads the 
 
 ### The order of a month
 
-Each month, for each tree, `deal-run!` does these things in this order:
+Each month `deal-run!` does these things in this order:
 
 1. **the interest**: the split of the collateral divides the interest it was paid among its children, and each of them divides what it was
    paid, down to the bonds;
@@ -143,44 +144,36 @@ A split does only its own part: it does not call the splits of its children. `de
 
 ### Amounts, and what is equal
 
-Amounts that should be equal are, if they are within `deal-tolerance` (a billionth) of the balance of all the collateral. It is a fraction, not
+Amounts that should be equal are, if they are within `deal-tolerance` (a billionth) of the balance of the collateral. It is a fraction, not
 an amount of money, so it does not matter whether a deal is in dollars or millions.
 
 ## Building a deal
 
 ### The collateral
 
-`(collateral-from-psa name balance rate [:term 360] [:age 0] [:psa 100])` makes the collateral node for a pool of level-pay mortgages with this
-balance, this annual `rate` in percent, and a `term` and `age` in months, prepaying at `psa` percent of the PSA curve (100 is the standard
-curve, 0 none; see `prepayment_model.lsp`). It has its cash flows worked out, for the `term - age` months that are to run: `collateral-principal`,
-`collateral-interest` (at its rate) and `collateral-balance`. `(pool-cash-flows balance rate term age psa)` gives the same three vectors as a
-list. Its coupon is its rate, as a decimal.
-
-**Collateral from another source** is made by `make-collateral`, with the balance (one element more than the months), the principal and the
-interest for each month, the coupon the interest is at, and, if there is any, the loss:
+The collateral of a deal is **data**: a table with a row for each piece (a pool of loans, with its balance, its rates and the months it has left), and the root of the tree,
+`POOL`, is the **cash flows** that they pay together, at a prepayment speed. `(new-deal name [:collateral pieces] [:speed speed] [:first-payment date] [:closing-date date]
+[:shortfalls #t])` makes a deal with that one tranche. The cash flows are worked out when the collateral is given, at the **pricing speed**, and again, at whatever speed it
+is given, every time `deal-run!` is called. The collateral can be given later, with `(deal-set-collateral! deal pieces)`, or in a notebook (see "The deal object, and its
+views in a notebook").
 
 ```lisp
-(make-collateral :name "POOL" :balance balances :principal principals :interest interests
-                 :coupon (constant-coupon 0.06) :loss losses)
+(define deal (new-deal "Demo" :collateral '((100000000.0 6.5 6.0 360)) :speed (prepayment-speed 'psa 150)))
+(deal-names deal)                                          ; => ("POOL")
+(vector-ref (node-balance (get-node deal "POOL")) 0)       ; => 100000000.0
+(vector-length (node-principal (get-node deal "POOL")))    ; => 360
 ```
 
-The cash flows only have to be right for the splits to divide: where they come from does not matter, and a deal does not look into them. A
-collateral with no coupon makes a deal of principal only, and one with no loss has none. (Collateral that is to be run at another speed, as a PAC
-needs, is made by `collateral-from-psa`, which knows the rate and the term.)
-
-`(start-deal name collateral [:shortfalls #t])` makes a deal whose root is the collateral, and `(deal-add-collateral! deal collateral)` adds
-another piece, the root of a tree of its own. It pays for as many months as the first: pad the vectors with zeros if need be. This is a deal whose
-collateral is **cash flows** that it was given. A deal can instead have the **data** of its collateral, the balances, wacs and coupons that the cash flows are worked out
-from, and that is a deal made by `new-deal` (see "The deal object, and its views in a notebook").
+The root is a `collateral`, a kind of node with the principal, the interest and the balance that its pieces pay, and no loss: a deal made from pieces has no default model yet,
+so nothing is lost (see "Losses and shortfalls"). Its coupon is the pass-through coupon of its pieces (see below).
 
 ### Pieces of collateral, and the pricing speed
 
-A pool is often several pieces, each with its own balance, coupon and maturity, that prepay at one speed. `(collateral-from-pieces name pieces speed)`
-makes one collateral node of them: each piece is projected at the speed, and the cash flows are added up, month by month, so that the collateral pays what they
-pay together. A **piece** is `(balance wac coupon wam [age])`: the balance now; the **wac**, the weighted average coupon of the loans, in percent, which is what the
+A pool is often several pieces, each with its own balance, coupon and maturity, that prepay at one speed. Each piece is projected at the speed, and the cash flows
+are added up, month by month, so that the collateral pays what they pay together. A **piece** is `(balance wac coupon wam [age])`: the balance now; the **wac**, the weighted average coupon of the loans, in percent, which is what the
 borrowers pay and what pays the loans off; the **pass-through coupon**, in percent, which is what the investors in the pool are paid, the wac less the fees that are
 taken out (so it is no more than the wac: it is an error if it is); the **wam**, the weighted average maturity, the months that are left; and the age, the months the loans have gone
-(0 if left out), which is what the PSA curve rises with. A piece with no balance is left out. The collateral has as many months as its longest piece.
+(0 if left out), which is what the PSA curve rises with. A piece with no balance is left out. The deal has as many months as its longest piece.
 
 A **speed** has a type, which says what its number means, and a number that can change with time: `(prepayment-speed type spec)`. The types are `psa` (150 is 150% of
 the standard curve, 0 to 6 CPR over 30 months of age, which is the curve of `prepayment_model.lsp`), `cpr` (the annual rate of prepayment, in percent) and
@@ -201,30 +194,30 @@ worked out at. A PAC is still sized at the two PSA speeds it is given, by projec
 
 ```lisp
 (define pieces '((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12)))
-(define pool (collateral-from-pieces "POOL" pieces (prepayment-speed 'psa 150)))
+(define deal (new-deal "Demo" :collateral pieces :speed (prepayment-speed 'psa 150)))
+(define pool (get-node deal "POOL"))
 (vector-ref (node-balance pool) 0)             ; => 150000000.0
 (vector-ref (node-principal pool) 0)           ; => 347773.9772172784
 (vector-ref (node-interest pool) 0)            ; => 729166.6666666666
-(collateral-rate pool)                          ; => 5.833333333333333
-(collateral-wac pool)                           ; => 6.333333333333333
 ```
 
 Each piece pays off as loans at its wac do, and pays the investors interest at its pass-through coupon on its balance, so the collateral's principal is the loans' and its interest
 is the investors': 729,166.67 in the first month, which is 5.8333% of 150,000,000 for a month (the loans pay 791,666.67, at 6.3333%; the difference is the fees, which
-are not modeled). `collateral-rate` is the average pass-through coupon of the pieces, by their balances, and `collateral-wac` their average wac.
+are not modeled).
 
-The collateral pays interest at the rate that the interest is of the balance in each month, so its **coupon is a vector**, one rate for each month (`(pool-coupons interest
-balances)`), that changes as the pieces with the higher coupons pay off or prepay: 5.83% in the first month here, and 5.66% in the two hundredth. A coupon is a
+The collateral pays interest at the rate that the interest is of the balance in each month, so, if its pieces have different pass-through coupons, its **coupon is a vector**, one rate for each month (`(pool-coupons interest
+balances)`), that changes as the pieces with the higher coupons pay off or prepay: 5.83% in the first month here, and 5.66% in the two hundredth. (If the pieces all have the same pass-through coupon
+it is that, a fixed coupon, whatever their wacs are.) A coupon is a
 function of the index, or a vector like this one (`(coupon-at coupon index month)`); the bonds under the collateral have it too, so a sequential split, a pro-rata
 split, a PAC and an IO/PO split all work. A floater and an inverse floater, and a premium and a discount bond, are made from a fixed coupon, and say so if the
 collateral has not got one. `(project-pieces pieces speed)` is the vectors the collateral is made of (principal, interest, balance, and the interest that the loans pay, at the wac), and
 `(project-pool balance wac coupon months smms)` those of one pool that prepays by the monthly mortality of each month.
 
-**The dates.** `(start-deal name collateral :first-payment (date 2026 11 25))` gives the deal the date of its first payment, which is month 1. `(deal-payment-date deal month)`
+**The dates.** `(new-deal name :first-payment (date 2026 11 25))` gives the deal the date of its first payment, which is month 1. `(deal-payment-date deal month)`
 is the date of a month, and `(deal-payment-dates deal)` a vector of them, the same day of each month (the end of the month, in one that is shorter).
 
 ```lisp
-(define deal (start-deal "Demo" pool :first-payment (date 2026 11 25)))
+(define deal (new-deal "Demo" :collateral pieces :first-payment (date 2026 11 25)))
 (vector-ref (deal-payment-dates deal) 1)       ; => 2026-12-25
 (vector-ref (deal-payment-dates deal) 359)     ; => 2056-10-25
 ```
@@ -262,7 +255,7 @@ order, without changing the deal (a PAC and its companion are sized from what th
 from the cap, and the others are as they were given):
 
 ```lisp
-(define deal (start-deal "Demo" (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa 150)))
+(define deal (new-deal "Demo" :collateral '((100000000.0 6.5 6.5 360)) :speed (prepayment-speed 'psa 150)))
 (define plan (floater-inverse-plan "F" "I" :cap 0.0975))
 (split-plan-sizes deal (get-node deal "POOL") plan)     ; => (66666666.66666667 33333333.33333333)
 (deal-names deal)                                       ; => ("POOL")
@@ -287,7 +280,7 @@ anything is wrong, in the new split or in any split below it, an error says what
 divided in another way. It returns the names that were taken away.
 
 ```lisp
-(define deal (start-deal "Demo" (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa 150)))
+(define deal (new-deal "Demo" :collateral '((100000000.0 6.5 6.5 360)) :speed (prepayment-speed 'psa 150)))
 (deal-sequential! deal "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
 (deal-floater-inverse! deal "A" "AF" "AI" :cap 0.095)
 (deal-pac! deal "AF" "AP" "AC" 100 300)
@@ -302,10 +295,9 @@ has), for looking at what the change would make, and for the error if it cannot 
 
 ### Running a deal, and looking at it
 
-`(deal-run! deal [speed] [:index index])` works out what each node is paid, and owes, in every month. It can be run again, with another index, or after a
-change. `speed` is a prepayment speed, made by `prepayment-speed`: a deal that has the data of its collateral (made by `new-deal`) has the cash flows of it worked out
-again at that speed, every time it is run, and then the tree is run; without one it is run at the pricing speed of the deal. (A deal started with collateral made by
-`collateral-from-psa` or `collateral-from-pieces` can be given a speed too; the cash flows of collateral that was given as they are cannot be worked out at another one.)
+`(deal-run! deal [speed] [:index index])` works out what each node is paid, and owes, in every month. It can be run again, with another speed or index, or after a
+change. `speed` is a prepayment speed, made by `prepayment-speed`: the cash flows of the collateral are worked out again at that speed, every time the deal is run, and then the
+tree is run; without one it is run at the pricing speed of the deal.
 `(deal-check deal)` is `#t` if everything adds up, and an error that says where if not (see "Checking a deal").
 
 The results are the vectors of the nodes, and tables, with a row for each month (from 1; the balances from 0) and a column for each node, to show
@@ -361,16 +353,15 @@ Each month the PAC split pays, with the principal the parent was paid:
 
 So at any speed between the two the PAC is paid exactly its schedule, and the companion takes up the difference. If the pool pays less than the
 schedule, the PAC is behind and is paid first to catch up. If more, the companion is paid off sooner, and then the PAC takes what is over, ahead
-of its schedule. The collateral must be made by `collateral-from-psa`. A PAC split has two children, the PAC and the companion, in that order,
-which can be divided again.
+of its schedule. The deal must have collateral, because the PAC is sized by running its pieces at the two speeds. A PAC split has two children, the PAC and
+the companion, in that order, which can be divided again.
 
 ```lisp
-(define pool (collateral-from-psa "POOL" 100000000.0 6.5 :term 360 :psa 200))
-(define deal (start-deal "PAC demo" pool))
+(define deal (new-deal "PAC demo" :collateral '((100000000.0 6.5 6.5 360)) :speed (prepayment-speed 'psa 200)))
 (deal-pac! deal "POOL" "PAC" "COMP" 100 300)
 (deal-run! deal)
 (format "{:.1f}%" (* 100 (/ (vector-ref (node-balance (get-node deal "PAC")) 0) 1e8)))   ; => "64.9%"
-(vector-max (abs (- (node-balance (get-node deal "PAC")) (pac-split-schedule (node-split pool)))))   ; => 0.0
+(vector-max (abs (- (node-balance (get-node deal "PAC")) (pac-split-schedule (node-split (get-node deal "POOL"))))))   ; => 0.0
 (deal-check deal)                                                                         ; => #t
 ```
 
@@ -405,18 +396,18 @@ that are paid ahead of it. Each month `balance[t+1] = balance[t] + accrual - pri
 `(name balance z)`:
 
 ```lisp
-(define pool (make-collateral :name "POOL" :balance #(100.0 80.0 60.0 40.0 20.0 0.0) :principal #(20.0 20.0 20.0 20.0 20.0)
-                              :interest #(1.0 0.8 0.6 0.4 0.2) :coupon (constant-coupon 0.12)))
-(define deal (start-deal "Z" pool))
-(deal-sequential! deal "POOL" '(("A" 40.0) ("Z" 60.0 z)))
+(define deal (new-deal "Z" :collateral '((100000000.0 6.0 6.0 360)) :speed (prepayment-speed 'psa 150)))
+(deal-sequential! deal "POOL" '(("A" 40000000.0) ("Z" 60000000.0 z)))
 (deal-run! deal)
-(node-accrual (get-node deal "Z"))          ; => #(0.6 0.606 0.6 0.4 0.2)
-(node-principal (get-node deal "A"))        ; => #(20.6 19.4 0.0 0.0 0.0)
-(node-balance (get-node deal "Z"))          ; => #(60.0 60.6 60.0 40.0 20.0 0.0)
-(deal-check deal)                           ; => #t
+(vector-ref (node-accrual (get-node deal "Z")) 0)         ; => 300000.0
+(vector-ref (node-interest (get-node deal "Z")) 0)        ; => 0.0
+(vector-ref (node-principal (get-node deal "POOL")) 0)    ; => 99550.52515275695
+(vector-ref (node-principal (get-node deal "A")) 0)       ; => 399550.52515275695
+(vector-ref (node-balance (get-node deal "Z")) 1)         ; => 60300000.0
+(deal-check deal)                                         ; => #t
 ```
 
-In the first month `Z` is owed 0.6 (1% of 60), which is not paid to it; and `A` is paid 20.6, the pool's 20 and what `Z` accrued. The sequential split
+In the first month `Z` is owed 300,000 (half a percent of 60,000,000), which is not paid to it; and `A` is paid 399,550.53, the pool's 99,550.53 and what `Z` accrued. The sequential split
 pays what its Z bonds accrue, with the principal its parent was paid, to its children in order, a Z bond too, in its place in the order (so a Z bond is
 last, usually, and is paid when the bonds before it are paid off), and a Z bond is owed, in a month, what it accrues in it. The accrual is neither the
 parent's interest nor its principal, so the parent's balance and interest are as they were: what the children are paid in principal is the parent's and
@@ -439,16 +430,18 @@ principal and no loss; `deal-check` checks it follows. The IO has the coupon of 
 `:io-coupon 0.05` makes a partial strip, an IO that is paid 5%, and a PO that is paid the rest of the node's coupon.
 
 ```lisp
-(define pool (make-collateral :name "POOL" :balance #(100.0 75.0 50.0 25.0 0.0) :principal #(25.0 25.0 25.0 25.0)
-                              :interest #(1.0 0.75 0.5 0.25) :coupon (constant-coupon 0.12)))
-(define deal (start-deal "Strip" pool))
+(define deal (new-deal "Strip" :collateral '((100000000.0 6.0 6.0 360)) :speed (prepayment-speed 'psa 150)))
 (deal-io-po! deal "POOL" "IO" "PO")
 (deal-run! deal)
-(node-balance (get-node deal "IO"))         ; => #(100.0 75.0 50.0 25.0 0.0)
-(node-interest (get-node deal "IO"))        ; => #(1.0 0.75 0.5 0.25)
-(node-principal (get-node deal "PO"))       ; => #(25.0 25.0 25.0 25.0)
-(deal-check deal)                           ; => #t
+(vector-ref (node-balance (get-node deal "IO")) 0)        ; => 100000000.0
+(vector-ref (node-balance (get-node deal "IO")) 12)       ; => 97136864.58902393
+(vector-ref (node-interest (get-node deal "IO")) 0)       ; => 500000.0
+(vector-ref (node-principal (get-node deal "PO")) 0)      ; => 99550.52515275695
+(deal-check deal)                                         ; => #t
 ```
+
+The IO's notional balance is the PO's, so it is the pool's, and falls as the pool pays: 100,000,000 at the start, and 97,136,864.59 after a year. Its interest in the first month is a
+twelfth of 6% of that, 500,000, and the PO is paid the pool's principal.
 
 The node may be anything but a Z bond, an IO or a PO: the collateral, a PAC, a floater. The IO and the PO can be divided in turn, in any way, except
 into a Z bond: a PO in order, say, or in proportion, and an IO in parts of its notional balance (the children of an IO are notional bonds too, each
@@ -471,8 +464,8 @@ adds it: `children` is a list of `(name years)`, in the order that they are paid
 is a child of `sequential-split` (`average-life-split`, with the lives in `average-life-split-lives`): it pays in order, as a sequential split does, and has no Z bonds.
 
 ```lisp
-(define pool (collateral-from-pieces "POOL" '((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12)) (prepayment-speed 'psa 150)))
-(define deal (start-deal "Demo" pool :first-payment (date 2026 11 25)))
+(define deal (new-deal "Demo" :first-payment (date 2026 11 25) :speed (prepayment-speed 'psa 150)
+                       :collateral '((100000000.0 6.0 5.5 360) (50000000.0 7.0 6.5 240 12))))
 (deal-average-life! deal "POOL" '(("A1" 2.0) ("A2" 5.0) ("A3")))
 (vector-ref (node-balance (get-node deal "A1")) 0)        ; => 36980402.10543777
 (vector-ref (node-balance (get-node deal "A3")) 0)        ; => 76689806.9439642
@@ -492,9 +485,13 @@ split, and taking one away"). The lives are of the principal that the parent is 
 
 Both apply to some deals only. A deal with no losses has none, and a deal is only run with shortfalls if it asks for them.
 
+A deal made from pieces of collateral has **no default model yet**: its collateral pays all of its principal, and loses nothing, so every loss is 0, and the interest it pays is
+what its bonds are owed. What is here is what the tree does when the collateral does lose something, or pays less interest than the bonds are owed, which is a matter of the
+vectors of the collateral node, its `loss` and its `interest`: the tests of the library put them in by hand, and a model of defaults will give them.
+
 ### Losses
 
-A **loss** is balance written off, with no cash: the collateral's `loss` vector (`make-collateral :loss`) says how much, each month. A deal whose
+A **loss** is balance written off, with no cash: the collateral's `loss` vector (`node-loss` of the collateral) says how much, each month. A deal whose
 collateral has none is not touched by any of this. Each month, after the principal, the loss is divided among the children of the collateral by its
 split, and among theirs by theirs, down to the bonds, whose balances it reduces: a node's `loss` vector is what it was written down by, and a bond can
 not be written down by more than it has left (its balance and what it accrues, less what it was paid that month). Interest is of the balance at the
@@ -516,19 +513,12 @@ A deal of **senior and subordinate bonds**, with `A` bonds that share a loss and
 of sequential splits, the first dividing the pool into the `A` bonds and the `B` bonds (reverse, so that the `B` bonds are written down first), and
 one for each:
 
-```lisp
-(define pool (make-collateral :name "POOL" :balance #(100.0 80.0 35.0 20.0 10.0 0.0) :principal #(20.0 20.0 15.0 10.0 10.0)
-                              :loss #(0.0 25.0 0.0 0.0 0.0) :interest #(1.0 0.8 0.35 0.2 0.1) :coupon (constant-coupon 0.12)))
-(define deal (start-deal "Senior and subordinate" pool))
-(deal-sequential! deal "POOL" '(("A" 80.0) ("B" 20.0)))
-(deal-sequential! deal "A" '(("A1" 50.0) ("A2" 30.0)) :losses 'pro-rata)
-(deal-sequential! deal "B" '(("B1" 15.0) ("B2" 5.0)))
-(deal-run! deal)
-(node-loss (get-node deal "B2"))            ; => #(0.0 5.0 0.0 0.0 0.0)
-(node-loss (get-node deal "B1"))            ; => #(0.0 15.0 0.0 0.0 0.0)
-(node-loss (get-node deal "A1"))            ; => #(0.0 1.25 0.0 0.0 0.0)
-(node-loss (get-node deal "A2"))            ; => #(0.0 3.75 0.0 0.0 0.0)
-(deal-check deal)                           ; => #t
+```text
+POOL (100) -- sequential (reverse) --> A (80) -- sequential, :losses 'pro-rata --> A1 (50), A2 (30)
+                                       B (20) -- sequential                     --> B1 (15), B2 (5)
+
+The pool pays principal of 20, 20, 15, 10 and 10, and loses 25 in the second month:
+  B2 is written down by 5 and B1 by 15, in that month; A1 by 1.25 and A2 by 3.75
 ```
 
 The pool loses 25 in the second month. `B2` is written down by its 5 and `B1` by its 15; the other 5 is shared by the `A` bonds: after that month's
@@ -542,18 +532,15 @@ A loss that the bonds have not enough left to take is an error (the collateral's
 
 Each bond is owed a twelfth of its coupon on its balance, and the cash for it is the interest of the collateral, which a collateral's own model may
 say is less. A deal that is right owes exactly what it is paid, and by default it is an error if it does not (a deal with coupons that do not add
-up to the collateral's has a mistake in it). A deal started with **`:shortfalls #t`** is one in which that can be so, and the interest that the bonds
+up to the collateral's has a mistake in it). A deal made with **`:shortfalls #t`** (`(new-deal name ... :shortfalls #t)`) is one in which that can be so, and the interest that the bonds
 are owed and are not paid is their **shortfall**:
 
-```lisp
-(define pool (make-collateral :name "POOL" :balance #(100.0 80.0 60.0 40.0 20.0 0.0) :principal #(20.0 20.0 20.0 20.0 20.0)
-                              :interest #(0.9 0.8 0.70201 0.4 0.2) :coupon (constant-coupon 0.12)))
-(define deal (start-deal "Short" pool :shortfalls #t))
-(deal-sequential! deal "POOL" '(("A" 80.0) ("B" 20.0)))
-(deal-run! deal)
-(node-interest (get-node deal "B"))         ; => #(0.1 0.2 0.30201 0.2 0.2)
-(node-shortfall (get-node deal "B"))        ; => #(0.1 0.101 0.0 0.0 0.0)
-(deal-check deal)                           ; => #t
+```text
+POOL (100) pays 20 of principal a month, and interest of 0.9, 0.8, 0.70201, 0.4 and 0.2
+POOL -- sequential --> A (80), B (20), both owed 12% a year, 1% a month, on their balances
+
+B is paid interest of     0.1  0.2    0.30201  0.2  0.2
+B has a shortfall of      0.1  0.101  0.0      0.0  0.0
 ```
 
 - A bond (a node with nothing under it) is owed, in a month, its interest for the month, **and what it was owed and not paid the month before, with a
@@ -796,5 +783,5 @@ kind of split", has a `split-label` method, and a form with that label):
 
 `examples/deal_example.lsp` builds a deal of two levels and runs it at two prepayment speeds; divides a pool into a PAC and its companion and shows
 what the PAC owes at five speeds; divides the companion into a second PAC; divides a bond into a floater and an inverse floater and shows their
-coupons at five levels of the index; has a Z bond and an accretion directed bond; strips a bond into an IO and a PO and divides the PO; and has two
-pieces of collateral. The example programs document describes it.
+coupons at five levels of the index; has a Z bond and an accretion directed bond; strips a bond into an IO and a PO and divides the PO; and makes
+a deal from two pieces of collateral that have different pass-through coupons. The example programs document describes it.
