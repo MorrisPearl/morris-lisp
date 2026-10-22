@@ -46,7 +46,7 @@ class TestSpeeds(PiecesCase):
         np.testing.assert_allclose(speeds, [0.3, 0.4, 0.4, 0.4, 0.4])
 
     def test_a_speed_that_is_not_one_is_an_error_that_says_what_is_wrong(self):
-        for src, message in (("(prepayment-speed 'ppr 5)", "psa, cpr or smm"),
+        for src, message in (("(prepayment-speed 'ppr 5)", "psa, cpr, smm or model"),
                              ("(prepayment-speed 'cpr -5)", "cannot be below 0"),
                              ("(prepayment-speed 'cpr '())", "a number, or a list of pieces"),
                              ("(prepayment-speed 'cpr '((5)))", "a piece of a speed is (from to months)"),
@@ -355,5 +355,6 @@ class TestWhatTheLoansAreLike(PiecesCase):
                          (deal-set-prepayment-model! deal (lambda (piece path)
                                                             (set! seen (list (collateral-piece-credit-score piece) (collateral-piece-ltv piece)))
                                                             (make-vector (collateral-piece-wam piece) 6.0)))
+                         (deal-set-pricing-speed! deal (prepayment-speed 'model 100))
                          (deal-run-paths! deal :paths 2)''')
         self.assertShows("seen", "(720.0 85.0)")                                  # (the deal keeps its pieces in a table, of decimals)

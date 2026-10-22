@@ -107,15 +107,27 @@
   collateral-piece-loan-size collateral-piece-loan-size-set! collateral-piece-ltv collateral-piece-ltv-set!
   collateral-piece-refinance-share collateral-piece-refinance-share-set! collateral-piece-sato
   collateral-piece-sato-set! collateral-piece-second-home-share collateral-piece-second-home-share-set!
-  missing-number?)
+  missing-number? model-speed?)
 
 ; A prepayment model fitted to Freddie Mac's loans, from the database that load_freddie_data/ makes
 (lazy-load "freddie_prepayment.lsp"
-  copy-prepayment-data cpr-of-smm fit-prepayment-model freddie-groups freddie-loan-months make-prepayment-data
-  plot-cpr-by-month plot-prepayment-s-curves predicted-smm prepayment-cpr-by-month prepayment-data-from
-  prepayment-data-periods prepayment-data-periods-set! prepayment-data-predictors prepayment-data-predictors-set!
-  prepayment-data-smm prepayment-data-smm-set! prepayment-data-weights prepayment-data-weights-set! prepayment-data?
-  prepayment-s-curve knots-within prepayment-cpr-misses)
+  fit-prepayment-model freddie-groups freddie-loan-months plot-prepayment-s-curves prepayment-s-curve calendar-months
+  freddie-prepayment-fit freddie-prepayment-model piece-value prepayment-model-columns save-freddie-prepayment-fit
+  scheduled-balance-left)
+
+; What the models of Freddie Mac's loans share: reading the database that load_freddie_data/ makes, fitting, and trying a model month by month
+(lazy-load "freddie_loans.lsp"
+  annual-rate copy-loan-data copy-predictor data-knots fit-rate-model knots-within loan-data-from loan-data-outcomes
+  loan-data-outcomes-set! loan-data-periods loan-data-periods-set! loan-data-predictors loan-data-predictors-set!
+  loan-data-weights loan-data-weights-set! loan-data? make-loan-data make-predictor model-curve outcomes-by-period
+  plot-rate-by-month predicted-outcomes predictor-group-sql predictor-group-sql-set! predictor-knots
+  predictor-knots-set! predictor-name predictor-name-set! predictor-sql predictor-sql-set! predictor? rate-by-month
+  rate-misses model-predictions)
+
+; A default model and a severity model fitted to Freddie Mac's loans, from the same database
+(lazy-load "freddie_default.lsp"
+  default-ltv-curves default-outcomes fit-default-model fit-severity-model freddie-default-months freddie-liquidations
+  plot-default-ltv-curves severity-by-year severity-ltv-curve)
 
 ; Structured deals as a tree: a pool, divided by splits into tranches (see lisp_cmo_manual.md)
 (lazy-load "deal.lsp"
@@ -191,7 +203,9 @@
   collateral-effective-duration-set! collateral-oas collateral-oas-set! deal-index-function deal-index-function-set!
   deal-path-sets deal-path-sets-set! deal-prepayment-model deal-prepayment-model-set! deal-rate-model
   deal-rate-model-set! node-effective-duration node-effective-duration-set! node-oas node-oas-set!
-  tranche-effective-duration tranche-effective-duration-set! tranche-oas tranche-oas-set!)
+  tranche-effective-duration tranche-effective-duration-set! tranche-oas tranche-oas-set! deal-change-pricing!
+  deal-home-price-growth deal-home-price-growth-set! deal-mortgage-spread deal-mortgage-spread-set!
+  deal-project-pieces deal-set-home-price-growth! deal-set-mortgage-spread!)
 
 ; The OAS and the effective duration of the tranches of a deal, on paths of rates (see "Option-adjusted spread" in lisp_cmo_manual.md)
 (lazy-load "deal_paths.lsp"
@@ -204,7 +218,8 @@
   path-tranche-flows rate-model-a rate-model-a-set! rate-model-b rate-model-b-set! rate-model-sigma1
   rate-model-sigma1-set! rate-model-sigma2 rate-model-sigma2-set! rate-model? rate-path-long-yields
   rate-path-long-yields-set! rate-path-short-rates rate-path-short-rates-set! rate-path? run-path-set
-  static-prepayment-model)
+  static-prepayment-model deal-base-prepayment-model deal-forward-path model-at-speed model-speed-smms
+  rate-path-first-payment rate-path-first-payment-set!)
 
 ; What a price says about a tranche of a deal: yield, spread, duration, dv01, money (see lisp_cmo_manual.md)
 (lazy-load "deal_pricing.lsp"
@@ -245,7 +260,8 @@
   info-gui-name-set! info-gui-show info-gui-speed-grid info-gui-speed-grid-set! info-gui-speed-type
   info-gui-speed-type-set! info-gui-update info-gui? info-speed-from-grid info-speed-table make-collateral-gui
   make-info-gui show-collateral-flows info-curve-from-grid info-curve-table info-gui-curve-grid
-  info-gui-curve-grid-set!)
+  info-gui-curve-grid-set! info-gui-home-prices info-gui-home-prices-set! info-gui-mortgage-spread
+  info-gui-mortgage-spread-set!)
 
 ; Templates of text and SQL
 (lazy-load "template.lsp"

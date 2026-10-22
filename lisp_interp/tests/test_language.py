@@ -1508,6 +1508,22 @@ class TestLoadPath(LispTestCase):
                 os.chdir(cwd)
         self.assertIn("fit-vol-smiles", self.show("(defined-functions)"))
 
+    def test_load_variables_looks_for_a_file_where_load_does(self):
+        saved = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, saved, ignore_errors=True)
+        cwd = os.getcwd()
+        os.chdir(saved)
+        try:
+            self.run_lisp('(define kept #(1 2 3)) (save-variables "kept.json" kept)')
+        finally:
+            os.chdir(cwd)
+        self.run_lisp("(define kept '())")
+        with mock.patch.dict(os.environ, {"LISP_PATH": saved}):
+            self.assertShows('(load-variables "kept.json")', "(kept)")                # (not in the current directory: in LISP_PATH)
+        self.assertShows("kept", "#(1 2 3)")
+        with mock.patch.dict(os.environ, {"LISP_PATH": ""}):
+            self.assertLispError('(load-variables "kept.json")', "couldn't read kept.json")
+
     def test_a_missing_file_says_where_it_looked(self):
         with mock.patch.dict(os.environ, {"LISP_PATH": self.dir}):
             self.assertLispError('(load "nowhere.lsp")', "load: can't find nowhere.lsp in the current directory or in " + self.dir)

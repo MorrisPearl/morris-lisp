@@ -184,8 +184,8 @@ class TestTheInfoView(ViewsCase):
     def view(self, collateral=ViewsCase.PIECES):
         self.make(collateral)
         self.page = self.widget("(info deal)")
-        (self.heading, self.name, self.closing, self.first_payment, self.speed_type, self.speed_grid, self.curve_heading, self.curve_grid,
-         self.update_button, self.messages) = self.page.children
+        (self.heading, self.name, self.closing, self.first_payment, self.speed_type, self.speed_grid, self.home_prices, self.mortgage_spread,
+         self.curve_heading, self.curve_grid, self.update_button, self.messages) = self.page.children
 
     def test_the_fields_have_what_the_deal_has(self):
         self.view()
@@ -193,7 +193,8 @@ class TestTheInfoView(ViewsCase):
         self.assertEqual(self.closing.value, "2026-11-20")
         self.assertEqual(self.first_payment.value, "2026-11-25")
         self.assertEqual(self.speed_type.value, "PSA")
-        self.assertEqual(list(self.speed_type.options), ["PSA", "CPR", "SMM"])
+        self.assertEqual(list(self.speed_type.options), ["PSA", "CPR", "SMM", "MODEL"])
+        self.assertEqual((self.home_prices.value, self.mortgage_spread.value), (3.0, 1.75))       # (what the prepayment model is told, to begin with)
         self.assertEqual(list(self.speed_grid.data.columns), ["from", "to", "months"])
         self.assertEqual(len(self.speed_grid.data), 4)
         self.assertEqual(list(self.speed_grid.data.iloc[0]), [100.0, 100.0, 0])                # (the pricing speed is 100 PSA to begin with)
@@ -252,6 +253,42 @@ class TestTheInfoView(ViewsCase):
         self.assertShows("(deal-name deal)", '"Demo 2026-2"')
         self.assertShows("(deal-closing-date deal)", "2026-12-01")
         self.assertShows("(deal-first-payment deal)", "2027-01-25")
+
+    def test_what_the_prepayment_model_is_told_is_typed_and_shown(self):
+        self.view()
+        self.home_prices.value = -2.5
+        self.mortgage_spread.value = 2.25
+        self.press(self.update_button)
+        self.assertShows("(list (deal-home-price-growth deal) (deal-mortgage-spread deal))", "(-2.5 2.25)")
+        self.run_lisp("(deal-set-home-price-growth! deal 4.0)")                                    # (a change made somewhere else is shown)
+        self.assertEqual(self.home_prices.value, 4.0)
+        self.home_prices.value = -150.0
+        self.assertIn("above -100", self.press(self.update_button))
+
+    def test_a_speed_of_the_model_needs_the_curve_and_is_given_it_first(self):
+        self.view()
+        self.speed_type.value = "MODEL"
+        self.assertIn("needs a Treasury curve", self.press(self.update_button))
+        self.assertShows("(speed-curve-type (deal-pricing-speed deal))", "psa")
+        self.run_lisp('''(set! freddie-prepayment-fit-read
+                            (spline-logistic (list (cons "incentive_bp" (vector -100.0 0.0 100.0 200.0)) (cons "loan_age" (vector 1.0 2.0 3.0 4.0))
+                                                   (cons "loan_size_k" (vector 100.0 200.0 300.0 250.0)) (cons "credit_score" (vector 700.0 720.0 740.0 760.0))
+                                                   (cons "current_ltv" (vector 50.0 60.0 70.0 80.0)) (cons "sato" (vector 0.0 0.1 0.2 0.3))
+                                                   (cons "burnout" (vector 0.0 1.0 2.0 3.0)) (cons "investor" (vector 0.0 0.0 1.0 0.0))
+                                                   (cons "second_home" (vector 0.0 1.0 0.0 0.0)) (cons "cash_out" (vector 1.0 0.0 0.0 0.0))
+                                                   (cons "refinance" (vector 0.0 0.0 0.0 1.0)) (cons "winter" (vector 1.0 0.0 0.0 0.0))
+                                                   (cons "summer" (vector 0.0 1.0 0.0 0.0)))
+                                             (vector 0.01 0.02 0.05 0.2) 0))''')        # (a stand-in for the fitted model: just enough to work)
+        for row, (years, percent) in enumerate(((2, 4.1), (10, 4.5))):
+            self.edit(self.curve_grid, row, "years", years)
+            self.edit(self.curve_grid, row, "yield", percent)
+        self.assertEqual(self.speed_type.value, "PSA")                       # (what failed is put back as the deal has it)
+        self.speed_type.value = "MODEL"                                       # (and the grid's 100 is 100% of the model)
+        shown = self.press(self.update_button)
+        self.assertIn("pricing speed MODEL 100", shown)
+        self.assertIn("(home prices 3.0% a year, mortgage rate 1.75% over the 10-year Treasury)", shown)
+        self.assertShows("(speed-curve-type (deal-pricing-speed deal))", "model")
+        self.assertShows("(deal-treasury-curve deal)", "((2.0 4.1) (10.0 4.5))")
 
     def test_a_date_left_blank_is_no_date(self):
         self.view()
@@ -432,7 +469,7 @@ class TestSeveralViewsAtOnce(ViewsCase):
         self.bonds_grid = self.bonds_page.children[0]
         self.speed_type = self.info_page.children[4]
         self.speed_grid = self.info_page.children[5]
-        self.update_info = self.info_page.children[8]
+        self.update_info = self.info_page.children[10]
 
     def bonds_balances(self):
         return list(self.bonds_grid.data["balance"])

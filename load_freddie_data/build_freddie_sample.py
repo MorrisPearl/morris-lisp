@@ -5,7 +5,8 @@ build_freddie_sample.py
 Draws a random sample of 30-year fixed-rate loans from Freddie Mac's
 Single-Family Loan-Level Dataset and writes every month of each into the
 table loan_months of a SQLite database: one row per loan per month, with what
-it prepaid and what a prepayment model looks at (see loan_months.py).
+it prepaid, whether it defaulted, what was lost, and what a model looks at
+(see loan_months.py).
 
 Sampling
 --------
@@ -50,6 +51,7 @@ COLUMNS = [
     ("orig_term", "INTEGER", "months"),
     ("credit_score", "INTEGER", "the borrower's credit score when it was made"),
     ("dti", "INTEGER", "debt-to-income when it was made, percent"),
+    ("mi_percent", "INTEGER", "the mortgage insurance, percent of the loss it covers (0 if none)"),
     ("borrowers", "INTEGER", "how many borrowers"),
     ("first_time_buyer", "INTEGER", "1 for a first-time homebuyer, 0 if not"),
     ("occupancy", "TEXT", "P primary home, I investment property, S second home"),
@@ -79,6 +81,15 @@ COLUMNS = [
     ("home_price_change", "REAL", "home prices now over when the loan was made, in its 3-digit zip code (or the country)"),
     ("current_ltv", "REAL", "the loan-to-value now, percent: orig_ltv x start_upb / orig_upb / home_price_change"),
     ("freddie_ltv", "INTEGER", "Freddie's own estimate of the loan-to-value now, percent, where it gives one"),
+    # defaults and losses (see loan_months.py)
+    ("in_forbearance", "INTEGER", "1 if the loan is in forbearance, or delinquent because of a disaster"),
+    ("defaulted", "INTEGER", "1 in the month the loan defaulted"),
+    ("after_default", "INTEGER", "1 in the months after it defaulted"),
+    ("ltv_at_default", "REAL", "current_ltv in the month it defaulted, from then on"),
+    ("months_since_default", "INTEGER", "months since the month it defaulted, from then on"),
+    ("removal_upb", "REAL", "in the loan's last month: the balance when it was removed"),
+    ("loss", "REAL", "on a third-party sale, short sale or REO sale: what was lost (positive), net of what was recovered"),
+    ("severity", "REAL", "loss / removal_upb"),
 ]
 
 COLUMN_NAMES = [name for name, _, _ in COLUMNS]

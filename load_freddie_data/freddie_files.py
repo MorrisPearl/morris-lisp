@@ -32,6 +32,7 @@ ENCODING = "latin-1"
 O_CREDIT_SCORE = 0          # 300-850; 9999 if not known
 O_FIRST_PAYMENT_DATE = 1    # YYYYMM
 O_FIRST_TIME_HOMEBUYER = 2  # Y, N; 9 if not known
+O_MI_PERCENT = 5            # mortgage insurance, percent of the loss it covers; 0 if none, 999 if not known
 O_OCCUPANCY = 7             # P primary home, I investment property, S second home
 O_DTI = 9                   # debt-to-income, percent; 999 if not known
 O_ORIG_UPB = 10             # the balance when it was made, rounded to $1,000
@@ -60,7 +61,12 @@ P_ZERO_BALANCE_CODE = 8     # how the loan ended, in its last month: 01 prepaid 
                             # 16 reperforming loan sale, 96 removed for another reason
 P_CURRENT_RATE = 10         # the note rate now, percent
 P_DEFERRED_UPB = 11         # principal put off by a modification or a deferral, which bears no interest
+P_ACTUAL_LOSS = 21          # on a short sale, third-party sale or REO sale: what was lost, with the unpaid interest and the costs, less what
+                            # was recovered (by mortgage insurance, among others); a positive number is a loss
 P_ESTIMATED_LTV = 25        # Freddie's own estimate of the loan-to-value now, percent; 999 if not known
+P_REMOVAL_UPB = 26          # in the loan's last month: the balance when it was removed
+P_DISASTER = 28             # Y if the loan is delinquent because of a disaster (as the COVID-19 pandemic was)
+P_ASSISTANCE = 29           # F forbearance, R repayment plan, T trial modification; blank if none
 
 
 def blank_or(value, missing):
@@ -76,6 +82,7 @@ def origination_record(fields):
     borrowers = blank_or(fields[O_BORROWERS], "99")
     first_time = blank_or(fields[O_FIRST_TIME_HOMEBUYER], "9")
     postal_code = blank_or(fields[O_POSTAL_CODE], "000")
+    mi_percent = blank_or(fields[O_MI_PERCENT], "999")
     return {
         "loan_id": fields[O_LOAN_ID],
         "first_payment": fields[O_FIRST_PAYMENT_DATE],
@@ -85,6 +92,7 @@ def origination_record(fields):
         "orig_term": int(fields[O_ORIG_TERM]),
         "credit_score": int(credit_score) if credit_score else None,
         "dti": int(dti) if dti else None,
+        "mi_percent": int(mi_percent) if mi_percent else None,
         "borrowers": int(borrowers) if borrowers else None,
         "first_time_buyer": None if first_time is None else (1 if first_time == "Y" else 0),
         "occupancy": fields[O_OCCUPANCY],
@@ -96,6 +104,14 @@ def origination_record(fields):
     }
 
 
+def number_or_none(text):
+    """The number in the text, or None if it is empty or not a number."""
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def performance_record(fields):
     """What the loader keeps of a row of the performance file: a dict of the loan's month."""
     delinquency = fields[P_DELINQUENCY]
@@ -103,6 +119,7 @@ def performance_record(fields):
         "period": fields[P_PERIOD],
         "upb": float(fields[P_CURRENT_UPB]) if fields[P_CURRENT_UPB] else 0.0,
         "months_delinquent": int(delinquency) if delinquency.isdigit() else None,
+        "reo_acquired": delinquency == "RA",
         "loan_age": int(fields[P_LOAN_AGE]),
         "remaining_months": int(fields[P_REMAINING_MONTHS]) if fields[P_REMAINING_MONTHS] else 0,
         "modified": fields[P_MODIFICATION_FLAG] in ("Y", "P"),
@@ -110,6 +127,9 @@ def performance_record(fields):
         "rate": float(fields[P_CURRENT_RATE]),
         "deferred_upb": float(fields[P_DEFERRED_UPB]) if fields[P_DEFERRED_UPB] else 0.0,
         "freddie_ltv": int(fields[P_ESTIMATED_LTV]) if fields[P_ESTIMATED_LTV] not in ("", "999") else None,
+        "actual_loss": number_or_none(fields[P_ACTUAL_LOSS]),
+        "removal_upb": number_or_none(fields[P_REMOVAL_UPB]),
+        "in_forbearance": fields[P_ASSISTANCE] == "F" or fields[P_DISASTER] == "Y",
     }
 
 

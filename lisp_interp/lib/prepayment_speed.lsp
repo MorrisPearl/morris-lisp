@@ -4,7 +4,8 @@
 ;
 ; A speed has a type, which says what the number means, and the number for each month. The types are PSA (150 is 150% of the standard
 ; curve, which rises to 6 CPR over 30 months of loan age; see prepayment_model.lsp), CPR (the annual rate of prepayment, in percent: 6
-; is 6 CPR) and SMM (the share of what is left that prepays in a month, in percent: 0.5 is a half a percent a month). The number is a
+; is 6 CPR), SMM (the share of what is left that prepays in a month, in percent: 0.5 is a half a percent a month) and MODEL (a share, in percent, of
+; what a deal's prepayment model says, which looks at rates: 105 is 105% of it; see model-speed-smms in deal_paths.lsp, which a deal works it out with). The number is a
 ; single one, for every month, or a few linear pieces, each (from to months): the speed goes in a straight line from `from` to `to`, and is
 ; `to` in the last of the months, so that the piece after it, or the speed that holds after the last piece, starts from there.
 ; The months are those from the first payment, the same for every piece of collateral.
@@ -28,7 +29,11 @@
 
 (defstruct speed-curve type pieces)                  ; (made by prepayment-speed: pieces is a list of (from to months), months '() for "from here on")
 
-(define speed-types '(psa cpr smm))
+(define speed-types '(psa cpr smm model))
+
+(define (model-speed? curve)
+  "Whether the speed is a share of a prepayment model (its type is model), which has no prepayments of its own: a deal works them out (see deal-project-pieces)."
+  (eq? (speed-curve-type curve) 'model))
 
 (define (speed-piece-of piece)
   "A piece of a speed as (from to months), with the months '() for a piece that goes on for ever. An error that says what is wrong with it."
@@ -47,10 +52,10 @@
     (list from to months)))
 
 (define (prepayment-speed type spec)
-  "A speed: the type, psa, cpr or smm, and the number for each month, which is one number, or a list of pieces, each (from to months) (see the
+  "A speed: the type, psa, cpr, smm or model, and the number for each month, which is one number, or a list of pieces, each (from to months) (see the
 top of the file). A piece with no months, (from to), is for the rest of the time, and so must be the last, and have the same speed at both ends."
   (unless (member type speed-types)
-    (error (format "the type of a speed is psa, cpr or smm, not {}" type)))
+    (error (format "the type of a speed is psa, cpr, smm or model, not {}" type)))
   (let ((pieces (map speed-piece-of (if (number? spec) (list (list spec spec)) spec))))
     (when (null? pieces)
       (error "a speed has a number, or a list of pieces"))
@@ -94,7 +99,10 @@ top of the file). A piece with no months, (from to), is for the rest of the time
 
 (define (speed-smms curve age months)
   "The single monthly mortality, a decimal, in each of the months, 1 to months, of loans that are `age` months old when the first of
-them begins: a vector. A PSA speed is a multiple of the PSA curve at the age that the loans have in the month."
+them begins: a vector. A PSA speed is a multiple of the PSA curve at the age that the loans have in the month. A speed of a model has none of its own."
+  (when (model-speed? curve)
+    (error (format "{} is a share of a prepayment model, which looks at rates: a deal works out what it prepays (see deal-project-pieces), not a speed alone"
+                   (describe-speed curve))))
   (let ((speeds (speed-values curve months))
         (smms (make-vector months 0.0))
         (type (speed-curve-type curve)))

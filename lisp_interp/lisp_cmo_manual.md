@@ -39,6 +39,7 @@ general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is 
   - [Sequential by average life](#sequential-by-average-life)
 - [Prices, yields and spreads](#prices-yields-and-spreads)
 - [Option-adjusted spread and effective duration](#option-adjusted-spread-and-effective-duration)
+- [The prepayment model](#the-prepayment-model)
 - [Losses and shortfalls](#losses-and-shortfalls)
   - [Losses](#losses)
   - [Interest shortfalls](#interest-shortfalls)
@@ -210,8 +211,9 @@ The table of collateral of a deal (see `collateral-table`, and the grid of `(col
 deal is given the pieces: a credit score is from 300 to 850, a share from 0 to 1, and the investor and second-home shares, or the two refinance shares, are no more than 1 together.
 
 A **speed** has a type, which says what its number means, and a number that can change with time: `(prepayment-speed type spec)`. The types are `psa` (150 is 150% of
-the standard curve, 0 to 6 CPR over 30 months of age, which is the curve of `prepayment_model.lsp`), `cpr` (the annual rate of prepayment, in percent) and
-`smm` (the share of what is left that prepays in a month, in percent). The `spec` is one number, which is the speed in every month, or a list of linear
+the standard curve, 0 to 6 CPR over 30 months of age, which is the curve of `prepayment_model.lsp`), `cpr` (the annual rate of prepayment, in percent),
+`smm` (the share of what is left that prepays in a month, in percent) and `model` (105 is 105% of what the deal's prepayment model says, which looks at rates: see
+"The prepayment model"). The `spec` is one number, which is the speed in every month, or a list of linear
 pieces, each `(from to months)`: the speed goes in a straight line from `from` to `to`, and is `to` in the last of the months, so that the next piece starts from
 there; a piece with no months, `(from to)` with the two the same, is for the rest of the time; and after the last piece the speed holds. The months are counted
 from the first payment, and are the same for every piece of collateral. The PSA curve itself is `(prepayment-speed 'cpr '((0 6 30)))`, 0.2 CPR in the first
@@ -673,12 +675,12 @@ tranche whose cash flows do not change with rates has one near its modified dura
 | Part | Is | To begin with |
 |---|---|---|
 | rate model | the numbers that make the paths: `(make-rate-model :a 2.75 :b 0.15 :sigma1 0.019 :sigma2 0.012)`, as in `simulate-rate-paths` | the values in the library manual's fit; they are to be worked out from market data |
-| prepayment model | a function `(model piece path)` of a `collateral-piece` and a `rate-path`, that gives the annual prepayment rate, in percent, of each month of the piece: a vector with as many months as its wam | `(static-prepayment-model speed)`, which does not look at rates, and prepays at the pricing speed of the deal |
+| prepayment model | a function `(model piece path)` of a `collateral-piece` and a `rate-path`, that gives the annual prepayment rate, in percent, of each month of the piece: a vector with as many months as its wam. A pricing speed of type `model` is a share of it; a pricing speed of another type does not look at rates, and the paths prepay at it (`static-prepayment-model`) | the one fitted to Freddie Mac's loans (see "The prepayment model") |
 | index function | a function of the vector of short rates of a path, that gives the vector of the index that the floating tranches are of | the identity: the index is the short rate |
 
-A `rate-path` has the two vectors `short-rates` and `long-yields`, a rate (a decimal) for the start of each month, from today: month 1 is the first payment, and the first rate is today's. The model is free
-to look at them as it likes (it is given the piece, which says what the loans are: their wac, their age and so on), and it is called once for each piece on each path. Here is one that prepays at 5 CPR, and at more
-for every point that the short rate is under 4.5%:
+A `rate-path` has the two vectors `short-rates` and `long-yields`, a rate (a decimal) for the start of each month, from today: month 1 is the first payment, and the first rate is today's; and the date of the
+first payment, `first-payment`. The model is free to look at them as it likes (it is given the piece, which says what the loans are: their wac, their age and so on), and it is called once for each piece on each
+path. Here is one of one's own, which prepays at 5 CPR, and at more for every point that the short rate is under 4.5%; the pricing speed is made 100% of it:
 
 ```lisp
 (define deal (new-deal "Demo 2026-1" :closing-date (date 2026 11 20) :first-payment (date 2026 12 25)
@@ -691,23 +693,25 @@ for every point that the short rate is under 4.5%:
 (define (refinancing piece path)
   (let ((incentive (vector-clip (- 0.045 (vector-take (rate-path-short-rates path) (collateral-piece-wam piece))) 0.0 1.0)))
     (+ 5.0 (* 800.0 incentive))))
-(deal-set-prepayment-model! deal refinancing)                ; this forgets the paths (see below)
+(deal-set-prepayment-model! deal refinancing)
+(deal-set-pricing-speed! deal (prepayment-speed 'model 100)) ; this forgets the paths (see below)
 (node-oas (get-node deal "A"))                               ; => ()
 (deal-run-paths! deal :paths 10)
 (node-price (get-node deal "A"))                             ; => 100.5
 (node-oas (get-node deal "A"))                               ; => 49.56409369573326
 (node-effective-duration (get-node deal "A"))                ; => 0.5223917758561567
-(node-duration (get-node deal "A"))                          ; => 0.6427940046414851
+(node-duration (get-node deal "A"))                          ; => 0.5878938713532995
 (node-price (get-node deal "B"))                             ; => 101.86014674505945
 ```
 
-A is bought at 100.5, above par: when the model has the borrowers prepay faster as rates fall, its option is worth more, its OAS is lower (49.6 basis points where the static model gave 66.1), and it falls less
-in value when rates rise (an effective duration of 0.52 years, not 0.64): it is called back before it can gain. B was given its OAS, and it is the price that has changed, from 101.95 to 101.86. The static model
-is only there to begin with: a model that looks at the rates is the point.
+A is bought at 100.5, above par: when the model has the borrowers prepay faster as rates fall, its option is worth more, its OAS is lower (49.6 basis points where 150 PSA on every path gave 66.1), and it falls less
+in value when rates rise (an effective duration of 0.52 years, where its modified duration, of the cash flows that the model gives if rates follow the forward curve, is 0.59): it is called back before it can gain.
+B was given its OAS, and it is the price that has changed, from 101.95 to 101.86.
 
 `(deal-set-rate-model! deal model)`, `(deal-set-prepayment-model! deal model)` and `(deal-set-index-function! deal function)` give the deal its parts (`'()` takes one away, and the deal goes back to what it began with).
 
-**What forgets the paths.** They belong to the deal as it is, so they are forgotten when it changes: its collateral, its tranches, its pricing speed, its dates, its Treasury curve, or any of the three parts. The OAS and the
+**What forgets the paths.** They belong to the deal as it is, so they are forgotten when it changes: its collateral, its tranches, its pricing speed, its dates, its Treasury curve, any of the three parts, or what
+the prepayment model is told (the growth of home prices and the mortgage spread). The OAS and the
 effective duration of the tranches are blank until `deal-run-paths!` is called again. A tranche that was given a price, a yield or a spread keeps it. One that was given an OAS keeps that, and has no price until
 the paths are run, when it has one again. `(deal-forget-paths! deal)` does it by hand.
 
@@ -719,13 +723,80 @@ so the grid of a deal does not work it out again when it is redrawn. A deal with
 In a notebook the grid of the tranches, `(bonds deal)`, has the columns `oas` and `effective duration` (see "Building a deal by clicking"), and an OAS is typed in the grid as a price is.
 
 
+## The prepayment model
+
+A pricing speed of type `model` is a share of a **prepayment model that looks at rates**: `(prepayment-speed 'model 105)` is 105% of what the model says, month by month (and,
+as with any speed, the share can change with time: `(prepayment-speed 'model '((50 100 12)))` goes from 50% to 100% over a year). The model is the one fitted to a sample of
+Freddie Mac's 30-year loans (see "Models fitted to Freddie Mac's loans" in the library manual, and `notebooks/freddie_prepayment_model.ipynb`), which comes with the library
+in `lib/freddie_prepayment_fit.json`; a deal can be given one of its own instead, with `deal-set-prepayment-model!`.
+
+**What it looks at.** For each piece of collateral, and each month, 1 to its wam (`(prepayment-model-columns piece path)`):
+
+| What | Is |
+|---|---|
+| the incentive | the wac less the rate of a new mortgage at the start of the month: the 10-year Treasury yield of the path of rates, plus the **mortgage spread** of the deal (1.75 percent to begin with) |
+| the age | the piece's, and a month more each month |
+| the loan size, and the loan-to-value | the piece's, paid down by the scheduled payments; the loan-to-value falls, too, as home prices grow by the deal's **growth of home prices** (3 percent a year to begin with) |
+| burnout | the piece's, and a month more for each month in the money (an incentive above 75 basis points, after the first year) |
+| the credit score, the spread at origination, and the shares on investment properties and second homes and of refinances | the piece's, the same each month |
+| the season | from the date of the first payment |
+
+A piece that does not say what its loans are like (its slot is `'()`) is taken to be like `unknown-piece`: $250,000 loans, a credit score of 750, 70% loan-to-value, purchases of
+homes to live in. The model's answer is the CPR of each month.
+
+**Where the rates come from.** The cash flows at the pricing speed, which the yield, the spread and the duration are of, are what the model says if rates follow the
+**forward curve** of the deal's Treasury curve (`(deal-forward-path deal months)`: the curve read forward, with no randomness), so a speed of the model needs a Treasury curve.
+On the paths of rates that `deal-run-paths!` makes, the collateral prepays as the model says it does on each path, so the OAS and the effective duration take in what the
+borrowers' option is worth. The two are what the deal tells the model of the future, and are its slots: `(deal-set-home-price-growth! deal percent)` and
+`(deal-set-mortgage-spread! deal percent)`, or the fields under the pricing speed in `(info deal)`, where MODEL is a type of speed.
+
+```lisp
+(define deal (new-deal "Model 2026-1" :closing-date (date 2026 11 20) :first-payment (date 2026 12 25)
+                       :treasury-curve '((1 4.0) (2 4.1) (3 4.2) (5 4.3) (10 4.5))
+                       :collateral (list (make-collateral-piece :balance 10000000.0 :wac 6.5 :coupon 6.0 :wam 60 :age 3
+                                                                :credit-score 750 :ltv 75.0 :loan-size 350000))
+                       :speed (prepayment-speed 'model 100)))
+(deal-sequential! deal "POOL" '(("A" 6000000.0) ("B" 4000000.0)))
+(define (cpr-in-month month) (annual-rate (vector-ref (model-speed-smms deal (deal-pricing-speed deal) (car (deal-pieces deal))) (- month 1))))
+(cpr-in-month 1)                                             ; => 8.740078153786657
+(cpr-in-month 12)                                            ; => 19.432766343577747
+(deal-set-mortgage-spread! deal 1.0)                         ; mortgage rates 0.75 lower: the loans are 100 basis points in the money
+(cpr-in-month 1)                                             ; => 25.449261480205486
+(deal-set-mortgage-spread! deal 1.75)
+(deal-set-pricing-speed! deal (prepayment-speed 'model 150))
+(cpr-in-month 1)                                             ; => 13.110117230680007
+(deal-set-pricing-speed! deal (prepayment-speed 'model 100))
+(deal-set-price! deal "A" 100.5)
+(deal-run-paths! deal :paths 10)
+(node-spread (get-node deal "A"))                            ; => 117.58752714778478
+(node-oas (get-node deal "A"))                               ; => 78.91073186529778
+(node-duration (get-node deal "A"))                          ; => 1.0064532280939644
+(node-effective-duration (get-node deal "A"))                ; => 0.5797211881725738
+```
+
+The loans are 25 basis points in the money at first (6.5% against 4.5% + 1.75%), and season from 8.7 CPR to 19.4 in a year. A, bought above par, has an OAS 39 basis points
+below its spread, and an effective duration of 0.58 years where its modified duration is 1.01: when rates fall the loans prepay faster, and A is paid back before it
+can gain. For a 30-year pool of the same loans, divided the same way, with 20 paths:
+
+| | 150 PSA | MODEL 100 |
+|---|---|---|
+| A, at 101: spread and OAS | 143 and 143 | 129 and 5 |
+| A: duration and effective duration | 3.76 and 3.85 | 2.20 and 1.03 |
+| B, at 99: spread and OAS | 155 and 170 | 162 and 85 |
+| B: duration and effective duration | 9.73 and 9.91 | 8.10 and 4.50 |
+
+At 150 PSA, the same on every path, the OAS is about the spread and the effective duration about the duration: nothing is worth anything but the curve. With the model,
+the OAS is less by what the borrowers' option is worth, and the effective duration is about half the duration.
+
+
 ## Losses and shortfalls
 
 Both apply to some deals only. A deal with no losses has none, and a deal is only run with shortfalls if it asks for them.
 
 A deal made from pieces of collateral has **no default model yet**: its collateral pays all of its principal, and loses nothing, so every loss is 0, and the interest it pays is
 what its bonds are owed. What is here is what the tree does when the collateral does lose something, or pays less interest than the bonds are owed, which is a matter of the
-vectors of the collateral node, its `loss` and its `interest`: the tests of the library put them in by hand, and a model of defaults will give them.
+vectors of the collateral node, its `loss` and its `interest`: the tests of the library put them in by hand, and a model of defaults will give them. (A default
+model and a severity model fitted to Freddie Mac's loans are in the library manual, "Models fitted to Freddie Mac's loans"; they are not yet used by a deal.)
 
 ### Losses
 
@@ -937,9 +1008,10 @@ carries as a shortfall, if it ever does. `(deal-summary-months periods)` is the 
   with a row for the first month and the end of each year (the payment date, the balance, the principal, the interest paid to the investors, the speed of the month, and the wac and the
   pass-through coupon of the pool, which change as the pieces with the higher rates pay off). **Update the deal** gives the deal what is in the grid (`deal-set-collateral!`).
 - `(info deal)` is a few fields: the name, the closing date, the first payment date (written `2026-12-25`, or left blank), the Treasury curve (a grid of the years and the yield in percent of its points, with empty rows to type in, that a
-  spread is over: see "Prices, yields and spreads"), and the pricing speed, a type (PSA, CPR or SMM) and a grid of
+  spread is over: see "Prices, yields and spreads"), and the pricing speed, a type (PSA, CPR, SMM or MODEL) and a grid of
   pieces, each *from*, *to* and *months*, which is a speed that goes in a straight line from one to the other and is *to* in the last of the months; the last piece has 0 months, for the rest of
-  the time, and one row with the same speed twice is a single speed. The first row is always a piece, and any other row with nothing in it is left out. **Update the deal** gives the deal
+  the time, and one row with the same speed twice is a single speed. Under the speed are what the prepayment model is told, the growth of home prices and the mortgage spread
+  (see "The prepayment model"); MODEL 100 is 100% of the model. The first row is always a piece, and any other row with nothing in it is left out. **Update the deal** gives the deal
   what is typed, and nothing is changed if something is wrong.
 - `(bonds deal)` is the grid of the tranches (see "Building a deal by clicking"), with a column beside the split to click for the cash flows of a tranche.
 

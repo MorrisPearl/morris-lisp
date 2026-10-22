@@ -4968,7 +4968,9 @@ error.
 #### `(load-variables path)`
 Defines each variable saved in the file again, at the top level (even
 when it's called inside a function), and returns their names. Nothing is
-defined unless every value can be read.
+defined unless every value can be read. A file that isn't in the current
+directory is looked for where `load` looks for one (in `LISP_PATH`, then in
+`lib/` and `examples/`), so a library can keep a saved model beside it.
 
 ```lisp
 (load-variables "work.json")                      ; => (loans rates)

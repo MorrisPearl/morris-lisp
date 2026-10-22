@@ -15,8 +15,11 @@
 ;                      the deal, and spread out. (rate-model, with the values of the manual to begin with: they are to be worked out from market data.)
 ;   the prepayment model   a function (model piece path): the annual prepayment rate, in percent (a CPR of 6 is 6), for each month of the collateral-piece (a vector with as many
 ;                      as its wam, month 1 being the first payment), given the rate-path, the short rate and the 10-year yield, each a vector with a rate (a decimal) for each month
-;                      from the start. What a model looks at is its own affair: the piece says what the loans are (their wac, age and so on). To begin with it is
-;                      (static-prepayment-model speed), which does not look at rates at all, and prepays at the pricing speed of the deal.
+;                      from the start, and the date of the first payment. What a model looks at is its own affair: the piece says what the loans are (their wac, age and so on).
+;                      A pricing speed of the model (prepayment-speed 'model 105) is 105% of it, on each path; the cash flows at the pricing speed are what it says if rates follow
+;                      the forward curve (deal-forward-path). It is the one fitted to Freddie Mac's loans (freddie-prepayment-model, told the deal's home-price-growth and
+;                      mortgage-spread), unless the deal is given another. A pricing speed of another type (PSA, CPR, SMM) does not look at rates: the paths prepay at it
+;                      (static-prepayment-model).
 ;   the index function  a function of the path of short rates that gives the path of the index that a floating tranche is of: a vector with a number (a decimal) for each month.
 ;                      To begin with it is the identity: the index is the short rate.
 ;
@@ -33,12 +36,14 @@
 (require "deal.lsp")
 (require "yield_curves.lsp")
 (require "solver.lsp")
+(require "freddie_prepayment.lsp")
 
 (defstruct rate-model (a 2.75) (b 0.15) (sigma1 0.019) (sigma2 0.012))
 ; the numbers of the two-factor model of the paths (see simulate-rate-paths): how fast the short rate follows the level, and the level follows its mean, and the sizes of the shocks
 
-(defstruct rate-path short-rates long-yields)
-; a path of rates that a prepayment model is given: the short rate, and the 10-year par yield, at the start of each month from today, as vectors of decimals
+(defstruct rate-path short-rates long-yields (first-payment '()))
+; a path of rates that a prepayment model is given: the short rate, and the 10-year par yield, at the start of each month from today, as vectors of decimals, and the
+; date of the first payment, month 1 ('() if the deal has none), for a model that looks at the seasons
 
 (defstruct path-run rates flows)
 ; the paths that were run on one curve: rates is a list of vectors, the short rate on each path; flows is a hash table of the name of a tranche to a list, a vector for each
@@ -59,11 +64,39 @@ that the speed is for each month of the piece."
     (let ((smms (speed-smms speed (collateral-piece-age piece) (collateral-piece-wam piece))))
       (* 100.0 (- 1.0 (expt (- 1.0 smms) 12.0))))))
 
-(define (deal-prepayment-model-in-use deal)
-  "The prepayment model of the deal, or, if it has none, the one that prepays at its pricing speed."
+(define (model-at-speed model speed)
+  "The prepayment model, as a share of it that the speed of the model (prepayment-speed 'model ...) says, in each month: 105 is 105% of the rates it gives (no more than 99)."
+  (lambda (piece path)
+    (vector-clip (* (model piece path) (/ (speed-values speed (collateral-piece-wam piece)) 100.0)) 0.0 99.0)))
+
+(define (deal-base-prepayment-model deal)
+  "The deal's prepayment model: the one it was given (deal-set-prepayment-model!), or the one fitted to Freddie Mac's loans, told the deal's growth of home prices and
+mortgage spread."
   (if (null? (deal-prepayment-model deal))
-      (static-prepayment-model (deal-pricing-speed deal))
+      (freddie-prepayment-model :home-price-growth (deal-home-price-growth deal) :mortgage-spread (deal-mortgage-spread deal))
       (deal-prepayment-model deal)))
+
+(define (deal-prepayment-model-in-use deal)
+  "The prepayment model that the paths are prepaid by: if the pricing speed of the deal is of the model, the deal's prepayment model at that speed (see model-at-speed);
+otherwise one that prepays at the pricing speed, whatever the rates."
+  (let ((speed (deal-pricing-speed deal)))
+    (if (model-speed? speed)
+        (model-at-speed (deal-base-prepayment-model deal) speed)
+        (static-prepayment-model speed))))
+
+(define (deal-forward-path deal months)
+  "The path of rates that the forward curve of the deal's Treasury curve is (one with no randomness: the curve itself, read forward), at least months long: what rates
+are if they do what the market expects. An error if the deal has no curve."
+  (when (null? (deal-treasury-curve deal))
+    (error "a speed of the prepayment model needs a Treasury curve, which the rates it looks at are read forward from: give the deal one, (deal-set-treasury-curve! deal '((2 4.1) (10 4.5))), or in (info deal)"))
+  (let ((paths (simulate-rate-paths (deal-forward-curve deal) 0.0 0.0 (max 1 (ceiling (/ months 12.0))) 2)))
+    (make-rate-path :short-rates (car (second paths)) :long-yields (car (third paths)) :first-payment (deal-first-payment deal))))
+
+(define (model-speed-smms deal speed piece)
+  "The single monthly mortality, a decimal, of each month of the piece at a speed of the prepayment model: what the deal's prepayment model says it is if rates follow the
+forward curve, times the share that the speed says."
+  (let ((months (collateral-piece-wam piece)))
+    (smms-from-cprs ((model-at-speed (deal-base-prepayment-model deal) speed) piece (deal-forward-path deal months)) months)))
 
 (define (deal-rate-model-in-use deal)
   "The rate model of the deal, or, if it has none, one with the numbers of the library manual."
@@ -123,7 +156,7 @@ got, as label."
     (loop for short in short-paths
           for long in long-paths
           for number from 1
-          do (let* ((path (make-rate-path :short-rates short :long-yields long))
+          do (let* ((path (make-rate-path :short-rates short :long-yields long :first-payment (deal-first-payment deal)))
                     (flows (path-tranche-flows deal (path-collateral-flows deal pieces model path) (deal-index-of-short-rates deal short) names)))
                (for-each (lambda (name flow) (hash-table-set! collected name (cons flow (hash-table-ref collected name)))) names flows)
                (when (or (= (remainder number every) 0) (= number count))

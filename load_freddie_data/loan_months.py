@@ -30,6 +30,22 @@ balance: 1 for a loan that was paid off. Over a pool, it is the prepaid
 amounts added up over the scheduled balances added up, and the CPR is
 1 - (1 - smm)^12.
 
+When a loan defaulted, and what was lost
+----------------------------------------
+A loan DEFAULTS in the first month that it is six months delinquent, unless
+it is in forbearance or delinquent because of a disaster (as most loans that
+were that delinquent in 2020 and 2021 were, in the COVID-19 forbearance, and
+most of them caught up), or that the home is taken by foreclosure, or that the
+loan ends in a third-party sale, a short sale, an REO sale or a sale of the
+note of a loan that is not being paid (codes 02, 03, 09 and 15), whichever is
+first. That is near what Freddie calls a credit event in the bonds that share
+its losses. A loan that has defaulted is not counted again.
+
+On a third-party sale, a short sale or an REO sale, Freddie says what was
+LOST: the balance, the unpaid interest and the costs, less what the home sold
+for and what mortgage insurance and others paid. The SEVERITY is the loss over
+the balance that was removed.
+
 What a prepayment model looks at
 --------------------------------
   incentive      the loan's rate less the average survey rate of the month
@@ -53,6 +69,9 @@ from market_data import add_months, months_between
 
 BURNOUT_INCENTIVE = 0.75     # percent: a month with an incentive above this is a chance to refinance
 BURNOUT_FROM_AGE = 12        # months: chances are counted after the first year
+DEFAULT_DELINQUENCY = 6      # months: a loan this delinquent, and not in forbearance, has defaulted
+DEFAULT_CODES = ("02", "03", "09", "15")     # third-party sale, short sale, REO sale, sale of a note not being paid
+LOSS_CODES = ("02", "03", "09")              # the ones that Freddie reports a loss for
 
 
 def scheduled_principal(balance, rate, payments_left):
@@ -85,6 +104,17 @@ def curtailment_can_be_seen(previous, month):
             and previous["deferred_upb"] == month["deferred_upb"])
 
 
+def defaults_this_month(month):
+    """Whether a loan that has not defaulted defaults in this month (see the top of the file). A loan that ends this month in some other way
+    (it is paid off, repurchased, or sold while it is being paid) has not."""
+    code = month["zero_balance_code"]
+    if code is not None:
+        return code in DEFAULT_CODES
+    seriously_delinquent = (month["months_delinquent"] is not None and month["months_delinquent"] >= DEFAULT_DELINQUENCY
+                            and not month["in_forbearance"])
+    return seriously_delinquent or month["reo_acquired"]
+
+
 def loan_months(loan, months, rates, prices):
     """A dict for each month of the loan after its first row (which is the month before its first payment, when nothing is due), with a
     balance at its start: the columns of the table loan_months (see build_freddie_sample.py). loan is the loan's origination record,
@@ -102,6 +132,7 @@ def loan_months(loan, months, rates, prices):
         "orig_term": loan["orig_term"],
         "credit_score": loan["credit_score"],
         "dti": loan["dti"],
+        "mi_percent": loan["mi_percent"],
         "borrowers": loan["borrowers"],
         "first_time_buyer": loan["first_time_buyer"],
         "occupancy": loan["occupancy"],
@@ -115,6 +146,7 @@ def loan_months(loan, months, rates, prices):
 
     rows = []
     burnout = 0
+    default_month, ltv_at_default = None, None
     for previous, month in zip(months, months[1:]):
         start = previous["upb"]
         if start <= 0:
@@ -136,6 +168,13 @@ def loan_months(loan, months, rates, prices):
         current_ltv = (loan["orig_ltv"] * (start / loan["orig_upb"]) / price_change
                        if loan["orig_ltv"] is not None and price_change else None)
 
+        already_defaulted = default_month is not None
+        defaults_now = not already_defaulted and defaults_this_month(month)
+        if defaults_now:
+            default_month, ltv_at_default = month["period"], current_ltv
+        loss = month["actual_loss"] if code in LOSS_CODES else None
+        removal = month["removal_upb"] if code is not None else None
+
         rows.append(dict(loan_facts,
                          period=as_date(month["period"]),
                          calendar_month=int(month["period"][4:]),
@@ -155,7 +194,15 @@ def loan_months(loan, months, rates, prices):
                          burnout=burnout,
                          home_price_change=price_change,
                          current_ltv=current_ltv,
-                         freddie_ltv=month["freddie_ltv"]))
+                         freddie_ltv=month["freddie_ltv"],
+                         in_forbearance=1 if month["in_forbearance"] else 0,
+                         defaulted=1 if defaults_now else 0,
+                         after_default=1 if already_defaulted else 0,
+                         ltv_at_default=ltv_at_default,
+                         months_since_default=months_between(default_month, month["period"]) if default_month else None,
+                         removal_upb=removal,
+                         loss=loss,
+                         severity=loss / removal if loss is not None and removal else None))
 
         if incentive is not None and age > BURNOUT_FROM_AGE and incentive > BURNOUT_INCENTIVE:
             burnout += 1

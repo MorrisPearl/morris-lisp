@@ -1,8 +1,9 @@
 # Freddie Mac loans, for a prepayment model
 
-These scripts make a SQLite database of a sample of Freddie Mac's 30-year fixed-rate loans, every month of each, with what it prepaid and what a
-prepayment model looks at. `lisp_interp/lib/freddie_prepayment.lsp` fits a model to it, and `lisp_interp/notebooks/freddie_prepayment_model.ipynb`
-shows it.
+These scripts make a SQLite database of a sample of Freddie Mac's 30-year fixed-rate loans, every month of each, with what it prepaid, whether
+it defaulted, what was lost, and what the models look at. `lisp_interp/lib/freddie_prepayment.lsp` fits a prepayment model to it, and
+`lisp_interp/lib/freddie_default.lsp` a default model and a severity model; `lisp_interp/notebooks/freddie_prepayment_model.ipynb` and
+`freddie_default_model.ipynb` show them.
 
 ## Making the database
 
@@ -46,6 +47,20 @@ The **smm** of a month is what was prepaid over the scheduled balance: 1 for a l
 the scheduled balances added up, so a model of it is fitted with each month weighted by its scheduled balance; the CPR is 1 - (1 - smm)^12.
 
 The months of a loan four or more months delinquent are left out of a model: those loans are bought out of an agency's pools.
+
+## Defaults, and what was lost
+
+A loan **defaults** in the first month that it is six months delinquent, unless it is in forbearance or delinquent because of a disaster, or
+that the home is taken by foreclosure, or that the loan ends in a third-party sale, a short sale, an REO sale or a sale of the note while it is
+not being paid (codes 02, 03, 09 and 15), whichever is first. That is near what Freddie calls a credit event in the bonds that share its
+losses. Leaving out forbearance matters: about 3,500 loans of the sample were six months delinquent for the first time in 2020, against about
+350 in 2019, and most were in the COVID-19 forbearance, and caught up. A loan defaults once: `defaulted` is 1 in that month, and
+`after_default` in the months after it, which are not months it could default in.
+
+On a third-party sale, a short sale or an REO sale, Freddie reports what was **lost** (`loss`): the balance, the unpaid interest and the
+costs (taxes, upkeep, lawyers), less what the home sold for and what mortgage insurance and others paid. The **severity** is the loss over
+the balance that was removed. Freddie reports no loss for a sale of a note (15 and 16). `ltv_at_default` and `months_since_default` are
+what a severity model looks at.
 
 ## What a model looks at
 

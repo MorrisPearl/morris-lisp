@@ -144,15 +144,21 @@ percent. An error that says what is wrong with it."
   "Gives the deal the Treasury curve that spreads are to: a list of (years yield), such as '((2 4.1) (3 4.2)), or a table with the columns years and yield. The yields are
 in percent. The spreads of the tranches are worked out again (the ones that were given stay as they were, and so do the prices of those that were given a price, whose spreads
 change)."
-  (deal-treasury-curve-set! deal (treasury-points curve))
-  (deal-path-sets-set! deal '())                  ; (the paths of rates start on the curve: they are to be run again)
+  (let ((points (treasury-points curve)))
+    (if (model-speed? (deal-pricing-speed deal))
+        (deal-change-pricing! deal (lambda (a-deal) (deal-treasury-curve-set! a-deal points)))   ; (the model's prepayments look at the rates of the curve)
+        (begin
+          (deal-treasury-curve-set! deal points)
+          (deal-path-sets-set! deal '()))))       ; (the paths of rates start on the curve: they are to be run again)
   (deal-update-analytics! deal)
   (deal-refresh-views! deal 'prices 'info)
   (deal-treasury-curve deal))
 
 (define (deal-clear-treasury-curve! deal)
   "Takes the Treasury curve away from the deal: there is no spread to work out, and a tranche that was priced by a spread has nothing to take it over. The paths of rates,
-which start on it, are forgotten."
+which start on it, are forgotten. A deal whose pricing speed is of the prepayment model needs its curve."
+  (when (model-speed? (deal-pricing-speed deal))
+    (error "the pricing speed of the deal is of the prepayment model, which looks at the rates of the Treasury curve: choose another speed before taking the curve away"))
   (deal-treasury-curve-set! deal '())
   (deal-path-sets-set! deal '())
   (deal-update-analytics! deal)
@@ -343,12 +349,12 @@ deal, its Treasury curve, or its models change. Returns the deal."
   (deal-forget-paths! deal))
 
 (define (deal-set-prepayment-model! deal model)
-  "Gives the deal the prepayment model that the paths are prepaid by: a function (model piece path) of a collateral-piece and a rate-path, that gives the annual prepayment rate in
-percent for each month of the piece (see deal_paths.lsp); '() for the one that prepays at the pricing speed of the deal, whatever the rates. The paths are forgotten."
+  "Gives the deal the prepayment model that a pricing speed of the model (type model) is a share of: a function (model piece path) of a collateral-piece and a rate-path, that
+gives the annual prepayment rate in percent for each month of the piece (see deal_paths.lsp); '() for the one fitted to Freddie Mac's loans (see freddie-prepayment-model).
+If the pricing speed is of the model, the cash flows of the collateral are worked out again; the paths are forgotten."
   (unless (or (null? model) (procedure? model))
-    (error (format "the prepayment model is a function of a piece of collateral and a path of rates, or '() for none, not {}" model)))
-  (deal-prepayment-model-set! deal model)
-  (deal-forget-paths! deal))
+    (error (format "the prepayment model is a function of a piece of collateral and a path of rates, or '() for the one fitted to Freddie Mac's loans, not {}" model)))
+  (deal-change-pricing! deal (lambda (a-deal) (deal-prepayment-model-set! a-deal model))))
 
 (define (deal-set-index-function! deal function)
   "Gives the deal the function that makes the index that its floating tranches are of from a path of short rates, a vector, to a vector of the index with a number for each month; '() for

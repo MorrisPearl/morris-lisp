@@ -25,13 +25,14 @@ class RisingPrices:
 
 
 LOAN = {"loan_id": "F20Q10000001", "first_payment": "202002", "orig_upb": 100000.0, "orig_rate": 6.0, "orig_ltv": 80, "orig_term": 360,
-        "credit_score": 760, "dti": 30, "borrowers": 2, "first_time_buyer": 0, "occupancy": "P", "purpose": "P", "property_type": "SF",
+        "credit_score": 760, "dti": 30, "mi_percent": 0, "borrowers": 2, "first_time_buyer": 0, "occupancy": "P", "purpose": "P", "property_type": "SF",
         "channel": "R", "state": "NY", "zip3": "100"}
 
 
-def month(period, upb, age, remaining, code=None, delinquent=0, modified=False, deferred=0.0, rate=6.0):
-    return {"period": period, "upb": upb, "months_delinquent": delinquent, "loan_age": age, "remaining_months": remaining,
-            "modified": modified, "zero_balance_code": code, "rate": rate, "deferred_upb": deferred, "freddie_ltv": None}
+def month(period, upb, age, remaining, code=None, delinquent=0, modified=False, deferred=0.0, rate=6.0, forbearance=False, loss=None, removal=None):
+    return {"period": period, "upb": upb, "months_delinquent": delinquent, "reo_acquired": False, "loan_age": age, "remaining_months": remaining,
+            "modified": modified, "zero_balance_code": code, "rate": rate, "deferred_upb": deferred, "freddie_ltv": None,
+            "in_forbearance": forbearance, "actual_loss": loss, "removal_upb": removal}
 
 
 def scheduled_history(months, extra=None):
@@ -98,6 +99,59 @@ class TestPrepayments(unittest.TestCase):
         rows.append(month("202012", 0.0, 10, 350, code="03"))
         last = loan_months(LOAN, rows, FlatRates(), RisingPrices())[-1]
         self.assertEqual((last["prepaid"], last["payoff"], last["exit_code"]), (0.0, 0, "03"))
+
+
+def stops_paying(rows, from_age, forbearance=False):
+    """The rows, with the loan paying nothing from the month of from_age on: delinquent one more month each month."""
+    stuck = rows[from_age - 1]["upb"]
+    return rows[:from_age] + [dict(r, upb=stuck, months_delinquent=r["loan_age"] - from_age + 1, in_forbearance=forbearance) for r in rows[from_age:]]
+
+
+class TestDefaults(unittest.TestCase):
+
+    def test_a_loan_defaults_in_the_month_it_is_six_months_delinquent_and_only_once(self):
+        rows = loan_months(LOAN, stops_paying(scheduled_history(20), 10), FlatRates(), RisingPrices())
+        by_age = {r["loan_age"]: r for r in rows}
+        self.assertEqual([age for age, r in by_age.items() if r["defaulted"]], [15])        # (delinquent 1 month at age 10, 6 at age 15)
+        self.assertEqual([age for age, r in by_age.items() if r["after_default"]], list(range(16, 21)))
+        self.assertEqual(by_age[15]["ltv_at_default"], by_age[15]["current_ltv"])
+        self.assertEqual(by_age[18]["months_since_default"], 3)
+        self.assertIsNone(by_age[14]["months_since_default"])
+
+    def test_six_months_delinquent_in_forbearance_is_not_a_default(self):
+        rows = loan_months(LOAN, stops_paying(scheduled_history(20), 10, forbearance=True), FlatRates(), RisingPrices())
+        self.assertEqual(sum(r["defaulted"] for r in rows), 0)
+        self.assertEqual(rows[-1]["in_forbearance"], 1)
+
+    def test_a_short_sale_before_six_months_is_a_default_with_its_loss_and_severity(self):
+        rows = stops_paying(scheduled_history(12), 10)
+        rows.append(month(add_months("202001", 13), 0.0, 12, 348, code="03", delinquent=3, loss=30000.0, removal=rows[-1]["upb"]))
+        last = loan_months(LOAN, rows, FlatRates(), RisingPrices())[-1]
+        self.assertEqual((last["defaulted"], last["after_default"], last["months_since_default"]), (1, 0, 0))
+        self.assertEqual(last["loss"], 30000.0)
+        self.assertAlmostEqual(last["severity"], 30000.0 / rows[-2]["upb"])
+        self.assertEqual(last["prepaid"], 0.0)
+
+    def test_an_reo_sale_after_the_default_has_the_months_since_it(self):
+        rows = stops_paying(scheduled_history(24), 10)
+        rows.append(month(add_months("202001", 25), 0.0, 24, 336, code="09", delinquent=None, loss=-500.0, removal=rows[-1]["upb"]))
+        result = loan_months(LOAN, rows, FlatRates(), RisingPrices())
+        last = result[-1]
+        self.assertEqual((last["defaulted"], last["after_default"], last["months_since_default"]), (0, 1, 10))        # (defaulted at age 15, sold at 25)
+        self.assertLess(last["severity"], 0)                                 # (a sale for more than was owed is a gain)
+        self.assertEqual(sum(r["defaulted"] for r in result), 1)
+
+    def test_a_loan_paid_off_in_the_month_it_would_have_defaulted_has_not_defaulted(self):
+        rows = stops_paying(scheduled_history(14), 10)
+        rows.append(month(add_months("202001", 15), 0.0, 14, 346, code="01", delinquent=6))
+        self.assertEqual(sum(r["defaulted"] for r in loan_months(LOAN, rows, FlatRates(), RisingPrices())), 0)
+
+    def test_a_payoff_and_a_note_sale_of_a_performing_loan_are_not_defaults(self):
+        rows = scheduled_history(10)
+        rows.append(month("202012", 0.0, 10, 350, code="16", removal=rows[-1]["upb"]))
+        last = loan_months(LOAN, rows, FlatRates(), RisingPrices())[-1]
+        self.assertEqual((last["defaulted"], last["loss"], last["severity"]), (0, None, None))
+        self.assertEqual(last["removal_upb"], rows[-2]["upb"])
 
 
 class TestWhatAModelLooksAt(unittest.TestCase):

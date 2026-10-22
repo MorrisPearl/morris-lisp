@@ -103,7 +103,7 @@
 
 (defstruct deal name (nodes (make-hash-table)) (names '()) root periods (index '()) (shortfalls #f) (first-payment '())
   (closing-date '()) (collateral '()) (pricing-speed '()) (views '()) (ran #f) (treasury-curve '()) (priced-run '()) (tracks-prices #f)
-  (rate-model '()) (prepayment-model '()) (index-function '()) (path-sets '()))
+  (rate-model '()) (prepayment-model '()) (index-function '()) (path-sets '()) (home-price-growth 3.0) (mortgage-spread 1.75))
 ; The nodes are the tranches, by name, and root is the name of the collateral node, whose cash flows the rest are paid from. The collateral is data,
 ; a table with a row for each piece (balance wac coupon wam age) in collateral, and the cash flows of the root are worked out from it at the pricing
 ; speed, or at the speed that deal-run! is given. views are the functions that show the deal in a notebook, each with the kinds of change that
@@ -111,7 +111,9 @@
 ; the list of (years yield) that a spread is to (see deal_pricing.lsp); priced-run is a copy of the deal that has been run at the pricing speed, to price the tranches
 ; from, or '() (it is made again after the deal has changed); tracks-prices is #t once a tranche has been priced, when the deal has a view that works the prices out again
 ; when it changes (see deal-track-prices!). rate-model, prepayment-model and index-function are what the paths of rates are made with, and path-sets the paths that have been run, with
-; the cash flows of every tranche on each (see deal_paths.lsp): '() until the paths are run, and again when the deal changes.
+; the cash flows of every tranche on each (see deal_paths.lsp): '() until the paths are run, and again when the deal changes. home-price-growth (percent a year)
+; and mortgage-spread (the rate of a new mortgage over the 10-year Treasury yield, percent) are what a prepayment model is told of the future: how much the
+; loan-to-value of the loans falls, and what rate they could refinance at (see freddie-prepayment-model).
 
 (defgeneric pay-principal (split deal parent t)
   "Divides the principal of month t that the parent was paid among the children of the split: see the top of the file.")
@@ -230,11 +232,12 @@ by month (see pool-coupons)."
         (pool-coupons (cadr flows) (caddr flows)))))
 
 (define (new-deal name &key (collateral '()) (speed (prepayment-speed 'psa 100)) (first-payment '()) (closing-date '())
-                            (collateral-name "POOL") (shortfalls #f))
+                            (treasury-curve '()) (collateral-name "POOL") (shortfalls #f))
   "A deal with one tranche, called collateral-name, the cash flows of the collateral, which is the root of the tree. The collateral is a table
 (see collateral-table) or a list of pieces, each (balance wac coupon wam [age]), and can be given later, with deal-set-collateral!. :speed is the
 pricing speed (see prepayment-speed), 100 PSA to begin with: what the cash flows are, and what the sizes of the splits that depend on them are worked
-out at. The dates are those of the first payment, which is month 1, and of the closing. With :shortfalls #t the interest that is not enough to pay what the
+out at. The dates are those of the first payment, which is month 1, and of the closing. :treasury-curve is the Treasury curve (see deal-set-treasury-curve!), which
+a speed of the prepayment model needs. With :shortfalls #t the interest that is not enough to pay what the
 bonds are owed is a shortfall of the bonds that go without, carried forward, instead of an error: see \"Losses and shortfalls\", in the CMO manual."
   (unless (eq? (vector-precision) 'double)
     (error "new-deal: a deal is made in double precision: (set-vector-precision! 'double)"))
@@ -245,7 +248,8 @@ bonds are owed is a shortfall of the bonds that go without, carried forward, ins
   (unless (or (null? closing-date) (date? closing-date))
     (error (format "new-deal: :closing-date is a date, such as (date 2026 11 20), not {}" closing-date)))
   (let ((deal (make-deal :name name :root collateral-name :periods 0 :shortfalls shortfalls :first-payment first-payment
-                         :closing-date closing-date :pricing-speed speed :collateral (collateral-table '()))))
+                         :closing-date closing-date :pricing-speed speed :collateral (collateral-table '())
+                         :treasury-curve (if (null? treasury-curve) '() (treasury-points treasury-curve)))))
     (deal-add-node! deal (make-collateral :name collateral-name :balance (make-vector 1 0.0) :principal (make-vector 0 0.0)
                                           :interest (make-vector 0 0.0) :coupon (constant-coupon 0.0)))
     (unless (null? collateral)
@@ -271,6 +275,13 @@ rows with a balance. '() if it has none."
       (error (format "the collateral pays for {} months, and the deal has {}" (vector-length (car flows)) periods)))
     (list (padded (car flows) periods) (padded (cadr flows) periods) (padded (caddr flows) (+ periods 1)))))
 
+(define (deal-project-pieces deal pieces speed)
+  "The cash flows of the pieces at the speed (see project-pieces). A speed of the prepayment model (type model) is a share of what the deal's prepayment model says:
+each piece prepays as the model says it would if rates followed the forward curve of the deal's Treasury curve (see model-speed-smms, in deal_paths.lsp)."
+  (if (model-speed? speed)
+      (project-pieces-with pieces (lambda (piece) (model-speed-smms deal speed piece)))
+      (project-pieces pieces speed)))
+
 (define (deal-pricing-flows deal)
   "The principal, interest and balance (vectors) that the collateral pays at the pricing speed, as long as the deal: worked out from its pieces, so that it
 does not matter what speed the deal was last run at. (A deal with no pieces has the cash flows that its root has.)"
@@ -278,7 +289,7 @@ does not matter what speed the deal was last run at. (A deal with no pieces has 
     (if (null? pieces)
         (let ((root (get-node deal (deal-root deal))))
           (list (node-principal root) (node-interest root) (node-balance root)))
-        (deal-pad-flows deal (project-pieces pieces (deal-pricing-speed deal))))))
+        (deal-pad-flows deal (deal-project-pieces deal pieces (deal-pricing-speed deal))))))
 
 (define (deal-put-collateral-flows! deal pieces flows)
   "Gives the root the cash flows, (principal interest balance ...), of the pieces: its vectors, and its coupon."
@@ -295,7 +306,7 @@ does not matter what speed the deal was last run at. (A deal with no pieces has 
   (let ((pieces (deal-pieces deal)))
     (when (null? pieces)
       (error "the deal has no collateral to work out cash flows from: give it some with deal-set-collateral! (or, in a notebook, in (collateral deal))"))
-    (deal-put-collateral-flows! deal pieces (project-pieces pieces speed))))
+    (deal-put-collateral-flows! deal pieces (deal-project-pieces deal pieces speed))))
 
 (define (deal-assign-coupons-below! deal node)
   "Gives the children of the node their coupons again, by their splits, and theirs, to the leaves."
@@ -333,7 +344,7 @@ collateral at the pricing speed, the coupons of the tranches, and the sizes of t
 and the deal is half changed (see deal-set-collateral!, which tries it first on a copy)."
   (deal-collateral-set! deal table)
   (let* ((pieces (deal-pieces deal))
-         (flows (project-pieces pieces (deal-pricing-speed deal))))
+         (flows (deal-project-pieces deal pieces (deal-pricing-speed deal))))
     (deal-set-periods! deal (vector-length (car flows)))
     (deal-put-collateral-flows! deal pieces flows)
     (deal-resize-below! deal (get-node deal (deal-root deal)))))      ; (which gives the tranches their coupons again, as well as their sizes)
@@ -347,18 +358,38 @@ wrong, in the collateral, or in a split below it."
     (collateral-pieces-in-use (collateral-table-pieces table))
     (deal-change! deal (lambda (a-deal) (deal-install-collateral! a-deal table)) 'collateral 'tranches)))
 
-(define (deal-set-pricing-speed! deal speed)
-  "Makes the speed (see prepayment-speed) the pricing speed of the deal: the cash flows of the collateral are worked out at it, and so are the sizes of
-the tranches that depend on them (those sized by their average lives)."
-  (unless (speed-curve? speed)
-    (error (format "the speed is made by prepayment-speed, such as (prepayment-speed 'psa 100), not {}" speed)))
+(define (deal-change-pricing! deal change)
+  "Makes a change to the deal (change is called on a copy first, and then on the deal: see deal-change!) to something that the cash flows of the collateral at the
+pricing speed are worked out from: they are worked out again, and so are the sizes of the tranches that depend on them (those sized by their average lives). The
+pricing speed is one; and, if it is a speed of the prepayment model, so are the Treasury curve, the model, the growth of home prices and the mortgage spread."
   (deal-change! deal
                 (lambda (a-deal)
-                  (deal-pricing-speed-set! a-deal speed)
+                  (change a-deal)
                   (unless (null? (deal-pieces a-deal))
-                    (deal-generate-collateral! a-deal speed)
+                    (deal-generate-collateral! a-deal (deal-pricing-speed a-deal))
                     (deal-resize-below! a-deal (get-node a-deal (deal-root a-deal)))))
                 'info 'tranches))
+
+(define (deal-set-pricing-speed! deal speed)
+  "Makes the speed (see prepayment-speed) the pricing speed of the deal: the cash flows of the collateral are worked out at it, and so are the sizes of
+the tranches that depend on them (those sized by their average lives). A speed of the prepayment model needs a Treasury curve."
+  (unless (speed-curve? speed)
+    (error (format "the speed is made by prepayment-speed, such as (prepayment-speed 'psa 100), not {}" speed)))
+  (deal-change-pricing! deal (lambda (a-deal) (deal-pricing-speed-set! a-deal speed))))
+
+(define (deal-set-home-price-growth! deal percent)
+  "Tells the deal's prepayment model how much home prices grow, in percent a year (3 to begin with; it can be below 0): the loan-to-value of the loans falls by it, and
+a borrower with more equity can refinance. The cash flows at a pricing speed of the model are worked out again, and the paths of rates are forgotten."
+  (unless (and (number? percent) (> percent -100))
+    (error (format "the growth of home prices is in percent a year, above -100, not {}" percent)))
+  (deal-change-pricing! deal (lambda (a-deal) (deal-home-price-growth-set! a-deal percent))))
+
+(define (deal-set-mortgage-spread! deal percent)
+  "Tells the deal's prepayment model how far above the 10-year Treasury yield the rate of a new mortgage is, in percent (1.75 to begin with): the rate that a borrower
+could refinance at, on each path of rates. The cash flows at a pricing speed of the model are worked out again, and the paths of rates are forgotten."
+  (unless (number? percent)
+    (error (format "the mortgage spread is in percent over the 10-year Treasury yield, such as 1.75, not {}" percent)))
+  (deal-change-pricing! deal (lambda (a-deal) (deal-mortgage-spread-set! a-deal percent))))
 
 (define (deal-set-first-payment! deal date)
   "Gives the deal the date of its first payment (or '() for none): month 1."
@@ -757,7 +788,9 @@ by running the splits above it (see deal-principal-now), and is divided in order
   (let ((copy (make-deal :name (deal-name deal) :root (deal-root deal) :periods (deal-periods deal) :index (deal-index deal)
                          :shortfalls (deal-shortfalls deal) :first-payment (deal-first-payment deal)
                          :closing-date (deal-closing-date deal) :collateral (deal-collateral deal)
-                         :pricing-speed (deal-pricing-speed deal) :treasury-curve (deal-treasury-curve deal))))
+                         :pricing-speed (deal-pricing-speed deal) :treasury-curve (deal-treasury-curve deal)
+                         :rate-model (deal-rate-model deal) :prepayment-model (deal-prepayment-model deal) :index-function (deal-index-function deal)
+                         :home-price-growth (deal-home-price-growth deal) :mortgage-spread (deal-mortgage-spread deal))))
     (dolist (name (deal-names deal))
       (let ((node (copy-node (get-node deal name))))
         (node-balance-set! node (vector-copy (node-balance node)))

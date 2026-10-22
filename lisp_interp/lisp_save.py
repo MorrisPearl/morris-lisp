@@ -296,8 +296,15 @@ def save_variables(path, pairs, *options):
 
 
 def read_saved_variables(path, env, who):
-    """The (name, value) of each variable saved in the file at path."""
+    """The (name, value) of each variable saved in the file at path. A path that isn't absolute, and isn't in the current directory, is looked
+    for where load looks for a file: in LISP_PATH, and then in the interpreter's lib and examples directories (so a library can keep its data
+    beside it)."""
     path = os.path.expanduser(str(path))
+    if not os.path.isabs(path) and not os.path.exists(path):
+        from lisp_builtins import load_path
+        found = [os.path.join(d, path) for d in load_path() if os.path.isfile(os.path.join(d, path))]
+        if found:
+            path = found[0]
     try:
         with open(path, encoding="utf-8") as f:
             document = json.load(f)

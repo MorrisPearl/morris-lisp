@@ -51,7 +51,7 @@ that use all this are described in
   - [Interest rate paths (the two-factor model)](#interest-rate-paths-the-two-factor-model)
   - [Regression models](#regression-models)
   - [How good is a model? The measures, explained](#how-good-is-a-model-the-measures-explained)
-  - [A prepayment model fitted to Freddie Mac's loans](#a-prepayment-model-fitted-to-freddie-macs-loans)
+  - [Models fitted to Freddie Mac's loans](#models-fitted-to-freddie-macs-loans)
   - [Linear programming](#linear-programming)
   - [Stratification tables](#stratification-tables)
 - [Investments](#investments)
@@ -112,7 +112,7 @@ The functions for investment analysis, in the order an analysis uses them.
    (`sofr-*`, under "tastytrade (real broker data)"), futures curves
    (`futures-curve-fit`), and `lib/oas_monte_carlo.lsp`, `lib/column_engine.lsp`,
    `lib/template.lsp`, and `lib/prepayment_model.lsp`, for mortgage pools and
-   their tranches, and `lib/freddie_prepayment.lsp`, a prepayment model fitted to Freddie Mac's loans. A structured deal, a tree of tranches with interest, principal, losses
+   their tranches, and `lib/freddie_prepayment.lsp` and `lib/freddie_default.lsp`, a prepayment model and a default model fitted to Freddie Mac's loans. A structured deal, a tree of tranches with interest, principal, losses
    and shortfalls, is in its own manual, [lisp_cmo_manual.md](lisp_cmo_manual.md)
    (`lib/deal.lsp`).
 7. **Models.** "Regression models" (linear, logistic, spline, and least
@@ -4395,38 +4395,70 @@ honest numbers are from data the model hasn't seen: `model-evaluate` on
 rows held out, or `cross-validate`, which does that for every row. When
 choosing between models, compare those.
 
-### A prepayment model fitted to Freddie Mac's loans
+### Models fitted to Freddie Mac's loans
 
-[`freddie_prepayment.lsp`](lib/freddie_prepayment.lsp) fits a model of how fast mortgages prepay to a sample of Freddie Mac's 30-year
-fixed-rate loans: a SQLite database, made by the scripts in `load_freddie_data/` (its `README.md` says how), with every month of each loan.
-[`notebooks/freddie_prepayment_model.ipynb`](notebooks/freddie_prepayment_model.ipynb) shows it.
+Three libraries fit models to a sample of Freddie Mac's 30-year fixed-rate loans: a SQLite database, made by the scripts in `load_freddie_data/`
+(its `README.md` says how), with every month of each loan.
 
-The model is a `spline-logistic` of the **smm**: the share of a loan's scheduled balance that it prepaid in a month (1 for a loan paid off,
-and a part for a loan paid down early), with each month weighted by that balance, so that over a pool it is the pool's smm, and the CPR is
-`(cpr-of-smm smm)`, 1 - (1 - smm)^12, in percent. The predictors are `prepayment-predictors`: the incentive (the loan's rate over the survey
-rate of new mortgages, in basis points), the age, the loan size, the credit score, the loan-to-value now, the spread at origination, burnout,
-the shares on investment properties and second homes and of cash-out and other refinances, and two seasons. Each has its knots; a knot
-without data on both sides of it, from the 1st to the 99th percentile, is left out (`knots-within`): its hinge would be a column of zeros, or
-one that a few rows could make as steep as they liked. (The averages of groups are closer together than the loans, so the groups can lose a
-knot that the loans keep.)
+- [`freddie_prepayment.lsp`](lib/freddie_prepayment.lsp): how fast loans prepay ([`notebooks/freddie_prepayment_model.ipynb`](notebooks/freddie_prepayment_model.ipynb));
+- [`freddie_default.lsp`](lib/freddie_default.lsp): how many default, what is lost when they are sold, and what became of them
+  ([`notebooks/freddie_default_model.ipynb`](notebooks/freddie_default_model.ipynb));
+- [`freddie_loans.lsp`](lib/freddie_loans.lsp): what the two share.
 
-It can be fitted two ways, on the same predictors, so that the two can be compared:
+**What they share.** Most of the models are of a **monthly rate**: the share of a loan's balance that something happened to in a month (that it prepaid, the
+smm; that defaulted, the mdr), a `spline-logistic` of it, with each row weighted by the balance, so that over a pool it is the pool's rate. `(annual-rate monthly)`
+is twelve months of it in percent, 1 - (1 - monthly)^12: the CPR of an smm, the CDR of an mdr. A model looks at a list of `predictor`s, each a name, what it is in
+SQL, and its knots; a knot without data on both sides of it, from the 1st to the 99th percentile, is left out (`knots-within`): its hinge would be a column of
+zeros, or one that a few rows could make as steep as they liked.
 
-- `(freddie-loan-months conn where)`, every month of every loan that is `where` (an SQL condition, such as `"sample_bucket < 80"`);
-- `(freddie-groups conn where)`, the months of loans that are alike put together, each group's smm and the averages of its loans.
+What a model is fitted to is a `loan-data` (the periods, the outcomes, the weights, and the predictors). A model is tried on loans it was not fitted to (a
+`sample_bucket` of 80 or more): `(rate-by-month model data label)` is a table of the annual rate (`label`, `"CPR"` or `"CDR"`) of all the rows of a month together,
+and what the model says it was; `(plot-rate-by-month (list (list name model data) ...) label)` draws it for several models; `(rate-misses (list (list name model data)
+...) split label)` is a table of how far each model is from its data, on average over the months, before the date `split` and from it on. `(model-curve model predictors
+loan name values)` is what a model says of a loan as one of its predictors takes each of the values.
 
-Each gives a `prepayment-data` (the months, the smms, the weights, and the predictors), which `(fit-prepayment-model data)` fits.
-`(prepayment-cpr-by-month model data)` is a table of the CPR of all the rows of a month together, and what the model says it was;
-`(plot-cpr-by-month (list (list name model data) ...))` draws it for several models; `(prepayment-s-curve model)` is the CPR of
-`typical-prepayment-loan` for each incentive from -200 to 400 basis points, and `(plot-prepayment-s-curves (list (list name model) ...))`
-draws them. `(prepayment-cpr-misses (list (list name model data) ...) split)` is a table of how far each model's monthly CPR is from its
-data's, on average, before the date `split` and from it on.
+**Prepayments.** A `spline-logistic` of the smm, the share of a loan's scheduled balance that it prepaid in a month (1 for a loan paid off, and a part for a loan paid
+down early). The predictors are `prepayment-predictors`: the incentive (the loan's rate over the survey rate of new mortgages, in basis points), the age, the loan size,
+the credit score, the loan-to-value now, the spread at origination, burnout, the shares on investment properties and second homes and of cash-out and other
+refinances, and two seasons. It can be fitted two ways, on the same predictors, so that the two can be compared: `(freddie-loan-months conn where)`, every month of
+every loan that is `where` (an SQL condition, such as `"sample_bucket < 80"`), and `(freddie-groups conn where)`, the months of loans that are alike put together,
+each group's smm and the averages of its loans (the averages of groups are closer together than the loans, so the groups can lose a knot that the loans keep).
+`(fit-prepayment-model data)` fits either. `(prepayment-s-curve model)` is the CPR of `typical-prepayment-loan` for each incentive from -200 to 400 basis points, and
+`(plot-prepayment-s-curves (list (list name model) ...))` draws them.
+
+**For a deal.** `(freddie-prepayment-model [:home-price-growth 3.0 :mortgage-spread 1.75 :fit model])` is a prepayment model of the kind that a deal is given,
+`(model piece path)` (see "The prepayment model" in [lisp_cmo_manual.md](lisp_cmo_manual.md)): for a `collateral-piece` and a path of rates, the CPR of each month of
+the piece, from what the fitted model looks at in each month, `(prepayment-model-columns piece path)`. The incentive is the wac less the rate of a new mortgage, the
+path's 10-year yield plus `:mortgage-spread` (percent); the age goes on from the piece's; the loan size and the loan-to-value are paid down by the scheduled payments,
+and the loan-to-value falls as home prices grow by `:home-price-growth` (percent a year); burnout counts the months in the money; the seasons are of the months from
+the path's first payment. What a piece does not say is taken from `unknown-piece`. The fitted model is the one that comes with the library,
+`lib/freddie_prepayment_fit.json`, which `(freddie-prepayment-fit)` reads, unless `:fit` is another; the prepayment notebook makes it, with
+`(save-freddie-prepayment-fit model path)`.
+
+**Defaults.** A loan defaults in the first month that it is six months delinquent, unless it is in forbearance or delinquent because of a disaster (as most loans that
+were, in 2020 and 2021, were), or that the home is taken, or that the loan ends in a short sale, a third-party sale, an REO sale or a sale of the note while it is not
+being paid; it defaults once. `(freddie-default-months conn where)` is the months of the loans that have not defaulted yet, the outcome 1 in the month of the default,
+weighted by the balance, and `(fit-default-model data)` a `spline-logistic` of it: the mdr. The predictors are `default-predictors`: the credit score, the
+loan-to-value now, the age, the debt-to-income, the spread at origination, the incentive, the loan size, an investment property, a second home, a cash-out refinance,
+another refinance, and one borrower. `(default-ltv-curves model)` is the CDR of `typical-default-loan` against its loan-to-value now, a column for each of three
+credit scores, and `(plot-default-ltv-curves model)` draws it.
+
+**Losses.** `(freddie-liquidations conn where)` is the sales of defaulted loans that Freddie reports a loss for (short sales, third-party sales and REO sales): the
+severity of each, the loss (the balance, the unpaid interest and the costs, less what the home sold for and what mortgage insurance and others paid) over the balance,
+weighted by the balance, by the year of the sale. `(fit-severity-model data)` is a `spline-regression` of it on `severity-predictors`: the loan-to-value at the default,
+the balance, the mortgage insurance, the months from the default to the sale, and an investment property. `(severity-by-year model data)` is the severity of each year's
+sales together, and what the model says, in percent; `(severity-ltv-curve model)` is the severity of `typical-liquidation` against the loan-to-value at the default.
+`(default-outcomes conn)` is a table of what became of the loans that defaulted each year: the share of their balance sold at a loss, sold as a note, paid off, sold as
+a note after it was being paid again, and not over yet; the severity, the months to the sale, and the **loss given default**, the losses over all that defaulted, which
+is less than the severity, as not every default is sold at a loss.
 
 ```lisp
 (define conn (sqlite-open "/Users/morris/freddie_data/freddie_loans.db"))
 (define by-loan (fit-prepayment-model (freddie-loan-months conn "sample_bucket < 80 AND period < '2019-01-01'")))
-(define test-loans (freddie-loan-months conn "sample_bucket >= 80"))
-(plot-cpr-by-month (list (list "loan by loan" by-loan test-loans)))     ; tried on loans it was not fitted to, before 2019 and after
+(plot-rate-by-month (list (list "loan by loan" by-loan (freddie-loan-months conn "sample_bucket >= 80"))) "CPR")   ; on loans it was not fitted to
+(define defaults (fit-default-model (freddie-default-months conn "sample_bucket < 80 AND period < '2019-01-01'")))
+(plot-default-ltv-curves defaults)
+(display-table (default-outcomes conn))
 ```
 
 ### Linear programming
