@@ -4701,6 +4701,12 @@ millions (`table-head`, `table-filter` show the rows of interest; more than 100,
 thousand rows (ipydatagrid's own `:auto-fit-columns #t` fits the headings only, and cuts off a cell that is longer; a `:column-widths`,
 a hash table of column name to pixels, is used as it is).
 
+**The keyboard.** A cell is chosen by a click, and typing a letter or a digit then begins to change it. JupyterLab does not know that a grid is something to type in
+(it is drawn on a canvas), so its own keyboard shortcuts could run for what is typed there, or at a button beside the grid: a digit makes the cell a heading, `m` a
+Markdown cell, `dd` takes it away, and the grid is gone. A widget that has a grid is therefore shown, in a notebook, with a small script (`GRID_KEYBOARD_SCRIPT` in
+`lisp_jupyter.py`, shown as an output of the cell, with no text) that tells JupyterLab that its shortcuts are not for anything in that widget, and gives the keyboard to
+a grid that is clicked in. It is run once in a page, and a notebook that is not trusted does not run it.
+
 - `(grid-table grid)` is the table as it is now: the table the grid was made from, with the cells the user changed made new. A cell
   that was not changed keeps its value exactly, and each column keeps its type (a column of whole numbers stays one, and a
   decimal one stays decimal). A cell that has become something its column can't hold is an error that says which (`column

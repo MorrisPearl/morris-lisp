@@ -10,7 +10,13 @@ import unittest
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
 from test_debugging import start_test_kernel
 
+import lisp_jupyter
 import lisp_widgets
+
+try:
+    import IPython.display
+except ImportError:
+    IPython = None
 
 try:
     import ipywidgets
@@ -517,6 +523,45 @@ class TestTableGrid(LispTestCase):
         self.assertLispError('(grid-set-table! g 5)', "not a table")
         with mock.patch.object(lisp_widgets, "EDIT_ROWS_LIMIT", 2):
             self.assertLispError("(table-grid t)", "more than a grid can carry")
+
+
+@unittest.skipIf(ipywidgets is None or ipydatagrid is None or IPython is None, "ipywidgets, ipydatagrid and IPython are needed")
+class TestTheKeyboardOfAGrid(LispTestCase):
+    """In a notebook, JupyterLab's own keyboard shortcuts (a digit makes the cell a heading, m a Markdown cell) must not run for what is typed
+    in a grid, or at a button beside it: a widget that has a grid is shown with a script that says so (GRID_KEYBOARD_SCRIPT, which a browser runs)."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('(load "widgets.lsp") (define t (make-table "bal" (vector 100.5 200.0)))')
+        self.shown = []
+        patcher = mock.patch.object(lisp_jupyter, "_ipy_display", side_effect=self.shown.append)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def show(self, source):
+        lisp_jupyter._notebook_widget(self.run_lisp(source))
+
+    def test_a_grid_is_shown_with_the_script_before_it(self):
+        self.show("(table-grid t)")
+        script, grid = self.shown
+        self.assertIsInstance(script, IPython.display.Javascript)
+        self.assertIn("data-lm-suppress-shortcuts", script.data)
+        self.assertIsInstance(grid, ipydatagrid.DataGrid)
+
+    def test_so_is_a_widget_with_a_grid_somewhere_in_it(self):
+        self.show('(widget-column (widget-button "go" (lambda () 1)) (widget-column (table-grid t)))')
+        self.assertEqual(len(self.shown), 2)
+        self.assertIsInstance(self.shown[0], IPython.display.Javascript)
+
+    def test_a_widget_with_no_grid_is_shown_as_it_is(self):
+        self.show('(widget-column (widget-button "go" (lambda () 1)) (widget-text))')
+        self.assertEqual(len(self.shown), 1)
+        self.assertIsInstance(self.shown[0], ipywidgets.VBox)
+
+    def test_the_script_names_the_elements_it_is_about(self):
+        script = lisp_jupyter.GRID_KEYBOARD_SCRIPT
+        for name in ("focusin", "mouseup", ".lm-DataGrid", ".lm-DataGrid-viewport", ".jupyter-widgets", "data-lm-suppress-shortcuts"):
+            self.assertIn(name, script)
 
 
 class TestWidgetsInAKernel(unittest.TestCase):

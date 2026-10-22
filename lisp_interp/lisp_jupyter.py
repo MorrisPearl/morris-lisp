@@ -73,9 +73,51 @@ def _notebook_table(columns):
         print_table(columns, lambda text: print(text, end=""))
 
 
+# What a person needs, who works in a grid in a notebook, that JupyterLab does not do for them. Its keyboard shortcuts work on whatever has the
+# keyboard when it is not a place to type in: a digit makes the cell a heading (1 to 6), m a Markdown cell, dd takes it away. A grid is not
+# a place to type in, as far as JupyterLab knows (it is a canvas), so a key that the grid does not take, or that is typed when a button beside it has
+# the keyboard, changes the cell instead, and the grid is gone. This script, which is sent with a widget that has a grid, tells JupyterLab that its
+# shortcuts are not for what is typed in that widget: JupyterLab leaves out the shortcuts for a key typed at an element that has the attribute
+# data-lm-suppress-shortcuts (on the element itself, that has the keyboard, not on one around it), so the script puts it on each element of such a widget when it
+# takes the keyboard. It also gives the keyboard to a grid that is clicked in, if something else has it. It is run once in a page.
+GRID_KEYBOARD_SCRIPT = """
+(function () {
+  if (window.morrisLispGrids) { return; }
+  window.morrisLispGrids = true;
+  function widgetOf(node) {                    // (the whole widget that a node is in, with its buttons: its outermost view)
+    var widget = null;
+    for (var up = node.closest && node.closest('.jupyter-widgets'); up; up = up.parentElement && up.parentElement.closest('.jupyter-widgets')) { widget = up; }
+    return widget;
+  }
+  document.addEventListener('focusin', function (event) {
+    var widget = widgetOf(event.target);
+    if (widget && widget.querySelector('.lm-DataGrid')) { event.target.setAttribute('data-lm-suppress-shortcuts', 'true'); }
+  }, true);
+  document.addEventListener('mouseup', function (event) {
+    var grid = event.target.closest && event.target.closest('.lm-DataGrid');
+    if (grid && !grid.contains(document.activeElement)) { grid.querySelector('.lm-DataGrid-viewport').focus(); }
+  }, true);
+})();
+"""
+
+
+def _holds_grid(widget):
+    """Whether the widget is, or has among the widgets inside it, a grid (ipydatagrid's DataGrid)."""
+    try:
+        import ipydatagrid
+    except ImportError:
+        return False
+    if isinstance(widget, ipydatagrid.DataGrid):
+        return True
+    return any(_holds_grid(child) for child in getattr(widget, "children", ()))
+
+
 def _notebook_widget(widget):
     """display-widget -- the widget drawn in the output of the cell (an ipywidgets widget; the notebook's frontend
-    draws it)."""
+    draws it). One that has a grid is sent with GRID_KEYBOARD_SCRIPT, so that typing in the grid does not run the notebook's shortcuts."""
+    if _IPYTHON_AVAILABLE and _holds_grid(widget):
+        from IPython.display import Javascript
+        _ipy_display(Javascript(GRID_KEYBOARD_SCRIPT))
     _ipy_display(widget)
 
 
