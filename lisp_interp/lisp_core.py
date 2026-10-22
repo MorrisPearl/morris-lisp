@@ -1553,6 +1553,8 @@ def define_method(args, env):
                         % (to_string(kind), name))
     fixed, optional, rest, keyword_specs = parse_params(Pair(variable, parameters.cdr))
     method = Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs, name=name, optional_specs=optional)
+    if _profiling:
+        _coverage_defined(method, "%s (%s)" % (name, key if key is not None else "t"), env)
     generic = env.lookup_or_none(name)
     if generic is None:
         generic = env[name] = GenericFunction(name)
@@ -1606,6 +1608,8 @@ def eval_special_form(op, args, env, control_stack, value_stack):
             body = pairs_to_list(args.cdr)
             env[name] = Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs,
                                   name=name, optional_specs=optional)
+            if _profiling:
+                _coverage_defined(env[name], str(name), env)
             value_stack.append(name)
         else:
             name = target
@@ -2262,13 +2266,40 @@ class ProfileState:
 
 
 profile_state = ProfileState()
-_profiling = False      # whether any function is being profiled: change ONLY via set_profiling()
+
+
+class CoverageState:
+    """Which functions were defined, and which called, while coverage was on (see lisp_coverage.py). There's one, coverage_state, shared by
+    the whole process, like profile_state; tests clear it.
+
+    Coverage rides on the profiler's one test of _profiling for each call: switching it on sets _profiling, so a program that isn't being covered
+    pays nothing more than it does for the profiler."""
+
+    def __init__(self):
+        self.on = False
+        self.files = []         # the files being loaded now, innermost last (not forgotten by clear: it is not what was found)
+        self.clear()
+
+    def clear(self):
+        self.defined = {}       # label -> (the procedure, the file it was defined in): the latest definition of each function
+        self.calls = {}         # id(procedure) -> how many times it was called
+
+
+coverage_state = CoverageState()
+_profiling = False      # whether any function is being profiled, or covered: change ONLY via set_profiling()
 
 
 def set_profiling():
-    """Note whether anything is being profiled now, after profile_state changed."""
+    """Note whether anything is being profiled, or covered, now, after profile_state or coverage_state changed."""
     global _profiling
-    _profiling = bool(profile_state.procedures or profile_state.builtins)
+    _profiling = bool(profile_state.procedures or profile_state.builtins or coverage_state.on)
+
+
+def _coverage_defined(procedure, label, env):
+    """A function was defined, by define or defmethod: note it if coverage is on, and it is a top-level one (a function made inside another
+    is made again on every call of it, so it is left out). The latest definition of a name is the one that counts."""
+    if coverage_state.on and env.outer is None:
+        coverage_state.defined[label] = (procedure, coverage_state.files[-1] if coverage_state.files else None)
 
 
 def _begin_timing(entry):
@@ -2298,6 +2329,8 @@ def _profile_enter(proc, below=None):
     """A call of a user-defined function begins (its CALL frame is about to be pushed). Count it if it is
     profiled and, if it's timed, return the PROFILE frame to push under its CALL frame -- unless it's a tail
     call of the function whose PROFILE frame is `below`, which already times it."""
+    if coverage_state.on and isinstance(proc, Procedure):
+        coverage_state.calls[id(proc)] = coverage_state.calls.get(id(proc), 0) + 1
     entry = profile_state.procedures.get(proc.name) if proc.name is not None else None
     if entry is None:
         return None
@@ -2568,6 +2601,10 @@ def set_debug_repl(function):
 def run_file(path, env):
     with open(path) as f:
         text = f.read()
-    for expr in parse(text):
-        seval(expr, env)
+    coverage_state.files.append(path)           # (for coverage: what file a function is defined in)
+    try:
+        for expr in parse(text):
+            seval(expr, env)
+    finally:
+        coverage_state.files.pop()
 

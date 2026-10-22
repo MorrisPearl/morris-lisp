@@ -110,6 +110,7 @@ end.
   - [Debugging](#debugging-1)
   - [Verbose mode and stack traces](#verbose-mode-and-stack-traces)
   - [Profiling](#profiling)
+  - [Test coverage](#test-coverage)
 - [A short example](#a-short-example)
 - [A parser framework](#a-parser-framework)
 - [How the code is organized](#how-the-code-is-organized)
@@ -5755,6 +5756,58 @@ prints the table; `profile-results` returns it, to use as any table.
 #### `(unprofile function-or-name ...)`, `(profile-reset!)`
 `unprofile` stops watching the functions given, or all of them if none is. `profile-reset!`
 sets every count and time to zero and goes on watching.
+
+### Test coverage
+
+To find out which functions of a library its tests never call, turn coverage on, load the library,
+run its tests, and ask for the report:
+
+```lisp
+(coverage-on)
+(load "lib_cov.lsp")                      ; every function it defines is noted
+; ... run the tests of the library here ...
+(coverage-report)                         ; the functions that were never called, by file
+```
+
+```text
+4 of 6 functions were called (67%).
+
+lib_cov.lsp: 2 of 6 never called
+  never-called
+  area (shape)
+```
+
+(That is what it says of a small library of six functions, after tests that call four of them.)
+
+Coverage is by **function**: a function that is called once counts as covered, whatever it does with
+what it is given, and a branch inside it that no test reaches is not seen. It costs a program that
+isn't being covered nothing more than the profiler does, which is one test for each call, and
+the same test serves both: coverage and `profile` can be on together.
+
+#### `(coverage-on)`, `(coverage-off)`, `(coverage-reset!)`
+`coverage-on` starts from nothing, and notes every function that is **defined** from then on, at the
+top level, by `define` or `defmethod`, whether in a file or typed in, and counts its **calls**. A
+function defined before it was turned on is not noted. A function made inside another, and an
+anonymous `lambda`, are left out (they are made again each time, and are not things to test one
+by one). A function defined again counts as one, the latest. A method is `name (type)`.
+`coverage-off` stops noting, and keeps what was found; `coverage-reset!` forgets what was found and
+goes on as it was, on or off.
+
+#### `(coverage-report)`, `(coverage-results [:uncalled #t])`
+`coverage-report` prints how many of the functions were called, and the names of those that were not,
+under the file they are defined in (`(typed in)` for one that was not in a file).
+`coverage-results` is the same as a table, with a row for each function, in the order that they were
+defined: `function`, `file`, and `calls`; `:uncalled #t` is only the rows with none.
+
+```lisp
+(coverage-on)
+(define (double x) (* 2 x))
+(define (triple x) (* 3 x))
+(double 4)                                                    ; => 8
+(table-column (coverage-results) "function")                  ; => #("double" "triple")
+(table-column (coverage-results :uncalled #t) "function")     ; => #("triple")
+(coverage-off)
+```
 
 ---
 

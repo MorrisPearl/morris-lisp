@@ -104,6 +104,8 @@ class LispTestCase(unittest.TestCase):
         lisp_core.debug_state.reset()          # so are breakpoints and the debug hook
         self.addCleanup(lisp_core.debug_state.reset)
         lisp_core.profile_state.clear()        # and the functions being profiled
+        lisp_core.coverage_state.on = False    # and covered
+        lisp_core.coverage_state.clear()
         lisp_core.set_profiling()
         self.addCleanup(self.stop_profiling)
         # A stop that opens the debug REPL reads the keyboard. Tests that expect
@@ -124,6 +126,8 @@ class LispTestCase(unittest.TestCase):
     @staticmethod
     def stop_profiling():
         lisp_core.profile_state.clear()
+        lisp_core.coverage_state.on = False
+        lisp_core.coverage_state.clear()
         lisp_core.set_profiling()
 
     # -- running code ------------------------------------------------------
