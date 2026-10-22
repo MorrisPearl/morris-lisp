@@ -38,6 +38,7 @@ general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is 
   - [Interest-only and principal-only bonds](#interest-only-and-principal-only-bonds)
   - [Sequential by average life](#sequential-by-average-life)
 - [Prices, yields and spreads](#prices-yields-and-spreads)
+- [Option-adjusted spread and effective duration](#option-adjusted-spread-and-effective-duration)
 - [Losses and shortfalls](#losses-and-shortfalls)
   - [Losses](#losses)
   - [Interest shortfalls](#interest-shortfalls)
@@ -176,6 +177,19 @@ borrowers pay and what pays the loans off; the **pass-through coupon**, in perce
 taken out (so it is no more than the wac: it is an error if it is); the **wam**, the weighted average maturity, the months that are left; and the age, the months the loans have gone
 (0 if left out), which is what the PSA curve rises with. A piece with no balance is left out. The deal has as many months as its longest piece.
 
+A piece is a struct too, a `collateral-piece` with the slots `balance`, `wac`, `coupon`, `wam` and `age`, and that is what the deal keeps: `(deal-pieces deal)` gives them. A list
+is turned into one wherever a piece is wanted (`(collateral-piece-of '(50000000.0 7.0 6.5 240 12))`), so the two are the same, and a struct can be given where a list can. A struct has room for more
+slots later (a prepayment model, see "Option-adjusted spread and effective duration", is given the piece to look at).
+
+```lisp
+(define piece (make-collateral-piece :balance 100000000.0 :wac 6.0 :coupon 5.5 :wam 360))
+(collateral-piece-age piece)                                                    ; => 0
+(collateral-piece-wam (collateral-piece-of '(50000000.0 7.0 6.5 240 12)))       ; => 240
+(define deal (new-deal "Demo" :collateral (list piece '(50000000.0 7.0 6.5 240 12)) :speed (prepayment-speed 'psa 150)))
+(collateral-piece-age (cadr (deal-pieces deal)))                                ; => 12
+(vector-ref (node-principal (get-node deal "POOL")) 0)                          ; => 347773.9772172784
+```
+
 A **speed** has a type, which says what its number means, and a number that can change with time: `(prepayment-speed type spec)`. The types are `psa` (150 is 150% of
 the standard curve, 0 to 6 CPR over 30 months of age, which is the curve of `prepayment_model.lsp`), `cpr` (the annual rate of prepayment, in percent) and
 `smm` (the share of what is left that prepays in a month, in percent). The `spec` is one number, which is the speed in every month, or a list of linear
@@ -212,7 +226,8 @@ it is that, a fixed coupon, whatever their wacs are.) A coupon is a
 function of the index, or a vector like this one (`(coupon-at coupon index month)`); the bonds under the collateral have it too, so a sequential split, a pro-rata
 split, a PAC and an IO/PO split all work. A floater and an inverse floater, and a premium and a discount bond, are made from a fixed coupon, and say so if the
 collateral has not got one. `(project-pieces pieces speed)` is the vectors the collateral is made of (principal, interest, balance, and the interest that the loans pay, at the wac), and
-`(project-pool balance wac coupon months smms)` those of one pool that prepays by the monthly mortality of each month.
+`(project-pool balance wac coupon months smms)` those of one pool that prepays by the monthly mortality of each month; `(project-pieces-with pieces smms-of)` is `project-pieces` with a function
+from a piece to its vector of monthly mortalities in place of a speed (`(smms-from-cprs cprs months)` makes one from annual rates in percent), which is how a model of prepayments is used.
 
 **The dates.** `(new-deal name :first-payment (date 2026 11 25))` gives the deal the date of its first payment, which is month 1. `(deal-payment-date deal month)`
 is the date of a month, and `(deal-payment-dates deal)` a vector of them, the same day of each month (the end of the month, in one that is shorter).
@@ -485,8 +500,8 @@ split, and taking one away"). The lives are of the principal that the parent is 
 ## Prices, yields and spreads
 
 A tranche has a **price**, a **yield** and a **spread**, and what follows from them: its **duration**, its **average life**, its **dv01**, its **money**, and a **delay**. They are slots
-of the tranche (`node-price`, `node-yield`, `node-spread`, `node-duration`, `node-average-life`, `node-dv01`, `node-money` and `node-delay`), and are worked out by
-`lib/deal_pricing.lsp`. A price, a yield or a spread is what is **given**, and the rest are worked out from it, from the cash flows that the tranche is paid when the deal is run
+of the tranche (`node-price`, `node-yield`, `node-spread`, `node-oas`, `node-duration`, `node-effective-duration`, `node-average-life`, `node-dv01`, `node-money` and `node-delay`), and are worked out by
+`lib/deal_pricing.lsp`. A price, a yield, a spread or an OAS is what is **given**, and the rest are worked out from it, from the cash flows that the tranche is paid when the deal is run
 at its pricing speed, as of the closing date of the deal, which is when the buyer pays.
 
 | Slot | Is | Units |
@@ -495,6 +510,8 @@ at its pricing speed, as of the closing date of the deal, which is when the buye
 | `yield` | what the buyer earns: the bond equivalent yield of the cash flows | percent a year |
 | `spread` | the yield over the Treasury curve at the average life of the tranche | basis points |
 | `duration` | the modified duration | years |
+| `oas` | the spread over the paths of rates that makes them worth the money (see "Option-adjusted spread and effective duration"); blank until they are run | basis points |
+| `effective-duration` | the proportion the money falls by when rates rise, with the prepayments that follow; blank until the paths are run | years |
 | `average-life` | the average life (see "Sequential by average life") | years |
 | `dv01` | how much the money falls when the yield rises by a basis point, and nothing else is changed | dollars |
 | `money` | what the buyer pays, in all: the balance times the price over 100, and the accrued interest | dollars |
@@ -569,10 +586,119 @@ all the tranches that are paid by the same split (its siblings) is exactly that 
 
 **What it is as of, and what it is not.** The cash flows are those of the deal run at its pricing speed (and, for a tranche that floats, at the index that the deal was last run with: a deal
 with a floating tranche that has not been run with an index cannot be priced, and says so). The slots are as of the closing date, so the deal needs a closing date and a first payment date. The
-duration is the modified duration at that speed: nothing is done about what a change in rates would do to the speed (there is no effective duration, or option-adjusted spread). Losses
+duration is the modified duration at that speed: nothing is done about what a change in rates would do to the speed (that is what the next section is for). Losses
 and shortfalls are not looked at: a tranche is priced by what it is paid.
 
 In a notebook the grid of the tranches, `(bonds deal)`, has a column for each slot beyond the cash flows (see "Building a deal by clicking"), and `(info deal)` a grid for the Treasury curve.
+
+## Option-adjusted spread and effective duration
+
+The yield of a tranche is of the cash flows it is paid if rates stay where they are, and the collateral prepays at the pricing speed whatever happens. It does not. When rates fall the
+borrowers refinance, and a bond that was bought above par is paid back early, when it is worth most to keep; when rates rise they stay, and a bond bought below par is paid back late. A spread
+over the Treasury curve leaves that out, and so does a modified duration. The **option-adjusted spread** (OAS) puts it in, and the **effective duration** says how much a bond falls in value when
+rates rise, *with* the prepayments that follow.
+
+The method is a simulation. The deal is run on many **paths of interest rates**, each a possible future (see "Interest rate paths" in the library manual). On each path the collateral is prepaid
+by a **prepayment model**, which can look at the rates of the path, so the collateral pays differently on each, and so does every bond. A tranche is worth the **average**, over the paths, of
+its cash flows, each discounted along its own path. The OAS of a tranche is the one spread, added to the short rate of every month of every path, that makes that average the money that the buyer pays.
+An OAS of 0 is a price on the Treasury curve (the paths start on it, so their discount factors average to its); the more the borrowers' option is worth, the lower the OAS of a given price.
+The code is in `lib/deal_paths.lsp`, and what a price says about it in `lib/deal_pricing.lsp`.
+
+```lisp
+(define deal (new-deal "Demo 2026-1" :closing-date (date 2026 11 20) :first-payment (date 2026 12 25)
+                       :collateral '((10000000.0 6.5 6.0 24)) :speed (prepayment-speed 'psa 150)))
+(deal-sequential! deal "POOL" '(("A" 6000000.0) ("B" 4000000.0)))
+(deal-set-treasury-curve! deal '((1 4.0) (2 4.1) (3 4.2) (5 4.3) (10 4.5)))
+(deal-run-paths! deal :paths 10)                             ; the deal is run on 10 paths, which prints how far it has got
+(deal-set-price! deal "A" 100.5)                             ; the OAS and the effective duration are worked out with the yield and the rest
+(node-yield (get-node deal "A"))                             ; => 4.674308479043608
+(node-spread (get-node deal "A"))                            ; => 67.43084790436083
+(node-oas (get-node deal "A"))                               ; => 66.1184998937952
+(node-duration (get-node deal "A"))                          ; => 0.6427940046414851
+(node-effective-duration (get-node deal "A"))                ; => 0.6552837891713873
+```
+
+`(deal-run-paths! deal :paths 200 :shift 0.0025 :seed 1)` runs the deal; the values written are the ones it has if they are left out. It needs the deal to have collateral made of pieces,
+and a Treasury curve, which the paths start on (their forward rates are those of the curve: `(deal-forward-curve deal)`). **It takes a while.** The deal is run once for each path, and for
+each of the two shifts of the curve below, three times in all, one after another; a run of a deal of 360 months takes about a second, so 200 paths take ten minutes or more, and the function says how
+far it has got as it goes (`on the curve: 60 of 200 paths`). Nothing is done until it is called, and the paths are kept in the deal: a price, a yield or a spread that is given afterwards
+has its OAS and its effective duration at once. A tranche that has a price already has them when the paths are run. `:paths` is how many paths (they come in mirror-image pairs, so that their average is the curve's own, and the number is made even);
+`:seed` makes the same random numbers each time, so that a run can be repeated, and two tranches, or two deals, are compared on the same paths.
+
+**An OAS can be given.** `(deal-set-oas! deal name oas)`, with the OAS in basis points, is a way to price a tranche, as a price, a yield and a spread are: the price is the one that makes the paths
+worth what the OAS says, and the yield, spread, duration and the rest follow. It needs the paths to have been run.
+
+```lisp
+(define deal (new-deal "Demo 2026-1" :closing-date (date 2026 11 20) :first-payment (date 2026 12 25)
+                       :collateral '((10000000.0 6.5 6.0 24)) :speed (prepayment-speed 'psa 150)))
+(deal-sequential! deal "POOL" '(("A" 6000000.0) ("B" 4000000.0)))
+(deal-set-treasury-curve! deal '((1 4.0) (2 4.1) (3 4.2) (5 4.3) (10 4.5)))
+(deal-run-paths! deal :paths 10)
+(deal-set-oas! deal "B" 50)                                  ; B is to be 50 basis points over the paths
+(node-price (get-node deal "B"))                             ; => 101.94748948690255
+(node-yield (get-node deal "B"))                             ; => 4.569726518502865
+(node-spread (get-node deal "B"))                            ; => 50.53115736924801
+(node-effective-duration (get-node deal "B"))                ; => 1.577949772214555
+(node-priced-by (get-node deal "B"))                         ; => oas
+(deal-set-price! deal "B" (node-price (get-node deal "B")))
+(node-oas (get-node deal "B"))                               ; => 49.99999999999999
+```
+
+**The effective duration** is worked out with the curve moved up and down by the shift (0.0025, which is 25 basis points). The paths are made again on each moved curve, from the same random
+numbers, the collateral is prepaid by the model on them, and the deal run; the tranche is valued on all three sets of paths at its OAS, which is held as it was. Its effective duration is the
+proportion that its money falls by for a rise of one (a hundred percentage points) in rates: (money on the curve moved down, less money on the curve moved up) over twice the shift times the money on the curve. A
+tranche whose cash flows do not change with rates has one near its modified duration (try a model that looks at no rates); one whose cash flows do is shorter or longer than that, because the prepayments change when rates do.
+
+**The parts.** Each is a slot of the deal, which the user can replace, and each has something to begin with.
+
+| Part | Is | To begin with |
+|---|---|---|
+| rate model | the numbers that make the paths: `(make-rate-model :a 2.75 :b 0.15 :sigma1 0.019 :sigma2 0.012)`, as in `simulate-rate-paths` | the values in the library manual's fit; they are to be worked out from market data |
+| prepayment model | a function `(model piece path)` of a `collateral-piece` and a `rate-path`, that gives the annual prepayment rate, in percent, of each month of the piece: a vector with as many months as its wam | `(static-prepayment-model speed)`, which does not look at rates, and prepays at the pricing speed of the deal |
+| index function | a function of the vector of short rates of a path, that gives the vector of the index that the floating tranches are of | the identity: the index is the short rate |
+
+A `rate-path` has the two vectors `short-rates` and `long-yields`, a rate (a decimal) for the start of each month, from today: month 1 is the first payment, and the first rate is today's. The model is free
+to look at them as it likes (it is given the piece, which says what the loans are: their wac, their age and so on), and it is called once for each piece on each path. Here is one that prepays at 5 CPR, and at more
+for every point that the short rate is under 4.5%:
+
+```lisp
+(define deal (new-deal "Demo 2026-1" :closing-date (date 2026 11 20) :first-payment (date 2026 12 25)
+                       :collateral '((10000000.0 6.5 6.0 24)) :speed (prepayment-speed 'psa 150)))
+(deal-sequential! deal "POOL" '(("A" 6000000.0) ("B" 4000000.0)))
+(deal-set-treasury-curve! deal '((1 4.0) (2 4.1) (3 4.2) (5 4.3) (10 4.5)))
+(deal-run-paths! deal :paths 10)
+(deal-set-price! deal "A" 100.5)
+(deal-set-oas! deal "B" 50)
+(define (refinancing piece path)
+  (let ((incentive (vector-clip (- 0.045 (vector-take (rate-path-short-rates path) (collateral-piece-wam piece))) 0.0 1.0)))
+    (+ 5.0 (* 800.0 incentive))))
+(deal-set-prepayment-model! deal refinancing)                ; this forgets the paths (see below)
+(node-oas (get-node deal "A"))                               ; => ()
+(deal-run-paths! deal :paths 10)
+(node-price (get-node deal "A"))                             ; => 100.5
+(node-oas (get-node deal "A"))                               ; => 49.56409369573326
+(node-effective-duration (get-node deal "A"))                ; => 0.5223917758561567
+(node-duration (get-node deal "A"))                          ; => 0.6427940046414851
+(node-price (get-node deal "B"))                             ; => 101.86014674505945
+```
+
+A is bought at 100.5, above par: when the model has the borrowers prepay faster as rates fall, its option is worth more, its OAS is lower (49.6 basis points where the static model gave 66.1), and it falls less
+in value when rates rise (an effective duration of 0.52 years, not 0.64): it is called back before it can gain. B was given its OAS, and it is the price that has changed, from 101.95 to 101.86. The static model
+is only there to begin with: a model that looks at the rates is the point.
+
+`(deal-set-rate-model! deal model)`, `(deal-set-prepayment-model! deal model)` and `(deal-set-index-function! deal function)` give the deal its parts (`'()` takes one away, and the deal goes back to what it began with).
+
+**What forgets the paths.** They belong to the deal as it is, so they are forgotten when it changes: its collateral, its tranches, its pricing speed, its dates, its Treasury curve, or any of the three parts. The OAS and the
+effective duration of the tranches are blank until `deal-run-paths!` is called again. A tranche that was given a price, a yield or a spread keeps it. One that was given an OAS keeps that, and has no price until
+the paths are run, when it has one again. `(deal-forget-paths! deal)` does it by hand.
+
+**How the numbers are worked out.** A month's cash flow is discounted by 1 / (1 + (short rate + OAS) / 12) for each month of its path up to it, as in "Mortgages and option-adjusted spread" in the library manual, except
+that the first payment is the part of a month away that it is from the closing date (the same as the yield of a tranche, so that the two are alike when the rates do not change). `(path-present-values flows rate-paths oas [first-fraction])`
+(a builtin: see the library manual) does the discounting of every path at once. The OAS of a price is found by Ridders' method, from -10000 to 50000 basis points, and is remembered for the price,
+so the grid of a deal does not work it out again when it is redrawn. A deal with a floating tranche is run on each path with the index that the index function makes of that path's short rates.
+
+In a notebook the grid of the tranches, `(bonds deal)`, has the columns `oas` and `effective duration` (see "Building a deal by clicking"), and an OAS is typed in the grid as a price is.
+
 
 ## Losses and shortfalls
 
@@ -836,7 +962,8 @@ at the same time as they are, and shows what they change (the balance of the col
 - **Take away this split, and all under it** is under the panel whenever a tranche that is divided is chosen. It says which tranches would go, and asks; **Yes**
   takes them away (`deal-delete-split!`), and **No** keeps them.
 - **Type a price, a yield or a spread, in the cell of a tranche** (double-click the cell, or click it and type: a price of `+` or `?` is typed after a double-click, which opens the cell), and the others are worked out (see "Prices, yields and spreads"): the grid has
-  the columns *price*, *yield*, *spread*, *duration*, *average life*, *dv01*, *money* and *delay* after the cash flows, and a price, a yield, a spread and the delay are typed. A price can be typed as `+` or `?`, and
+  the columns *price*, *yield*, *spread*, *oas*, *duration*, *effective duration*, *average life*, *dv01*, *money* and *delay* after the cash flows, and a price, a yield, a spread, an OAS and the delay are typed
+  (the OAS and the effective duration are blank until the paths of rates are run, with `(deal-run-paths! deal)`: see "Option-adjusted spread and effective duration"). A price can be typed as `+` or `?`, and
   a cell that is cleared takes the price away. What is typed in a column that is worked out is put back, with a line to say so, and so is text that is not a number. The Treasury curve that a spread is over is
   in `(info deal)`, and what is typed in the grid stays when the deal changes: the rest is worked out again.
 - **Click *view*, in the column of cash flows beside the split**, and the cash flows of that tranche are shown under the grid: what it is, its average life, the speed that the deal was

@@ -44,8 +44,8 @@ class PricingGridCase(ViewsCase):
 class TestTheColumns(PricingGridCase):
 
     def test_the_grid_has_the_columns_of_what_a_price_says_after_the_cash_flows(self):
-        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "price", "yield", "spread", "duration",
-                                                         "average life", "dv01", "money", "delay"])
+        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "price", "yield", "spread", "oas", "duration",
+                                                         "effective duration", "average life", "dv01", "money", "delay"])
         self.assertEqual([name.strip() for name in self.grid.data["tranche"]], ["POOL", "A", "B"])
 
     def test_the_average_life_and_the_delay_are_there_before_anything_is_priced(self):
@@ -122,6 +122,40 @@ class TestTypingAPrice(PricingGridCase):
         self.assertEqual(self.cell(1, "price"), "100.5000")
         self.assertEqual(self.cell(3, "money"), "")
         self.assertTrue(float(self.cell(3, "average life")) > 0)
+
+
+class TestTheOasColumns(PricingGridCase):
+
+    def test_they_are_blank_until_the_paths_are_run_and_then_have_the_oas_and_the_effective_duration(self):
+        self.type_in(1, "price", "100.5")
+        for column in ("oas", "effective duration"):
+            self.assertEqual(self.cell(1, column), "")
+        self.run_lisp("(deal-run-paths! deal :paths 4)")
+        self.assertEqual(self.cell(1, "oas"), "%.1f" % self.slot("A", "oas"))
+        self.assertEqual(self.cell(1, "effective duration"), "%.3f" % self.slot("A", "effective-duration"))
+        self.assertEqual(self.cell(2, "oas"), "")                                    # (B has no price)
+
+    def test_an_oas_that_is_typed_gives_the_price_and_the_rest(self):
+        self.run_lisp("(deal-run-paths! deal :paths 4)")
+        self.assertEqual(self.type_in(2, "oas", "80"), "")
+        self.assertEqual(self.slot("B", "oas"), 80)
+        self.assertEqual(self.cell(2, "oas"), "80.0")
+        self.assertEqual(self.cell(2, "price"), "%.4f" % self.slot("B", "price"))
+        self.assertEqual(self.cell(2, "yield"), "%.4f" % self.slot("B", "yield"))
+        self.assertEqual(self.cell(2, "effective duration"), "%.3f" % self.slot("B", "effective-duration"))
+        self.assertShows('(node-priced-by (get-node deal "B"))', "oas")
+
+    def test_an_oas_before_the_paths_are_run_is_said_and_put_back(self):
+        said = self.type_in(2, "oas", "80")
+        self.assertIn("have not been run", said)
+        self.assertEqual(self.cell(2, "oas"), "")
+
+    def test_the_effective_duration_is_worked_out_not_typed(self):
+        self.run_lisp("(deal-run-paths! deal :paths 4)")
+        self.type_in(1, "price", "100.5")
+        said = self.type_in(1, "effective duration", "9")
+        self.assertIn("effective duration is worked out, not typed", said)
+        self.assertEqual(self.cell(1, "effective duration"), "%.3f" % self.slot("A", "effective-duration"))
 
 
 class TestWhatIsPutBack(PricingGridCase):

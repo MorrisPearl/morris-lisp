@@ -8,10 +8,11 @@
 ;   duration      the modified duration, in years
 ;   average-life  the average life, in years
 ;   dv01          how much the money falls if the yield rises by a basis point, and nothing else is changed
+;   oas           the option-adjusted spread, in basis points, and effective-duration its duration, in years: of paths of rates that the user runs (see deal_paths.lsp)
 ;   money         what the buyer pays, in all: the balance times the price over 100, and the accrued interest
 ;   delay         the days from the end of the accrual period of its interest to the day it is paid (24 to begin with)
 ;
-; The user gives one of price, yield or spread, and the rest are worked out from it (see deal-set-price! and the others): they are of the cash flows that the
+; The user gives one of price, yield, spread or oas, and the rest are worked out from it (see deal-set-price! and the others): they are of the cash flows that the
 ; tranche is paid when the deal is run at its pricing speed, as of the closing date of the deal, which is when the buyer pays and the bond is delivered.
 ; (deal-update-analytics! deal) works them out again, after the deal has changed: from the one that was given.
 ;
@@ -45,6 +46,7 @@
 
 (require "deal.lsp")
 (require "solver.lsp")
+(require "deal_paths.lsp")
 
 ; ---------------------------------------------------------------------------
 ; Dates
@@ -143,13 +145,16 @@ percent. An error that says what is wrong with it."
 in percent. The spreads of the tranches are worked out again (the ones that were given stay as they were, and so do the prices of those that were given a price, whose spreads
 change)."
   (deal-treasury-curve-set! deal (treasury-points curve))
+  (deal-path-sets-set! deal '())                  ; (the paths of rates start on the curve: they are to be run again)
   (deal-update-analytics! deal)
   (deal-refresh-views! deal 'prices 'info)
   (deal-treasury-curve deal))
 
 (define (deal-clear-treasury-curve! deal)
-  "Takes the Treasury curve away from the deal: there is no spread to work out, and a tranche that was priced by a spread has nothing to take it over."
+  "Takes the Treasury curve away from the deal: there is no spread to work out, and a tranche that was priced by a spread has nothing to take it over. The paths of rates,
+which start on it, are forgotten."
   (deal-treasury-curve-set! deal '())
+  (deal-path-sets-set! deal '())
   (deal-update-analytics! deal)
   (deal-refresh-views! deal 'prices 'info))
 
@@ -206,12 +211,14 @@ changes. An error if it has no collateral, or a tranche floats and it has no ind
     (if (> (vector-sum principal) 0.0) (average-life principal) '())))
 
 (define (analyze-tranche deal run name priced-by value)
-  "What the tranche called name is, priced by one of price, yield and spread (the symbol priced-by) that is value: a list (price yield spread duration average-life dv01
-money). With '() for priced-by, only the average life is worked out. The price is per 100 of balance, the yield in percent, the spread in basis points. Nothing is changed."
+  "What the tranche called name is, priced by one of price, yield, spread and oas (the symbol priced-by) that is value: a list (price yield spread duration average-life dv01
+money oas effective-duration). With '() for priced-by, only the average life is worked out. The price is per 100 of balance, the yield in percent, the spread and the oas in basis
+points. The oas and the effective duration are of the paths of rates that were run (see deal-run-paths!), and '() if none were. Nothing is changed."
   (let ((node (get-node deal name))
-        (life (tranche-average-life run name)))
+        (life (tranche-average-life run name))
+        (sets (deal-path-sets deal)))
     (if (null? priced-by)
-        (list '() '() '() '() life '() '())
+        (list '() '() '() '() life '() '() '() '())
         (let ((balance (vector-ref (node-balance node) 0))
               (flows (tranche-cash-flows run name))
               (accrued (accrued-interest deal node)))
@@ -219,29 +226,41 @@ money). With '() for priced-by, only the average life is worked out. The price i
             (error (format "{} has no balance, so it has no price" name)))
           (when (and (eq? priced-by 'spread) (null? life))
             (error (format "{} is paid no principal, so it has no average life to take a spread at" name)))
+          (when (and (eq? priced-by 'oas) (null? sets))
+            (error "the paths of rates have not been run, which an OAS is of: run them, (deal-run-paths! deal)"))
           (let* ((months (months-from-settlement deal (vector-length flows)))
+                 (fraction (vector-ref months 0))
                  (money-of (lambda (price) (+ (* balance (/ price 100.0)) accrued)))
-                 (yield (cond ((eq? priced-by 'price) (yield-of-money flows months (money-of value)))
+                 (given-money (cond ((eq? priced-by 'price) (money-of value))
+                                    ((eq? priced-by 'oas) (path-run-money (path-sets-base sets) name (/ value 10000.0) fraction))
+                                    (else '())))
+                 (yield (cond ((not (null? given-money)) (yield-of-money flows months given-money))
                               ((eq? priced-by 'yield) value)
                               (else (+ (treasury-yield deal life) (/ value 100.0)))))
-                 (money (if (eq? priced-by 'price) (money-of value) (present-value flows months yield)))
+                 (money (if (null? given-money) (present-value flows months yield) given-money))
                  (price (if (eq? priced-by 'price) value (* 100.0 (/ (- money accrued) balance))))
                  (spread (cond ((eq? priced-by 'spread) value)
                                ((or (null? life) (null? (deal-treasury-curve deal))) '())
-                               (else (* 100.0 (- yield (treasury-yield deal life)))))))
+                               (else (* 100.0 (- yield (treasury-yield deal life))))))
+                 (oas (cond ((eq? priced-by 'oas) value)
+                            ((null? sets) '())
+                            (else (* 10000.0 (path-sets-oas sets name money fraction))))))
             (list price yield spread (modified-duration flows months yield) life
                   (- (present-value flows months yield) (present-value flows months (+ yield 0.01)))
-                  money))))))
+                  money oas
+                  (if (null? sets) '() (path-sets-effective-duration sets name (/ oas 10000.0) fraction))))))))
 
 (define (analytics-assign! node result)
-  "Puts the list that analyze-tranche gives, (price yield spread duration average-life dv01 money), in the slots of the node."
+  "Puts the list that analyze-tranche gives, (price yield spread duration average-life dv01 money oas effective-duration), in the slots of the node."
   (node-price-set! node (list-ref result 0))
   (node-yield-set! node (list-ref result 1))
   (node-spread-set! node (list-ref result 2))
   (node-duration-set! node (list-ref result 3))
   (node-average-life-set! node (list-ref result 4))
   (node-dv01-set! node (list-ref result 5))
-  (node-money-set! node (list-ref result 6)))
+  (node-money-set! node (list-ref result 6))
+  (node-oas-set! node (list-ref result 7))
+  (node-effective-duration-set! node (list-ref result 8)))
 
 (define (deal-track-prices! deal)
   "Makes the deal work the slots of its tranches out again whenever it changes (its collateral, its tranches, its pricing speed, its dates, its index): a view of the deal,
@@ -251,11 +270,12 @@ which is made once. It is made when a tranche is first priced."
     (deal-add-view! deal '(collateral tranches info index) (lambda () (deal-update-analytics! deal)))))
 
 (define (priced-by-value node)
-  "The one of price, yield and spread that the node was priced by: what was given."
+  "The one of price, yield, spread and oas that the node was priced by: what was given."
   (let ((kind (node-priced-by node)))
     (cond ((eq? kind 'price) (node-price node))
           ((eq? kind 'yield) (node-yield node))
           ((eq? kind 'spread) (node-spread node))
+          ((eq? kind 'oas) (node-oas node))
           (else '()))))
 
 (define (deal-update-analytics! deal)
@@ -273,12 +293,73 @@ what is wrong. Returns the list of messages, which is empty if all is well. A de
                (catch-error (analytics-assign! node (analyze-tranche deal run name (node-priced-by node) (priced-by-value node)))
                  (message)
                  (begin
-                   (analytics-assign! node (analyze-tranche deal run name '() '()))
+                   (let ((given (priced-by-value node)))
+                     (analytics-assign! node (analyze-tranche deal run name '() '()))
+                     (when (eq? (node-priced-by node) 'oas)        ; (an OAS that was given is kept, to price the tranche when the paths are run again)
+                       (node-oas-set! node given)))
                    (set! problems (append problems (list (format "{}: {}" name message))))))))
            problems))))
 
 ; ---------------------------------------------------------------------------
-; Giving a price, a yield or a spread
+; The paths of rates
+; ---------------------------------------------------------------------------
+
+(define (deal-run-paths! deal &key (paths 200) (shift 0.0025) (seed 1))
+  "Runs the deal on paths of interest rates (see deal_paths.lsp), which takes a while: the deal is run on each path, on the curve and on the curve moved up and down by the shift
+(a decimal: 0.0025 is 25 basis points), and how far it has got is said. paths is how many paths (made even), and the seed makes the same random numbers each time (an integer).
+The OAS and the effective duration of the tranches are then worked out, from the price, yield or spread that they were given, and an OAS can be given. The paths are forgotten when the
+deal, its Treasury curve, or its models change. Returns the deal."
+  (unless (and (integer? paths) (> paths 0))
+    (error (format "the number of paths is a whole number above 0, not {}" paths)))
+  (unless (and (number? shift) (> shift 0))
+    (error (format "the shift of the curve is a number above 0, a decimal such as 0.0025 for 25 basis points, not {}" shift)))
+  (unless (integer? seed)
+    (error (format "the seed is a whole number, not {}" seed)))
+  (when (= (deal-periods deal) 0)
+    (error "the deal has no collateral, so there are no cash flows to run on paths: give it some, (deal-set-collateral! deal '((100000000 6.5 6.0 360)))"))
+  (when (null? (deal-pieces deal))
+    (error "the paths prepay the pieces of the collateral of the deal, and it has none: give it some, (deal-set-collateral! deal '((100000000 6.5 6.0 360)))"))
+  (let* ((forwards (deal-forward-curve deal))
+         (base (run-path-set deal forwards paths seed "on the curve"))
+         (up (run-path-set deal (+ forwards shift) paths seed "on the curve moved up"))
+         (down (run-path-set deal (- forwards shift) paths seed "on the curve moved down")))
+    (deal-path-sets-set! deal (make-path-sets :paths (length (path-run-rates base)) :shift shift :seed seed :base base :up up :down down))
+    (deal-update-analytics! deal)
+    (deal-refresh-views! deal 'prices)
+    deal))
+
+(define (deal-forget-paths! deal)
+  "Forgets the paths of rates that were run: the OAS and the effective duration of the tranches are blank until they are run again, and a tranche that was given an OAS keeps it, but has no price until then."
+  (deal-path-sets-set! deal '())
+  (deal-update-analytics! deal)
+  (deal-refresh-views! deal 'prices)
+  deal)
+
+(define (deal-set-rate-model! deal model)
+  "Gives the deal the numbers of the model of rates (a rate-model: see deal_paths.lsp) that the paths are made with. The paths are forgotten."
+  (unless (rate-model? model)
+    (error (format "the rate model is made by make-rate-model, such as (make-rate-model :a 2.75 :sigma1 0.019 :sigma2 0.012), not {}" model)))
+  (deal-rate-model-set! deal model)
+  (deal-forget-paths! deal))
+
+(define (deal-set-prepayment-model! deal model)
+  "Gives the deal the prepayment model that the paths are prepaid by: a function (model piece path) of a collateral-piece and a rate-path, that gives the annual prepayment rate in
+percent for each month of the piece (see deal_paths.lsp); '() for the one that prepays at the pricing speed of the deal, whatever the rates. The paths are forgotten."
+  (unless (or (null? model) (procedure? model))
+    (error (format "the prepayment model is a function of a piece of collateral and a path of rates, or '() for none, not {}" model)))
+  (deal-prepayment-model-set! deal model)
+  (deal-forget-paths! deal))
+
+(define (deal-set-index-function! deal function)
+  "Gives the deal the function that makes the index that its floating tranches are of from a path of short rates, a vector, to a vector of the index with a number for each month; '() for
+the identity, which is the short rate itself. The paths are forgotten."
+  (unless (or (null? function) (procedure? function))
+    (error (format "the index function is a function of a path of short rates, or '() for none, not {}" function)))
+  (deal-index-function-set! deal function)
+  (deal-forget-paths! deal))
+
+; ---------------------------------------------------------------------------
+; Giving a price, a yield, a spread or an oas
 ; ---------------------------------------------------------------------------
 
 (define (priced-money deal name)
@@ -357,10 +438,15 @@ the price that makes the money of the tranche what its children's add up to, or 
   (check-priceable deal name)
   (let ((node (get-node deal name)))
     (node-priced-by-set! node '())
-    (dolist (clear (list node-price-set! node-yield-set! node-spread-set! node-duration-set! node-dv01-set! node-money-set!))
+    (dolist (clear (list node-price-set! node-yield-set! node-spread-set! node-duration-set! node-dv01-set! node-money-set! node-oas-set! node-effective-duration-set!))
       (clear node '()))
     (deal-refresh-views! deal 'prices)
     node))
+
+(define (deal-set-oas! deal name oas)
+  "Gives the tranche called name an option-adjusted spread (in basis points, over the paths of rates, which have to have been run: see deal-run-paths!), and works out its price,
+yield, spread, duration, dv01, money and effective duration."
+  (deal-price-tranche! deal name 'oas oas))
 
 (define (deal-set-delay! deal name days)
   "Gives the tranche called name a delay: the days from the end of the accrual period of its interest to the payment date, which is 24 to begin with. It changes the
@@ -384,7 +470,7 @@ accrued interest, and so the money and the price, whichever of them was given."
 
 (define (deal-pricing-table deal)
   "A table of the slots that a price gives, a row for each tranche, each below its parent (as deal-outline has them): the tranche, its balance, the price, the yield (percent),
-the spread (basis points), the duration and the average life (years), the dv01, the money and the delay (days). nan where it has none. The slots are as they were last
+the spread and the oas (basis points), the duration, the effective duration and the average life (years), the dv01, the money and the delay (days). nan where it has none. The slots are as they were last
 worked out (see deal-update-analytics!)."
   (let* ((names (map car (deal-outline-entries deal)))
          (slot-of (lambda (slot) (list->vector (map (lambda (name) (let ((value (slot (get-node deal name)))) (if (null? value) nan value))) names)))))
@@ -393,7 +479,9 @@ worked out (see deal-update-analytics!)."
                 "price" (slot-of node-price)
                 "yield" (slot-of node-yield)
                 "spread" (slot-of node-spread)
+                "oas" (slot-of node-oas)
                 "duration" (slot-of node-duration)
+                "effective duration" (slot-of node-effective-duration)
                 "average life" (slot-of node-average-life)
                 "dv01" (slot-of node-dv01)
                 "money" (slot-of node-money)

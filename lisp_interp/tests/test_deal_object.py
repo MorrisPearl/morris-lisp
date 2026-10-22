@@ -78,7 +78,7 @@ class TestMakingADeal(DealObjectCase):
         self.run_lisp('''(define table (make-table "balance" (vector 100000000.0 50000000.0) "wac" (vector 6.5 7.5) "coupon" (vector 6.0 6.5) "wam" (vector 360 240)))
                          (define deal (new-deal "Demo" :collateral table))''')                       # (no age: 0)
         self.assertShows("(deal-size deal)", "150000000.0")
-        self.assertShows("(collateral-table-pieces (deal-collateral deal))", "((100000000.0 6.5 6.0 360 0) (50000000.0 7.5 6.5 240 0))")
+        self.assertShows("(map (lambda (piece) (list (collateral-piece-balance piece) (collateral-piece-wac piece) (collateral-piece-coupon piece) (collateral-piece-wam piece) (collateral-piece-age piece))) (collateral-table-pieces (deal-collateral deal)))", "((100000000.0 6.5 6.0 360 0) (50000000.0 7.5 6.5 240 0))")
         self.assertShows("(table-column (collateral-table '((1000.0 6.0 5.5 12 3))) \"age\")", "#(3)")
 
     def test_a_row_with_no_balance_is_left_out(self):

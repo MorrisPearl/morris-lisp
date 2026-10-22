@@ -32,6 +32,8 @@ builtins raise a clear error when called.
 import os
 import sys
 
+import numpy as np
+
 from lisp_core import (
     LispError, LispString, LispVector, Pair, Symbol, keyword_options, list_to_pairs, pairs_to_list,
 )
@@ -549,7 +551,40 @@ def simulate_mortgage_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years
                           _lisp_paths(underlying_paths), _lisp_paths(mortgage_paths)])
 
 
+def path_present_values_fn(flows, rate_paths, oas, first_fraction=1.0):
+    """(path-present-values flows rate-paths oas [first-fraction]) -> a vector with the value of the cash flows on each path
+
+    flows is a list of vectors, one for each path (a cash flow for each month, from the first payment), or one vector, which every path has;
+    rate-paths a list of vectors, one for each path, of the short rate (a decimal) at the start of each month, at least as long as the flows, as
+    simulate-rate-paths gives them; oas a decimal added to every month's rate (0.005 is 50 basis points). A month's cash flow is discounted by what a
+    dollar is worth for each month of the path up to it, 1 / (1 + (rate + oas) / 12) a month: the same as path-present-value (oas_monte_carlo.lsp),
+    but for all the paths at once, and fast. The first payment is first-fraction of a month from the start (1 if it is left out): its month is
+    discounted by that power of the month's factor. A path's value is its cash flows, discounted, added up. No network access."""
+    who = "path-present-values"
+    paths = [np.asarray(v.items, dtype=float) for v in pairs_to_list(rate_paths)]
+    if not paths:
+        raise LispError("%s: there are no rate paths" % who)
+    if isinstance(flows, LispVector):
+        flow_rows = [np.asarray(flows.items, dtype=float)] * len(paths)
+    else:
+        flow_rows = [np.asarray(v.items, dtype=float) for v in pairs_to_list(flows)]
+    if len(flow_rows) != len(paths):
+        raise LispError("%s: %d cash flows for %d rate paths: there is one for each path" % (who, len(flow_rows), len(paths)))
+    months = len(flow_rows[0])
+    if any(len(row) != months for row in flow_rows) or any(len(path) < months for path in paths):
+        raise LispError("%s: each path needs a rate for each of the %d months of the cash flows" % (who, months))
+    rates = np.vstack([path[:months] for path in paths])
+    factors = 1.0 + (rates + float(oas)) / 12.0
+    if (factors <= 0).any():
+        raise LispError("%s: an oas of %s makes a month's discount factor not above 0" % (who, oas))
+    log_discounts = -np.log(factors)
+    log_discounts[:, 0] *= float(first_fraction)
+    values = (np.vstack(flow_rows) * np.exp(np.cumsum(log_discounts, axis=1))).sum(axis=1)
+    return LispVector([float(x) for x in values])
+
+
 BUILTINS = {
+    "path-present-values": path_present_values_fn,
     "sofr-forward-curve": sofr_forward_curve_fn,
     "sofr-calibration-data": sofr_calibration_data_fn,
     "sofr-bootstrap-curve": sofr_bootstrap_curve_fn,

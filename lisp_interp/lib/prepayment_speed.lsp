@@ -13,7 +13,8 @@
 ;   (prepayment-speed 'cpr '((5 5 12) (5 20 24)))        ; 5 CPR for a year, then to 20 CPR over two years, and 20 CPR after that
 ;   (prepayment-speed 'psa '((0 100 30)))                ; 0 PSA in month 0 to 100 PSA in month 30, and 100 after: a ramp
 ;
-; A piece of collateral is (balance wac coupon wam [age]): the balance now, the weighted average coupon of the loans (the wac, which
+; A piece of collateral is a collateral-piece (make-collateral-piece :balance 100000000 :wac 6.5 :coupon 6.0 :wam 360 :age 0), or, as a shorthand, the list (balance wac coupon wam [age])
+; of its slots: the balance now, the weighted average coupon of the loans (the wac, which
 ; the borrowers pay and which pays the loans off) and the pass-through coupon (which the investors in the pool are paid), both in percent
 ; (the pass-through coupon is the wac less the fees that are taken out, so it is no more), the weighted average maturity, the months
 ; that are left (so that a pool of 30-year loans that have gone for a year is 348), and the age, the months the loans have gone, which is what
@@ -126,19 +127,25 @@ decimal for each of them."
                (vector-set! balances (+ t 1) (- owed paid))))
     (list principal interest balances gross)))
 
-(define (piece-wam piece)
-  "The wam of a piece of collateral, (balance wac coupon wam [age])."
-  (cadddr piece))
+(defstruct collateral-piece balance wac coupon wam (age 0))
+; what is known of a piece of collateral, a pool of loans: the balance now, the wac and the pass-through coupon in percent, the wam, the months that are left, and the
+; age, the months that the loans have gone. (More that a prepayment model uses, the state the loans are in, their sizes, and so on, are to be slots of it.)
 
-(define (piece-age piece)
-  "The age of a piece of collateral, (balance wac coupon wam [age]): 0 if it is left out."
-  (if (= (length piece) 5) (list-ref piece 4) 0))
+(define (collateral-piece-of x)
+  "A piece of collateral: x if it is one, or one made from a list (balance wac coupon wam [age]) of numbers (the age is 0 if it is left out). An error that says what is wrong
+if it is neither."
+  (cond ((collateral-piece? x) x)
+        ((and (list? x) (<= 4 (length x) 5) (every number? x))
+         (make-collateral-piece :balance (car x) :wac (cadr x) :coupon (caddr x) :wam (cadddr x) :age (if (= (length x) 5) (list-ref x 4) 0)))
+        (else (error (format "a piece of collateral is (balance wac coupon wam [age]), numbers, not {}" x)))))
 
 (define (collateral-piece-check piece)
-  "An error unless the piece is (balance wac coupon wam [age]) of numbers that can be projected."
-  (unless (and (list? piece) (<= 4 (length piece) 5) (every number? piece))
-    (error (format "a piece of collateral is (balance wac coupon wam [age]), numbers, not {}" piece)))
-  (let ((wac (cadr piece)) (coupon (caddr piece)) (wam (piece-wam piece)) (age (piece-age piece)))
+  "An error unless the piece (a collateral-piece, or a list of (balance wac coupon wam [age])) is one that can be projected."
+  (let* ((piece (collateral-piece-of piece))
+         (wac (collateral-piece-wac piece))
+         (coupon (collateral-piece-coupon piece))
+         (wam (collateral-piece-wam piece))
+         (age (collateral-piece-age piece)))
     (when (< wac 0)
       (error (format "the wac of a piece of collateral is in percent, from 0, not {}" wac)))
     (when (< coupon 0)
@@ -151,29 +158,37 @@ decimal for each of them."
       (error (format "the age of a piece of collateral is the months that have gone, a whole number from 0, not {}" age)))))
 
 (define (collateral-pieces-in-use pieces)
-  "The pieces that have a balance: one with none is an empty row, and is left out. An error unless the others can be projected, and there is one."
-  (let ((used (filter (lambda (piece) (and (list? piece) (pair? piece) (not (and (number? (car piece)) (= (car piece) 0)))))
-                      pieces)))
+  "The pieces, as collateral-pieces, that have a balance: one with none is an empty row, and is left out. An error unless the others can be projected, and there is one.
+The pieces can be collateral-pieces, or lists of (balance wac coupon wam [age])."
+  (let* ((all (map collateral-piece-of pieces))
+         (used (filter (lambda (piece) (not (= (collateral-piece-balance piece) 0))) all)))
     (dolist (piece used)
       (collateral-piece-check piece)
-      (when (< (car piece) 0)
-        (error (format "the balance of a piece of collateral is from 0, not {}" (car piece)))))
+      (when (< (collateral-piece-balance piece) 0)
+        (error (format "the balance of a piece of collateral is from 0, not {}" (collateral-piece-balance piece)))))
     (when (null? used)
       (error "there is no collateral: a piece of collateral is (balance wac coupon wam [age])"))
     used))
 
-(define (project-pieces pieces curve)
-  "The cash flows of all the pieces of collateral at the speed, added together: (principal interest balance gross-interest), each a vector, as
-project-pool gives, as long as the longest piece. A piece is (balance wac coupon wam [age]); one with no balance is left out."
+(define (smms-from-cprs cprs months)
+  "The single monthly mortality, a decimal, of each of the first months of a vector of annual prepayment rates in percent (a CPR of 6 is 6): the rate for the months of a piece
+of collateral that a prepayment model gives."
+  (when (< (vector-length cprs) months)
+    (error (format "the prepayment rates are for {} months, and the piece of collateral has {}" (vector-length cprs) months)))
+  (- 1.0 (expt (- 1.0 (vector-clip (/ (vector-take cprs months) 100.0) 0.0 0.99)) (/ 1.0 12.0))))
+
+(define (project-pieces-with pieces smms-of)
+  "The cash flows of all the pieces of collateral added together: (principal interest balance gross-interest), each a vector, as project-pool gives, as long as the longest piece.
+(smms-of piece) gives the single monthly mortality, a decimal, of each of the months of a piece, as a vector: how fast it prepays. One with no balance is left out."
   (let* ((used (collateral-pieces-in-use pieces))
-         (months (apply max (map piece-wam used)))
+         (months (apply max (map collateral-piece-wam used)))
          (principal (make-vector months 0.0))
          (interest (make-vector months 0.0))
          (gross (make-vector months 0.0))
          (balances (make-vector (+ months 1) 0.0)))
     (dolist (piece used)
-      (let* ((wam (piece-wam piece))
-             (flows (project-pool (car piece) (cadr piece) (caddr piece) wam (speed-smms curve (piece-age piece) wam))))
+      (let* ((wam (collateral-piece-wam piece))
+             (flows (project-pool (collateral-piece-balance piece) (collateral-piece-wac piece) (collateral-piece-coupon piece) wam (smms-of piece))))
         (loop for t from 0 below wam
               do (begin (vector-update! principal t + (vector-ref (car flows) t))
                         (vector-update! interest t + (vector-ref (cadr flows) t))
@@ -181,6 +196,12 @@ project-pool gives, as long as the longest piece. A piece is (balance wac coupon
         (loop for t from 0 to wam
               do (vector-update! balances t + (vector-ref (caddr flows) t)))))
     (list principal interest balances gross)))
+
+(define (project-pieces pieces curve)
+  "The cash flows of all the pieces of collateral at the speed (a speed-curve), added together: (principal interest balance gross-interest), each a vector, as project-pool
+gives, as long as the longest piece. A piece is a collateral-piece, or a list (balance wac coupon wam [age]); one with no balance is left out."
+  (project-pieces-with pieces
+                       (lambda (piece) (speed-smms curve (collateral-piece-age piece) (collateral-piece-wam piece)))))
 
 (define (pool-coupons interest balances)
   "The rate of interest of the pool in each month, a decimal for the year: twelve times the interest over the balance at the start

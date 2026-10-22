@@ -3286,6 +3286,19 @@ It has:
   ordinary bond) or a per-path list of cashflow vectors (a prepaying mortgage, whose cashflows are path-dependent).
   Because the paths start on the curve and their average discount factor is the curve's, a security of fixed cash flows
   with no option in it has an OAS of about 0 against the curve the paths start on.
+- `(path-present-values flows rate-paths oas [first-fraction])` — `path-present-value` for every path at once, a Python
+  builtin (numpy) that is fast enough to be solved for an OAS many times: a vector with the value of the cash flows on
+  each path. `flows` is a list of vectors, one for each path, or one vector that every path has; `rate-paths` a list of
+  vectors of the short rate (a decimal), as `simulate-rate-paths` gives them; `oas` a decimal added to every rate. A month's
+  cash flow is discounted by 1 / (1 + (rate + oas) / 12) for each month up to it. `first-fraction` (1 if it is left out) is
+  how much of a month the first payment is away: the first month's discount is to that power, so that a first payment
+  35 days after the closing date can be discounted by 35/30 of a month. The structured deals use it (see "Option-adjusted
+  spread and effective duration" in [lisp_cmo_manual.md](lisp_cmo_manual.md)).
+
+```lisp
+(path-present-values (vector 1.0 1.0) (list (vector 0.0 0.0) (vector 0.12 0.12)) 0.0)    ; => #(2.0 1.970395059307911)
+(path-present-values (list (vector 100.0 100.0) (vector 50.0 150.0)) (list (vector 0.03 0.03) (vector 0.06 0.06)) 0.01)    ; => #(199.00442599971302 197.9752191201696)
+```
 
 See [`oas_monte_carlo_example.lsp`](examples/oas_monte_carlo_example.lsp) for the pipeline end to end — a curve from
 par yields → `simulate-mortgage-rate-paths` → `mortgage-cashflows-per-path` → `oas-solve` — runnable with no

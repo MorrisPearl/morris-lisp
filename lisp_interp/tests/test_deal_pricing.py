@@ -404,7 +404,7 @@ class TestThePricingTable(PricingCase):
         self.run_lisp('(deal-update-analytics! deal) (deal-set-price! deal "A" 100.5)')
         table = self.run_lisp("(deal-pricing-table deal)")
         columns = {str(pair.car): list(pair.cdr.items) for pair in lisp_core.pairs_to_list(table)}
-        self.assertEqual(list(columns), ["tranche", "balance", "price", "yield", "spread", "duration", "average life", "dv01", "money", "delay"])
+        self.assertEqual(list(columns), ["tranche", "balance", "price", "yield", "spread", "oas", "duration", "effective duration", "average life", "dv01", "money", "delay"])
         self.assertEqual(columns["tranche"], ["POOL", "A", "B"])
         self.assertEqual(columns["price"][1], 100.5)
         self.assertTrue(np.isnan(columns["price"][0]) and np.isnan(columns["price"][2]))

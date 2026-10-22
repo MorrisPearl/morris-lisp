@@ -71,7 +71,8 @@
   (duration '()) (average-life '())         ; the price per 100 of balance, the yield in percent, the spread to the Treasury curve in basis points, the duration
   (dv01 '()) (money '())                    ; and average life in years, the dollars that the money falls by when the yield rises a basis point, and what
   (delay 24)                                ; the buyer pays, price and accrued interest; delay is the days from the end of the accrual period to the payment date
-  (priced-by '()))                          ; which of price, yield and spread was typed (a symbol): the others are worked out from it
+  (oas '()) (effective-duration '())        ; the option-adjusted spread in basis points, and the effective duration in years, of the paths of rates (see deal_paths.lsp)
+  (priced-by '()))                          ; which of price, yield, spread and oas was typed (a symbol): the others are worked out from it
 
 (defstruct (collateral (:include node)))        ; (the root of the tree, with the cash flows of the pieces of collateral of the deal)
 
@@ -101,14 +102,16 @@
 (defstruct (average-life-split (:include sequential-split)) lives)
 
 (defstruct deal name (nodes (make-hash-table)) (names '()) root periods (index '()) (shortfalls #f) (first-payment '())
-  (closing-date '()) (collateral '()) (pricing-speed '()) (views '()) (ran #f) (treasury-curve '()) (priced-run '()) (tracks-prices #f))
+  (closing-date '()) (collateral '()) (pricing-speed '()) (views '()) (ran #f) (treasury-curve '()) (priced-run '()) (tracks-prices #f)
+  (rate-model '()) (prepayment-model '()) (index-function '()) (path-sets '()))
 ; The nodes are the tranches, by name, and root is the name of the collateral node, whose cash flows the rest are paid from. The collateral is data,
 ; a table with a row for each piece (balance wac coupon wam age) in collateral, and the cash flows of the root are worked out from it at the pricing
 ; speed, or at the speed that deal-run! is given. views are the functions that show the deal in a notebook, each with the kinds of change that
 ; it shows, that are called when it changes; ran is #f if the deal has changed since it was run, and otherwise the speed it was run at. treasury-curve is
 ; the list of (years yield) that a spread is to (see deal_pricing.lsp); priced-run is a copy of the deal that has been run at the pricing speed, to price the tranches
 ; from, or '() (it is made again after the deal has changed); tracks-prices is #t once a tranche has been priced, when the deal has a view that works the prices out again
-; when it changes (see deal-track-prices!).
+; when it changes (see deal-track-prices!). rate-model, prepayment-model and index-function are what the paths of rates are made with, and path-sets the paths that have been run, with
+; the cash flows of every tranche on each (see deal_paths.lsp): '() until the paths are run, and again when the deal changes.
 
 (defgeneric pay-principal (split deal parent t)
   "Divides the principal of month t that the parent was paid among the children of the split: see the top of the file.")
@@ -174,21 +177,19 @@
 (define collateral-columns '("balance" "wac" "coupon" "wam" "age"))
 
 (define (collateral-table pieces)
-  "The table of the collateral of a list of pieces, each (balance wac coupon wam [age]): a row for each, with the columns balance, wac, coupon, wam and
-age (0 if left out). A table of collateral of your own, from a file, say, has these columns, and the age is not needed."
+  "The table of the collateral of a list of pieces, each a collateral-piece or a list (balance wac coupon wam [age]): a row for each, with the columns balance, wac, coupon, wam
+and age (0 if left out). A table of collateral of your own, from a file, say, has these columns, and the age is not needed."
   (unless (list? pieces)
     (error (format "the collateral is a table, or a list of pieces, each (balance wac coupon wam [age]), not {}" pieces)))
-  (dolist (piece pieces)
-    (unless (and (list? piece) (<= 4 (length piece) 5) (every number? piece))
-      (error (format "a piece of collateral is (balance wac coupon wam [age]), numbers, not {}" piece))))
-  (make-table "balance" (list->vector (map (lambda (piece) (+ 0.0 (car piece))) pieces))
-              "wac" (list->vector (map (lambda (piece) (+ 0.0 (cadr piece))) pieces))
-              "coupon" (list->vector (map (lambda (piece) (+ 0.0 (caddr piece))) pieces))
-              "wam" (list->vector (map piece-wam pieces))
-              "age" (list->vector (map piece-age pieces))))
+  (let ((all (map collateral-piece-of pieces)))
+    (make-table "balance" (list->vector (map (lambda (piece) (+ 0.0 (collateral-piece-balance piece))) all))
+                "wac" (list->vector (map (lambda (piece) (+ 0.0 (collateral-piece-wac piece))) all))
+                "coupon" (list->vector (map (lambda (piece) (+ 0.0 (collateral-piece-coupon piece))) all))
+                "wam" (list->vector (map collateral-piece-wam all))
+                "age" (list->vector (map collateral-piece-age all)))))
 
 (define (collateral-table-pieces table)
-  "The pieces, each (balance wac coupon wam age), in a table of collateral, one with a balance: the rows with none are left out. An error if the table
+  "The pieces, as collateral-pieces, in a table of collateral, one with a balance: the rows with none are left out. An error if the table
 does not have the columns balance, wac, coupon and wam."
   (unless (table? table)
     (error (format "the collateral is a table, with the columns balance, wac, coupon and wam (and age), not {}" table)))
@@ -202,14 +203,14 @@ does not have the columns balance, wac, coupon and wam."
         (ages (if (assoc "age" table) (table-column table "age") '())))
     (loop for i from 0 below (vector-length balances)
           when (> (vector-ref balances i) 0.0)
-          collect (list (vector-ref balances i) (vector-ref wacs i) (vector-ref coupons i) (vector-ref wams i)
-                        (if (null? ages) 0 (vector-ref ages i))))))
+          collect (make-collateral-piece :balance (vector-ref balances i) :wac (vector-ref wacs i) :coupon (vector-ref coupons i) :wam (vector-ref wams i)
+                                         :age (if (null? ages) 0 (vector-ref ages i))))))
 
 (define (pieces-coupon pieces flows)
   "The coupon of the collateral of the pieces, whose cash flows are flows (principal interest balance ...): the pass-through coupon that they
 have, as a fixed coupon, if they all have the same, whatever their wacs are, and otherwise the rate that the interest is of the balance, month
 by month (see pool-coupons)."
-  (let ((rates (map caddr pieces)))
+  (let ((rates (map collateral-piece-coupon pieces)))
     (if (every (lambda (rate) (= rate (car rates))) rates)
         (constant-coupon (/ (car rates) 100.0))
         (pool-coupons (cadr flows) (caddr flows)))))
@@ -238,7 +239,7 @@ bonds are owed is a shortfall of the bonds that go without, carried forward, ins
     deal))
 
 (define (deal-pieces deal)
-  "The pieces of collateral that the cash flows of the root are made of, a list of (balance wac coupon wam age): those of the deal's table of collateral, the
+  "The pieces of collateral that the cash flows of the root are made of, a list of collateral-pieces: those of the deal's table of collateral, the
 rows with a balance. '() if it has none."
   (collateral-table-pieces (deal-collateral deal)))
 
@@ -383,6 +384,7 @@ The notebook views of a deal, (collateral deal), (bonds deal) and (info deal), a
   "Says that the deal has changed in these kinds: it has not been run since, and each view that shows one of them is refreshed."
   (deal-ran-set! deal #f)
   (deal-priced-run-set! deal '())
+  (deal-path-sets-set! deal '())
   (apply deal-refresh-views! deal kinds))
 
 (define (deal-add-node! deal node)
@@ -1220,14 +1222,16 @@ the children, and not a Z bond."
         (append (deal-ancestors deal (node-name parent)) (list (node-name parent)))
         '())))
 
-(define (deal-run-copy deal flows keep)
+(define (deal-run-copy deal flows keep &optional (index '()))
   "A copy of the tree of the deal, run with the cash flows (principal interest) that the collateral is given, at the
-   index the deal was last run with, or 0. The copy has its own vectors, so that the deal is not changed. Only the splits of the nodes named in
+   index the deal was last run with, or 0 (or the index that is given: a vector with a number for each month). The copy has its own vectors, so that the deal is not changed. Only the splits of the nodes named in
    keep are in it (or all of them, if keep is #t): a node that is not in it is a bond in the copy, whatever it is divided into. The flows are
    (principal interest balance), and if the coupon of the collateral is a rate for each month, it is made, with the coupons below it, from them."
   (let* ((root-name (deal-root deal))
          (copy (make-deal :name (deal-name deal) :root root-name :periods (deal-periods deal)
-                          :index (if (null? (deal-index deal)) (make-vector (deal-periods deal) 0.0) (deal-index deal)))))
+                          :index (cond ((not (null? index)) index)
+                                       ((null? (deal-index deal)) (make-vector (deal-periods deal) 0.0))
+                                       (else (deal-index deal))))))
     (dolist (node-name (deal-tree-names deal root-name))
       (let ((node (copy-node (get-node deal node-name))))
         (unless (or (eq? keep #t) (member node-name keep))

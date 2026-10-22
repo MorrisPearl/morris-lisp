@@ -136,7 +136,7 @@ class TestDealBuilder(BuilderCase):
     # -- the start ----------------------------------------------------------------
 
     def test_a_new_deal_is_a_grid_with_one_row_the_collateral_and_a_panel_that_is_put_away(self):
-        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "price", "yield", "spread", "duration", "average life", "dv01", "money", "delay"])
+        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "price", "yield", "spread", "oas", "duration", "effective duration", "average life", "dv01", "money", "delay"])
         self.assertEqual(self.names(), ["POOL"])
         self.assertEqual(self.grid.data["balance"][0], 100000000.0)
         self.assertTrue(self.hidden())

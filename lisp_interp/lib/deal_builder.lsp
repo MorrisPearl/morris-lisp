@@ -17,8 +17,8 @@
 ; for this view of a deal, with (collateral deal) and (info deal) (see deal_views.lsp): they can be shown at the same time, in different cells, and each
 ; shows what is changed in the others.
 ;
-; Beyond the cash flows are the columns of what a price says about a tranche (see deal_pricing.lsp): price, yield, spread, duration, average life, dv01, money and
-; delay. Type in one of price, yield and spread, in the cell of a tranche (double-click it, or click it and type; a + or ? is typed after the double-click), and the others are worked out; a price can be +, which
+; Beyond the cash flows are the columns of what a price says about a tranche (see deal_pricing.lsp): price, yield, spread, oas, duration, effective duration, average life,
+; dv01, money and delay (the oas and the effective duration are of the paths of rates, and are blank until they are run: see deal_paths.lsp). Type in one of price, yield, spread and oas, in the cell of a tranche (double-click it, or click it and type; a + or ? is typed after the double-click), and the others are worked out; a price can be +, which
 ; makes the money of the tranche that of its children, or ?, which makes the money of the tranche and its siblings that of their parent. Clear a cell to take the
 ; price away. The delay, in days, is typed too. The other columns are worked out: what is typed in them is put back.
 ;
@@ -301,8 +301,8 @@ who clicked a button has typed something that cannot be used, and the message sa
   "Shows a line under the panel."
   (widget-capture (deal-gui-messages gui) (lambda () (display text))))
 
-(define priced-columns '("price" "yield" "spread" "duration" "average life" "dv01" "money" "delay"))
-(define typed-columns '("price" "yield" "spread" "delay"))
+(define priced-columns '("price" "yield" "spread" "oas" "duration" "effective duration" "average life" "dv01" "money" "delay"))
+(define typed-columns '("price" "yield" "spread" "oas" "delay"))
 
 (define (priced-column-texts deal names)
   "The columns of what a price says about each of the tranches called names, as text (blank for what a tranche has not got), as a table: so that a price can be typed
@@ -312,7 +312,9 @@ as + or ?, and a cell cleared."
     (make-table "price" (texts node-price "{:.4f}")
                 "yield" (texts node-yield "{:.4f}")
                 "spread" (texts node-spread "{:.1f}")
+                "oas" (texts node-oas "{:.1f}")
                 "duration" (texts node-duration "{:.3f}")
+                "effective duration" (texts node-effective-duration "{:.3f}")
                 "average life" (texts node-average-life "{:.3f}")
                 "dv01" (texts node-dv01 "{:,.2f}")
                 "money" (texts node-money "{:,.2f}")
@@ -355,7 +357,7 @@ worked out from it is shown; a cleared cell takes the price away. What is typed 
     (without-traceback
       (lambda ()
         (cond ((not (member column typed-columns))
-               (error (format "{} is worked out, not typed: type a price, a yield, a spread or a delay" column)))
+               (error (format "{} is worked out, not typed: type a price, a yield, a spread, an oas or a delay" column)))
               ((equal? column "delay")
                (deal-set-delay! deal name (deal-gui-type-number word (format "the delay of {}" name))))
               ((equal? word "")
@@ -364,6 +366,8 @@ worked out from it is shown; a cleared cell takes the price away. What is typed 
                (deal-set-price! deal name (if (member word '("+" "?")) word (deal-gui-type-number word (format "the price of {}" name)))))
               ((equal? column "yield")
                (deal-set-yield! deal name (deal-gui-type-number word (format "the yield of {}" name))))
+              ((equal? column "oas")
+               (deal-set-oas! deal name (deal-gui-type-number word (format "the oas of {}" name))))
               (else
                (deal-set-spread! deal name (deal-gui-type-number word (format "the spread of {}" name)))))
         (set! done #t)))

@@ -122,7 +122,7 @@ class TestTheCollateralView(ViewsCase):
         shown = self.press(self.update_button)
         self.assertIn("Updated the collateral of Demo 2026-1: 170,000,000.00 in 3 pieces, paying for 360 months.", shown)
         self.assertShows("(deal-size deal)", "170000000.0")
-        self.assertShows("(collateral-table-pieces (deal-collateral deal))", "((90000000.0 6.5 6.0 360 0) (50000000.0 7.5 6.5 240 12) (30000000.0 8.0 7.0 120 6))")
+        self.assertShows("(map (lambda (piece) (list (collateral-piece-balance piece) (collateral-piece-wac piece) (collateral-piece-coupon piece) (collateral-piece-wam piece) (collateral-piece-age piece))) (collateral-table-pieces (deal-collateral deal)))", "((90000000.0 6.5 6.0 360 0) (50000000.0 7.5 6.5 240 12) (30000000.0 8.0 7.0 120 6))")
         self.assertEqual(list(self.grid.data.iloc[2]), [30000000.0, 8.0, 7.0, 120, 6])
 
     def test_the_tranches_under_it_are_worked_out_again_by_the_button(self):
@@ -314,7 +314,7 @@ class TestTheBondsView(ViewsCase):
 
     def test_bonds_is_the_grid_of_the_tranches_with_a_column_to_click_for_the_cash_flows(self):
         self.view()
-        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "price", "yield", "spread", "duration", "average life", "dv01", "money", "delay"])
+        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "price", "yield", "spread", "oas", "duration", "effective duration", "average life", "dv01", "money", "delay"])
         self.assertEqual(self.names(), ["POOL"])
         self.assertEqual(list(self.grid.data["cash flows"]), ["view"])
         self.divide()

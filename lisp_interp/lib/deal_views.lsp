@@ -58,11 +58,11 @@ with the interest that the investors are paid, and the rate that it is of the ba
          (coupons (pool-coupons interest balances))
          (rows (deal-summary-months months))
          (used (collateral-pieces-in-use pieces))
-         (total (apply + (map car used)))
-         (average (lambda (field) (/ (apply + (map (lambda (piece) (* (car piece) (field piece))) used)) total)))
+         (total (apply + (map collateral-piece-balance used)))
+         (average (lambda (field) (/ (apply + (map (lambda (piece) (* (collateral-piece-balance piece) (field piece))) used)) total)))
          (at (lambda (vector) (list->vector (map (lambda (month) (vector-ref vector (- month 1))) rows)))))
     (display (format "{} pieces, {:,.2f}, with a wac of {:.4f}%, a pass-through coupon of {:.4f}% and a wam of {} months, paying for {} months; its average life is {:.2f} years at {}.\n"
-                     (length used) total (average cadr) (average caddr) (apply max (map piece-wam used)) months (average-life principal)
+                     (length used) total (average collateral-piece-wac) (average collateral-piece-coupon) (apply max (map collateral-piece-wam used)) months (average-life principal)
                      (describe-speed curve)))
     (display-table (apply make-table
                           (append (list "month" (list->vector rows))

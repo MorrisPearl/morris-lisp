@@ -97,7 +97,11 @@
 (lazy-load "prepayment_speed.lsp"
   collateral-piece-check collateral-pieces-in-use copy-speed-curve make-speed-curve pool-coupons prepayment-speed
   project-pieces project-pool speed-curve-pieces speed-curve-pieces-set! speed-curve-type speed-curve-type-set!
-  speed-curve? speed-in-month speed-piece-of speed-smms speed-values describe-speed piece-age piece-wam)
+  speed-curve? speed-in-month speed-piece-of speed-smms speed-values describe-speed collateral-piece-age
+  collateral-piece-age-set! collateral-piece-balance collateral-piece-balance-set! collateral-piece-coupon
+  collateral-piece-coupon-set! collateral-piece-of collateral-piece-wac collateral-piece-wac-set! collateral-piece-wam
+  collateral-piece-wam-set! collateral-piece? copy-collateral-piece make-collateral-piece project-pieces-with
+  smms-from-cprs)
 
 ; Structured deals as a tree: a pool, divided by splits into tranches (see lisp_cmo_manual.md)
 (lazy-load "deal.lsp"
@@ -169,7 +173,24 @@
   tranche-average-life tranche-average-life-set! tranche-delay tranche-delay-set! tranche-duration
   tranche-duration-set! tranche-dv01 tranche-dv01-set! tranche-money tranche-money-set! tranche-price
   tranche-price-set! tranche-priced-by tranche-priced-by-set! tranche-spread tranche-spread-set! tranche-yield
-  tranche-yield-set! deal-tracks-prices deal-tracks-prices-set!)
+  tranche-yield-set! deal-tracks-prices deal-tracks-prices-set! collateral-effective-duration
+  collateral-effective-duration-set! collateral-oas collateral-oas-set! deal-index-function deal-index-function-set!
+  deal-path-sets deal-path-sets-set! deal-prepayment-model deal-prepayment-model-set! deal-rate-model
+  deal-rate-model-set! node-effective-duration node-effective-duration-set! node-oas node-oas-set!
+  tranche-effective-duration tranche-effective-duration-set! tranche-oas tranche-oas-set!)
+
+; The OAS and the effective duration of the tranches of a deal, on paths of rates (see "Option-adjusted spread" in lisp_cmo_manual.md)
+(lazy-load "deal_paths.lsp"
+  copy-path-run copy-path-sets copy-rate-model copy-rate-path deal-forward-curve deal-index-of-short-rates
+  deal-prepayment-model-in-use deal-rate-model-in-use make-path-run make-path-sets make-rate-model make-rate-path
+  path-collateral-flows path-run-flows path-run-flows-set! path-run-money path-run-rates path-run-rates-set! path-run?
+  path-sets-base path-sets-base-set! path-sets-cache path-sets-cache-set! path-sets-cached path-sets-down
+  path-sets-down-set! path-sets-effective-duration path-sets-oas path-sets-paths path-sets-paths-set! path-sets-seed
+  path-sets-seed-set! path-sets-shift path-sets-shift-set! path-sets-up path-sets-up-set! path-sets?
+  path-tranche-flows rate-model-a rate-model-a-set! rate-model-b rate-model-b-set! rate-model-sigma1
+  rate-model-sigma1-set! rate-model-sigma2 rate-model-sigma2-set! rate-model? rate-path-long-yields
+  rate-path-long-yields-set! rate-path-short-rates rate-path-short-rates-set! rate-path? run-path-set
+  static-prepayment-model)
 
 ; What a price says about a tranche of a deal: yield, spread, duration, dv01, money (see lisp_cmo_manual.md)
 (lazy-load "deal_pricing.lsp"
@@ -178,7 +199,8 @@
   deal-set-spread! deal-set-treasury-curve! deal-set-yield! deal-settlement deal-update-analytics! interpolate-points
   money-left-for money-of-children monthly-factor months-from-settlement node-floats? price-for-money priced-by-value
   priced-money tranche-cash-flows treasury-points treasury-yield yield-of-money deal-clear-treasury-curve!
-  deal-track-prices!)
+  deal-track-prices! deal-forget-paths! deal-run-paths! deal-set-index-function! deal-set-oas!
+  deal-set-prepayment-model! deal-set-rate-model!)
 
 ; Building a deal by clicking in a notebook (see "Building a deal by clicking" in lisp_cmo_manual.md)
 (lazy-load "deal_builder.lsp"
