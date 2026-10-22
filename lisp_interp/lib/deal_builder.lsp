@@ -17,6 +17,11 @@
 ; for this view of a deal, with (collateral deal) and (info deal) (see deal_views.lsp): they can be shown at the same time, in different cells, and each
 ; shows what is changed in the others.
 ;
+; Beyond the cash flows are the columns of what a price says about a tranche (see deal_pricing.lsp): price, yield, spread, duration, average life, dv01, money and
+; delay. Type in one of price, yield and spread, in the cell of a tranche (double-click it, or click it and type; a + or ? is typed after the double-click), and the others are worked out; a price can be +, which
+; makes the money of the tranche that of its children, or ?, which makes the money of the tranche and its siblings that of their parent. Clear a cell to take the
+; price away. The delay, in days, is typed too. The other columns are worked out: what is typed in them is put back.
+;
 ; Click a tranche that has been divided, and the panel shows its split, with the fields as they were filled in. Change them, and
 ; the buttons calculate and make the change: the tranches of the split are worked out again, and so are those under them, to the
 ; leaves (see deal-replace-split!). A button under the panel takes the split away, with every tranche under it, after asking.
@@ -30,6 +35,7 @@
 ;   (deal-builder deal :forms (append (standard-split-forms) (list my-form)))
 
 (require "deal.lsp")
+(require "deal_pricing.lsp")
 (require "widgets.lsp")
 
 (defstruct split-form title label help fields defaults describe plan)
@@ -295,18 +301,74 @@ who clicked a button has typed something that cannot be used, and the message sa
   "Shows a line under the panel."
   (widget-capture (deal-gui-messages gui) (lambda () (display text))))
 
+(define priced-columns '("price" "yield" "spread" "duration" "average life" "dv01" "money" "delay"))
+(define typed-columns '("price" "yield" "spread" "delay"))
+
+(define (priced-column-texts deal names)
+  "The columns of what a price says about each of the tranches called names, as text (blank for what a tranche has not got), as a table: so that a price can be typed
+as + or ?, and a cell cleared."
+  (let ((texts (lambda (slot spec)
+                 (list->vector (map (lambda (name) (let ((value (slot (get-node deal name)))) (if (null? value) "" (format spec value)))) names)))))
+    (make-table "price" (texts node-price "{:.4f}")
+                "yield" (texts node-yield "{:.4f}")
+                "spread" (texts node-spread "{:.1f}")
+                "duration" (texts node-duration "{:.3f}")
+                "average life" (texts node-average-life "{:.3f}")
+                "dv01" (texts node-dv01 "{:,.2f}")
+                "money" (texts node-money "{:,.2f}")
+                "delay" (texts node-delay "{}"))))
+
 (define (deal-gui-table gui)
-  "The table for the grid: the outline of the deal, with a column beside the split to click to see the cash flows of a tranche."
-  (let ((entries (deal-outline-entries (deal-gui-deal gui))))
-    (append (deal-outline (deal-gui-deal gui))
-            (list (cons "cash flows" (list->vector (map (lambda (entry) "view") entries)))))))
+  "The table for the grid: the outline of the deal, with a column beside the split to click to see the cash flows of a tranche, and the columns of what a price says
+about each (see deal_pricing.lsp)."
+  (let* ((deal (deal-gui-deal gui))
+         (names (map car (deal-outline-entries deal))))
+    (append (deal-outline deal)
+            (list (cons "cash flows" (list->vector (map (lambda (name) "view") names))))
+            (priced-column-texts deal names))))
+
+(define (deal-gui-update-prices! gui)
+  "Works out the slots that a price gives, of every tranche, again (the deal may have changed), and says what could not be."
+  (dolist (problem (deal-update-analytics! (deal-gui-deal gui)))
+    (deal-gui-say gui (format "{}\n" problem))))
 
 (define (deal-gui-refresh! gui)
   "Shows the tranches of the deal as they are now, and puts away what was being done to one of them: the deal has changed."
   (deal-gui-names-set! gui (map car (deal-outline-entries (deal-gui-deal gui))))
+  (deal-gui-update-prices! gui)
   (grid-set-table! (deal-gui-grid gui) (deal-gui-table gui))
   (widget-clear (deal-gui-flows gui))
   (deal-gui-put-away! gui))
+
+(define (deal-gui-type-number text what)
+  "The number typed in a cell, for what it is of."
+  (form-number (string-trim text) what))
+
+(define (deal-gui-typed! gui column row text)
+  "The user typed text in a cell of the grid, in column, in the row of a tranche. A price (a number, or + or ?), a yield, a spread or a delay is given to the tranche, and what is
+worked out from it is shown; a cleared cell takes the price away. What is typed in any other column is put back, with what is wrong said."
+  (let* ((deal (deal-gui-deal gui))
+         (name (list-ref (deal-gui-names gui) row))
+         (word (string-trim text))
+         (done #f))
+    (widget-clear (deal-gui-messages gui))
+    (without-traceback
+      (lambda ()
+        (cond ((not (member column typed-columns))
+               (error (format "{} is worked out, not typed: type a price, a yield, a spread or a delay" column)))
+              ((equal? column "delay")
+               (deal-set-delay! deal name (deal-gui-type-number word (format "the delay of {}" name))))
+              ((equal? word "")
+               (deal-clear-price! deal name))
+              ((equal? column "price")
+               (deal-set-price! deal name (if (member word '("+" "?")) word (deal-gui-type-number word (format "the price of {}" name)))))
+              ((equal? column "yield")
+               (deal-set-yield! deal name (deal-gui-type-number word (format "the yield of {}" name))))
+              (else
+               (deal-set-spread! deal name (deal-gui-type-number word (format "the spread of {}" name)))))
+        (set! done #t)))
+    (unless done                                        ; (the cell has what was typed in it, which is not what the deal has)
+      (deal-gui-refresh! gui))))
 
 (define (show-node-flows deal name)
   "Shows the cash flows of the tranche called name, from the last run of the deal: what it is, its average life, and a table with a row for the first month and
@@ -499,7 +561,8 @@ of it can make at the same time."
   (let* ((messages (widget-output))
          (flows (widget-output))
          (gui (make-deal-gui :deal deal :forms forms :messages messages :flows flows :names (map car (deal-outline-entries deal))))
-         (grid (table-grid (deal-gui-table gui) :editable #f :selection-mode "row"))
+         (priced (deal-gui-update-prices! gui))
+         (grid (table-grid (deal-gui-table gui) :editable #t :selection-mode "cell"))
          (panel (widget-actions (map (lambda (form) (append (list (split-form-title form) (split-form-help form)) (split-form-fields form)))
                                      forms)
                                 :style style
@@ -519,10 +582,13 @@ of it can make at the same time."
     (deal-gui-cancel-button-set! gui cancel-button)
     (grid-on-click grid
                    (lambda (column row value)
-                     (without-traceback (lambda () (if (equal? column "cash flows") (deal-gui-show-flows! gui row) (deal-gui-choose! gui row)))))
+                     (without-traceback (lambda () (cond ((equal? column "cash flows") (deal-gui-show-flows! gui row))
+                                                         ((member column priced-columns) '())
+                                                         (else (deal-gui-choose! gui row))))))
                    :output messages)
+    (grid-on-edit grid (lambda (column row value) (deal-gui-typed! gui column row value)) :output messages)
     (deal-gui-put-away! gui)
-    (deal-add-view! deal '(tranches) (lambda () (deal-gui-refresh! gui)))
+    (deal-add-view! deal '(tranches prices) (lambda () (deal-gui-refresh! gui)))
     (widget-column grid flows panel delete-row messages)))
 
 (define (bonds deal &key (forms (standard-split-forms)) (style "tabs"))

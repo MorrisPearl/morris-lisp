@@ -136,7 +136,7 @@ class TestDealBuilder(BuilderCase):
     # -- the start ----------------------------------------------------------------
 
     def test_a_new_deal_is_a_grid_with_one_row_the_collateral_and_a_panel_that_is_put_away(self):
-        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows"])
+        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "price", "yield", "spread", "duration", "average life", "dv01", "money", "delay"])
         self.assertEqual(self.names(), ["POOL"])
         self.assertEqual(self.grid.data["balance"][0], 100000000.0)
         self.assertTrue(self.hidden())
@@ -207,11 +207,11 @@ class TestDealBuilder(BuilderCase):
         self.assertShows("(begin (deal-run! deal :index 0.04) (deal-check deal))", "#t")
 
     def test_a_grid_that_is_as_tall_as_its_rows_grows_with_them(self):
-        self.assertEqual(self.grid.layout.height, "60px")
+        self.assertEqual(self.grid.layout.height, "76px")
         self.click(0)
         self.fill("Sequential", {"Tranches": "A 60000000\nB"})
         self.add("Sequential")
-        self.assertEqual(self.grid.layout.height, "100px")
+        self.assertEqual(self.grid.layout.height, "116px")
 
     def test_a_click_on_any_cell_of_a_row_chooses_the_tranche(self):
         self.click(0)
@@ -653,7 +653,7 @@ class TestChangingAndTakingAwayInTheBuilder(BuilderCase):
         self.assertShows("(deal-names deal)", '("POOL" "A" "B")')
         self.assertTrue(self.hidden())
         self.assertEqual(self.shown_buttons(), [])
-        self.assertEqual(self.grid.layout.height, "100px")
+        self.assertEqual(self.grid.layout.height, "116px")
         self.assertShows("(run-and-check deal)", "#t")
         self.click(1)                                                       # (A can be divided again)
         self.assertEqual(self.panel.children[0].value, "Divide <b>A</b>, which has a balance of 60,000,000.00, by:")

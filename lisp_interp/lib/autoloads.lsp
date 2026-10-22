@@ -159,7 +159,26 @@
   deal-pricing-speed-set! deal-put-collateral-flows! deal-ran deal-ran-set! deal-set-closing-date!
   deal-set-collateral! deal-set-first-payment! deal-set-periods! deal-set-pricing-speed! deal-summary-months
   deal-views deal-views-set! new-deal padded pieces-coupon deal-check-collateral deal-in-tree? deal-pieces deal-root
-  deal-root-set!)
+  deal-root-set! collateral-average-life collateral-average-life-set! collateral-delay collateral-delay-set!
+  collateral-duration collateral-duration-set! collateral-dv01 collateral-dv01-set! collateral-money
+  collateral-money-set! collateral-price collateral-price-set! collateral-priced-by collateral-priced-by-set!
+  collateral-spread collateral-spread-set! collateral-yield collateral-yield-set! deal-priced-run deal-priced-run-set!
+  deal-refresh-views! deal-treasury-curve deal-treasury-curve-set! node-average-life node-average-life-set! node-delay
+  node-delay-set! node-duration node-duration-set! node-dv01 node-dv01-set! node-money node-money-set! node-price
+  node-price-set! node-priced-by node-priced-by-set! node-spread node-spread-set! node-yield node-yield-set!
+  tranche-average-life tranche-average-life-set! tranche-delay tranche-delay-set! tranche-duration
+  tranche-duration-set! tranche-dv01 tranche-dv01-set! tranche-money tranche-money-set! tranche-price
+  tranche-price-set! tranche-priced-by tranche-priced-by-set! tranche-spread tranche-spread-set! tranche-yield
+  tranche-yield-set! deal-tracks-prices deal-tracks-prices-set!)
+
+; What a price says about a tranche of a deal: yield, spread, duration, dv01, money (see lisp_cmo_manual.md)
+(lazy-load "deal_pricing.lsp"
+  accrual-end accrued-interest analytics-assign! analyze-tranche check-priceable days-360 deal-clear-price!
+  deal-floating-without-index deal-price-tranche! deal-pricing-run deal-pricing-table deal-set-delay! deal-set-price!
+  deal-set-spread! deal-set-treasury-curve! deal-set-yield! deal-settlement deal-update-analytics! interpolate-points
+  money-left-for money-of-children monthly-factor months-from-settlement node-floats? price-for-money priced-by-value
+  priced-money tranche-cash-flows treasury-points treasury-yield yield-of-money deal-clear-treasury-curve!
+  deal-track-prices!)
 
 ; Building a deal by clicking in a notebook (see "Building a deal by clicking" in lisp_cmo_manual.md)
 (lazy-load "deal_builder.lsp"
@@ -176,7 +195,8 @@
   deal-gui-form-for deal-gui-keep! deal-gui-offer-to-change! deal-gui-offer-to-divide! deal-gui-put-away!
   deal-gui-show-delete! form-children-text form-decimal-to-percent show-plan-effect split-form-describe
   split-form-describe-set! split-form-label split-form-label-set! without-traceback average-lives-of form-lives
-  form-lives-text bonds deal-gui-flows deal-gui-flows-set! deal-gui-show-flows! deal-gui-table show-node-flows)
+  form-lives-text bonds deal-gui-flows deal-gui-flows-set! deal-gui-show-flows! deal-gui-table show-node-flows
+  deal-gui-type-number deal-gui-typed! deal-gui-update-prices! priced-column-texts)
 
 ; Views of a deal in a notebook: its collateral, and its dates and pricing speed (see lisp_cmo_manual.md)
 (lazy-load "deal_views.lsp"
@@ -188,7 +208,8 @@
   info-gui-first-payment info-gui-first-payment-set! info-gui-messages info-gui-messages-set! info-gui-name
   info-gui-name-set! info-gui-show info-gui-speed-grid info-gui-speed-grid-set! info-gui-speed-type
   info-gui-speed-type-set! info-gui-update info-gui? info-speed-from-grid info-speed-table make-collateral-gui
-  make-info-gui show-collateral-flows)
+  make-info-gui show-collateral-flows info-curve-from-grid info-curve-table info-gui-curve-grid
+  info-gui-curve-grid-set!)
 
 ; Templates of text and SQL
 (lazy-load "template.lsp"

@@ -37,6 +37,7 @@ general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is 
   - [Z bonds, and accretion directed bonds](#z-bonds-and-accretion-directed-bonds)
   - [Interest-only and principal-only bonds](#interest-only-and-principal-only-bonds)
   - [Sequential by average life](#sequential-by-average-life)
+- [Prices, yields and spreads](#prices-yields-and-spreads)
 - [Losses and shortfalls](#losses-and-shortfalls)
   - [Losses](#losses)
   - [Interest shortfalls](#interest-shortfalls)
@@ -481,6 +482,98 @@ what they can (the first child of a pool cannot have more than the pool's own av
 leave nothing for the one that is left. The sizes are worked out again whenever the parent's are, so that the lives still hold after a change above (see "Changing a
 split, and taking one away"). The lives are of the principal that the parent is paid at the pricing speed, so they are the lives of the bonds at that speed, not at any other.
 
+## Prices, yields and spreads
+
+A tranche has a **price**, a **yield** and a **spread**, and what follows from them: its **duration**, its **average life**, its **dv01**, its **money**, and a **delay**. They are slots
+of the tranche (`node-price`, `node-yield`, `node-spread`, `node-duration`, `node-average-life`, `node-dv01`, `node-money` and `node-delay`), and are worked out by
+`lib/deal_pricing.lsp`. A price, a yield or a spread is what is **given**, and the rest are worked out from it, from the cash flows that the tranche is paid when the deal is run
+at its pricing speed, as of the closing date of the deal, which is when the buyer pays.
+
+| Slot | Is | Units |
+|---|---|---|
+| `price` | what the buyer pays for each 100 of balance, without the accrued interest | 100 is par |
+| `yield` | what the buyer earns: the bond equivalent yield of the cash flows | percent a year |
+| `spread` | the yield over the Treasury curve at the average life of the tranche | basis points |
+| `duration` | the modified duration | years |
+| `average-life` | the average life (see "Sequential by average life") | years |
+| `dv01` | how much the money falls when the yield rises by a basis point, and nothing else is changed | dollars |
+| `money` | what the buyer pays, in all: the balance times the price over 100, and the accrued interest | dollars |
+| `delay` | the days from the end of the accrual period of its interest to the day it is paid (24 to begin with) | days |
+
+```lisp
+(define deal (new-deal "Demo 2026-1" :closing-date (date 2026 11 20) :first-payment (date 2026 12 25)
+                       :collateral '((100000000.0 6.5 6.0 360)) :speed (prepayment-speed 'psa 150)))
+(deal-sequential! deal "POOL" '(("A" 60000000.0) ("B" 40000000.0)))
+(deal-set-treasury-curve! deal '((1 4.0) (2 4.1) (3 4.2) (5 4.3) (10 4.5)))    ; years, and yield in percent
+(deal-set-price! deal "A" 100.5)                                              ; the rest of what A has is worked out
+(node-yield (get-node deal "A"))               ; => 5.8457833561537464
+(node-spread (get-node deal "A"))              ; => 155.92398872535912
+(node-duration (get-node deal "A"))            ; => 3.9109519134294706
+(node-average-life (get-node deal "A"))        ; => 4.730869378003109
+(node-dv01 (get-node deal "A"))                ; => 23650.493554621935
+(node-money (get-node deal "A"))               ; => 60490000.0
+```
+
+`(deal-set-price! deal name price)`, `(deal-set-yield! deal name yield)` and `(deal-set-spread! deal name spread)` give a tranche one of them, and work out the others;
+`(deal-clear-price! deal name)` takes them away (the average life stays), and `(deal-set-delay! deal name days)` gives it a delay. Nothing is changed if something is wrong. A tranche
+keeps **the one that was given**, as it was given: when the deal changes (its pricing speed, its collateral, its tranches, its dates, its index, its Treasury curve) the rest are worked out
+again from it, so a price stays, and its yield follows the speed; a spread stays, and its yield follows the average life. `(deal-update-analytics! deal)` does it by hand: it returns a list of messages
+for the tranches that could not be worked out (those have their slots cleared), which is empty if all is well. `(deal-pricing-table deal)` is a table of the slots, a row for each tranche, with
+`nan` where a tranche has not got one.
+
+**Accrued interest.** The buyer pays the interest that has accrued since the accrual period began, by the 30/360 day count (every month is 30 days, and a year 360;
+`(days-360 from to)`): the balance times the coupon times the days over 360. The **delay** says where the period is: the first accrual period ends *delay* days before the
+first payment date, and began a month before it ended. Here the first payment is 2026-12-25, so the period ends 2026-12-01 and began 2026-11-01, and 19 days have gone at the closing
+date, 2026-11-20: 60,000,000 at 6% for 19 days is 190,000. A closing date after the end of the first period is an error, and nothing has accrued if the period has not begun.
+
+```lisp
+(accrued-interest deal (get-node deal "A"))    ; => 190000.0
+(days-360 (date 2026 11 1) (date 2026 11 20))  ; => 19
+```
+
+**The yield** is a bond equivalent yield. The cash flows that the tranche is paid, its principal and its interest each month, on its payment dates (the first payment date, and a month
+apart), are discounted by `(1 + yield / 200)` to the power of minus a sixth for each month from the closing date, the months being counted by the 30/360 day count; the money is what they
+are worth, added up. The yield of a price is the one that makes them worth the money (found by Ridders' method, between -100% and 1000%), and the price of a yield is what the money
+that they are worth is, less the accrued interest, per 100 of balance. The **duration** is the modified duration: the proportion that the money falls by for a rise of one (a hundred
+percentage points) in the yield. The **dv01** is exactly what it says: the money at the yield, less the money at a yield a basis point (0.01 percent) higher, with the cash flows, and the
+accrued interest, as they are.
+
+**The spread** is the yield less the yield of the Treasury curve at the average life of the tranche, in basis points. The curve is a list of points, `(years yield)` with the yield in
+percent, or a table with the columns `years` and `yield`, given to the deal with `(deal-set-treasury-curve! deal curve)` (or in `(info deal)`), and the yield at an average life is on a
+straight line between the two points on either side of it, so that the yield for an average life of 2.25 is a quarter of the way from the two-year point to the three-year point; beyond the
+ends of the curve it is that of the nearest point. A tranche that is paid no principal (an interest-only bond) has no average life, and no spread.
+
+```lisp
+(deal-set-treasury-curve! deal '((2 4.0) (3 5.0)))
+(treasury-yield deal 2.25)                     ; => 4.25
+(deal-set-treasury-curve! deal '((1 4.0) (2 4.1) (3 4.2) (5 4.3) (10 4.5)))
+(treasury-yield deal 2.25)                     ; => 4.125
+```
+
+**+ and ?.** A price can be given as `"+"`, which sets the price of a tranche so that its money is exactly the money of its children, added up; and as `"?"`, which sets it so that the money of the tranche and of
+all the tranches that are paid by the same split (its siblings) is exactly that of their parent. Each needs the others to be priced already. They give a price, and the tranche keeps it as a price.
+
+```lisp
+(deal-set-price! deal "A" 100.5)
+(deal-set-spread! deal "B" 120)                ; B is to be 120 basis points over the curve at its average life
+(deal-set-price! deal "POOL" "+")              ; the price of the pool that makes it worth what A and B are, together
+(node-money (get-node deal "POOL"))            ; => 101974088.54376554
+(deal-set-price! deal "POOL" 101.0)
+(deal-set-price! deal "B" "?")                 ; the price of B that makes A and B together worth what the pool is
+(node-price (get-node deal "B"))               ; => 101.75
+(+ (node-money (get-node deal "A")) (node-money (get-node deal "B")))   ; => 101316666.66666667
+(deal-set-delay! deal "A" 14)                  ; the accrued interest of A is less, so its money is: its price stays
+(node-money (get-node deal "A"))               ; => 60390000.0
+(node-price (get-node deal "A"))               ; => 100.5
+```
+
+**What it is as of, and what it is not.** The cash flows are those of the deal run at its pricing speed (and, for a tranche that floats, at the index that the deal was last run with: a deal
+with a floating tranche that has not been run with an index cannot be priced, and says so). The slots are as of the closing date, so the deal needs a closing date and a first payment date. The
+duration is the modified duration at that speed: nothing is done about what a change in rates would do to the speed (there is no effective duration, or option-adjusted spread). Losses
+and shortfalls are not looked at: a tranche is priced by what it is paid.
+
+In a notebook the grid of the tranches, `(bonds deal)`, has a column for each slot beyond the cash flows (see "Building a deal by clicking"), and `(info deal)` a grid for the Treasury curve.
+
 ## Losses and shortfalls
 
 Both apply to some deals only. A deal with no losses has none, and a deal is only run with shortfalls if it asks for them.
@@ -697,7 +790,8 @@ carries as a shortfall, if it ever does. `(deal-summary-months periods)` is the 
   in the grid, at the pricing speed, and shows them: how many pieces there are, the balance, the wac, the pass-through coupon, the wam, the average life and the speed in words, and a table
   with a row for the first month and the end of each year (the payment date, the balance, the principal, the interest paid to the investors, the speed of the month, and the wac and the
   pass-through coupon of the pool, which change as the pieces with the higher rates pay off). **Update the deal** gives the deal what is in the grid (`deal-set-collateral!`).
-- `(info deal)` is a few fields: the name, the closing date, the first payment date (written `2026-11-25`, or left blank), and the pricing speed, a type (PSA, CPR or SMM) and a grid of
+- `(info deal)` is a few fields: the name, the closing date, the first payment date (written `2026-12-25`, or left blank), the Treasury curve (a grid of the years and the yield in percent of its points, with empty rows to type in, that a
+  spread is over: see "Prices, yields and spreads"), and the pricing speed, a type (PSA, CPR or SMM) and a grid of
   pieces, each *from*, *to* and *months*, which is a speed that goes in a straight line from one to the other and is *to* in the last of the months; the last piece has 0 months, for the rest of
   the time, and one row with the same speed twice is a single speed. The first row is always a piece, and any other row with nothing in it is left out. **Update the deal** gives the deal
   what is typed, and nothing is changed if something is wrong.
@@ -741,6 +835,10 @@ at the same time as they are, and shows what they change (the balance of the col
   them, to the leaves. Another tab will change the split to a split of another kind, with the same tranches or others.
 - **Take away this split, and all under it** is under the panel whenever a tranche that is divided is chosen. It says which tranches would go, and asks; **Yes**
   takes them away (`deal-delete-split!`), and **No** keeps them.
+- **Type a price, a yield or a spread, in the cell of a tranche** (double-click the cell, or click it and type: a price of `+` or `?` is typed after a double-click, which opens the cell), and the others are worked out (see "Prices, yields and spreads"): the grid has
+  the columns *price*, *yield*, *spread*, *duration*, *average life*, *dv01*, *money* and *delay* after the cash flows, and a price, a yield, a spread and the delay are typed. A price can be typed as `+` or `?`, and
+  a cell that is cleared takes the price away. What is typed in a column that is worked out is put back, with a line to say so, and so is text that is not a number. The Treasury curve that a spread is over is
+  in `(info deal)`, and what is typed in the grid stays when the deal changes: the rest is worked out again.
 - **Click *view*, in the column of cash flows beside the split**, and the cash flows of that tranche are shown under the grid: what it is, its average life, the speed that the deal was
   run at, and a table (see `deal-flows-table`) with a row for the first month and the end of each year. The deal is run first, at the pricing speed, if it has changed since it was last run (or if
   it was never); a deal that was run by hand, with `(deal-run! deal speed)`, shows that run, until it changes. A floater needs the index, so a deal with one must have been run with `:index`

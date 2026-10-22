@@ -479,8 +479,9 @@ def column_widths_for(frame):
 
 
 def height_for_rows(rows, row_size, header_size):
-    """The height of a grid of this many rows: tall enough for them (up to GRID_ROWS_SHOWN of them), and not a good deal taller."""
-    return "%dpx" % (header_size + min(rows, GRID_ROWS_SHOWN) * row_size + 20)
+    """The height of a grid of this many rows: tall enough for them (up to GRID_ROWS_SHOWN of them), and the scroll bar of a grid that is wider than its
+    cell, and not a good deal taller."""
+    return "%dpx" % (header_size + min(rows, GRID_ROWS_SHOWN) * row_size + 36)
 
 
 def _grid_of(ipydatagrid, frame, settings):

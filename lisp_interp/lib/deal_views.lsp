@@ -1,6 +1,6 @@
 ; deal_views.lsp
 ; ==============
-; Views of a deal in a Jupyter notebook: the collateral, as a grid to type in, and the dates and the pricing speed, as a few fields. Each is one
+; Views of a deal in a Jupyter notebook: the collateral, as a grid to type in, and the dates, the pricing speed and the Treasury curve, as a few fields. Each is one
 ; cell of the notebook, and they can all be shown at once, with the grid of the bonds (see deal_builder.lsp), for the same deal: what is changed
 ; in one is shown in the others.
 ;
@@ -15,7 +15,8 @@
 ; flows of the pieces, as they are in the grid, at the pricing speed, and shows them year by year; **Update the deal** gives the deal the collateral that is
 ; in the grid, which works out the cash flows again, and the sizes of the tranches under it. The pricing speed is a type (PSA, CPR or SMM) and a grid of
 ; pieces, each from, to and months, which is a speed that goes in a straight line from one to the other, and is `to` in the last of the months (see
-; prepayment_speed.lsp); the last piece has 0 months, for the rest of the time, and one row with the same speed twice is a single speed.
+; prepayment_speed.lsp); the last piece has 0 months, for the rest of the time, and one row with the same speed twice is a single speed. The Treasury curve is a grid
+; of points, the years and the yield in percent, that the spreads of the tranches are over (see deal_pricing.lsp).
 
 (require "deal_builder.lsp")
 
@@ -132,8 +133,22 @@ made to the collateral of the deal elsewhere."
 ; The dates and the pricing speed
 ; ---------------------------------------------------------------------------
 
-(defstruct info-gui deal name closing first-payment speed-type speed-grid messages)
-; the deal, the fields and the grid, and the place for what is shown
+(defstruct info-gui deal name closing first-payment speed-type speed-grid curve-grid messages)
+; the deal, the fields and the grids (of the pieces of the pricing speed, and of the points of the Treasury curve), and the place for what is shown
+
+(define (info-curve-table points)
+  "The table of the points of a Treasury curve, for the grid: years and yield (percent), with rows with nothing in them to make six."
+  (let ((blanks (max 0 (- 6 (length points)))))
+    (make-table "years" (list->vector (append (map car points) (loop repeat blanks collect 0.0)))
+                "yield" (list->vector (append (map cadr points) (loop repeat blanks collect 0.0))))))
+
+(define (info-curve-from-grid table)
+  "The points, (years yield), that a table of years and yield says: a row with nothing in it is left out."
+  (let ((years (table-column table "years"))
+        (yields (table-column table "yield")))
+    (loop for i from 0 below (vector-length years)
+          unless (and (= (vector-ref years i) 0.0) (= (vector-ref yields i) 0.0))
+          collect (list (vector-ref years i) (vector-ref yields i)))))
 
 (define (info-speed-table curve)
   "The table of the pieces of a speed, for the grid: from, to and months (0 for the rest of the time), with rows with nothing in them to make four."
@@ -164,7 +179,8 @@ nothing in it is left out; a piece with 0 months is for the rest of the time."
     (widget-set! (info-gui-closing gui) "value" (date-to-text (deal-closing-date deal)))
     (widget-set! (info-gui-first-payment gui) "value" (date-to-text (deal-first-payment deal)))
     (widget-set! (info-gui-speed-type gui) "value" (string-upcase (format "{}" (speed-curve-type (deal-pricing-speed deal)))))
-    (grid-set-table! (info-gui-speed-grid gui) (info-speed-table (deal-pricing-speed deal)))))
+    (grid-set-table! (info-gui-speed-grid gui) (info-speed-table (deal-pricing-speed deal)))
+    (grid-set-table! (info-gui-curve-grid gui) (info-curve-table (deal-treasury-curve deal)))))
 
 (define (info-gui-update gui)
   "The button that gives the deal the name, the dates and the pricing speed that are typed. Nothing is changed if something is wrong."
@@ -172,16 +188,24 @@ nothing in it is left out; a piece with 0 months is for the rest of the time."
          (closing (date-from-text (widget-get (info-gui-closing gui) "value") "the closing date"))
          (first-payment (date-from-text (widget-get (info-gui-first-payment gui) "value") "the first payment"))
          (name (string-trim (widget-get (info-gui-name gui) "value")))
-         (speed (info-speed-from-grid (widget-get (info-gui-speed-type gui) "value") (grid-table (info-gui-speed-grid gui)))))
+         (speed (info-speed-from-grid (widget-get (info-gui-speed-type gui) "value") (grid-table (info-gui-speed-grid gui))))
+         (curve (info-curve-from-grid (grid-table (info-gui-curve-grid gui)))))
     (when (equal? name "")
       (error "the deal needs a name"))
+    (treasury-points (if (null? curve) '((1 0)) curve))                  ; (an error now, before anything is changed, if the curve is wrong)
     (deal-set-pricing-speed! deal speed)
     (deal-set-closing-date! deal closing)
     (deal-set-first-payment! deal first-payment)
     (deal-name-set! deal name)
+    (if (null? curve)
+        (deal-clear-treasury-curve! deal)
+        (deal-set-treasury-curve! deal curve))
     (widget-clear (info-gui-messages gui))
     (widget-capture (info-gui-messages gui)
-                    (lambda () (display (format "Updated {}: pricing speed {}.\n" name (describe-speed speed)))))))
+                    (lambda () (display (format "Updated {}: pricing speed {}{}.\n" name (describe-speed speed)
+                                                (cond ((null? curve) ", no Treasury curve")
+                                                      ((= (length curve) 1) ", Treasury curve of 1 point")
+                                                      (else (format ", Treasury curve of {} points" (length curve))))))))))
 
 (define (info deal)
   "A few fields for the name of the deal, the date of its closing, the date of its first payment, which is month 1, and its pricing speed, which is what the cash flows
@@ -194,11 +218,15 @@ Returns the widget, which a cell of a notebook shows. It shows the changes made 
          (speed-type (make-widget "Dropdown" :options (list "PSA" "CPR" "SMM") :description "Pricing speed" :style (widget--style)))
          (speed-grid (table-grid (info-speed-table (deal-pricing-speed deal)) :editable #t
                                  :column-widths (grid-column-widths '(("from" 80) ("to" 80) ("months" 80)))))
+         (curve-grid (table-grid (info-curve-table (deal-treasury-curve deal)) :editable #t
+                                 :column-widths (grid-column-widths '(("years" 80) ("yield" 80)))))
          (gui (make-info-gui :deal deal :name name :closing closing :first-payment first-payment :speed-type speed-type :speed-grid speed-grid
-                             :messages messages))
+                             :curve-grid curve-grid :messages messages))
          (page (widget-column
                  (make-widget "HTML" :value "<b>The deal</b>: its name, its dates, and the pricing speed: a type, and a row for each piece of the speed, which goes in a straight line from <i>from</i> to <i>to</i> and is <i>to</i> in the last of its <i>months</i>; the last piece has 0 months, for the rest of the time. One row with the same speed twice is a single speed.")
                  name closing first-payment speed-type speed-grid
+                 (make-widget "HTML" :value "<b>The Treasury curve</b>, that a spread is over: a row for each point, the years to its maturity and its yield in percent, in any order (a row with nothing in it is left out). The yield at an average life between two points is on the straight line between them.")
+                 curve-grid
                  (deal-gui-button "Update the deal" "primary" (lambda () (info-gui-update gui)) messages)
                  messages)))
     (info-gui-show gui)

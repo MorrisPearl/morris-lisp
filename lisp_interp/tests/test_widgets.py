@@ -500,17 +500,17 @@ class TestTableGrid(LispTestCase):
         self.assertLispError("(table-grid t :nonsense 1)", "no attribute")
 
     def test_a_grid_is_as_tall_as_its_rows_up_to_fifteen_unless_it_is_given_a_layout(self):
-        self.assertEqual(self.grid.layout.height, "100px")             # three rows: a heading, three rows and some room
-        self.assertEqual(self.run_lisp("(table-grid t :base-row-size 30)").layout.height, "130px")
+        self.assertEqual(self.grid.layout.height, "116px")             # three rows: a heading, three rows and some room
+        self.assertEqual(self.run_lisp("(table-grid t :base-row-size 30)").layout.height, "146px")
         self.run_lisp('(define long (make-table "x" (vector-range 100)))')
-        self.assertEqual(self.run_lisp("(table-grid long)").layout.height, "340px")
+        self.assertEqual(self.run_lisp("(table-grid long)").layout.height, "356px")
         self.assertEqual(self.run_lisp('(table-grid t :layout (make-widget "Layout" :height "50px"))').layout.height, "50px")
 
     def test_a_grid_that_is_as_tall_as_its_rows_becomes_as_tall_as_the_rows_of_a_new_table(self):
         self.run_lisp('(grid-set-table! g (make-table "x" (vector-range 100)))')
-        self.assertEqual(self.grid.layout.height, "340px")
+        self.assertEqual(self.grid.layout.height, "356px")
         self.run_lisp('(grid-set-table! g (make-table "x" (vector-range 2)))')
-        self.assertEqual(self.grid.layout.height, "80px")
+        self.assertEqual(self.grid.layout.height, "96px")
         self.run_lisp('(define fixed (table-grid t :layout (make-widget "Layout" :height "50px")))')
         self.run_lisp('(grid-set-table! fixed (make-table "x" (vector-range 100)))')
         self.assertEqual(self.env[lisp_core.Symbol("fixed")].layout.height, "50px")         # (a height that was asked for stays)

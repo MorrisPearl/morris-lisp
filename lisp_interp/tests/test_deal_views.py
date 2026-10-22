@@ -163,7 +163,8 @@ class TestTheInfoView(ViewsCase):
     def view(self, collateral=ViewsCase.PIECES):
         self.make(collateral)
         self.page = self.widget("(info deal)")
-        (self.heading, self.name, self.closing, self.first_payment, self.speed_type, self.speed_grid, self.update_button, self.messages) = self.page.children
+        (self.heading, self.name, self.closing, self.first_payment, self.speed_type, self.speed_grid, self.curve_heading, self.curve_grid,
+         self.update_button, self.messages) = self.page.children
 
     def test_the_fields_have_what_the_deal_has(self):
         self.view()
@@ -175,6 +176,44 @@ class TestTheInfoView(ViewsCase):
         self.assertEqual(list(self.speed_grid.data.columns), ["from", "to", "months"])
         self.assertEqual(len(self.speed_grid.data), 4)
         self.assertEqual(list(self.speed_grid.data.iloc[0]), [100.0, 100.0, 0])                # (the pricing speed is 100 PSA to begin with)
+
+    def test_the_treasury_curve_is_a_grid_of_years_and_yields_with_empty_rows_to_type_in(self):
+        self.view()
+        self.assertEqual(list(self.curve_grid.data.columns), ["years", "yield"])
+        self.assertEqual(len(self.curve_grid.data), 6)
+        self.assertEqual(list(self.curve_grid.data.iloc[0]), [0.0, 0.0])
+        self.run_lisp("(deal-set-treasury-curve! deal '((2 4.1) (3 4.2)))")                        # (a change made somewhere else is shown)
+        self.assertEqual(list(self.curve_grid.data.iloc[0]), [2.0, 4.1])
+        self.assertEqual(list(self.curve_grid.data.iloc[1]), [3.0, 4.2])
+        self.assertEqual(list(self.curve_grid.data.iloc[2]), [0.0, 0.0])
+        self.assertIn("Treasury curve", self.curve_heading.value)
+
+    def test_the_button_gives_the_deal_the_curve_that_is_typed_and_a_blank_one_takes_it_away(self):
+        self.view()
+        for row, (years, percent) in enumerate(((5, 4.3), (2, 4.1), (10, 4.5))):                    # (in any order)
+            self.edit(self.curve_grid, row, "years", years)
+            self.edit(self.curve_grid, row, "yield", percent)
+        shown = self.press(self.update_button)
+        self.assertIn("Treasury curve of 3 points", shown)
+        self.assertShows("(deal-treasury-curve deal)", "((2.0 4.1) (5.0 4.3) (10.0 4.5))")
+        for row in range(3):
+            self.edit(self.curve_grid, row, "years", 0.0)
+            self.edit(self.curve_grid, row, "yield", 0.0)
+        shown = self.press(self.update_button)
+        self.assertIn("no Treasury curve", shown)
+        self.assertShows("(deal-treasury-curve deal)", "()")
+
+    def test_a_curve_that_is_wrong_is_said_and_nothing_is_changed(self):
+        self.view()
+        self.edit(self.curve_grid, 0, "years", 2.0)
+        self.edit(self.curve_grid, 0, "yield", 4.0)
+        self.edit(self.curve_grid, 1, "years", 2.0)
+        self.edit(self.curve_grid, 1, "yield", 4.5)
+        self.name.value = "Changed"
+        shown = self.press(self.update_button)
+        self.assertIn("two yields for 2.0 years", shown)
+        self.assertEqual(self.run_lisp("(deal-name deal)"), "Demo 2026-1")
+        self.assertShows("(deal-treasury-curve deal)", "()")
 
     def test_a_deal_with_no_dates_has_empty_fields(self):
         self.run_lisp('(define deal (new-deal "Demo"))')
@@ -275,7 +314,7 @@ class TestTheBondsView(ViewsCase):
 
     def test_bonds_is_the_grid_of_the_tranches_with_a_column_to_click_for_the_cash_flows(self):
         self.view()
-        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows"])
+        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "price", "yield", "spread", "duration", "average life", "dv01", "money", "delay"])
         self.assertEqual(self.names(), ["POOL"])
         self.assertEqual(list(self.grid.data["cash flows"]), ["view"])
         self.divide()
@@ -372,7 +411,7 @@ class TestSeveralViewsAtOnce(ViewsCase):
         self.bonds_grid = self.bonds_page.children[0]
         self.speed_type = self.info_page.children[4]
         self.speed_grid = self.info_page.children[5]
-        self.update_info = self.info_page.children[6]
+        self.update_info = self.info_page.children[8]
 
     def bonds_balances(self):
         return list(self.bonds_grid.data["balance"])

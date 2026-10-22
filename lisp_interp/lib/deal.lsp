@@ -66,7 +66,12 @@
 (defstruct node name balance principal interest accrual loss shortfall coupon (split '())
   (z-flag #f)                ; a Z (accrual) bond: its interest is not paid but added to its balance, and pays the bonds ahead of it
   (notional-flag #f)         ; an interest-only bond: a notional balance that follows another's, interest, and no principal
-  (follows '()) (share 1.0)) ; the name of the node whose balance a notional bond follows, and what share of it
+  (follows '()) (share 1.0)  ; the name of the node whose balance a notional bond follows, and what share of it
+  (price '()) (yield '()) (spread '())      ; what the node is worth, and what the investor earns, as deal_pricing.lsp works them out ('() if not priced):
+  (duration '()) (average-life '())         ; the price per 100 of balance, the yield in percent, the spread to the Treasury curve in basis points, the duration
+  (dv01 '()) (money '())                    ; and average life in years, the dollars that the money falls by when the yield rises a basis point, and what
+  (delay 24)                                ; the buyer pays, price and accrued interest; delay is the days from the end of the accrual period to the payment date
+  (priced-by '()))                          ; which of price, yield and spread was typed (a symbol): the others are worked out from it
 
 (defstruct (collateral (:include node)))        ; (the root of the tree, with the cash flows of the pieces of collateral of the deal)
 
@@ -96,11 +101,14 @@
 (defstruct (average-life-split (:include sequential-split)) lives)
 
 (defstruct deal name (nodes (make-hash-table)) (names '()) root periods (index '()) (shortfalls #f) (first-payment '())
-  (closing-date '()) (collateral '()) (pricing-speed '()) (views '()) (ran #f))
+  (closing-date '()) (collateral '()) (pricing-speed '()) (views '()) (ran #f) (treasury-curve '()) (priced-run '()) (tracks-prices #f))
 ; The nodes are the tranches, by name, and root is the name of the collateral node, whose cash flows the rest are paid from. The collateral is data,
 ; a table with a row for each piece (balance wac coupon wam age) in collateral, and the cash flows of the root are worked out from it at the pricing
 ; speed, or at the speed that deal-run! is given. views are the functions that show the deal in a notebook, each with the kinds of change that
-; it shows, that are called when it changes; ran is #f if the deal has changed since it was run, and otherwise the speed it was run at.
+; it shows, that are called when it changes; ran is #f if the deal has changed since it was run, and otherwise the speed it was run at. treasury-curve is
+; the list of (years yield) that a spread is to (see deal_pricing.lsp); priced-run is a copy of the deal that has been run at the pricing speed, to price the tranches
+; from, or '() (it is made again after the deal has changed); tracks-prices is #t once a tranche has been priced, when the deal has a view that works the prices out again
+; when it changes (see deal-track-prices!).
 
 (defgeneric pay-principal (split deal parent t)
   "Divides the principal of month t that the parent was paid among the children of the split: see the top of the file.")
@@ -363,15 +371,19 @@ deal. The views of the deal that show the kinds of change, symbols such as colla
 The notebook views of a deal, (collateral deal), (bonds deal) and (info deal), are made this way."
   (deal-views-set! deal (append (deal-views deal) (list (cons kinds refresh)))))
 
-(define (deal-changed! deal &rest kinds)
-  "Says that the deal has changed in these kinds: it has not been run since, and each view that shows one of them is refreshed. (An error in a view is said, and
-does not undo the change.)"
-  (deal-ran-set! deal #f)
+(define (deal-refresh-views! deal &rest kinds)
+  "Brings the views that show one of the kinds (symbols) up to date. (An error in a view is said, and does not undo the change.)"
   (dolist (view (deal-views deal))
     (when (some (lambda (kind) (member kind (car view))) kinds)
       (catch-error ((cdr view))
         (message)
         (display (format "(a view of the deal could not be brought up to date: {})\n" message))))))
+
+(define (deal-changed! deal &rest kinds)
+  "Says that the deal has changed in these kinds: it has not been run since, and each view that shows one of them is refreshed."
+  (deal-ran-set! deal #f)
+  (deal-priced-run-set! deal '())
+  (apply deal-refresh-views! deal kinds))
 
 (define (deal-add-node! deal node)
   "Adds a node to the deal, which has no node of that name yet."
@@ -729,7 +741,7 @@ by running the splits above it (see deal-principal-now), and is divided in order
   (let ((copy (make-deal :name (deal-name deal) :root (deal-root deal) :periods (deal-periods deal) :index (deal-index deal)
                          :shortfalls (deal-shortfalls deal) :first-payment (deal-first-payment deal)
                          :closing-date (deal-closing-date deal) :collateral (deal-collateral deal)
-                         :pricing-speed (deal-pricing-speed deal))))
+                         :pricing-speed (deal-pricing-speed deal) :treasury-curve (deal-treasury-curve deal))))
     (dolist (name (deal-names deal))
       (let ((node (copy-node (get-node deal name))))
         (node-balance-set! node (vector-copy (node-balance node)))
@@ -1306,11 +1318,16 @@ the children, and not a Z bond."
         (walk-losses! deal (get-node deal name) t)))))
 
 (define (deal-set-index! deal index)
-  "Sets the index of the deal: a number for every month, or a vector of them, or '() for none."
-  (cond ((null? index) (deal-index-set! deal '()))
-        ((number? index) (deal-index-set! deal (make-vector (deal-periods deal) (+ index 0.0))))
-        ((and (vector? index) (>= (vector-length index) (deal-periods deal))) (deal-index-set! deal index))
-        (else (error (format "the index is a number, or a vector with a number for each of the {} months, not {}" (deal-periods deal) index)))))
+  "Sets the index of the deal: a number for every month, or a vector of them, or '() for none. A new index is a change that the views that show the prices (kind
+index) are told of; the same one is not."
+  (let ((new (cond ((null? index) '())
+                   ((number? index) (make-vector (deal-periods deal) (+ index 0.0)))
+                   ((and (vector? index) (>= (vector-length index) (deal-periods deal))) index)
+                   (else (error (format "the index is a number, or a vector with a number for each of the {} months, not {}" (deal-periods deal) index))))))
+    (unless (equal? new (deal-index deal))
+      (deal-index-set! deal new)
+      (deal-priced-run-set! deal '())
+      (deal-refresh-views! deal 'index))))
 
 (define (deal-run-months! deal)
   "Month by month, the interest, then the principal, and then the loss that each node is paid or written down by, and the balance it has
