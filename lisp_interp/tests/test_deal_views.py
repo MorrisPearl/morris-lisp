@@ -77,7 +77,8 @@ class TestTheCollateralView(ViewsCase):
     def test_the_grid_has_a_row_for_each_piece_and_empty_ones_to_type_in(self):
         self.view()
         self.assertEqual(list(self.grid.data.columns), ["balance", "wac", "coupon", "wam", "age", "loan size", "credit score", "ltv", "sato", "burnout",
-                                                         "investor share", "second home share", "cash-out share", "refinance share"])
+                                                         "investor share", "second home share", "cash-out share", "refinance share", "dti",
+                                                         "one borrower share", "mi percent"])
         self.assertEqual(len(self.grid.data), 8)
         self.assertEqual(self.row(0), [100000000.0, 6.5, 6.0, 360, 0])
         self.assertEqual(self.row(1), [50000000.0, 7.5, 6.5, 240, 12])
@@ -185,7 +186,7 @@ class TestTheInfoView(ViewsCase):
         self.make(collateral)
         self.page = self.widget("(info deal)")
         (self.heading, self.name, self.closing, self.first_payment, self.speed_type, self.speed_grid, self.home_prices, self.mortgage_spread,
-         self.curve_heading, self.curve_grid, self.update_button, self.messages) = self.page.children
+         self.defaults, self.liquidation_lag, self.curve_heading, self.curve_grid, self.update_button, self.messages) = self.page.children
 
     def test_the_fields_have_what_the_deal_has(self):
         self.view()
@@ -195,6 +196,7 @@ class TestTheInfoView(ViewsCase):
         self.assertEqual(self.speed_type.value, "PSA")
         self.assertEqual(list(self.speed_type.options), ["PSA", "CPR", "SMM", "MODEL"])
         self.assertEqual((self.home_prices.value, self.mortgage_spread.value), (3.0, 1.75))       # (what the prepayment model is told, to begin with)
+        self.assertEqual((self.defaults.value, self.liquidation_lag.value), (0.0, 18))            # (no defaults, to begin with)
         self.assertEqual(list(self.speed_grid.data.columns), ["from", "to", "months"])
         self.assertEqual(len(self.speed_grid.data), 4)
         self.assertEqual(list(self.speed_grid.data.iloc[0]), [100.0, 100.0, 0])                # (the pricing speed is 100 PSA to begin with)
@@ -469,7 +471,7 @@ class TestSeveralViewsAtOnce(ViewsCase):
         self.bonds_grid = self.bonds_page.children[0]
         self.speed_type = self.info_page.children[4]
         self.speed_grid = self.info_page.children[5]
-        self.update_info = self.info_page.children[10]
+        self.update_info = self.info_page.children[12]
 
     def bonds_balances(self):
         return list(self.bonds_grid.data["balance"])

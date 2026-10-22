@@ -80,7 +80,7 @@ class TestSpeeds(PiecesCase):
 class TestProjecting(PiecesCase):
 
     def test_a_pool_of_one_piece_is_a_pool_whose_prepayments_follow_the_psa_curve_from_its_age(self):
-        principal, interest, balance, gross = self.flows("(project-pieces '((100000.0 6.0 6.0 348 12)) (prepayment-speed 'psa 100))")
+        principal, interest, balance, gross, loss = self.flows("(project-pieces '((100000.0 6.0 6.0 348 12)) (prepayment-speed 'psa 100))")
         monthly = 0.005
         payment = 100000 * monthly / (1 - (1 + monthly) ** -348)
         scheduled = payment - 100000 * monthly
@@ -101,7 +101,7 @@ class TestProjecting(PiecesCase):
             np.testing.assert_allclose(total, first + second, rtol=1e-12, atol=1e-9)
 
     def test_the_balance_is_what_there_was_less_what_was_paid(self):
-        principal, interest, balance, gross = self.flows("(project-pieces '((100000.0 6.0 5.5 360) (50000.0 7.0 6.5 120)) (prepayment-speed 'psa 200))")
+        principal, interest, balance, gross, loss = self.flows("(project-pieces '((100000.0 6.0 5.5 360) (50000.0 7.0 6.5 120)) (prepayment-speed 'psa 200))")
         self.assertEqual((len(principal), len(interest), len(balance)), (360, 360, 361))
         np.testing.assert_allclose(balance[1:], balance[:-1] - principal, atol=1e-6)
         self.assertEqual(balance[0], 150000.0)
@@ -307,15 +307,16 @@ class TestCoupons(PiecesCase):
 class TestWhatTheLoansAreLike(PiecesCase):
     """The slots of a collateral-piece that say what its loans are like, for a prepayment model: '() when they are not known."""
 
-    CHARACTERISTICS = ["loan-size", "credit-score", "ltv", "sato", "burnout", "investor-share", "second-home-share", "cash-out-share", "refinance-share"]
+    CHARACTERISTICS = ["loan-size", "credit-score", "ltv", "sato", "burnout", "investor-share", "second-home-share", "cash-out-share", "refinance-share",
+                       "dti", "one-borrower-share", "mi-percent"]
 
     def test_they_are_not_known_unless_they_are_given(self):
         self.run_lisp("(define piece (collateral-piece-of '(1000.0 6.0 5.5 12)))")
         for slot in self.CHARACTERISTICS:
             self.assertShows("(collateral-piece-%s piece)" % slot, "()")
         self.run_lisp("(define piece (make-collateral-piece :balance 1000.0 :wac 6.0 :coupon 5.5 :wam 12 :loan-size 250000 :credit-score 745 :ltv 68.5 :sato 0.2 "
-                      ":burnout 4 :investor-share 0.1 :second-home-share 0.05 :cash-out-share 0.2 :refinance-share 0.3))")
-        self.assertShows("(map (lambda (slot) (slot piece)) (map cadr collateral-characteristics))", "(250000 745 68.5 0.2 4 0.1 0.05 0.2 0.3)")
+                      ":burnout 4 :investor-share 0.1 :second-home-share 0.05 :cash-out-share 0.2 :refinance-share 0.3 :dti 38 :one-borrower-share 0.4 :mi-percent 12))")
+        self.assertShows("(map (lambda (slot) (slot piece)) (map cadr collateral-characteristics))", "(250000 745 68.5 0.2 4 0.1 0.05 0.2 0.3 38 0.4 12)")
 
     def test_what_makes_no_sense_is_said(self):
         for given, message in ((":loan-size 0", "the loan size of a piece of collateral is the balance of a loan"),
@@ -325,7 +326,10 @@ class TestWhatTheLoansAreLike(PiecesCase):
                                (":investor-share 1.2", "the investor share of a piece of collateral is a share of the balance, from 0 to 1"),
                                (":cash-out-share \"most\"", "the cash-out share of a piece of collateral is a share of the balance"),
                                (":investor-share 0.6 :second-home-share 0.6", "the investor share and the second home share of a piece of collateral are 1.2 together"),
-                               (":cash-out-share 0.7 :refinance-share 0.4", "the cash-out share and the refinance share")):
+                               (":cash-out-share 0.7 :refinance-share 0.4", "the cash-out share and the refinance share"),
+                               (":dti 120", "the dti of a piece of collateral is the debt-to-income in percent, from 0 to 100"),
+                               (":one-borrower-share -0.1", "the one borrower share of a piece of collateral is a share of the balance"),
+                               (":mi-percent 150", "the mi percent of a piece of collateral is the percent of a loss that mortgage insurance pays")):
             with self.subTest(given=given):
                 self.assertLispError("(new-deal \"D\" :collateral (list (make-collateral-piece :balance 1000.0 :wac 6.0 :coupon 5.5 :wam 12 %s)))" % given, message)
 
@@ -333,7 +337,7 @@ class TestWhatTheLoansAreLike(PiecesCase):
         self.run_lisp("(define table (collateral-table (list (make-collateral-piece :balance 1000.0 :wac 6.0 :coupon 5.5 :wam 12 :credit-score 760 :investor-share 0.1) "
                       "'(500.0 6.0 5.5 12))))")
         self.assertShows("(map car table)", '("balance" "wac" "coupon" "wam" "age" "loan size" "credit score" "ltv" "sato" "burnout" "investor share" '
-                                            '"second home share" "cash-out share" "refinance share")')
+                                            '"second home share" "cash-out share" "refinance share" "dti" "one borrower share" "mi percent")')
         self.assertShows('(table-column table "credit score")', "#(760.0 nan)")
         self.assertShows("(map collateral-piece-credit-score (collateral-table-pieces table))", "(760.0 ())")
         self.assertShows("(map collateral-piece-investor-share (collateral-table-pieces table))", "(0.1 ())")

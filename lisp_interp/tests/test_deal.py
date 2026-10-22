@@ -41,7 +41,7 @@ class TestThePool(DealTestCase):
         return [np.array(v.items) for v in lisp_core.pairs_to_list(result)]
 
     def test_with_no_prepayment_it_is_a_level_payment_loan(self):
-        principal, interest, balance, _ = self.flows("((1200.0 12.0 12.0 12))", "(prepayment-speed 'psa 0)")
+        principal, interest, balance, _, _ = self.flows("((1200.0 12.0 12.0 12))", "(prepayment-speed 'psa 0)")
         payment = 1200 * 0.01 / (1 - 1.01 ** -12)
         owed = 1200.0
         for t in range(12):
@@ -56,7 +56,7 @@ class TestThePool(DealTestCase):
     def test_a_pool_with_prepayments_pays_off_what_it_owes_sooner(self):
         slow = self.flows("((100000.0 6.0 6.0 360))", "(prepayment-speed 'psa 100)")
         fast = self.flows("((100000.0 6.0 6.0 360))", "(prepayment-speed 'psa 300)")
-        (slow_principal, _, slow_balance, _), (fast_principal, _, fast_balance, _) = slow, fast
+        (slow_principal, _, slow_balance, _, _), (fast_principal, _, fast_balance, _, _) = slow, fast
         for principal, balance in ((slow_principal, slow_balance), (fast_principal, fast_balance)):
             self.assertAlmostEqual(principal.sum(), 100000.0, places=6)
             np.testing.assert_allclose(balance[1:], balance[:-1] - principal, atol=1e-8)

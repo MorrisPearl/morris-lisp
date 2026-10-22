@@ -54,6 +54,8 @@ loans pay (the wac), month by month: they change as the pieces with the higher r
          (principal (car flows))
          (interest (cadr flows))
          (balances (caddr flows))
+         (losses (list-ref flows 4))
+         (lost (vector-sum losses))
          (months (vector-length principal))
          (speeds (speed-values curve months))
          (wacs (pool-coupons (cadddr flows) balances))
@@ -63,9 +65,12 @@ loans pay (the wac), month by month: they change as the pieces with the higher r
          (total (apply + (map collateral-piece-balance used)))
          (average (lambda (field) (/ (apply + (map (lambda (piece) (* (collateral-piece-balance piece) (field piece))) used)) total)))
          (at (lambda (vector) (list->vector (map (lambda (month) (vector-ref vector (- month 1))) rows)))))
-    (display (format "{} pieces, {:,.2f}, with a wac of {:.4f}%, a pass-through coupon of {:.4f}% and a wam of {} months, paying for {} months; its average life is {:.2f} years at {}.\n"
+    (display (format "{} pieces, {:,.2f}, with a wac of {:.4f}%, a pass-through coupon of {:.4f}% and a wam of {} months, paying for {} months; its average life is {:.2f} years at {}{}.\n"
                      (length used) total (average collateral-piece-wac) (average collateral-piece-coupon) (apply max (map collateral-piece-wam used)) months (average-life principal)
-                     (describe-speed curve)))
+                     (describe-speed curve)
+                     (if (> lost 0.0)
+                         (format ", and it loses {:,.2f} ({:.2f}%) when the homes of the loans that default ({}% of the default model) are sold" lost (* 100.0 (/ lost total)) (deal-defaults deal))
+                         "")))
     (display-table (apply make-table
                           (append (list "month" (list->vector rows))
                                   (if (null? first-payment)
@@ -76,8 +81,9 @@ loans pay (the wac), month by month: they change as the pieces with the higher r
                                         "interest" (at interest)
                                         "speed" (at speeds)
                                         "wac" (at (vector-map (lambda (rate) (* 100.0 rate)) wacs))
-                                        "coupon" (at (vector-map (lambda (rate) (* 100.0 rate)) coupons)))))
-                   '(("balance" ",.2f") ("principal" ",.2f") ("interest" ",.2f") ("speed" ".2f") ("wac" ".4f") ("coupon" ".4f")) :max-rows #f)))
+                                        "coupon" (at (vector-map (lambda (rate) (* 100.0 rate)) coupons)))
+                                  (if (> lost 0.0) (list "loss" (at losses)) '())))
+                   '(("balance" ",.2f") ("principal" ",.2f") ("interest" ",.2f") ("speed" ".2f") ("wac" ".4f") ("coupon" ".4f") ("loss" ",.2f")) :max-rows #f)))
 
 ; ---------------------------------------------------------------------------
 ; The collateral
@@ -136,7 +142,7 @@ made to the collateral of the deal elsewhere."
 ; The dates and the pricing speed
 ; ---------------------------------------------------------------------------
 
-(defstruct info-gui deal name closing first-payment speed-type speed-grid home-prices mortgage-spread curve-grid messages)
+(defstruct info-gui deal name closing first-payment speed-type speed-grid home-prices mortgage-spread defaults liquidation-lag curve-grid messages)
 ; the deal, the fields and the grids (of the pieces of the pricing speed, and of the points of the Treasury curve), and the place for what is shown
 
 (define (info-curve-table points)
@@ -185,12 +191,14 @@ nothing in it is left out; a piece with 0 months is for the rest of the time."
     (grid-set-table! (info-gui-speed-grid gui) (info-speed-table (deal-pricing-speed deal)))
     (widget-set! (info-gui-home-prices gui) "value" (+ 0.0 (deal-home-price-growth deal)))
     (widget-set! (info-gui-mortgage-spread gui) "value" (+ 0.0 (deal-mortgage-spread deal)))
+    (widget-set! (info-gui-defaults gui) "value" (+ 0.0 (deal-defaults deal)))
+    (widget-set! (info-gui-liquidation-lag gui) "value" (deal-liquidation-lag deal))
     (grid-set-table! (info-gui-curve-grid gui) (info-curve-table (deal-treasury-curve deal)))))
 
 (define (info-gui-update gui)
-  "The button that gives the deal the name, the dates, the pricing speed, what its prepayment model is told, and the Treasury curve that are typed. A speed of the
-model needs the curve, so it is given the curve first; another speed is given first, so that the curve can then be taken away. Nothing is changed if something is
-wrong."
+  "The button that gives the deal the name, the dates, the pricing speed, what its models are told, its defaults, and the Treasury curve that are typed. A speed of the
+model, and defaults, need the curve, so it is given the curve first; otherwise the speed and the defaults are given first, so that the curve can then be taken away.
+Nothing is changed if something is wrong."
   (let* ((deal (info-gui-deal gui))
          (closing (date-from-text (widget-get (info-gui-closing gui) "value") "the closing date"))
          (first-payment (date-from-text (widget-get (info-gui-first-payment gui) "value") "the first payment"))
@@ -198,25 +206,32 @@ wrong."
          (speed (info-speed-from-grid (widget-get (info-gui-speed-type gui) "value") (grid-table (info-gui-speed-grid gui))))
          (home-prices (widget-get (info-gui-home-prices gui) "value"))
          (mortgage-spread (widget-get (info-gui-mortgage-spread gui) "value"))
+         (defaults (widget-get (info-gui-defaults gui) "value"))
+         (liquidation-lag (widget-get (info-gui-liquidation-lag gui) "value"))
          (curve (info-curve-from-grid (grid-table (info-gui-curve-grid gui))))
          (set-curve (lambda () (if (null? curve) (deal-clear-treasury-curve! deal) (deal-set-treasury-curve! deal curve))))
          (set-model-settings (lambda ()
                                (unless (= home-prices (deal-home-price-growth deal)) (deal-set-home-price-growth! deal home-prices))
-                               (unless (= mortgage-spread (deal-mortgage-spread deal)) (deal-set-mortgage-spread! deal mortgage-spread)))))
+                               (unless (= mortgage-spread (deal-mortgage-spread deal)) (deal-set-mortgage-spread! deal mortgage-spread))
+                               (unless (= liquidation-lag (deal-liquidation-lag deal)) (deal-set-liquidation-lag! deal liquidation-lag))
+                               (unless (= defaults (deal-defaults deal)) (deal-set-defaults! deal defaults)))))
     (when (equal? name "")
       (error "the deal needs a name"))
     (treasury-points (if (null? curve) '((1 0)) curve))                  ; (an error now, before anything is changed, if the curve is wrong)
     (deal-set-closing-date! deal closing)
     (deal-set-first-payment! deal first-payment)
     (deal-name-set! deal name)
-    (if (model-speed? speed)
+    (if (or (model-speed? speed) (> defaults 0))
         (begin (set-curve) (set-model-settings) (deal-set-pricing-speed! deal speed))
         (begin (deal-set-pricing-speed! deal speed) (set-model-settings) (set-curve)))
     (widget-clear (info-gui-messages gui))
     (widget-capture (info-gui-messages gui)
-                    (lambda () (display (format "Updated {}: pricing speed {}{}{}.\n" name (describe-speed speed)
-                                                (if (model-speed? speed)
+                    (lambda () (display (format "Updated {}: pricing speed {}{}{}{}.\n" name (describe-speed speed)
+                                                (if (or (model-speed? speed) (> defaults 0))
                                                     (format " (home prices {}% a year, mortgage rate {}% over the 10-year Treasury)" home-prices mortgage-spread)
+                                                    "")
+                                                (if (> defaults 0)
+                                                    (format ", defaults {}% of the default model, sold {} months later" defaults liquidation-lag)
                                                     "")
                                                 (cond ((null? curve) ", no Treasury curve")
                                                       ((= (length curve) 1) ", Treasury curve of 1 point")
@@ -235,13 +250,16 @@ Returns the widget, which a cell of a notebook shows. It shows the changes made 
                                  :column-widths (grid-column-widths '(("from" 80) ("to" 80) ("months" 80)))))
          (home-prices (make-widget "FloatText" :description "Home prices, % a year" :style (widget--style)))
          (mortgage-spread (make-widget "FloatText" :description "Mortgage rate over the 10-year, %" :style (widget--style)))
+         (defaults (make-widget "FloatText" :description "Defaults, % of the model (0: none)" :style (widget--style)))
+         (liquidation-lag (make-widget "IntText" :description "Months from a default to the sale" :style (widget--style)))
          (curve-grid (table-grid (info-curve-table (deal-treasury-curve deal)) :editable #t
                                  :column-widths (grid-column-widths '(("years" 80) ("yield" 80)))))
          (gui (make-info-gui :deal deal :name name :closing closing :first-payment first-payment :speed-type speed-type :speed-grid speed-grid
-                             :home-prices home-prices :mortgage-spread mortgage-spread :curve-grid curve-grid :messages messages))
+                             :home-prices home-prices :mortgage-spread mortgage-spread :defaults defaults :liquidation-lag liquidation-lag
+                             :curve-grid curve-grid :messages messages))
          (page (widget-column
-                 (make-widget "HTML" :value "<b>The deal</b>: its name, its dates, and the pricing speed: a type, and a row for each piece of the speed, which goes in a straight line from <i>from</i> to <i>to</i> and is <i>to</i> in the last of its <i>months</i>; the last piece has 0 months, for the rest of the time. One row with the same speed twice is a single speed. MODEL is a share of the prepayment model fitted to Freddie Mac's loans, which looks at rates: 100 is the model, and 105 is 105% of it. It needs the Treasury curve, which the rates are read forward from (and on each path of rates, for the OAS), and is told how much home prices grow, and how far the rate of a new mortgage is above the 10-year Treasury yield.")
-                 name closing first-payment speed-type speed-grid home-prices mortgage-spread
+                 (make-widget "HTML" :value "<b>The deal</b>: its name, its dates, and the pricing speed: a type, and a row for each piece of the speed, which goes in a straight line from <i>from</i> to <i>to</i> and is <i>to</i> in the last of its <i>months</i>; the last piece has 0 months, for the rest of the time. One row with the same speed twice is a single speed. MODEL is a share of the prepayment model fitted to Freddie Mac's loans, which looks at rates: 100 is the model, and 105 is 105% of it. It needs the Treasury curve, which the rates are read forward from (and on each path of rates, for the OAS), and is told how much home prices grow, and how far the rate of a new mortgage is above the 10-year Treasury yield. The defaults are a share, in percent, of the default model fitted to Freddie Mac's loans (0 for none): a loan that defaults is sold the months after it that are typed, and what is lost, by the severity model, writes the tranches down. The default model needs the curve too.")
+                 name closing first-payment speed-type speed-grid home-prices mortgage-spread defaults liquidation-lag
                  (make-widget "HTML" :value "<b>The Treasury curve</b>, that a spread is over: a row for each point, the years to its maturity and its yield in percent, in any order (a row with nothing in it is left out). The yield at an average life between two points is on the straight line between them.")
                  curve-grid
                  (deal-gui-button "Update the deal" "primary" (lambda () (info-gui-update gui)) messages)

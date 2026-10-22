@@ -86,70 +86,38 @@ its weight its scheduled balance."
   (set! freddie-prepayment-fit-model model)
   (save-variables path freddie-prepayment-fit-model))
 
-(define unknown-piece
-  '((loan-size 250000) (credit-score 750) (ltv 70) (sato 0) (burnout 0) (investor-share 0) (second-home-share 0) (cash-out-share 0) (refinance-share 0)))
-; what the model takes a piece of collateral to be like where it does not say (its slot is '()): the loan of typical-prepayment-loan
-
-(define (piece-value piece slot accessor)
-  "The slot of the piece (a collateral-piece), or what unknown-piece says it is if the piece does not say."
-  (let ((value (accessor piece)))
-    (if (null? value) (cadr (assoc slot unknown-piece)) value)))
-
-(define (scheduled-balance-left wac wam month-numbers)
-  "The share of a loan's balance that is left at the start of each of the months (a vector of their numbers, 1 for the first payment), if it pays as scheduled: a
-level-payment loan at the wac (percent) with wam payments to go. After k payments it is ((1 + r)^wam - (1 + r)^k) / ((1 + r)^wam - 1) of what it is now, r being the
-monthly rate."
-  (let ((growth (+ 1.0 (/ wac 1200.0)))
-        (paid (- month-numbers 1.0)))
-    (if (= wac 0)
-        (- 1.0 (/ paid wam))
-        (/ (- (expt growth wam) (expt growth paid)) (- (expt growth wam) 1.0)))))
-
-(define (calendar-months first-payment months)
-  "The month of the year, 1 to 12, of each month from the first payment: a vector."
-  (+ 1 (remainder (+ (- (date-month first-payment) 1) (vector-range 0 months)) 12)))
-
 (define (prepayment-model-columns piece path &key (home-price-growth 3.0) (mortgage-spread 1.75))
   "What the prepayment model looks at in each month of the piece (a collateral-piece), 1 to its wam, on the path of rates (a rate-path): its predictors
 (prepayment-predictors), each a vector with a value for each month, as a list of (name . vector).
 
-  incentive_bp    the wac less the rate of a new mortgage at the start of the month, in basis points: the 10-year yield of the path, plus the mortgage spread (percent)
-  loan_age        the piece's age, and a month more each month
-  loan_size_k     the piece's loan size, in thousands, as it is paid down by its scheduled payments (a loan that prepays is gone; the others are smaller)
-  current_ltv     the piece's loan-to-value, as the scheduled payments pay it down and home prices grow (home-price-growth, percent a year)
+  incentive_bp, loan_age, loan_size_k, current_ltv   as the piece goes along the path (see piece-on-path)
   burnout         the piece's burnout, and a month more for each month before this one, after the first year, with an incentive above 75 basis points
   credit_score, sato, investor, second_home, cash_out, refinance    the piece's, the same each month
   winter, summer  1 in January and February, and May to August, from the date of the first payment; with no date, 2/12 and 4/12, an average year
 
 Where the piece does not say what its loans are like, the model takes them to be the loan of unknown-piece."
   (let* ((months (collateral-piece-wam piece))
-         (month-numbers (vector-range 1 (+ months 1)))
-         (long-yields (rate-path-long-yields path))
-         (constant (lambda (value) (make-vector months (+ 0.0 value)))))
-    (when (< (vector-length long-yields) months)
-      (error (format "the path of rates has {} months, and the piece of collateral {}" (vector-length long-yields) months)))
-    (let* ((mortgage-rates (+ (* 100.0 (vector-take long-yields months)) mortgage-spread))
-           (incentive (* 100.0 (- (collateral-piece-wac piece) mortgage-rates)))
-           (age (+ (collateral-piece-age piece) month-numbers))
-           (left (scheduled-balance-left (collateral-piece-wac piece) months month-numbers))
-           (home-prices (expt (+ 1.0 (/ home-price-growth 100.0)) (/ (- month-numbers 1) 12.0)))
-           (in-the-money (* (> incentive 75.0) (> age 12)))
-           (burnout (+ (piece-value piece 'burnout collateral-piece-burnout) (- (vector-cumsum in-the-money) in-the-money)))
-           (first-payment (rate-path-first-payment path))
-           (calendar (if (null? first-payment) '() (calendar-months first-payment months))))
-      (list (cons "incentive_bp" incentive)
-            (cons "loan_age" (+ 0.0 age))
-            (cons "loan_size_k" (* (/ (piece-value piece 'loan-size collateral-piece-loan-size) 1000.0) left))
-            (cons "credit_score" (constant (piece-value piece 'credit-score collateral-piece-credit-score)))
-            (cons "current_ltv" (/ (* (piece-value piece 'ltv collateral-piece-ltv) left) home-prices))
-            (cons "sato" (constant (piece-value piece 'sato collateral-piece-sato)))
-            (cons "burnout" (+ 0.0 burnout))
-            (cons "investor" (constant (piece-value piece 'investor-share collateral-piece-investor-share)))
-            (cons "second_home" (constant (piece-value piece 'second-home-share collateral-piece-second-home-share)))
-            (cons "cash_out" (constant (piece-value piece 'cash-out-share collateral-piece-cash-out-share)))
-            (cons "refinance" (constant (piece-value piece 'refinance-share collateral-piece-refinance-share)))
-            (cons "winter" (if (null? calendar) (constant (/ 2.0 12)) (+ 0.0 (<= calendar 2))))
-            (cons "summer" (if (null? calendar) (constant (/ 4.0 12)) (+ 0.0 (* (>= calendar 5) (<= calendar 8)))))))))
+         (along (piece-on-path piece path home-price-growth mortgage-spread))
+         (incentive (cdr (assoc "incentive_bp" along)))
+         (age (cdr (assoc "loan_age" along)))
+         (constant (lambda (slot accessor) (make-vector months (+ 0.0 (piece-value piece slot accessor)))))
+         (in-the-money (* (> incentive 75.0) (> age 12)))
+         (burnout (+ (piece-value piece 'burnout collateral-piece-burnout) (- (vector-cumsum in-the-money) in-the-money)))
+         (first-payment (rate-path-first-payment path))
+         (calendar (if (null? first-payment) '() (calendar-months first-payment months))))
+    (list (cons "incentive_bp" incentive)
+          (cons "loan_age" age)
+          (assoc "loan_size_k" along)
+          (cons "credit_score" (constant 'credit-score collateral-piece-credit-score))
+          (assoc "current_ltv" along)
+          (cons "sato" (constant 'sato collateral-piece-sato))
+          (cons "burnout" (+ 0.0 burnout))
+          (cons "investor" (constant 'investor-share collateral-piece-investor-share))
+          (cons "second_home" (constant 'second-home-share collateral-piece-second-home-share))
+          (cons "cash_out" (constant 'cash-out-share collateral-piece-cash-out-share))
+          (cons "refinance" (constant 'refinance-share collateral-piece-refinance-share))
+          (cons "winter" (if (null? calendar) (make-vector months (/ 2.0 12)) (+ 0.0 (<= calendar 2))))
+          (cons "summer" (if (null? calendar) (make-vector months (/ 4.0 12)) (+ 0.0 (* (>= calendar 5) (<= calendar 8))))))))
 
 (define (freddie-prepayment-model &key (home-price-growth 3.0) (mortgage-spread 1.75) (fit '()))
   "A prepayment model for a deal, (model piece path) (see deal_paths.lsp): the model fitted to Freddie Mac's loans (fit, or, if it is '(), the one that comes with the

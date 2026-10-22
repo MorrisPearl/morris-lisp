@@ -41,6 +41,7 @@ general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is 
 - [Option-adjusted spread and effective duration](#option-adjusted-spread-and-effective-duration)
 - [The prepayment model](#the-prepayment-model)
 - [Losses and shortfalls](#losses-and-shortfalls)
+  - [Defaults, from the default model](#defaults-from-the-default-model)
   - [Losses](#losses)
   - [Interest shortfalls](#interest-shortfalls)
   - [What is not modeled](#what-is-not-modeled)
@@ -167,8 +168,8 @@ views in a notebook").
 (vector-length (node-principal (get-node deal "POOL")))    ; => 360
 ```
 
-The root is a `collateral`, a kind of node with the principal, the interest and the balance that its pieces pay, and no loss: a deal made from pieces has no default model yet,
-so nothing is lost (see "Losses and shortfalls"). Its coupon is the pass-through coupon of its pieces (see below).
+The root is a `collateral`, a kind of node with the principal, the interest and the balance that its pieces pay, and what is lost when its loans default, if the deal is told
+that they do (see "Defaults, from the default model"; to begin with they do not, and nothing is lost). Its coupon is the pass-through coupon of its pieces (see below).
 
 ### Pieces of collateral, and the pricing speed
 
@@ -607,8 +608,8 @@ all the tranches that are paid by the same split (its siblings) is exactly that 
 
 **What it is as of, and what it is not.** The cash flows are those of the deal run at its pricing speed (and, for a tranche that floats, at the index that the deal was last run with: a deal
 with a floating tranche that has not been run with an index cannot be priced, and says so). The slots are as of the closing date, so the deal needs a closing date and a first payment date. The
-duration is the modified duration at that speed: nothing is done about what a change in rates would do to the speed (that is what the next section is for). Losses
-and shortfalls are not looked at: a tranche is priced by what it is paid.
+duration is the modified duration at that speed: nothing is done about what a change in rates would do to the speed (that is what the next section is for). A tranche is
+priced by what it is paid: if the deal's loans default (see "Defaults, from the default model"), one that is written down is paid less, and its yield is less.
 
 In a notebook the grid of the tranches, `(bonds deal)`, has a column for each slot beyond the cash flows (see "Building a deal by clicking"), and `(info deal)` a grid for the Treasury curve.
 
@@ -793,10 +794,62 @@ the OAS is less by what the borrowers' option is worth, and the effective durati
 
 Both apply to some deals only. A deal with no losses has none, and a deal is only run with shortfalls if it asks for them.
 
-A deal made from pieces of collateral has **no default model yet**: its collateral pays all of its principal, and loses nothing, so every loss is 0, and the interest it pays is
-what its bonds are owed. What is here is what the tree does when the collateral does lose something, or pays less interest than the bonds are owed, which is a matter of the
-vectors of the collateral node, its `loss` and its `interest`: the tests of the library put them in by hand, and a model of defaults will give them. (A default
-model and a severity model fitted to Freddie Mac's loans are in the library manual, "Models fitted to Freddie Mac's loans"; they are not yet used by a deal.)
+A deal made from pieces of collateral loses nothing, to begin with: its collateral pays all of its principal, so every loss is 0, and the interest it pays is what its bonds are
+owed. It can be told that its loans default, as the default model fitted to Freddie Mac's loans says (see the next section): then its collateral loses what is lost when the
+homes of the loans that default are sold, and the tranches are written down by their rules. What follows that is what the tree does when the collateral loses something, or pays
+less interest than the bonds are owed, which is a matter of the vectors of the collateral node, its `loss` and its `interest`.
+
+### Defaults, from the default model
+
+`(deal-set-defaults! deal 100)` makes the loans of the deal default as the default model fitted to Freddie Mac's loans says (see "Models fitted to Freddie Mac's loans" in the
+library manual): 100 is the model, 200 is twice it, and 0, as to begin with, is no defaults. Each month, that share of the model's default rate of the loans that are still
+being paid default. What the model looks at, for each piece of collateral and each month (`(default-model-columns piece path)`), is its credit score, its loan-to-value now (paid
+down by the scheduled payments, and falling as home prices grow by the deal's growth of home prices: see "The prepayment model"), its age, its debt-to-income, the spread at
+origination, the incentive, the loan size, the shares on investment properties and second homes, of cash-out and other refinances, and with one borrower; a piece that does not
+say is taken to be like `unknown-piece`.
+
+A loan that defaults stops paying. Its interest is advanced to the investors until its home is sold, `liquidation-lag` months later (18 to begin with,
+`(deal-set-liquidation-lag! deal months)`): then what the sale brings back, 1 less the **severity** of its balance, is paid as principal, and the rest is a **loss** of the
+collateral, which writes the tranches down by their loss rules (see "Losses", below). The severity is what the severity model says of the loans that default in the month: it
+looks at their loan-to-value then, their balance, their mortgage insurance (the piece's `mi-percent`), the months to the sale, and the share on investment properties
+(`(severity-model-columns piece path)`). It is Freddie's measure of what was lost: the balance, the unpaid interest (which the advances have paid) and the costs, less what the
+home sold for and what mortgage insurance and others paid. The deal runs on for the months of the lag, until the last sale.
+
+```lisp
+(define deal (new-deal "Losses 2026-1" :closing-date (date 2026 11 20) :first-payment (date 2026 12 25)
+                       :treasury-curve '((1 4.0) (2 4.1) (3 4.2) (5 4.3) (10 4.5) (30 4.8))
+                       :collateral (list (make-collateral-piece :balance 100000000.0 :wac 6.5 :coupon 6.0 :wam 357 :age 3
+                                                                :credit-score 700 :ltv 90.0 :loan-size 300000))
+                       :speed (prepayment-speed 'psa 150)))
+(deal-sequential! deal "POOL" '(("A" 85000000.0) ("M" 10000000.0) ("B" 5000000.0)))
+(deal-set-defaults! deal 100)                          ; the default model, as it is
+(deal-run! deal)
+(deal-periods deal)                                    ; => 375
+(define (lost name) (vector-sum (node-loss (get-node deal name))))
+(lost "POOL")                                          ; => 1754714.9066060549
+(lost "B")                                             ; => 1754714.9066060549
+(lost "M")                                             ; => 0.0
+(define (in-month month)                               ; the CDR and the severity of the loans that default in the month
+  (let ((defaults (deal-piece-defaults deal (car (deal-pieces deal)) (deal-forward-path deal 357))))
+    (list (annual-rate (vector-ref (car defaults) (- month 1))) (vector-ref (cadr defaults) (- month 1)))))
+(in-month 36)                                          ; => (0.8337622193992256 0.3878215509270752)
+(deal-set-home-price-growth! deal -5.0)                ; home prices fall 5% a year
+(deal-run! deal)
+(lost "POOL")                                          ; => 15732036.226627294
+(lost "B")                                             ; => 5000000.0
+(lost "M")                                             ; => 10000000.0
+(lost "A")                                             ; => 732036.2266272897
+(in-month 36)                                          ; => (2.8236214781029445 0.5072390617767402)
+```
+
+The loans, of 90% loan-to-value and a credit score of 700, default at under 1 CDR while home prices grow 3% a year, and lose about 40% when they are sold: the pool loses 1.75% of
+its balance, all of it from B, the last of the sequence. If home prices fall 5% a year, the loan-to-value rises, more default (2.8 CDR in the third year), each loses more (51%),
+and the pool loses 15.7%: B and M are written off, and A loses $732,036. The deal runs for 375 months: the 357 of the loans and the 18 to the last sale.
+
+The default model looks at the rates read forward from the deal's Treasury curve, as the prepayment model does, so a deal whose loans default needs a curve; on the paths of
+rates of `deal-run-paths!` they default as the model says on each path. In a notebook, `(info deal)` has the defaults, as a percent of the model, and the months from a default
+to the sale. In an agency deal the agency buys a loan that defaults out of the pool: the bonds are paid all of it, as a prepayment, and the loss is the agency's. The losses
+matter to a deal of loans that no one guarantees, and to the bonds that share an agency's losses.
 
 ### Losses
 

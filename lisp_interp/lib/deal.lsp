@@ -103,7 +103,8 @@
 
 (defstruct deal name (nodes (make-hash-table)) (names '()) root periods (index '()) (shortfalls #f) (first-payment '())
   (closing-date '()) (collateral '()) (pricing-speed '()) (views '()) (ran #f) (treasury-curve '()) (priced-run '()) (tracks-prices #f)
-  (rate-model '()) (prepayment-model '()) (index-function '()) (path-sets '()) (home-price-growth 3.0) (mortgage-spread 1.75))
+  (rate-model '()) (prepayment-model '()) (index-function '()) (path-sets '()) (home-price-growth 3.0) (mortgage-spread 1.75)
+  (defaults 0) (liquidation-lag 18))
 ; The nodes are the tranches, by name, and root is the name of the collateral node, whose cash flows the rest are paid from. The collateral is data,
 ; a table with a row for each piece (balance wac coupon wam age) in collateral, and the cash flows of the root are worked out from it at the pricing
 ; speed, or at the speed that deal-run! is given. views are the functions that show the deal in a notebook, each with the kinds of change that
@@ -113,7 +114,8 @@
 ; when it changes (see deal-track-prices!). rate-model, prepayment-model and index-function are what the paths of rates are made with, and path-sets the paths that have been run, with
 ; the cash flows of every tranche on each (see deal_paths.lsp): '() until the paths are run, and again when the deal changes. home-price-growth (percent a year)
 ; and mortgage-spread (the rate of a new mortgage over the 10-year Treasury yield, percent) are what a prepayment model is told of the future: how much the
-; loan-to-value of the loans falls, and what rate they could refinance at (see freddie-prepayment-model).
+; loan-to-value of the loans falls, and what rate they could refinance at (see freddie-prepayment-model). defaults is the share, in percent, of what the default model
+; says that the loans default at (0, to begin with, for none: see deal-set-defaults!), and liquidation-lag the months from a default to the sale of the home.
 
 (defgeneric pay-principal (split deal parent t)
   "Divides the principal of month t that the parent was paid among the children of the split: see the top of the file.")
@@ -269,18 +271,32 @@ rows with a balance. '() if it has none."
     out))
 
 (define (deal-pad-flows deal flows)
-  "The flows (principal interest balance ...) of a collateral, for as many months as the deal has: zeros after the last of its own. An error if it has more."
+  "The flows of a collateral, (principal interest balance gross-interest loss) as project-pieces gives them, for as many months as the deal has, zeros after the last of
+their own: (principal interest balance loss). An error if they have more."
   (let ((periods (deal-periods deal)))
     (when (> (vector-length (car flows)) periods)
       (error (format "the collateral pays for {} months, and the deal has {}" (vector-length (car flows)) periods)))
-    (list (padded (car flows) periods) (padded (cadr flows) periods) (padded (caddr flows) (+ periods 1)))))
+    (list (padded (car flows) periods) (padded (cadr flows) periods) (padded (caddr flows) (+ periods 1)) (padded (list-ref flows 4) periods))))
 
 (define (deal-project-pieces deal pieces speed)
-  "The cash flows of the pieces at the speed (see project-pieces). A speed of the prepayment model (type model) is a share of what the deal's prepayment model says:
-each piece prepays as the model says it would if rates followed the forward curve of the deal's Treasury curve (see model-speed-smms, in deal_paths.lsp)."
-  (if (model-speed? speed)
-      (project-pieces-with pieces (lambda (piece) (model-speed-smms deal speed piece)))
-      (project-pieces pieces speed)))
+  "The cash flows of the pieces at the speed (see project-pieces-with), and, if the deal's loans default (deal-set-defaults!), with their defaults, the sales of the homes
+liquidation-lag months later, and the losses. A speed of the prepayment model (type model) is a share of what the deal's prepayment model says: each piece prepays as the
+model says it would if rates followed the forward curve of the deal's Treasury curve (see model-speed-smms, in deal_paths.lsp); the default model looks at the same rates
+(see deal-defaults-of)."
+  (project-pieces-with pieces
+                       (lambda (piece)
+                         (if (model-speed? speed)
+                             (model-speed-smms deal speed piece)
+                             (speed-smms speed (collateral-piece-age piece) (collateral-piece-wam piece))))
+                       :defaults-of (if (> (deal-defaults deal) 0)
+                                        (deal-defaults-of deal (lambda (piece) (deal-forward-path deal (collateral-piece-wam piece))))
+                                        '())
+                       :lag (deal-liquidation-lag deal)))
+
+(define (deal-looks-at-rates? deal)
+  "Whether the cash flows of the collateral at the pricing speed depend on the deal's Treasury curve: if the speed is of the prepayment model, or the loans default as the
+default model says (both look at the rates read forward from the curve)."
+  (or (model-speed? (deal-pricing-speed deal)) (> (deal-defaults deal) 0)))
 
 (define (deal-pricing-flows deal)
   "The principal, interest and balance (vectors) that the collateral pays at the pricing speed, as long as the deal: worked out from its pieces, so that it
@@ -298,7 +314,7 @@ does not matter what speed the deal was last run at. (A deal with no pieces has 
     (node-principal-set! root (car padded-flows))
     (node-interest-set! root (cadr padded-flows))
     (node-balance-set! root (caddr padded-flows))
-    (node-loss-set! root (make-vector (deal-periods deal) 0.0))
+    (node-loss-set! root (cadddr padded-flows))
     (node-coupon-set! root (pieces-coupon pieces padded-flows))))
 
 (define (deal-generate-collateral! deal speed)
@@ -360,14 +376,14 @@ wrong, in the collateral, or in a split below it."
 
 (define (deal-change-pricing! deal change)
   "Makes a change to the deal (change is called on a copy first, and then on the deal: see deal-change!) to something that the cash flows of the collateral at the
-pricing speed are worked out from: they are worked out again, and so are the sizes of the tranches that depend on them (those sized by their average lives). The
-pricing speed is one; and, if it is a speed of the prepayment model, so are the Treasury curve, the model, the growth of home prices and the mortgage spread."
+pricing speed are worked out from: they are worked out again (and the months of the deal, which the sales of defaulted loans can make longer), and so are the sizes of
+the tranches that depend on them (those sized by their average lives). The pricing speed and the defaults are; and, if the speed is of the prepayment model or the
+loans default, so are the Treasury curve, the models, the growth of home prices and the mortgage spread."
   (deal-change! deal
                 (lambda (a-deal)
                   (change a-deal)
                   (unless (null? (deal-pieces a-deal))
-                    (deal-generate-collateral! a-deal (deal-pricing-speed a-deal))
-                    (deal-resize-below! a-deal (get-node a-deal (deal-root a-deal)))))
+                    (deal-install-collateral! a-deal (deal-collateral a-deal))))
                 'info 'tranches))
 
 (define (deal-set-pricing-speed! deal speed)
@@ -383,6 +399,23 @@ a borrower with more equity can refinance. The cash flows at a pricing speed of 
   (unless (and (number? percent) (> percent -100))
     (error (format "the growth of home prices is in percent a year, above -100, not {}" percent)))
   (deal-change-pricing! deal (lambda (a-deal) (deal-home-price-growth-set! a-deal percent))))
+
+(define (deal-set-defaults! deal percent)
+  "Makes the loans of the deal default at this share, in percent, of what the default model fitted to Freddie Mac's loans says (see freddie-default-model): 100 is the
+model, 200 twice it, and 0 is no defaults, as to begin with. A loan that defaults stops paying; its interest is advanced until its home is sold, liquidation-lag months
+later, when what the sale brings back is paid as principal and the rest is a loss of the collateral, which the tranches are written down by (see \"Losses\" in the CMO
+manual); the severity is the severity model's. The default model needs the Treasury curve, which the rates it looks at are read forward from. The cash flows of the
+collateral are worked out again."
+  (unless (and (number? percent) (>= percent 0))
+    (error (format "the defaults are a percent of the default model, from 0 (none), such as 100, not {}" percent)))
+  (deal-change-pricing! deal (lambda (a-deal) (deal-defaults-set! a-deal percent))))
+
+(define (deal-set-liquidation-lag! deal months)
+  "Makes the homes of the loans that default be sold this many months after the default (18 to begin with): what the sale brings back, and the loss, come then, and the
+severity model is told it (the longer it takes, the more is lost)."
+  (unless (and (integer? months) (>= months 0))
+    (error (format "the months from a default to the sale of the home are a whole number, from 0, not {}" months)))
+  (deal-change-pricing! deal (lambda (a-deal) (deal-liquidation-lag-set! a-deal months))))
 
 (define (deal-set-mortgage-spread! deal percent)
   "Tells the deal's prepayment model how far above the 10-year Treasury yield the rate of a new mortgage is, in percent (1.75 to begin with): the rate that a borrower
@@ -790,7 +823,8 @@ by running the splits above it (see deal-principal-now), and is divided in order
                          :closing-date (deal-closing-date deal) :collateral (deal-collateral deal)
                          :pricing-speed (deal-pricing-speed deal) :treasury-curve (deal-treasury-curve deal)
                          :rate-model (deal-rate-model deal) :prepayment-model (deal-prepayment-model deal) :index-function (deal-index-function deal)
-                         :home-price-growth (deal-home-price-growth deal) :mortgage-spread (deal-mortgage-spread deal))))
+                         :home-price-growth (deal-home-price-growth deal) :mortgage-spread (deal-mortgage-spread deal)
+                         :defaults (deal-defaults deal) :liquidation-lag (deal-liquidation-lag deal))))
     (dolist (name (deal-names deal))
       (let ((node (copy-node (get-node deal name))))
         (node-balance-set! node (vector-copy (node-balance node)))
@@ -1293,7 +1327,7 @@ the children, and not a Z bond."
     (let ((pool (get-node copy root-name)))              ; (the balances are worked out again by the run)
       (node-principal-set! pool (car flows))
       (node-interest-set! pool (cadr flows))
-      (node-loss-set! pool (make-vector (deal-periods deal) 0.0))      ; (a PAC's schedule is of the cash flows, without losses)
+      (node-loss-set! pool (if (>= (length flows) 4) (cadddr flows) (make-vector (deal-periods deal) 0.0)))   ; (the losses, if the flows have them)
       (when (vector? (node-coupon pool))                 ; (the rate that the interest is of the balance, at these cash flows, and so the coupons of the rest)
         (node-coupon-set! pool (pool-coupons (cadr flows) (caddr flows)))
         (deal-assign-all-coupons! copy)))

@@ -145,8 +145,8 @@ percent. An error that says what is wrong with it."
 in percent. The spreads of the tranches are worked out again (the ones that were given stay as they were, and so do the prices of those that were given a price, whose spreads
 change)."
   (let ((points (treasury-points curve)))
-    (if (model-speed? (deal-pricing-speed deal))
-        (deal-change-pricing! deal (lambda (a-deal) (deal-treasury-curve-set! a-deal points)))   ; (the model's prepayments look at the rates of the curve)
+    (if (deal-looks-at-rates? deal)
+        (deal-change-pricing! deal (lambda (a-deal) (deal-treasury-curve-set! a-deal points)))   ; (the models' prepayments and defaults look at the rates of the curve)
         (begin
           (deal-treasury-curve-set! deal points)
           (deal-path-sets-set! deal '()))))       ; (the paths of rates start on the curve: they are to be run again)
@@ -159,6 +159,8 @@ change)."
 which start on it, are forgotten. A deal whose pricing speed is of the prepayment model needs its curve."
   (when (model-speed? (deal-pricing-speed deal))
     (error "the pricing speed of the deal is of the prepayment model, which looks at the rates of the Treasury curve: choose another speed before taking the curve away"))
+  (when (> (deal-defaults deal) 0)
+    (error "the loans of the deal default as the default model says, which looks at the rates of the Treasury curve: make the defaults 0 before taking the curve away"))
   (deal-treasury-curve-set! deal '())
   (deal-path-sets-set! deal '())
   (deal-update-analytics! deal)

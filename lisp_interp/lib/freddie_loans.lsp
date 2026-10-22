@@ -30,7 +30,7 @@
                                         table where)
                                 (apply string-append "." (map (lambda (column) "F") (cons "outcome" (cons "weight" predictors))))
                                 (max count 1))))
-    (make-loan-data :periods (cdr (first columns)) :outcomes (cdr (second columns)) :weights (cdr (third columns)) :predictors (cdddr columns))))
+    (make-loan-data :periods (cdr (car columns)) :outcomes (cdr (cadr columns)) :weights (cdr (caddr columns)) :predictors (cdddr columns))))
 
 (define (knots-within knots values)
   "The knots that have values on both sides of them, from the 1st to the 99th percentile (0, for a straight line, if none have): a hinge at a knot with
@@ -117,3 +117,53 @@ loan has them: a vector."
                                             (if (equal? (predictor-name predictor) name) value (cadr (assoc (predictor-name predictor) loan))))
                                           predictors)))
               values))
+
+; ---------------------------------------------------------------------------
+; A piece of collateral along a path of rates, for a model of a deal
+; ---------------------------------------------------------------------------
+
+(define unknown-piece
+  '((loan-size 250000) (credit-score 750) (ltv 70) (sato 0) (burnout 0) (investor-share 0) (second-home-share 0) (cash-out-share 0) (refinance-share 0)
+    (dti 36) (one-borrower-share 0.5) (mi-percent 0)))
+; what the models take a piece of collateral to be like where it does not say (its slot is '()): $250,000 loans, a credit score of 750, 70% loan-to-value, 36%
+; debt-to-income, purchases of homes to live in, half of them by one borrower, with no mortgage insurance
+
+(define (piece-value piece slot accessor)
+  "The slot of the piece (a collateral-piece), or what unknown-piece says it is if the piece does not say."
+  (let ((value (accessor piece)))
+    (if (null? value) (cadr (assoc slot unknown-piece)) value)))
+
+(define (scheduled-balance-left wac wam month-numbers)
+  "The share of a loan's balance that is left at the start of each of the months (a vector of their numbers, 1 for the first payment), if it pays as scheduled: a
+level-payment loan at the wac (percent) with wam payments to go. After k payments it is ((1 + r)^wam - (1 + r)^k) / ((1 + r)^wam - 1) of what it is now, r being the
+monthly rate."
+  (let ((growth (+ 1.0 (/ wac 1200.0)))
+        (paid (- month-numbers 1.0)))
+    (if (= wac 0)
+        (- 1.0 (/ paid wam))
+        (/ (- (expt growth wam) (expt growth paid)) (- (expt growth wam) 1.0)))))
+
+(define (calendar-months first-payment months)
+  "The month of the year, 1 to 12, of each month from the first payment: a vector."
+  (+ 1 (remainder (+ (- (date-month first-payment) 1) (vector-range 0 months)) 12)))
+
+(define (piece-on-path piece path home-price-growth mortgage-spread)
+  "What changes month by month, for each month of the piece (a collateral-piece), 1 to its wam, on the path of rates (a rate-path), as a list of (name . vector):
+
+  incentive_bp    the wac less the rate of a new mortgage at the start of the month, in basis points: the 10-year yield of the path, plus the mortgage spread (percent)
+  loan_age        the piece's age, and a month more each month
+  loan_size_k     the piece's loan size, in thousands, as it is paid down by its scheduled payments (a loan that prepays is gone; the others are smaller)
+  current_ltv     the piece's loan-to-value, as the scheduled payments pay it down and home prices grow (home-price-growth, percent a year)"
+  (let* ((months (collateral-piece-wam piece))
+         (month-numbers (vector-range 1 (+ months 1)))
+         (long-yields (rate-path-long-yields path)))
+    (when (< (vector-length long-yields) months)
+      (error (format "the path of rates has {} months, and the piece of collateral {}" (vector-length long-yields) months)))
+    (let ((mortgage-rates (+ (* 100.0 (vector-take long-yields months)) mortgage-spread))
+          (left (scheduled-balance-left (collateral-piece-wac piece) months month-numbers))
+          (home-prices (expt (+ 1.0 (/ home-price-growth 100.0)) (/ (- month-numbers 1) 12.0))))
+      (list (cons "incentive_bp" (* 100.0 (- (collateral-piece-wac piece) mortgage-rates)))
+            (cons "loan_age" (+ 0.0 (collateral-piece-age piece) month-numbers))
+            (cons "loan_size_k" (* (/ (piece-value piece 'loan-size collateral-piece-loan-size) 1000.0) left))
+            (cons "current_ltv" (/ (* (piece-value piece 'ltv collateral-piece-ltv) left) home-prices))))))
+

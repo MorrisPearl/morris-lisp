@@ -37,6 +37,7 @@
 (require "yield_curves.lsp")
 (require "solver.lsp")
 (require "freddie_prepayment.lsp")
+(require "freddie_default.lsp")
 
 (defstruct rate-model (a 2.75) (b 0.15) (sigma1 0.019) (sigma2 0.012))
 ; the numbers of the two-factor model of the paths (see simulate-rate-paths): how fast the short rate follows the level, and the level follows its mean, and the sizes of the shocks
@@ -88,9 +89,25 @@ otherwise one that prepays at the pricing speed, whatever the rates."
   "The path of rates that the forward curve of the deal's Treasury curve is (one with no randomness: the curve itself, read forward), at least months long: what rates
 are if they do what the market expects. An error if the deal has no curve."
   (when (null? (deal-treasury-curve deal))
-    (error "a speed of the prepayment model needs a Treasury curve, which the rates it looks at are read forward from: give the deal one, (deal-set-treasury-curve! deal '((2 4.1) (10 4.5))), or in (info deal)"))
+    (error "a speed of the prepayment model, or loans that default as the default model says, needs a Treasury curve, which the rates the models look at are read forward from: give the deal one, (deal-set-treasury-curve! deal '((2 4.1) (10 4.5))), or in (info deal)"))
   (let ((paths (simulate-rate-paths (deal-forward-curve deal) 0.0 0.0 (max 1 (ceiling (/ months 12.0))) 2)))
-    (make-rate-path :short-rates (car (second paths)) :long-yields (car (third paths)) :first-payment (deal-first-payment deal))))
+    (make-rate-path :short-rates (car (cadr paths)) :long-yields (car (caddr paths)) :first-payment (deal-first-payment deal))))
+
+(define (deal-piece-defaults deal piece path)
+  "The defaults of the piece on the path of rates, as project-pool takes them: (mdrs severities). The monthly default rate is the deal's share (deal-defaults) of what the
+default model fitted to Freddie Mac's loans says, and the severity is what the severity model says of the loans that default each month, sold liquidation-lag months later;
+both are told the deal's growth of home prices and mortgage spread."
+  (let* ((settings (list :home-price-growth (deal-home-price-growth deal) :mortgage-spread (deal-mortgage-spread deal)))
+         (cdrs (vector-clip (* ((apply freddie-default-model settings) piece path) (/ (deal-defaults deal) 100.0)) 0.0 99.0))
+         (severities ((apply freddie-severity-model :lag (deal-liquidation-lag deal) settings) piece path)))
+    (list (smms-from-cprs cdrs (collateral-piece-wam piece)) severities)))
+
+(define (deal-defaults-of deal path-of)
+  "What project-pieces-with is to be given as defaults-of: '() if the deal's loans do not default (deal-defaults is 0), and otherwise a function of a piece, the defaults
+of the piece on its path of rates, (path-of piece)."
+  (if (= (deal-defaults deal) 0)
+      '()
+      (lambda (piece) (deal-piece-defaults deal piece (path-of piece)))))
 
 (define (model-speed-smms deal speed piece)
   "The single monthly mortality, a decimal, of each month of the piece at a speed of the prepayment model: what the deal's prepayment model says it is if rates follow the
@@ -123,9 +140,12 @@ rates (see par-curve-zeros and curve-forward-rates). An error if it has no curve
 ; ---------------------------------------------------------------------------
 
 (define (path-collateral-flows deal pieces model path)
-  "The cash flows of the collateral on a path: each piece prepays as the model says it does on the path. (principal interest balance gross-interest), as long as the deal."
+  "The cash flows of the collateral on a path: each piece prepays as the model says it does on the path, and, if the deal's loans default, defaults as the default model
+says it does there. (principal interest balance loss), as long as the deal."
   (deal-pad-flows deal (project-pieces-with pieces
-                                            (lambda (piece) (smms-from-cprs (model piece path) (collateral-piece-wam piece))))))
+                                            (lambda (piece) (smms-from-cprs (model piece path) (collateral-piece-wam piece)))
+                                            :defaults-of (deal-defaults-of deal (lambda (piece) path))
+                                            :lag (deal-liquidation-lag deal))))
 
 (define (path-tranche-flows deal collateral-flows index names)
   "What each of the tranches called names is paid in each month, a vector for each, when the collateral pays the cash flows, and the floating coupons are of the index (a vector
@@ -144,8 +164,8 @@ got, as label."
          (years (max 1 (ceiling (/ (deal-periods deal) 12.0))))
          (simulated (simulate-rate-paths forwards (rate-model-sigma1 rates) (rate-model-sigma2 rates) years n-paths
                                          :a (rate-model-a rates) :b (rate-model-b rates) :seed seed))
-         (short-paths (second simulated))
-         (long-paths (third simulated))
+         (short-paths (cadr simulated))
+         (long-paths (caddr simulated))
          (count (length short-paths))
          (every (max 1 (quotient count 10)))
          (pieces (deal-pieces deal))

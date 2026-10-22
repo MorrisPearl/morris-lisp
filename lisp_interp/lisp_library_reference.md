@@ -4433,7 +4433,12 @@ path's 10-year yield plus `:mortgage-spread` (percent); the age goes on from the
 and the loan-to-value falls as home prices grow by `:home-price-growth` (percent a year); burnout counts the months in the money; the seasons are of the months from
 the path's first payment. What a piece does not say is taken from `unknown-piece`. The fitted model is the one that comes with the library,
 `lib/freddie_prepayment_fit.json`, which `(freddie-prepayment-fit)` reads, unless `:fit` is another; the prepayment notebook makes it, with
-`(save-freddie-prepayment-fit model path)`.
+`(save-freddie-prepayment-fit model path)`. In the same way `(freddie-default-model [:home-price-growth :mortgage-spread :fit])` gives the CDR of each month of a piece
+(from `(default-model-columns piece path)`), and `(freddie-severity-model [:home-price-growth :mortgage-spread :lag 18 :fit])` the severity, from 0 to 1, of the loans that
+default in each month, sold `:lag` months later (from `(severity-model-columns piece path)`); they read `lib/freddie_default_fit.json` and
+`lib/freddie_severity_fit.json`, which the default notebook makes with `(save-freddie-default-fits default-model severity-model directory)`. A deal uses them when it is
+told that its loans default (see "Defaults, from the default model" in the CMO manual). What the three models share, the piece along the path of rates, is
+`(piece-on-path piece path home-price-growth mortgage-spread)`, in `freddie_loans.lsp`.
 
 **Defaults.** A loan defaults in the first month that it is six months delinquent, unless it is in forbearance or delinquent because of a disaster (as most loans that
 were, in 2020 and 2021, were), or that the home is taken, or that the loan ends in a short sale, a third-party sale, an REO sale or a sale of the note while it is not

@@ -113,34 +113,47 @@ them begins: a vector. A PSA speed is a multiple of the PSA curve at the age tha
                                 (else (min 1.0 (/ (vector-ref speeds t) 100.0))))))
     smms))
 
-(define (project-pool balance wac coupon months smms)
-  "The cash flows of a pool of level-pay mortgages that prepays by the single monthly mortality of each month: (principal interest balance
-gross-interest), each a vector, the first two and the last one element a month and the balance one longer. balance is what is owed now,
-wac the annual rate of the loans in percent, which they are paid off at, and gross-interest is the interest that they pay; coupon is the annual
-pass-through rate in percent, and interest what is paid to the investors at it. months is the months that are left, and smms a vector with a
-decimal for each of them."
-  (let ((monthly-wac (/ wac 1200.0))
-        (monthly-coupon (/ coupon 1200.0))
-        (principal (make-vector months 0.0))
-        (interest (make-vector months 0.0))
-        (gross (make-vector months 0.0))
-        (balances (make-vector (+ months 1) 0.0)))
+(define (project-pool balance wac coupon months smms &key (mdrs '()) (severities '()) (lag 0))
+  "The cash flows of a pool of level-pay mortgages that prepays by the single monthly mortality of each month, and, if it is given mdrs, defaults: (principal interest
+balance gross-interest loss), each a vector, a month each, but the balance, which is one longer. balance is what is owed now, wac the annual rate of the loans in percent,
+which they are paid off at, and gross-interest is the interest that they pay; coupon is the annual pass-through rate in percent, and interest what is paid to the investors
+at it. months is the months that are left, and smms a vector with a decimal for each of them: the share of what is left after the scheduled payment that prepays.
+
+Defaults. mdrs is a vector with a decimal for each month: the share of the loans still being paid at its start that default (the monthly default rate). The loans that
+default stop paying, and are sold lag months later: what the sale brings back, (1 - severity) of their balance, the severity being that of the month they defaulted in
+(severities, a vector), is paid as principal, and the rest is lost. Until the sale their interest is paid to the investors (the servicer advances it, and is paid back
+from the sale, which the severity takes in), so the interest is the coupon of all that is owed. The cash flows go on for lag months after the last month."
+  (let* ((length (if (null? mdrs) months (+ months lag)))
+         (monthly-wac (/ wac 1200.0))
+         (monthly-coupon (/ coupon 1200.0))
+         (principal (make-vector length 0.0))
+         (interest (make-vector length 0.0))
+         (gross (make-vector length 0.0))
+         (loss (make-vector length 0.0))
+         (balances (make-vector (+ length 1) 0.0))
+         (paying balance))                                      ; (the balance of the loans that are still being paid)
     (vector-set! balances 0 balance)
-    (loop for t from 0 below months
-          do (let* ((owed (vector-ref balances t))
+    (loop for t from 0 below length
+          do (let* ((defaulted (if (or (null? mdrs) (>= t months)) 0.0 (* paying (vector-ref mdrs t))))
+                    (owed (- paying defaulted))
                     (interest-due (* owed monthly-wac))
-                    (scheduled (min owed (- (payment monthly-wac (- months t) owed) interest-due)))
-                    (prepaid (* (vector-ref smms t) (- owed scheduled)))
+                    (scheduled (if (>= t months) 0.0 (min owed (- (payment monthly-wac (- months t) owed) interest-due))))
+                    (prepaid (if (>= t months) 0.0 (* (vector-ref smms t) (- owed scheduled))))
                     (paid (min owed (+ scheduled prepaid))))
+               (when (> defaulted 0.0)                          ; (the sale, lag months on)
+                 (vector-update! principal (+ t lag) + (* defaulted (- 1.0 (vector-ref severities t))))
+                 (vector-update! loss (+ t lag) + (* defaulted (vector-ref severities t))))
                (vector-set! gross t interest-due)
-               (vector-set! interest t (* owed monthly-coupon))
-               (vector-set! principal t paid)
-               (vector-set! balances (+ t 1) (- owed paid))))
-    (list principal interest balances gross)))
+               (vector-set! interest t (* (vector-ref balances t) monthly-coupon))
+               (vector-update! principal t + paid)
+               (set! paying (- owed paid))
+               (vector-set! balances (+ t 1) (- (vector-ref balances t) (vector-ref principal t) (vector-ref loss t)))))
+    (list principal interest balances gross loss)))
 
 (defstruct collateral-piece balance wac coupon wam (age 0)
   (loan-size '()) (credit-score '()) (ltv '()) (sato '()) (burnout '())
-  (investor-share '()) (second-home-share '()) (cash-out-share '()) (refinance-share '()))
+  (investor-share '()) (second-home-share '()) (cash-out-share '()) (refinance-share '())
+  (dti '()) (one-borrower-share '()) (mi-percent '()))
 ; what is known of a piece of collateral, a pool of loans: the balance now, the wac and the pass-through coupon in percent, the wam, the months that are left, and the
 ; age, the months that the loans have gone; and what its loans are like, each '() if it is not known (see collateral-characteristics). Each is an average over the loans,
 ; weighted by their balances, as an agency's pool says it:
@@ -154,6 +167,9 @@ decimal for each of them."
 ;   second-home-share  the share on second homes
 ;   cash-out-share     the share that was a cash-out refinance
 ;   refinance-share    the share that was a refinance without cash out
+;   dti                the borrowers' debt-to-income when the loans were made, percent (a default model looks at it)
+;   one-borrower-share the share of the balance with one borrower, not two or more (one income, which a default model looks at)
+;   mi-percent         the mortgage insurance, the percent of a loss that it pays (a severity model looks at it)
 
 (define collateral-characteristics
   (list (list "loan size" collateral-piece-loan-size collateral-piece-loan-size-set!)
@@ -164,7 +180,10 @@ decimal for each of them."
         (list "investor share" collateral-piece-investor-share collateral-piece-investor-share-set!)
         (list "second home share" collateral-piece-second-home-share collateral-piece-second-home-share-set!)
         (list "cash-out share" collateral-piece-cash-out-share collateral-piece-cash-out-share-set!)
-        (list "refinance share" collateral-piece-refinance-share collateral-piece-refinance-share-set!)))
+        (list "refinance share" collateral-piece-refinance-share collateral-piece-refinance-share-set!)
+        (list "dti" collateral-piece-dti collateral-piece-dti-set!)
+        (list "one borrower share" collateral-piece-one-borrower-share collateral-piece-one-borrower-share-set!)
+        (list "mi percent" collateral-piece-mi-percent collateral-piece-mi-percent-set!)))
 ; the slots of a collateral-piece that say what its loans are like: (the column of a table of collateral that has it, the accessor, the setter)
 
 (define (missing-number? x)
@@ -210,6 +229,9 @@ if it is neither."
     (check "ltv" (collateral-piece-ltv piece) (lambda (x) (> x 0)) "the loan-to-value in percent, above 0")
     (check "sato" (collateral-piece-sato piece) (lambda (x) #t) "a number, in percent")
     (check "burnout" (collateral-piece-burnout piece) (lambda (x) (>= x 0)) "a number of months, from 0")
+    (check "dti" (collateral-piece-dti piece) (lambda (x) (<= 0 x 100)) "the debt-to-income in percent, from 0 to 100")
+    (check "one borrower share" (collateral-piece-one-borrower-share piece) (lambda (x) (<= 0 x 1)) "a share of the balance, from 0 to 1")
+    (check "mi percent" (collateral-piece-mi-percent piece) (lambda (x) (<= 0 x 100)) "the percent of a loss that mortgage insurance pays, from 0 to 100")
     (dolist (share (list (list "investor share" (collateral-piece-investor-share piece))
                          (list "second home share" (collateral-piece-second-home-share piece))
                          (list "cash-out share" (collateral-piece-cash-out-share piece))
@@ -242,28 +264,37 @@ of collateral that a prepayment model gives."
     (error (format "the prepayment rates are for {} months, and the piece of collateral has {}" (vector-length cprs) months)))
   (- 1.0 (expt (- 1.0 (vector-clip (/ (vector-take cprs months) 100.0) 0.0 0.99)) (/ 1.0 12.0))))
 
-(define (project-pieces-with pieces smms-of)
-  "The cash flows of all the pieces of collateral added together: (principal interest balance gross-interest), each a vector, as project-pool gives, as long as the longest piece.
-(smms-of piece) gives the single monthly mortality, a decimal, of each of the months of a piece, as a vector: how fast it prepays. One with no balance is left out."
+(define (project-pieces-with pieces smms-of &key (defaults-of '()) (lag 0))
+  "The cash flows of all the pieces of collateral added together: (principal interest balance gross-interest loss), each a vector, as project-pool gives, as long as the
+longest piece. (smms-of piece) gives the single monthly mortality, a decimal, of each of the months of a piece, as a vector: how fast it prepays. If defaults-of is given,
+(defaults-of piece) gives (mdrs severities), how many of the loans of each month default and what is lost (see project-pool), and the defaulted loans are sold lag months
+later. One with no balance is left out."
   (let* ((used (collateral-pieces-in-use pieces))
-         (months (apply max (map collateral-piece-wam used)))
+         (months (+ (apply max (map collateral-piece-wam used)) (if (null? defaults-of) 0 lag)))
          (principal (make-vector months 0.0))
          (interest (make-vector months 0.0))
          (gross (make-vector months 0.0))
+         (loss (make-vector months 0.0))
          (balances (make-vector (+ months 1) 0.0)))
     (dolist (piece used)
       (let* ((wam (collateral-piece-wam piece))
-             (flows (project-pool (collateral-piece-balance piece) (collateral-piece-wac piece) (collateral-piece-coupon piece) wam (smms-of piece))))
-        (loop for t from 0 below wam
+             (defaults (if (null? defaults-of) '() (defaults-of piece)))
+             (flows (if (null? defaults)
+                        (project-pool (collateral-piece-balance piece) (collateral-piece-wac piece) (collateral-piece-coupon piece) wam (smms-of piece))
+                        (project-pool (collateral-piece-balance piece) (collateral-piece-wac piece) (collateral-piece-coupon piece) wam (smms-of piece)
+                                      :mdrs (car defaults) :severities (cadr defaults) :lag lag)))
+             (length (vector-length (car flows))))
+        (loop for t from 0 below length
               do (begin (vector-update! principal t + (vector-ref (car flows) t))
                         (vector-update! interest t + (vector-ref (cadr flows) t))
-                        (vector-update! gross t + (vector-ref (cadddr flows) t))))
-        (loop for t from 0 to wam
+                        (vector-update! gross t + (vector-ref (cadddr flows) t))
+                        (vector-update! loss t + (vector-ref (list-ref flows 4) t))))
+        (loop for t from 0 to length
               do (vector-update! balances t + (vector-ref (caddr flows) t)))))
-    (list principal interest balances gross)))
+    (list principal interest balances gross loss)))
 
 (define (project-pieces pieces curve)
-  "The cash flows of all the pieces of collateral at the speed (a speed-curve), added together: (principal interest balance gross-interest), each a vector, as project-pool
+  "The cash flows of all the pieces of collateral at the speed (a speed-curve), added together: (principal interest balance gross-interest loss), each a vector, as project-pool
 gives, as long as the longest piece. A piece is a collateral-piece, or a list (balance wac coupon wam [age]); one with no balance is left out."
   (project-pieces-with pieces
                        (lambda (piece) (speed-smms curve (collateral-piece-age piece) (collateral-piece-wam piece)))))
