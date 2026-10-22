@@ -55,6 +55,12 @@ class ViewsCase(LispTestCase):
             button.click()
         return self.printed() + printed.getvalue()
 
+    def row(self, row):
+        """The balance, wac, coupon, wam and age in a row of the grid of collateral: the cells after them say what the loans are like, which is not known here."""
+        cells = list(self.grid.data.iloc[row])
+        self.assertTrue(all(cell != cell for cell in cells[5:]), "what the loans are like is blank: %s" % cells)
+        return cells[:5]
+
     def piece(self, grid, row, balance, wac, coupon, wam, age=0):
         for column, value in (("balance", balance), ("wac", wac), ("coupon", coupon), ("wam", wam), ("age", age)):
             self.edit(grid, row, column, value)
@@ -70,11 +76,12 @@ class TestTheCollateralView(ViewsCase):
 
     def test_the_grid_has_a_row_for_each_piece_and_empty_ones_to_type_in(self):
         self.view()
-        self.assertEqual(list(self.grid.data.columns), ["balance", "wac", "coupon", "wam", "age"])
+        self.assertEqual(list(self.grid.data.columns), ["balance", "wac", "coupon", "wam", "age", "loan size", "credit score", "ltv", "sato", "burnout",
+                                                         "investor share", "second home share", "cash-out share", "refinance share"])
         self.assertEqual(len(self.grid.data), 8)
-        self.assertEqual(list(self.grid.data.iloc[0]), [100000000.0, 6.5, 6.0, 360, 0])
-        self.assertEqual(list(self.grid.data.iloc[1]), [50000000.0, 7.5, 6.5, 240, 12])
-        self.assertEqual(list(self.grid.data.iloc[2]), [0.0, 0.0, 0.0, 0, 0])
+        self.assertEqual(self.row(0), [100000000.0, 6.5, 6.0, 360, 0])
+        self.assertEqual(self.row(1), [50000000.0, 7.5, 6.5, 240, 12])
+        self.assertEqual(self.row(2), [0.0, 0.0, 0.0, 0, 0])
         self.assertIn("Demo 2026-1", self.heading.value)
         self.assertIn("pass-through coupon", self.heading.value)
 
@@ -123,7 +130,7 @@ class TestTheCollateralView(ViewsCase):
         self.assertIn("Updated the collateral of Demo 2026-1: 170,000,000.00 in 3 pieces, paying for 360 months.", shown)
         self.assertShows("(deal-size deal)", "170000000.0")
         self.assertShows("(map (lambda (piece) (list (collateral-piece-balance piece) (collateral-piece-wac piece) (collateral-piece-coupon piece) (collateral-piece-wam piece) (collateral-piece-age piece))) (collateral-table-pieces (deal-collateral deal)))", "((90000000.0 6.5 6.0 360 0) (50000000.0 7.5 6.5 240 12) (30000000.0 8.0 7.0 120 6))")
-        self.assertEqual(list(self.grid.data.iloc[2]), [30000000.0, 8.0, 7.0, 120, 6])
+        self.assertEqual(self.row(2), [30000000.0, 8.0, 7.0, 120, 6])
 
     def test_the_tranches_under_it_are_worked_out_again_by_the_button(self):
         self.view()
@@ -145,11 +152,25 @@ class TestTheCollateralView(ViewsCase):
         self.assertNotIn("traceback", shown)
         self.assertShows("(deal-size deal)", "150000000.0")
 
+    def test_what_the_loans_are_like_is_typed_in_its_columns_and_a_blank_is_not_known(self):
+        self.view()
+        self.edit(self.grid, 0, "credit score", 760)
+        self.edit(self.grid, 0, "investor share", 0.15)
+        self.edit(self.grid, 1, "ltv", 62.5)
+        self.press(self.update_button)
+        self.assertShows("(map collateral-piece-credit-score (deal-pieces deal))", "(760.0 ())")
+        self.assertShows("(map collateral-piece-investor-share (deal-pieces deal))", "(0.15 ())")
+        self.assertShows("(map collateral-piece-ltv (deal-pieces deal))", "(() 62.5)")
+        self.assertEqual(self.grid.data["credit score"][0], 760)
+        self.edit(self.grid, 1, "investor share", 1.5)
+        self.assertIn("a share of the balance, from 0 to 1", self.press(self.update_button))
+        self.assertShows("(map collateral-piece-investor-share (deal-pieces deal))", "(0.15 ())")
+
     def test_a_change_of_the_collateral_somewhere_else_is_shown(self):
         self.view()
         self.run_lisp("(deal-set-collateral! deal '((7000000.0 6.0 5.5 120)))")
-        self.assertEqual(list(self.grid.data.iloc[0]), [7000000.0, 6.0, 5.5, 120, 0])
-        self.assertEqual(list(self.grid.data.iloc[1]), [0.0, 0.0, 0.0, 0, 0])
+        self.assertEqual(self.row(0), [7000000.0, 6.0, 5.5, 120, 0])
+        self.assertEqual(self.row(1), [0.0, 0.0, 0.0, 0, 0])
 
     def test_a_change_of_the_tranches_is_not_a_reason_to_lose_what_was_typed_and_not_given_to_the_deal(self):
         self.view()

@@ -73,7 +73,7 @@ class TestPiecesAreStructs(PathsCase):
             np.testing.assert_allclose(self.vectors("(list (list-ref (project-pieces pieces speed) %d))" % part)[0],
                                        self.vectors("(list (list-ref (project-pieces listed speed) %d))" % part)[0])
         self.run_lisp('(define by-structs (new-deal "S" :collateral pieces)) (define by-lists (new-deal "L" :collateral listed))')
-        self.assertShows("(equal? (deal-collateral by-structs) (deal-collateral by-lists))", "#t")
+        self.assertShows("(equal? (deal-pieces by-structs) (deal-pieces by-lists))", "#t")             # (their tables have nan, not known, which is not equal to itself)
 
     def test_the_pieces_of_a_deal_are_structs(self):
         self.assertShows("(collateral-piece? (car (deal-pieces deal)))", "#t")

@@ -117,9 +117,10 @@ made to the collateral of the deal elsewhere."
   (let* ((messages (widget-output))
          (gui (make-collateral-gui :deal deal :messages messages :rows rows))
          (grid (table-grid (collateral-gui-table gui) :editable #t
-                           :column-widths (grid-column-widths '(("balance" 140) ("wac" 80) ("coupon" 80) ("wam" 80) ("age" 80)))))
+                           :column-widths (grid-column-widths (append '(("balance" 140) ("wac" 80) ("coupon" 80) ("wam" 80) ("age" 80))
+                                                                      (map (lambda (characteristic) (list (car characteristic) 120)) collateral-characteristics)))))
          (page (widget-column
-                 (make-widget "HTML" :value (format "<b>Collateral</b> of {}: a row for each piece, with its balance, its wac (the weighted average coupon of the loans, in percent), its pass-through coupon (in percent, what the investors are paid: the wac less the fees taken out, so no more than the wac), its wam (the months that are left) and its age (the months the loans have gone, 0 if new). A row with no balance is left out. Double-click a cell to change it." (deal-name deal)))
+                 (make-widget "HTML" :value (format "<b>Collateral</b> of {}: a row for each piece, with its balance, its wac (the weighted average coupon of the loans, in percent), its pass-through coupon (in percent, what the investors are paid: the wac less the fees taken out, so no more than the wac), its wam (the months that are left) and its age (the months the loans have gone, 0 if new). The columns after those say what the loans are like, for a prepayment model: the balance of a loan, the credit score, the loan-to-value now (percent), the sato (the wac less the market rate when the loans were made, percent), the burnout (months with a reason to refinance that went by), and the shares of the balance (0 to 1) on investment properties and second homes, and that were cash-out and other refinances; a blank cell is not known. A row with no balance is left out. Double-click a cell to change it." (deal-name deal)))
                  grid
                  (widget-row (deal-gui-button "Show the cash flows" "" (lambda () (collateral-gui-show gui)) messages)
                              (deal-gui-button "Update the deal" "primary" (lambda () (collateral-gui-update gui)) messages))

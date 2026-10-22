@@ -174,23 +174,31 @@
 ; a closing date and a name. They can be changed in a notebook with (collateral deal), (bonds deal) and (info deal), which can all be shown at once: each
 ; is a view of the deal, and shows what is changed in the others (see deal-add-view!).
 
-(define collateral-columns '("balance" "wac" "coupon" "wam" "age"))
+(define collateral-columns (append '("balance" "wac" "coupon" "wam" "age") (map car collateral-characteristics)))
 
 (define (collateral-table pieces)
   "The table of the collateral of a list of pieces, each a collateral-piece or a list (balance wac coupon wam [age]): a row for each, with the columns balance, wac, coupon, wam
-and age (0 if left out). A table of collateral of your own, from a file, say, has these columns, and the age is not needed."
+and age (0 if left out), and a column for each of the collateral-characteristics, what the loans are like, with nan where a piece does not say. A table of collateral of
+your own, from a file, say, has these columns, and only the first four are needed."
   (unless (list? pieces)
     (error (format "the collateral is a table, or a list of pieces, each (balance wac coupon wam [age]), not {}" pieces)))
-  (let ((all (map collateral-piece-of pieces)))
-    (make-table "balance" (list->vector (map (lambda (piece) (+ 0.0 (collateral-piece-balance piece))) all))
-                "wac" (list->vector (map (lambda (piece) (+ 0.0 (collateral-piece-wac piece))) all))
-                "coupon" (list->vector (map (lambda (piece) (+ 0.0 (collateral-piece-coupon piece))) all))
-                "wam" (list->vector (map collateral-piece-wam all))
-                "age" (list->vector (map collateral-piece-age all)))))
+  (let ((all (map collateral-piece-of pieces))
+        (number-or-nan (lambda (x) (if (null? x) nan (+ 0.0 x)))))
+    (for-each collateral-characteristics-check all)
+    (apply make-table
+           (append (list "balance" (list->vector (map (lambda (piece) (+ 0.0 (collateral-piece-balance piece))) all))
+                         "wac" (list->vector (map (lambda (piece) (+ 0.0 (collateral-piece-wac piece))) all))
+                         "coupon" (list->vector (map (lambda (piece) (+ 0.0 (collateral-piece-coupon piece))) all))
+                         "wam" (list->vector (map collateral-piece-wam all))
+                         "age" (list->vector (map collateral-piece-age all)))
+                   (apply append
+                          (map (lambda (characteristic)
+                                 (list (car characteristic) (list->vector (map (lambda (piece) (number-or-nan ((cadr characteristic) piece))) all))))
+                               collateral-characteristics))))))
 
 (define (collateral-table-pieces table)
   "The pieces, as collateral-pieces, in a table of collateral, one with a balance: the rows with none are left out. An error if the table
-does not have the columns balance, wac, coupon and wam."
+does not have the columns balance, wac, coupon and wam. The columns of the collateral-characteristics that it has give the pieces those slots, where they are not nan."
   (unless (table? table)
     (error (format "the collateral is a table, with the columns balance, wac, coupon and wam (and age), not {}" table)))
   (dolist (name '("balance" "wac" "coupon" "wam"))
@@ -200,11 +208,17 @@ does not have the columns balance, wac, coupon and wam."
         (wacs (table-column table "wac"))
         (coupons (table-column table "coupon"))
         (wams (table-column table "wam"))
-        (ages (if (assoc "age" table) (table-column table "age") '())))
+        (ages (if (assoc "age" table) (table-column table "age") '()))
+        (characteristics (filter (lambda (characteristic) (assoc (car characteristic) table)) collateral-characteristics)))
     (loop for i from 0 below (vector-length balances)
           when (> (vector-ref balances i) 0.0)
-          collect (make-collateral-piece :balance (vector-ref balances i) :wac (vector-ref wacs i) :coupon (vector-ref coupons i) :wam (vector-ref wams i)
-                                         :age (if (null? ages) 0 (vector-ref ages i))))))
+          collect (let ((piece (make-collateral-piece :balance (vector-ref balances i) :wac (vector-ref wacs i) :coupon (vector-ref coupons i)
+                                                      :wam (vector-ref wams i) :age (if (null? ages) 0 (vector-ref ages i)))))
+                    (dolist (characteristic characteristics)
+                      (let ((value (vector-ref (table-column table (car characteristic)) i)))
+                        (unless (missing-number? value)
+                          ((caddr characteristic) piece value))))
+                    piece))))
 
 (define (pieces-coupon pieces flows)
   "The coupon of the collateral of the pieces, whose cash flows are flows (principal interest balance ...): the pass-through coupon that they

@@ -14,12 +14,15 @@
 ;   (prepayment-speed 'psa '((0 100 30)))                ; 0 PSA in month 0 to 100 PSA in month 30, and 100 after: a ramp
 ;
 ; A piece of collateral is a collateral-piece (make-collateral-piece :balance 100000000 :wac 6.5 :coupon 6.0 :wam 360 :age 0), or, as a shorthand, the list (balance wac coupon wam [age])
-; of its slots: the balance now, the weighted average coupon of the loans (the wac, which
+; of its first slots: the balance now, the weighted average coupon of the loans (the wac, which
 ; the borrowers pay and which pays the loans off) and the pass-through coupon (which the investors in the pool are paid), both in percent
 ; (the pass-through coupon is the wac less the fees that are taken out, so it is no more), the weighted average maturity, the months
 ; that are left (so that a pool of 30-year loans that have gone for a year is 348), and the age, the months the loans have gone, which is what
 ; the PSA curve is a rise with (0 if left out). (project-pieces pieces speed) adds up the cash flows of all of them: what is paid to the
 ; investors is the interest at the pass-through coupon, and the principal is what the loans at their wac pay.
+;
+; The other slots of a piece say what its loans and its borrowers are like, for a prepayment model to look at (see collateral-characteristics).
+; Each is '() if it is not known, and the cash flows at a speed do not use them.
 
 (require "prepayment_model.lsp")
 
@@ -127,9 +130,38 @@ decimal for each of them."
                (vector-set! balances (+ t 1) (- owed paid))))
     (list principal interest balances gross)))
 
-(defstruct collateral-piece balance wac coupon wam (age 0))
+(defstruct collateral-piece balance wac coupon wam (age 0)
+  (loan-size '()) (credit-score '()) (ltv '()) (sato '()) (burnout '())
+  (investor-share '()) (second-home-share '()) (cash-out-share '()) (refinance-share '()))
 ; what is known of a piece of collateral, a pool of loans: the balance now, the wac and the pass-through coupon in percent, the wam, the months that are left, and the
-; age, the months that the loans have gone. (More that a prepayment model uses, the state the loans are in, their sizes, and so on, are to be slots of it.)
+; age, the months that the loans have gone; and what its loans are like, each '() if it is not known (see collateral-characteristics). Each is an average over the loans,
+; weighted by their balances, as an agency's pool says it:
+;   loan-size          the balance of a loan now, in dollars (smaller loans refinance less: the costs are much the same, and the saving is less)
+;   credit-score       the borrowers' credit score when the loans were made
+;   ltv                the loan-to-value now, percent, after what has been paid and what home prices have done (a borrower with little equity cannot refinance)
+;   sato               the spread at origination: the wac less the survey rate of new mortgages when the loans were made, percent (a borrower who paid more than the
+;                      market, most often for weaker credit, refinances less)
+;   burnout            the months the loans have already had a reason to refinance and did not (an incentive above 0.75 percent, after their first year)
+;   investor-share     the share of the balance (0 to 1) on investment properties
+;   second-home-share  the share on second homes
+;   cash-out-share     the share that was a cash-out refinance
+;   refinance-share    the share that was a refinance without cash out
+
+(define collateral-characteristics
+  (list (list "loan size" collateral-piece-loan-size collateral-piece-loan-size-set!)
+        (list "credit score" collateral-piece-credit-score collateral-piece-credit-score-set!)
+        (list "ltv" collateral-piece-ltv collateral-piece-ltv-set!)
+        (list "sato" collateral-piece-sato collateral-piece-sato-set!)
+        (list "burnout" collateral-piece-burnout collateral-piece-burnout-set!)
+        (list "investor share" collateral-piece-investor-share collateral-piece-investor-share-set!)
+        (list "second home share" collateral-piece-second-home-share collateral-piece-second-home-share-set!)
+        (list "cash-out share" collateral-piece-cash-out-share collateral-piece-cash-out-share-set!)
+        (list "refinance share" collateral-piece-refinance-share collateral-piece-refinance-share-set!)))
+; the slots of a collateral-piece that say what its loans are like: (the column of a table of collateral that has it, the accessor, the setter)
+
+(define (missing-number? x)
+  "Whether x is nan, the number that a table has where a value is missing (it is the one number that is not equal to itself)."
+  (and (number? x) (not (= x x))))
 
 (define (collateral-piece-of x)
   "A piece of collateral: x if it is one, or one made from a list (balance wac coupon wam [age]) of numbers (the age is 0 if it is left out). An error that says what is wrong
@@ -155,7 +187,32 @@ if it is neither."
     (unless (and (integer? wam) (> wam 0))
       (error (format "the wam of a piece of collateral is the months that are left, a whole number above 0, not {}" wam)))
     (unless (and (integer? age) (>= age 0))
-      (error (format "the age of a piece of collateral is the months that have gone, a whole number from 0, not {}" age)))))
+      (error (format "the age of a piece of collateral is the months that have gone, a whole number from 0, not {}" age)))
+    (collateral-characteristics-check piece)))
+
+(define (collateral-characteristics-check piece)
+  "An error unless what the piece says about its loans (see collateral-piece), where it says anything, makes sense."
+  (let ((known (lambda (x) (not (null? x))))
+        (check (lambda (name value ok? meaning)
+                 (unless (null? value)
+                   (unless (and (number? value) (ok? value))
+                     (error (format "the {} of a piece of collateral is {}, not {}" name meaning value)))))))
+    (check "loan size" (collateral-piece-loan-size piece) (lambda (x) (> x 0)) "the balance of a loan, in dollars, above 0")
+    (check "credit score" (collateral-piece-credit-score piece) (lambda (x) (<= 300 x 850)) "from 300 to 850")
+    (check "ltv" (collateral-piece-ltv piece) (lambda (x) (> x 0)) "the loan-to-value in percent, above 0")
+    (check "sato" (collateral-piece-sato piece) (lambda (x) #t) "a number, in percent")
+    (check "burnout" (collateral-piece-burnout piece) (lambda (x) (>= x 0)) "a number of months, from 0")
+    (dolist (share (list (list "investor share" (collateral-piece-investor-share piece))
+                         (list "second home share" (collateral-piece-second-home-share piece))
+                         (list "cash-out share" (collateral-piece-cash-out-share piece))
+                         (list "refinance share" (collateral-piece-refinance-share piece))))
+      (check (car share) (cadr share) (lambda (x) (<= 0 x 1)) "a share of the balance, from 0 to 1"))
+    (let ((occupancy (filter known (list (collateral-piece-investor-share piece) (collateral-piece-second-home-share piece))))
+          (purpose (filter known (list (collateral-piece-cash-out-share piece) (collateral-piece-refinance-share piece)))))
+      (when (> (apply + occupancy) 1)
+        (error (format "the investor share and the second home share of a piece of collateral are {} together: they are parts of one balance, so no more than 1" (apply + occupancy))))
+      (when (> (apply + purpose) 1)
+        (error (format "the cash-out share and the refinance share of a piece of collateral are {} together: they are parts of one balance, so no more than 1" (apply + purpose)))))))
 
 (define (collateral-pieces-in-use pieces)
   "The pieces, as collateral-pieces, that have a balance: one with none is an empty row, and is left out. An error unless the others can be projected, and there is one.

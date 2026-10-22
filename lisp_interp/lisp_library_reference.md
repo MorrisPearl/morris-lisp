@@ -51,6 +51,7 @@ that use all this are described in
   - [Interest rate paths (the two-factor model)](#interest-rate-paths-the-two-factor-model)
   - [Regression models](#regression-models)
   - [How good is a model? The measures, explained](#how-good-is-a-model-the-measures-explained)
+  - [A prepayment model fitted to Freddie Mac's loans](#a-prepayment-model-fitted-to-freddie-macs-loans)
   - [Linear programming](#linear-programming)
   - [Stratification tables](#stratification-tables)
 - [Investments](#investments)
@@ -111,7 +112,7 @@ The functions for investment analysis, in the order an analysis uses them.
    (`sofr-*`, under "tastytrade (real broker data)"), futures curves
    (`futures-curve-fit`), and `lib/oas_monte_carlo.lsp`, `lib/column_engine.lsp`,
    `lib/template.lsp`, and `lib/prepayment_model.lsp`, for mortgage pools and
-   their tranches. A structured deal, a tree of tranches with interest, principal, losses
+   their tranches, and `lib/freddie_prepayment.lsp`, a prepayment model fitted to Freddie Mac's loans. A structured deal, a tree of tranches with interest, principal, losses
    and shortfalls, is in its own manual, [lisp_cmo_manual.md](lisp_cmo_manual.md)
    (`lib/deal.lsp`).
 7. **Models.** "Regression models" (linear, logistic, spline, and least
@@ -4393,6 +4394,40 @@ to every point looks perfect there, and predicts new data badly. The
 honest numbers are from data the model hasn't seen: `model-evaluate` on
 rows held out, or `cross-validate`, which does that for every row. When
 choosing between models, compare those.
+
+### A prepayment model fitted to Freddie Mac's loans
+
+[`freddie_prepayment.lsp`](lib/freddie_prepayment.lsp) fits a model of how fast mortgages prepay to a sample of Freddie Mac's 30-year
+fixed-rate loans: a SQLite database, made by the scripts in `load_freddie_data/` (its `README.md` says how), with every month of each loan.
+[`notebooks/freddie_prepayment_model.ipynb`](notebooks/freddie_prepayment_model.ipynb) shows it.
+
+The model is a `spline-logistic` of the **smm**: the share of a loan's scheduled balance that it prepaid in a month (1 for a loan paid off,
+and a part for a loan paid down early), with each month weighted by that balance, so that over a pool it is the pool's smm, and the CPR is
+`(cpr-of-smm smm)`, 1 - (1 - smm)^12, in percent. The predictors are `prepayment-predictors`: the incentive (the loan's rate over the survey
+rate of new mortgages, in basis points), the age, the loan size, the credit score, the loan-to-value now, the spread at origination, burnout,
+the shares on investment properties and second homes and of cash-out and other refinances, and two seasons. Each has its knots; a knot
+without data on both sides of it, from the 1st to the 99th percentile, is left out (`knots-within`): its hinge would be a column of zeros, or
+one that a few rows could make as steep as they liked. (The averages of groups are closer together than the loans, so the groups can lose a
+knot that the loans keep.)
+
+It can be fitted two ways, on the same predictors, so that the two can be compared:
+
+- `(freddie-loan-months conn where)`, every month of every loan that is `where` (an SQL condition, such as `"sample_bucket < 80"`);
+- `(freddie-groups conn where)`, the months of loans that are alike put together, each group's smm and the averages of its loans.
+
+Each gives a `prepayment-data` (the months, the smms, the weights, and the predictors), which `(fit-prepayment-model data)` fits.
+`(prepayment-cpr-by-month model data)` is a table of the CPR of all the rows of a month together, and what the model says it was;
+`(plot-cpr-by-month (list (list name model data) ...))` draws it for several models; `(prepayment-s-curve model)` is the CPR of
+`typical-prepayment-loan` for each incentive from -200 to 400 basis points, and `(plot-prepayment-s-curves (list (list name model) ...))`
+draws them. `(prepayment-cpr-misses (list (list name model data) ...) split)` is a table of how far each model's monthly CPR is from its
+data's, on average, before the date `split` and from it on.
+
+```lisp
+(define conn (sqlite-open "/Users/morris/freddie_data/freddie_loans.db"))
+(define by-loan (fit-prepayment-model (freddie-loan-months conn "sample_bucket < 80 AND period < '2019-01-01'")))
+(define test-loans (freddie-loan-months conn "sample_bucket >= 80"))
+(plot-cpr-by-month (list (list "loan by loan" by-loan test-loans)))     ; tried on loans it was not fitted to, before 2019 and after
+```
 
 ### Linear programming
 

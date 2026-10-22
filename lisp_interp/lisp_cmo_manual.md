@@ -178,17 +178,36 @@ taken out (so it is no more than the wac: it is an error if it is); the **wam**,
 (0 if left out), which is what the PSA curve rises with. A piece with no balance is left out. The deal has as many months as its longest piece.
 
 A piece is a struct too, a `collateral-piece` with the slots `balance`, `wac`, `coupon`, `wam` and `age`, and that is what the deal keeps: `(deal-pieces deal)` gives them. A list
-is turned into one wherever a piece is wanted (`(collateral-piece-of '(50000000.0 7.0 6.5 240 12))`), so the two are the same, and a struct can be given where a list can. A struct has room for more
-slots later (a prepayment model, see "Option-adjusted spread and effective duration", is given the piece to look at).
+is turned into one wherever a piece is wanted (`(collateral-piece-of '(50000000.0 7.0 6.5 240 12))`), so the two are the same, and a struct can be given where a list can.
+
+**What the loans are like.** A piece has more slots, which say what its loans and borrowers are like, for a prepayment model to look at (see "Option-adjusted spread and effective duration": a model
+is given the piece). The cash flows at a speed do not use them. Each is an average over the loans, weighted by their balances, as an agency's pool discloses it, and each is `'()` if it is not known,
+which it is in a piece made from a list. They are the things that the model of `load_freddie_data/` (in the repository) is fitted on, with the same meanings.
+
+| Slot | Is | Units |
+|---|---|---|
+| `loan-size` | the balance of a loan now: a small loan is refinanced less, as the costs are much the same and the saving is less | dollars |
+| `credit-score` | the borrowers' credit score when the loans were made | 300 to 850 |
+| `ltv` | the loan-to-value now, after what has been paid and what home prices have done: a borrower with little equity cannot refinance | percent |
+| `sato` | the spread at origination: the wac less the survey rate of new mortgages when the loans were made (a borrower who paid more than the market, most often for weaker credit, refinances less) | percent |
+| `burnout` | the months that the loans have already had a reason to refinance, an incentive above 0.75 percent after their first year, and did not | months |
+| `investor-share`, `second-home-share` | the share of the balance on investment properties, and on second homes | 0 to 1 |
+| `cash-out-share`, `refinance-share` | the share of the balance that was a cash-out refinance, and a refinance without cash out | 0 to 1 |
 
 ```lisp
-(define piece (make-collateral-piece :balance 100000000.0 :wac 6.0 :coupon 5.5 :wam 360))
+(define piece (make-collateral-piece :balance 100000000.0 :wac 6.0 :coupon 5.5 :wam 360 :credit-score 750 :ltv 72.0 :investor-share 0.08))
 (collateral-piece-age piece)                                                    ; => 0
+(collateral-piece-ltv piece)                                                    ; => 72.0
 (collateral-piece-wam (collateral-piece-of '(50000000.0 7.0 6.5 240 12)))       ; => 240
 (define deal (new-deal "Demo" :collateral (list piece '(50000000.0 7.0 6.5 240 12)) :speed (prepayment-speed 'psa 150)))
 (collateral-piece-age (cadr (deal-pieces deal)))                                ; => 12
+(collateral-piece-credit-score (cadr (deal-pieces deal)))                       ; => ()
 (vector-ref (node-principal (get-node deal "POOL")) 0)                          ; => 347773.9772172784
 ```
+
+The table of collateral of a deal (see `collateral-table`, and the grid of `(collateral deal)`) has a column for each of them after the age, named as in `collateral-characteristics` (`"credit score"`,
+`"investor share"`, ...), with `nan` where a piece does not say. A table read from a file needs only the columns balance, wac, coupon and wam; the others it has are used. Each value is checked when the
+deal is given the pieces: a credit score is from 300 to 850, a share from 0 to 1, and the investor and second-home shares, or the two refinance shares, are no more than 1 together.
 
 A **speed** has a type, which says what its number means, and a number that can change with time: `(prepayment-speed type spec)`. The types are `psa` (150 is 150% of
 the standard curve, 0 to 6 CPR over 30 months of age, which is the curve of `prepayment_model.lsp`), `cpr` (the annual rate of prepayment, in percent) and
@@ -912,7 +931,8 @@ carries as a shortfall, if it ever does. `(deal-summary-months periods)` is the 
 
 - `(collateral deal [:rows 8])` (in `lib/deal_views.lsp`) is a **grid** of the collateral, a row for each piece, and empty rows to type in: its balance, its wac in percent (the weighted
   average coupon of the loans), its pass-through coupon in percent (what the investors are paid: the wac less the fees, so no more than the wac), its wam (the months that are left) and its age
-  (the months the loans have gone, 0 if new). Double-click a cell to type in it. A row with no balance is left out. **Show the cash flows** adds up the cash flows of the pieces that are
+  (the months the loans have gone, 0 if new), and then what the loans are like (see "Pieces of collateral, and the pricing speed"), a blank cell being not known. Double-click a cell to type in it.
+  A row with no balance is left out. **Show the cash flows** adds up the cash flows of the pieces that are
   in the grid, at the pricing speed, and shows them: how many pieces there are, the balance, the wac, the pass-through coupon, the wam, the average life and the speed in words, and a table
   with a row for the first month and the end of each year (the payment date, the balance, the principal, the interest paid to the investors, the speed of the month, and the wac and the
   pass-through coupon of the pool, which change as the pieces with the higher rates pay off). **Update the deal** gives the deal what is in the grid (`deal-set-collateral!`).

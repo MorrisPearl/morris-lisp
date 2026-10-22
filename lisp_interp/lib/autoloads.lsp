@@ -101,7 +101,21 @@
   collateral-piece-age-set! collateral-piece-balance collateral-piece-balance-set! collateral-piece-coupon
   collateral-piece-coupon-set! collateral-piece-of collateral-piece-wac collateral-piece-wac-set! collateral-piece-wam
   collateral-piece-wam-set! collateral-piece? copy-collateral-piece make-collateral-piece project-pieces-with
-  smms-from-cprs)
+  smms-from-cprs collateral-characteristics-check collateral-piece-burnout collateral-piece-burnout-set!
+  collateral-piece-cash-out-share collateral-piece-cash-out-share-set! collateral-piece-credit-score
+  collateral-piece-credit-score-set! collateral-piece-investor-share collateral-piece-investor-share-set!
+  collateral-piece-loan-size collateral-piece-loan-size-set! collateral-piece-ltv collateral-piece-ltv-set!
+  collateral-piece-refinance-share collateral-piece-refinance-share-set! collateral-piece-sato
+  collateral-piece-sato-set! collateral-piece-second-home-share collateral-piece-second-home-share-set!
+  missing-number?)
+
+; A prepayment model fitted to Freddie Mac's loans, from the database that load_freddie_data/ makes
+(lazy-load "freddie_prepayment.lsp"
+  copy-prepayment-data cpr-of-smm fit-prepayment-model freddie-groups freddie-loan-months make-prepayment-data
+  plot-cpr-by-month plot-prepayment-s-curves predicted-smm prepayment-cpr-by-month prepayment-data-from
+  prepayment-data-periods prepayment-data-periods-set! prepayment-data-predictors prepayment-data-predictors-set!
+  prepayment-data-smm prepayment-data-smm-set! prepayment-data-weights prepayment-data-weights-set! prepayment-data?
+  prepayment-s-curve knots-within prepayment-cpr-misses)
 
 ; Structured deals as a tree: a pool, divided by splits into tranches (see lisp_cmo_manual.md)
 (lazy-load "deal.lsp"

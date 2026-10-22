@@ -302,3 +302,58 @@ class TestCoupons(PiecesCase):
         self.assertAlmostEqual(self.run_lisp("((coupon-less (constant-coupon 0.05) 0.02) 0.0)"), 0.03)
         self.assertShows("((coupon-less (constant-coupon 0.05) 0.07) 0.0)", "0.0")
         np.testing.assert_allclose(self.vector("(coupon-less (vector 0.05 0.06 0.01) 0.02)"), [0.03, 0.04, 0.0])
+
+
+class TestWhatTheLoansAreLike(PiecesCase):
+    """The slots of a collateral-piece that say what its loans are like, for a prepayment model: '() when they are not known."""
+
+    CHARACTERISTICS = ["loan-size", "credit-score", "ltv", "sato", "burnout", "investor-share", "second-home-share", "cash-out-share", "refinance-share"]
+
+    def test_they_are_not_known_unless_they_are_given(self):
+        self.run_lisp("(define piece (collateral-piece-of '(1000.0 6.0 5.5 12)))")
+        for slot in self.CHARACTERISTICS:
+            self.assertShows("(collateral-piece-%s piece)" % slot, "()")
+        self.run_lisp("(define piece (make-collateral-piece :balance 1000.0 :wac 6.0 :coupon 5.5 :wam 12 :loan-size 250000 :credit-score 745 :ltv 68.5 :sato 0.2 "
+                      ":burnout 4 :investor-share 0.1 :second-home-share 0.05 :cash-out-share 0.2 :refinance-share 0.3))")
+        self.assertShows("(map (lambda (slot) (slot piece)) (map cadr collateral-characteristics))", "(250000 745 68.5 0.2 4 0.1 0.05 0.2 0.3)")
+
+    def test_what_makes_no_sense_is_said(self):
+        for given, message in ((":loan-size 0", "the loan size of a piece of collateral is the balance of a loan"),
+                               (":credit-score 200", "the credit score of a piece of collateral is from 300 to 850"),
+                               (":ltv -5", "the ltv of a piece of collateral is the loan-to-value in percent"),
+                               (":burnout -1", "the burnout of a piece of collateral is a number of months"),
+                               (":investor-share 1.2", "the investor share of a piece of collateral is a share of the balance, from 0 to 1"),
+                               (":cash-out-share \"most\"", "the cash-out share of a piece of collateral is a share of the balance"),
+                               (":investor-share 0.6 :second-home-share 0.6", "the investor share and the second home share of a piece of collateral are 1.2 together"),
+                               (":cash-out-share 0.7 :refinance-share 0.4", "the cash-out share and the refinance share")):
+            with self.subTest(given=given):
+                self.assertLispError("(new-deal \"D\" :collateral (list (make-collateral-piece :balance 1000.0 :wac 6.0 :coupon 5.5 :wam 12 %s)))" % given, message)
+
+    def test_the_table_of_collateral_has_a_column_for_each_and_nan_where_it_is_not_known(self):
+        self.run_lisp("(define table (collateral-table (list (make-collateral-piece :balance 1000.0 :wac 6.0 :coupon 5.5 :wam 12 :credit-score 760 :investor-share 0.1) "
+                      "'(500.0 6.0 5.5 12))))")
+        self.assertShows("(map car table)", '("balance" "wac" "coupon" "wam" "age" "loan size" "credit score" "ltv" "sato" "burnout" "investor share" '
+                                            '"second home share" "cash-out share" "refinance share")')
+        self.assertShows('(table-column table "credit score")', "#(760.0 nan)")
+        self.assertShows("(map collateral-piece-credit-score (collateral-table-pieces table))", "(760.0 ())")
+        self.assertShows("(map collateral-piece-investor-share (collateral-table-pieces table))", "(0.1 ())")
+        self.assertShows("(map collateral-piece-ltv (collateral-table-pieces table))", "(() ())")
+
+    def test_a_table_of_collateral_needs_only_the_first_four_columns(self):
+        self.run_lisp('''(define deal (new-deal "D" :collateral (make-table "balance" (vector 1000.0) "wac" (vector 6.0) "coupon" (vector 5.5) "wam" (vector 12)
+                                                                    "credit score" (vector 700.0))))''')
+        self.assertShows("(collateral-piece-credit-score (car (deal-pieces deal)))", "700.0")
+        self.assertShows("(collateral-piece-age (car (deal-pieces deal)))", "0")
+        self.assertShows("(collateral-piece-ltv (car (deal-pieces deal)))", "()")
+
+    def test_a_prepayment_model_is_given_them(self):
+        self.run_lisp('''(load "deal_pricing.lsp")
+                         (define seen '())
+                         (define deal (new-deal "D" :closing-date (date 2026 11 20) :first-payment (date 2026 12 25)
+                                                :collateral (list (make-collateral-piece :balance 1000000.0 :wac 6.5 :coupon 6.0 :wam 12 :credit-score 720 :ltv 85.0))))
+                         (deal-set-treasury-curve! deal '((1 4.0) (2 4.1)))
+                         (deal-set-prepayment-model! deal (lambda (piece path)
+                                                            (set! seen (list (collateral-piece-credit-score piece) (collateral-piece-ltv piece)))
+                                                            (make-vector (collateral-piece-wam piece) 6.0)))
+                         (deal-run-paths! deal :paths 2)''')
+        self.assertShows("seen", "(720.0 85.0)")                                  # (the deal keeps its pieces in a table, of decimals)
