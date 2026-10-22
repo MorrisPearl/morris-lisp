@@ -100,6 +100,21 @@ date, today by default: this year so far. The Treasury's curve begins in 1990. E
            (dates (table-column all "date")))
       (table-sort (table-filter all (vector-and (>= dates first-day) (<= dates last-day))) "date"))))
 
+(define (latest-treasury-points &key (cache-hours 1))
+  "The Treasury's most recent par yield curve, as (day points): the last day of its file that has a yield, and the points, (years yield), of the maturities that it
+has one for, the yield in percent, in the form of a Treasury curve of a deal (see deal-set-treasury-curve!). The file is the one that treasury-par-curve reads, kept
+for :cache-hours (1). An error if the Treasury has published no yield in the last two weeks."
+  (let* ((today-date (today))
+         (curve (treasury-par-curve :start-date (date-add-days today-date -14) :end-date today-date :cache-hours cache-hours))
+         (days (table-row-count curve)))
+    (loop for row from (- days 1) downto 0
+          do (let ((points (loop for tenor in treasury-tenors
+                                 for yield = (vector-ref (table-column curve (cadr tenor)) row)
+                                 when (= yield yield)
+                                 collect (list (/ (caddr tenor) 12.0) (* 100.0 yield)))))
+               (unless (null? points)
+                 (return (list (vector-ref (table-column curve "date") row) points)))))))
+
 ; ---------------------------------------------------------------------------
 ; 2. From par yields to zero rates, and forward rates
 ; ---------------------------------------------------------------------------

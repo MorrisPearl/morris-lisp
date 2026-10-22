@@ -2725,6 +2725,16 @@ the Treasury's site, kept for `:cache-hours` (12).
 (table-where curve "date" (date 2026 10 15))      ; one day's curve
 ```
 
+#### `(latest-treasury-points [:cache-hours h])`
+The Treasury's most recent par yield curve, as `(day points)`: the last day in the last two weeks of the file that `treasury-par-curve` reads which has a yield, and
+the points, `(years yield)`, of the maturities it has one for, the yield in percent. That is the form of the Treasury curve of a deal (see
+`deal-set-treasury-curve!` in [lisp_cmo_manual.md](lisp_cmo_manual.md)); `(info deal)` has a button for it. The file is kept for `:cache-hours` (1).
+
+```lisp
+(define latest (latest-treasury-points))     ; a download, like treasury-par-curve
+(deal-set-treasury-curve! deal (cadr latest))
+```
+
 #### `(par-curve-zeros years yields)`
 The zero curve that par yields give, as a table. `years` are the maturities, rising,
 and `yields` the par yield at each as decimals; a missing one (`nan`) is left out. The

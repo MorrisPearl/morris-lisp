@@ -195,6 +195,17 @@ nothing in it is left out; a piece with 0 months is for the rest of the time."
     (widget-set! (info-gui-liquidation-lag gui) "value" (deal-liquidation-lag deal))
     (grid-set-table! (info-gui-curve-grid gui) (info-curve-table (deal-treasury-curve deal)))))
 
+(define (info-gui-latest-curve gui)
+  "The button that gets the Treasury's most recent par yield curve (latest-treasury-points, which reads the Treasury's own file) and puts it in the grid of the curve: the
+deal is given it by the Update button, with what else is typed."
+  (let* ((found (latest-treasury-points))
+         (points (cadr found)))
+    (grid-set-table! (info-gui-curve-grid gui) (info-curve-table points))
+    (widget-clear (info-gui-messages gui))
+    (widget-capture (info-gui-messages gui)
+                    (lambda () (display (format "The Treasury's par yield curve of {}, {} points, is in the grid: Update the deal gives it to {}.\n"
+                                                (car found) (length points) (deal-name (info-gui-deal gui))))))))
+
 (define (info-gui-update gui)
   "The button that gives the deal the name, the dates, the pricing speed, what its models are told, its defaults, and the Treasury curve that are typed. A speed of the
 model, and defaults, need the curve, so it is given the curve first; otherwise the speed and the defaults are given first, so that the curve can then be taken away.
@@ -260,9 +271,10 @@ Returns the widget, which a cell of a notebook shows. It shows the changes made 
          (page (widget-column
                  (make-widget "HTML" :value "<b>The deal</b>: its name, its dates, and the pricing speed: a type, and a row for each piece of the speed, which goes in a straight line from <i>from</i> to <i>to</i> and is <i>to</i> in the last of its <i>months</i>; the last piece has 0 months, for the rest of the time. One row with the same speed twice is a single speed. MODEL is a share of the prepayment model fitted to Freddie Mac's loans, which looks at rates: 100 is the model, and 105 is 105% of it. It needs the Treasury curve, which the rates are read forward from (and on each path of rates, for the OAS), and is told how much home prices grow, and how far the rate of a new mortgage is above the 10-year Treasury yield. The defaults are a share, in percent, of the default model fitted to Freddie Mac's loans (0 for none): a loan that defaults is sold the months after it that are typed, and what is lost, by the severity model, writes the tranches down. The default model needs the curve too.")
                  name closing first-payment speed-type speed-grid home-prices mortgage-spread defaults liquidation-lag
-                 (make-widget "HTML" :value "<b>The Treasury curve</b>, that a spread is over: a row for each point, the years to its maturity and its yield in percent, in any order (a row with nothing in it is left out). The yield at an average life between two points is on the straight line between them.")
+                 (make-widget "HTML" :value "<b>The Treasury curve</b>, that a spread is over: a row for each point, the years to its maturity and its yield in percent, in any order (a row with nothing in it is left out). The yield at an average life between two points is on the straight line between them. <i>Get the latest curve</i> fills it with the Treasury's most recent par yield curve (from its own website); <i>Update the deal</i> then gives it to the deal.")
                  curve-grid
-                 (deal-gui-button "Update the deal" "primary" (lambda () (info-gui-update gui)) messages)
+                 (widget-row (deal-gui-button "Get the latest curve" "" (lambda () (info-gui-latest-curve gui)) messages)
+                             (deal-gui-button "Update the deal" "primary" (lambda () (info-gui-update gui)) messages))
                  messages)))
     (info-gui-show gui)
     (deal-add-view! deal '(info) (lambda () (info-gui-show gui)))

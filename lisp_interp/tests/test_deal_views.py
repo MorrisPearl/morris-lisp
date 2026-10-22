@@ -186,7 +186,8 @@ class TestTheInfoView(ViewsCase):
         self.make(collateral)
         self.page = self.widget("(info deal)")
         (self.heading, self.name, self.closing, self.first_payment, self.speed_type, self.speed_grid, self.home_prices, self.mortgage_spread,
-         self.defaults, self.liquidation_lag, self.curve_heading, self.curve_grid, self.update_button, self.messages) = self.page.children
+         self.defaults, self.liquidation_lag, self.curve_heading, self.curve_grid, self.buttons, self.messages) = self.page.children
+        self.latest_button, self.update_button = self.buttons.children
 
     def test_the_fields_have_what_the_deal_has(self):
         self.view()
@@ -291,6 +292,39 @@ class TestTheInfoView(ViewsCase):
         self.assertIn("(home prices 3.0% a year, mortgage rate 1.75% over the 10-year Treasury)", shown)
         self.assertShows("(speed-curve-type (deal-pricing-speed deal))", "model")
         self.assertShows("(deal-treasury-curve deal)", "((2.0 4.1) (10.0 4.5))")
+
+    def fake_treasury(self):
+        """The Treasury's file, for the last three days, with the 1.5-month and the 20-year missing on the last (as a file has them), in place of a download."""
+        self.run_lisp('''(define (treasury-par-curve &key (start-date '()) (end-date '()) (cache-hours 12))
+                           (make-table "date" (vector (date 2026 10 20) (date 2026 10 21) (date 2026 10 22))
+                                       "1m" (vector 0.040 0.041 0.042) "1.5m" (vector 0.040 0.041 nan) "2m" (vector 0.040 0.041 0.042)
+                                       "3m" (vector 0.040 0.041 0.042) "4m" (vector 0.040 0.041 0.042) "6m" (vector 0.041 0.042 0.043)
+                                       "1y" (vector 0.041 0.042 0.043) "2y" (vector 0.040 0.041 0.0415) "3y" (vector 0.041 0.042 0.042)
+                                       "5y" (vector 0.042 0.043 0.043) "7y" (vector 0.043 0.044 0.044) "10y" (vector 0.044 0.045 0.0452)
+                                       "20y" (vector 0.047 0.048 nan) "30y" (vector 0.048 0.049 0.0495)))''')
+
+    def test_a_button_gets_the_latest_curve_into_the_grid_and_the_update_button_gives_it_to_the_deal(self):
+        self.view()
+        self.fake_treasury()
+        shown = self.press(self.latest_button)
+        self.assertIn("The Treasury's par yield curve of 2026-10-22, 12 points, is in the grid", shown)
+        years = list(self.curve_grid.data["years"])
+        yields = list(self.curve_grid.data["yield"])
+        self.assertEqual(len(years), 12)
+        self.assertAlmostEqual(years[0], 1 / 12)
+        self.assertEqual(years[-1], 30.0)
+        self.assertEqual(yields[-1], 4.95)                                           # (percent)
+        self.assertNotIn(20.0, years)                                                # (the day's file has no 20-year yield)
+        self.assertShows("(deal-treasury-curve deal)", "()")                          # (not given to the deal yet)
+        self.press(self.update_button)
+        self.assertShows("(length (deal-treasury-curve deal))", "12")
+        self.assertShows("(cadr (car (reverse (deal-treasury-curve deal))))", "4.95")
+
+    def test_no_curve_from_the_treasury_is_said_and_nothing_changes(self):
+        self.view()
+        self.run_lisp('''(define (treasury-par-curve &key (start-date '()) (end-date '()) (cache-hours 12)) (error "no connection"))''')
+        self.assertIn("no connection", self.press(self.latest_button))
+        self.assertEqual(list(self.curve_grid.data["years"]), [0.0] * 6)
 
     def test_a_date_left_blank_is_no_date(self):
         self.view()
@@ -471,7 +505,7 @@ class TestSeveralViewsAtOnce(ViewsCase):
         self.bonds_grid = self.bonds_page.children[0]
         self.speed_type = self.info_page.children[4]
         self.speed_grid = self.info_page.children[5]
-        self.update_info = self.info_page.children[12]
+        self.update_info = self.info_page.children[12].children[1]
 
     def bonds_balances(self):
         return list(self.bonds_grid.data["balance"])

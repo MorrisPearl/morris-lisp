@@ -53,7 +53,7 @@
 
 ; Yield curves: the Treasury's par curve and the Fed's fitted curve, zero rates and forward rates
 (lazy-load "yield_curves.lsp"
-  treasury-par-curve treasury-zero-curve par-curve-zeros curve-forward-rates extend-forward-curve gsw-curve
+  treasury-par-curve latest-treasury-points treasury-zero-curve par-curve-zeros curve-forward-rates extend-forward-curve gsw-curve
   gsw-parameters gsw-zero-curve
   svensson-zero-rates svensson-forward-rates)
 
@@ -264,7 +264,7 @@
   make-info-gui show-collateral-flows info-curve-from-grid info-curve-table info-gui-curve-grid
   info-gui-curve-grid-set! info-gui-home-prices info-gui-home-prices-set! info-gui-mortgage-spread
   info-gui-mortgage-spread-set! info-gui-defaults info-gui-defaults-set! info-gui-liquidation-lag
-  info-gui-liquidation-lag-set!)
+  info-gui-liquidation-lag-set! info-gui-latest-curve)
 
 ; Templates of text and SQL
 (lazy-load "template.lsp"

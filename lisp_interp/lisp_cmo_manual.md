@@ -1061,7 +1061,7 @@ carries as a shortfall, if it ever does. `(deal-summary-months periods)` is the 
   with a row for the first month and the end of each year (the payment date, the balance, the principal, the interest paid to the investors, the speed of the month, and the wac and the
   pass-through coupon of the pool, which change as the pieces with the higher rates pay off). **Update the deal** gives the deal what is in the grid (`deal-set-collateral!`).
 - `(info deal)` is a few fields: the name, the closing date, the first payment date (written `2026-12-25`, or left blank), the Treasury curve (a grid of the years and the yield in percent of its points, with empty rows to type in, that a
-  spread is over: see "Prices, yields and spreads"), and the pricing speed, a type (PSA, CPR, SMM or MODEL) and a grid of
+  spread is over: see "Prices, yields and spreads"; **Get the latest curve** puts the Treasury's most recent par yield curve in the grid, from its website (`latest-treasury-points`), and **Update the deal** gives it to the deal), and the pricing speed, a type (PSA, CPR, SMM or MODEL) and a grid of
   pieces, each *from*, *to* and *months*, which is a speed that goes in a straight line from one to the other and is *to* in the last of the months; the last piece has 0 months, for the rest of
   the time, and one row with the same speed twice is a single speed. Under the speed are what the prepayment model is told, the growth of home prices and the mortgage spread
   (see "The prepayment model"); MODEL 100 is 100% of the model. The first row is always a piece, and any other row with nothing in it is left out. **Update the deal** gives the deal
