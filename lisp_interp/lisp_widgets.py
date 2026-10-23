@@ -23,7 +23,7 @@ import numpy as np
 
 from lisp_core import (
     Keyword, LispAbort, LispDate, LispError, LispHashTable, LispString, LispVector, NIL, Pair, Procedure, Symbol,
-    _brief, _date_from_pydate, _lisp_scalar, apply_proc, format_error_report, list_to_pairs, pairs_to_list, parse_date_text,
+    _brief, _date_from_pydate, _lisp_scalar, apply_proc, format_error_report, is_true, list_to_pairs, pairs_to_list, parse_date_text,
 )
 from lisp_tables import column_values, make_table_value, table_columns
 
@@ -439,9 +439,94 @@ def table_from_frame(table, baseline, current, kinds, who):
     return make_table_value(made)
 
 
+# How a column of a grid is drawn. A bar-renderer draws each number of a column as a bar, as long as the number is of the biggest in the column, or of
+# :max, so that all the cells of a column have one scale; an html-renderer draws a cell that holds HTML (a sparkline, from `sparklines`, is an
+# <svg>). table-grid is given them with :renderers, a list of (column renderer).
+
+class GridRenderer:
+    """What bar-renderer and html-renderer make: how one column of a grid is drawn. kind is "bar" or "html"."""
+
+    def __init__(self, kind, **options):
+        self.kind = kind
+        self.options = options
+
+    def __repr__(self):
+        return "#<%s-renderer%s>" % (self.kind, "".join(" %s=%s" % item for item in self.options.items() if item[1] is not None))
+
+
+GRID_BAR_WIDTH = 140            # pixels wide, to begin with, a column of bars
+GRID_HTML_WIDTH = 120           # and a column of cells of HTML
+
+
+def renderer_options(arguments, who, allowed):
+    """The :name value options of bar-renderer or html-renderer, as a dict of Python names; an error that says which are allowed for a name that is not."""
+    if len(arguments) % 2:
+        raise LispError("%s: after the function come :name value pairs, the options being %s" % (who, ", ".join(":" + name for name in allowed)))
+    found = {}
+    for key, value in zip(arguments[::2], arguments[1::2]):
+        name = trait_name(key, who) if isinstance(key, Keyword) else None
+        if name not in allowed:
+            raise LispError("%s: %s isn't an option -- the options are %s" % (who, _brief(key), ", ".join(":" + n.replace("_", "-") for n in allowed)))
+        found[name] = None if value is NIL else value
+    return found
+
+
+def bar_renderer(*arguments):
+    """(bar-renderer [:max m] [:color c] [:show-text #f] [:width pixels]) -- draws the numbers of a column of a grid as horizontal bars (with the number on
+    them, unless :show-text is #f), the longest as long as the cell, and the others in proportion: a number of :max is the full length, or, if
+    there is none, the biggest in the column, so that every cell has one scale. :color is a color name or #rrggbb; :width the width of the column."""
+    options = renderer_options(arguments, "bar-renderer", ("max", "color", "show_text", "width"))
+    maximum = options.get("max")
+    if maximum is not None and not (isinstance(maximum, (int, float)) and not isinstance(maximum, bool) and maximum > 0):
+        raise LispError("bar-renderer: :max is a number above 0, not %s" % _brief(maximum))
+    return GridRenderer("bar", **{"max": maximum, "color": str(options.get("color") or "#4682b4"),
+                                  "show_text": is_true(options.get("show_text", True)), "width": options.get("width") or GRID_BAR_WIDTH})
+
+
+def html_renderer(*arguments):
+    """(html-renderer [:width pixels]) -- draws a column of a grid whose cells are HTML text, such as the <svg> that `sparklines` makes."""
+    options = renderer_options(arguments, "html-renderer", ("width",))
+    return GridRenderer("html", width=options.get("width") or GRID_HTML_WIDTH)
+
+
+def renderer_columns(arguments, frame):
+    """The :renderers of table-grid, a list of (column renderer), as a list of (column name, GridRenderer): an error that says what is wrong with one."""
+    found = []
+    for entry in pairs_to_list(arguments):
+        parts = pairs_to_list(entry) if isinstance(entry, Pair) else []
+        if len(parts) != 2 or not isinstance(parts[1], GridRenderer):
+            raise LispError("table-grid: :renderers is a list of (column renderer), the renderer made by bar-renderer or html-renderer, not %s" % _brief(entry))
+        name = str(parts[0])
+        if name not in frame.columns:
+            raise LispError("table-grid: :renderers: the table has no column %s (it has %s)" % (name, ", ".join(str(c) for c in frame.columns)))
+        if parts[1].kind == "bar" and frame[name].dtype.kind not in "if":
+            raise LispError("table-grid: :renderers: a bar-renderer draws numbers, and the column %s is not a column of numbers" % name)
+        found.append((name, parts[1]))
+    return found
+
+
+def build_renderers(ipydatagrid, specs, frame):
+    """The ipydatagrid renderers (a dict by column name) that these (column name, GridRenderer) make of the columns of the frame, and the width of each column.
+    A bar-renderer without a :max has the biggest number in its column as its."""
+    renderers, widths = {}, {}
+    for name, spec in specs:
+        widths[name] = spec.options["width"]
+        if spec.kind == "html":
+            renderers[name] = ipydatagrid.HtmlRenderer()
+            continue
+        maximum = spec.options["max"]
+        if maximum is None:
+            biggest = float(np.nanmax(frame[name].to_numpy(dtype=float))) if len(frame) else 0.0
+            maximum = biggest if biggest > 0 else 1.0
+        renderers[name] = ipydatagrid.BarRenderer(bar_value=ipydatagrid.Expr("cell.value / %r" % float(maximum)),
+                                                  bar_color=spec.options["color"], show_text=spec.options["show_text"],
+                                                  horizontal_alignment="left")
+    return renderers, widths
+
+
 def table_grid(table, *arguments):
-    """(table-grid table [:editable #t] [:name value ...]) -- a grid of the table, which the user can edit with the keyboard
-    and mouse (ipydatagrid's DataGrid, with its attributes as keywords)."""
+    """(table-grid table [:editable #t] [:renderers ((column renderer) ...)] [:name value ...]) -- a grid of the table, which the user can edit with the
+    keyboard and mouse (ipydatagrid's DataGrid, with its attributes as keywords). :renderers says how to draw a column: with bars, or as HTML."""
     ipydatagrid, _ = _datagrid("table-grid")
     columns = table_columns(table, "table-grid")
     rows = len(columns[0][1].items) if columns else 0
@@ -449,6 +534,8 @@ def table_grid(table, *arguments):
         raise LispError("table-grid: %s rows is more than a grid can carry to the browser (%s); show some of them "
                         "(table-head, table-filter)" % (format(rows, ","), format(EDIT_ROWS_LIMIT, ",")))
     settings = keyword_settings(arguments, "table-grid")
+    renderer_argument = next((value for name, value in settings if name == "renderers"), NIL)
+    settings = [(name, value) for name, value in settings if name != "renderers"]
     given = dict(settings)
     if "editable" not in given:                                               # (the usual choice, unless given)
         settings.append(("editable", True))
@@ -458,9 +545,14 @@ def table_grid(table, *arguments):
         sizes = (given.get("base_row_size", 20), given.get("base_column_header_size", 20))
         settings.append(("layout", _ipywidgets("table-grid").Layout(height=height_for_rows(rows, *sizes))))
     frame, kinds = table_to_frame(table, "table-grid")
+    specs = renderer_columns(renderer_argument, frame)
+    renderers, renderer_widths = build_renderers(ipydatagrid, specs, frame)
     if fitted_by_us:        # (the grid's own fit is to the headings, and cuts off a cell that is longer: the columns are as wide as their text)
-        settings += [("auto_fit_columns", False), ("column_widths", column_widths_for(frame))]
+        settings += [("auto_fit_columns", False), ("column_widths", column_widths_for(frame, renderer_widths))]
     grid = _grid_of(ipydatagrid, frame, settings)
+    grid._lisp_renderer_specs = specs
+    if renderers:
+        grid.renderers = renderers
     grid._lisp_table = table
     grid._lisp_baseline = frame.copy()
     grid._lisp_kinds = kinds
@@ -469,10 +561,13 @@ def table_grid(table, *arguments):
     return grid
 
 
-def column_widths_for(frame):
-    """The width in pixels of each column of the frame that shows all of its heading and of its cells (those of the first rows)."""
-    widths = {}
+def column_widths_for(frame, fixed=None):
+    """The width in pixels of each column of the frame that shows all of its heading and of its cells (those of the first rows), or, for a column
+    in `fixed`, that (the width of a column of bars or of HTML, whose text is not what is seen)."""
+    widths = dict(fixed or {})
     for name in frame.columns:
+        if name in widths:
+            continue
         texts = [str(name)] + [str(value) for value in frame[name].iloc[:GRID_ROWS_MEASURED]]
         widths[name] = max(len(text) for text in texts) * GRID_CHARACTER_WIDTH + GRID_COLUMN_PADDING
     return widths
@@ -515,10 +610,16 @@ def grid_set_table(grid, table):
     frame, kinds = table_to_frame(table, "grid-set-table!")
     grid.data = frame
     grid._lisp_table, grid._lisp_baseline, grid._lisp_kinds = table, frame.copy(), kinds
+    specs = getattr(grid, "_lisp_renderer_specs", [])
+    renderer_widths = {}
+    if specs:                                         # (a column of bars has the scale of the new numbers)
+        ipydatagrid, _ = _datagrid("grid-set-table!")
+        renderers, renderer_widths = build_renderers(ipydatagrid, renderer_columns(list_to_pairs([list_to_pairs([LispString(n), r]) for n, r in specs]), frame), frame)
+        grid.renderers = renderers
     if grid._lisp_sizes is not None:                  # (a grid that is as tall as its rows is as tall as the new ones)
         grid.layout.height = height_for_rows(len(frame), *grid._lisp_sizes)
     if grid._lisp_fitted:                             # (and its columns are as wide as the text of the new ones)
-        grid.column_widths = column_widths_for(frame)
+        grid.column_widths = column_widths_for(frame, renderer_widths)
     return NIL
 
 
@@ -556,6 +657,47 @@ def grid_on_click(grid, function, *options):
     return NIL
 
 
+SPARKLINE_COLOR = "#4682b4"
+
+
+def sparklines(series, *arguments):
+    """(sparklines series [:width 100] [:height 18] [:color c] [:max m] [:fill #f]) -- a little chart of each of the vectors of numbers in `series`, a list
+    of them, as the HTML text of an <svg> that fills a cell of a grid drawn by (html-renderer): a line (and the area under it, in a lighter color, unless
+    :fill is #f), the numbers from 0 up to the biggest of them all (or :max), and the months from the first to the last of the longest, so that every chart
+    has the same scale, and a vector that is shorter ends sooner. Returns a vector of the text, one for each. A vector with no numbers has none."""
+    options = renderer_options(arguments, "sparklines", ("width", "height", "color", "max", "fill"))
+    width, height = int(options.get("width") or 100), int(options.get("height") or 18)
+    if width < 4 or height < 4:
+        raise LispError("sparklines: :width and :height are in pixels, at least 4")
+    color, fill = str(options.get("color") or SPARKLINE_COLOR), is_true(options.get("fill", True))
+    arrays = []
+    for one in pairs_to_list(series) if isinstance(series, Pair) or series is NIL else [series]:
+        if not isinstance(one, LispVector):
+            raise LispError("sparklines: expected a list of vectors of numbers, not %s in it" % _brief(one))
+        arrays.append(np.asarray(one.items, dtype=np.float64))
+    longest = max((len(a) for a in arrays), default=0)
+    biggest = options.get("max")
+    if biggest is None:
+        biggest = max((float(np.nanmax(a)) for a in arrays if len(a) and not np.all(np.isnan(a))), default=0.0)
+    if not (isinstance(biggest, (int, float)) and biggest > 0):
+        biggest = 1.0
+    texts = []
+    for values in arrays:
+        values = values[:longest]
+        if not len(values):
+            texts.append(LispString(""))
+            continue
+        places = np.unique(np.round(np.linspace(0, len(values) - 1, min(len(values), width))).astype(int))
+        xs = 1 + places * (width - 2) / max(longest - 1, 1)
+        ys = (height - 1) - np.clip(np.nan_to_num(values[places]), 0, biggest) / biggest * (height - 2)
+        line = " ".join("%.1f,%.1f" % point for point in zip(xs, ys))
+        area = ("<polygon points='%.1f,%d %s %.1f,%d' fill='%s' fill-opacity='0.25' stroke='none'/>" % (xs[0], height - 1, line, xs[-1], height - 1, color)
+                if fill else "")
+        texts.append(LispString("<svg xmlns='http://www.w3.org/2000/svg' width='%d' height='%d' viewBox='0 0 %d %d'>%s"
+                                "<polyline points='%s' fill='none' stroke='%s' stroke-width='1.3'/></svg>" % (width, height, width, height, area, line, color)))
+    return LispVector(texts)
+
+
 def make_widget_builtins(show):
     """display-widget, which hands the widget to show, the environment's way of showing one (a notebook draws it)."""
 
@@ -585,4 +727,7 @@ BUILTINS = {
     "grid-set-table!": grid_set_table,
     "grid-on-edit": grid_on_edit,
     "grid-on-click": grid_on_click,
+    "bar-renderer": bar_renderer,
+    "html-renderer": html_renderer,
+    "sparklines": sparklines,
 }

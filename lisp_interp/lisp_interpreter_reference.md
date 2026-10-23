@@ -4745,7 +4745,7 @@ To make the choice of a row of a table start it, put the panel under the grid an
 notebook doesn't see it; it is for a function that is given the widget to find what it needs.
 
 #### Editing a table: `table-grid`
-`(table-grid table [:editable #t] [:name value ...])` gives a grid of the table that the user can edit by double-clicking a cell,
+`(table-grid table [:editable #t] [:renderers ((column renderer) ...)] [:name value ...])` gives a grid of the table that the user can edit by double-clicking a cell,
 and sort and filter by the column headings. The other attributes of ipydatagrid's `DataGrid` are keywords, such as `:base-row-size 30`,
 `:selection-mode "cell"` or `:layout`. The whole table is sent to the browser, so a grid is for thousands of rows, not
 millions (`table-head`, `table-filter` show the rows of interest; more than 100,000 is an error). A grid is as tall as its rows, up to
@@ -4771,6 +4771,27 @@ a grid that is clicked in. It is run once in a page, and a notebook that is not 
   order the user has sorted the grid into (and the same goes for `grid-on-edit`).
 - `(grid-set-table! grid table)` shows another table in the grid, or the same one again to undo the edits. A grid that is as tall as its rows
   becomes as tall as the rows of the new table, and one with the columns as wide as their text has them as wide as the text of the new one.
+  A column of bars has the scale of the numbers of the new table (see below).
+
+**Bars and charts in a column.** `:renderers` is a list of `(column renderer)`, which says how to draw a column.
+`(bar-renderer [:max m] [:color c] [:show-text #f] [:width pixels])` draws each number of a column as a horizontal bar, with the number on it (unless `:show-text` is `#f`).
+All the bars of a column are on **one scale**: the biggest number of the column is as long as the cell, and the others in proportion, or, with `:max`, a number of `m` is. The
+cells are still the numbers, which `grid-table` gives back as they were. `(html-renderer [:width pixels])` draws a column whose cells are HTML text, and
+`(sparklines series [:width 100] [:height 18] [:color c] [:max m] [:fill #f])` makes the text of a little chart for each of the vectors of numbers in `series`, a list of them: an
+`<svg>` of a line, and the area under it unless `:fill` is `#f`. It returns a vector with a text for each, to put in a column of the table. The charts are on **one scale**, too:
+the numbers go from 0 to the biggest of them all (or `:max`), and the months from the first to the last of the longest vector, so that a smaller vector is a lower chart, and a shorter one a
+shorter chart. A vector with no numbers has an empty cell. A chart is drawn in the width and height given, so that the cell is as tall as the rows are (20 pixels, to begin
+with: `:height` is a little less).
+
+```lisp
+(define tranches (make-table "tranche" (vector "A" "B" "C") "balance" #(60000000.0 30000000.0 10000000.0)))
+(define with-charts
+  (table-add-column tranches "balance by month"
+                    (sparklines (list (vector 6.0 4.0 2.0 0.0) (vector 3.0 3.0 3.0 1.0) (vector 1.0 1.0 1.0 1.0)))))
+(table-grid with-charts :renderers (list (list "balance" (bar-renderer :color "#2ca02c"))
+                                         (list "balance by month" (html-renderer :width 110))))
+(vector-length (table-column with-charts "balance by month"))     ; => 3
+```
 
 ```lisp
 (define loans (make-table "id" (vector "a" "b" "c") "balance" #(100000 200000 300000) "rate" #(0.05 0.06 0.055)))

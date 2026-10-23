@@ -4,6 +4,8 @@ worked out is put back. The grid is edited and clicked the way the browser does 
 
 import unittest
 
+import ipydatagrid
+
 from support import *  # noqa: F401,F403 -- the interpreters modules, numpy, mock, and LispTestCase
 from test_deal_views import ViewsCase
 
@@ -44,7 +46,7 @@ class PricingGridCase(ViewsCase):
 class TestTheColumns(PricingGridCase):
 
     def test_the_grid_has_the_columns_of_what_a_price_says_after_the_cash_flows(self):
-        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "price", "yield", "spread", "oas", "duration",
+        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "balance chart", "price", "yield", "spread", "oas", "duration",
                                                          "effective duration", "average life", "dv01", "money", "delay"])
         self.assertEqual([name.strip() for name in self.grid.data["tranche"]], ["POOL", "A", "B"])
 
@@ -57,6 +59,54 @@ class TestTheColumns(PricingGridCase):
 
     def test_the_average_life_of_a_tranche_is_that_of_the_slot(self):
         self.assertEqual(self.cell(1, "average life"), "%.3f" % self.slot("A", "average-life"))
+
+
+class TestTheBalanceChart(PricingGridCase):
+
+    def points(self, row):
+        """The (x, y) points of the line in the chart of a row of the grid."""
+        text = re.search(r"<polyline points='([^']*)'", self.cell(row, "balance chart")).group(1)
+        return [tuple(float(v) for v in pair.split(",")) for pair in text.split()]
+
+    def test_every_tranche_has_a_chart_of_its_balance_in_the_grid_and_the_column_is_drawn_as_html(self):
+        self.assertIsInstance(self.grid.renderers["balance chart"], ipydatagrid.HtmlRenderer)
+        self.assertEqual(self.grid.column_widths["balance chart"], 130)
+        for row in range(3):
+            self.assertTrue(self.cell(row, "balance chart").startswith("<svg"))
+
+    def test_all_the_charts_are_on_one_scale_so_a_smaller_tranche_is_a_lower_chart(self):
+        pool, a, b = self.points(0), self.points(1), self.points(2)
+        self.assertAlmostEqual(pool[0][1], 1.0)                      # (the pool starts at the top: it is the biggest balance)
+        self.assertAlmostEqual(a[0][1], 15 - 0.6 * 14)               # (A is 60% of it)
+        self.assertAlmostEqual(b[0][1], 15 - 0.4 * 14)
+        self.assertGreater(a[0][1], pool[0][1])
+        self.assertLess(self.points(2)[-1][0], 130)                  # (and in the cell)
+
+    def test_the_chart_is_the_balance_month_by_month_from_a_run_at_the_pricing_speed(self):
+        points = self.points(1)
+        ys = [y for _, y in points]
+        self.assertEqual(ys, sorted(ys))                              # (the balance only falls: the line only goes down the page)
+        self.assertGreater(ys[len(ys) // 2] - ys[0], ys[-1] - ys[len(ys) // 2])   # (A is the first of the sequence: it is paid most in the first half)
+        self.assertAlmostEqual(ys[-1], 15.0)                          # (and is paid off, at the bottom)
+
+    def test_the_charts_change_when_the_deal_does(self):
+        before = self.points(1)
+        self.run_lisp("(deal-set-pricing-speed! deal (prepayment-speed 'psa 600))")
+        self.assertNotEqual(self.points(1), before)                  # (faster prepayments, a faster decline)
+        self.run_lisp('''(deal-sequential! deal "B" '(("B1" 1000000.0) ("B2" 3000000.0)))''')
+        self.assertEqual(len(self.grid.data), 5)
+        self.assertTrue(all(self.cell(row, "balance chart").startswith("<svg") for row in range(5)))
+
+    def test_a_deal_with_no_collateral_has_blank_charts_and_what_is_typed_in_a_chart_is_put_back(self):
+        self.run_lisp('(define empty (new-deal "Empty"))')
+        empty = self.widget("(bonds empty)")
+        self.assertEqual(list(empty.children[0].data["balance chart"]), [""])
+        said = self.type_in(1, "balance chart", "x")
+        self.assertIn("balance chart is worked out, not typed", said)
+
+    def test_clicking_a_chart_does_not_open_the_panel(self):
+        self.click(self.grid, 1, "balance chart")
+        self.assertEqual(self.ui.children[2].layout.display, "none")
 
 
 class TestTypingAPrice(PricingGridCase):

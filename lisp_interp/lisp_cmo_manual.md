@@ -1107,6 +1107,7 @@ at the same time as they are, and shows what they change (the balance of the col
 - **Take away this split, and all under it** is under the panel whenever a tranche that is divided is chosen. It says which tranches would go, and asks; **Yes**
   takes them away (`deal-delete-split!`), and **No** keeps them.
 - **Type a price, a yield or a spread, in the cell of a tranche** (double-click the cell, or click it and type: a price of `+` or `?` is typed after a double-click, which opens the cell), and the others are worked out (see "Prices, yields and spreads"): the grid has
+  a column *balance chart* with a little chart of the balance of each tranche month by month, all on one scale (the biggest balance, over the months of the longest tranche, so that a small tranche is a small chart: see `sparklines` in the language manual),
   the columns *price*, *yield*, *spread*, *oas*, *duration*, *effective duration*, *average life*, *dv01*, *money* and *delay* after the cash flows, and a price, a yield, a spread, an OAS and the delay are typed
   (the OAS and the effective duration are blank until the paths of rates are run, with `(deal-run-paths! deal)`: see "Option-adjusted spread and effective duration"). A price can be typed as `+` or `?`, and
   a cell that is cleared takes the price away. What is typed in a column that is worked out is put back, with a line to say so, and so is text that is not a number. The Treasury curve that a spread is over is

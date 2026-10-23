@@ -408,7 +408,7 @@ class TestTheBondsView(ViewsCase):
 
     def test_bonds_is_the_grid_of_the_tranches_with_a_column_to_click_for_the_cash_flows(self):
         self.view()
-        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "price", "yield", "spread", "oas", "duration", "effective duration", "average life", "dv01", "money", "delay"])
+        self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "balance chart", "price", "yield", "spread", "oas", "duration", "effective duration", "average life", "dv01", "money", "delay"])
         self.assertEqual(self.names(), ["POOL"])
         self.assertEqual(list(self.grid.data["cash flows"]), ["view"])
         self.divide()

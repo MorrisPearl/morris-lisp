@@ -345,6 +345,86 @@ class TestActionPanel(LispTestCase):
 
 
 @unittest.skipIf(ipydatagrid is None, "ipydatagrid is needed")
+class TestGridCharts(LispTestCase):
+    """Bars in a column of a grid (bar-renderer), HTML in one (html-renderer), and the little charts of sparklines that go in it: all of a column on one scale."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('''(define t (make-table "id" (vector "a" "b" "c") "bal" #(6000000.0 4000000.0 1500000.0) "n" #(1 2 3)))''')
+
+    def points(self, svg, element="polyline"):
+        """The (x, y) points of the first element of this kind in an svg's text."""
+        text = re.search(r"<%s points='([^']*)'" % element, svg).group(1)
+        return [tuple(float(v) for v in pair.split(",")) for pair in text.split()]
+
+    def test_a_bar_renderer_draws_a_column_of_numbers_as_bars_on_one_scale(self):
+        grid = self.run_lisp('(table-grid t :renderers (list (list "bal" (bar-renderer))))')
+        bar = grid.renderers["bal"]
+        self.assertIsInstance(bar, ipydatagrid.BarRenderer)
+        self.assertEqual(bar.bar_value.value, "(cell.value / 6000000.0)")             # (the biggest number is the whole cell)
+        self.assertEqual(grid.column_widths["bal"], 140)
+        self.assertEqual(grid.column_widths["id"], 40)                                  # (the other columns are as wide as their text)
+        self.assertEqual(list(grid.data["bal"]), [6000000.0, 4000000.0, 1500000.0])      # (the cells are still the numbers)
+
+    def test_a_bar_renderer_can_be_given_its_scale_color_and_width_and_no_text(self):
+        grid = self.run_lisp('(table-grid t :renderers (list (list "n" (bar-renderer :max 10 :color "#d62728" :show-text #f :width 90))))')
+        bar = grid.renderers["n"]
+        self.assertEqual(bar.bar_value.value, "(cell.value / 10.0)")
+        self.assertEqual((bar.bar_color, bar.show_text, grid.column_widths["n"]), ("#d62728", False, 90))
+
+    def test_a_new_table_in_the_grid_has_the_scale_of_its_own_biggest_number(self):
+        grid = self.run_lisp('(table-grid t :renderers (list (list "bal" (bar-renderer))))')
+        self.env[lisp_core.Symbol("g")] = grid
+        self.run_lisp('''(grid-set-table! g (make-table "id" (vector "a" "b") "bal" #(50.0 200.0) "n" #(1 2)))''')
+        self.assertEqual(grid.renderers["bal"].bar_value.value, "(cell.value / 200.0)")
+
+    def test_an_html_renderer_draws_a_column_whose_cells_are_html_and_the_column_is_not_as_wide_as_the_text(self):
+        self.run_lisp('''(define u (table-add-column t "chart" (sparklines (list (vector 3.0 2.0 1.0) (vector 2.0 1.0) (vector 1.0)))))''')
+        grid = self.run_lisp('(table-grid u :renderers (list (list "chart" (html-renderer :width 110))))')
+        self.assertIsInstance(grid.renderers["chart"], ipydatagrid.HtmlRenderer)
+        self.assertEqual(grid.column_widths["chart"], 110)
+        self.assertTrue(grid.data["chart"][0].startswith("<svg"))
+
+    def test_what_is_wrong_with_the_renderers_is_said(self):
+        self.assertLispError('(table-grid t :renderers (list (list "nowhere" (bar-renderer))))', "the table has no column nowhere")
+        self.assertLispError('(table-grid t :renderers (list (list "id" (bar-renderer))))', "the column id is not a column of numbers")
+        self.assertLispError('(table-grid t :renderers (list (list "bal" 5)))', "a list of (column renderer)")
+        self.assertLispError('(table-grid t :renderers (list "bal"))', "a list of (column renderer)")
+        self.assertLispError("(bar-renderer :max 0)", ":max is a number above 0")
+        self.assertLispError("(bar-renderer :colour 1)", "isn't an option")
+        self.assertLispError("(html-renderer :max 5)", "isn't an option")
+
+    def test_a_sparkline_is_an_svg_of_the_numbers_from_the_top_to_0(self):
+        svgs = self.run_lisp("(sparklines (list (vector 100.0 50.0 0.0)) :width 21 :height 12)")
+        svg = svgs.items[0]
+        self.assertTrue(svg.startswith("<svg xmlns='http://www.w3.org/2000/svg' width='21' height='12'"))
+        self.assertEqual(self.points(svg), [(1.0, 1.0), (10.5, 6.0), (20.0, 11.0)])           # (the biggest at the top, 0 at the bottom, a pixel in from the edges)
+        self.assertEqual(len(self.points(svg, "polygon")), 5)                                  # (and the area under it, down to the bottom corners)
+
+    def test_all_the_sparklines_have_one_scale_the_biggest_number_and_the_longest_vector(self):
+        svgs = self.run_lisp("(sparklines (list (vector 100.0 50.0 0.0) (vector 50.0 25.0) (vector) (vector 0.0)) :width 21 :height 12 :fill #f)").items
+        big, small, none, zero = svgs
+        self.assertEqual(self.points(small), [(1.0, 6.0), (10.5, 8.5)])                         # (half the height, and it ends at the middle: it is 2 of 3 months)
+        self.assertEqual(none, "")
+        self.assertEqual(self.points(zero), [(1.0, 11.0)])
+        self.assertNotIn("<polygon", big)
+        scaled = self.run_lisp("(sparklines (list (vector 50.0)) :max 100 :width 21 :height 12)").items[0]
+        self.assertEqual(self.points(scaled), [(1.0, 6.0)])
+
+    def test_a_long_vector_is_cut_to_a_point_for_each_pixel_and_keeps_its_ends(self):
+        svg = self.run_lisp("(sparklines (list (vector-range 0 360)) :width 40)").items[0]
+        points = self.points(svg)
+        self.assertLessEqual(len(points), 40)
+        self.assertEqual((points[0][0], points[-1][0]), (1.0, 39.0))
+        self.assertEqual(self.run_lisp("(vector-length (sparklines (list (vector 1.0) (vector 2.0) (vector 3.0))))"), 3)
+
+    def test_what_is_wrong_with_the_arguments_of_sparklines_is_said(self):
+        self.assertLispError("(sparklines (list 5))", "a list of vectors of numbers")
+        self.assertLispError("(sparklines (list (vector 1.0)) :width 2)", "at least 4")
+        self.assertLispError("(sparklines (list (vector 1.0)) :size 5)", "isn't an option")
+        self.assertShows("(vector-length (sparklines '()))", "0")
+
+
 class TestTableGrid(LispTestCase):
 
     TABLE = '''(define t (make-table "id" (vector "a" "b" "c")

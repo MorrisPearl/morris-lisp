@@ -17,6 +17,9 @@
 ; for this view of a deal, with (collateral deal) and (info deal) (see deal_views.lsp): they can be shown at the same time, in different cells, and each
 ; shows what is changed in the others.
 ;
+; Beside it is a chart of the balance of each tranche, month by month: a little area chart in the cell, all of them on one scale (that of the biggest balance, over the
+; months of the longest tranche), so that a small tranche is a small chart and a short one a short one.
+;
 ; Beyond the cash flows are the columns of what a price says about a tranche (see deal_pricing.lsp): price, yield, spread, oas, duration, effective duration, average life,
 ; dv01, money and delay (the oas and the effective duration are of the paths of rates, and are blank until they are run: see deal_paths.lsp). Type in one of price, yield, spread and oas, in the cell of a tranche (double-click it, or click it and type; a + or ? is typed after the double-click), and the others are worked out; a price can be +, which
 ; makes the money of the tranche that of its children, or ?, which makes the money of the tranche and its siblings that of their parent. Clear a cell to take the
@@ -303,6 +306,8 @@ who clicked a button has typed something that cannot be used, and the message sa
 
 (define priced-columns '("price" "yield" "spread" "oas" "duration" "effective duration" "average life" "dv01" "money" "delay"))
 (define typed-columns '("price" "yield" "spread" "oas" "delay"))
+(define chart-column "balance chart")
+(define chart-width 130)
 
 (define (priced-column-texts deal names)
   "The columns of what a price says about each of the tranches called names, as text (blank for what a tranche has not got), as a table: so that a price can be typed
@@ -320,13 +325,23 @@ as + or ?, and a cell cleared."
                 "money" (texts node-money "{:,.2f}")
                 "delay" (texts node-delay "{}"))))
 
+(define (balance-charts deal names)
+  "A little chart of the balance of each of the tranches called names, month by month, as the HTML of an svg, for a column of the grid: from the deal run at its pricing speed
+(see deal-pricing-run), all on one scale, that of the biggest balance, over the months of the longest, so that a small tranche is a small chart and a short one a short one. They
+are blank if the deal has no collateral yet, or has a floating tranche and no index to run it with."
+  (if (or (= (deal-periods deal) 0) (deal-floating-without-index deal))
+      (list->vector (map (lambda (name) "") names))
+      (let ((run (deal-pricing-run deal)))
+        (sparklines (map (lambda (name) (node-balance (get-node run name))) names) :width (- chart-width 10) :height 16))))
+
 (define (deal-gui-table gui)
-  "The table for the grid: the outline of the deal, with a column beside the split to click to see the cash flows of a tranche, and the columns of what a price says
-about each (see deal_pricing.lsp)."
+  "The table for the grid: the outline of the deal, with a column beside the split to click to see the cash flows of a tranche, a chart of the balance of each, and the
+columns of what a price says about each (see deal_pricing.lsp)."
   (let* ((deal (deal-gui-deal gui))
          (names (map car (deal-outline-entries deal))))
     (append (deal-outline deal)
-            (list (cons "cash flows" (list->vector (map (lambda (name) "view") names))))
+            (list (cons "cash flows" (list->vector (map (lambda (name) "view") names)))
+                  (cons chart-column (balance-charts deal names)))
             (priced-column-texts deal names))))
 
 (define (deal-gui-update-prices! gui)
@@ -566,7 +581,8 @@ of it can make at the same time."
          (flows (widget-output))
          (gui (make-deal-gui :deal deal :forms forms :messages messages :flows flows :names (map car (deal-outline-entries deal))))
          (priced (deal-gui-update-prices! gui))
-         (grid (table-grid (deal-gui-table gui) :editable #t :selection-mode "cell"))
+         (grid (table-grid (deal-gui-table gui) :editable #t :selection-mode "cell"
+                           :renderers (list (list chart-column (html-renderer :width chart-width)))))
          (panel (widget-actions (map (lambda (form) (append (list (split-form-title form) (split-form-help form)) (split-form-fields form)))
                                      forms)
                                 :style style
@@ -587,7 +603,7 @@ of it can make at the same time."
     (grid-on-click grid
                    (lambda (column row value)
                      (without-traceback (lambda () (cond ((equal? column "cash flows") (deal-gui-show-flows! gui row))
-                                                         ((member column priced-columns) '())
+                                                         ((or (member column priced-columns) (equal? column chart-column)) '())
                                                          (else (deal-gui-choose! gui row))))))
                    :output messages)
     (grid-on-edit grid (lambda (column row value) (deal-gui-typed! gui column row value)) :output messages)

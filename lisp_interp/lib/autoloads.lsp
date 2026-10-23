@@ -249,7 +249,7 @@
   deal-gui-show-delete! form-children-text form-decimal-to-percent show-plan-effect split-form-describe
   split-form-describe-set! split-form-label split-form-label-set! without-traceback average-lives-of form-lives
   form-lives-text bonds deal-gui-flows deal-gui-flows-set! deal-gui-show-flows! deal-gui-table show-node-flows
-  deal-gui-type-number deal-gui-typed! deal-gui-update-prices! priced-column-texts)
+  deal-gui-type-number deal-gui-typed! deal-gui-update-prices! priced-column-texts balance-charts)
 
 ; Views of a deal in a notebook: its collateral, and its dates and pricing speed (see lisp_cmo_manual.md)
 (lazy-load "deal_views.lsp"
