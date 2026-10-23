@@ -37,7 +37,6 @@ try:
 except ImportError:
     pass        # (lisp_charts checks for matplotlib before anything is drawn)
 
-
 # The symbols a series can be drawn with, by name: matplotlib's marker codes.
 SYMBOLS = {"circle": "o", "square": "s", "triangle": "^", "diamond": "D", "down-triangle": "v",
            "plus": "+", "x": "x", "star": "*", "dot": "."}
@@ -48,7 +47,7 @@ LEGEND_PLACES = ["best", "upper right", "upper left", "lower left", "lower right
 
 # plot-chart's options for the whole chart, with their defaults.
 CHART_DEFAULTS = {"title": "", "x-label": "", "y-label": "", "secondary-label": "", "legend": True,
-                  "bars": "grouped", "bar-width": 0.8, "line-width": 1.5, "symbol-size": 6, "grid": True,
+                  "bars": "grouped", "bar-width": 0.8, "line-width": 0.3, "symbol-size": 6, "grid": True,
                   "horizontal": False, "width": None, "height": None,
                   "x-min": None, "x-max": None, "x-format": None, "x-lines": NIL, "shade": NIL, "notes": NIL,
                   "y-min": None, "y-max": None, "y-ticks": None, "y-log": False, "y-format": None, "y-lines": NIL,
@@ -64,7 +63,6 @@ FILL_OPACITY = 0.3              # a filled area lets what's behind it show throu
 SHADE_OPACITY = 0.15
 REFERENCE_COLOR = "dimgray"     # reference lines' color, unless they say
 SHADE_COLOR = "gray"
-
 
 # ---------------------------------------------------------------------------
 # Checking the options
@@ -818,7 +816,7 @@ def draw_series(ax, secondary, spec):
         if s["line"] or s["symbol"]:
             points = sorted(zip(xs, s["y"]))     # a line goes in order of X
             along, values = [x for x, _ in points], [y for _, y in points]
-            style = dict(color=color, linestyle=LINE_STYLES[s["line"]] if s["line"] else "None",
+            style = dict(color=color, fillstyle="none", linestyle=LINE_STYLES[s["line"]] if s["line"] else "None",
                          linewidth=s["line_width"], marker=SYMBOLS[s["symbol"]] if s["symbol"] else "None",
                          markersize=s["symbol_size"])
             if horizontal:
@@ -833,7 +831,7 @@ def draw_series(ax, secondary, spec):
                 thickness = room / len(bar_series)
                 offset = (bar_series.index(s) - (len(bar_series) - 1) / 2) * thickness
                 positions, starts = [x + offset for x in xs], [0.0] * len(xs)
-            style = dict(color=color, edgecolor="white", linewidth=0.5)
+            style = dict(color=color, edgecolor="white", linewidth=0.3)
             if horizontal:
                 shown = axes.barh(positions, s["y"], height=thickness, left=starts, **style)
             else:
