@@ -2,7 +2,7 @@
 by lisp_kernel.py (the "morris_lisp" kernel -- see install_lisp_kernel.py):
 charts are drawn inline with matplotlib, display-table shows a table (as
 Markdown), display-markdown renders Markdown, display-html renders
-HTML, and display-widget draws a widget (see lisp_widgets.py). get_env() holds the one environment a kernel uses for its whole life.
+HTML, display-svg draws an SVG picture, and display-widget draws a widget (see lisp_widgets.py). get_env() holds the one environment a kernel uses for its whole life.
 
 The tastytrade-* and sofr-calibration-data builtins work here too: a
 Jupyter kernel already has an asyncio event loop running, which
@@ -141,6 +141,17 @@ def _notebook_html(text):
         print(text)
 
 
+def _notebook_svg(text):
+    """display-svg -- the picture, by itself, via IPython.display.SVG (the
+    output's type is image/svg+xml, so the notebook keeps it as a picture);
+    the SVG as text if IPython isn't available."""
+    if _IPYTHON_AVAILABLE:
+        from IPython.display import SVG
+        _ipy_display(SVG(text))
+    else:
+        print(text)
+
+
 _env = None
 
 
@@ -152,6 +163,6 @@ def get_env():
     if _env is None:
         _env = make_global_env(output=_notebook_output, plot=_notebook_plot,
                                table=_notebook_table, markdown=_notebook_markdown,
-                               html=_notebook_html, widget=_notebook_widget)
+                               html=_notebook_html, svg=_notebook_svg, widget=_notebook_widget)
         load_init_file(_env)
     return _env

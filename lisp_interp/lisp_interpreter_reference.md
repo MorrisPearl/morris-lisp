@@ -4598,6 +4598,21 @@ pieces; at the console, as lines of text.
 (display-html "<span style=\"color:red; font-size:20px\">Stop</span>" "Stop")
 ```
 
+#### `(display-svg svg [text])`
+Draws the picture that `svg`, a string `"<svg ...>...</svg>"`, describes, by itself in the output of a Jupyter notebook's cell. The
+notebook keeps it as a picture (of type `image/svg+xml`), not as part of a page, as `display-html` would. Anywhere else (console,
+GUI, `redirect-output`), `text` is written instead, or, if there's no `text`, a line that says there is a picture. Returns `'()`.
+
+The string must be well-formed XML whose outermost element is `<svg>`: an error says what is wrong if it is not. A declaration
+(`<?xml ...?>`) or a comment before the `<svg>` is left out, and the SVG namespace, `xmlns="http://www.w3.org/2000/svg"`, is
+added if the element has none, since a browser needs it to draw an SVG as a picture. To save the picture as a file, write the
+string with `write-text-file`, to a name that ends in `.svg`.
+
+```lisp
+(display-svg "<svg width=\"120\" height=\"60\"><circle cx=\"30\" cy=\"30\" r=\"25\" fill=\"teal\"/><text x=\"65\" y=\"35\">teal</text></svg>"
+             "a teal circle")
+```
+
 #### `(write-columns-csv filename pairs)`
 Writes a table to a CSV file. `pairs` is a table — a list of
 `(name . vector)` — or a list in which some entries are

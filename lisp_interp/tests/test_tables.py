@@ -413,6 +413,80 @@ class TestDisplayHtml(LispTestCase):
         self.assertLispError("(display-html 5)", "display-html: expected a string for html, got 5")
 
 
+class TestDisplaySvg(LispTestCase):
+    """display-svg: the picture a string of SVG draws, by itself in a notebook; a line of text anywhere else."""
+
+    CIRCLE = '<svg width=\\"100\\" height=\\"50\\"><circle cx=\\"25\\" cy=\\"25\\" r=\\"20\\" fill=\\"red\\"/></svg>'
+
+    def shown_in_a_notebook(self, svg):
+        """What the notebook's callback is given for (display-svg svg), and what is written."""
+        shown = []
+        env = lisp_builtins.make_global_env(output=self.out.append, svg=shown.append)
+        self.run_lisp('(display-svg "%s")' % svg, env)
+        return shown
+
+    def test_a_notebook_gets_the_svg_with_its_namespace(self):
+        self.assertEqual(self.shown_in_a_notebook(self.CIRCLE),
+                         ['<svg width="100" height="50" xmlns="http://www.w3.org/2000/svg"><circle cx="25" cy="25" r="20" fill="red"/></svg>'])
+        self.assertEqual(self.printed(), "")
+
+    def test_a_namespace_it_has_is_kept_and_what_comes_before_the_svg_is_left_out(self):
+        svg = '<?xml version=\\"1.0\\"?><!-- a comment --><svg xmlns=\\"http://www.w3.org/2000/svg\\" width=\\"10\\" height=\\"10\\"></svg>'
+        self.assertEqual(self.shown_in_a_notebook(svg), ['<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>'])
+
+    def test_the_console_gets_the_text_or_a_line_that_says_there_is_a_picture(self):
+        self.run_lisp('(display-svg "%s" "a red circle")' % self.CIRCLE)
+        self.run_lisp('(display-svg "%s")' % self.CIRCLE)
+        self.assertEqual(self.printed(), "a red circle\n[an SVG picture, which a notebook shows]\n")
+
+    def test_what_is_not_an_svg_is_an_error(self):
+        self.assertLispError('(display-svg "<svg><circle></svg>")', "display-svg: the SVG is not well-formed XML: mismatched tag")
+        self.assertLispError('(display-svg "<div>hello</div>")', "expected an <svg> element, and the text is a <div>")
+        self.assertLispError("(display-svg 5)", "display-svg: expected a string for svg, got 5")
+        self.assertLispError('(display-svg "<svg/>" 5)', "expected a string for text, got 5")
+
+    def test_the_notebook_callback_shows_it_as_an_svg_picture(self):
+        try:
+            import lisp_jupyter
+            from IPython.display import SVG
+        except ImportError:
+            self.skipTest("IPython is not installed")
+        with mock.patch.object(lisp_jupyter, "_ipy_display") as fake_display:
+            lisp_jupyter._notebook_svg('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>')
+        shown = fake_display.call_args[0][0]
+        self.assertIsInstance(shown, SVG)
+        self.assertEqual(shown.data, '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>')
+
+
+class TestDisplaySvgInARealKernel(unittest.TestCase):
+    """What a real kernel sends the notebook for display-svg: a display of type image/svg+xml, which the notebook draws as a picture."""
+
+    def test_the_kernel_sends_the_svg_as_a_picture(self):
+        from test_debugging import start_test_kernel
+        tmp = tempfile.mkdtemp()
+        frontend = start_test_kernel(tmp, "lisp-svg-test")
+        try:
+            kc = frontend.kc
+            cell = kc.execute('(display-svg "<svg width=\\"60\\" height=\\"30\\"><rect width=\\"60\\" height=\\"30\\" fill=\\"teal\\"/></svg>")')
+            shown = []
+            while True:
+                message = kc.get_iopub_msg(timeout=30)
+                if message["parent_header"].get("msg_id") != cell:
+                    continue
+                if message["msg_type"] == "display_data":
+                    shown.append(message["content"]["data"])
+                if message["msg_type"] == "status" and message["content"]["execution_state"] == "idle":
+                    break
+        finally:
+            frontend.close()
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertEqual(len(shown), 1)
+        import xml.dom.minidom
+        picture = xml.dom.minidom.parseString(shown[0]["image/svg+xml"]).documentElement      # (IPython may put the attributes in another order)
+        self.assertEqual(dict(picture.attributes.items()), {"xmlns": "http://www.w3.org/2000/svg", "width": "60", "height": "30"})
+        self.assertEqual(picture.firstChild.toxml(), '<rect width="60" height="30" fill="teal"/>')
+
+
 class TestDisplayTable(LispTestCase):
     """display-table: a table, or a list of rows, with each column's numbers
     laid out by a format spec."""

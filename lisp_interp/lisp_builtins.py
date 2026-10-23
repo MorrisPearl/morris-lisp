@@ -21,6 +21,8 @@ import os
 import random
 import string
 import sys
+import xml.dom.minidom
+import xml.parsers.expat
 
 import numpy as np
 
@@ -1604,11 +1606,31 @@ class OutputChannel:
 # returns them as a {lisp-name: function} table, the same shape as the
 # tables above.
 
-def make_output_builtins(out, markdown, html):
+SVG_NAMESPACE = "http://www.w3.org/2000/svg"
+
+
+def svg_picture(text):
+    """The <svg> element of the text, as text: an error if the text is not
+    well-formed XML or its outermost element is not <svg>. A declaration
+    (<?xml ...?>) or a comment before it is left out, and the SVG namespace is
+    added if it has none, which a browser needs to draw it as a picture."""
+    try:
+        document = xml.dom.minidom.parseString(str(text))
+    except xml.parsers.expat.ExpatError as e:
+        raise LispError("display-svg: the SVG is not well-formed XML: %s" % e)
+    svg = document.documentElement
+    if svg.tagName != "svg":
+        raise LispError("display-svg: expected an <svg> element, and the text is a <%s>" % svg.tagName)
+    if not svg.hasAttribute("xmlns"):
+        svg.setAttribute("xmlns", SVG_NAMESPACE)
+    return svg.toxml()
+
+
+def make_output_builtins(out, markdown, html, svg):
     """display, newline, print, redirect-output, reset-output,
-    display-markdown, and display-html. `markdown` and `html` are the
-    callbacks that render Markdown and HTML (the Jupyter kernel supplies
-    them), or None."""
+    display-markdown, display-html and display-svg. `markdown`, `html` and
+    `svg` are the callbacks that render Markdown, HTML and SVG (the Jupyter
+    kernel supplies them), or None."""
 
     def lisp_display(x):
         out.write(to_display_string(x))
@@ -1659,6 +1681,22 @@ def make_output_builtins(out, markdown, html):
             out.write(str(html_text if text is None else text) + "\n")
         return NIL
 
+    def display_svg(svg_text, text=None):
+        """(display-svg svg [text]) -- the picture that svg, a string "<svg ...>...</svg>",
+        draws, by itself in a Jupyter notebook; elsewhere (console, GUI,
+        redirected output), text is written instead, or, without it, a line
+        that says there is a picture. An error if svg is not an <svg> element
+        of well-formed XML."""
+        for name, value in (("svg", svg_text), ("text", text)):
+            if value is not None and not isinstance(value, LispString):
+                raise LispError("display-svg: expected a string for %s, got %s" % (name, _brief(value)))
+        picture = svg_picture(svg_text)
+        if svg is not None and not out.is_redirected():
+            svg(picture)
+        else:
+            out.write((str(text) if text is not None else "[an SVG picture, which a notebook shows]") + "\n")
+        return NIL
+
     return {
         "display": lisp_display,
         "newline": lisp_newline,
@@ -1667,6 +1705,7 @@ def make_output_builtins(out, markdown, html):
         "reset-output": reset_output,
         "display-markdown": display_markdown,
         "display-html": display_html,
+        "display-svg": display_svg,
     }
 
 
@@ -1983,10 +2022,10 @@ SHARED_BUILTIN_TABLES = (
 )
 
 
-def make_global_env(output=None, plot=None, table=None, markdown=None, html=None, widget=None):
+def make_global_env(output=None, plot=None, table=None, markdown=None, html=None, svg=None, widget=None):
     """Build a fresh global environment holding every built-in procedure.
 
-    The six optional arguments say where this environment's output goes,
+    The seven optional arguments say where this environment's output goes,
     so the same interpreter can run in the console, the GUI, or Jupyter:
       output    receives the text written by display/newline/print
       plot      receives each chart spec from the plot- functions (see lisp_charts)
@@ -1994,10 +2033,12 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
                 (name, cell texts, alignment) tuples
       markdown  receives each string from display-markdown
       html      receives the HTML from each display-html
+      svg       receives the SVG from each display-svg (its <svg> element, checked)
       widget    receives each widget from display-widget (only a notebook can show one)
     Any left out get the plain console behavior: print the text, print a
     one-line chart summary, print a text table, print the raw Markdown,
-    print display-html's plain text, and say that display-widget needs a notebook.
+    print display-html's plain text, print display-svg's text or a line saying
+    there is a picture, and say that display-widget needs a notebook.
     """
     if output is None:
         output = lambda text: print(text, end="")
@@ -2019,7 +2060,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
         env.update(builtins)
 
     # Builtins that belong to this environment.
-    env.update(make_output_builtins(out, markdown, html))
+    env.update(make_output_builtins(out, markdown, html, svg))
     env.update(make_display_table_builtin(out, table))
     env.update(lisp_widgets.make_widget_builtins(widget))
     env.update(lisp_charts.make_chart_builtins(plot))
