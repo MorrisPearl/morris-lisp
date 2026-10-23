@@ -304,7 +304,7 @@ who clicked a button has typed something that cannot be used, and the message sa
   "Shows a line under the panel."
   (widget-capture (deal-gui-messages gui) (lambda () (display text))))
 
-(define priced-columns '("price" "yield" "spread" "oas" "duration" "effective duration" "average life" "dv01" "money" "delay"))
+(define priced-columns '("price" "yield" "spread" "oas" "duration" "effective duration" "effective convexity" "average life" "dv01" "money" "delay"))
 (define typed-columns '("price" "yield" "spread" "oas" "delay"))
 (define chart-column "balance chart")
 (define chart-width 130)
@@ -320,6 +320,7 @@ as + or ?, and a cell cleared."
                 "oas" (texts node-oas "{:.1f}")
                 "duration" (texts node-duration "{:.3f}")
                 "effective duration" (texts node-effective-duration "{:.3f}")
+                "effective convexity" (texts node-effective-convexity "{:.2f}")
                 "average life" (texts node-average-life "{:.3f}")
                 "dv01" (texts node-dv01 "{:,.2f}")
                 "money" (texts node-money "{:,.2f}")

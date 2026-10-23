@@ -291,6 +291,39 @@ class TestGivingAnOas(PathsCase):
         self.assertTrue(60 < self.slot("POOL", "oas") < 90)
 
 
+class TestEffectiveConvexity(PathsCase):
+
+    def test_it_is_how_the_value_at_the_oas_bends_as_rates_move_up_and_down(self):
+        self.run_paths()
+        self.run_lisp('(deal-set-price! deal "A" 100.5)')
+        oas, money = self.slot("A", "oas") / 10000.0, self.slot("A", "money")
+        down = mean_value(self.path_flows("A", "down"), self.path_rates("down"), oas)
+        up = mean_value(self.path_flows("A", "up"), self.path_rates("up"), oas)
+        self.assertAlmostEqual(self.slot("A", "effective-convexity"), (down + up - 2 * money) / (money * 0.0025 ** 2), places=4)
+
+    def test_for_cash_flows_that_do_not_change_it_is_above_0_and_a_longer_bond_has_more(self):
+        self.run_lisp("(deal-set-rate-model! deal (make-rate-model :sigma1 0.0 :sigma2 0.0))")
+        self.run_paths(2)
+        self.run_lisp('(deal-set-oas! deal "A" 50) (deal-set-oas! deal "B" 50)')
+        a, b = self.slot("A", "effective-convexity"), self.slot("B", "effective-convexity")
+        self.assertGreater(a, 0)
+        self.assertGreater(b, a)
+        duration = self.slot("A", "effective-duration")
+        self.assertGreater(a, 0.9 * duration ** 2)          # (at least about the duration squared, for cash flows that do not change)
+
+    def test_a_model_that_prepays_faster_as_rates_fall_makes_it_below_0_and_it_goes_with_the_paths(self):
+        self.run_lisp('''(define (refinancing piece path)
+                             (+ 5.0 (* 3000.0 (vector-clip (- 0.045 (vector-take (rate-path-short-rates path) (collateral-piece-wam piece))) 0.0 1.0))))
+                           (deal-set-prepayment-model! deal refinancing)
+                           (deal-set-pricing-speed! deal (prepayment-speed 'model 100))''')
+        self.run_lisp("(deal-set-rate-model! deal (make-rate-model :sigma1 0.0 :sigma2 0.0))")
+        self.run_paths(2)
+        self.run_lisp('(deal-set-price! deal "POOL" 102.0)')
+        self.assertLess(self.slot("POOL", "effective-convexity"), 0)
+        self.run_lisp("(deal-forget-paths! deal)")
+        self.assertShows('(node-effective-convexity (get-node deal "POOL"))', "()")
+
+
 class TestEffectiveDuration(PathsCase):
 
     def test_it_is_how_the_value_at_the_oas_falls_for_a_rise_in_rates(self):
@@ -433,7 +466,7 @@ class TestThePricingTableHasThem(PathsCase):
         self.run_lisp('(deal-set-price! deal "A" 100.5)')
         table = self.run_lisp("(deal-pricing-table deal)")
         columns = {str(pair.car): list(pair.cdr.items) for pair in lisp_core.pairs_to_list(table)}
-        self.assertEqual(list(columns), ["tranche", "balance", "price", "yield", "spread", "oas", "duration", "effective duration", "average life", "dv01", "money", "delay"])
+        self.assertEqual(list(columns), ["tranche", "balance", "price", "yield", "spread", "oas", "duration", "effective duration", "effective convexity", "average life", "dv01", "money", "delay"])
         self.assertAlmostEqual(columns["oas"][1], self.slot("A", "oas"))
         self.assertTrue(np.isnan(columns["oas"][2]))
 

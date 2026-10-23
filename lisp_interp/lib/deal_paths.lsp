@@ -31,7 +31,8 @@
 ;
 ; THE EFFECTIVE DURATION. The curve is moved up and down by a shift (25 basis points), the paths are made again on the moved curves from the same random numbers, the
 ; collateral is prepaid by the model on them, and the deal run; the value of the tranche at its OAS, which stays as it was, is worked out on each of the three sets of paths.
-; The effective duration is the proportion that the money falls by, for a rise of one in rates: (down - up) / (2 x shift x money).
+; The effective duration is the proportion that the money falls by, for a rise of one in rates: (down - up) / (2 x shift x money). The effective convexity is how much
+; that changes as rates do: (down + up - 2 x money) / (money x shift^2), in years squared; it is below 0 for a tranche that the borrowers' option shortens as rates fall.
 
 (require "deal.lsp")
 (require "yield_curves.lsp")
@@ -211,6 +212,17 @@ decimal), the first payment being fraction of a month from the start."
         (unless (and (> (excess -1.0) 0.0) (< (excess 5.0) 0.0))
           (error (format "no OAS, from -10000 to 50000 basis points, makes {} worth {:,.2f} on the paths" name money)))
         (ridders excess -1.0 5.0 :tolerance 1e-13)))))
+
+(define (path-sets-effective-convexity sets name oas fraction)
+  "The effective convexity of the tranche called name at this OAS (a decimal), in years squared: how much its effective duration changes as rates do, from its value on the
+paths on the curve moved down and moved up, and on the curve, at the same OAS: (down + up - 2 x value) / (value x shift^2). Below 0 for a tranche that the borrowers' option
+shortens as rates fall (it gains less than it loses)."
+  (path-sets-cached sets (format "convexity {} {}" name oas)
+    (lambda ()
+      (let ((value (path-run-money (path-sets-base sets) name oas fraction))
+            (shift (path-sets-shift sets)))
+        (/ (+ (path-run-money (path-sets-down sets) name oas fraction) (path-run-money (path-sets-up sets) name oas fraction) (* -2.0 value))
+           (* value shift shift))))))
 
 (define (path-sets-effective-duration sets name oas fraction)
   "The effective duration of the tranche called name at this OAS (a decimal), in years: the proportion that its value falls by for a rise of one in rates, from its value on the

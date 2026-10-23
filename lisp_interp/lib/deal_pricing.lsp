@@ -8,7 +8,8 @@
 ;   duration      the modified duration, in years
 ;   average-life  the average life, in years
 ;   dv01          how much the money falls if the yield rises by a basis point, and nothing else is changed
-;   oas           the option-adjusted spread, in basis points, and effective-duration its duration, in years: of paths of rates that the user runs (see deal_paths.lsp)
+;   oas           the option-adjusted spread, in basis points, effective-duration its duration, in years, and effective-convexity its convexity, in years squared: of
+;                 paths of rates that the user runs (see deal_paths.lsp)
 ;   money         what the buyer pays, in all: the balance times the price over 100, and the accrued interest
 ;   delay         the days from the end of the accrual period of its interest to the day it is paid (24 to begin with)
 ;
@@ -220,13 +221,13 @@ changes. An error if it has no collateral, or a tranche floats and it has no ind
 
 (define (analyze-tranche deal run name priced-by value)
   "What the tranche called name is, priced by one of price, yield, spread and oas (the symbol priced-by) that is value: a list (price yield spread duration average-life dv01
-money oas effective-duration). With '() for priced-by, only the average life is worked out. The price is per 100 of balance, the yield in percent, the spread and the oas in basis
-points. The oas and the effective duration are of the paths of rates that were run (see deal-run-paths!), and '() if none were. Nothing is changed."
+money oas effective-duration effective-convexity). With '() for priced-by, only the average life is worked out. The price is per 100 of balance, the yield in percent, the spread and the oas in basis
+points. The oas, the effective duration and the effective convexity are of the paths of rates that were run (see deal-run-paths!), and '() if none were. Nothing is changed."
   (let ((node (get-node deal name))
         (life (tranche-average-life run name))
         (sets (deal-path-sets deal)))
     (if (null? priced-by)
-        (list '() '() '() '() life '() '() '() '())
+        (list '() '() '() '() life '() '() '() '() '())
         (let ((balance (vector-ref (node-balance node) 0))
               (flows (tranche-cash-flows run name))
               (accrued (accrued-interest deal node)))
@@ -256,10 +257,11 @@ points. The oas and the effective duration are of the paths of rates that were r
             (list price yield spread (modified-duration flows months yield) life
                   (- (present-value flows months yield) (present-value flows months (+ yield 0.01)))
                   money oas
-                  (if (null? sets) '() (path-sets-effective-duration sets name (/ oas 10000.0) fraction))))))))
+                  (if (null? sets) '() (path-sets-effective-duration sets name (/ oas 10000.0) fraction))
+                  (if (null? sets) '() (path-sets-effective-convexity sets name (/ oas 10000.0) fraction))))))))
 
 (define (analytics-assign! node result)
-  "Puts the list that analyze-tranche gives, (price yield spread duration average-life dv01 money oas effective-duration), in the slots of the node."
+  "Puts the list that analyze-tranche gives, (price yield spread duration average-life dv01 money oas effective-duration effective-convexity), in the slots of the node."
   (node-price-set! node (list-ref result 0))
   (node-yield-set! node (list-ref result 1))
   (node-spread-set! node (list-ref result 2))
@@ -268,7 +270,8 @@ points. The oas and the effective duration are of the paths of rates that were r
   (node-dv01-set! node (list-ref result 5))
   (node-money-set! node (list-ref result 6))
   (node-oas-set! node (list-ref result 7))
-  (node-effective-duration-set! node (list-ref result 8)))
+  (node-effective-duration-set! node (list-ref result 8))
+  (node-effective-convexity-set! node (list-ref result 9)))
 
 (define (deal-track-prices! deal)
   "Makes the deal work the slots of its tranches out again whenever it changes (its collateral, its tranches, its pricing speed, its dates, its index): a view of the deal,
@@ -446,7 +449,7 @@ the price that makes the money of the tranche what its children's add up to, or 
   (check-priceable deal name)
   (let ((node (get-node deal name)))
     (node-priced-by-set! node '())
-    (dolist (clear (list node-price-set! node-yield-set! node-spread-set! node-duration-set! node-dv01-set! node-money-set! node-oas-set! node-effective-duration-set!))
+    (dolist (clear (list node-price-set! node-yield-set! node-spread-set! node-duration-set! node-dv01-set! node-money-set! node-oas-set! node-effective-duration-set! node-effective-convexity-set!))
       (clear node '()))
     (deal-refresh-views! deal 'prices)
     node))
@@ -478,7 +481,7 @@ accrued interest, and so the money and the price, whichever of them was given."
 
 (define (deal-pricing-table deal)
   "A table of the slots that a price gives, a row for each tranche, each below its parent (as deal-outline has them): the tranche, its balance, the price, the yield (percent),
-the spread and the oas (basis points), the duration, the effective duration and the average life (years), the dv01, the money and the delay (days). nan where it has none. The slots are as they were last
+the spread and the oas (basis points), the duration, the effective duration and the average life (years), the effective convexity (years squared), the dv01, the money and the delay (days). nan where it has none. The slots are as they were last
 worked out (see deal-update-analytics!)."
   (let* ((names (map car (deal-outline-entries deal)))
          (slot-of (lambda (slot) (list->vector (map (lambda (name) (let ((value (slot (get-node deal name)))) (if (null? value) nan value))) names)))))
@@ -490,6 +493,7 @@ worked out (see deal-update-analytics!)."
                 "oas" (slot-of node-oas)
                 "duration" (slot-of node-duration)
                 "effective duration" (slot-of node-effective-duration)
+                "effective convexity" (slot-of node-effective-convexity)
                 "average life" (slot-of node-average-life)
                 "dv01" (slot-of node-dv01)
                 "money" (slot-of node-money)

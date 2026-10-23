@@ -47,7 +47,7 @@ class TestTheColumns(PricingGridCase):
 
     def test_the_grid_has_the_columns_of_what_a_price_says_after_the_cash_flows(self):
         self.assertEqual(list(self.grid.data.columns), ["tranche", "balance", "split", "cash flows", "balance chart", "price", "yield", "spread", "oas", "duration",
-                                                         "effective duration", "average life", "dv01", "money", "delay"])
+                                                         "effective duration", "effective convexity", "average life", "dv01", "money", "delay"])
         self.assertEqual([name.strip() for name in self.grid.data["tranche"]], ["POOL", "A", "B"])
 
     def test_the_average_life_and_the_delay_are_there_before_anything_is_priced(self):

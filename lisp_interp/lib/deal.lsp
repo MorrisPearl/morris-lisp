@@ -72,6 +72,7 @@
   (dv01 '()) (money '())                    ; and average life in years, the dollars that the money falls by when the yield rises a basis point, and what
   (delay 24)                                ; the buyer pays, price and accrued interest; delay is the days from the end of the accrual period to the payment date
   (oas '()) (effective-duration '())        ; the option-adjusted spread in basis points, and the effective duration in years, of the paths of rates (see deal_paths.lsp)
+  (effective-convexity '())                 ; and the effective convexity, in years squared
   (priced-by '()))                          ; which of price, yield, spread and oas was typed (a symbol): the others are worked out from it
 
 (defstruct (collateral (:include node)))        ; (the root of the tree, with the cash flows of the pieces of collateral of the deal)

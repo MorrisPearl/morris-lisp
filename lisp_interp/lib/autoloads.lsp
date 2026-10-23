@@ -207,7 +207,9 @@
   tranche-effective-duration tranche-effective-duration-set! tranche-oas tranche-oas-set! deal-change-pricing!
   deal-home-price-growth deal-home-price-growth-set! deal-mortgage-spread deal-mortgage-spread-set!
   deal-project-pieces deal-set-home-price-growth! deal-set-mortgage-spread! deal-defaults deal-defaults-set!
-  deal-liquidation-lag deal-liquidation-lag-set! deal-looks-at-rates? deal-set-defaults! deal-set-liquidation-lag!)
+  deal-liquidation-lag deal-liquidation-lag-set! deal-looks-at-rates? deal-set-defaults! deal-set-liquidation-lag!
+  collateral-effective-convexity collateral-effective-convexity-set! node-effective-convexity
+  node-effective-convexity-set! tranche-effective-convexity tranche-effective-convexity-set!)
 
 ; The OAS and the effective duration of the tranches of a deal, on paths of rates (see "Option-adjusted spread" in lisp_cmo_manual.md)
 (lazy-load "deal_paths.lsp"
@@ -221,7 +223,8 @@
   rate-model-sigma1-set! rate-model-sigma2 rate-model-sigma2-set! rate-model? rate-path-long-yields
   rate-path-long-yields-set! rate-path-short-rates rate-path-short-rates-set! rate-path? run-path-set
   static-prepayment-model deal-base-prepayment-model deal-forward-path model-at-speed model-speed-smms
-  rate-path-first-payment rate-path-first-payment-set! deal-defaults-of deal-piece-defaults)
+  rate-path-first-payment rate-path-first-payment-set! deal-defaults-of deal-piece-defaults
+  path-sets-effective-convexity)
 
 ; What a price says about a tranche of a deal: yield, spread, duration, dv01, money (see lisp_cmo_manual.md)
 (lazy-load "deal_pricing.lsp"
@@ -232,6 +235,11 @@
   priced-money tranche-cash-flows treasury-points treasury-yield yield-of-money deal-clear-treasury-curve!
   deal-track-prices! deal-forget-paths! deal-run-paths! deal-set-index-function! deal-set-oas!
   deal-set-prepayment-model! deal-set-rate-model!)
+
+; Hedging a tranche: the Treasuries' effective durations and convexities, and the pair of them and the collateral that hedges it (see lisp_cmo_manual.md)
+(lazy-load "deal_hedge.lsp"
+  deal-hedge deal-hedge-pairs deal-shift deal-zero-curve hedge-instruments hedge-of-pair tranche-measures
+  treasury-cash-flows treasury-measures treasury-value)
 
 ; Building a deal by clicking in a notebook (see "Building a deal by clicking" in lisp_cmo_manual.md)
 (lazy-load "deal_builder.lsp"

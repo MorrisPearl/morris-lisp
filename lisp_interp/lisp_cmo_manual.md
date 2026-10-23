@@ -40,6 +40,7 @@ general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is 
 - [Prices, yields and spreads](#prices-yields-and-spreads)
 - [Option-adjusted spread and effective duration](#option-adjusted-spread-and-effective-duration)
 - [The prepayment model](#the-prepayment-model)
+- [Hedging a tranche](#hedging-a-tranche)
 - [Losses and shortfalls](#losses-and-shortfalls)
   - [Defaults, from the default model](#defaults-from-the-default-model)
   - [Losses](#losses)
@@ -534,6 +535,7 @@ at its pricing speed, as of the closing date of the deal, which is when the buye
 | `duration` | the modified duration | years |
 | `oas` | the spread over the paths of rates that makes them worth the money (see "Option-adjusted spread and effective duration"); blank until they are run | basis points |
 | `effective-duration` | the proportion the money falls by when rates rise, with the prepayments that follow; blank until the paths are run | years |
+| `effective-convexity` | how much the effective duration changes as rates do: below 0 for a tranche that the borrowers' option shortens as rates fall; blank until the paths are run | years squared |
 | `average-life` | the average life (see "Sequential by average life") | years |
 | `dv01` | how much the money falls when the yield rises by a basis point, and nothing else is changed | dollars |
 | `money` | what the buyer pays, in all: the balance times the price over 100, and the accrued interest | dollars |
@@ -671,6 +673,11 @@ numbers, the collateral is prepaid by the model on them, and the deal run; the t
 proportion that its money falls by for a rise of one (a hundred percentage points) in rates: (money on the curve moved down, less money on the curve moved up) over twice the shift times the money on the curve. A
 tranche whose cash flows do not change with rates has one near its modified duration (try a model that looks at no rates); one whose cash flows do is shorter or longer than that, because the prepayments change when rates do.
 
+**The effective convexity** is of the same three values: (money on the curve moved down, plus money on the curve moved up, less twice the money on the curve) over the money times
+the shift squared, in years squared. It says how much the effective duration changes as rates move. A bond whose cash flows do not change has a convexity above 0, at least its duration
+squared: it gains more when rates fall than it loses when they rise. A tranche that the borrowers' option shortens as rates fall has one below 0: it gains less than it loses.
+Some quote convexity divided by 100 (so that -150 here is -1.5 there).
+
 **The parts.** Each is a slot of the deal, which the user can replace, and each has something to begin with.
 
 | Part | Is | To begin with |
@@ -721,7 +728,7 @@ that the first payment is the part of a month away that it is from the closing d
 (a builtin: see the library manual) does the discounting of every path at once. The OAS of a price is found by Ridders' method, from -10000 to 50000 basis points, and is remembered for the price,
 so the grid of a deal does not work it out again when it is redrawn. A deal with a floating tranche is run on each path with the index that the index function makes of that path's short rates.
 
-In a notebook the grid of the tranches, `(bonds deal)`, has the columns `oas` and `effective duration` (see "Building a deal by clicking"), and an OAS is typed in the grid as a price is.
+In a notebook the grid of the tranches, `(bonds deal)`, has the columns `oas`, `effective duration` and `effective convexity` (see "Building a deal by clicking"), and an OAS is typed in the grid as a price is.
 
 
 ## The prepayment model
@@ -789,6 +796,57 @@ can gain. For a 30-year pool of the same loans, divided the same way, with 20 pa
 At 150 PSA, the same on every path, the OAS is about the spread and the effective duration about the duration: nothing is worth anything but the curve. With the model,
 the OAS is less by what the borrowers' option is worth, and the effective duration is about half the duration.
 
+
+## Hedging a tranche
+
+A tranche can be hedged with Treasuries and with the collateral of the deal: positions that, with the tranche, lose nothing for a small move in rates either way. `lib/deal_hedge.lsp`
+works them out, from the effective durations and convexities of the paths of rates, so the tranche must be priced, and the paths run.
+
+**The Treasuries.** `(treasury-measures deal)` is a table with a row for a par Treasury at each maturity of the deal's Treasury curve: its coupon is the curve's par yield there,
+paid every six months, so that it is worth 100. It is valued off the zero curve that the par yields give (`par-curve-zeros`), and with all the zero rates moved up and down by the
+shift that the paths were moved by, as the tranche is, so that its effective duration and effective convexity are the same measures as the tranche's. A Treasury's convexity is
+above 0, and at least the square of its duration (more, the longer its cash flows are spread out: the 30-year's is 366, and its duration 16).
+
+**The hedge.** A position of market value M (the money of the tranche), effective duration D and effective convexity C has a **dollar duration** of M x D, what it loses for a rise
+of one in rates, and a **dollar convexity** of M x C. The hedge is positions h1 and h2, in dollars of market value (below 0 for what is sold), in two instruments, that make the dollar
+duration and the dollar convexity of the tranche and the two together 0:
+
+```text
+M D + h1 D1 + h2 D2 = 0          M C + h1 C1 + h2 C2 = 0
+```
+
+Two instruments are enough to make both 0, and of every pair of the instruments (the Treasuries, and the collateral, if it has been priced, and is not the tranche itself), the hedge
+is the one that does it with the least in all, |h1| + |h2|: a hedge is a cost to keep, and a big long and a big short that cancel are a bet on the difference between them.
+`(deal-hedge deal name)` is a table of the tranche, the two positions, and the net of them all, whose dollar duration and dollar convexity are 0; `(deal-hedge-pairs deal name)` is
+every pair, the one with the least in all first.
+
+```lisp
+(define deal (new-deal "Hedge 2026-1" :closing-date (date 2026 11 20) :first-payment (date 2026 12 25)
+                       :treasury-curve '((1 4.0) (2 4.1) (3 4.2) (5 4.3) (10 4.5) (30 4.8))
+                       :collateral (list (make-collateral-piece :balance 10000000.0 :wac 6.5 :coupon 6.0 :wam 60 :age 3
+                                                                :credit-score 750 :ltv 75.0))
+                       :speed (prepayment-speed 'model 100)))
+(deal-sequential! deal "POOL" '(("A" 6000000.0) ("B" 4000000.0)))
+(deal-set-price! deal "POOL" 101.0)                          ; the collateral is priced, so it can be a hedge
+(deal-set-price! deal "B" 100.0)
+(deal-run-paths! deal :paths 10)
+(node-effective-duration (get-node deal "B"))                ; => 2.3020023036820145
+(node-effective-convexity (get-node deal "B"))               ; => -57.04650713969748
+(define treasuries (treasury-measures deal))
+(table-column treasuries "instrument")                       ; => #("1y Treasury" "2y Treasury" "3y Treasury" "5y Treasury" "10y Treasury" "30y Treasury")
+(vector-ref (table-column treasuries "effective duration") 4)    ; => 8.149515477396818
+(vector-ref (table-column treasuries "effective convexity") 4)   ; => 75.42947965357598
+(define hedge (deal-hedge deal "B"))
+(table-column hedge "position")                              ; => #("B" "10y Treasury" "POOL" "net")
+(table-column hedge "market value")                          ; => #(4012666.6666666665 -619481.1685778834 -3580302.462053031 -187116.96396424808)
+```
+
+B, of a convexity below 0, is hedged mostly with the collateral, which has one below 0 too (-77), and a little of the 10-year Treasury: sell $3.58 million of the collateral and $0.62
+million of the 10-year, for the $4.01 million of B. A tranche hedged with Treasuries alone needs a long one and a short one, as Treasuries have convexities above 0 and the tranche one
+below: the one of greater convexity is bought, and the other sold.
+
+The hedge is of small moves, as durations and convexities are: it is to be done again as rates move, and the tranche's duration with them. It is of the model, too: of its paths of
+rates, and of its prepayment model, which the effective duration and convexity of a tranche of mortgages are mostly of.
 
 ## Losses and shortfalls
 
@@ -1108,7 +1166,7 @@ at the same time as they are, and shows what they change (the balance of the col
   takes them away (`deal-delete-split!`), and **No** keeps them.
 - **Type a price, a yield or a spread, in the cell of a tranche** (double-click the cell, or click it and type: a price of `+` or `?` is typed after a double-click, which opens the cell), and the others are worked out (see "Prices, yields and spreads"): the grid has
   a column *balance chart* with a little chart of the balance of each tranche month by month, all on one scale (the biggest balance, over the months of the longest tranche, so that a small tranche is a small chart: see `sparklines` in the language manual),
-  the columns *price*, *yield*, *spread*, *oas*, *duration*, *effective duration*, *average life*, *dv01*, *money* and *delay* after the cash flows, and a price, a yield, a spread, an OAS and the delay are typed
+  the columns *price*, *yield*, *spread*, *oas*, *duration*, *effective duration*, *effective convexity*, *average life*, *dv01*, *money* and *delay* after the cash flows, and a price, a yield, a spread, an OAS and the delay are typed
   (the OAS and the effective duration are blank until the paths of rates are run, with `(deal-run-paths! deal)`: see "Option-adjusted spread and effective duration"). A price can be typed as `+` or `?`, and
   a cell that is cleared takes the price away. What is typed in a column that is worked out is put back, with a line to say so, and so is text that is not a number. The Treasury curve that a spread is over is
   in `(info deal)`, and what is typed in the grid stays when the deal changes: the rest is worked out again.
