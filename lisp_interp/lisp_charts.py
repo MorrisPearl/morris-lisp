@@ -20,7 +20,13 @@ import lisp_plot_chart
 try:
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.pyplot import rcParams
     MATPLOTLIB_AVAILABLE = True
+
+    rcParams['font.family'] = 'sans-serif'
+    rcParams['font.sans-serif'] = ['Architects Daughter', 'Helvetica Neue', 'Arial', 'Helvetica', 'DejaVu Sans']
+
+
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
 
