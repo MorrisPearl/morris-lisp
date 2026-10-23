@@ -21,7 +21,12 @@ try:
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.pyplot import rcParams
+    from matplotlib.pyplot import get_cmap
+    from cycler import cycler
+
     MATPLOTLIB_AVAILABLE = True
+
+    rcParams['axes.prop_cycle'] = cycler(color=get_cmap('Pastel1').colors)
 
     rcParams['font.family'] = 'sans-serif'
     rcParams['font.sans-serif'] = ['Architects Daughter', 'Helvetica Neue', 'Arial', 'Helvetica', 'DejaVu Sans']
