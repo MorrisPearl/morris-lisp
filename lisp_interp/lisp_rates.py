@@ -34,8 +34,9 @@ import sys
 import numpy as np
 
 from lisp_core import (
-    LispError, LispString, LispVector, Pair, Symbol, keyword_options, list_to_pairs, pairs_to_list,
+    NETWORK, LispError, LispString, LispVector, Pair, Symbol, keyword_options, lisp_error_of_kind, list_to_pairs, pairs_to_list,
 )
+from lisp_tastytrade import NETWORK_FAILURES
 from lisp_tables import make_table_value
 from lisp_futures import row_field
 
@@ -127,8 +128,11 @@ def sofr_calibration_data_fn(credentials_path, n_futures=40, n_underlyings=10, n
         raise LispError(
             "sofr-calibration-data: sofr_market_data.py isn't available -- "
             "see term_structure/ next to lisp_interp/")
-    curve, options = _fetch_sofr_calibration_data(
-        str(credentials_path), int(n_futures), int(n_underlyings), int(n_strikes))
+    try:
+        curve, options = _fetch_sofr_calibration_data(
+            str(credentials_path), int(n_futures), int(n_underlyings), int(n_strikes))
+    except NETWORK_FAILURES as e:
+        raise lisp_error_of_kind("sofr-calibration-data: couldn't reach tastytrade: %s" % (e or type(e).__name__), NETWORK)
     curve_rows = list_to_pairs([
         list_to_pairs([LispString(c["symbol"]), int(c["start_months"]),
                         int(c["end_months"]), float(c["rate"])])

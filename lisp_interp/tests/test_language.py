@@ -1134,6 +1134,34 @@ class TestErrorsAndCatchError(LispTestCase):
     def test_catch_error_returns_the_protected_value_on_success(self):
         self.assertShows("(catch-error (+ 1 2) (e) 'handler-ran)", "3")
 
+    def test_catch_error_only_catches_the_kinds_of_error_it_names(self):
+        self.assertShows("(catch-error (error :kind 'network \"site down\") (m) :only (network) (list 'caught m))", '(caught "site down")')
+        self.assertShows("(catch-error (error :kind 'network \"site down\") (m) :only network m)", '"site down"')     # one kind, not in a list
+        self.assertShows("(catch-error (error :kind 'late \"x\") (m) :only (network late) 'either)", "either")
+        self.assertShows("(catch-error (+ 1 2) (m) :only (network) 'not-run)", "3")
+
+    def test_an_error_of_another_kind_or_of_none_passes_on(self):
+        self.assertLispError("(catch-error (car 5) (m) :only (network) 'caught)", "car: not a pair: 5")
+        self.assertLispError("(catch-error (error :kind 'other \"x\") (m) :only (network) 'caught)", "x")
+        self.assertLispError("(catch-error (sqrt \"x\") (m) :only (network) 'caught)", "sqrt")                # (a builtin's Python error)
+        self.assertShows("(catch-error (catch-error (car 5) (m) :only (network) 'inner) (m) (list 'outer m))", '(outer "car: not a pair: 5")')
+        self.assertShows("(catch-error (error :kind 'network \"x\") (m) 'caught)", "caught")              # (without :only, every error)
+
+    def test_the_kinds_and_the_error_s_kind_are_checked(self):
+        self.assertLispError("(catch-error 1 (m) :only)", "catch-error: :only is followed by the kinds of error to catch")
+        self.assertLispError("(catch-error 1 (m) :only (5) 'x)", "a kind of error, such as network, or a list of them, not (5)")
+        self.assertLispError("(catch-error 1 (m) :only :network 'x)", "a kind of error")
+        self.assertLispError("(error :kind)", "error: :kind is followed by the kind of error, a symbol")
+        self.assertLispError('(error :kind "network" "x")', "error: :kind is followed by the kind of error, a symbol")
+
+    def test_the_kind_is_kept_on_the_error(self):
+        with self.assertRaises(lisp_core.LispError) as raised:
+            self.run_lisp("(error :kind 'network \"site down\" 42)")
+        self.assertEqual((str(raised.exception), raised.exception.kind), ("site down 42", "network"))
+        with self.assertRaises(lisp_core.LispError) as raised:
+            self.run_lisp('(error "plain")')
+        self.assertIsNone(raised.exception.kind)
+
     def test_catch_error_handler_body_is_an_implicit_begin(self):
         self.assertShows("(catch-error (error \"x\") (e) (display \"handled \") 'value)", "value")
         self.assertEqual(self.printed(), "handled ")

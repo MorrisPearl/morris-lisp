@@ -33,7 +33,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from lisp_core import LispError, LispHashTable, LispString, NIL, Pair, list_to_pairs, pairs_to_list
+from lisp_core import NETWORK, LispError, LispHashTable, LispString, NIL, Pair, lisp_error_of_kind, list_to_pairs, pairs_to_list
 from lisp_csv import csv_arguments, table_from_csv_rows
 from lisp_data_common import name_value_pairs
 
@@ -103,6 +103,13 @@ def download(url, cache_hours, headers, name, shown_url=None, body=None, check=N
     return data
 
 
+def unavailable(status):
+    """Whether an HTTP status says that the site cannot answer now, and may later: its own trouble (500 and up), too many
+    requests (429), or no request in time (408). An error with one of these is a network error (see NETWORK in lisp_core.py);
+    one with another status, such as 404 (no such page) or 401 (not signed in), is not."""
+    return status >= 500 or status in (408, 429)
+
+
 def fetch(request, name, shown_url, last_try):
     """One try at a download: its bytes -- or, if it failed in a way that
     may pass (no answer, a dropped connection, or HTTP 500 and up, the
@@ -115,12 +122,13 @@ def fetch(request, name, shown_url, last_try):
         e.close()       # the error holds the connection open until it's closed
         if e.code >= 500 and not last_try:
             return None
-        raise LispError("%s: %s returned HTTP %d %s%s" % (name, shown_url, e.code, e.reason,
-                                                          (" -- " + detail) if detail else ""))
+        raise lisp_error_of_kind("%s: %s returned HTTP %d %s%s" % (name, shown_url, e.code, e.reason,
+                                                                   (" -- " + detail) if detail else ""),
+                                 NETWORK if unavailable(e.code) else None)
     except (urllib.error.URLError, OSError) as e:
         if not last_try:
             return None
-        raise LispError("%s: couldn't download %s: %s" % (name, shown_url, e))
+        raise lisp_error_of_kind("%s: couldn't download %s: %s" % (name, shown_url, e), NETWORK)
 
 
 def delete_old_downloads():

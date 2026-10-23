@@ -48,9 +48,12 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
-from lisp_core import LispDate, LispError, LispString, Keyword, NIL, Pair, keyword_options, to_display_string
+from lisp_core import (
+    NETWORK, LispDate, LispError, LispString, Keyword, NIL, Pair, keyword_options, lisp_error_of_kind, to_display_string,
+)
 import lisp_data_common
 from lisp_data_common import credential
+from lisp_http import unavailable
 from lisp_tables import HIDDEN, column_values, format_specs, table_columns
 from lisp_vector_math import is_number
 
@@ -98,9 +101,10 @@ def google_request(method, url, who, headers, body=None):
     except urllib.error.HTTPError as e:
         text = e.read().decode("utf-8", errors="replace")
         e.close()
-        raise LispError("%s: Google says (HTTP %d): %s" % (who, e.code, google_message(text)))
+        raise lisp_error_of_kind("%s: Google says (HTTP %d): %s" % (who, e.code, google_message(text)),
+                                 NETWORK if unavailable(e.code) else None)
     except (urllib.error.URLError, OSError) as e:
-        raise LispError("%s: couldn't reach Google: %s" % (who, e))
+        raise lisp_error_of_kind("%s: couldn't reach Google: %s" % (who, e), NETWORK)
 
 
 def token_request(credentials_path, form, who):

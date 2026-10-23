@@ -44,7 +44,7 @@ import urllib.parse
 
 from lisp_core import (
     LispDate, LispError, LispHashTable, LispString, LispVector, NIL, Pair,
-    list_to_pairs, pairs_to_list,
+    NETWORK, lisp_error_of_kind, list_to_pairs, pairs_to_list,
 )
 from lisp_data_common import name_value_pairs, read_credentials
 from lisp_http import json_to_lisp
@@ -57,6 +57,14 @@ try:
     _TASTYTRADE_AVAILABLE = True
 except ImportError:
     _TASTYTRADE_AVAILABLE = False
+
+# What the tastytrade package raises when it can't reach tastytrade: the errors of the connection itself (its web library,
+# httpx2, has its own), or no answer in time. A builtin turns them into a network error (see NETWORK in lisp_core.py).
+try:
+    from httpx2 import TransportError as _TransportError
+    NETWORK_FAILURES = (OSError, asyncio.TimeoutError, _TransportError)
+except ImportError:
+    NETWORK_FAILURES = (OSError, asyncio.TimeoutError)
 
 TASTY_MONTH_CODES = {
     1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
@@ -205,7 +213,10 @@ def _with_session(credentials_path, work):
             result = await work(session)
         _saved_sessions[_session_key(credentials_path)] = session.serialize()
         return result
-    return _run_async(run())
+    try:
+        return _run_async(run())
+    except NETWORK_FAILURES as e:
+        raise lisp_error_of_kind("tastytrade: couldn't reach tastytrade: %s" % (e or type(e).__name__), NETWORK)
 
 
 # ---------------------------------------------------------------------------

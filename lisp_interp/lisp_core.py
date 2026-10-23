@@ -480,8 +480,25 @@ class GenericFunction:
 
 
 class LispError(Exception):
-    """Raised for any error in a Lisp program: reading, evaluating, or in a builtin."""
-    pass
+    """Raised for any error in a Lisp program: reading, evaluating, or in a builtin.
+
+    `kind` names the kind of problem, for an error that a program may expect and get past, such as a web site that cannot be
+    reached: (catch-error ... :only (network) ...) catches the errors of that kind and lets every other one pass on. It is None
+    for the rest, which are mostly mistakes in a program. lisp_error_of_kind makes an error with a kind."""
+    kind = None
+
+
+# The kind of error of a web site that cannot be reached, or does not answer, or says it cannot answer now (its own trouble,
+# or too many requests): a problem that a program may expect, and try again later or go on without. Every download raises it
+# (see lisp_http.py, and Google, Schwab and tastytrade).
+NETWORK = "network"
+
+
+def lisp_error_of_kind(message, kind):
+    """A LispError with this message, of this kind (a string such as NETWORK, or None)."""
+    error = LispError(message)
+    error.kind = kind
+    return error
 
 
 class LispThrow(BaseException):
@@ -1257,6 +1274,14 @@ SPECIAL_FORMS = {
 }
 
 
+def error_kinds_named(spec):
+    """The kinds of error that catch-error's :only names, a symbol or a list of them, as a set of strings."""
+    names = pairs_to_list(spec) if isinstance(spec, Pair) else [spec]
+    if not names or not all(isinstance(name, Symbol) and not isinstance(name, Keyword) for name in names):
+        raise LispError("catch-error: :only is followed by a kind of error, such as network, or a list of them, not %s" % _brief(spec))
+    return {str(name) for name in names}
+
+
 def is_true(x):
     """Everything except #f counts as true (including '() and 0)."""
     return x is not False
@@ -1701,23 +1726,32 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         control_stack.append(('EVAL', args.car, env))
 
     elif op == "catch-error":
-        # (catch-error protected-expr (var) handler-body...): if evaluating
-        # protected-expr raises an error -- a LispError or a Python exception from a
-        # builtin, such as sqrt's ValueError -- bind var to the message and return
-        # handler-body's value instead. (KeyboardInterrupt and the like still
-        # propagate.) This needs a real Python try/except, so protected-expr runs in
-        # a nested seval(); tail calls inside it are optimized only up to that
-        # boundary.
+        # (catch-error protected-expr (var) [:only kinds] handler-body...): if
+        # evaluating protected-expr raises an error -- a LispError or a Python
+        # exception from a builtin, such as sqrt's ValueError -- bind var to the
+        # message and return handler-body's value instead. With :only, only an error
+        # of one of the kinds (see LispError) is caught, and any other passes on as
+        # if this weren't here. (KeyboardInterrupt and the like still propagate.)
+        # This needs a real Python try/except, so protected-expr runs in a nested
+        # seval(); tail calls inside it are optimized only up to that boundary.
         protected_expr = args.car
         var_name = args.cdr.car.car
         handler_body = pairs_to_list(args.cdr.cdr)
-        debug_state.catch_error_depth += 1      # so break-on-error leaves the errors this will handle alone
+        kinds = None                            # (every error)
+        if handler_body and isinstance(handler_body[0], Keyword) and str(handler_body[0]) == ":only":
+            if len(handler_body) < 2:
+                raise LispError("catch-error: :only is followed by the kinds of error to catch, such as (network)")
+            kinds = error_kinds_named(handler_body[1])
+            handler_body = handler_body[2:]
+        debug_state.catching.append(kinds)      # so break-on-error leaves the errors this will handle alone
         try:
             try:
                 result = seval(protected_expr, env)
             finally:
-                debug_state.catch_error_depth -= 1
+                debug_state.catching.pop()
         except Exception as e:
+            if kinds is not None and getattr(e, "kind", None) not in kinds:
+                raise
             handler_env = Env(outer=env)
             handler_env[var_name] = LispString(str(e))
             result = eval_body(handler_body, handler_env)
@@ -2419,7 +2453,8 @@ class DebugState:
         self.break_on_error = False  # whether an error stops the program where it happened
         self.pauses = []             # a Pause for each stop in progress, innermost last
         self.hook_running = False    # True while the hook runs: the calls it makes don't stop
-        self.catch_error_depth = 0   # how many catch-error forms are running: they'll handle errors
+        self.catching = []           # for each catch-error that is running, innermost last, the kinds of error it
+                                     # catches (a set of names), or None for every error
 
 
 debug_state = DebugState()
@@ -2458,13 +2493,19 @@ def check_breakpoint(proc, args, env):
     stop_program("break", proc.name, args, env)
 
 
+def will_be_caught(exc):
+    """Whether a catch-error that is running will catch the error: one that catches every error, or its kind."""
+    kind = getattr(exc, "kind", None)
+    return any(kinds is None or kind in kinds for kinds in debug_state.catching)
+
+
 def stop_on_error(exc, env):
     """An error is passing out of the innermost seval() that saw it, and
     break-on-error is on: stop where it happened, before the calls it's
     unwinding are gone. Not for an error that a catch-error will handle, one
     that happens while the debugger is already stopped, one already stopped for
     at a deeper level, or running out of stack (no room left to debug in)."""
-    if debug_state.catch_error_depth or debug_state.pauses or isinstance(exc, RecursionError):
+    if will_be_caught(exc) or debug_state.pauses or isinstance(exc, RecursionError):
         return
     if getattr(exc, "lisp_stopped", False):
         return

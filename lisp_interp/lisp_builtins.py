@@ -32,7 +32,7 @@ from lisp_core import (
     _brief, _date_from_pydate, _lisp_scalar, _vector_widen_for,
     apply_proc, builtin_names, check_numbers, lisp_equal, plural, check_vector_elements, expand_macro, gensym,
     get_verbose_level, is_true, keyword_options,
-    list_to_pairs, pairs_to_list, parse, pretty_print_string,
+    lisp_error_of_kind, list_to_pairs, pairs_to_list, parse, pretty_print_string,
     reconstruct_macro_source, reconstruct_procedure_source, run_file, seval,
     set_verbose_level, set_vector_precision, throw_to, to_display_string, to_string, parse_date_text, vector_precision,
 )
@@ -933,7 +933,15 @@ def lisp_gensym(*base):
 
 
 def lisp_error(*args):
-    raise LispError(" ".join(to_display_string(a) for a in args))
+    """(error [:kind kind] item...) -- stops the program with an error whose message is the items, written as display
+    writes them, with a space between each. Given :kind and a symbol, the error is of that kind, which
+    (catch-error ... :only (kind) ...) catches, and no other catch-error :only does."""
+    kind = None
+    if args and isinstance(args[0], Keyword) and str(args[0]) == ":kind":
+        if len(args) < 2 or not isinstance(args[1], Symbol) or isinstance(args[1], Keyword):
+            raise LispError("error: :kind is followed by the kind of error, a symbol, such as 'network")
+        kind, args = str(args[1]), args[2:]
+    raise lisp_error_of_kind(" ".join(to_display_string(a) for a in args), kind)
 
 
 def lisp_throw(tag, value=NIL):

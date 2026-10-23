@@ -146,6 +146,20 @@ Each of these gives a table (see "Tables", in the
 [language manual](lisp_interpreter_reference.md#tables)), so the data from
 all of them works the same way after that.
 
+When a site can't be reached, doesn't answer, or says it can't answer now,
+the error is a **network** error, which a program can catch alone and get
+past -- use a saved copy, or try later -- while any other error stops it as
+usual:
+
+```lisp
+(define rates
+  (catch-error (fred-table creds '("DGS10")) (message) :only (network)
+    (load-variables "rates.json")     ; a copy saved earlier with (save-variables "rates.json" rates)
+    rates))
+```
+
+(See "Catching only the problems you expect" in the language manual.)
+
 ### Downloading data from the web
 
 (In `lisp_http.py`.) These reach any web API that returns JSON, CSV, or

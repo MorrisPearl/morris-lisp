@@ -5,6 +5,12 @@ support.py says how to run them."""
 
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
 
+import urllib.error
+
+import lisp_google
+import lisp_rates
+import lisp_schwab
+
 
 class TestOptionChainTable(LispTestCase):
     """tastytrade-option-chain's rows become a table (no network needed to
@@ -1527,6 +1533,21 @@ class TestHttp(LispTestCase):
         self.assertLispError('(http-get-text "%s/missing")' % self.base, "HTTP 404")
         self.assertEqual(len(self.handler.hits), 1)                         # a 404 won't pass: no second try
 
+    def test_a_site_that_cannot_answer_is_a_network_error_and_a_missing_page_is_not(self):
+        offline = '(catch-error (http-get-text "%s") (m) :only (network) (list "offline" m))'
+        self.assertShows(offline % (self.base + "/broken") + " ", '("offline" "http-get-text: %s/broken returned HTTP 503 '
+                         'Service Unavailable -- try again later")' % self.base)
+        self.assertLispError(offline % (self.base + "/missing"), "HTTP 404")              # (no such page: not a network error)
+        import socket
+        with socket.socket() as unused:                 # a port that nothing listens on: the site can't be reached
+            unused.bind(("127.0.0.1", 0))
+            port = unused.getsockname()[1]
+        self.assertEqual(self.run_lisp(offline % ("http://127.0.0.1:%d/x" % port)).car, "offline")
+
+    def test_the_statuses_that_say_a_site_cannot_answer_now(self):
+        self.assertEqual([status for status in (200, 400, 401, 403, 404, 408, 429, 500, 502, 503, 504) if lisp_http.unavailable(status)],
+                         [408, 429, 500, 502, 503, 504])
+
     def test_old_downloads_are_deleted(self):
         cache = os.environ["LISP_HTTP_CACHE"]
         now = time.time()
@@ -1913,3 +1934,42 @@ class TestGoogleSheets(LispTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNetworkErrorsOfTheOtherServices(LispTestCase):
+    """Google, Schwab and tastytrade make their own requests: a site that can't be reached, or can't answer now, is a network error
+    (see NETWORK in lisp_core.py) there too, and another problem is not. No request leaves this machine."""
+
+    def http_error(self, status):
+        return urllib.error.HTTPError("https://example.com", status, "status %d" % status, {}, io.BytesIO(b'{"error": "x"}'))
+
+    def kinds(self, request):
+        """The kind of error that request() raises for no connection, for HTTP 503, and for HTTP 401, when urlopen raises them."""
+        found = []
+        for failure in (urllib.error.URLError("no route to host"), self.http_error(503), self.http_error(401)):
+            with mock.patch("urllib.request.urlopen", side_effect=failure):
+                with self.assertRaises(lisp_core.LispError) as raised:
+                    request()
+            found.append(raised.exception.kind)
+        return found
+
+    def test_google_and_schwab(self):
+        self.assertEqual(self.kinds(lambda: lisp_google.google_request("GET", "https://example.com", "google-sheet", {})),
+                         ["network", "network", None])
+        self.assertEqual(self.kinds(lambda: lisp_schwab.schwab_request("GET", "https://example.com", "schwab-quotes", {})),
+                         ["network", "network", None])
+
+    def test_tastytrade(self):
+        def cannot_connect(coroutine):
+            coroutine.close()                           # (it is never run)
+            raise lisp_tastytrade.NETWORK_FAILURES[-1]("connection refused")
+        with mock.patch.object(lisp_tastytrade, "_run_async", cannot_connect):
+            with self.assertRaises(lisp_core.LispError) as raised:
+                lisp_tastytrade._with_session("credentials.json", lambda session: None)
+        self.assertEqual((str(raised.exception), raised.exception.kind), ("tastytrade: couldn't reach tastytrade: connection refused", "network"))
+
+    def test_sofr_calibration_data(self):
+        with mock.patch.object(lisp_rates, "_SOFR_MARKET_DATA_AVAILABLE", True), \
+                mock.patch.object(lisp_rates, "_fetch_sofr_calibration_data", side_effect=TimeoutError("timed out"), create=True):
+            self.assertShows('(catch-error (sofr-calibration-data "credentials.json" 4 2 2) (m) :only (network) m)',
+                             '"sofr-calibration-data: couldn\'t reach tastytrade: timed out"')

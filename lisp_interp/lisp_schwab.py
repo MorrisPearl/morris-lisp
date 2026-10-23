@@ -59,11 +59,11 @@ import webbrowser
 
 from lisp_core import (
     Keyword, LispDate, LispError, LispHashTable, LispString, LispVector, NIL, Pair, date_argument, keyword_options,
-    is_true, pairs_to_list,
+    NETWORK, is_true, lisp_error_of_kind, pairs_to_list,
 )
 import lisp_data_common
 from lisp_data_common import credential, text_list
-from lisp_http import json_to_lisp
+from lisp_http import json_to_lisp, unavailable
 from lisp_tables import table_from_tuples
 from lisp_tastytrade import OPTION_CHAIN_COLUMNS
 
@@ -108,9 +108,10 @@ def schwab_request(method, url, who, headers, body=None):
     except urllib.error.HTTPError as e:
         text = e.read().decode("utf-8", errors="replace")
         e.close()
-        raise LispError("%s: Schwab says (HTTP %d): %s" % (who, e.code, schwab_message(text)))
+        raise lisp_error_of_kind("%s: Schwab says (HTTP %d): %s" % (who, e.code, schwab_message(text)),
+                                 NETWORK if unavailable(e.code) else None)
     except (urllib.error.URLError, OSError) as e:
-        raise LispError("%s: couldn't reach Schwab: %s" % (who, e))
+        raise lisp_error_of_kind("%s: couldn't reach Schwab: %s" % (who, e), NETWORK)
 
 
 # ---------------------------------------------------------------------------

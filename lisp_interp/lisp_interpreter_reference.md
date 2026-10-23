@@ -1131,13 +1131,14 @@ real environment. See `with_struct_example.lsp` for a worked example.
 
 ### Errors and cleanup
 
-`catch-error` catches an error and carries on; `unwind-protect` makes sure
+`catch-error` catches an error and carries on (or only the errors of a kind,
+such as a web site that can't be reached); `unwind-protect` makes sure
 cleanup code runs however a body finishes; `catch` and `throw` jump out of
 a computation early; `assert` stops with an error if something that must be
 true isn't; `with-sqlite` opens a database and always closes it.
 
 #### catch-error
-#### `(catch-error protected-expr (var) handler-body...)`
+#### `(catch-error protected-expr (var) [:only kinds] handler-body...)`
 Evaluates `protected-expr`; if it raises an error, binds `var` to the
 error's message (a string) and evaluates `handler-body...` (implicit
 `begin`) instead, whose value becomes `catch-error`'s own. If
@@ -1158,6 +1159,34 @@ expression, wrap them in a `begin`.
   (catch-error (sqrt x) (e) -1))     ; -1 instead of crashing on a negative x
 (safe-sqrt -4)                       ; => -1
 (safe-sqrt 16)                       ; => 4.0
+```
+
+**Catching only the problems you expect.** Most errors are mistakes in a program, and a handler that catches every error hides
+them too. Some are problems a program can expect and get past, such as a web site that can't be reached. An error can have a
+**kind**, a name for such a problem, and `:only`, after the variable, catches only the errors of the kinds it names (a symbol,
+or a list of them); every other error passes on, as if the `catch-error` weren't there:
+
+```lisp
+(catch-error protected-expr (var) :only (kind...) handler-body...)
+```
+
+The kind the interpreter gives is **`network`**: a web site that can't be reached, doesn't answer in time, or says it can't
+answer now (HTTP 500 and up, 429 for too many requests, or 408). Every function that downloads raises it -- `http-get-text`
+and the others built on it (FRED, the Treasury's curves, the SEC, and the rest of "Getting data" in the library manual), Google,
+Schwab, and tastytrade. A page that isn't there (HTTP 404), or a sign-in that has run out (401), is not a network error: trying
+later won't fix it. Your own code gives an error a kind with `(error :kind 'name message...)`. `break-on-error` still stops
+for an error that a `catch-error` with `:only` won't catch.
+
+```lisp
+(define (latest-curve)
+  (catch-error (treasury-par-curve) (message) :only (network)
+    (display "The Treasury's site can't be reached, so the saved curve is used: ") (display message) (newline)
+    (load-variables "curve.json")
+    saved-curve))
+
+(catch-error (error :kind 'network "site down") (m) :only (network) m)    ; => "site down"
+(catch-error (catch-error (car 5) (m) :only (network) 'offline)            ; car's error isn't a network error,
+             (m) m)                                                        ; so the outer one catches it => "car: not a pair: 5"
 ```
 
 #### unwind-protect
@@ -5184,17 +5213,20 @@ name is the same symbol, so the pasted code still works.
 #### `(load "path.lsp")`
 See "Input / output", above — documented once there.
 
-#### `(error message arg...)`
+#### `(error [:kind kind] message arg...)`
 Raises `LispError` with a message built by rendering each argument the way
 `display` would and joining them with spaces (so `(error "bad value:" x)`
 reads naturally). For signaling a problem from your own Lisp code — e.g. a
-library like `column_engine.lsp` reporting a circular dependency.
+library like `column_engine.lsp` reporting a circular dependency. Given
+`:kind` and a symbol first, the error is of that kind, which
+`(catch-error ... :only (kind) ...)` catches (see "Catching only the
+problems you expect", under `catch-error`).
 
 ```lisp
 (error "bad value:" 42)        ; raises LispError: bad value: 42
 ```
 
-#### `(catch-error protected-expr (var) handler-body...)`
+#### `(catch-error protected-expr (var) [:only kinds] handler-body...)`
 See "Errors and cleanup", above — documented once there (it's a special form,
 not a function: `protected-expr` must NOT be evaluated eagerly, since the
 whole point is to catch what happens when it's evaluated).

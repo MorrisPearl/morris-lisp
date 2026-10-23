@@ -656,6 +656,17 @@ class TestBreakOnError(LispTestCase):
         self.assertLispError("(outer 1)", "car: not a pair")
         self.assertShows("count", "1")
 
+    def test_it_stops_for_an_error_that_a_catch_error_with_only_will_not_catch(self):
+        self.run_lisp(self.RISKY + "(define count 0)"
+                      "(set-debug-hook! (lambda (k n a) (set! count (+ count 1))))"
+                      "(break-on-error #t)")
+        self.assertShows("(catch-error (error :kind 'network \"down\") (e) :only (network) 'handled)", "handled")
+        self.assertShows("count", "0")
+        self.assertLispError("(catch-error (outer 1) (e) :only (network) 'handled)", "car: not a pair")
+        self.assertShows("count", "1")
+        self.assertShows("(catch-error (catch-error (outer 1) (e) :only (network) 'inner) (e) 'outer)", "outer")   # (the outer one catches it)
+        self.assertShows("count", "1")
+
     def test_an_error_in_a_catch_error_handler_is_not_protected_by_it(self):
         self.run_lisp("(define count 0)"
                       "(set-debug-hook! (lambda (k n a) (set! count (+ count 1))))"
