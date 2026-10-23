@@ -213,7 +213,7 @@ The table of collateral of a deal (see `collateral-table`, and the grid of `(col
 deal is given the pieces: a credit score is from 300 to 850, a share from 0 to 1, and the investor and second-home shares, or the two refinance shares, are no more than 1 together.
 
 A **speed** has a type, which says what its number means, and a number that can change with time: `(prepayment-speed type spec)`. The types are `psa` (150 is 150% of
-the standard curve, 0 to 6 CPR over 30 months of age, which is the curve of `prepayment_model.lsp`), `cpr` (the annual rate of prepayment, in percent),
+the standard curve, 0 to 6 CPR over 30 months of age: `(psa-cpr age)`), `cpr` (the annual rate of prepayment, in percent),
 `smm` (the share of what is left that prepays in a month, in percent) and `model` (105 is 105% of what the deal's prepayment model says, which looks at rates: see
 "The prepayment model"). The `spec` is one number, which is the speed in every month, or a list of linear
 pieces, each `(from to months)`: the speed goes in a straight line from `from` to `to`, and is `to` in the last of the months, so that the next piece starts from
@@ -251,6 +251,7 @@ split, a PAC and an IO/PO split all work. A floater and an inverse floater, and 
 collateral has not got one. `(project-pieces pieces speed)` is the vectors the collateral is made of (principal, interest, balance, and the interest that the loans pay, at the wac), and
 `(project-pool balance wac coupon months smms)` those of one pool that prepays by the monthly mortality of each month; `(project-pieces-with pieces smms-of)` is `project-pieces` with a function
 from a piece to its vector of monthly mortalities in place of a speed (`(smms-from-cprs cprs months)` makes one from annual rates in percent), which is how a model of prepayments is used.
+`(annual-rate smm)` is the CPR, in percent, of a monthly mortality (a decimal), and `(monthly-rate cpr)` the monthly mortality of a CPR: `(monthly-rate 6.0)` is 0.00514.
 
 **The dates.** `(new-deal name :first-payment (date 2026 11 25))` gives the deal the date of its first payment, which is month 1. `(deal-payment-date deal month)`
 is the date of a month, and `(deal-payment-dates deal)` a vector of them, the same day of each month (the end of the month, in one that is shorter).

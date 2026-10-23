@@ -3,7 +3,7 @@
 ; How fast a pool of mortgages prepays, as one value that can change with time, and the cash flows of pieces of collateral at that speed.
 ;
 ; A speed has a type, which says what the number means, and the number for each month. The types are PSA (150 is 150% of the standard
-; curve, which rises to 6 CPR over 30 months of loan age; see prepayment_model.lsp), CPR (the annual rate of prepayment, in percent: 6
+; curve, which rises to 6 CPR over 30 months of loan age; see psa-cpr), CPR (the annual rate of prepayment, in percent: 6
 ; is 6 CPR), SMM (the share of what is left that prepays in a month, in percent: 0.5 is a half a percent a month) and MODEL (a share, in percent, of
 ; what a deal's prepayment model says, which looks at rates: 105 is 105% of it; see model-speed-smms in deal_paths.lsp, which a deal works it out with). The number is a
 ; single one, for every month, or a few linear pieces, each (from to months): the speed goes in a straight line from `from` to `to`, and is
@@ -25,7 +25,23 @@
 ; The other slots of a piece say what its loans and its borrowers are like, for a prepayment model to look at (see collateral-characteristics).
 ; Each is '() if it is not known, and the cash flows at a speed do not use them.
 
-(require "prepayment_model.lsp")
+; ---------------------------------------------------------------------------
+; Annual and monthly rates, and the PSA curve
+; ---------------------------------------------------------------------------
+
+(define (annual-rate monthly)
+  "The annual rate in percent (a CPR, or a CDR) of a monthly rate (a decimal: an SMM, or an MDR), or of a vector of them: the share of the loans that is gone after twelve
+months of it. An SMM of 0.005 is a CPR of 5.8."
+  (* 100.0 (- 1.0 (expt (- 1.0 monthly) 12))))
+
+(define (monthly-rate annual)
+  "The monthly rate, a decimal (an SMM, or an MDR), of an annual rate in percent (a CPR, or a CDR), or of a vector of them: the one that leaves as much after twelve months.
+The opposite of annual-rate: (monthly-rate 6.0) is 0.00514."
+  (- 1.0 (expt (- 1.0 (/ annual 100.0)) (/ 1.0 12.0))))
+
+(define (psa-cpr age)
+  "The CPR, in percent, of 100 PSA for loans that are `age` months old: it rises in a straight line from 0 when they are new to 6 at 30 months, and is 6 after that."
+  (* 6.0 (/ (min age 30) 30.0)))
 
 (defstruct speed-curve type pieces)                  ; (made by prepayment-speed: pieces is a list of (from to months), months '() for "from here on")
 
@@ -108,8 +124,8 @@ them begins: a vector. A PSA speed is a multiple of the PSA curve at the age tha
         (type (speed-curve-type curve)))
     (loop for t from 0 below months
           do (vector-set! smms t
-                          (cond ((eq? type 'psa) (smm-from-cpr (cpr (+ age t) (vector-ref speeds t))))
-                                ((eq? type 'cpr) (smm-from-cpr (min 0.99 (/ (vector-ref speeds t) 100.0))))
+                          (cond ((eq? type 'psa) (monthly-rate (min 99.0 (* (psa-cpr (+ age t)) (/ (vector-ref speeds t) 100.0)))))
+                                ((eq? type 'cpr) (monthly-rate (min 99.0 (vector-ref speeds t))))
                                 (else (min 1.0 (/ (vector-ref speeds t) 100.0))))))
     smms))
 
@@ -262,7 +278,7 @@ The pieces can be collateral-pieces, or lists of (balance wac coupon wam [age]).
 of collateral that a prepayment model gives."
   (when (< (vector-length cprs) months)
     (error (format "the prepayment rates are for {} months, and the piece of collateral has {}" (vector-length cprs) months)))
-  (- 1.0 (expt (- 1.0 (vector-clip (/ (vector-take cprs months) 100.0) 0.0 0.99)) (/ 1.0 12.0))))
+  (monthly-rate (vector-clip (vector-take cprs months) 0.0 99.0)))
 
 (define (project-pieces-with pieces smms-of &key (defaults-of '()) (lag 0))
   "The cash flows of all the pieces of collateral added together: (principal interest balance gross-interest loss), each a vector, as project-pool gives, as long as the

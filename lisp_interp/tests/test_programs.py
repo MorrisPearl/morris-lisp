@@ -1472,8 +1472,8 @@ class TestExampleScripts(unittest.TestCase):
     there, never in the repository. The libraries they load (lib/) are
     found where they are, by load's search.
 
-    The two slowest examples (about 15s and 60s) only run when the
-    environment variable LISP_TEST_SLOW is set."""
+    The slowest examples only run when the environment variable
+    LISP_TEST_SLOW is set."""
 
     FAST_EXAMPLES = [
         "macros_example.lsp",
@@ -1496,7 +1496,6 @@ class TestExampleScripts(unittest.TestCase):
     ]
     SLOW_EXAMPLES = [
         "dolist_vectors_map_example.lsp",
-        "oas_monte_carlo_example.lsp",
         "othello_example.lsp",
         "chess_example.lsp",
         "kenken_example.lsp",

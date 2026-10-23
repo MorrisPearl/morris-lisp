@@ -6,10 +6,12 @@
 ;
 ; Most of the models are of a MONTHLY RATE: the share of a loan's balance that something happened to in a month (that it prepaid: the smm; that defaulted:
 ; the mdr), a spline-logistic of it, with each row weighted by the balance, so that over a pool it is the pool's rate. Twelve months of a monthly rate are
-; the annual rate (annual-rate): the CPR of an smm, the CDR of an mdr. The severity of a loss is modeled the same way, by a spline-regression.
+; the annual rate (annual-rate, in prepayment_speed.lsp): the CPR of an smm, the CDR of an mdr. The severity of a loss is modeled the same way, by a spline-regression.
 ;
 ; A model is tried on loans that it was not fitted to (a sample_bucket of 80 or more), period by period: what they did, all of them together, and what the
 ; model said they would (outcomes-by-period, rate-by-month, plot-rate-by-month, rate-misses).
+
+(require "prepayment_speed.lsp")
 
 (defstruct predictor name sql group-sql knots)
 ; something a model looks at: its name, what it is in SQL, in the table loan_months and in the table groups ('() if it is not in that table), and its knots
@@ -58,10 +60,6 @@ averages of groups of loans are closer together than the loans are, so a knot th
 the predictions, less than 0.)"
   (let ((zeros (make-vector (vector-length (cdr (car columns))) 0.0)))
     (- zeros (model-residuals model columns zeros))))
-
-(define (annual-rate monthly)
-  "The annual rate in percent (a CPR, or a CDR) of a monthly rate (a decimal, or a vector of them): what is left after twelve months of it, taken from all of it."
-  (* 100.0 (- 1.0 (expt (- 1.0 monthly) 12))))
 
 (define (outcomes-by-period model data)
   "A table, a row for each period: the outcome of all the rows of the loan-data of the period together (their outcomes, weighted by their weights), and what the model

@@ -219,15 +219,18 @@ changes. An error if it has no collateral, or a tranche floats and it has no ind
   (let ((principal (node-principal (get-node run name))))
     (if (> (vector-sum principal) 0.0) (average-life principal) '())))
 
+(defstruct tranche-analytics price yield spread duration average-life dv01 money oas effective-duration effective-convexity)
+; what analyze-tranche works out of a tranche, which analytics-assign! puts in the slots of its node, of the same names
+
 (define (analyze-tranche deal run name priced-by value)
-  "What the tranche called name is, priced by one of price, yield, spread and oas (the symbol priced-by) that is value: a list (price yield spread duration average-life dv01
-money oas effective-duration effective-convexity). With '() for priced-by, only the average life is worked out. The price is per 100 of balance, the yield in percent, the spread and the oas in basis
-points. The oas, the effective duration and the effective convexity are of the paths of rates that were run (see deal-run-paths!), and '() if none were. Nothing is changed."
+  "What the tranche called name is, priced by one of price, yield, spread and oas (the symbol priced-by) that is value: a tranche-analytics. With '() for priced-by, only
+the average life is worked out. The price is per 100 of balance, the yield in percent, the spread and the oas in basis points. The oas, the effective duration and the
+effective convexity are of the paths of rates that were run (see deal-run-paths!), and '() if none were. Nothing is changed."
   (let ((node (get-node deal name))
         (life (tranche-average-life run name))
         (sets (deal-path-sets deal)))
     (if (null? priced-by)
-        (list '() '() '() '() life '() '() '() '() '())
+        (make-tranche-analytics :average-life life)
         (let ((balance (vector-ref (node-balance node) 0))
               (flows (tranche-cash-flows run name))
               (accrued (accrued-interest deal node)))
@@ -254,24 +257,25 @@ points. The oas, the effective duration and the effective convexity are of the p
                  (oas (cond ((eq? priced-by 'oas) value)
                             ((null? sets) '())
                             (else (* 10000.0 (path-sets-oas sets name money fraction))))))
-            (list price yield spread (modified-duration flows months yield) life
-                  (- (present-value flows months yield) (present-value flows months (+ yield 0.01)))
-                  money oas
-                  (if (null? sets) '() (path-sets-effective-duration sets name (/ oas 10000.0) fraction))
-                  (if (null? sets) '() (path-sets-effective-convexity sets name (/ oas 10000.0) fraction))))))))
+            (make-tranche-analytics
+              :price price :yield yield :spread spread :duration (modified-duration flows months yield) :average-life life
+              :dv01 (- (present-value flows months yield) (present-value flows months (+ yield 0.01)))
+              :money money :oas oas
+              :effective-duration (if (null? sets) '() (path-sets-effective-duration sets name (/ oas 10000.0) fraction))
+              :effective-convexity (if (null? sets) '() (path-sets-effective-convexity sets name (/ oas 10000.0) fraction))))))))
 
-(define (analytics-assign! node result)
-  "Puts the list that analyze-tranche gives, (price yield spread duration average-life dv01 money oas effective-duration effective-convexity), in the slots of the node."
-  (node-price-set! node (list-ref result 0))
-  (node-yield-set! node (list-ref result 1))
-  (node-spread-set! node (list-ref result 2))
-  (node-duration-set! node (list-ref result 3))
-  (node-average-life-set! node (list-ref result 4))
-  (node-dv01-set! node (list-ref result 5))
-  (node-money-set! node (list-ref result 6))
-  (node-oas-set! node (list-ref result 7))
-  (node-effective-duration-set! node (list-ref result 8))
-  (node-effective-convexity-set! node (list-ref result 9)))
+(define (analytics-assign! node analytics)
+  "Puts what analyze-tranche worked out, a tranche-analytics, in the slots of the node of the same names."
+  (node-price-set! node (tranche-analytics-price analytics))
+  (node-yield-set! node (tranche-analytics-yield analytics))
+  (node-spread-set! node (tranche-analytics-spread analytics))
+  (node-duration-set! node (tranche-analytics-duration analytics))
+  (node-average-life-set! node (tranche-analytics-average-life analytics))
+  (node-dv01-set! node (tranche-analytics-dv01 analytics))
+  (node-money-set! node (tranche-analytics-money analytics))
+  (node-oas-set! node (tranche-analytics-oas analytics))
+  (node-effective-duration-set! node (tranche-analytics-effective-duration analytics))
+  (node-effective-convexity-set! node (tranche-analytics-effective-convexity analytics)))
 
 (define (deal-track-prices! deal)
   "Makes the deal work the slots of its tranches out again whenever it changes (its collateral, its tranches, its pricing speed, its dates, its index): a view of the deal,

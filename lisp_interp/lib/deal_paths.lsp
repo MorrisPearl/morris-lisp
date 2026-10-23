@@ -24,8 +24,8 @@
 ;                      To begin with it is the identity: the index is the short rate.
 ;
 ; THE SPREAD. The OAS of a tranche is the one spread, a constant added to the short rate of every month of every path, that makes the average value of its cash flows the money
-; that the buyer pays (its price and its accrued interest). A month's cash flow is discounted by 1 / (1 + (short rate + oas) / 12) for each month on the path up to it, as
-; in oas_monte_carlo.lsp, but the first payment is the part of a month away that it is from the closing date, as in the yield of deal_pricing.lsp. It is in basis points.
+; that the buyer pays (its price and its accrued interest). A month's cash flow is discounted by 1 / (1 + (short rate + oas) / 12) for each month on the path up to it
+; (path-present-values), but the first payment is the part of a month away that it is from the closing date, as in the yield of deal_pricing.lsp. It is in basis points.
 ; The paths start on the curve, so their average discount factor is the curve's, and an OAS of 0 is a price on the Treasury curve (what the borrowers' option to prepay
 ; is worth is taken out of the spread: the more it is worth, the lower the OAS of a price).
 ;
@@ -63,8 +63,7 @@
   "A prepayment model that does not look at the rates: the collateral prepays at the speed (see prepayment-speed), whatever they are. Its answer is the rate, in percent,
 that the speed is for each month of the piece."
   (lambda (piece path)
-    (let ((smms (speed-smms speed (collateral-piece-age piece) (collateral-piece-wam piece))))
-      (* 100.0 (- 1.0 (expt (- 1.0 smms) 12.0))))))
+    (annual-rate (speed-smms speed (collateral-piece-age piece) (collateral-piece-wam piece)))))
 
 (define (model-at-speed model speed)
   "The prepayment model, as a share of it that the speed of the model (prepayment-speed 'model ...) says, in each month: 105 is 105% of the rates it gives (no more than 99)."
@@ -126,15 +125,18 @@ forward curve, times the share that the speed says."
       short-rates
       ((deal-index-function deal) short-rates)))
 
-(define (deal-forward-curve deal)
-  "The monthly forward rates, a vector of 360 decimals, of the Treasury curve of the deal, which the paths of rates start on: the zero curve that its par yields give, and its forward
-rates (see par-curve-zeros and curve-forward-rates). An error if it has no curve."
+(define (deal-zero-curve deal)
+  "The zero curve of the deal's Treasury curve, as par-curve-zeros makes it from the par yields: a table of years, par, discount and zero (a continuously compounded rate).
+An error if the deal has no curve."
   (let ((points (deal-treasury-curve deal)))
     (when (null? points)
-      (error "the deal has no Treasury curve, which the paths of rates start on: give it one, (deal-set-treasury-curve! deal '((2 4.1) (3 4.2))), or in (info deal)"))
-    (table-column (curve-forward-rates (par-curve-zeros (list->vector (map car points))
-                                                         (list->vector (map (lambda (point) (/ (cadr point) 100.0)) points))))
-                  "forward")))
+      (error "the deal has no Treasury curve, which the paths of rates and the Treasuries are of: give it one, (deal-set-treasury-curve! deal '((2 4.1) (10 4.5))), or in (info deal)"))
+    (par-curve-zeros (list->vector (map car points)) (list->vector (map (lambda (point) (/ (cadr point) 100.0)) points)))))
+
+(define (deal-forward-curve deal)
+  "The monthly forward rates, a vector of 360 decimals, of the Treasury curve of the deal, which the paths of rates start on: those of its zero curve (see curve-forward-rates).
+An error if it has no curve."
+  (table-column (curve-forward-rates (deal-zero-curve deal)) "forward"))
 
 ; ---------------------------------------------------------------------------
 ; The deal on a path
@@ -213,21 +215,33 @@ decimal), the first payment being fraction of a month from the start."
           (error (format "no OAS, from -10000 to 50000 basis points, makes {} worth {:,.2f} on the paths" name money)))
         (ridders excess -1.0 5.0 :tolerance 1e-13)))))
 
-(define (path-sets-effective-convexity sets name oas fraction)
-  "The effective convexity of the tranche called name at this OAS (a decimal), in years squared: how much its effective duration changes as rates do, from its value on the
-paths on the curve moved down and moved up, and on the curve, at the same OAS: (down + up - 2 x value) / (value x shift^2). Below 0 for a tranche that the borrowers' option
-shortens as rates fall (it gains less than it loses)."
-  (path-sets-cached sets (format "convexity {} {}" name oas)
-    (lambda ()
-      (let ((value (path-run-money (path-sets-base sets) name oas fraction))
-            (shift (path-sets-shift sets)))
-        (/ (+ (path-run-money (path-sets-down sets) name oas fraction) (path-run-money (path-sets-up sets) name oas fraction) (* -2.0 value))
-           (* value shift shift))))))
+(define (effective-duration down value up shift)
+  "The effective duration, in years, of something that is worth value, down when rates are moved down by the shift (a decimal) and up when they are moved up: the
+proportion that its value falls by for a rise of one in rates, (down - up) / (2 x shift x value)."
+  (/ (- down up) (* 2.0 shift value)))
+
+(define (effective-convexity down value up shift)
+  "The effective convexity, in years squared, of something that is worth value, down when rates are moved down by the shift (a decimal) and up when they are moved up: how
+much its effective duration changes as rates do, (down + up - 2 x value) / (value x shift^2). Below 0 for something that gains less when rates fall than it loses when they rise."
+  (/ (+ down up (* -2.0 value)) (* value shift shift)))
+
+(define (path-sets-moneys sets name oas fraction)
+  "What the tranche called name is worth at this OAS (a decimal) on the paths on the curve moved down, on the curve, and on the curve moved up: (down value up)."
+  (map (lambda (run) (path-run-money run name oas fraction))
+       (list (path-sets-down sets) (path-sets-base sets) (path-sets-up sets))))
 
 (define (path-sets-effective-duration sets name oas fraction)
-  "The effective duration of the tranche called name at this OAS (a decimal), in years: the proportion that its value falls by for a rise of one in rates, from its value on the
-paths on the curve moved down and moved up, at the same OAS."
+  "The effective duration of the tranche called name at this OAS (a decimal), in years (see effective-duration), from its value on the paths on the curve, and on it moved
+down and up, at the same OAS."
   (path-sets-cached sets (format "duration {} {}" name oas)
     (lambda ()
-      (/ (- (path-run-money (path-sets-down sets) name oas fraction) (path-run-money (path-sets-up sets) name oas fraction))
-         (* 2.0 (path-sets-shift sets) (path-run-money (path-sets-base sets) name oas fraction))))))
+      (let ((moneys (path-sets-moneys sets name oas fraction)))
+        (effective-duration (car moneys) (cadr moneys) (caddr moneys) (path-sets-shift sets))))))
+
+(define (path-sets-effective-convexity sets name oas fraction)
+  "The effective convexity of the tranche called name at this OAS (a decimal), in years squared (see effective-convexity), from its value on the paths on the curve, and
+on it moved down and up, at the same OAS. Below 0 for a tranche that the borrowers' option shortens as rates fall."
+  (path-sets-cached sets (format "convexity {} {}" name oas)
+    (lambda ()
+      (let ((moneys (path-sets-moneys sets name oas fraction)))
+        (effective-convexity (car moneys) (cadr moneys) (caddr moneys) (path-sets-shift sets))))))

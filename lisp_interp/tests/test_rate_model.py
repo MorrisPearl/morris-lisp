@@ -1022,34 +1022,6 @@ class TestTheFactorAndCurveBuiltins(NoteOptionsLispTestCase):
         self.assertLispError("(curve-par-yield forwards 10 :start-months 340)", "ends at")
 
 
-class TestTheMortgagePathBuiltin(NoteOptionsLispTestCase):
-
-    def paths(self, keywords=""):
-        return lisp_core.pairs_to_list(self.run_lisp("(simulate-mortgage-rate-paths forwards 0.012 0.014 2 6 0.021 %s)" % keywords))
-
-    def test_the_result_is_the_years_the_short_rates_the_yields_and_the_mortgage_rates(self):
-        years, short, underlying, mortgage = self.paths(":seed 4")
-        np.testing.assert_allclose(years.items, np.arange(25) / 12)
-        for name in (short, underlying, mortgage):
-            self.assertEqual([len(p.items) for p in lisp_core.pairs_to_list(name)], [25] * 6)
-        np.testing.assert_allclose([p.items for p in lisp_core.pairs_to_list(mortgage)],
-                                   np.array([p.items for p in lisp_core.pairs_to_list(underlying)]) + 0.021, rtol=1e-6)
-
-    def test_the_paths_are_the_models(self):
-        years, short, underlying, mortgage = self.paths(":seed 4 :a 1.3 :b 0.2 :tenor-years 7.5")
-        expected = model.simulate_mortgage_rate_paths(FORWARDS, 0.012, 0.014, 2, 6, 0.021, seed=4, a=1.3, b=0.2, tenor_years=7.5)
-        for got, want in ((short, expected[1]), (underlying, expected[2]), (mortgage, expected[3])):
-            np.testing.assert_allclose([p.items for p in lisp_core.pairs_to_list(got)], want, rtol=1e-6)
-
-    def test_the_choices_are_checked(self):
-        self.assertLispError("(simulate-mortgage-rate-paths forwards 0.01 0.01 1 4 0.02 :theta-bar 0.05)", ":theta-bar isn't an option")
-        self.assertLispError("(simulate-mortgage-rate-paths forwards 0.01 0.01 1 4 0.02 0.05)", ":name value pairs")
-        self.assertLispError("(simulate-mortgage-rate-paths 5 0.01 0.01 1 4 0.02)", "forward-rates must be a vector")
-
-    def test_the_old_short_rate_builtin_is_gone(self):
-        self.assertLispError("(sofr-simulate-rate-paths forwards 0.01 0.01 1 4)", "sofr-simulate-rate-paths")
-
-
 class TestTheBuiltinForBothKinds(NoteOptionsLispTestCase):
 
     def setUp(self):

@@ -64,13 +64,6 @@
 (lazy-load "call_spreads.lsp"
   call-spreads call-spreads-for-chain show-call-spreads call-spread-order plot-call-spreads)
 
-; Mortgages: the OAS Monte Carlo, and the prepayment model it uses
-(lazy-load "oas_monte_carlo.lsp"
-  oas-model-price oas-solve annualized-realized-vol path-present-value
-  simple-mortgage-cashflows mortgage-cashflows-per-path)
-(lazy-load "prepayment_model.lsp"
-  cpr smm-from-cpr psa-base-cpr incentive-bump-cpr)
-
 ; Root finding and minimizing
 (lazy-load "solver.lsp" ridders nelder-mead)
 
@@ -108,7 +101,8 @@
   collateral-piece-refinance-share collateral-piece-refinance-share-set! collateral-piece-sato
   collateral-piece-sato-set! collateral-piece-second-home-share collateral-piece-second-home-share-set!
   missing-number? model-speed? collateral-piece-dti collateral-piece-dti-set! collateral-piece-mi-percent
-  collateral-piece-mi-percent-set! collateral-piece-one-borrower-share collateral-piece-one-borrower-share-set!)
+  collateral-piece-mi-percent-set! collateral-piece-one-borrower-share collateral-piece-one-borrower-share-set!
+  annual-rate monthly-rate psa-cpr)
 
 ; A prepayment model fitted to Freddie Mac's loans, from the database that load_freddie_data/ makes
 (lazy-load "freddie_prepayment.lsp"
@@ -117,7 +111,7 @@
 
 ; What the models of Freddie Mac's loans share: reading the database that load_freddie_data/ makes, fitting, and trying a model month by month
 (lazy-load "freddie_loans.lsp"
-  annual-rate copy-loan-data copy-predictor data-knots fit-rate-model knots-within loan-data-from loan-data-outcomes
+  copy-loan-data copy-predictor data-knots fit-rate-model knots-within loan-data-from loan-data-outcomes
   loan-data-outcomes-set! loan-data-periods loan-data-periods-set! loan-data-predictors loan-data-predictors-set!
   loan-data-weights loan-data-weights-set! loan-data? make-loan-data make-predictor model-curve outcomes-by-period
   plot-rate-by-month predicted-outcomes predictor-group-sql predictor-group-sql-set! predictor-knots
@@ -224,7 +218,7 @@
   rate-path-long-yields-set! rate-path-short-rates rate-path-short-rates-set! rate-path? run-path-set
   static-prepayment-model deal-base-prepayment-model deal-forward-path model-at-speed model-speed-smms
   rate-path-first-payment rate-path-first-payment-set! deal-defaults-of deal-piece-defaults
-  path-sets-effective-convexity)
+  path-sets-effective-convexity deal-zero-curve effective-convexity effective-duration path-sets-moneys)
 
 ; What a price says about a tranche of a deal: yield, spread, duration, dv01, money (see lisp_cmo_manual.md)
 (lazy-load "deal_pricing.lsp"
@@ -234,12 +228,22 @@
   money-left-for money-of-children monthly-factor months-from-settlement node-floats? price-for-money priced-by-value
   priced-money tranche-cash-flows treasury-points treasury-yield yield-of-money deal-clear-treasury-curve!
   deal-track-prices! deal-forget-paths! deal-run-paths! deal-set-index-function! deal-set-oas!
-  deal-set-prepayment-model! deal-set-rate-model!)
+  deal-set-prepayment-model! deal-set-rate-model! copy-tranche-analytics make-tranche-analytics
+  tranche-analytics-average-life tranche-analytics-average-life-set! tranche-analytics-duration
+  tranche-analytics-duration-set! tranche-analytics-dv01 tranche-analytics-dv01-set!
+  tranche-analytics-effective-convexity tranche-analytics-effective-convexity-set!
+  tranche-analytics-effective-duration tranche-analytics-effective-duration-set! tranche-analytics-money
+  tranche-analytics-money-set! tranche-analytics-oas tranche-analytics-oas-set! tranche-analytics-price
+  tranche-analytics-price-set! tranche-analytics-spread tranche-analytics-spread-set! tranche-analytics-yield
+  tranche-analytics-yield-set! tranche-analytics?)
 
 ; Hedging a tranche: the Treasuries' effective durations and convexities, and the pair of them and the collateral that hedges it (see lisp_cmo_manual.md)
 (lazy-load "deal_hedge.lsp"
-  deal-hedge deal-hedge-pairs deal-shift deal-zero-curve hedge-instruments hedge-of-pair tranche-measures
-  treasury-cash-flows treasury-measures treasury-value)
+  deal-hedge deal-hedge-pairs deal-shift hedge-instruments hedge-of-pair treasury-cash-flows treasury-measures
+  treasury-value copy-hedge-instrument deal-treasuries hedge-instrument-convexity hedge-instrument-convexity-set!
+  hedge-instrument-duration hedge-instrument-duration-set! hedge-instrument-name hedge-instrument-name-set!
+  hedge-instrument-price hedge-instrument-price-set! hedge-instrument? make-hedge-instrument node-instrument pairs-of
+  priced-on-paths? tranche-to-hedge)
 
 ; Building a deal by clicking in a notebook (see "Building a deal by clicking" in lisp_cmo_manual.md)
 (lazy-load "deal_builder.lsp"

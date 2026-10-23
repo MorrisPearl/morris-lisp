@@ -1485,7 +1485,7 @@ def price_callable_bond_mc(forward_rates, sigma1, sigma2, term_years,
                     This is an INPUT here -- you supply the OAS, the model
                     tells you the resulting price. (The reverse direction,
                     solving for the OAS that reproduces a market price, is
-                    what oas_monte_carlo.lsp's oas-solve does.)
+                    what the deal library's OAS does: lisp_interp/lib/deal_paths.lsp.)
 
     SIMPLIFICATIONS:
       - Models a single, one-time call right at call_years (a "European"

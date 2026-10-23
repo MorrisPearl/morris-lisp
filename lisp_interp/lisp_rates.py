@@ -13,7 +13,6 @@ The curve and the data of SOFR futures (sofr-*):
 Paths of rates from the two-factor model, which start on any curve (the
 Treasury's is the one to use):
   simulate-rate-paths,                        Monte Carlo rate scenarios
-  simulate-mortgage-rate-paths
   simulate-rate-factors,                      what they are made of: the model's
   rate-curve-on-date, curve-par-yield         two random factors, the curve they
                                               bend on a date, a curve's par yields
@@ -47,7 +46,6 @@ try:
     from term_structure_model import rate_curve_on_date as _rate_curve_on_date
     from term_structure_model import curve_par_yield as _curve_par_yield
     from term_structure_model import simulate_rate_factors as _simulate_rate_factors
-    from term_structure_model import simulate_mortgage_rate_paths as _simulate_mortgage_rate_paths
     from term_structure_model import calibrate_to_sofr_options as _calibrate_to_sofr_options
     from term_structure_model import calibrate_to_note_options as _calibrate_to_note_options
     from term_structure_model import calibrate_rate_model as _calibrate_rate_model
@@ -526,39 +524,14 @@ def curve_par_yield_fn(forward_rates, tenor_years, *options):
     return float(_curve_par_yield(_forward_rates_list(forward_rates, who), start_months / 12.0, float(tenor_years)))
 
 
-def simulate_mortgage_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths,
-                                          mortgage_spread, *options):
-    """(simulate-mortgage-rate-paths forward-rates sigma1 sigma2
-      horizon-years n-paths mortgage-spread [:a :b :seed :tenor-years])
-    -> (list years short-rate-paths underlying-paths mortgage-paths)
-
-    The same simulation as simulate-rate-paths, plus a simple mortgage
-    rate for each scenario and month: the par yield of a note of :tenor-years
-    (default 10) plus mortgage-spread. underlying-paths is that yield before
-    adding the spread.
-
-    A real mortgage rate depends on more than one spread over one rate
-    (prepayment risk, the whole curve, costs); see
-    term_structure/mortgage_spread.py for estimating the spread from FRED's
-    MORTGAGE30US, as today's mortgage rate less the curve's 10-year par yield.
-    No network access."""
-    who = "simulate-mortgage-rate-paths"
-    _check_term_structure(who)
-    years, short_rate_paths, underlying_paths, mortgage_paths = _simulate_mortgage_rate_paths(
-        _forward_rates_list(forward_rates, who), float(sigma1), float(sigma2), float(horizon_years), int(n_paths),
-        float(mortgage_spread), **_path_keywords(options, who))
-    return list_to_pairs([LispVector([float(y) for y in years]), _lisp_paths(short_rate_paths),
-                          _lisp_paths(underlying_paths), _lisp_paths(mortgage_paths)])
-
-
 def path_present_values_fn(flows, rate_paths, oas, first_fraction=1.0):
     """(path-present-values flows rate-paths oas [first-fraction]) -> a vector with the value of the cash flows on each path
 
     flows is a list of vectors, one for each path (a cash flow for each month, from the first payment), or one vector, which every path has;
     rate-paths a list of vectors, one for each path, of the short rate (a decimal) at the start of each month, at least as long as the flows, as
     simulate-rate-paths gives them; oas a decimal added to every month's rate (0.005 is 50 basis points). A month's cash flow is discounted by what a
-    dollar is worth for each month of the path up to it, 1 / (1 + (rate + oas) / 12) a month: the same as path-present-value (oas_monte_carlo.lsp),
-    but for all the paths at once, and fast. The first payment is first-fraction of a month from the start (1 if it is left out): its month is
+    dollar is worth for each month of the path up to it, 1 / (1 + (rate + oas) / 12) a month,
+    for all the paths at once. The first payment is first-fraction of a month from the start (1 if it is left out): its month is
     discounted by that power of the month's factor. A path's value is its cash flows, discounted, added up. No network access."""
     who = "path-present-values"
     paths = [np.asarray(v.items, dtype=float) for v in pairs_to_list(rate_paths)]
@@ -596,5 +569,4 @@ BUILTINS = {
     "simulate-rate-factors": simulate_rate_factors_fn,
     "rate-curve-on-date": rate_curve_on_date_fn,
     "curve-par-yield": curve_par_yield_fn,
-    "simulate-mortgage-rate-paths": simulate_mortgage_rate_paths_fn,
 }

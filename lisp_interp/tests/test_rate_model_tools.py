@@ -170,7 +170,7 @@ class TestWhatWasRemoved(LispTestCase):
             self.assertLispError("(%s 1 2 3)" % name, name)
 
     def test_the_builtins_that_were_renamed_are_under_their_new_names_only(self):
-        renamed = {"sofr-simulate-curve-paths": "simulate-rate-paths", "sofr-simulate-mortgage-rate-paths": "simulate-mortgage-rate-paths",
+        renamed = {"sofr-simulate-curve-paths": "simulate-rate-paths",
                    "sofr-simulate-factor-paths": "simulate-rate-factors", "sofr-curve-on-date": "rate-curve-on-date",
                    "sofr-par-yield": "curve-par-yield", "sofr-calibrate-jointly": "calibrate-rate-model",
                    "sofr-calibrate-note-options": "calibrate-to-note-options", "sofr-calibrate-model": "calibrate-to-sofr-options",

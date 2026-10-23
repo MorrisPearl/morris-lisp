@@ -4554,7 +4554,7 @@ structure; `lib/column_engine.lsp` is a small example library, built on
 its own `decimals` slot — e.g. `0` for a dollar amount, `4`-`6` for an
 interest rate/CPR/SMM column), calculates them row-by-row in dependency
 order, and shows them with `display-table` for you — demonstrated
-end-to-end in `mortgage_amortization_example.lsp`. Inside a column's
+end-to-end in `sofr_floating_rate_example.lsp`. Inside a column's
 formula, `(lag NAME n [default])` is column `NAME`'s value `n` rows back;
 for a row before the first one (or past the last, with a negative `n`),
 it's `default` — or an error saying so, if no default was given. For
@@ -4604,8 +4604,8 @@ missing value (`nan` or `'()`) is written as an empty cell, and a column
 shorter than the longest one is padded with empty cells. Any table can be
 written this way, and `load-csv` reads the file back into the same table.
 Returns `'()`. `column_engine.lsp`'s `write-csv` wraps this for a list of column
-structs directly — see that function and `mortgage_amortization_example.
-lsp`'s `(write-csv "mortgage_amortization_example.csv" *columns*)` call.
+structs directly — see that function and `sofr_floating_rate_example.
+lsp`'s `(write-csv "sofr_floating_rate_example.csv" *columns*)` call.
 
 ```lisp
 (write-columns-csv "out.csv" (list (list "rate" #(0.0435 0.041) 4) (cons "prices" #(10 20))))
@@ -6005,7 +6005,7 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 
 | Directory | What's in it |
 |---|---|
-| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `option_methods.lsp` (a stock's options valued three ways), `template.lsp`, `column_engine.lsp`, `prepayment_model.lsp`, `oas_monte_carlo.lsp`, `model_utils.lsp`, `parser.lsp` (a framework for parsers of small languages: see "A parser framework") |
+| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `option_methods.lsp` (a stock's options valued three ways), `template.lsp`, `column_engine.lsp`, `model_utils.lsp`, `parser.lsp` (a framework for parsers of small languages: see "A parser framework") |
 | `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, with its opening book, `chess_book.lsp`, a KenKen solver, and an SQL interpreter, `sql.lsp`. They are described, and the techniques they show explained, in [lisp_example_programs.md](lisp_example_programs.md). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `notebooks/` | Jupyter notebooks that use the interpreter (on the `morris_lisp` kernel) |
 | `scratch/` | Experiments: not part of the interpreter, and not tested |
@@ -6121,10 +6121,10 @@ test that failed. Other ways to run them:
 To see the names of the groups, run `grep -n "^class Test" tests/*.py`.
 Each group's docstring says what it covers.
 
-**The slow examples.** Two example scripts take a while
-(`dolist_vectors_map_example.lsp`, about 15 seconds, and
-`oas_monte_carlo_example.lsp`, about 60), so they're skipped unless you
-set the `LISP_TEST_SLOW` environment variable:
+**The slow examples.** A few example scripts take a while
+(`dolist_vectors_map_example.lsp`, about 15 seconds, and the Othello, chess
+and KenKen programs), so they're skipped unless you set the
+`LISP_TEST_SLOW` environment variable:
 
 ```bash
 LISP_TEST_SLOW=1 python3 -m unittest discover -s tests

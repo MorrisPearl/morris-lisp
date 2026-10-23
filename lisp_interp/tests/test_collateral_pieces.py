@@ -58,10 +58,20 @@ class TestSpeeds(PiecesCase):
             with self.subTest(src=src):
                 self.assertLispError(src, message)
 
+    def test_an_annual_rate_is_twelve_months_of_a_monthly_rate_and_the_other_way(self):
+        self.assertAlmostEqual(self.run_lisp("(annual-rate 0.01)"), 100 * (1 - 0.99 ** 12))
+        np.testing.assert_allclose(self.vector("(annual-rate (vector 0.0 0.05))"), [0.0, 100 * (1 - 0.95 ** 12)])
+        self.assertAlmostEqual(self.run_lisp("(monthly-rate 6.0)"), 1 - 0.94 ** (1 / 12))
+        np.testing.assert_allclose(self.vector("(monthly-rate (annual-rate (vector 0.0 0.003 0.05)))"), [0.0, 0.003, 0.05])
+
+    def test_the_psa_curve_rises_to_6_cpr_over_30_months(self):
+        self.assertEqual([self.run_lisp("(psa-cpr %d)" % age) for age in (0, 15, 30, 100)], [0.0, 3.0, 6.0, 6.0])
+
     def test_a_psa_speed_is_a_multiple_of_the_curve_at_the_age_of_the_loans_and_the_others_are_not(self):
         smms = self.vector("(speed-smms (prepayment-speed 'psa 200) 10 3)")
-        expected = [self.run_lisp("(smm-from-cpr (cpr %d 200))" % age) for age in (10, 11, 12)]
+        expected = [1 - (1 - 2 * 0.06 * age / 30) ** (1 / 12) for age in (10, 11, 12)]          # (200% of 6 CPR x age / 30)
         np.testing.assert_allclose(smms, expected)
+        np.testing.assert_allclose(self.vector("(speed-smms (prepayment-speed 'psa 100) 40 1)"), [1 - 0.94 ** (1 / 12)])     # (6 CPR after 30 months)
         np.testing.assert_allclose(self.vector("(speed-smms (prepayment-speed 'cpr 6) 10 2)"), [1 - (1 - 0.06) ** (1 / 12)] * 2)
         np.testing.assert_allclose(self.vector("(speed-smms (prepayment-speed 'smm 0.5) 10 2)"), [0.005, 0.005])
         np.testing.assert_allclose(self.vector("(speed-smms (prepayment-speed 'cpr '((0 12 2))) 99 2)"),

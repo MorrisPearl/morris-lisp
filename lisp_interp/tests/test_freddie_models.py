@@ -143,10 +143,6 @@ class TestWhatTheModelsShare(ModelsCase):
         self.run_lisp('''(define data (freddie-loan-months conn "sample_bucket < 80"))
                          (define model (fit-prepayment-model data))''')
 
-    def test_an_annual_rate_is_twelve_months_of_a_monthly_rate(self):
-        self.assertAlmostEqual(self.run_lisp("(annual-rate 0.01)"), 100 * (1 - 0.99 ** 12))
-        np.testing.assert_allclose(self.vector("(annual-rate (vector 0.0 0.05))"), [0.0, 100 * (1 - 0.95 ** 12)])
-
     def test_a_knot_without_data_on_both_sides_is_left_out(self):
         self.assertShows("(knots-within '(-100 0 300) (vector-range -150 251))", "(-100 0)")
         self.assertShows("(knots-within '(12) (vector 0.0 5.0))", "0")

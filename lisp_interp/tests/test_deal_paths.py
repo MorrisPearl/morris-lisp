@@ -97,11 +97,6 @@ class TestPresentValuesOfPaths(PathsCase):
                 expected = [mean_value([f], [r], oas, fraction) for f, r in zip(flows, rates)]
                 np.testing.assert_allclose(values, expected, rtol=1e-12)
 
-    def test_it_agrees_with_the_library_function_of_one_path(self):
-        self.run_lisp('(load "oas_monte_carlo.lsp")')
-        self.assertAlmostEqual(self.run_lisp("(vector-ref (path-present-values (list (vector 1.0 2.0 3.0)) (list (vector 0.04 0.05 0.06)) 0.01) 0)"),
-                               self.run_lisp("(path-present-value (vector 1.0 2.0 3.0) (vector 0.04 0.05 0.06) 0.01)"), places=12)
-
     def test_one_vector_of_cash_flows_is_for_every_path(self):
         values = self.vectors("(list (path-present-values (vector 1.0 1.0) (list (vector 0.0 0.0) (vector 0.12 0.12)) 0.0))")[0]
         self.assertAlmostEqual(values[0], 2.0)

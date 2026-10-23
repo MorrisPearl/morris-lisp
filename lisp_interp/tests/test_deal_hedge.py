@@ -21,6 +21,10 @@ class HedgeCase(LispTestCase):
         table = self.run_lisp(source)
         return {name: v.items.tolist() for name, v in lisp_tables.table_columns(table, "test")}
 
+    def names(self, instruments):
+        """The names of the hedge-instruments that the Lisp gives."""
+        return [str(name) for name in lisp_core.pairs_to_list(self.run_lisp("(map hedge-instrument-name %s)" % instruments))]
+
     def make_deal(self, price_pool=True):
         """A deal of 24 months whose loans prepay faster as rates fall (so the tranches have a convexity below 0), divided into A and B, with the paths of rates run, A and B
         priced, and the collateral too, unless price_pool is False."""
@@ -70,6 +74,10 @@ class TestTheTreasuries(HedgeCase):
 
 class TestTheHedge(HedgeCase):
 
+    def test_the_pairs_of_a_list_are_each_pair_once(self):
+        self.assertShows("(pairs-of '(x y z))", "((x y) (x z) (y z))")
+        self.assertShows("(pairs-of '(x))", "()")
+
     def test_the_hedge_makes_the_dollar_duration_and_the_dollar_convexity_nothing(self):
         self.make_deal()
         hedge = self.columns('(deal-hedge deal "B")')
@@ -87,7 +95,9 @@ class TestTheHedge(HedgeCase):
         pairs = self.columns('(deal-hedge-pairs deal "B")')
         self.assertEqual(pairs["gross"], sorted(pairs["gross"]))
         money, duration, convexity = (self.run_lisp('(node-%s (get-node deal "B"))' % slot) for slot in ("money", "effective-duration", "effective-convexity"))
-        instruments = {name: (d, c) for name, _, d, c in (lisp_core.pairs_to_list(i) for i in lisp_core.pairs_to_list(self.run_lisp('(hedge-instruments deal "B")')))}
+        names = self.names('(hedge-instruments deal "B")')
+        durations, convexities = (lisp_core.pairs_to_list(self.run_lisp('(map hedge-instrument-%s (hedge-instruments deal "B"))' % slot)) for slot in ("duration", "convexity"))
+        instruments = dict(zip(names, zip(durations, convexities)))
         for first, second, h1, h2 in zip(pairs["first"], pairs["second"], pairs["first value"], pairs["second value"]):
             solved = np.linalg.solve(np.array([[instruments[first][0], instruments[second][0]], [instruments[first][1], instruments[second][1]]]),
                                      -money * np.array([duration, convexity]))
@@ -98,13 +108,13 @@ class TestTheHedge(HedgeCase):
 
     def test_the_collateral_is_an_instrument_when_it_is_priced_and_is_not_the_tranche(self):
         self.make_deal(price_pool=False)
-        names = [str(lisp_core.pairs_to_list(i)[0]) for i in lisp_core.pairs_to_list(self.run_lisp('(hedge-instruments deal "B")'))]
+        names = self.names('(hedge-instruments deal "B")')
         self.assertNotIn("POOL", names)
         self.assertEqual(len(names), 7)
         self.run_lisp('(deal-set-price! deal "POOL" 101.0)')
-        names = [str(lisp_core.pairs_to_list(i)[0]) for i in lisp_core.pairs_to_list(self.run_lisp('(hedge-instruments deal "B")'))]
+        names = self.names('(hedge-instruments deal "B")')
         self.assertEqual(names[-1], "POOL")
-        names = [str(lisp_core.pairs_to_list(i)[0]) for i in lisp_core.pairs_to_list(self.run_lisp('(hedge-instruments deal "POOL")'))]
+        names = self.names('(hedge-instruments deal "POOL")')
         self.assertNotIn("POOL", names)                                         # (the collateral is not a hedge of itself)
         hedge = self.columns('(deal-hedge deal "POOL")')
         self.assertAlmostEqual(hedge["dollar convexity"][3], 0.0, delta=1e-6 * abs(hedge["dollar convexity"][0]))

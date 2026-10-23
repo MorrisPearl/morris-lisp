@@ -110,9 +110,8 @@ The functions for investment analysis, in the order an analysis uses them.
    the two-factor model of rates, with paths of rates drawn from it and fitted to
    option prices ("Interest rate paths"), the SOFR futures it can be fitted to
    (`sofr-*`, under "tastytrade (real broker data)"), futures curves
-   (`futures-curve-fit`), and `lib/oas_monte_carlo.lsp`, `lib/column_engine.lsp`,
-   `lib/template.lsp`, and `lib/prepayment_model.lsp`, for mortgage pools and
-   their tranches, and `lib/freddie_prepayment.lsp` and `lib/freddie_default.lsp`, a prepayment model and a default model fitted to Freddie Mac's loans. A structured deal, a tree of tranches with interest, principal, losses
+   (`futures-curve-fit`), `lib/column_engine.lsp` and `lib/template.lsp`, tables of
+   formulas, and `lib/freddie_prepayment.lsp` and `lib/freddie_default.lsp`, a prepayment model and a default model fitted to Freddie Mac's loans. A structured deal, a tree of tranches with interest, principal, losses
    and shortfalls, is in its own manual, [lisp_cmo_manual.md](lisp_cmo_manual.md)
    (`lib/deal.lsp`).
 7. **Models.** "Regression models" (linear, logistic, spline, and least
@@ -121,8 +120,7 @@ The functions for investment analysis, in the order an analysis uses them.
 **Built in, or loaded.** Everything above is built in, and there whenever
 the interpreter is, except the libraries in `lib/`, which are loaded with
 `(load "name.lsp")`: `vol_smile.lsp`, `option_check.lsp`, `option_methods.lsp`,
-`oas_monte_carlo.lsp`, `solver.lsp`, `column_engine.lsp`, `template.lsp`,
-`prepayment_model.lsp`, and `model_utils.lsp`. (Their functions can be
+`solver.lsp`, `column_engine.lsp`, `template.lsp`, and `model_utils.lsp`, among others. (Their functions can be
 called without loading them, too, once `lib/autoloads.lsp` is loaded, as
 `init.lsp` does: see `lazy-load`.) The rule: what has to be fast, or talks
 to the world outside, is a builtin, written in Python; a model made of
@@ -140,8 +138,7 @@ and asks: give it the stock's symbol), `vol_smile_example.lsp`, `option_chain_ex
 `census_bls_example.lsp`, `bea_example.lsp`, `prepayment_demo.lsp`,
 `regression_kinds_example.lsp` (the kinds of regression on the same data,
 charted -- with a floor and ceiling, a quantile band, a smooth spline --
-and cross-validated),
-`oas_monte_carlo_example.lsp`, and `mortgage_amortization_example.lsp`.
+and cross-validated), and `deal_example.lsp` (a structured deal).
 
 ## Getting data
 
@@ -1631,13 +1628,7 @@ Needs `term_structure/term_structure_model.py` (next to this repo's
 
 See `examples/sofr_floating_rate_example.lsp` for feeding
 `sofr-forward-rates` into `column_engine.lsp` to drive a floating-rate
-note's coupon, period by period. `prepayment_model.lsp` (a simple
-PSA-style CPR/SMM curve — see that file) is the mortgage-prepayment
-counterpart, incorporated into `mortgage_amortization_example.lsp`'s
-collateral cashflows; `prepayment_demo.lsp`/`term_structure/
-mortgage_spread.py` show a data-fit (rather than textbook-PSA) CPR model
-and a way to estimate the SOFR-to-mortgage spread the rate-incentive
-input to either kind of model would need.
+note's coupon, period by period.
 
 #### `(sofr-calibration-data credentials-path [n-futures n-underlyings n-strikes])`
 Fetches a SOFR futures curve AND a spread of SOFR futures OPTIONS in one
@@ -2929,17 +2920,10 @@ about SOFR futures themselves, `sofr-forward-curve`, `sofr-bootstrap-curve` and
                :legend #f :title "Eight paths of the 10-year yield" :y-format "{:.1%}")
    ```
 
-4. **For mortgages**, add a spread to the yield. The spread that makes the paths' first mortgage rate
-   today's is today's mortgage rate (say 7.4%, from FRED's `MORTGAGE30US`) less the curve's 10-year yield:
-
-   ```lisp
-   (define spread (- 0.074 (curve-par-yield forwards 10)))
-   (define mortgage-paths (fourth (simulate-mortgage-rate-paths forwards 0.019 0.012 30 200 spread :a 2.75 :seed 1)))
-   ```
-
-5. **Use them.** A path is one possible future. Discount a security's cash flows along each path
-   and average, to price it (`oas-model-price`, `oas-solve`: see "Mortgages and option-adjusted
-   spread", below), or look at how the 10-year yield is spread after five years:
+4. **Use them.** A path is one possible future. Discount a security's cash flows along each path
+   and average, to price it (`path-present-values`, below; the structured deals do this for their
+   tranches: see "Option-adjusted spread and effective duration" in [lisp_cmo_manual.md](lisp_cmo_manual.md)),
+   or look at how the 10-year yield is spread after five years:
 
    ```lisp
    (define yields-in-5-years (list->vector (map (lambda (path) (vector-ref path 60)) ten-year-yields)))
@@ -3092,24 +3076,6 @@ they are the curve itself.
 (define paths (simulate-rate-paths forwards 0.0194 0.0122 5 200 :a 2.75 :seed 1))
 (define ten-year-yields (third paths))          ; 200 vectors of 61 monthly yields
 ```
-
-#### `(simulate-mortgage-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths mortgage-spread [:a :b :seed :tenor-years])`
-Pure function — no networking. The same simulation as `simulate-rate-paths` (its arguments, and
-the paths start on `forward-rates`, the market's curve), plus a simple proxy mortgage rate per
-path/month: `mortgage_rate = tenor-years-yield + mortgage-spread` (`tenor-years` defaults to `10`, the usual
-rate-sensitivity proxy for a 30-year mortgage). Reuses `simulate_mortgage_rate_paths()` as-is. The spread
-that puts the first month's mortgage rate at today's is today's mortgage rate (FRED's `MORTGAGE30US`) less the
-curve's 10-year par yield, as in step 4 of "How to generate paths".
-
-**SIMPLIFICATION** (from the underlying model, not this bridge): a real mortgage rate tracks current-coupon MBS
-yields — the whole curve, prepayment risk, origination costs — not one flat spread over one tenor point;
-`mortgage-spread` is a deliberate simplification, named so it's obvious where to plug in something richer
-(`term_structure/mortgage_spread.py`'s `fetch_current_mortgage_rate()` pulls FRED's `MORTGAGE30US` for one way to
-estimate it from real data).
-
-Returns `(list years-vector short-rate-paths underlying-paths mortgage-paths)` — `underlying-paths` is the
-`tenor-years` yield before adding the spread; `mortgage-paths` is after. Each of the three is a Lisp LIST of
-`(horizon-years×12 + 1)`-element vectors, one per path.
 
 #### `(simulate-rate-factors sigma1 sigma2 horizon-years n-paths [:a :b :seed])`
 Pure function — no networking. The model's two random factors along `n-paths` scenarios, which are all
@@ -3276,51 +3242,24 @@ parameters.
 (define fitted-sigma2 (list-ref fit 3))
 ```
 
-#### Mortgages and option-adjusted spread (`oas_monte_carlo.lsp`)
+#### Values on paths of rates
 
-The paths are the input to a Monte Carlo price. [`oas_monte_carlo.lsp`](lib/oas_monte_carlo.lsp) does the next step
-in Lisp, deliberately WITHOUT `column_engine.lsp` (its per-row registry/topological-sort machinery is built for
-readability on a single calculated table, not for generating hundreds-to-thousands of per-path cashflow vectors fast).
-It has:
-
-- `annualized-realized-vol` — a historical-data cross-check for the fitted `sigma1`/`sigma2` (or a quick sanity
-  check with no options data at all), from a plain rate-level vector — see its docstring for a worked example with
-  FRED's `"DFF"` and `"DGS10"`.
-- `simple-mortgage-cashflows` / `mortgage-cashflows-per-path` — a fast, direct fixed-rate, PSA-prepaying
-  pass-through cashflow generator, reusing `prepayment_model.lsp`'s `cpr`/`smm-from-cpr`, either for one path or for
-  every path in a `simulate-mortgage-rate-paths` result at once (prepayments on each path respond to that
-  path's mortgage rate).
-- `path-present-value` / `oas-model-price` / `oas-solve` — the Option-Adjusted Spread engine itself: discounts a
-  cashflow stream along one path using that path's own short rate plus a trial spread (the SAME discounting convention
-  `term_structure_model.py`'s `price_callable_bond_mc()` uses), averages across paths for a model price, then
-  bisects for whichever spread reproduces a target market price. Works for a single shared cashflow vector (an
-  ordinary bond) or a per-path list of cashflow vectors (a prepaying mortgage, whose cashflows are path-dependent).
-  Because the paths start on the curve and their average discount factor is the curve's, a security of fixed cash flows
-  with no option in it has an OAS of about 0 against the curve the paths start on.
-- `(path-present-values flows rate-paths oas [first-fraction])` — `path-present-value` for every path at once, a Python
-  builtin (numpy) that is fast enough to be solved for an OAS many times: a vector with the value of the cash flows on
-  each path. `flows` is a list of vectors, one for each path, or one vector that every path has; `rate-paths` a list of
-  vectors of the short rate (a decimal), as `simulate-rate-paths` gives them; `oas` a decimal added to every rate. A month's
-  cash flow is discounted by 1 / (1 + (rate + oas) / 12) for each month up to it. `first-fraction` (1 if it is left out) is
-  how much of a month the first payment is away: the first month's discount is to that power, so that a first payment
-  35 days after the closing date can be discounted by 35/30 of a month. The structured deals use it (see "Option-adjusted
-  spread and effective duration" in [lisp_cmo_manual.md](lisp_cmo_manual.md)).
+`(path-present-values flows rate-paths oas [first-fraction])` gives the value of cash flows on each path of rates, a
+vector, fast enough (it is a Python builtin) to be solved for an option-adjusted spread many times. `flows` is a list of
+vectors, one for each path (a cash flow for each month), or one vector that every path has; `rate-paths` a list of vectors
+of the short rate (a decimal), as `simulate-rate-paths` gives them; `oas` a decimal added to every rate. A month's cash
+flow is discounted by 1 / (1 + (rate + oas) / 12) for each month up to it. `first-fraction` (1 if it is left out) is how
+much of a month the first payment is away: the first month's discount is to that power, so that a first payment 35 days
+after the closing date can be discounted by 35/30 of a month. The average of the values is the price on the paths; the
+spread that makes it the market's price is the OAS. Because the paths start on the curve and their average discount
+factor is the curve's, cash flows that do not depend on the path have an OAS of about 0. The structured deals use it for
+their tranches, whose cash flows do depend on the path, through prepayments (see "Option-adjusted spread and effective
+duration" in [lisp_cmo_manual.md](lisp_cmo_manual.md)).
 
 ```lisp
 (path-present-values (vector 1.0 1.0) (list (vector 0.0 0.0) (vector 0.12 0.12)) 0.0)    ; => #(2.0 1.970395059307911)
 (path-present-values (list (vector 100.0 100.0) (vector 50.0 150.0)) (list (vector 0.03 0.03) (vector 0.06 0.06)) 0.01)    ; => #(199.00442599971302 197.9752191201696)
 ```
-
-See [`oas_monte_carlo_example.lsp`](examples/oas_monte_carlo_example.lsp) for the pipeline end to end — a curve from
-par yields → `simulate-mortgage-rate-paths` → `mortgage-cashflows-per-path` → `oas-solve` — runnable with no
-network access or credentials (its curve, volatilities and market price are all illustrative).
-[`oas_monte_carlo_live_example.lsp`](examples/oas_monte_carlo_live_example.lsp) is the same against REAL data: the
-Treasury's curve, SOFR and note options from tastytrade fitted with `calibrate-rate-model`, a historical-volatility
-cross-check and the mortgage note rate from FRED, and a mortgage spread worked out from them. Only the
-security's own market price has no live source wired up anywhere in this codebase, so that one number stays an
-assumption. It writes `oas_monte_carlo_live_report.txt` (and prints the same report to the console) listing every
-fetched data point and every assumption the run used. Needs a credentials file with both tastytrade fields and a
-`"fred_api_key"` entry (`creds` in `init.lsp`).
 
 ### Regression models
 
@@ -4417,7 +4356,8 @@ Three libraries fit models to a sample of Freddie Mac's 30-year fixed-rate loans
 
 **What they share.** Most of the models are of a **monthly rate**: the share of a loan's balance that something happened to in a month (that it prepaid, the
 smm; that defaulted, the mdr), a `spline-logistic` of it, with each row weighted by the balance, so that over a pool it is the pool's rate. `(annual-rate monthly)`
-is twelve months of it in percent, 1 - (1 - monthly)^12: the CPR of an smm, the CDR of an mdr. A model looks at a list of `predictor`s, each a name, what it is in
+is twelve months of it in percent, 1 - (1 - monthly)^12: the CPR of an smm, the CDR of an mdr; `(monthly-rate annual)` is the other way. (Both are in
+`lib/prepayment_speed.lsp`, with the deal's prepayment speeds.) A model looks at a list of `predictor`s, each a name, what it is in
 SQL, and its knots; a knot without data on both sides of it, from the 1st to the 99th percentile, is left out (`knots-within`): its hinge would be a column of
 zeros, or one that a few rows could make as steep as they liked.
 

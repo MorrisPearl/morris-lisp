@@ -7,29 +7,15 @@
 ; function's docstring for the full methodology and its documented
 ; simplifications), and uses the resulting curve to drive a floating-rate
 ; note's coupon -- built on column_engine.lsp's defstruct-based column
-; engine, the same way mortgage_amortization_example.lsp builds a fixed-
-; rate amortization table.
+; engine, where each column is a formula of the columns before it.
 ;
 ; Needs the `tastytrade` package (pip install tastytrade), a tastytrade
 ; account, and a credentials JSON file -- see tasty_api/README.md for the
 ; one-time OAuth setup.
 ;
-; USING THIS FOR A MORTGAGE PREPAYMENT MODEL INSTEAD: sofr-forward-rates
-; (below) is exactly what you'd feed a prepayment model too -- a
-; borrower's "rate incentive" to refinance is (their origination rate -
-; the CURRENT market mortgage rate), and the current market mortgage rate
-; can be estimated as sofr-forward-rates[period] + a spread (see
-; term_structure/mortgage_spread.py, which estimates that spread
-; empirically from FRED's MORTGAGE30US series -- fetch it once with
-; fetch_current_mortgage_rate() there, or just assume a flat ~150-250bp
-; spread over 1-month SOFR as a starting point). Once you have a
-; per-period rate_incentive column, prepayment_demo.lsp already shows how
-; to fit/use a spline-logistic CPR model from rate incentive (among other
-; predictors) -- (model-predict that-model (list rate_incentive-vector
-; ...)) gives a per-period prepayment speed, which would multiply into a
-; column here the same way `interest`/`principal` do below, reducing
-; `balance` by (scheduled principal + prepayment) each period instead of
-; just scheduled principal.
+; For mortgages, whose prepayments depend on rates, see the deal library
+; (lisp_cmo_manual.md): its prepayment model, fitted to Freddie Mac's
+; loans, is run on paths of rates that start on a curve like this one.
 
 (load "column_engine.lsp")
 
@@ -46,10 +32,9 @@
 (newline)
 
 ; --- 2. a floating-rate note: coupon = SOFR(this period) + a fixed margin.
-;     Bullet note (flat balance) for simplicity -- swap balance_column's
-;     value_calculation for something like mortgage_amortization_
-;     example.lsp's balance formula (referencing coupon_rate instead of a
-;     fixed rate) to make it amortize instead. ---
+;     Bullet note (flat balance) for simplicity -- give balance_column a
+;     value_calculation that takes out principal each period to make it
+;     amortize instead. ---
 (define note_initial_balance 100000.0)
 (define note_term 60)             ; months (5-year FRN, for example)
 (define coupon_margin 0.0150)     ; 150bp margin over 1-month SOFR

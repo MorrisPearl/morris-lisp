@@ -179,8 +179,6 @@
 ; a closing date and a name. They can be changed in a notebook with (collateral deal), (bonds deal) and (info deal), which can all be shown at once: each
 ; is a view of the deal, and shows what is changed in the others (see deal-add-view!).
 
-(define collateral-columns (append '("balance" "wac" "coupon" "wam" "age") (map car collateral-characteristics)))
-
 (define (collateral-table pieces)
   "The table of the collateral of a list of pieces, each a collateral-piece or a list (balance wac coupon wam [age]): a row for each, with the columns balance, wac, coupon, wam
 and age (0 if left out), and a column for each of the collateral-characteristics, what the loans are like, with nan where a piece does not say. A table of collateral of

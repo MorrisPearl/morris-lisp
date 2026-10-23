@@ -197,9 +197,7 @@
 
 ; Used by write-csv, below: turns a list of column structs into the
 ; (name vector decimals) shape write-columns-csv expects, keeping only the
-; visible ones (visible #f columns -- pure bookkeeping, e.g.
-; wala/sched_principal in mortgage_amortization_example.lsp -- are left
-; out).
+; visible ones (visible #f columns, pure bookkeeping, are left out).
 (define (columns->display-pairs cols)
   (map (lambda (c) (list (column-name c) (column-series c) (column-decimals c)))
        (filter column-visible cols)))

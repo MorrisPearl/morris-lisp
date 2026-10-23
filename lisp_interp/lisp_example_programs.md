@@ -83,7 +83,7 @@ files in `examples/` and `lib/` from anywhere:
   `sql_example.lsp`).
 - **The tests run them.** The offline examples run in the tests
   (`tests/test_programs.py`), most of them checking what they print; the five
-  slowest (Othello, chess, KenKen, the OAS pipeline, and the tail-call example) only
+  slowest (Othello, chess, KenKen, and the tail-call example) only
   when `LISP_TEST_SLOW=1` is set.
 
 ## The examples at a glance
@@ -127,10 +127,7 @@ files in `examples/` and `lib/` from anywhere:
 
 | File | What it shows | Needs |
 |---|---|---|
-| `mortgage_amortization_example.lsp` | a mortgage and a four-tranche deal, as columns of formulas (`lib/column_engine.lsp`) | tastytrade (for its SOFR section) |
-| `sofr_floating_rate_example.lsp` | a floating-rate note driven by the SOFR futures curve | tastytrade |
-| `oas_monte_carlo_example.lsp` | the whole option-adjusted-spread pipeline on made-up numbers | nothing (60 s) |
-| `oas_monte_carlo_live_example.lsp` | the same on live data, written to a report | tastytrade, FRED |
+| `sofr_floating_rate_example.lsp` | a floating-rate note driven by the SOFR futures curve, as columns of formulas (`lib/column_engine.lsp`) | tastytrade |
 | `rate_paths_example.lsp` | how paths of interest rates are made, a stage at a time: today's curve, the curve with no volatility, the model's two random factors, the curve they bend on a date, and many paths | nothing: a free download |
 | `rate_model_example.lsp` | fitting the rate model to SOFR and 10-year note options together, then drawing and charting a few paths from it | tastytrade, the Treasury's curve |
 | `note_option_example.lsp` | fitting the rate model to options on the 10-year note future: the model's prices next to the market's, and the volatility smile | tastytrade, the Treasury's curve |
@@ -1127,8 +1124,7 @@ that has never been seen to fail isn't known to test anything.
 
 ### Models as columns of formulas
 
-`mortgage_amortization_example.lsp`, `sofr_floating_rate_example.lsp`, and the
-library behind them, `lib/column_engine.lsp`. A structured-finance deal is a table in
+`sofr_floating_rate_example.lsp`, and the library behind it, `lib/column_engine.lsp`. A structured-finance deal is a table in
 which each column is a formula about the others and about its own previous row — a
 spreadsheet. The column engine lets you write it that way:
 
@@ -1164,36 +1160,21 @@ sorted order and overwrites its binding with the fresh value. So a column sees t
 *current* row's value of a column calculated before it and the *previous* row's of one
 calculated after, with no unbound-variable errors.
 
-**The same name again: a waterfall.** The four-tranche deal in
-`mortgage_amortization_example.lsp` pays interest and principal to tranches in turn out
-of a pool of `cash`. It does so by *redefining* the column `cash` after each payment:
+**The same name again.** A column's name can be defined more than once: `find-column`
+resolves it to the nearest definition at or before the column being calculated, so a
+column `cash` redefined after each payment, `(- cash int_a)`, reads like a deal's
+priority of payments. (For a real deal, with its tranches and its rules of payment, the
+deal library is the better tool: see `deal_example.lsp` and the
+[CMO manual](lisp_cmo_manual.md).)
 
-```lisp
-(defcolumn int_a :value_calculation (min cash (* (lag bal_a 1) periodic_mortgage_interest_rate)))
-(defcolumn cash  :value_calculation (- cash int_a))     ; what's left after A's interest
-(defcolumn int_b :value_calculation (min cash ...))
-(defcolumn cash  :value_calculation (- cash int_b))
-```
+**Caveats.** A column's name becomes a real global variable while it is calculated (so a
+column called `list` would shadow the builtin), and a column's series is a vector, which
+holds numbers: use 1 and 0, not `#t` and `#f`. Read the engine as an *approach*, not the
+only one.
 
-`find-column` resolves a name used more than once to the nearest definition at or before
-the column being calculated, so each stage sees the cash left by the stage before — the
-text of the program reads like the deal's "priority of payments". The Z bond
-(accretion bond) section is a careful example of getting an either/or rule right
-without branching in two places: while senior tranches are outstanding, its interest
-isn't paid (it just isn't taken from the pool), so the cash is automatically available
-to speed their principal.
-
-**Caveats the file itself states.** A column's name becomes a real global variable while
-it is calculated (so a column called `list` would shadow the builtin), and a column's
-series is a vector, which holds numbers: use 1 and 0, not `#t` and `#f` (the example
-says so beside `z_locked_out`). Read the file as an *approach*, not the only one.
-
-The example also folds a prepayment model (`lib/prepayment_model.lsp`, PSA-style
-speeds with a refinancing-incentive term) into the collateral's cash flows, driven by a
-SOFR forward curve from `sofr-forward-curve`: market data flowing all the way through
-into a deal's cash flows. It needs a tastytrade sign-in for that piece alone (comment out the
-SOFR section to run it offline), and it writes the cash flow tape to a CSV with
-`write-csv`.
+`sofr_floating_rate_example.lsp` drives a floating-rate note's coupon by a SOFR forward
+curve from `sofr-forward-curve`, so market data flows into the note's cash flows. It
+needs a tastytrade sign-in, and it writes the cash flow tape to a CSV with `write-csv`.
 
 ### Statistics and optimization
 
@@ -1236,14 +1217,6 @@ a short script to copy from.
   and shows that `lp-solve` reports an infeasible problem as an error that `catch-error`
   catches. Separating the *problem* (data, in a file) from the *solver* (code) means a
   portfolio manager can edit the first without touching the second.
-- **`oas_monte_carlo_example.lsp`** (60 seconds; the **live** version uses real data). The
-  option-adjusted spread pipeline from `lib/oas_monte_carlo.lsp`: a forward curve from par
-  yields, paths of a two-factor rate model that start on it, a mortgage cash flow for each path,
-  and the spread that reproduces a market price. All of the inputs in this version are made up, which makes the pipeline
-  runnable anywhere and its stages easy to follow; the live version
-  (`oas_monte_carlo_live_example.lsp`) swaps in the Treasury's curve, a model fitted to option prices,
-  and the mortgage rate and its spread over the 10-year yield, and writes a report that
-  separates what was fetched from the one number (the price) that is still an assumption.
 
 ---
 
@@ -1451,7 +1424,8 @@ two narrower speeds. The interest goes down the same tree: the program divides a
 so that the two pay the bond's coupon whatever the index is, and shows their coupons at five levels of the index. A bond that accrues (a Z bond) pays the bonds before it,
 and a bond is divided into an interest-only and a principal-only bond. And a deal made of two pieces of collateral with different pass-through
 coupons, which has a coupon that falls as the piece with the higher coupon is paid off, is run at two speeds. The
-[CMO manual](lisp_cmo_manual.md) says what each part is and how to make another kind of split, and how losses and shortfalls are divided.
+[CMO manual](lisp_cmo_manual.md) says what each part is and how to make another kind of split, and how losses and shortfalls are divided; and how a
+tranche is priced, on paths of interest rates too (its option-adjusted spread, effective duration and convexity), and hedged.
 
 ## Writing an example
 
