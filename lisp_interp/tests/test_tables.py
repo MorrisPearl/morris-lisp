@@ -697,6 +697,99 @@ class TestSaveVariables(LispTestCase):
         self.assertLispError('(load-variables "/no/such/file.json")', "couldn't read /no/such/file.json")
 
 
+class TestPivotTable(LispTestCase):
+    """(table-pivot table rows columns aggregation ...): a row for each value of one column, a column for each value of another, and in each cell an
+    aggregation of the rows that go with it. And round-to-nearest, for putting numbers in groups."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("""
+          (define loans (make-table "wac"       #(6.1 6.4 6.6 6.3 6.9 7.2)
+                                    "occupancy" (vector "P" "P" "I" "I" "P" "S")
+                                    "balance"   #(100 200 300 400 500 600)
+                                    "state"     (vector "CA" "NY" "CA" "CA" "NY" "TX")))""")
+
+    def columns(self, source):
+        """A table as a dict of its columns, each a list."""
+        table = self.run_lisp(source)
+        return {name: v.items.tolist() for name, v in lisp_tables.table_columns(table, "test")}
+
+    def test_a_row_for_each_value_a_column_for_each_value_and_the_sum_in_each_cell(self):
+        pivot = self.columns("""(table-pivot loans "state" "occupancy" '(sum "balance"))""")
+        self.assertEqual(list(pivot), ["state", "I", "P", "S"])
+        self.assertEqual(pivot["state"], ["CA", "NY", "TX"])
+        self.assertEqual(pivot["I"], [700, 0, 0])                       # (two investor loans in CA; a sum of nothing is 0)
+        self.assertEqual(pivot["P"], [100, 700, 0])
+        self.assertEqual(pivot["S"], [0, 0, 600])
+
+    def test_the_rows_or_the_columns_can_be_a_function_of_the_values_and_a_total_column_is_added(self):
+        pivot = self.columns("""(table-pivot loans "wac" "occupancy" '(sum "balance") :row-key (lambda (w) (round-to-nearest w 0.5)) :row-total #t)""")
+        self.assertEqual(pivot["wac"], [6.0, 6.5, 7.0])
+        self.assertEqual(pivot["I"], [0, 700, 0])
+        self.assertEqual(pivot["P"], [100, 200, 500])
+        self.assertEqual(pivot["total"], [100, 900, 1100])
+        counts = self.columns("""(table-pivot loans "state" "balance" 'count :column-key (lambda (b) (round-to-nearest b 300)) :row-total #t)""")
+        self.assertEqual(list(counts), ["state", "0.0", "300.0", "600.0", "total"])
+        self.assertEqual(counts["300.0"], [2, 1, 0])
+        self.assertEqual(counts["total"], [3, 2, 1])
+
+    def test_a_total_is_of_the_rows_not_of_the_cells_and_can_be_another_summary(self):
+        pivot = self.columns("""(table-pivot loans "state" "occupancy" '(mean "balance") :row-total #t)""")
+        self.assertEqual(pivot["I"][0], 350.0)                           # (CA's investor loans: 300 and 400)
+        self.assertAlmostEqual(pivot["total"][0], (100 + 300 + 400) / 3)         # (the mean of the three rows, not of the cells' means)
+        other = self.columns("""(table-pivot loans "state" "occupancy" '(mean "balance") :row-total '(sum "balance"))""")
+        self.assertEqual(other["total"], [800, 700, 600])
+        for value in self.columns("""(table-pivot loans "state" "occupancy" '(mean "balance"))""")["S"][:2]:
+            self.assertTrue(value != value)                              # (a mean of nothing is missing: nan)
+
+    def test_a_row_of_totals_and_what_is_in_an_empty_cell(self):
+        pivot = self.columns("""(table-pivot loans "state" "occupancy" 'count :row-total #t :column-total #t :total-name "all")""")
+        self.assertEqual(pivot["state"], ["CA", "NY", "TX", "all"])
+        self.assertEqual(pivot["I"], [2, 0, 0, 2])
+        self.assertEqual(pivot["P"], [1, 2, 0, 3])
+        self.assertEqual(pivot["all"], [3, 2, 1, 6])
+        filled = self.columns("""(table-pivot loans "state" "occupancy" '(max "balance") :empty -1)""")
+        self.assertEqual(filled["S"], [-1, -1, 600])
+
+    def test_a_weighted_mean_a_percentile_and_a_cell_that_is_text(self):
+        self.assertAlmostEqual(self.columns("""(table-pivot loans "state" "occupancy" '(weighted-mean "wac" "balance"))""")["I"][0],
+                               (6.6 * 300 + 6.3 * 400) / 700)
+        self.assertEqual(self.columns("""(table-pivot loans "occupancy" "state" '((percentile 100) "balance"))""")["NY"][1], 500.0)
+        firsts = self.columns("""(table-pivot loans "state" "occupancy" '(first "state"))""")
+        self.assertEqual(firsts["P"][:2], ["CA", "NY"])
+
+    def test_a_missing_value_is_a_row_or_column_of_its_own_and_an_empty_table_has_no_rows(self):
+        self.run_lisp("""(define gaps (make-table "k" #(1.0 nan 1.0) "c" #(5 nan 7) "v" #(1 2 3)))""")
+        pivot = self.columns("""(table-pivot gaps "k" "c" '(sum "v"))""")
+        self.assertEqual(pivot["k"][0], 1.0)
+        self.assertTrue(pivot["k"][1] != pivot["k"][1])                  # (the row with no k is a row, shown as missing)
+        self.assertEqual(list(pivot)[1:], ["5.0", "7.0", "missing"])     # (a column of decimals: its values are written as decimals)
+        self.assertEqual(pivot["5.0"], [1, 0])
+        self.assertEqual(pivot["missing"], [0, 2])
+        empty = self.columns("""(table-pivot (table-filter loans (vector 0 0 0 0 0 0)) "state" "occupancy" 'count :row-total #t)""")
+        self.assertEqual(empty, {"state": [], "total": []})
+
+    def test_what_is_wrong_is_said(self):
+        self.assertLispError("""(table-pivot loans "nowhere" "occupancy" 'count)""", "nowhere")
+        self.assertLispError("""(table-pivot loans "state" "occupancy" 'sum)""", "sum needs a column")
+        self.assertLispError("""(table-pivot loans "state" "occupancy" '(weighted-mean "wac"))""", "needs a weight column")
+        self.assertLispError("""(table-pivot loans "state" "occupancy" 'median-ish)""", "isn't a summary")
+        self.assertLispError("""(table-pivot loans "state" "occupancy" 'count :row-key 5)""", ":row-key must be a procedure")
+        self.assertLispError("""(table-pivot loans "state" "occupancy" 'count :empty "none")""", ":empty is a number")
+        self.assertLispError("""(table-pivot loans "state" "occupancy" 'count :nonsense 1)""", "nonsense")
+        self.run_lisp("""(define clash (make-table "a" (vector "x" "a")))""")                  # (a value of the columns is the name of the first column)
+        self.assertLispError("""(table-pivot clash "a" "a" 'count)""", "two columns of the result are called a")
+        self.assertLispError("""(table-pivot loans "state" "occupancy" 'count :row-total #t :total-name "I")""", "two columns of the result are called I")
+        self.assertLispError("""(table-pivot loans "state" "occupancy" 'count :row-key (lambda (x) (list x)))""", "must return a number, string, or date")
+
+    def test_round_to_nearest_rounds_a_number_or_a_vector_to_a_multiple_of_the_step(self):
+        self.assertShows("(round-to-nearest 6.37 0.5)", "6.5")
+        self.assertShows("(round-to-nearest 123456 50000)", "100000.0")
+        self.assertShows("(round-to-nearest #(1.2 7.9 -2.6) 5)", "#(0.0 10.0 -5.0)")
+        self.assertLispError("(round-to-nearest 5 0)", "the step is a number above 0")
+        self.assertLispError('(round-to-nearest "5" 1)', "expected a number")
+
+
 class TestStratify(LispTestCase):
     """lisp_stratify.py: stratify and stratify-all."""
 

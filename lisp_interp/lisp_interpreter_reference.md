@@ -3759,6 +3759,57 @@ order, and each value joins the first earlier group it matches.
 (table-group-by names "n" (list (list "total" 'sum "v")) :key string-downcase)   ; => (("n" . #("a" "b")) ("total" . #(5 1)))
 ```
 
+#### `(table-pivot t rows columns aggregation [:row-key f] [:column-key g] [:row-total spec] [:column-total spec] [:total-name text] [:empty value])`
+A pivot table: a new table with a **row** for each distinct value of the column `rows`, a **column** for each distinct value of the column `columns`,
+and in each cell what the `aggregation` gives of the rows of `t` that go with it. The rows and the columns are in order of their values. The
+first column of the result has the name of `rows`; the others are named for the values of `columns`, written as they are (`"P"`, `"0.5"`, `"2026-10-22"`,
+and `"missing"` for a value that is missing).
+
+The **aggregation** is a summary function, `count`, or a list `(function column [weight-column])` as `table-group-by` has them, without the new
+name: `(sum "balance")`, `(mean "wac")`, `(weighted-mean "wac" "balance")`, `((percentile 90) "balance")`. A cell that no row goes with is 0 for `count` and
+`sum`, and missing (`nan`) for the others; `:empty` says what it is instead, a number or `'()`.
+
+`:row-key f` and `:column-key g` apply a function to each value of the `rows` or the `columns` column, and rows whose results are equal go together, as `:key` does for
+`table-group-by`: the rows are then a function of the column, such as a bucket of it. `(round-to-nearest x step)` rounds a number, or a vector, to the nearest multiple of
+`step`, for buckets (0.5 for the nearest half, 50000 for the nearest fifty thousand).
+
+`:row-total spec` adds a column with a summary of each row, and `:column-total spec` a last row with a summary of each column, named `"total"` (`:total-name` says
+another name). The spec is `#t` for the aggregation of the cells again, or another one, such as `'(sum "balance")`: a total is of the *rows of the table*, not of the
+cells, so that the total of a mean is the mean of the rows, not of the means of the cells. A column total puts the name in the first column, so that if that is a column of numbers it
+is then a column of numbers and a word.
+
+```lisp
+(define loans (make-table "state" (vector "CA" "NY" "CA" "NY" "TX")
+                          "occupancy" (vector "P" "P" "I" "P" "S")
+                          "wac" #(6.1 6.4 6.6 6.9 7.2)
+                          "balance" #(100 200 300 400 500)))
+; the balance, by wac to the nearest half a percent and occupancy, with the total of each row
+(define by-wac (table-pivot loans "wac" "occupancy" '(sum "balance")
+                            :row-key (lambda (w) (round-to-nearest w 0.5)) :row-total #t))
+(table-column-names by-wac)                                   ; => ("wac" "I" "P" "S" "total")
+(table-column by-wac "wac")                                   ; => #(6.0 6.5 7.0)
+(table-column by-wac "P")                                     ; => #(100 200 400)
+(table-column by-wac "total")                                 ; => #(100 500 900)
+
+; how many loans of each state have a balance in each bucket of 300, with the totals of the rows and the columns
+(define counts (table-pivot loans "state" "balance" 'count
+                            :column-key (lambda (b) (round-to-nearest b 300)) :row-total #t :column-total #t))
+(table-column-names counts)                                   ; => ("state" "0.0" "300.0" "600.0" "total")
+(table-column counts "state")                                 ; => #("CA" "NY" "TX" "total")
+(table-column counts "300.0")                                 ; => #(1 2 0 3)
+(table-column counts "total")                                 ; => #(2 2 1 5)
+```
+
+#### `(round-to-nearest x step)`
+`x`, a number or a vector of numbers, rounded to the nearest multiple of `step`, a number above 0. An exact half rounds to the even multiple, like `round`. The result is
+a decimal. For putting numbers in buckets: see `table-pivot`.
+
+```lisp
+(round-to-nearest 6.37 0.5)                                   ; => 6.5
+(round-to-nearest 123456 50000)                               ; => 100000.0
+(round-to-nearest #(1.2 7.9) 5)                               ; => #(0.0 10.0)
+```
+
 #### `(table-join left right keys [how] [:key f] [:test predicate])`
 Combine the rows of two tables whose key column(s) match. Each output row
 is a row of `left` followed by the other columns of the matching `right`

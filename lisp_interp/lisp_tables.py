@@ -21,7 +21,7 @@ import numpy as np
 from lisp_core import (
     Keyword, LispDate, LispError, LispHashTable, LispString, LispStruct, LispStructType, LispVector, NIL, Pair,
     Procedure, Symbol,
-    _brief, _lisp_scalar, apply_proc, is_true, keyword_options, list_to_pairs, pairs_to_list, to_string, parse_date_text,
+    _brief, _lisp_scalar, apply_proc, is_true, keyword_options, list_to_pairs, pairs_to_list, to_display_string, to_string, parse_date_text,
 )
 from lisp_vector_math import factorize, floats_of, is_number, missing_mask, to_vector, truth_of
 
@@ -869,6 +869,124 @@ def table_group_by(table, keys, aggregations, *options):
 
 
 # ---------------------------------------------------------------------------
+# A pivot table
+# ---------------------------------------------------------------------------
+
+def pivot_aggregation(spec, columns, who):
+    """An aggregation as table-pivot is given it -- a summary function such as count or sum, or a list (function column [weight-column]),
+    where the function is a symbol or (percentile p) -- as (function, percent, column, weights)."""
+    if isinstance(spec, Pair):
+        parts = pairs_to_list(spec)
+        if str(parts[0]) in ("percentile", "weighted-percentile") and len(parts) == 2 and is_number(parts[1]):
+            parts = [spec]                                      # (percentile 90), with no column: summary_function will say what is wrong
+    else:
+        parts = [spec]
+    function, percent = summary_function(parts[0], who)
+    column = find_column(columns, str(parts[1]), who) if len(parts) > 1 else None
+    weights = find_column(columns, str(parts[2]), who) if len(parts) > 2 else None
+    if column is None and function != "count":
+        raise LispError("%s: %s needs a column: (%s \"column\")" % (who, function, function))
+    if function in WEIGHTED_FUNCTIONS and weights is None:
+        raise LispError("%s: %s needs a weight column: (%s \"column\" \"weights\")" % (who, function, function))
+    return function, percent, column, weights
+
+
+def group_numbers(vector):
+    """Which group each row of the vector is in, in the order of the groups, sorted by value, with the value of each group: (group of each row, values)."""
+    order, starts, counts, key_values = group_rows([vector])
+    group_of_row = np.empty(len(vector.items), dtype=np.int64)
+    for group, (start, count) in enumerate(zip(starts, counts)):
+        group_of_row[order[start:start + count]] = group
+    return group_of_row, key_values[0]
+
+
+def heading_text(value):
+    """The heading of a column of a pivot table, for a value of the key of the columns: the value as it is written, and `missing` for none."""
+    if is_missing(value):
+        return "missing"
+    return to_display_string(value)
+
+
+def table_pivot(table, rows, columns, aggregation, *options):
+    """(table-pivot table rows columns aggregation [:row-key f] [:column-key f] [:row-total spec] [:column-total spec] [:total-name text] [:empty value]) --
+    a table with a row for each distinct value of the column `rows`, a column for each distinct value of the column `columns`, and in each cell what the
+    aggregation, applied to the rows of the table that go with it, gives. The aggregation is a summary function, a symbol such as count, or a list
+    (function column [weight-column]), as table-group-by has them (without the new name): (sum "balance"), (weighted-mean "wac" "balance"). The rows
+    and the columns are in order of their values."""
+    who = "table-pivot"
+    given = keyword_options(options, ["row-key", "column-key", "row-total", "column-total", "total-name", "empty"], who)
+    table_cols = table_columns(table, who)
+    row_name, column_name = str(rows), str(columns)
+    row_vector, column_vector = find_column(table_cols, row_name, who), find_column(table_cols, column_name, who)
+    for option in ("row-key", "column-key"):
+        procedure = given.get(option)
+        if procedure is not None and not (isinstance(procedure, Procedure) or callable(procedure)):
+            raise LispError("%s: :%s must be a procedure of one value, such as (lambda (x) (round-to-nearest x 0.5)), not %s"
+                            % (who, option, _brief(procedure)))
+        if procedure is not None:
+            if option == "row-key":
+                row_vector = keyed_vector(row_vector, procedure, who)
+            else:
+                column_vector = keyed_vector(column_vector, procedure, who)
+    function, percent, value_column, weights = pivot_aggregation(aggregation, table_cols, who)
+    total_label = str(given.get("total-name", "total"))
+
+    def total_spec(option):
+        """What a total is of: None for none, the aggregation itself for #t, and otherwise the spec that was given."""
+        spec = given.get(option)
+        if spec is None or spec is False:
+            return None
+        if spec is True:
+            return function, percent, value_column, weights
+        return pivot_aggregation(spec, table_cols, who)
+
+    row_total, column_total = total_spec("row-total"), total_spec("column-total")
+
+    n = row_count(table_cols)
+    row_of_row, row_values = group_numbers(row_vector) if n else (np.zeros(0, dtype=np.int64), [])
+    column_of_row, column_values_ = group_numbers(column_vector) if n else (np.zeros(0, dtype=np.int64), [])
+    headings = [heading_text(v) for v in column_values_]
+    taken = [row_name] + headings + ([total_label] if row_total else [])
+    if len(set(taken)) != len(taken):
+        raise LispError("%s: two columns of the result are called %s: the values of %s are written as column headings, and the first column is %s%s"
+                        % (who, [h for h in taken if taken.count(h) > 1][0], column_name, row_name,
+                           ", then the total, " + total_label if row_total else ""))
+
+    # the cells: the aggregation of the rows that go with each pair of a row value and a column value
+    order, starts, counts, _ = group_rows([LispVector(row_of_row), LispVector(column_of_row)]) if n else (None, [], [], None)
+    cells = aggregate(function, value_column, weights, order, starts, counts, percent=percent).items if n else np.zeros(0)
+    numeric = cells.dtype != object
+    default_empty = 0 if function in ("count", "sum") else (float("nan") if numeric else NIL)
+    empty = given.get("empty", default_empty)
+    if not (is_number(empty) or empty is NIL):
+        raise LispError("%s: :empty is a number (or '()), not %s" % (who, _brief(empty)))
+    grid = [[empty] * len(row_values) for _ in headings]                  # by column, then row
+    for start, value in zip(starts, cells):
+        first = order[start]
+        grid[column_of_row[first]][row_of_row[first]] = value.item() if hasattr(value, "item") else value
+
+    def summaries(spec, group_of_row):
+        """The spec's aggregation over the rows of each group (the group of each row is given), in the order of the groups, as a list."""
+        total_function, total_percent, total_column, total_weights = spec
+        t_order, t_starts, t_counts, _ = group_rows([LispVector(group_of_row)])
+        found = aggregate(total_function, total_column, total_weights, t_order, t_starts, t_counts, percent=total_percent).items
+        return [v.item() if hasattr(v, "item") else v for v in found]
+
+    row_keys = list(row_values)
+    columns_out = [list(values) for values in grid]
+    if row_total:
+        columns_out.append(summaries(row_total, row_of_row) if n else [])
+    if column_total:
+        by_column = summaries(column_total, column_of_row) if n else []
+        everything = summaries(row_total or column_total, np.zeros(n, dtype=np.int64))[0] if n else empty
+        row_keys.append(LispString(total_label))
+        for j, values in enumerate(columns_out):
+            values.append(by_column[j] if j < len(headings) else everything)
+    names = headings + ([total_label] if row_total else [])
+    return make_table_value([(row_name, LispVector(row_keys))] + [(name, LispVector(values)) for name, values in zip(names, columns_out)])
+
+
+# ---------------------------------------------------------------------------
 # Joining two tables on matching key values
 # ---------------------------------------------------------------------------
 
@@ -1021,6 +1139,7 @@ def table_describe(table):
 
 SUMMARY_BUILTINS = {
     "table-group-by": table_group_by,
+    "table-pivot": table_pivot,
     "table-join": table_join,
     "table-describe": table_describe,
 }

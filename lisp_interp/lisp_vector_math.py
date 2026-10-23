@@ -243,6 +243,18 @@ def vector_round(v, decimals=0):
     return unary("vector-round", v, lambda x: np.round(x, int(decimals)))
 
 
+def round_to_nearest(x, step):
+    """(round-to-nearest x step) -- x, a number or a vector, rounded to the nearest multiple of step (a number above 0): 0.5 for
+    the nearest half, 50000 for the nearest fifty thousand. Halves round to even. For grouping numbers: see table-pivot."""
+    if not isinstance(step, (int, float)) or isinstance(step, bool) or not step > 0:
+        raise LispError("round-to-nearest: the step is a number above 0, such as 0.5 or 50000, not %s" % to_string(step))
+    if isinstance(x, LispVector):
+        return unary("round-to-nearest", x, lambda a: np.round(np.asarray(a, dtype=np.float64) / step) * step)
+    if not isinstance(x, (int, float)) or isinstance(x, bool):
+        raise LispError("round-to-nearest: expected a number or a vector of numbers, not %s" % to_string(x))
+    return float(np.round(x / step) * step)
+
+
 def vector_clip(v, low, high):
     """(vector-clip v low high) -- each element limited to the range
     [low, high]; pass '() for no limit on that side."""
@@ -262,6 +274,7 @@ ARITHMETIC_BUILTINS = {
     "vector-sqrt": lambda v: unary("vector-sqrt", v, lambda x: np.sqrt(np.asarray(x, dtype=np.float64))),
     "vector-abs": lambda v: unary("vector-abs", v, np.abs),
     "vector-round": vector_round,
+    "round-to-nearest": round_to_nearest,
     "vector-clip": vector_clip,
 }
 
