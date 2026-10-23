@@ -12,7 +12,9 @@ Differences from a Python kernel:
   - An error shows the Lisp chain of calls that led to it, not a Python
     traceback. (A tail call replaces its caller's frame, shown as
     "[+N tail calls]".)
-  - There's no tab completion.
+  - Tab completes a name from the names defined at the top level (not a
+    function's own local variables), and Shift-Tab shows the help of the
+    name at the cursor, as (help name) does (see lisp_help.py).
   - The debug REPL that (breakpoint) and (break f) open is made with ipywidgets:
     a text area and a Run button, with Continue and Abort, in the output of the
     running cell (see lisp_jupyter_debug.py). A debug hook that prints, and
@@ -43,6 +45,7 @@ os.environ.setdefault("MPLBACKEND", "module://matplotlib_inline.backend_inline")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lisp_core import LispAbort, LispError, NIL, Symbol, format_lisp_traceback, parse, seval, to_string
 import lisp_core
+import lisp_help
 import lisp_jupyter
 import lisp_jupyter_debug
 import lisp_widgets
@@ -68,7 +71,8 @@ class LispKernel(IPythonKernel):
         "See lisp_interpreter_reference.md for the language and its general builtins,\n"
         "lisp_library_reference.md for data, models, and investments,\n"
         "lisp_cmo_manual.md for the structured-deal (CMO) model, and\n"
-        "lisp_example_programs.md for programs to read."
+        "lisp_example_programs.md for programs to read.\n"
+        "(help name) shows the documentation of a name, and (apropos \"text\") looks for one."
     )
 
     # IPythonKernel.execution_count reads the IPython shell's counter and
@@ -155,16 +159,49 @@ class LispKernel(IPythonKernel):
         }
 
     def do_complete(self, code, cursor_pos):
-        """No tab-completion implemented (yet) -- report "no matches"
-        explicitly rather than falling through to IPythonKernel's
-        Python-specific completer."""
+        """Tab: the names defined at the top level that begin with the part of
+        a name just before the cursor."""
+        start = name_start(code, cursor_pos)
+        prefix = code[start:cursor_pos]
+        matches = lisp_help.completions(lisp_jupyter.get_env(), prefix) if prefix else []
         return {
             "status": "ok",
-            "matches": [],
-            "cursor_start": cursor_pos,
+            "matches": matches,
+            "cursor_start": start,
             "cursor_end": cursor_pos,
             "metadata": {},
         }
+
+    def do_inspect(self, code, cursor_pos, detail_level=0, omit_sections=()):
+        """Shift-Tab: the help of the name at the cursor (see lisp_help.py)."""
+        start, end = name_start(code, cursor_pos), name_end(code, cursor_pos)
+        text = lisp_help.documentation(lisp_jupyter.get_env(), code[start:end]) if end > start else None
+        return {
+            "status": "ok",
+            "found": text is not None,
+            "data": {"text/plain": text} if text is not None else {},
+            "metadata": {},
+        }
+
+
+# The characters that end a name: what tokenize (lisp_core.py) stops a name at.
+NAME_ENDS = " \t\r\n()'\"`,;"
+
+
+def name_start(code, position):
+    """Where the name that the position is in, or just after, begins."""
+    start = position
+    while start > 0 and code[start - 1] not in NAME_ENDS:
+        start -= 1
+    return start
+
+
+def name_end(code, position):
+    """Where the name that the position is in, or just before, ends."""
+    end = position
+    while end < len(code) and code[end] not in NAME_ENDS:
+        end += 1
+    return end
 
 
 if __name__ == "__main__":

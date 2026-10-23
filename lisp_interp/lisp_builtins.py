@@ -43,6 +43,7 @@ import lisp_charts
 import lisp_clock
 import lisp_csv
 import lisp_debug
+import lisp_help
 import lisp_profile
 import lisp_coverage
 import lisp_fdic
@@ -575,11 +576,30 @@ def lisp_filter(f, seq):
     return list_to_pairs([x for x in list_items(seq, "filter") if is_true(apply_proc(f, [x]))])
 
 
+# The comparisons that someone used to Scheme or Common Lisp gives sort, as in
+# (sort xs <). sort's second argument is a key, a function of ONE element, and
+# (< x) is always #t, so every element would look the same, and the list would
+# come back unsorted without a word. sort says so instead.
+COMPARISONS = {"<", ">", "<=", ">=", "=", "string<?", "string>?", "string=?", "equal?", "eq?"}
+
+
+def is_a_comparison(f):
+    """Whether f looks like a comparison of two things, not a key: one of COMPARISONS, or a function of exactly two arguments."""
+    if isinstance(f, Procedure):
+        return len(f.params) == 2 and not f.optional_specs and f.rest_param is None and not f.keyword_specs
+    return callable(f) and builtin_names.get(f) in COMPARISONS
+
+
 def lisp_sort(seq, key=None):
     """(sort seq [key]) -- a new list or vector with seq's elements in
     ascending order; seq itself is unchanged, and equal elements keep their
-    order. `key`, if given, is a procedure returning what to compare for
-    each element (a number or string), e.g. (sort people person-age)."""
+    order. `key`, if given, is a procedure of one element returning what to
+    compare for it (a number or string), e.g. (sort people person-age). A
+    comparison, such as <, is not a key, and is an error."""
+    if key is not None and is_a_comparison(key):
+        raise LispError("sort: %s compares two things, and sort's key is a function of ONE element that gives what to compare: "
+                        "(sort xs) sorts in ascending order, (reverse (sort xs)) in descending order, and "
+                        "(sort people person-age) by age" % (builtin_names.get(key) or "the key"))
     if isinstance(seq, LispVector):
         if key is None and seq.items.dtype != object:
             return LispVector(np.sort(seq.items, kind="stable"))
@@ -1781,6 +1801,24 @@ def make_eval_builtins(env, out):
         in the top-level environment."""
         return seval(expr, env)
 
+    def lisp_read_from_string(text):
+        """(read-from-string text) -- the Lisp expression that text is, read but
+        not evaluated: (read-from-string "(+ 1 2)") is the list (+ 1 2), which
+        eval then evaluates to 3. Code is data: the reader that turns a program's
+        text into lists is the same one. An error if the text has no expression,
+        or more than one (to read several, put them in a list: wrap the text in
+        parentheses)."""
+        if not isinstance(text, str):
+            raise LispError("read-from-string: expected a string, not %s" % _brief(text))
+        try:
+            expressions = list(parse(text))
+        except LispError as e:
+            raise LispError("read-from-string: %s" % e)
+        if len(expressions) != 1:
+            raise LispError("read-from-string: the text has %s, and it reads one (to read several, wrap the text in parentheses)"
+                            % plural(len(expressions), "expression"))
+        return expressions[0]
+
     def lisp_macroexpand_1(form):
         """(macroexpand-1 'form) -- if form is a call to a macro, expand it one
         level and return the new code without evaluating it; otherwise return
@@ -1830,6 +1868,7 @@ def make_eval_builtins(env, out):
 
     return {
         "eval": lisp_eval,
+        "read-from-string": lisp_read_from_string,
         "macroexpand-1": lisp_macroexpand_1,
         "macroexpand": lisp_macroexpand,
         "print-macroexpansion": lisp_print_macroexpansion,
@@ -1987,6 +2026,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(make_eval_builtins(env, out))
     env.update(lisp_save.make_save_builtins(env))
     env.update(make_introspection_builtins(env, out))
+    env.update(lisp_help.make_help_builtins(env, out))
     env.update(lisp_debug.make_debug_builtins(env, out))
     env.update(lisp_profile.make_profile_builtins(env, out))
     env.update(lisp_coverage.make_coverage_builtins(env, out))

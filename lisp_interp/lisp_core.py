@@ -443,11 +443,13 @@ class GenericFunction:
     (call-next-method) calls the method of the type that it extends.
 
     `methods` maps the name of a struct type (a type is found by its name, so that defining it again keeps its methods), or None
-    for t, to the Procedure that is its method."""
+    for t, to the Procedure that is its method. `parameters` and `documentation` are what defgeneric was given, for help."""
 
     def __init__(self, name):
         self.name = name
         self.methods = {}
+        self.parameters = NIL
+        self.documentation = None
 
     def applicable(self, args):
         """The methods that apply to a call with these arguments, the most specific first."""
@@ -1405,6 +1407,23 @@ def expand_macro_call(macro, form):
     return expansion
 
 
+def struct_function_docs(type_name, slot_names):
+    """What each function that (defstruct type_name slot...) makes does, as a dict of its name -> its docstring, which begins with how
+    it is called. (help shows them, for a struct that is defined and for one in a library that is not loaded yet: see lisp_help.py.)"""
+    made = "(made by defstruct)"
+    docs = {
+        "make-%s" % type_name: "(make-%s &key %s) -- a new %s, with each slot given by its keyword %s." % (
+            type_name, " ".join(slot_names), type_name, made),
+        "%s?" % type_name: "(%s? x) -- whether x is a %s, or of a type that includes it %s." % (type_name, type_name, made),
+        "copy-%s" % type_name: "(copy-%s %s) -- a new %s with the same slots %s." % (type_name, type_name, type_name, made),
+    }
+    for slot in slot_names:
+        docs["%s-%s" % (type_name, slot)] = "(%s-%s %s) -- the %s slot of a %s %s." % (type_name, slot, type_name, slot, type_name, made)
+        docs["%s-%s-set!" % (type_name, slot)] = "(%s-%s-set! %s value) -- sets the %s slot of a %s %s." % (
+            type_name, slot, type_name, slot, type_name, made)
+    return docs
+
+
 def define_struct(args, env):
     """(defstruct name slot...) or (defstruct (name (:include parent)) slot...); args is what follows the
     defstruct. Each slot is a symbol (default '()) or (slot default-expr). Defines, in env:
@@ -1473,8 +1492,9 @@ def define_struct(args, env):
         plist_items.append(slot_name)
     list_call = Pair(Symbol("list"), list_to_pairs(plist_items))
     make_body = list_to_pairs([Symbol("%make-struct"), struct_type, list_call])
+    docs = struct_function_docs(type_name, [str(slot_name) for slot_name, _ in slots])
     env[Symbol("make-%s" % type_name)] = Procedure(
-        [], [make_body], env, rest_param=None, keyword_specs=slots,
+        [], [LispString(docs["make-%s" % type_name]), make_body], env, rest_param=None, keyword_specs=slots,
         name=Symbol("make-%s" % type_name))
 
     def make_accessor(slot_name):
@@ -1484,6 +1504,7 @@ def define_struct(args, env):
             return s.values[slot_name]
         accessor.struct_type = struct_type      # call-super needs to know whose slot this is
         accessor.slot_name = slot_name
+        accessor.__doc__ = docs["%s-%s" % (type_name, slot_name)]
         return accessor
 
     def make_setter(slot_name):
@@ -1492,14 +1513,17 @@ def define_struct(args, env):
                 raise LispError("%s-%s-set!: not a %s: %r" % (type_name, slot_name, type_name, s))
             s.values[slot_name] = v
             return NIL
+        setter.__doc__ = docs["%s-%s-set!" % (type_name, slot_name)]
         return setter
 
     for slot_name, _ in slots:
         define_builtin(env, "%s-%s" % (type_name, slot_name), make_accessor(slot_name))
         define_builtin(env, "%s-%s-set!" % (type_name, slot_name), make_setter(slot_name))
 
-    define_builtin(env, "%s?" % type_name,
-                   lambda s, t=struct_type: isinstance(s, LispStruct) and s.struct_type.is_a(t))
+    def predicate(s, t=struct_type):
+        return isinstance(s, LispStruct) and s.struct_type.is_a(t)
+    predicate.__doc__ = docs["%s?" % type_name]
+    define_builtin(env, "%s?" % type_name, predicate)
 
     def copier(s, t=struct_type):
         # A shallow copy, of the instance's own type -- so copying a child
@@ -1507,6 +1531,7 @@ def define_struct(args, env):
         if not (isinstance(s, LispStruct) and s.struct_type.is_a(t)):
             raise LispError("copy-%s: not a %s: %r" % (type_name, type_name, s))
         return LispStruct(s.struct_type, dict(s.values))
+    copier.__doc__ = docs["copy-%s" % type_name]
     define_builtin(env, "copy-%s" % type_name, copier)
 
     return type_name
@@ -1522,6 +1547,10 @@ def define_generic(args, env):
     check_name(name)
     if not isinstance(env.lookup_or_none(name), GenericFunction):
         env[name] = GenericFunction(name)
+    generic = env[name]
+    generic.parameters = args.cdr.car
+    if isinstance(args.cdr.cdr, Pair):
+        generic.documentation = str(args.cdr.cdr.car)
     return name
 
 

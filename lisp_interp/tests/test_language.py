@@ -1343,6 +1343,19 @@ class TestMetaprogrammingAndIO(LispTestCase):
     def test_eval_cannot_see_local_variables(self):
         self.assertLispError("(let ((local 5)) (eval 'local))", "unbound symbol")
 
+    def test_read_from_string_reads_the_text_as_data_and_eval_runs_it(self):
+        self.assertShows('(read-from-string "(+ 1 2)")', "(+ 1 2)")
+        self.assertShows('(eval (read-from-string "(+ 1 2)"))', "3")
+        self.assertShows('(read-from-string "  \'(a #(1 2) \\"s\\") ; a comment")', '(quote (a #(1 2) "s"))')
+        self.assertShows('(car (read-from-string "(define (f x) x)"))', "define")
+        self.assertShows('(read-from-string "(1 2 3)")', "(1 2 3)")
+
+    def test_read_from_string_reads_one_expression_and_says_what_is_wrong(self):
+        self.assertLispError('(read-from-string "1 2")', "the text has 2 expressions, and it reads one")
+        self.assertLispError('(read-from-string "")', "the text has 0 expressions")
+        self.assertLispError('(read-from-string "(1 2")', "read-from-string: missing ')'")
+        self.assertLispError("(read-from-string 5)", "expected a string, not 5")
+
     def test_eval_of_define_creates_a_global(self):
         self.run_lisp("(eval (list 'define 'made-by-eval 42))")
         self.assertShows("made-by-eval", "42")

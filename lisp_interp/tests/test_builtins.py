@@ -552,6 +552,24 @@ class TestSequenceFunctions(LispTestCase):
         self.assertLispError("(dolist (x 5) x)", "dolist: expected a list or a vector, not 5")
 
 
+class TestSortKeys(LispTestCase):
+    """sort's second argument is a key, a function of one element; a comparison, as Scheme and Common Lisp give sort, is an
+    error, since (< x) is always #t and would leave the list as it was."""
+
+    def test_a_key_of_one_element_sorts_by_what_it_gives(self):
+        self.assertShows("(sort '(3 1 2))", "(1 2 3)")
+        self.assertShows("(sort '(3 1 2) (lambda (x) (- x)))", "(3 2 1)")
+        self.assertShows("(sort (list #t #f #t) (lambda (x) (if x 1 0)))", "(#f #t #t)")
+        self.assertShows("(sort (list '(b 2) '(a 1)) cadr)", "((a 1) (b 2))")
+
+    def test_a_comparison_is_an_error_that_says_what_a_key_is(self):
+        for comparison in ("<", ">", "<=", "string<?", "(lambda (a b) (< a b))"):
+            with self.subTest(comparison=comparison):
+                self.assertLispError("(sort '(3 1 2) %s)" % comparison, "sort's key is a function of ONE element")
+        self.assertLispError("(sort '(3 1 2) <)", "sort: < compares two things")
+        self.assertLispError("(sort (vector 3 1 2) >)", "(reverse (sort xs)) in descending order")
+
+
 class TestEqual(LispTestCase):
 
     def test_long_lists(self):

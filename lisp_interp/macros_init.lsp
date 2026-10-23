@@ -20,6 +20,7 @@
 ;   (case key-expr ((key...) body...)... [(else body...)])
 ;   (destructuring-bind pattern expression body...)
 ;   (lazy-load file name...)
+;   (help name)
 ;   (save-variables path name... [:leave-out-procedures #t])
 ;   (pretty-print-function name), (pretty-print-macro name)
 ;
@@ -860,6 +861,19 @@ one of names (unless allow-other-keys)."
   `(begin
      ,@(map (lambda (name) (lazy-load--stub file name)) names)
      ',names))
+
+; (help name)
+; Shows the documentation of name: a function, a macro, a special form, or a
+; variable -- how it is called, and what it does (see lisp_help.py for where
+; that comes from). The name is not evaluated, so (help dolist) and
+; (help 'dolist) both work, and so does (help if), whose name is not a
+; variable at all. (documentation name) gives the same text as a string, and
+; (apropos "text") lists the names that have text in them.
+
+(defmacro help (name)
+  (if (and (pair? name) (eq? (car name) 'quote))
+      `(%show-help ',(cadr name))
+      `(%show-help ',name)))
 
 ; (save-variables path name... [:leave-out-procedures #t])
 ; Saves each named variable's value -- numbers, strings, lists, vectors,

@@ -106,6 +106,7 @@ end.
   - [Input / output](#input--output)
   - [Saving variables](#saving-variables)
   - [Metaprogramming](#metaprogramming)
+  - [Help](#help)
   - [Introspection / debugging](#introspection--debugging)
   - [Debugging](#debugging-1)
   - [Verbose mode and stack traces](#verbose-mode-and-stack-traces)
@@ -184,8 +185,9 @@ Jupyter alike — loads these Lisp files before doing anything else:
   (which the chart/table rendering uses, in `lisp_jupyter.py`) keeps
   resolving correctly — see `lisp_kernel.py`'s own docstring for why that
   specific base class matters, and what else is worth knowing about how it
-  behaves (error display, tab-completion, history variables `_`/`__`/
-  `___`/`_N`). Needs `pandas` and `ipykernel` in addition to matplotlib;
+  behaves (error display, history variables `_`/`__`/`___`/`_N`). **Tab**
+  completes a name, and **Shift-Tab** shows the help of the name at the
+  cursor, as `(help name)` does (see "Help", below). Needs `pandas` and `ipykernel` in addition to matplotlib;
   falls back to the console's plain-text chart/table output if either
   isn't installed. A `(breakpoint)`, a `(break f)`, or an error with
   `break-on-error` opens a debug REPL made with `ipywidgets` in the
@@ -2257,7 +2259,11 @@ even millions of elements sort in a fraction of a second.
 `key`, if given, is a procedure of one argument that returns what to
 compare for each element — a number or string, anything `<` can compare —
 so the elements themselves can be anything. Without `key`, the elements
-themselves are compared. Raises an error if two elements (or keys) can't
+themselves are compared. The key is not a comparison, as it is in Scheme and
+Common Lisp: `(sort xs <)` is an error that says so (otherwise `(< x)`, which
+is always `#t`, would make every element look the same, and the list would come
+back as it was). For descending order, `(reverse (sort xs))`, or a key that is
+the opposite, `(sort xs (lambda (x) (- x)))`. Raises an error if two elements (or keys) can't
 be compared, e.g. a number and a string.
 
 ```lisp
@@ -5117,6 +5123,19 @@ way and wanting to run it directly.
 (eval code)                    ; => 15
 ```
 
+#### `(read-from-string text)`
+The Lisp expression that `text` is written as, read but not evaluated: the same reader that turns a program's text into lists.
+`eval` then runs it. That is what "code is data" means: a program is lists, and a list can be made, looked at, and changed like any
+other. An error if the text has no expression, or more than one (to read several, put the text in parentheses, and they are read as
+one list).
+
+```lisp
+(read-from-string "(+ 1 2)")             ; => (+ 1 2)
+(car (read-from-string "(+ 1 2)"))       ; => +
+(eval (read-from-string "(+ 1 2)"))      ; => 3
+(read-from-string "((1 2 3) (4 5))")     ; => ((1 2 3) (4 5))
+```
+
 #### `(apply f arg1 ... args)`
 See "Pairs and lists", above — documented once there, since it's equally a
 list operation and a metaprogramming tool.
@@ -5171,6 +5190,52 @@ See "Errors and cleanup", above. `throw` jumps out to the matching `catch`;
 
 #### `(assert test [message...])`
 See "Errors and cleanup", above.
+
+### Help
+
+Every function of the libraries, and most builtins, has a docstring that says how it is called and what it does. These show it, in
+the console, the GUI, or a notebook. The documentation of a name comes from the first of these that has it:
+
+1. Its **docstring**: the string a function's body begins with, `(define (f x) "What f does." ...)`; a builtin's own, which begins
+   with how it is called; or what `defgeneric` was given. The functions that `defstruct` makes have one too.
+2. For a **library function that is not loaded yet** (`lib/autoloads.lsp` makes a stand-in for each, with `lazy-load`), its
+   definition in the library's file, which is read and not loaded: its parameters and docstring, or, for a function a `defstruct`
+   makes, the `defstruct` and the comment lines under it.
+3. The **section of a manual** whose heading shows how it is called: the special forms, the standard macros, and the builtins
+   without a docstring of their own. At most 40 lines of it are shown.
+
+In a notebook, **Tab** completes a name from those defined at the top level (not a function's own local variables), and
+**Shift-Tab** shows the help of the name at the cursor. The code is in `lisp_help.py`.
+
+#### `(help name)`
+Shows the documentation of `name` -- a function, a macro, a special form, or a variable (whose value it shows) -- and returns
+nothing. It is a macro, and does not evaluate the name, so `(help dolist)`, `(help 'dolist)` and `(help if)` all work. A name that
+is not defined says so, and how to look for it.
+
+```lisp
+(define (square x) "The square of x." (* x x))
+(help square)             ; shows (square x), and under it The square of x.
+(help deal-hedge)         ; from lib/deal_hedge.lsp, which is not loaded to show it
+```
+
+#### `(documentation name)`
+The text that `help` shows, as a string, or `#f` if there is none. `name` is a symbol, a string, or the function itself.
+
+```lisp
+(define (square x) "The square of x." (* x x))
+(documentation 'square)            ; the string that (help square) shows
+(documentation 'no-such-name)      ; => #f
+```
+
+#### `(apropos text)`
+Shows each name that has `text` in it (a string or a symbol; capital letters are the same as small ones), in alphabetical order,
+with the first line of its documentation, which is usually how it is called. The library functions that are not loaded yet are
+among them; names that begin with `%` or have `--` in them, which the interpreter and the libraries use inside themselves, are not.
+Returns nothing.
+
+```lisp
+(apropos "hedge")    ; deal-hedge  (deal-hedge deal name), deal-hedge-pairs ..., and the others
+```
 
 ### Introspection / debugging
 
@@ -6026,6 +6091,7 @@ The Python files:
 | `lisp_tables.py` | Tables: `table-filter`, `table-sort`, `table-group-by`, `table-join`, ... |
 | `lisp_stratify.py` | Stratification tables: `stratify`, `stratify-all` |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
+| `lisp_help.py` | `help`'s documentation, `documentation`, `apropos`, and the notebook's Tab and Shift-Tab: where the documentation of a name comes from |
 | `lisp_profile.py` | `profile`, `unprofile`, `profile-reset!`, `profile-results`, `show-profile`: the profiling functions (the machinery is in `lisp_core.py`) |
 | `lisp_debug.py` | `break`, `unbreak`, `set-debug-hook!`, `abort`, `locals`, `break-on-error`, ...: the debugging functions (the machinery is in `lisp_core.py`) |
 | `lisp_regression.py` | `linear-regression`, `lad-regression`, `quantile-regression`, `logistic-regression`, `spline-regression`, `spline-lad`, `spline-quantile`, `spline-logistic`, `model-report`, ... |

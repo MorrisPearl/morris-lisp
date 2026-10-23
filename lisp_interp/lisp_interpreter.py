@@ -137,7 +137,7 @@ from lisp_builtins import load_init_file, make_global_env, set_command_line_argu
 def repl(env):
     """The console read-eval-print loop. A form is evaluated once its
     parentheses balance, so a definition can span several lines."""
-    print("Simple Lisp interpreter. Type (exit) to quit.")
+    print("Simple Lisp interpreter. Type (exit) to quit, (help name) for help with a name, and (apropos \"text\") to look for one.")
     buffer = ""
     while True:
         try:
