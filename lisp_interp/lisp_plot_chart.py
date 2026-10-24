@@ -47,7 +47,7 @@ LEGEND_PLACES = ["best", "upper right", "upper left", "lower left", "lower right
 
 # plot-chart's options for the whole chart, with their defaults.
 CHART_DEFAULTS = {"title": "", "x-label": "", "y-label": "", "secondary-label": "", "legend": True,
-                  "bars": "grouped", "bar-width": 0.8, "line-width": 0.3, "symbol-size": 6, "grid": True,
+                  "bars": "grouped", "bar-width": 0.6, "line-width": 0.3, "symbol-size": 6, "grid": True,
                   "horizontal": False, "width": None, "height": None,
                   "x-min": None, "x-max": None, "x-format": None, "x-lines": NIL, "shade": NIL, "notes": NIL,
                   "y-min": None, "y-max": None, "y-ticks": None, "y-log": False, "y-format": None, "y-lines": NIL,
