@@ -40,6 +40,7 @@ that use all this are described in
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Schwab (your accounts)](#schwab-your-accounts)
   - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
+- [Reporting](#reporting)
   - [Google Sheets](#google-sheets)
   - [Reports with control breaks](#reports-with-control-breaks)
 - [Dates and cash flows](#dates-and-cash-flows)
@@ -1984,7 +1985,7 @@ table with no rows.
 ```
 
 `daily-returns` takes this table as its `:dividends`: see "Simulating investment prices".
-
+## Reporting
 ### Google Sheets
 
 (In `lisp_google.py`.) Tables, sent out to a new spreadsheet in your own

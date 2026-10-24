@@ -7,4 +7,6 @@ The purpose of the software is to help people understand things.
 All source files should be checked in to the main branch of git, and
 committed, and pushed to github, unless you are told to use a branch.
 
-
+The users almost always use the lisp interpreter through a Jupyter
+notebook.  Everything should be written with the Jupyter notebook
+interface in mind unless otherwise specified.
