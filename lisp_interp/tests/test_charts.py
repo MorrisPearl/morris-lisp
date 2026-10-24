@@ -69,7 +69,7 @@ class TestPlotChart(LispTestCase):
         self.assertEqual(a["x"], [datetime.date(2024, 1, 1), datetime.date(2024, 3, 1)])   # the NaN is left out
         self.assertEqual(a["y"], [1.0, 3.0])
         self.assertEqual((a["line"], a["symbol"], a["bars"]), ("solid", None, False))      # a line, unless told
-        self.assertEqual((a["line_width"], a["symbol_size"]), (1.5, 9.0))
+        self.assertEqual((a["line_width"], a["symbol_size"]), (0.3, 9.0))
         self.assertEqual((b["line"], b["symbol"], b["bars"], b["color"]), ("dashed", "square", True, "red"))
         self.assertEqual(b["line_width"], 3.0)          # #t: the second series gets the second symbol
         self.assertEqual(spec["legend"], "best")
@@ -99,8 +99,8 @@ class TestPlotChart(LispTestCase):
         ax = self.drawn('(plot-chart (list (list "a" #("p" "q") #(1 2) :bars #t)'
                         '                  (list "b" #("p" "q") #(3 4) :bars #t)))')
         bars = [(round(p.get_x(), 6), round(p.get_width(), 6), p.get_height()) for p in ax.patches]
-        # 0.8 of the room between categories, shared by the two series
-        self.assertEqual(bars, [(-0.4, 0.4, 1), (0.6, 0.4, 2), (0.0, 0.4, 3), (1.0, 0.4, 4)])
+        # 0.6 of the room between categories, shared by the two series
+        self.assertEqual(bars, [(-0.3, 0.3, 1), (0.7, 0.3, 2), (0.0, 0.3, 3), (1.0, 0.3, 4)])
 
     def test_stacked_bars_build_up_from_zero_and_down_from_it(self):
         ax = self.drawn('(plot-chart (list (list "a" #(1 2) #(1 -2) :bars #t)'
@@ -118,7 +118,8 @@ class TestPlotChart(LispTestCase):
                         '                  (list "q" (vector (date 2024 1 1) (date 2024 4 1)) #(5 6) :bars #t)))')
         january, april = [p.get_x() + p.get_width() / 2 for p in ax.patches]
         self.assertAlmostEqual(april - january, 91)                  # days: on a calendar
-        self.assertAlmostEqual(ax.patches[0].get_width(), 0.8 * 91)  # the quarterly bars' room, not the months'
+        self.assertAlmostEqual(ax.patches[0].get_width(), 0.6 * 91)  # the quarterly bars' room, not the months'
+
         line = ax.get_lines()[0]
         self.assertEqual(list(line.get_xdata())[3], april)
 
@@ -140,7 +141,7 @@ class TestPlotChart(LispTestCase):
                         '                  (list "c" #(1 2) #(5 5) :line #t)))')
         right = self.fig.axes[1]
         # grouped: side by side, though on two scales
-        self.assertEqual([round(p.get_x(), 6) for p in ax.patches], [0.6, 1.6])
+        self.assertEqual([round(p.get_x(), 6) for p in ax.patches], [0.7, 1.7])
         self.assertEqual([round(p.get_x(), 6) for p in right.patches], [1.0, 2.0])
         self.assertGreater(ax.get_zorder(), right.get_zorder())   # so the secondary bars don't hide c's line
         ax = self.drawn('(plot-chart (list (list "a" #(1) #(10) :bars #t) (list "b" #(1) #(1) :bars #t :secondary #t)'
@@ -153,7 +154,7 @@ class TestPlotChart(LispTestCase):
                         '                  (list "b" #("p" "q") #(30 40) :symbol #t :secondary #t))'
                         '            :horizontal #t :x-label "place" :y-label "amount")')
         bars = [(p.get_y() + p.get_height() / 2, round(p.get_height(), 6), p.get_width()) for p in ax.patches]
-        self.assertEqual(bars, [(0, 0.8, 1), (1, 0.8, 2), (2, 0.8, 3)])     # going across
+        self.assertEqual(bars, [(0, 0.6, 1), (1, 0.6, 2), (2, 0.6, 3)])     # going across
         self.assertEqual([t.get_text() for t in ax.get_yticklabels()], ["p", "q", "r"])
         self.assertTrue(ax.yaxis_inverted())                                 # p at the top
         self.assertEqual((ax.get_ylabel(), ax.get_xlabel()), ("place", "amount"))
