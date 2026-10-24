@@ -12,7 +12,8 @@ the headings. Run it after adding or renaming a section:
 import os
 import re
 
-HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../doc")
+
 MANUALS = [os.path.join(HERE, "lisp_interpreter_reference.md"), os.path.join(HERE, "lisp_library_reference.md"),
            os.path.join(HERE, "lisp_example_programs.md"), os.path.join(HERE, "lisp_cmo_manual.md")]
 
@@ -55,6 +56,7 @@ def contents(lines):
 
 def main():
     for manual in MANUALS:
+        print("now working on ",manual)
         with open(manual) as f:
             lines = f.read().split("\n")
         start = lines.index("## Contents")
