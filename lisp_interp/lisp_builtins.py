@@ -14,6 +14,7 @@ lisp_interpreter_reference.md."""
 
 import datetime
 import itertools
+import json
 import math
 import numbers
 import operator
@@ -21,8 +22,10 @@ import os
 import random
 import string
 import sys
+import urllib.parse
 import xml.dom.minidom
 import xml.parsers.expat
+from html import escape as html_escape
 
 import numpy as np
 
@@ -1634,6 +1637,112 @@ def svg_picture(text):
     return svg.toxml()
 
 
+def top_level_form_texts(text):
+    """The source text of each top-level form of a Lisp file, as a list of strings, in order: each form exactly as the file has it
+    (its comments and layout included, so nothing is pretty-printed away). A comment above a form goes with it, and one at the end
+    of a form's line goes with that form; a comment on a line of its own after the last form is left out. The text is read first, so a syntax error is raised before any form is split off."""
+    list(parse(text))
+    texts = []
+    n = len(text)
+    i = 0
+    start = None                                  # where the next form's text begins: its first character, or comment
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif c == ";":                            # a comment outside a form: it goes with the form after it
+            if start is None:
+                start = i
+            while i < n and text[i] != "\n":
+                i += 1
+        else:
+            if start is None:
+                start = i
+            i = _end_of_top_level_form(text, i)
+            j = i                                 # a comment at the end of the form's line is the form's own
+            while j < n and text[j] in " \t":
+                j += 1
+            if j < n and text[j] == ";":
+                i = text.find("\n", j) if text.find("\n", j) != -1 else n
+            texts.append(text[start:i].strip())
+            start = None
+    return texts
+
+
+def _end_of_top_level_form(text, i):
+    """The index just after the form that begins at text[i]: a list (with the quote, quasiquote, unquote or vector marks in front
+    of it), a string, or an atom. Strings and comments inside it are skipped, so their parentheses do not count."""
+    n = len(text)
+    while i < n and text[i] in "'`,@#":          # the marks in front of a form: 'x, `(...), ,y, ,@z, #(...)
+        i += 1
+    if i < n and text[i] == "(":
+        depth = 0
+        while i < n:
+            c = text[i]
+            if c == '"':
+                i = _end_of_string(text, i)
+                continue
+            if c == ";":
+                while i < n and text[i] != "\n":
+                    i += 1
+                continue
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+            i += 1
+        return n
+    if i < n and text[i] == '"':
+        return _end_of_string(text, i)
+    while i < n and not text[i].isspace() and text[i] not in "()\";":
+        i += 1
+    return i
+
+
+def _end_of_string(text, i):
+    """The index just after the string that begins with the quote at text[i], where \\ escapes the next character."""
+    i += 1
+    while i < len(text) and text[i] != '"':
+        i += 2 if text[i] == "\\" else 1
+    return i + 1
+
+
+def notebook_json(texts):
+    """A Jupyter notebook (format 4.4) with a code cell for each text, none run, for the morris_lisp kernel (install_lisp_kernel.py)."""
+    def cell(text):
+        lines = text.splitlines(keepends=True)
+        return {"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [], "source": lines}
+    return {
+        "cells": [cell(text) for text in texts],
+        "metadata": {"kernelspec": {"name": "morris-lisp", "display_name": "morris_lisp", "language": "scheme"},
+                     "language_info": {"name": "scheme", "file_extension": ".lsp", "mimetype": "text/x-scheme"}},
+        "nbformat": 4,
+        "nbformat_minor": 4,
+    }
+
+
+def choose_lisp_file():
+    """Asks for a Lisp file with a file dialog, and returns its path, or None if the dialog is cancelled. An error if the dialog
+    cannot be shown (tkinter is not installed, or there is no display)."""
+    try:
+        import tkinter
+        from tkinter import filedialog
+    except ImportError:
+        raise LispError("file-to-notebook: there is no file dialog here (tkinter is not installed): give the file's path, (file-to-notebook \"file.lsp\")")
+    root = tkinter.Tk()
+    try:
+        root.withdraw()
+        root.attributes("-topmost", True)
+        path = filedialog.askopenfilename(title="Choose a Lisp file", filetypes=[("Lisp files", "*.lsp"), ("All files", "*")])
+    except tkinter.TclError as e:
+        raise LispError("file-to-notebook: there is no file dialog here (%s): give the file's path, (file-to-notebook \"file.lsp\")" % e)
+    finally:
+        root.destroy()
+    return path or None
+
+
 def make_output_builtins(out, markdown, html, svg):
     """display, newline, print, redirect-output, reset-output,
     display-markdown, display-html and display-svg. `markdown`, `html` and
@@ -1705,8 +1814,38 @@ def make_output_builtins(out, markdown, html, svg):
             out.write((str(text) if text is not None else "[an SVG picture, which a notebook shows]") + "\n")
         return NIL
 
+    def file_to_notebook(path=None, notebook=None):
+        """(file-to-notebook [path [notebook]]) -- writes a Jupyter notebook with each top-level form of a Lisp file in its own code
+        cell, without running any of them. The path is a string (relative to the current directory, or the load path); without one,
+        a file dialog asks for the file. The notebook is notebook (a string), or else the file's name with .ipynb, in the current
+        directory; it is not written over a file that is there. In a notebook, a link to the new notebook is shown: a click opens it
+        in a new tab. Returns the notebook's path."""
+        if path is None:
+            path = choose_lisp_file()
+            if path is None:
+                return NIL
+        elif not isinstance(path, LispString):
+            raise LispError("file-to-notebook: expected the file's path as a string, or no path for a file dialog, not %s" % _brief(path))
+        found = find_lisp_file(str(path))
+        with open(found, encoding="utf-8") as f:
+            texts = top_level_form_texts(f.read())
+        name = str(notebook) if notebook is not None else os.path.splitext(os.path.basename(found))[0] + ".ipynb"
+        if os.path.exists(name):
+            raise LispError("file-to-notebook: %s is there already: give the notebook another name, (file-to-notebook \"%s\" \"other.ipynb\")"
+                            % (name, path))
+        with open(name, "w", encoding="utf-8") as f:
+            json.dump(notebook_json(texts), f, indent=1)
+            f.write("\n")
+        if html is not None and not out.is_redirected():
+            link = '<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(name), html_escape(name))
+            html(link)
+        else:
+            out.write("Wrote %s, with %d cells (open it in Jupyter)\n" % (name, len(texts)))
+        return LispString(name)
+
     return {
         "display": lisp_display,
+        "file-to-notebook": file_to_notebook,
         "newline": lisp_newline,
         "print": lisp_print,
         "redirect-output": redirect_output,

@@ -4627,6 +4627,25 @@ pieces; at the console, as lines of text.
 (display-html "<span style=\"color:red; font-size:20px\">Stop</span>" "Stop")
 ```
 
+#### `(file-to-notebook [path [notebook]])`
+Writes a Jupyter notebook with each top-level form of a Lisp file in its own code cell, so a file can be read, changed and run one
+form at a time. **None of the forms is run.** Each cell has the form's text exactly as the file has it, comments and layout included.
+`path` is a string (relative to the current directory, or found on `LISP_PATH`, as `load` finds one); without it, a file dialog asks
+for the file, and a cancelled dialog writes nothing and returns `'()`. `notebook` is the new notebook's name, relative to the current
+directory; without it, the notebook is the file's name with `.ipynb`. A notebook that is there already is not written over: give the
+new one another name. The whole file is read first, so a syntax error stops it before anything is written.
+
+The notebook is written in the morris_lisp kernel's format. In a notebook, the call shows a link, "Open sample.ipynb", which opens the
+new notebook in a new tab, and the call returns its path. Outside a notebook (the console, the GUI), it says where the file was written.
+
+A comment on a line of its own above a form goes with that form; a comment at the end of a form's line stays with it; comments after
+the last form are left out.
+
+```lisp
+(file-to-notebook "deal_example.lsp")                  ; writes deal_example.ipynb here, one cell for each form
+(file-to-notebook "deal_example.lsp" "deal_cells.ipynb")
+```
+
 #### `(display-svg svg [text])`
 Draws the picture that `svg`, a string `"<svg ...>...</svg>"`, describes, by itself in the output of a Jupyter notebook's cell. The
 notebook keeps it as a picture (of type `image/svg+xml`), not as part of a page, as `display-html` would. Anywhere else (console,

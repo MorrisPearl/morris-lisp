@@ -34,7 +34,10 @@ _LOADABLE_IN_EXAMPLES_DOC = {
 
 
 def _loads_something_unsafe(doc, block):
-    """Whether the block loads a file that a block in this document isn't allowed to."""
+    """Whether the block loads a file that a block in this document isn't allowed to. A block that calls file-to-notebook is never run:
+    without a path it opens a file dialog, and it writes a notebook."""
+    if "(file-to-notebook" in block:
+        return True
     loaded = re.findall(r'\(load "([^"]*)"\)', block)
     if "(load " in block and not loaded:
         return True                                 # a load whose file isn't written out
