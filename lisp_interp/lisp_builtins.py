@@ -1740,6 +1740,16 @@ def without_live_outputs(notebook):
     return left_out
 
 
+def write_notebook(path, document):
+    """Writes the notebook (a dictionary) in the form Jupyter writes it in, through a file beside it that then takes its place, so that
+    a notebook is never left half written."""
+    temporary = path + ".writing"
+    with open(temporary, "w", encoding="utf-8") as f:
+        json.dump(document, f, sort_keys=True, indent=1, ensure_ascii=False)
+        f.write("\n")
+    os.replace(temporary, path)
+
+
 def link_path(name):
     """Where a link in a notebook's output finds the file called name: its path from the folder that the notebook runs in (which is the
     notebook's own folder in JupyterLab), with / between the folders. A path from the top of the computer, /Users/..., would be a place
@@ -1957,12 +1967,12 @@ def make_output_builtins(out, markdown, html, svg):
         return LispString(name)
 
     def set_slide_types(notebook, style=None, output=None):
-        """(set-slide-types notebook [style [output]]) -- writes a copy of a Jupyter notebook with the slide type of every cell set, for
-        a slideshow of it (with jupyterlab-deck in JupyterLab, or jupyter nbconvert --to slides). notebook is the path of the notebook,
-        a string. style is each-cell (the default: every cell is a slide) or by-heading (a markdown cell that begins with "# " starts a
-        slide, "## " or deeper a sub-slide, and the cells after it stay on it). The copy is output, or else the notebook's name with
-        -slides before .ipynb; it is not written over a file that is there. In a notebook, a link to the copy is shown. Returns its
-        path. The cells, their outputs and everything else in the notebook are kept."""
+        """(set-slide-types notebook [style [output]]) -- sets the slide type of every cell of a Jupyter notebook, for a slideshow of it (with
+        jupyterlab-deck in JupyterLab, or jupyter nbconvert --to slides). notebook is the path of the notebook, a string, and it is the
+        notebook that is changed: the cells, their outputs and everything else in it are kept. style is each-cell (the default: every cell
+        is a slide) or by-heading (a markdown cell that begins with "# " starts a slide, "## " or deeper a sub-slide, and the cells after it
+        stay on it). Given output, a string, the notebook is left as it is, and a copy with the slide types is written there instead; it is
+        not written over a file that is there, and in a notebook a link to it is shown. Returns the path of the notebook that was written."""
         if not isinstance(notebook, LispString):
             raise LispError("set-slide-types: expected the notebook's path as a string, not %s" % _brief(notebook))
         style = "each-cell" if style is None else str(style)
@@ -1976,16 +1986,18 @@ def make_output_builtins(out, markdown, html, svg):
                 raise LispError("set-slide-types: %s is not a notebook (%s)" % (notebook, e))
         if not isinstance(document, dict) or not isinstance(document.get("cells"), list):
             raise LispError("set-slide-types: %s is not a notebook: it has no cells" % notebook)
-        name = str(output) if output is not None else os.path.splitext(str(notebook))[0] + "-slides.ipynb"
-        if os.path.exists(name):
+        name = str(output) if output is not None else source
+        if output is not None and os.path.exists(name):
             raise LispError("set-slide-types: %s is there already: give the copy another name, (set-slide-types \"%s\" '%s \"other.ipynb\")"
                             % (name, notebook, style))
         for cell, slide_type in zip(document["cells"], slide_types_for(document["cells"], style)):
             cell.setdefault("metadata", {}).setdefault("slideshow", {})["slide_type"] = slide_type
-        with open(name, "w", encoding="utf-8") as f:
-            json.dump(document, f, indent=1)
-            f.write("\n")
-        show_link(name, "with the slide types set on %d cells" % len(document["cells"]))
+        write_notebook(name, document)
+        if output is not None:
+            show_link(name, "with the slide types set on %d cells" % len(document["cells"]))
+        else:
+            out.write("Set the slide types of the %d cells of %s. If it is open in JupyterLab, reload it from the disk (File, Reload Notebook "
+                      "from Disk): save it first if it has changes of its own, since reloading takes them out\n" % (len(document["cells"]), name))
         return LispString(name)
 
     def notebook_to_slides(notebook, output=None, theme=None, font=None):

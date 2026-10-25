@@ -5052,23 +5052,29 @@ lsp`'s `(write-csv "sofr_floating_rate_example.csv" *columns*)` call.
 ```
 
 #### `(set-slide-types notebook [style [output]])`
-Writes a copy of a Jupyter notebook with the **slide type** of every cell set, for a slideshow of it: presented live in JupyterLab
-(with the `jupyterlab-deck` extension), or made into a reveal.js page with `jupyter nbconvert --to slides`. The cells, their outputs and
-everything else in the notebook are kept, and the original is not touched. `notebook` is the notebook's path, a string. `style` is a
-symbol:
+Sets the **slide type** of every cell of a Jupyter notebook, for a slideshow of it: presented live in JupyterLab (with the
+`jupyterlab-deck` extension), or made into a reveal.js page with `notebook-to-slides`. It is the notebook itself that is changed, so you
+keep one notebook: the cells, their outputs and everything else in it stay as they were. `notebook` is the notebook's path, a string.
+`style` is a symbol:
 
 - `each-cell` (the default): every cell is a slide of its own.
 - `by-heading`: a markdown cell that begins with `# ` starts a slide, one that begins with `## ` or more `#`s a sub-slide (shown
   below the slide, down the screen), and every other cell stays on the slide before it. The first cell always starts a slide.
 
-The copy is named `output` (a string) or else the notebook's name with `-slides` before `.ipynb`. It is not written over a file that is
-there. In a notebook, the call shows a link that opens the copy in a new tab, and it returns the copy's path. Each cell's type is
-stored as it is by Jupyter's own slide-type setting (the cell's `slideshow` metadata), so it can be changed by hand afterwards, in
-the property inspector on the right of JupyterLab.
+Each cell's type is stored as Jupyter's own slide-type setting does (the cell's `slideshow` metadata), so it can be changed by hand
+afterwards, a cell at a time, in the property inspector on the right of JupyterLab. The call returns the notebook's path.
+
+If the notebook is open in JupyterLab, JupyterLab does not see the change until it is reloaded from the disk: **save the notebook first**
+(if it has changes of its own), run `set-slide-types`, then choose *File, Reload Notebook from Disk*. (Without that, the next save from
+JupyterLab would write its own copy, without the slide types, over the changed one.)
+
+Given `output`, a string, the notebook is left as it is and a **copy** with the slide types is written there instead, which is not written
+over a file that is there; in a notebook, the call shows a link that opens the copy in a new tab.
 
 ```lisp
-(set-slide-types "talk.ipynb")                          ; writes talk-slides.ipynb, every cell a slide
-(set-slide-types "talk.ipynb" 'by-heading "show.ipynb") ; headings start the slides
+(set-slide-types "talk.ipynb")                               ; every cell of talk.ipynb a slide
+(set-slide-types "talk.ipynb" 'by-heading)                   ; headings start the slides
+(set-slide-types "talk.ipynb" 'by-heading "show.ipynb")      ; the same, in a copy, show.ipynb
 ```
 
 #### `(notebook-to-slides notebook [output [theme [font]]])`
@@ -5096,18 +5102,39 @@ python3 tools/get_slide_files.py
 They are kept in `slides_support/` there, which git ignores.
 
 ```lisp
-(set-slide-types "talk.ipynb" 'by-heading "talk-slides.ipynb")
-(notebook-to-slides "talk-slides.ipynb")        ; writes talk-slides.slides.html and talk-slides.slides_files/
-(notebook-to-slides "talk-slides.ipynb" "show.html" 'black)
-(notebook-to-slides "talk-slides.ipynb" "show.html" 'white "Architects Daughter")   ; an informal look
+(set-slide-types "talk.ipynb" 'by-heading)
+(notebook-to-slides "talk.ipynb")               ; writes talk.slides.html and talk.slides_files/
+(notebook-to-slides "talk.ipynb" "show.html" 'black)
+(notebook-to-slides "talk.ipynb" "show.html" 'white "Architects Daughter")   ; an informal look
 ```
 
-**Presenting live, from the notebook.** The JupyterLab extension `jupyterlab-deck` shows a notebook as a slideshow where it is, using
-the same slide types, so a cell can be run or changed during the talk; it comes with the notebook, and needs no internet connection.
-Install it once, with `pip install jupyterlab-deck jupyterlab-fonts`, and restart JupyterLab. Open the notebook, set the slide types
-(with `set-slide-types`, or in the property inspector on the right), and start the deck with the presentation button in the notebook's
-toolbar, or *Start Deck* in the command palette; *Stop Deck* ends it. Its own manual is at
-https://github.com/deathbeds/jupyterlab-deck.
+**Presenting live, from the notebook.** The JupyterLab extension `jupyterlab-deck` shows a notebook as a slideshow where it is, using the
+same slide types, so a cell can be run or changed during the talk, and a widget (the grids of `deal-builder`) stays alive on its slide. It
+needs no internet connection. Its own manual is at https://github.com/deathbeds/jupyterlab-deck. The steps:
+
+1. Install it once, with `pip install jupyterlab-deck jupyterlab-fonts`, and restart JupyterLab.
+2. **Set the slide types** in your notebook, with `(set-slide-types "talk.ipynb" 'by-heading)` (and reload the notebook, as above), or one
+   cell at a time, with the property inspector (the gear icon in the right sidebar, *Slide Type*). It is the same notebook that you
+   work in and present from, so a change you make to it is in the slideshow too. (To keep your notebook as it is, make a copy to present
+   from with `(set-slide-types "talk.ipynb" 'by-heading "show.ipynb")`; the copy does not follow later changes to the original, and what
+   you run during the talk changes the copy's outputs.)
+3. Open the notebook to present, and run it, so that its outputs are what you want on the slides.
+4. **Start the deck:** click the deck icon in the notebook's toolbar, or run *Start Deck* from the command palette.
+5. **Move** with the arrow keys: left and right between slides, down into the sub-slides under a slide, up to come back. Space goes forward
+   (down, or else right) and shift-space back. Shift-enter runs the cell on the slide and moves on.
+6. **Stop** with the deck icon again, or *Stop Deck* in the command palette.
+
+The menus and the status bar are hidden while it runs; hover over the sidebars and the notebook toolbar to bring them back. The slide types:
+
+| type | on the slide |
+|---|---|
+| `slide` | starts a new slide |
+| `subslide` | starts a slide below the one before it, reached with the down arrow |
+| `fragment` | appears when you advance, on the slide |
+| `-` | stays on the slide, under the cell before it |
+| `skip` | is not shown |
+
+Until any cell has a slide type, all of the notebook's cells show as one scrolling stack.
 
 #### `(display-svg svg [text])`
 Draws the picture that `svg`, a string `"<svg ...>...</svg>"`, describes, by itself in the output of a Jupyter notebook's cell. The

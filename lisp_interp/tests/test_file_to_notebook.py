@@ -178,40 +178,47 @@ class TestSetSlideTypes(LispTestCase):
         with open(path) as f:
             return [c["metadata"]["slideshow"]["slide_type"] for c in json.load(f)["cells"]]
 
-    def test_a_copy_is_written_with_the_slide_type_of_every_cell(self):
-        copy = os.path.join(self.folder, "talk-slides.ipynb")
-        self.assertShows('(set-slide-types "%s")' % self.notebook, '"%s"' % copy)
-        self.assertEqual(self.types(copy), ["slide", "slide", "slide"])
-        self.assertEqual(self.printed(), "Wrote %s, with the slide types set on 3 cells (open it in Jupyter)\n" % copy)
+    def test_the_notebook_itself_is_changed_unless_a_copy_is_asked_for(self):
+        self.assertShows('(set-slide-types "%s")' % self.notebook, '"%s"' % self.notebook)
+        self.assertEqual(self.types(self.notebook), ["slide", "slide", "slide"])
+        self.assertIn("Set the slide types of the 3 cells of %s. If it is open in JupyterLab, reload it" % self.notebook, self.printed())
+        self.assertEqual(sorted(os.listdir(self.folder)), ["talk.ipynb"])             # (no copy, and nothing left over from writing)
 
-    def test_by_heading_and_a_name_for_the_copy(self):
+    def test_by_heading_and_a_name_for_a_copy(self):
         copy = os.path.join(self.folder, "mine.ipynb")
-        self.run_lisp("(set-slide-types \"%s\" 'by-heading \"%s\")" % (self.notebook, copy))
+        self.assertShows("(set-slide-types \"%s\" 'by-heading \"%s\")" % (self.notebook, copy), '"%s"' % copy)
         self.assertEqual(self.types(copy), ["slide", "-", "subslide"])
+        self.assertIn("Wrote %s, with the slide types set on 3 cells (open it in Jupyter)" % copy, self.printed())
+        with open(self.notebook) as f:
+            self.assertEqual(json.load(f), self.document)                              # (the notebook is as it was)
 
-    def test_everything_else_in_the_notebook_is_kept_and_the_original_is_not_touched(self):
-        copy = os.path.join(self.folder, "copy.ipynb")
-        self.run_lisp('(set-slide-types "%s" (quote each-cell) "%s")' % (self.notebook, copy))
-        with open(copy) as f:
+    def test_everything_else_in_the_notebook_is_kept(self):
+        self.run_lisp("(set-slide-types \"%s\" 'by-heading)" % self.notebook)
+        self.assertEqual(self.types(self.notebook), ["slide", "-", "subslide"])
+        with open(self.notebook) as f:
             written = json.load(f)
         for c in written["cells"]:
             del c["metadata"]["slideshow"]
         self.assertEqual(written, self.document)                          # (outputs, execution counts, kernel: all as they were)
-        with open(self.notebook) as f:
-            self.assertEqual(json.load(f), self.document)
+
+    def test_it_is_written_as_jupyter_writes_a_notebook(self):
+        self.run_lisp('(set-slide-types "%s")' % self.notebook)
+        with open(self.notebook, encoding="utf-8") as f:
+            text = f.read()
+        self.assertEqual(text, json.dumps(json.loads(text), sort_keys=True, indent=1, ensure_ascii=False) + "\n")
 
     def test_a_notebook_shows_a_link_to_the_copy(self):
         shown = []
         env = lisp_builtins.make_global_env(output=self.out.append, html=shown.append)
-        self.run_lisp('(set-slide-types "%s")' % self.notebook, env)
         copy = os.path.join(self.folder, "talk-slides.ipynb")
+        self.run_lisp('(set-slide-types "%s" (quote each-cell) "%s")' % (self.notebook, copy), env)
         self.assertEqual(shown, ['<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(os.path.relpath(copy)), html.escape(copy))])
 
     def test_a_copy_that_is_there_already_is_not_written_over(self):
         copy = os.path.join(self.folder, "talk-slides.ipynb")
         with open(copy, "w") as f:
             f.write("mine")
-        self.assertLispError('(set-slide-types "%s")' % self.notebook, "is there already")
+        self.assertLispError('(set-slide-types "%s" (quote each-cell) "%s")' % (self.notebook, copy), "is there already")
         with open(copy) as f:
             self.assertEqual(f.read(), "mine")
 
