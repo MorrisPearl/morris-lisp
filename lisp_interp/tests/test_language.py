@@ -28,6 +28,17 @@ class TestReader(LispTestCase):
         self.assertEqual(self.run_lisp(r'"back\\slash"'), "back\\slash")
         self.assertTrue(lisp_core.is_true(self.run_lisp('(string? "x")')))
 
+    def test_a_string_may_be_written_between_vertical_bars(self):
+        self.assertEqual(self.run_lisp(r'|hello|'), "hello")
+        self.assertEqual(self.run_lisp(r'|say "hi" and "bye"|'), 'say "hi" and "bye"')       # (the point: no \" everywhere)
+        self.assertEqual(self.run_lisp(r'|a\nb\tc|'), "a\nb\tc")                                 # (the same escapes)
+        self.assertEqual(self.run_lisp(r'|back\\slash|'), "back\\slash")
+        self.assertEqual(self.run_lisp(r'|a \| bar|'), "a | bar")
+        self.assertEqual(self.run_lisp(r'||'), "")
+        self.assertTrue(lisp_core.is_true(self.run_lisp('(string? |x|)')))
+        self.assertShows(r'(list |a "b"| "c |d")', '("a \\"b\\"" "c |d")')                 # (a bar inside a "..." string is a bar)
+        self.assertShows(r'(string-length |"|)', "1")
+
     def test_quote_shorthand(self):
         self.assertShows("'x", "x")
         self.assertShows("'(1 2 3)", "(1 2 3)")

@@ -513,7 +513,7 @@ borders drawn over it:
           :title "Per capita personal income, 2024")
 ```
 
-[`examples/map_example.lsp`](examples/map_example.lsp) has more maps:
+[`examples/map_example.lsp`](../lisp_interp/examples/map_example.lsp) has more maps:
 
 - states colored by their poverty rate, with circles sized by their GDP;
 - a circle on each of New York's ZIP code areas, sized by its population;
@@ -537,7 +537,7 @@ borders drawn over it:
 | `tastytrade-quotes`, `tastytrade-option-chain`, `tastytrade-futures-curve`, `tastytrade-get`, `sofr-calibration-data` | Market prices, option chains, futures curves | tastytrade | [tastytrade](lisp_library_reference.md#tastytrade-real-broker-data) |
 | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders` | Your accounts' holdings; quotes; years of daily prices | Schwab | [Schwab](lisp_library_reference.md#schwab-your-accounts) |
 
-Example programs in [`examples/`](examples/) show each source at work:
+Example programs in [`examples/`](../lisp_interp/examples/) show each source at work:
 
 - `census_bls_example.lsp`
 - `bea_example.lsp`

@@ -27,7 +27,8 @@ from lisp_core import (
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# The manuals that help looks in, in this order.
+# The manuals that help looks in, in this order, in the doc directory beside this one.
+DOC_DIRECTORY = os.path.join(HERE, "..", "doc")
 MANUALS = ["lisp_interpreter_reference.md", "lisp_library_reference.md", "lisp_cmo_manual.md"]
 
 # The most lines of a manual's section that help shows.
@@ -203,7 +204,7 @@ def manual_sections():
     if _manual_sections is None:
         _manual_sections = []
         for manual in MANUALS:
-            path = os.path.join(HERE, manual)
+            path = os.path.join(DOC_DIRECTORY, manual)
             if not os.path.isfile(path):
                 continue
             with open(path) as f:

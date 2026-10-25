@@ -34,9 +34,9 @@ _LOADABLE_IN_EXAMPLES_DOC = {
 
 
 def _loads_something_unsafe(doc, block):
-    """Whether the block loads a file that a block in this document isn't allowed to. A block that calls file-to-notebook is never run:
-    without a path it opens a file dialog, and it writes a notebook."""
-    if "(file-to-notebook" in block:
+    """Whether the block loads a file that a block in this document isn't allowed to. A block that calls file-to-notebook, set-slide-types or
+    notebook-to-slides is never run: it writes a notebook (and file-to-notebook, without a path, opens a file dialog)."""
+    if any(call in block for call in ("(file-to-notebook", "(set-slide-types", "(notebook-to-slides")):
         return True
     loaded = re.findall(r'\(load "([^"]*)"\)', block)
     if "(load " in block and not loaded:
@@ -281,7 +281,7 @@ class TestDocumentLinks(unittest.TestCase):
     those links must go somewhere, or moving a section would leave readers at a dead end."""
 
     def test_every_link_goes_to_a_file_and_a_heading_that_exist(self):
-        documents = [REFERENCE_DOC, LIBRARY_DOC, EXAMPLES_DOC, CMO_DOC, os.path.join(HERE, "economic_data_guide.md"),
+        documents = [REFERENCE_DOC, LIBRARY_DOC, EXAMPLES_DOC, CMO_DOC, os.path.join(DOC_DIRECTORY, "economic_data_guide.md"),
                      os.path.join(HERE, "..", "README.md")]
         texts = {}
         for path in documents:

@@ -585,6 +585,22 @@ def tokenize(text):
                     j += 1
             tokens.append('"' + "".join(buf) + '"')
             i = j + 1
+        elif c == '|':
+            j = i + 1
+            buf = []
+            while j < n and text[j] != '|':
+                if text[j] == '\\' and j + 1 < n:
+                    # \n, \t, \r, \f, \|, and \\ are escapes. A backslash before any
+                    # other character is kept, as Python does, so that a
+                    # regular expression such as "\d+" can be written as is.
+                    escapes = {'n': '\n', 't': '\t', 'r': '\r', 'f': '\f', '|': '|', '\\': '\\'}
+                    buf.append(escapes.get(text[j + 1], '\\' + text[j + 1]))
+                    j += 2
+                else:
+                    buf.append(text[j])
+                    j += 1
+            tokens.append('"' + "".join(buf) + '"')
+            i = j + 1
         else:
             j = i
             while j < n and text[j] not in " \t\r\n()'\"`," and text[j] != ';':

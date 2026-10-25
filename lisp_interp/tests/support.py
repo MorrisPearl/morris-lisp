@@ -64,10 +64,11 @@ import lisp_vector_math  # noqa: E402
 INTERPRETER = os.path.join(HERE, "lisp_interpreter.py")
 LIB = os.path.join(HERE, "lib")                 # the Lisp libraries that come with the interpreter
 EXAMPLES = os.path.join(HERE, "examples")
-REFERENCE_DOC = os.path.join(HERE, "lisp_interpreter_reference.md")
-LIBRARY_DOC = os.path.join(HERE, "lisp_library_reference.md")
-EXAMPLES_DOC = os.path.join(HERE, "lisp_example_programs.md")
-CMO_DOC = os.path.join(HERE, "lisp_cmo_manual.md")
+DOC_DIRECTORY = os.path.join(HERE, "..", "doc")
+REFERENCE_DOC = os.path.join(DOC_DIRECTORY, "lisp_interpreter_reference.md")
+LIBRARY_DOC = os.path.join(DOC_DIRECTORY, "lisp_library_reference.md")
+EXAMPLES_DOC = os.path.join(DOC_DIRECTORY, "lisp_example_programs.md")
+CMO_DOC = os.path.join(DOC_DIRECTORY, "lisp_cmo_manual.md")
 
 
 # ---------------------------------------------------------------------------

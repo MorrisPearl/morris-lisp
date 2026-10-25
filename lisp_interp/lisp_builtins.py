@@ -20,6 +20,8 @@ import numbers
 import operator
 import os
 import random
+import re
+import shutil
 import string
 import sys
 import urllib.parse
@@ -1679,7 +1681,7 @@ def _end_of_top_level_form(text, i):
         depth = 0
         while i < n:
             c = text[i]
-            if c == '"':
+            if c in STRING_DELIMITERS:
                 i = _end_of_string(text, i)
                 continue
             if c == ";":
@@ -1694,17 +1696,21 @@ def _end_of_top_level_form(text, i):
                     return i + 1
             i += 1
         return n
-    if i < n and text[i] == '"':
+    if i < n and text[i] in STRING_DELIMITERS:
         return _end_of_string(text, i)
     while i < n and not text[i].isspace() and text[i] not in "()\";":
         i += 1
     return i
 
 
+STRING_DELIMITERS = '"|'            # a string is written "like this" or |like this|, for one with many quotation marks in it
+
+
 def _end_of_string(text, i):
-    """The index just after the string that begins with the quote at text[i], where \\ escapes the next character."""
+    """The index just after the string that begins with the delimiter at text[i] (" or |), where \\ escapes the next character."""
+    delimiter = text[i]
     i += 1
-    while i < len(text) and text[i] != '"':
+    while i < len(text) and text[i] != delimiter:
         i += 2 if text[i] == "\\" else 1
     return i + 1
 
@@ -1721,6 +1727,77 @@ def notebook_json(texts):
         "nbformat": 4,
         "nbformat_minor": 4,
     }
+
+
+SLIDE_STYLES = ("each-cell", "by-heading")
+
+# Where tools/get_slide_files.py puts the files that a slideshow needs to work with no internet connection: reveal.js, require.js and jQuery.
+SLIDES_SUPPORT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "slides_support")
+SLIDE_SUPPORT_FILES = ("require.min.js", "jquery.min.js")
+
+
+# Where find_font_file looks for the file of a font that is installed on this computer.
+FONT_DIRECTORIES = ["~/Library/Fonts", "/Library/Fonts", "/System/Library/Fonts", "~/.fonts", "~/.local/share/fonts", "/usr/share/fonts"]
+
+
+def find_font_file(name):
+    """The path of the file of the installed font called name ("Architects Daughter", in ArchitectsDaughter-Regular.ttf), or None. Looks
+    for the name with no spaces, then -Regular, as fonts are usually named, in the folders of FONT_DIRECTORIES."""
+    stem = name.replace(" ", "").lower()
+    wanted = {stem + "-regular.ttf", stem + "-regular.otf", stem + ".ttf", stem + ".otf"}
+    for directory in FONT_DIRECTORIES:
+        for folder, _, files in os.walk(os.path.expanduser(directory)):
+            for file in files:
+                if file.lower() in wanted:
+                    return os.path.join(folder, file)
+    return None
+
+
+def font_style(name, folder, font_file):
+    """The <style> that makes a slideshow use the font called name: its @font-face, if there is a font_file to copy into the folder of
+    the page's files, and the rules that set the font of the slides' text, headings and the notebook's text cells (not of the code, which stays as it is)."""
+    face = ""
+    if font_file is not None:
+        face = '@font-face { font-family: "%s"; src: url("%s/%s"); }\n' % (name, urllib.parse.quote(os.path.basename(folder)),
+                                                                        urllib.parse.quote(os.path.basename(font_file)))
+    text = ", ".join([".reveal"] + [".reveal h%d" % level for level in range(1, 7)] + [".reveal .jp-RenderedHTMLCommon"])
+    return '<style>\n%s%s { font-family: "%s", sans-serif; }\n</style>\n' % (face, text, name)
+
+
+def themes_without_web_fonts():
+    """The names of the reveal.js themes (in the downloaded files) that do not fetch their fonts from Google, so that they show with no
+    internet: white, black and serif, in reveal.js 4.0.2. Sorted, with white first."""
+    folder = os.path.join(SLIDES_SUPPORT, "reveal.js", "dist", "theme")
+    found = []
+    for file in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+        if file.endswith(".css"):
+            with open(os.path.join(folder, file), encoding="utf-8") as f:
+                if "fonts.googleapis.com" not in f.read():
+                    found.append(file[:-len(".css")])
+    return sorted(found, key=lambda theme: (theme != "white", theme))
+
+# nbconvert's slide template imports mermaid (for diagrams) from a web address; with none, its line is an import of nothing.
+EMPTY_MERMAID_IMPORT = re.compile(r"<script type=\"module\">\s*import mermaid from '';.*?</script>", re.DOTALL)
+
+
+def slide_types_for(cells, style):
+    """The slide type of each cell of a notebook (the cells are the notebook's, as dictionaries), as a list of strings that Jupyter's
+    slideshow tools know: "slide" (a new slide), "subslide" (a new slide below this one), or "-" (continues the slide before it).
+      each-cell    every cell is a slide of its own.
+      by-heading   a markdown cell whose first line is a heading begins a slide, if it is "# ...", or a subslide, if it is "## ..."
+                   or deeper; every other cell continues the slide before it. The first cell always begins a slide."""
+    if style == "each-cell":
+        return ["slide"] * len(cells)
+    types = []
+    for cell in cells:
+        text = "".join(cell.get("source", [])).lstrip()
+        if cell.get("cell_type") == "markdown" and text.startswith("#"):
+            types.append("slide" if not text.startswith("##") else "subslide")
+        else:
+            types.append("-")
+    if types and types[0] == "-":
+        types[0] = "slide"
+    return types
 
 
 def choose_lisp_file():
@@ -1814,6 +1891,14 @@ def make_output_builtins(out, markdown, html, svg):
             out.write((str(text) if text is not None else "[an SVG picture, which a notebook shows]") + "\n")
         return NIL
 
+    def show_link(name, what):
+        """Says that the notebook called name was written, with what: in a notebook, as a link that opens it in a new tab; elsewhere, as
+        a line of text."""
+        if html is not None and not out.is_redirected():
+            html('<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(name), html_escape(name)))
+        else:
+            out.write("Wrote %s, %s (open it in Jupyter)\n" % (name, what))
+
     def file_to_notebook(path=None, notebook=None):
         """(file-to-notebook [path [notebook]]) -- writes a Jupyter notebook with each top-level form of a Lisp file in its own code
         cell, without running any of them. The path is a string (relative to the current directory, or the load path); without one,
@@ -1836,15 +1921,100 @@ def make_output_builtins(out, markdown, html, svg):
         with open(name, "w", encoding="utf-8") as f:
             json.dump(notebook_json(texts), f, indent=1)
             f.write("\n")
-        if html is not None and not out.is_redirected():
-            link = '<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(name), html_escape(name))
-            html(link)
-        else:
-            out.write("Wrote %s, with %d cells (open it in Jupyter)\n" % (name, len(texts)))
+        show_link(name, "with %d cells" % len(texts))
+        return LispString(name)
+
+    def set_slide_types(notebook, style=None, output=None):
+        """(set-slide-types notebook [style [output]]) -- writes a copy of a Jupyter notebook with the slide type of every cell set, for
+        a slideshow of it (with jupyterlab-deck in JupyterLab, or jupyter nbconvert --to slides). notebook is the path of the notebook,
+        a string. style is each-cell (the default: every cell is a slide) or by-heading (a markdown cell that begins with "# " starts a
+        slide, "## " or deeper a sub-slide, and the cells after it stay on it). The copy is output, or else the notebook's name with
+        -slides before .ipynb; it is not written over a file that is there. In a notebook, a link to the copy is shown. Returns its
+        path. The cells, their outputs and everything else in the notebook are kept."""
+        if not isinstance(notebook, LispString):
+            raise LispError("set-slide-types: expected the notebook's path as a string, not %s" % _brief(notebook))
+        style = "each-cell" if style is None else str(style)
+        if style not in SLIDE_STYLES:
+            raise LispError("set-slide-types: the style is each-cell or by-heading, not %s" % style)
+        source = find_lisp_file(str(notebook))
+        with open(source, encoding="utf-8") as f:
+            try:
+                document = json.load(f)
+            except ValueError as e:
+                raise LispError("set-slide-types: %s is not a notebook (%s)" % (notebook, e))
+        if not isinstance(document, dict) or not isinstance(document.get("cells"), list):
+            raise LispError("set-slide-types: %s is not a notebook: it has no cells" % notebook)
+        name = str(output) if output is not None else os.path.splitext(str(notebook))[0] + "-slides.ipynb"
+        if os.path.exists(name):
+            raise LispError("set-slide-types: %s is there already: give the copy another name, (set-slide-types \"%s\" '%s \"other.ipynb\")"
+                            % (name, notebook, style))
+        for cell, slide_type in zip(document["cells"], slide_types_for(document["cells"], style)):
+            cell.setdefault("metadata", {}).setdefault("slideshow", {})["slide_type"] = slide_type
+        with open(name, "w", encoding="utf-8") as f:
+            json.dump(document, f, indent=1)
+            f.write("\n")
+        show_link(name, "with the slide types set on %d cells" % len(document["cells"]))
+        return LispString(name)
+
+    def notebook_to_slides(notebook, output=None, theme=None, font=None):
+        """(notebook-to-slides notebook [output [theme [font]]]) -- makes a slideshow of a Jupyter notebook (a reveal.js page), that works with no
+        internet connection. notebook is the path of the notebook, a string, whose cells have slide types (see set-slide-types). The page is
+        output, or else the notebook's name with .slides.html; the files it needs go in a folder beside it, with _files added to its name:
+        copy both to show it somewhere else. Neither is written over what is there. theme is white (the default), black or serif: the
+        themes whose fonts come with reveal.js, and so need no internet. font is the name of a font installed here, "Architects Daughter" for an
+        informal look, which the slides use for their text and headings: its file is copied into the folder beside the page, so that the
+        slideshow shows it on another computer too. Open the page in a browser. The notebook is not run: the outputs it
+        has are what the slides show. Needs the files that tools/get_slide_files.py downloads once. Returns the page's path."""
+        if not isinstance(notebook, LispString):
+            raise LispError("notebook-to-slides: expected the notebook's path as a string, not %s" % _brief(notebook))
+        try:
+            from nbconvert import SlidesExporter
+        except ImportError:
+            raise LispError("notebook-to-slides: the nbconvert package is needed (pip install nbconvert)")
+        if not os.path.isdir(os.path.join(SLIDES_SUPPORT, "reveal.js")):
+            raise LispError("notebook-to-slides: the files that a slideshow needs to work with no internet are not here yet: download them "
+                            "once, with  python3 tools/get_slide_files.py  (run it where lisp_interpreter.py is: %s)"
+                            % os.path.dirname(SLIDES_SUPPORT))
+        themes = themes_without_web_fonts()
+        theme = "white" if theme is None else str(theme)
+        if theme not in themes:
+            raise LispError("notebook-to-slides: the theme is %s, not %s (the other themes of reveal.js load their fonts from the internet)"
+                            % (" or ".join(themes), theme))
+        if font is not None and not (isinstance(font, LispString) and re.fullmatch(r"[A-Za-z0-9 _-]+", font)):
+            raise LispError("notebook-to-slides: the font is the name of an installed font, a string such as \"Architects Daughter\", not %s"
+                            % _brief(font))
+        source = find_lisp_file(str(notebook))
+        name = str(output) if output is not None else os.path.splitext(str(notebook))[0] + ".slides.html"
+        folder = os.path.splitext(name)[0] + "_files"
+        for taken in (name, folder):
+            if os.path.exists(taken):
+                raise LispError("notebook-to-slides: %s is there already: give the slideshow another name, (notebook-to-slides \"%s\" \"other.html\")"
+                                % (taken, notebook))
+        place = urllib.parse.quote(os.path.basename(folder))              # (the page and its folder are side by side)
+        exporter = SlidesExporter(reveal_theme=theme, reveal_url_prefix=place + "/reveal.js", require_js_url=place + "/require.min.js",
+                                  jquery_url=place + "/jquery.min.js", mathjax_url="", mermaid_js_url="", mermaid_layout_elk_js_url="")
+        page, _ = exporter.from_filename(source)
+        font_file = find_font_file(str(font)) if font is not None else None
+        page = EMPTY_MERMAID_IMPORT.sub("", page)
+        if font is not None:
+            page = page.replace("</head>", font_style(str(font), folder, font_file) + "</head>", 1)
+        with open(name, "w", encoding="utf-8") as f:
+            f.write(page)
+        shutil.copytree(os.path.join(SLIDES_SUPPORT, "reveal.js"), os.path.join(folder, "reveal.js"))
+        for support_file in SLIDE_SUPPORT_FILES:
+            shutil.copy(os.path.join(SLIDES_SUPPORT, support_file), folder)
+        if font_file is not None:
+            shutil.copy(font_file, folder)
+        out.write("Wrote %s, and %s/ beside it, which it needs: open the page in a browser; it works with no internet\n"
+                  % (name, os.path.basename(folder)))
+        if font is not None and font_file is None:
+            out.write("The font %s is not installed here, so it is not in that folder: the slides show it only on a computer that has it\n" % font)
         return LispString(name)
 
     return {
         "display": lisp_display,
+        "notebook-to-slides": notebook_to_slides,
+        "set-slide-types": set_slide_types,
         "file-to-notebook": file_to_notebook,
         "newline": lisp_newline,
         "print": lisp_print,

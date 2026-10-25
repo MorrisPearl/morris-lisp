@@ -45,6 +45,12 @@ class TestTheSplitter(unittest.TestCase):
         for text in lisp_builtins.top_level_form_texts(SAMPLE):
             self.assertEqual(len(list(lisp_core.parse(text))), 1, text)
 
+    def test_a_string_in_vertical_bars_may_hold_parentheses_semicolons_and_quotation_marks(self):
+        source = '(define s |has ) a paren and ; a semicolon and "quotes"|)\n(define t 2)\n|just a bar string|\n'
+        self.assertEqual(lisp_builtins.top_level_form_texts(source),
+                         ['(define s |has ) a paren and ; a semicolon and "quotes"|)', "(define t 2)", "|just a bar string|"])
+        self.assertEqual(lisp_builtins.top_level_form_texts(r"(f |a \| bar|) (g)"), [r"(f |a \| bar|)", "(g)"])
+
     def test_a_file_with_no_forms_has_no_texts(self):
         self.assertEqual(lisp_builtins.top_level_form_texts("; only a comment\n\n"), [])
 
@@ -128,6 +134,217 @@ class TestFileToNotebook(LispTestCase):
     def test_what_is_wrong_is_said(self):
         self.assertLispError("(file-to-notebook 5)", "expected the file's path as a string")
         self.assertLispError('(file-to-notebook "no-such-file.lsp" "%s")' % self.notebook, "no-such-file.lsp")
+
+
+def cell(kind, text, **more):
+    return dict({"cell_type": kind, "metadata": {}, "source": text.splitlines(keepends=True)}, **more)
+
+
+class TestSlideTypes(unittest.TestCase):
+
+    CELLS = [cell("code", "(define a 1)"), cell("markdown", "# Part one"), cell("code", "a"), cell("markdown", "## A detail"),
+             cell("markdown", "just words"), cell("markdown", "  # Part two")]
+
+    def test_every_cell_is_a_slide_of_its_own_by_default(self):
+        self.assertEqual(lisp_builtins.slide_types_for(self.CELLS, "each-cell"), ["slide"] * 6)
+
+    def test_a_heading_starts_a_slide_or_a_sub_slide_and_the_other_cells_stay_on_it(self):
+        self.assertEqual(lisp_builtins.slide_types_for(self.CELLS, "by-heading"),
+                         ["slide", "slide", "-", "subslide", "-", "slide"])      # (the first cell always starts a slide)
+
+    def test_a_code_cell_that_looks_like_a_heading_is_not_one(self):
+        cells = [cell("markdown", "# Title"), cell("code", "# a comment, not a heading\n(f)")]
+        self.assertEqual(lisp_builtins.slide_types_for(cells, "by-heading"), ["slide", "-"])
+
+    def test_no_cells_have_no_types(self):
+        self.assertEqual(lisp_builtins.slide_types_for([], "by-heading"), [])
+
+
+class TestSetSlideTypes(LispTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.folder, True)
+        self.notebook = os.path.join(self.folder, "talk.ipynb")
+        self.document = {"cells": [cell("markdown", "# Title"), cell("code", "(+ 1 2)", execution_count=3,
+                                                                       outputs=[{"output_type": "stream", "name": "stdout", "text": ["3\n"]}]),
+                                   cell("markdown", "## Detail")],
+                         "metadata": {"kernelspec": {"name": "morris-lisp"}}, "nbformat": 4, "nbformat_minor": 4}
+        with open(self.notebook, "w") as f:
+            json.dump(self.document, f)
+
+    def types(self, path):
+        with open(path) as f:
+            return [c["metadata"]["slideshow"]["slide_type"] for c in json.load(f)["cells"]]
+
+    def test_a_copy_is_written_with_the_slide_type_of_every_cell(self):
+        copy = os.path.join(self.folder, "talk-slides.ipynb")
+        self.assertShows('(set-slide-types "%s")' % self.notebook, '"%s"' % copy)
+        self.assertEqual(self.types(copy), ["slide", "slide", "slide"])
+        self.assertEqual(self.printed(), "Wrote %s, with the slide types set on 3 cells (open it in Jupyter)\n" % copy)
+
+    def test_by_heading_and_a_name_for_the_copy(self):
+        copy = os.path.join(self.folder, "mine.ipynb")
+        self.run_lisp("(set-slide-types \"%s\" 'by-heading \"%s\")" % (self.notebook, copy))
+        self.assertEqual(self.types(copy), ["slide", "-", "subslide"])
+
+    def test_everything_else_in_the_notebook_is_kept_and_the_original_is_not_touched(self):
+        copy = os.path.join(self.folder, "copy.ipynb")
+        self.run_lisp('(set-slide-types "%s" (quote each-cell) "%s")' % (self.notebook, copy))
+        with open(copy) as f:
+            written = json.load(f)
+        for c in written["cells"]:
+            del c["metadata"]["slideshow"]
+        self.assertEqual(written, self.document)                          # (outputs, execution counts, kernel: all as they were)
+        with open(self.notebook) as f:
+            self.assertEqual(json.load(f), self.document)
+
+    def test_a_notebook_shows_a_link_to_the_copy(self):
+        shown = []
+        env = lisp_builtins.make_global_env(output=self.out.append, html=shown.append)
+        self.run_lisp('(set-slide-types "%s")' % self.notebook, env)
+        copy = os.path.join(self.folder, "talk-slides.ipynb")
+        self.assertEqual(shown, ['<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(copy), html.escape(copy))])
+
+    def test_a_copy_that_is_there_already_is_not_written_over(self):
+        copy = os.path.join(self.folder, "talk-slides.ipynb")
+        with open(copy, "w") as f:
+            f.write("mine")
+        self.assertLispError('(set-slide-types "%s")' % self.notebook, "is there already")
+        with open(copy) as f:
+            self.assertEqual(f.read(), "mine")
+
+    def test_what_is_wrong_is_said(self):
+        self.assertLispError("(set-slide-types 5)", "expected the notebook's path as a string")
+        self.assertLispError('(set-slide-types "%s" (quote everywhere))' % self.notebook, "the style is each-cell or by-heading, not everywhere")
+        self.assertLispError('(set-slide-types "no-such-notebook.ipynb")', "no-such-notebook.ipynb")
+        plain = os.path.join(self.folder, "plain.ipynb")
+        with open(plain, "w") as f:
+            f.write("not json")
+        self.assertLispError('(set-slide-types "%s")' % plain, "is not a notebook")
+        with open(plain, "w") as f:
+            f.write('{"metadata": {}}')
+        self.assertLispError('(set-slide-types "%s")' % plain, "it has no cells")
+
+
+class TestNotebookToSlides(LispTestCase):
+    """notebook-to-slides, against a small stand-in for the files that tools/get_slide_files.py downloads."""
+
+    def setUp(self):
+        super().setUp()
+        self.folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.folder, True)
+        self.support = os.path.join(self.folder, "support")
+        for path, text in (("reveal.js/dist/reveal.js", "// reveal"), ("reveal.js/plugin/notes/notes.js", "// notes"),
+                           ("reveal.js/dist/theme/white.css", "/* local fonts */"), ("reveal.js/dist/theme/black.css", "/* local fonts */"),
+                           ("reveal.js/dist/theme/simple.css", "@import url(https://fonts.googleapis.com/css?family=Lato);"),
+                           ("require.min.js", "// require"), ("jquery.min.js", "// jquery")):
+            os.makedirs(os.path.dirname(os.path.join(self.support, path)), exist_ok=True)
+            with open(os.path.join(self.support, path), "w") as f:
+                f.write(text)
+        patcher = mock.patch.object(lisp_builtins, "SLIDES_SUPPORT", self.support)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.notebook = os.path.join(self.folder, "talk.ipynb")
+        document = {"cells": [cell("markdown", "# Title"), cell("code", "(+ 1 2)", execution_count=1, outputs=[]), cell("markdown", "## Detail")],
+                    "metadata": {"kernelspec": {"name": "morris-lisp", "display_name": "morris_lisp", "language": "scheme"}},
+                    "nbformat": 4, "nbformat_minor": 4}
+        for c, slide_type in zip(document["cells"], ("slide", "slide", "subslide")):
+            c["metadata"]["slideshow"] = {"slide_type": slide_type}
+        with open(self.notebook, "w") as f:
+            json.dump(document, f)
+        self.page = os.path.join(self.folder, "talk.slides.html")
+
+    def read_page(self, path=None):
+        with open(path or self.page, encoding="utf-8") as f:
+            return f.read()
+
+    def test_a_page_and_the_folder_of_files_it_needs_are_written(self):
+        self.assertShows('(notebook-to-slides "%s")' % self.notebook, '"%s"' % self.page)
+        files = os.path.join(self.folder, "talk.slides_files")
+        self.assertEqual(sorted(os.listdir(files)), ["jquery.min.js", "require.min.js", "reveal.js"])
+        self.assertTrue(os.path.exists(os.path.join(files, "reveal.js", "dist", "reveal.js")))
+        self.assertTrue(os.path.exists(os.path.join(files, "reveal.js", "plugin", "notes", "notes.js")))
+        self.assertIn("open the page in a browser; it works with no internet", self.printed())
+
+    def test_the_page_names_only_files_beside_it(self):
+        self.run_lisp('(notebook-to-slides "%s")' % self.notebook)
+        page = self.read_page()
+        addresses = re.findall(r'(?:src|href)="([^"]*)"', page) + re.findall(r'"(talk\.slides_files/[^"]*)"', page)
+        self.assertEqual([a for a in addresses if a.startswith(("http:", "https:", "//"))], [])
+        for needed in ("talk.slides_files/reveal.js/dist/reveal.js", "talk.slides_files/reveal.js/plugin/notes/notes.js",
+                       "talk.slides_files/require.min.js", "talk.slides_files/jquery.min.js", "talk.slides_files/reveal.js/dist/theme/white.css"):
+            self.assertIn(needed, page)
+        self.assertNotIn("import mermaid from ''", page)
+        self.assertNotIn("mathjax.org", page)
+
+    def test_every_cell_is_on_a_slide_in_order(self):
+        self.run_lisp('(notebook-to-slides "%s")' % self.notebook)
+        text = re.sub(r"<[^>]*>", "", self.read_page())
+        self.assertEqual([text.index(word) for word in ("Title", "(+ 1 2)", "Detail")], sorted(text.index(word) for word in ("Title", "(+ 1 2)", "Detail")))
+        self.assertGreaterEqual(self.read_page().count("<section"), 3)          # (a sub-slide is a section inside its slide's)
+
+    def test_a_name_for_the_page_and_a_theme(self):
+        page = os.path.join(self.folder, "dark.html")
+        self.run_lisp("(notebook-to-slides \"%s\" \"%s\" 'black)" % (self.notebook, page))
+        self.assertIn("dark_files/reveal.js/dist/theme/black.css", self.read_page(page))
+        self.assertTrue(os.path.isdir(os.path.join(self.folder, "dark_files")))
+
+    def test_a_theme_that_loads_its_fonts_from_the_internet_is_not_offered(self):
+        self.assertEqual(lisp_builtins.themes_without_web_fonts(), ["white", "black"])
+        self.assertLispError('(notebook-to-slides "%s" "%s" (quote simple))' % (self.notebook, os.path.join(self.folder, "x.html")),
+                             "the theme is white or black, not simple")
+        self.assertFalse(os.path.exists(os.path.join(self.folder, "x.html")))
+
+    def make_font(self, name="Hand Written-Regular.ttf"):
+        folder = os.path.join(self.folder, "fonts", "nested")
+        os.makedirs(folder)
+        with open(os.path.join(folder, name), "wb") as f:
+            f.write(b"font bytes")
+        patcher = mock.patch.object(lisp_builtins, "FONT_DIRECTORIES", [os.path.join(self.folder, "fonts")])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_font_is_used_for_the_text_and_its_file_goes_in_the_folder(self):
+        self.make_font("HandWritten-Regular.ttf")
+        self.run_lisp('(notebook-to-slides "%s" "%s" (quote white) "Hand Written")' % (self.notebook, self.page))
+        page = self.read_page()
+        self.assertIn('@font-face { font-family: "Hand Written"; src: url("talk.slides_files/HandWritten-Regular.ttf"); }', page)
+        self.assertIn('.reveal .jp-RenderedHTMLCommon { font-family: "Hand Written", sans-serif; }', page)
+        with open(os.path.join(self.folder, "talk.slides_files", "HandWritten-Regular.ttf"), "rb") as f:
+            self.assertEqual(f.read(), b"font bytes")
+        self.assertNotIn("is not installed here", self.printed())
+
+    def test_a_font_that_is_not_installed_is_named_in_the_page_and_the_call_says_so(self):
+        self.make_font("Other-Regular.ttf")
+        self.run_lisp('(notebook-to-slides "%s" "%s" (quote white) "Hand Written")' % (self.notebook, self.page))
+        page = self.read_page()
+        self.assertIn('{ font-family: "Hand Written", sans-serif; }', page)
+        self.assertNotIn("@font-face", page)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.folder, "talk.slides_files"))), ["jquery.min.js", "require.min.js", "reveal.js"])
+        self.assertIn("The font Hand Written is not installed here", self.printed())
+
+    def test_a_font_is_a_name_and_the_slides_have_none_unless_one_is_given(self):
+        self.assertLispError('(notebook-to-slides "%s" "%s" (quote white) "Bad\\" name")' % (self.notebook, self.page), "the font is the name of an installed font")
+        self.assertLispError('(notebook-to-slides "%s" "%s" (quote white) 5)' % (self.notebook, self.page), "the font is the name of an installed font")
+        self.run_lisp('(notebook-to-slides "%s")' % self.notebook)
+        self.assertNotIn("font-family: \"", self.read_page().split("</head>")[0].split("theme/white.css")[-1])
+
+    def test_what_is_there_already_is_not_written_over(self):
+        with open(self.page, "w") as f:
+            f.write("mine")
+        self.assertLispError('(notebook-to-slides "%s")' % self.notebook, "is there already")
+        self.assertEqual(self.read_page(), "mine")
+        os.remove(self.page)
+        os.makedirs(os.path.join(self.folder, "talk.slides_files"))
+        self.assertLispError('(notebook-to-slides "%s")' % self.notebook, "talk.slides_files is there already")
+
+    def test_what_is_wrong_is_said(self):
+        self.assertLispError("(notebook-to-slides 5)", "expected the notebook's path as a string")
+        self.assertLispError('(notebook-to-slides "no-such.ipynb")', "no-such.ipynb")
+        with mock.patch.object(lisp_builtins, "SLIDES_SUPPORT", os.path.join(self.folder, "nothing-here")):
+            self.assertLispError('(notebook-to-slides "%s")' % self.notebook, "python3 tools/get_slide_files.py")
 
 
 class TestFileToNotebookInARealKernel(unittest.TestCase):

@@ -211,7 +211,7 @@ Jupyter alike — loads these Lisp files before doing anything else:
 |---|---|---|
 | Integer | `42`, `-7` | Python `int` |
 | Float | `3.14`, `-0.5`, `nan`, `inf` | Python `float`. `nan` ("not a number", the missing-value marker) and `inf` (infinity) are numbers too, so they can't be used as names (see below) |
-| String | `"hello"` | Double-quoted; `\n`, `\t`, `\r`, `\f` (a form feed, the page break of a printer), `\"`, `\\` escapes. A backslash before any other character is kept, as in Python, so a regular expression can be written as it is: `"\d+"`. The REPL prints a string the same way, in quotes and with `\"` and `\\` for a quote mark or backslash inside it, so what it prints can be typed back in (see `display`) |
+| String | `"hello"` | Double-quoted; `\n`, `\t`, `\r`, `\f` (a form feed, the page break of a printer), `\"`, `\\` escapes. A backslash before any other character is kept, as in Python, so a regular expression can be written as it is: `"\d+"`. A string may instead be written between vertical bars, `|say "hi"|`, which is easier to read when it has many quotation marks in it: it has the same escapes, with `\|` for a bar inside it The REPL prints a string the same way, in quotes and with `\"` and `\\` for a quote mark or backslash inside it, so what it prints can be typed back in (see `display`) |
 | Boolean | `#t`, `#f` | Everything except `#f` counts as true |
 | Symbol | `foo`, `list->vector` | Identifiers: anything that isn't read as a number or one of the types above |
 | quote | `'(a b c)` , `'(1 2 3)` , `'f`| Something that is not to be evaluated, but is treated as data |
@@ -5050,6 +5050,62 @@ lsp`'s `(write-csv "sofr_floating_rate_example.csv" *columns*)` call.
 ```lisp
 (write-columns-csv "out.csv" (list (list "rate" #(0.0435 0.041) 4) (cons "prices" #(10 20))))
 ```
+
+#### `(set-slide-types notebook [style [output]])`
+Writes a copy of a Jupyter notebook with the **slide type** of every cell set, for a slideshow of it: presented live in JupyterLab
+(with the `jupyterlab-deck` extension), or made into a reveal.js page with `jupyter nbconvert --to slides`. The cells, their outputs and
+everything else in the notebook are kept, and the original is not touched. `notebook` is the notebook's path, a string. `style` is a
+symbol:
+
+- `each-cell` (the default): every cell is a slide of its own.
+- `by-heading`: a markdown cell that begins with `# ` starts a slide, one that begins with `## ` or more `#`s a sub-slide (shown
+  below the slide, down the screen), and every other cell stays on the slide before it. The first cell always starts a slide.
+
+The copy is named `output` (a string) or else the notebook's name with `-slides` before `.ipynb`. It is not written over a file that is
+there. In a notebook, the call shows a link that opens the copy in a new tab, and it returns the copy's path. Each cell's type is
+stored as it is by Jupyter's own slide-type setting (the cell's `slideshow` metadata), so it can be changed by hand afterwards, in
+the property inspector on the right of JupyterLab.
+
+```lisp
+(set-slide-types "talk.ipynb")                          ; writes talk-slides.ipynb, every cell a slide
+(set-slide-types "talk.ipynb" 'by-heading "show.ipynb") ; headings start the slides
+```
+
+#### `(notebook-to-slides notebook [output [theme [font]]])`
+Makes a slideshow of a Jupyter notebook, a reveal.js page that works **with no internet connection**. `notebook` is the notebook's path,
+a string, whose cells have slide types (see `set-slide-types`). The page is `output`, or else the notebook's name with `.slides.html`. The
+files it needs, reveal.js and the two small scripts that load it, go in a folder beside it, named like the page with `_files` added:
+**copy both** to show the slideshow on another computer. Neither is written over what is there. Open the page in a browser; the arrow
+keys, space, `s` (speaker notes), `o` (an overview of the slides) and `f` (full screen) work as they do in any reveal.js slideshow. The
+notebook is not run: the outputs it has when it is saved are what the slides show, charts and tables included. The call says where it
+wrote the page, and returns its path.
+
+`theme` is `white` (the default), `black` or `serif`: reveal.js's other themes load their fonts from the internet. `font` is the name of a
+font installed on this computer, a string, for the slides' text and headings; code stays in its own. `"Architects Daughter"` gives a more
+informal look, as it does in the charts. The font's file is copied into the folder beside the page, so that the slideshow shows it on another
+computer too; if the font isn't installed here, the page still names it, and shows it only where it is installed (the call says so). The first time, download
+the files that the slideshow needs, which come from the places that publish them (reveal.js 4.0.2 from the npm registry, and require.js 2.1.10
+and jQuery 2.0.3 from cdnjs, each checked against the hash its publisher gives); run this where `lisp_interpreter.py` is:
+
+```bash
+python3 tools/get_slide_files.py
+```
+
+They are kept in `slides_support/` there, which git ignores.
+
+```lisp
+(set-slide-types "talk.ipynb" 'by-heading "talk-slides.ipynb")
+(notebook-to-slides "talk-slides.ipynb")        ; writes talk-slides.slides.html and talk-slides.slides_files/
+(notebook-to-slides "talk-slides.ipynb" "show.html" 'black)
+(notebook-to-slides "talk-slides.ipynb" "show.html" 'white "Architects Daughter")   ; an informal look
+```
+
+**Presenting live, from the notebook.** The JupyterLab extension `jupyterlab-deck` shows a notebook as a slideshow where it is, using
+the same slide types, so a cell can be run or changed during the talk; it comes with the notebook, and needs no internet connection.
+Install it once, with `pip install jupyterlab-deck jupyterlab-fonts`, and restart JupyterLab. Open the notebook, set the slide types
+(with `set-slide-types`, or in the property inspector on the right), and start the deck with the presentation button in the notebook's
+toolbar, or *Start Deck* in the command palette; *Stop Deck* ends it. Its own manual is at
+https://github.com/deathbeds/jupyterlab-deck.
 
 #### `(display-svg svg [text])`
 Draws the picture that `svg`, a string `"<svg ...>...</svg>"`, describes, by itself in the output of a Jupyter notebook's cell. The

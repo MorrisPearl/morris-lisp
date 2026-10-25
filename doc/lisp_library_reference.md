@@ -1692,7 +1692,7 @@ The functions that turn these curves into paths of rates, and fit the model of t
 are in "Interest rate paths (the two-factor model)". The curve is flat past the last futures contract (about 5 years
 out); for the long end, the Treasury's curve is the one to use (see "Yield curves").
 
-**Example** (also runnable as [`tastytrade_example.lsp`](examples/tastytrade_example.lsp) —
+**Example** (also runnable as [`tastytrade_example.lsp`](../lisp_interp/examples/tastytrade_example.lsp) —
 `python3 ../lisp_interpreter.py tastytrade_example.lsp`, from `examples/`). Exercises all
 ten `tastytrade-*` builtins; abridged here:
 
@@ -4150,7 +4150,7 @@ probability for `"logistic"`/`"spline-logistic"` models.
 (model-predict m2 50000)               ; one predictor -> bare number is fine too
 ```
 
-[`model_utils.lsp`](lib/model_utils.lsp)'s `(model->function m)` wraps this into
+[`model_utils.lsp`](../lisp_interp/lib/model_utils.lsp)'s `(model->function m)` wraps this into
 an ordinary Lisp function, one argument per predictor, instead of a list:
 
 ```lisp
@@ -4364,10 +4364,10 @@ choosing between models, compare those.
 Three libraries fit models to a sample of Freddie Mac's 30-year fixed-rate loans: a SQLite database, made by the scripts in `load_freddie_data/`
 (its `README.md` says how), with every month of each loan.
 
-- [`freddie_prepayment.lsp`](lib/freddie_prepayment.lsp): how fast loans prepay ([`notebooks/freddie_prepayment_model.ipynb`](notebooks/freddie_prepayment_model.ipynb));
-- [`freddie_default.lsp`](lib/freddie_default.lsp): how many default, what is lost when they are sold, and what became of them
-  ([`notebooks/freddie_default_model.ipynb`](notebooks/freddie_default_model.ipynb));
-- [`freddie_loans.lsp`](lib/freddie_loans.lsp): what the two share.
+- [`freddie_prepayment.lsp`](../lisp_interp/lib/freddie_prepayment.lsp): how fast loans prepay ([`notebooks/freddie_prepayment_model.ipynb`](../lisp_interp/notebooks/freddie_prepayment_model.ipynb));
+- [`freddie_default.lsp`](../lisp_interp/lib/freddie_default.lsp): how many default, what is lost when they are sold, and what became of them
+  ([`notebooks/freddie_default_model.ipynb`](../lisp_interp/notebooks/freddie_default_model.ipynb));
+- [`freddie_loans.lsp`](../lisp_interp/lib/freddie_loans.lsp): what the two share.
 
 **What they share.** Most of the models are of a **monthly rate**: the share of a loan's balance that something happened to in a month (that it prepaid, the
 smm; that defaulted, the mdr), a `spline-logistic` of it, with each row weighted by the balance, so that over a pool it is the pool's rate. `(annual-rate monthly)`
