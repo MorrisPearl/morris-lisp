@@ -1715,6 +1715,13 @@ def _end_of_string(text, i):
     return i + 1
 
 
+def link_path(name):
+    """Where a link in a notebook's output finds the file called name: its path from the folder that the notebook runs in (which is the
+    notebook's own folder in JupyterLab), with / between the folders. A path from the top of the computer, /Users/..., would be a place
+    on the web server, which has no such file: JupyterLab opens a notebook by its path from the folder it was started in."""
+    return os.path.relpath(os.path.abspath(name), os.getcwd()).replace(os.sep, "/")
+
+
 def notebook_json(texts):
     """A Jupyter notebook (format 4.4) with a code cell for each text, none run, for the morris_lisp kernel (install_lisp_kernel.py)."""
     def cell(text):
@@ -1895,7 +1902,7 @@ def make_output_builtins(out, markdown, html, svg):
         """Says that the notebook called name was written, with what: in a notebook, as a link that opens it in a new tab; elsewhere, as
         a line of text."""
         if html is not None and not out.is_redirected():
-            html('<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(name), html_escape(name)))
+            html('<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(link_path(name)), html_escape(name)))
         else:
             out.write("Wrote %s, %s (open it in Jupyter)\n" % (name, what))
 

@@ -109,7 +109,7 @@ class TestFileToNotebook(LispTestCase):
         shown = []
         env = lisp_builtins.make_global_env(output=self.out.append, html=shown.append)
         self.run_lisp('(file-to-notebook "%s" "%s")' % (self.path, self.notebook), env)
-        self.assertEqual(shown, ['<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(self.notebook), html.escape(self.notebook))])
+        self.assertEqual(shown, ['<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(os.path.relpath(self.notebook)), html.escape(self.notebook))])
         self.assertEqual(self.printed(), "")
 
     def test_a_path_is_found_on_the_load_path_too(self):
@@ -205,7 +205,7 @@ class TestSetSlideTypes(LispTestCase):
         env = lisp_builtins.make_global_env(output=self.out.append, html=shown.append)
         self.run_lisp('(set-slide-types "%s")' % self.notebook, env)
         copy = os.path.join(self.folder, "talk-slides.ipynb")
-        self.assertEqual(shown, ['<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(copy), html.escape(copy))])
+        self.assertEqual(shown, ['<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(os.path.relpath(copy)), html.escape(copy))])
 
     def test_a_copy_that_is_there_already_is_not_written_over(self):
         copy = os.path.join(self.folder, "talk-slides.ipynb")
@@ -347,6 +347,20 @@ class TestNotebookToSlides(LispTestCase):
             self.assertLispError('(notebook-to-slides "%s")' % self.notebook, "python3 tools/get_slide_files.py")
 
 
+class TestTheLinkToANotebook(unittest.TestCase):
+
+    def test_it_is_the_path_from_the_folder_the_notebook_runs_in_not_from_the_top_of_the_computer(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.realpath(folder)
+            cwd = os.getcwd()
+            os.chdir(folder)
+            self.addCleanup(os.chdir, cwd)
+            self.assertEqual(lisp_builtins.link_path(os.path.join(folder, "slides.ipynb")), "slides.ipynb")      # (given in full: the 404 of a link with /Users/...)
+            self.assertEqual(lisp_builtins.link_path("slides.ipynb"), "slides.ipynb")
+            self.assertEqual(lisp_builtins.link_path(os.path.join(folder, "sub", "a b.ipynb")), "sub/a b.ipynb")
+            self.assertEqual(lisp_builtins.link_path(os.path.join(os.path.dirname(folder), "other.ipynb")), "../other.ipynb")
+
+
 class TestFileToNotebookInARealKernel(unittest.TestCase):
 
     @classmethod
@@ -375,7 +389,7 @@ class TestFileToNotebookInARealKernel(unittest.TestCase):
                 shown.append(message["content"]["data"]["text/html"])
             if message["msg_type"] == "status" and message["content"]["execution_state"] == "idle":
                 break
-        self.assertEqual(shown, ['<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(notebook), html.escape(notebook))])
+        self.assertEqual(shown, ['<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(os.path.relpath(notebook)), html.escape(notebook))])
         with open(notebook) as f:
             self.assertEqual(["".join(c["source"]) for c in json.load(f)["cells"]],
                              ["(define first-cell 1)", "(define second-cell (* 2 first-cell))"])
