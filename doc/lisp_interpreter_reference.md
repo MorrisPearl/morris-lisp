@@ -5077,7 +5077,9 @@ a string, whose cells have slide types (see `set-slide-types`). The page is `out
 files it needs, reveal.js and the two small scripts that load it, go in a folder beside it, named like the page with `_files` added:
 **copy both** to show the slideshow on another computer. Neither is written over what is there. Open the page in a browser; the arrow
 keys, space, `s` (speaker notes), `o` (an overview of the slides) and `f` (full screen) work as they do in any reveal.js slideshow. The
-notebook is not run: the outputs it has when it is saved are what the slides show, charts and tables included. The call says where it
+notebook is not run: the outputs it has when it is saved are what the slides show, charts and tables included. A page can't draw a widget
+(the grids of `deal-builder`, say) or run a script, and what such an output saves is only a line of text that describes it, so these are left out of
+the slides, and the call says how many: present live, with the deck, to see them. The call says where it
 wrote the page, and returns its path.
 
 `theme` is `white` (the default), `black` or `serif`: reveal.js's other themes load their fonts from the internet. `font` is the name of a

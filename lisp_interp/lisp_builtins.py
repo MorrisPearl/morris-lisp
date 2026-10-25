@@ -1715,6 +1715,31 @@ def _end_of_string(text, i):
     return i + 1
 
 
+# What a page can show on its own, without a running notebook.
+STATIC_OUTPUT_TYPES = ("text/html", "text/markdown", "text/latex", "image/png", "image/jpeg", "image/svg+xml", "image/gif")
+# What only a running notebook can show: a widget (its saved form is a line of text that describes it) and a script.
+LIVE_OUTPUT_TYPES = ("application/vnd.jupyter.widget-view+json", "application/javascript")
+
+
+def only_a_live_notebook_can_show(output):
+    """Whether an output of a notebook's cell (a dictionary) is a widget or a script with nothing besides its description in words that a
+    page could show: on a slide it would be a line such as <IPython.core.display.Javascript object>."""
+    data = output.get("data", {})
+    return (output.get("output_type") in ("display_data", "execute_result")
+            and any(kind in data for kind in LIVE_OUTPUT_TYPES) and not any(kind in data for kind in STATIC_OUTPUT_TYPES))
+
+
+def without_live_outputs(notebook):
+    """Takes the outputs that only a live notebook can show out of the cells of the notebook (a notebook node), and says how many."""
+    left_out = 0
+    for cell in notebook.cells:
+        if cell.cell_type == "code":
+            kept = [output for output in cell.outputs if not only_a_live_notebook_can_show(output)]
+            left_out += len(cell.outputs) - len(kept)
+            cell.outputs = kept
+    return left_out
+
+
 def link_path(name):
     """Where a link in a notebook's output finds the file called name: its path from the folder that the notebook runs in (which is the
     notebook's own folder in JupyterLab), with / between the folders. A path from the top of the computer, /Users/..., would be a place
@@ -1971,7 +1996,7 @@ def make_output_builtins(out, markdown, html, svg):
         themes whose fonts come with reveal.js, and so need no internet. font is the name of a font installed here, "Architects Daughter" for an
         informal look, which the slides use for their text and headings: its file is copied into the folder beside the page, so that the
         slideshow shows it on another computer too. Open the page in a browser. The notebook is not run: the outputs it
-        has are what the slides show. Needs the files that tools/get_slide_files.py downloads once. Returns the page's path."""
+        has are what the slides show, but not a widget or a script, which only a live notebook can show: the call says how many it left out. Needs the files that tools/get_slide_files.py downloads once. Returns the page's path."""
         if not isinstance(notebook, LispString):
             raise LispError("notebook-to-slides: expected the notebook's path as a string, not %s" % _brief(notebook))
         try:
@@ -2000,7 +2025,10 @@ def make_output_builtins(out, markdown, html, svg):
         place = urllib.parse.quote(os.path.basename(folder))              # (the page and its folder are side by side)
         exporter = SlidesExporter(reveal_theme=theme, reveal_url_prefix=place + "/reveal.js", require_js_url=place + "/require.min.js",
                                   jquery_url=place + "/jquery.min.js", mathjax_url="", mermaid_js_url="", mermaid_layout_elk_js_url="")
-        page, _ = exporter.from_filename(source)
+        import nbformat
+        notebook_node = nbformat.read(source, as_version=4)
+        left_out = without_live_outputs(notebook_node)
+        page, _ = exporter.from_notebook_node(notebook_node)
         font_file = find_font_file(str(font)) if font is not None else None
         page = EMPTY_MERMAID_IMPORT.sub("", page)
         if font is not None:
@@ -2014,6 +2042,9 @@ def make_output_builtins(out, markdown, html, svg):
             shutil.copy(font_file, folder)
         out.write("Wrote %s, and %s/ beside it, which it needs: open the page in a browser; it works with no internet\n"
                   % (name, os.path.basename(folder)))
+        if left_out:
+            out.write("Left out %d output%s that only a live notebook can show (widgets and scripts): present live, with the deck, to see %s\n"
+                      % (left_out, "" if left_out == 1 else "s", "it" if left_out == 1 else "them"))
         if font is not None and font_file is None:
             out.write("The font %s is not installed here, so it is not in that folder: the slides show it only on a computer that has it\n" % font)
         return LispString(name)

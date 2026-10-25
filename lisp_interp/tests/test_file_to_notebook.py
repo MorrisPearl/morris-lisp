@@ -285,6 +285,31 @@ class TestNotebookToSlides(LispTestCase):
         self.assertEqual([text.index(word) for word in ("Title", "(+ 1 2)", "Detail")], sorted(text.index(word) for word in ("Title", "(+ 1 2)", "Detail")))
         self.assertGreaterEqual(self.read_page().count("<section"), 3)          # (a sub-slide is a section inside its slide's)
 
+    def test_what_only_a_live_notebook_can_show_is_left_out_and_the_rest_is_kept(self):
+        with open(self.notebook) as f:
+            document = json.load(f)
+        document["cells"][1]["outputs"] = [
+            {"output_type": "stream", "name": "stdout", "text": ["a plain line of output\n"]},
+            {"output_type": "execute_result", "execution_count": 1, "metadata": {}, "data": {"text/plain": ["a plain result"]}},
+            {"output_type": "display_data", "metadata": {}, "data": {"text/html": ["<b>a table</b>"], "text/plain": ["a table"]}},
+            {"output_type": "display_data", "metadata": {}, "data": {"application/vnd.jupyter.widget-view+json": {"model_id": "abc", "version_major": 2},
+                                                                      "text/plain": ["VBox(children=(DataGrid(auto_fit_params=ZZGRID"]}},
+            {"output_type": "display_data", "metadata": {}, "data": {"application/javascript": ["window.x = 1"],
+                                                                      "text/plain": ["<IPython.core.display.Javascript object>"]}}]
+        with open(self.notebook, "w") as f:
+            json.dump(document, f)
+        self.run_lisp('(notebook-to-slides "%s")' % self.notebook)
+        page = self.read_page()
+        for kept in ("a plain line of output", "a plain result", "<b>a table</b>"):
+            self.assertIn(kept, page)
+        for left_out in ("ZZGRID", "Javascript object", "window.x = 1"):
+            self.assertNotIn(left_out, page)
+        self.assertIn("Left out 2 outputs that only a live notebook can show (widgets and scripts)", self.printed())
+
+    def test_a_notebook_with_none_of_them_says_nothing_of_it(self):
+        self.run_lisp('(notebook-to-slides "%s")' % self.notebook)
+        self.assertNotIn("Left out", self.printed())
+
     def test_a_name_for_the_page_and_a_theme(self):
         page = os.path.join(self.folder, "dark.html")
         self.run_lisp("(notebook-to-slides \"%s\" \"%s\" 'black)" % (self.notebook, page))
