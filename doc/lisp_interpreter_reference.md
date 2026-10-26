@@ -4973,7 +4973,7 @@ Undoes `redirect-output`: closes whatever file is currently open (if any)
 and returns to writing to the console/GUI log. Safe to call even if no
 redirect is active.
 
-#### `(load-csv filename [headings] [:text columns] [:skip rows] [:missing texts])`
+#### `(load-csv filename [headings] [:text columns] [:skip rows] [:missing texts] [:separator char])`
 (In `lisp_csv.py`.) Reads a CSV file into a table (see "Tables") — a list
 of `(name . vector)` columns, the same shape `sqlite-query` returns. Every
 column and every row is kept. Each column becomes:
@@ -4990,6 +4990,15 @@ names, and they're named `Column1`, `Column2`, ...; or **a list of strings**, th
 row is data). To use names of your own *instead of* the ones a file has, give the list and `:skip 1`, which leaves out the row of the old
 ones. A row with more values than there are columns is an error, and so are more names than the widest row has values; a row with fewer
 values is padded with blanks. The names must differ, and `:text` names a column by its new name.
+
+**Another separator.** A file that has a character other than a comma between the values of a line, a vertical bar, a semicolon or
+a tab, is read with `:separator`, a string of one character: `"|"`, `";"`, or `"\t"` for a tab. A value in quotation marks may have the
+separator in it, as a value of a comma-separated file may have a comma, and a comma in a file that has another separator is only a character:
+
+```lisp
+(load-csv "pipes.csv" :separator "|")
+(load-csv "rates.tsv" (list "date" "rate") :separator "\t")      ; a tab, and the names to use
+```
 
 **Codes that look like numbers.** A zip code, a FIPS code, an account
 number: digits, but not numbers. Read as numbers, `08701` becomes `8701`,

@@ -203,13 +203,14 @@ string keys (read it with `hash-table-ref`), an array becomes a list,
 ; e.g. (("2026-09-23" 3.87) ("2026-09-22" 3.87) ("2026-09-21" 3.85))
 ```
 
-#### `(http-get-csv url [headings cache-hours headers] [:text columns] [:skip rows] [:missing texts])`
+#### `(http-get-csv url [headings cache-hours headers] [:text columns] [:skip rows] [:missing texts] [:separator char])`
 The CSV file at `url`, as a table, read exactly as `load-csv` reads a file:
 `:text` names the columns to keep as strings, as written, such as zip
 codes, which would lose their leading zeros as numbers; `:skip` leaves out the
 notes above the header, and `:missing` names what is read as a blank, such as
 `"NA"` (see `load-csv`, in the language manual). `headings` is `#t`, `#f`, or a list of the
-column names to use, as for `load-csv`.
+column names to use, as for `load-csv`; `:separator` is the character between the values of a line, if it is not a comma
+(`"|"`, `";"`, `"\t"` for a tab).
 
 ```lisp
 ; Zillow's home values by zip code: the zip is RegionName (RegionID is Zillow's own number)

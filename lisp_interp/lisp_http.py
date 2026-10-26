@@ -185,16 +185,17 @@ def http_get_json(url, cache_hours=None, headers=None):
 
 
 def http_get_csv(url, *arguments):
-    """(http-get-csv url [headings cache-hours headers] [:text columns] [:skip rows] [:missing texts])
+    """(http-get-csv url [headings cache-hours headers] [:text columns] [:skip rows] [:missing texts] [:separator char])
     -- the CSV file at url, as a table, read exactly as load-csv reads a file;
     the :text columns are strings, as written, the :skip rows above the header
     are left out, and the :missing texts are blanks (see load-csv). headings is
-    #t, #f, or a list of the column names to use, as load-csv's is."""
+    #t, #f, or a list of the column names to use, as load-csv's is; :separator is the
+    character between the values of a line, if it is not a comma."""
     who = "http-get-csv"
     positional, options = csv_arguments(arguments, 3, who)
     has_header, cache_hours, headers = (positional + [True, None, None][len(positional):])
     text = as_text(download(url, cache_hours, headers, who))
-    rows = list(csv.reader(io.StringIO(text)))
+    rows = list(csv.reader(io.StringIO(text), delimiter=options["separator"]))
     return table_from_csv_rows(rows, headings_argument(has_header, who), str(url), options, who)
 
 

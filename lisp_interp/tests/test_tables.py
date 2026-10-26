@@ -1039,6 +1039,22 @@ class TestCsvFiles(LispTestCase):
         self.assertShows('(load-csv "%s" #f)' % path, '(("Column1" . #(1 3)) ("Column2" . #(2.0 nan)))')
         self.assertLispError('(load-csv "%s")' % self.write("c.csv", "a\n1,2\n"), "only 1 columns")
 
+    def test_another_character_can_separate_the_values_of_a_line(self):
+        pipes = self.write("p.csv", 'date|rate|note\n2024-01-02|5.3|"a|b"\n2024-01-03|5.31|plain, with comma\n')
+        self.assertShows('(load-csv "%s" :separator "|")' % pipes,
+                         '(("date" . #(2024-01-02 2024-01-03)) ("rate" . #(5.3 5.31)) ("note" . #("a|b" "plain, with comma")))')   # (a quoted | is a value's; a comma is too)
+        tabs = self.write("t.tsv", "a\tb\n1\t2\n")
+        self.assertShows('(load-csv "%s" :separator "\\t")' % tabs, '(("a" . #(1)) ("b" . #(2)))')
+        self.assertShows('(load-csv "%s" :separator ";")' % self.write("s.csv", "a;b\n1;2\n"), '(("a" . #(1)) ("b" . #(2)))')
+        self.assertShows('(load-csv "%s")' % tabs, '(("a\tb" . #("1\t2")))')                                           # (a comma, unless told)
+        self.assertShows('(table-column (load-csv "%s" (list "d" "r" "n") :skip 1 :separator "|") "r")' % pipes, "#(5.3 5.31)")   # (with the other options)
+
+    def test_the_separator_is_checked(self):
+        path = self.write("c.csv", "a,b\n")
+        for bad in ('"ab"', '""', '5', '"\\""', '"\\n"', "'x"):
+            with self.subTest(separator=bad):
+                self.assertLispError('(load-csv "%s" :separator %s)' % (path, bad), ":separator is the one character between the values of a line")
+
     def test_a_list_of_names_names_the_columns_of_a_file_with_no_row_of_them(self):
         path = self.write("n.csv", "2024-01-02,5.3\n2024-01-03,5.31\n")
         self.assertShows('(load-csv "%s" (list "date" "rate"))' % path, '(("date" . #(2024-01-02 2024-01-03)) ("rate" . #(5.3 5.31)))')

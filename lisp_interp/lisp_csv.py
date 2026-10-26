@@ -82,12 +82,17 @@ def csv_arguments(arguments, most_positional, who):
     the keyword options, as a dict:
       "text"     the names of the columns to keep as strings, a list (none, if :text isn't given)
       "skip"     the rows above the header to leave out: a number, or the text its first cell is (0, if no :skip)
-      "missing"  the texts to read as blanks, a list (none, if :missing isn't given)"""
+      "missing"  the texts to read as blanks, a list (none, if :missing isn't given)
+      "separator" the character that separates a line's values, a string of one character (a comma, if :separator isn't given)"""
     first_keyword = next((i for i, a in enumerate(arguments) if isinstance(a, Keyword)), len(arguments))
     if first_keyword > most_positional:
         raise LispError("%s: expected at most %d argument(s) before the keyword options, not %d"
                         % (who, most_positional + 1, first_keyword + 1))
-    options = keyword_options(arguments[first_keyword:], ["text", "skip", "missing"], who)
+    options = keyword_options(arguments[first_keyword:], ["text", "skip", "missing", "separator"], who)
+    separator = options.get("separator", LispString(","))
+    if not isinstance(separator, LispString) or len(separator) != 1 or separator in '"\r\n':
+        raise LispError("%s: :separator is the one character between the values of a line, such as \"|\", \";\" or \"\\t\" (a tab), not %s"
+                        % (who, to_display_string(separator)))
     skip = options.get("skip", 0)
     if isinstance(skip, bool) or not (isinstance(skip, (str, int)) and (isinstance(skip, str) or skip >= 0)):
         raise LispError("%s: :skip must be a number of rows, or the text that the header row begins with, not %s"
@@ -95,7 +100,8 @@ def csv_arguments(arguments, most_positional, who):
     return list(arguments[:first_keyword]), {
         "text": _texts(options.get("text", NIL), "text", "a column's name", who),
         "skip": str(skip) if isinstance(skip, str) else skip,
-        "missing": _texts(options.get("missing", NIL), "missing", "a text", who)}
+        "missing": _texts(options.get("missing", NIL), "missing", "a text", who),
+        "separator": str(separator)}
 
 
 def headings_argument(value, who):
@@ -137,7 +143,7 @@ def table_from_csv_rows(rows, has_header, source, options=None, who="load-csv"):
     options is what csv_arguments gives: the :text columns are strings, as written, whatever their values
     look like; the :skip rows above the header are left out; and the :missing
     texts are blanks."""
-    options = options or {"text": [], "skip": 0, "missing": []}
+    options = options or {"text": [], "skip": 0, "missing": [], "separator": ","}
     text_columns = options["text"]
     rows = _rows_below(rows, options["skip"], source, who)
     if not rows:
@@ -172,7 +178,7 @@ def table_from_csv_rows(rows, has_header, source, options=None, who="load-csv"):
 
 
 def load_csv_fn(filename, *arguments):
-    """(load-csv filename [headings] [:text columns] [:skip rows] [:missing texts]) -- a CSV file as a
+    """(load-csv filename [headings] [:text columns] [:skip rows] [:missing texts] [:separator char]) -- a CSV file as a
     table: a list of (name . vector) columns, the same shape sqlite-query
     returns. A column of numbers becomes a numeric vector (blanks are NaN); a
     column of dates (YYYY-MM-DD or MM/DD/YYYY) becomes a vector of dates;
@@ -184,12 +190,13 @@ def load_csv_fn(filename, *arguments):
     the columns, which the file has no row of (to replace the names that it has, also give :skip 1). :skip
     leaves out the rows above the header -- notes, say -- a number of them, or the text
     that the header row begins with. :missing -- a text, or a list of them, such as "NA"
-    -- names what is read as a blank."""
+    -- names what is read as a blank. :separator is the character between the values of a
+    line, if it is not a comma: "|", ";", or "\t" for a tab."""
     positional, options = csv_arguments(arguments, 1, "load-csv")
     has_header = positional[0] if positional else True
     try:
         with open(str(filename), newline="") as f:
-            rows = list(csv.reader(f))
+            rows = list(csv.reader(f, delimiter=options["separator"]))
     except OSError as e:
         raise LispError("load-csv: could not open %r: %s" % (str(filename), e))
     return table_from_csv_rows(rows, headings_argument(has_header, "load-csv"), repr(str(filename)), options)

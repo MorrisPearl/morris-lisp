@@ -1424,6 +1424,8 @@ class TestHttp(LispTestCase):
                     body, kind = b'{"rates": [{"date": "2024-01-02", "rate": 5.3}], "ok": true, "none": null}', "json"
                 elif self.path.startswith("/data.csv"):
                     body, kind = b"date,rate\n01/02/2024,5.3\n01/03/2024,5.31\n", "csv"
+                elif self.path.startswith("/pipes.csv"):
+                    body, kind = b"date|rate\n01/02/2024|5.3\n01/03/2024|5.31\n", "csv"
                 elif self.path.startswith("/notes.csv"):
                     body, kind = b'"A note, with a comma."\n\nDate,rate\n2024-01-02,5.3\n2024-01-03,NA\n', "csv"
                 elif self.path.startswith("/fred?") and "series_id=NOPE" in self.path:
@@ -1498,6 +1500,11 @@ class TestHttp(LispTestCase):
         self.assertShows('(http-get-csv "%s/data.csv" (list "day" "pct") 0 \'() :skip 1)' % self.base,
                          '(("day" . #(2024-01-02 2024-01-03)) ("pct" . #(5.3 5.31)))')
         self.assertLispError('(http-get-csv "%s/data.csv" (list "a" "a") 0 \'() :skip 1)' % self.base, "http-get-csv: the column names must differ")
+
+    def test_another_separator(self):
+        self.assertShows('(http-get-csv "%s/pipes.csv" :separator "|")' % self.base, '(("date" . #(2024-01-02 2024-01-03)) ("rate" . #(5.3 5.31)))')
+        self.assertShows('(http-get-csv "%s/pipes.csv")' % self.base, '(("date|rate" . #("01/02/2024|5.3" "01/03/2024|5.31")))')
+        self.assertLispError('(http-get-csv "%s/pipes.csv" :separator "ab")' % self.base, "http-get-csv: :separator is the one character")
 
     def test_csv_text_columns(self):
         self.assertShows('(table-column (http-get-csv "%s/data.csv" #t 0 \'() :text "date") "date")' % self.base,
