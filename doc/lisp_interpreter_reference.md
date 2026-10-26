@@ -4973,7 +4973,7 @@ Undoes `redirect-output`: closes whatever file is currently open (if any)
 and returns to writing to the console/GUI log. Safe to call even if no
 redirect is active.
 
-#### `(load-csv filename [has-header?] [:text columns] [:skip rows] [:missing texts])`
+#### `(load-csv filename [headings] [:text columns] [:skip rows] [:missing texts])`
 (In `lisp_csv.py`.) Reads a CSV file into a table (see "Tables") — a list
 of `(name . vector)` columns, the same shape `sqlite-query` returns. Every
 column and every row is kept. Each column becomes:
@@ -4985,9 +4985,11 @@ column and every row is kept. Each column becomes:
   uses); a blank is `'()`;
 - otherwise a vector of **strings**; a blank is `'()`.
 
-`has-header?` (default `#t`): if true, the first row names the columns;
-with `#f`, they're named `Column1`, `Column2`, .... A row with more values
-than there are columns is an error; a row with fewer is padded with blanks.
+`headings` says what the columns are called: `#t` (the default), the first row of the file names them; `#f`, the file has no row of
+names, and they're named `Column1`, `Column2`, ...; or **a list of strings**, the names to use, which the file has no row of (so its first
+row is data). To use names of your own *instead of* the ones a file has, give the list and `:skip 1`, which leaves out the row of the old
+ones. A row with more values than there are columns is an error, and so are more names than the widest row has values; a row with fewer
+values is padded with blanks. The names must differ, and `:text` names a column by its new name.
 
 **Codes that look like numbers.** A zip code, a FIPS code, an account
 number: digits, but not numbers. Read as numbers, `08701` becomes `8701`,
@@ -4998,6 +5000,11 @@ list of them:
 ```lisp
 (define z (load-csv "zillow_zips.csv" :text '("RegionName")))   ; zips: "08701", not 8701
 (define d (load-csv "no_header.csv" #f :text "Column1"))
+```
+
+```lisp
+(load-csv "rates.csv" (list "date" "rate"))            ; no row of names in the file: these are the names
+(load-csv "rates.csv" (list "date" "rate") :skip 1)    ; replace the names that the file has
 ```
 
 A blank is `'()`, as in any column of strings, and a name that isn't one

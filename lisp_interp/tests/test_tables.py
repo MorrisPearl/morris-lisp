@@ -1039,6 +1039,32 @@ class TestCsvFiles(LispTestCase):
         self.assertShows('(load-csv "%s" #f)' % path, '(("Column1" . #(1 3)) ("Column2" . #(2.0 nan)))')
         self.assertLispError('(load-csv "%s")' % self.write("c.csv", "a\n1,2\n"), "only 1 columns")
 
+    def test_a_list_of_names_names_the_columns_of_a_file_with_no_row_of_them(self):
+        path = self.write("n.csv", "2024-01-02,5.3\n2024-01-03,5.31\n")
+        self.assertShows('(load-csv "%s" (list "date" "rate"))' % path, '(("date" . #(2024-01-02 2024-01-03)) ("rate" . #(5.3 5.31)))')
+        self.assertShows('(table-column (load-csv "%s" (list "when" "pct") :text "when") "when")' % path, '#("2024-01-02" "2024-01-03")')   # (:text by the new name)
+        self.assertShows('(load-csv "%s" #f)' % path, '(("Column1" . #(2024-01-02 2024-01-03)) ("Column2" . #(5.3 5.31)))')               # (as before)
+        self.assertShows('(load-csv "%s" #t)' % self.write("h.csv", "a,b\n1,2\n"), '(("a" . #(1)) ("b" . #(2)))')
+
+    def test_names_can_replace_the_names_the_file_has_with_skip(self):
+        path = self.write("o.csv", "old1,old2\n2024-01-02,5.3\n2024-01-03,5.31\n")
+        self.assertShows('(load-csv "%s" (list "date" "rate") :skip 1)' % path, '(("date" . #(2024-01-02 2024-01-03)) ("rate" . #(5.3 5.31)))')
+        self.assertShows('(table-column (load-csv "%s" (list "date" "rate")) "date")' % path, '#("old1" "2024-01-02" "2024-01-03")')   # (without :skip, the row is data)
+
+    def test_a_short_row_is_padded_and_too_many_or_too_few_names_are_said(self):
+        path = self.write("s.csv", "1,2,3\n4\n")
+        self.assertShows('(load-csv "%s" (list "a" "b" "c"))' % path, '(("a" . #(1 4)) ("b" . #(2.0 nan)) ("c" . #(3.0 nan)))')
+        self.assertLispError('(load-csv "%s" (list "a" "b" "c" "d"))' % path, "4 column names were given, but the widest line")
+        self.assertLispError('(load-csv "%s" (list "a" "b"))' % path, "line 1 of")
+        self.assertLispError('(load-csv "%s" (list "a" "b") :text "c")' % self.write("t.csv", "1,2\n"), ":text names c, which isn't a column")
+
+    def test_the_names_are_checked(self):
+        path = self.write("c.csv", "1,2\n")
+        self.assertLispError('(load-csv "%s" (list "a" "a"))' % path, "the column names must differ, and 'a' is there more than once")
+        self.assertLispError("(load-csv \"%s\" (list \"a\" 'b))" % path, 'the column names are strings, such as (list "date" "rate"), not b')
+        self.assertLispError('(load-csv "%s" (list "a" 5))' % path, "the column names are strings")
+        self.assertLispError("(load-csv \"%s\" '())" % path, "has-header? is #t, #f, or a list of the column names")
+
     def test_text_columns_are_kept_as_written(self):
         path = self.write("zip.csv", "RegionID,RegionName,fips,value\n"
                                      "61148,08701,34029,1.5\n"

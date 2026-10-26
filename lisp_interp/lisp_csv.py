@@ -8,7 +8,7 @@ A table is a list of (name . vector) columns -- see lisp_tables.py.
 import csv
 
 from lisp_core import (
-    Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, keyword_options, list_to_pairs, pairs_to_list,
+    Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, Symbol, keyword_options, list_to_pairs, pairs_to_list,
     to_display_string,
 )
 
@@ -98,6 +98,27 @@ def csv_arguments(arguments, most_positional, who):
         "missing": _texts(options.get("missing", NIL), "missing", "a text", who)}
 
 
+def headings_argument(value, who):
+    """What load-csv's and http-get-csv's has-header? argument says about the column names: #f (the columns are named Column1,
+    Column2, ...), a list of names, which the file has no row of (they are the names), or anything else, #t if it is left out (the first
+    row of the file is the names). Returns False, True, or the list of names as strings."""
+    if value is False:
+        return False
+    if value is NIL:
+        raise LispError("%s: has-header? is #t, #f, or a list of the column names, not the empty list" % who)
+    if not isinstance(value, Pair):
+        return True
+    names = pairs_to_list(value)
+    for name in names:
+        if not isinstance(name, str) or isinstance(name, Symbol):
+            raise LispError("%s: the column names are strings, such as (list \"date\" \"rate\"), not %s" % (who, to_display_string(name)))
+    names = [str(name) for name in names]
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        raise LispError("%s: the column names must differ, and %s is there more than once" % (who, ", ".join(repr(r) for r in repeated)))
+    return names
+
+
 def _rows_below(rows, skip, source, who):
     """The rows from the header on: without the first `skip` rows, or the rows above the first one whose first cell is
     the text skip."""
@@ -111,8 +132,9 @@ def _rows_below(rows, skip, source, who):
 
 def table_from_csv_rows(rows, has_header, source, options=None, who="load-csv"):
     """A table from the rows of a CSV file (lists of strings). `source`
-    names the file or URL in error messages. options is what csv_arguments
-    gives: the :text columns are strings, as written, whatever their values
+    names the file or URL in error messages. has_header is what headings_argument gives: True (the first row
+    is the names), False (the names are Column1, Column2, ...), or a list of names (which the file has no row of).
+    options is what csv_arguments gives: the :text columns are strings, as written, whatever their values
     look like; the :skip rows above the header are left out; and the :missing
     texts are blanks."""
     options = options or {"text": [], "skip": 0, "missing": []}
@@ -120,12 +142,19 @@ def table_from_csv_rows(rows, has_header, source, options=None, who="load-csv"):
     rows = _rows_below(rows, options["skip"], source, who)
     if not rows:
         raise LispError("load-csv: %s is empty" % source)
-    if has_header:
+    given_names = isinstance(has_header, list)
+    if given_names:
+        header, data_rows = has_header, rows
+        widest = max(len(row) for row in rows)
+        if len(header) > widest:
+            raise LispError("%s: %d column names were given, but the widest line of %s has only %d values"
+                            % (who, len(header), source, widest))
+    elif has_header:
         header, data_rows = rows[0], rows[1:]
     else:
         header, data_rows = ["Column%d" % (i + 1) for i in range(len(rows[0]))], rows
     n_columns = len(header)
-    for number, row in enumerate(data_rows, start=2 if has_header else 1):
+    for number, row in enumerate(data_rows, start=2 if has_header is True else 1):
         if len(row) > n_columns:
             raise LispError("load-csv: line %d of %s has %d values, but there are only %d columns"
                             % (number, source, len(row), n_columns))
@@ -143,14 +172,16 @@ def table_from_csv_rows(rows, has_header, source, options=None, who="load-csv"):
 
 
 def load_csv_fn(filename, *arguments):
-    """(load-csv filename [has-header?] [:text columns] [:skip rows] [:missing texts]) -- a CSV file as a
+    """(load-csv filename [headings] [:text columns] [:skip rows] [:missing texts]) -- a CSV file as a
     table: a list of (name . vector) columns, the same shape sqlite-query
     returns. A column of numbers becomes a numeric vector (blanks are NaN); a
     column of dates (YYYY-MM-DD or MM/DD/YYYY) becomes a vector of dates;
     anything else becomes a vector of strings (blanks are '()). The :text
     columns -- a name, or a list of names -- are strings as written, whatever
     they look like: zip codes, say, which would lose their leading zeros as
-    numbers. With has-header? #f, the columns are named Column1, Column2, ... :skip
+    numbers. headings is #t (the default: the first row names the columns), #f (the file has no row of
+    names, and the columns are named Column1, Column2, ...), or a list of strings, the names to use for
+    the columns, which the file has no row of (to replace the names that it has, also give :skip 1). :skip
     leaves out the rows above the header -- notes, say -- a number of them, or the text
     that the header row begins with. :missing -- a text, or a list of them, such as "NA"
     -- names what is read as a blank."""
@@ -161,7 +192,7 @@ def load_csv_fn(filename, *arguments):
             rows = list(csv.reader(f))
     except OSError as e:
         raise LispError("load-csv: could not open %r: %s" % (str(filename), e))
-    return table_from_csv_rows(rows, has_header is not False, repr(str(filename)), options)
+    return table_from_csv_rows(rows, headings_argument(has_header, "load-csv"), repr(str(filename)), options)
 
 
 def parse_column_pairs(name_value_pairs):

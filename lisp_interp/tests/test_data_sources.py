@@ -1494,6 +1494,11 @@ class TestHttp(LispTestCase):
         self.assertShows('(table-column (http-get-csv "%s/data.csv") "date")' % self.base,
                          "#(2024-01-02 2024-01-03)")
 
+    def test_a_list_of_names_names_the_columns(self):
+        self.assertShows('(http-get-csv "%s/data.csv" (list "day" "pct") 0 \'() :skip 1)' % self.base,
+                         '(("day" . #(2024-01-02 2024-01-03)) ("pct" . #(5.3 5.31)))')
+        self.assertLispError('(http-get-csv "%s/data.csv" (list "a" "a") 0 \'() :skip 1)' % self.base, "http-get-csv: the column names must differ")
+
     def test_csv_text_columns(self):
         self.assertShows('(table-column (http-get-csv "%s/data.csv" #t 0 \'() :text "date") "date")' % self.base,
                          '#("01/02/2024" "01/03/2024")')                   # as written, not as dates

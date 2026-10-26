@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 
 from lisp_core import NETWORK, LispError, LispHashTable, LispString, NIL, Pair, lisp_error_of_kind, list_to_pairs, pairs_to_list
-from lisp_csv import csv_arguments, table_from_csv_rows
+from lisp_csv import csv_arguments, headings_argument, table_from_csv_rows
 from lisp_data_common import name_value_pairs
 
 
@@ -185,16 +185,17 @@ def http_get_json(url, cache_hours=None, headers=None):
 
 
 def http_get_csv(url, *arguments):
-    """(http-get-csv url [has-header? cache-hours headers] [:text columns] [:skip rows] [:missing texts])
+    """(http-get-csv url [headings cache-hours headers] [:text columns] [:skip rows] [:missing texts])
     -- the CSV file at url, as a table, read exactly as load-csv reads a file;
     the :text columns are strings, as written, the :skip rows above the header
-    are left out, and the :missing texts are blanks (see load-csv)."""
+    are left out, and the :missing texts are blanks (see load-csv). headings is
+    #t, #f, or a list of the column names to use, as load-csv's is."""
     who = "http-get-csv"
     positional, options = csv_arguments(arguments, 3, who)
     has_header, cache_hours, headers = (positional + [True, None, None][len(positional):])
     text = as_text(download(url, cache_hours, headers, who))
     rows = list(csv.reader(io.StringIO(text)))
-    return table_from_csv_rows(rows, has_header is not False, str(url), options, who)
+    return table_from_csv_rows(rows, headings_argument(has_header, who), str(url), options, who)
 
 
 def http_url(base, parameters):
