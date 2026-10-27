@@ -63,12 +63,18 @@ def _notebook_plot(spec):
     _ipy_display(_ipy_image(data=buf.getvalue()))
 
 
+# The Markdown of a table cannot say how it looks, but a notebook passes through the HTML around it. A <div> ends at a blank line, so the
+# blank lines let the table in between be read as Markdown. The font stays the notebook's own; only its digits are made the same width.
+TABULAR_DIGITS_BEGIN = '<div style="font-variant-numeric: tabular-nums">\n\n'
+TABULAR_DIGITS_END = "\n\n</div>"
+
+
 def _notebook_table(columns):
-    """display-table -- shown as a Markdown table (numbers right-aligned),
-    or, without IPython, as the console's plain text table."""
+    """display-table -- shown as a Markdown table (numbers right-aligned, and every digit as wide as the others so that the
+    digits of a column line up), or, without IPython, as the console's plain text table."""
     if _IPYTHON_AVAILABLE:
         from IPython.display import Markdown
-        _ipy_display(Markdown(markdown_table(columns)))
+        _ipy_display(Markdown(TABULAR_DIGITS_BEGIN + markdown_table(columns) + TABULAR_DIGITS_END))
     else:
         print_table(columns, lambda text: print(text, end=""))
 

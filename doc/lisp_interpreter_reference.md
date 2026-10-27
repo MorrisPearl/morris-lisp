@@ -4506,7 +4506,7 @@ Shows a table, with a heading for each column, numbers right-aligned and
 text left-aligned, and nothing in a cell whose value is missing (NaN, or
 `'()`). `table` is a table (see "Tables") or a list of rows (see
 `table-rows`). Where it appears depends on where you are: in a **Jupyter
-notebook**, a rendered table; in the **GUI**, the Table tab; at the
+notebook**, a rendered table, in the notebook's own font but with every digit the same width, so that the digits of a column line up; in the **GUI**, the Table tab; at the
 **console** or in a script, a text table. Returns `'()`. Headings and text
 appear just as they are, `$`, `*`, `_`, and `|` included (a notebook's
 Markdown would otherwise read them as a formula, emphasis, or a new cell).

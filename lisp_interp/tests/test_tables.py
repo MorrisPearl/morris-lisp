@@ -582,6 +582,17 @@ class TestDisplayTable(LispTestCase):
         self.assertEqual(lisp_builtins.markdown_table(columns),
                          "| id | n |\n|:---|---:|\n| a | 1.50 |\n| b\\|c |  |")
 
+    def test_a_notebook_shows_the_digits_of_a_table_as_wide_as_each_other(self):
+        """So that the digits of a column line up, the notebook's table is inside a <div> with tabular numbers, set off by blank
+        lines so that the table itself is still read as Markdown."""
+        import lisp_jupyter
+        shown = []
+        with mock.patch.object(lisp_jupyter, "_ipy_display", shown.append):
+            lisp_jupyter._notebook_table([("n", ["1", "22"], "right")])
+        text = shown[0].data
+        self.assertTrue(text.startswith('<div style="font-variant-numeric: tabular-nums">\n\n| n |'))
+        self.assertTrue(text.endswith("| 22 |\n\n</div>"))
+
     def test_markdown_characters_in_a_table_are_shown_as_they_are(self):
         """In a notebook, a pair of $ makes a formula -- "revenue ($bn)" and
         "free cash flow ($bn)" in one row turned the text between them into
