@@ -4867,6 +4867,24 @@ Change any of it before you use it: it is only a list.
     (newline)))
 ```
 
+#### `(plot-stratification table [:formats formats] [:column heading])`
+(In `lib/stratify_plot.lsp`.) A chart of one stratification table: a bar
+for each bucket's share of the whole, and a line over the bars, on the
+secondary axis, for what the buckets average, so that a change from
+bucket to bucket is seen at once. The line is the table's first summary
+unless `:column` names another column of the table. `:formats` is a list
+of formats such as `display-table` takes, which write the axes' numbers.
+The `total` row is left out, and a table with no summaries has only bars.
+A table of several columns labels each bar with the buckets, joined by
+` / `. It draws as `plot-chart` does, so it is a chart in a notebook cell.
+
+```lisp
+(destructuring-bind (bys summaries formats) (stratify-plan pool :weight "balance")
+  (dolist (table (stratify-all pool bys summaries :weight "balance"))
+    (display-table table formats)
+    (plot-stratification table :formats formats)))
+```
+
 `examples/stratify_example.lsp` makes a report of eight tables from a
 pool of 5,000 made-up loans, and shows how to load real loan data from
 SQLite instead. The tables are ordinary tables, so `write-columns-csv`

@@ -3921,6 +3921,53 @@ of strings or dates are left out. A quick first look at new data:
 (table-describe (make-table "id" (vector "a" "b" "c") "balance" #(100 200 300)))   ; => (("column" . #("balance")) ("count" . #(3)) ("mean" . #(200.0)) ("stdev" . #(100.0)) ("min" . #(100.0)) ("p25" . #(150.0)) ("median" . #(200.0)) ("p75" . #(250.0)) ("max" . #(300.0)))
 ```
 
+#### `(table-profile t)`
+A first look at a table you have not seen before: a table with a row for
+each column, of any kind. Its columns are the `column`'s name; its `kind`
+(`number`, `date`, `text`, or `mixed`); how many values are `missing`;
+how many `distinct` values there are; for a number, its `mean`, `min`,
+`median` and `max` (NaN for other kinds); for dates and text, the `range`
+from the lowest to the highest; and the `most common` value, as text.
+(`table-describe` has more statistics for the numeric columns.)
+
+```lisp
+(define t (make-table "balance" #(100 200 300 300) "state" (vector "CA" "NY" "CA" "TX")))
+(table-column (table-profile t) "kind")          ; => #("number" "text")
+(table-column (table-profile t) "distinct")      ; => #(3 3)
+(table-column (table-profile t) "range")         ; => #("" "CA to TX")
+(table-column (table-profile t) "most common")   ; => #("300" "CA")
+```
+
+#### `(table-missing t)`
+Which columns are missing together. A table with a row for each pattern
+of missing values that occurs, the most common first: `missing` names the
+columns that are missing in those rows (`none` for the rows that are
+complete), `rows` is how many rows have just that pattern, and `percent`
+is their share of the table. A missing value is NaN or `'()`.
+
+```lisp
+(define t (make-table "a" #(1 nan 3 nan) "b" #(1 nan 3 4)))
+(table-column (table-missing t) "missing")     ; => #("none" "a, b" "a")
+(table-column (table-missing t) "rows")        ; => #(2 1 1)
+```
+
+#### `(table-outliers t [:count n])`
+The `n` lowest and `n` highest values (5, unless `:count` says) of each
+numeric column, a row for each, to look for values that are wrong or very
+different from the rest. The columns are `column`, `side` (`low` or
+`high`), `row` (its place in the table, counting from 0), `value`, and
+`spread`: how far the value is from the column's median, in interquartile
+ranges (from the 25th percentile to the 75th). A spread over 3 is far
+from the rest; it is NaN when the quartiles are the same. A value is not
+shown as both low and high. Missing values are skipped.
+
+```lisp
+(define t (make-table "balance" #(100 110 120 130 140 9000)))
+(table-column (table-outliers t :count 1) "side")     ; => #("low" "high")
+(table-column (table-outliers t :count 1) "row")      ; => #(0 5)
+(table-column (table-outliers t :count 1) "value")    ; => #(100.0 9000.0)
+```
+
 ### Structs
 
 See `defstruct`, under "Structs" in "Special forms and standard macros", above, for the
@@ -6256,6 +6303,7 @@ The Python files:
 | `lisp_regex.py` | Regular expressions: `regex-search`, `regex-replace`, ... |
 | `lisp_tables.py` | Tables: `table-filter`, `table-sort`, `table-group-by`, `table-join`, ... |
 | `lisp_stratify.py` | Stratification tables: `stratify`, `stratify-all`, `stratify-plan` |
+| `lisp_explore.py` | A first look at a table: `table-profile`, `table-missing`, `table-outliers` |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
 | `lisp_help.py` | `help`'s documentation, `documentation`, `apropos`, and the notebook's Tab and Shift-Tab: where the documentation of a name comes from |
 | `lisp_profile.py` | `profile`, `unprofile`, `profile-reset!`, `profile-results`, `show-profile`: the profiling functions (the machinery is in `lisp_core.py`) |

@@ -284,3 +284,6 @@
 
 ; A fitted model as a function
 (lazy-load "model_utils.lsp" model->function)
+
+; A chart of a stratification table
+(lazy-load "stratify_plot.lsp" plot-stratification)
