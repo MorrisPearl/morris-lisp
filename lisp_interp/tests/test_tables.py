@@ -875,6 +875,66 @@ class TestPivotTable(LispTestCase):
         self.assertLispError('(round-to-nearest "5" 1)', "expected a number")
 
 
+class TestStratifyPlan(LispTestCase):
+    """stratify-plan: a first look at a table, with a way of bucketing for each column, a summary for each number, and a
+    format for each summary."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("""
+          (define t
+            (make-table "balance" #(100000 250000 175000 300000 125000 90000 400000 60000 210000 50000 70000 80000)
+                        "rate"    #(3.25 4.5 5.125 5.75 6.25 6.5 7.0 7.25 3.99 6.0 5.5 5.0)
+                        "ltv"     #(0.5 0.6 0.7 0.8 0.55 0.65 0.75 0.85 0.9 0.95 0.4 0.45)
+                        "age"     #(12 24 36 6 48 60 3 72 18 30 90 100)
+                        "state"   (vector "CA" "NY" "CA" "TX" "CA" "NY" "FL" "TX" "CA" "WA" "OR" "NV")
+                        "const"   #(1 1 1 1 1 1 1 1 1 1 1 1)
+                        "empty"   #(nan nan nan nan nan nan nan nan nan nan nan nan)
+                        "flag"    #(0 1 0 1 0 1 0 1 0 1 0 1)
+                        "first"   (vector (date 2020 1 1) (date 2020 2 1) (date 2021 1 1) (date 2021 2 1)
+                                          (date 2022 1 1) (date 2022 2 1) (date 2023 1 1) (date 2023 2 1)
+                                          (date 2024 1 1) (date 2024 2 1) (date 2025 1 1) (date 2025 2 1))))""")
+
+    def test_a_way_of_bucketing_for_each_column_but_the_weight(self):
+        self.assertShows('(first (stratify-plan t :weight "balance"))',
+                         '(("rate" (equal-weight 5)) ("ltv" (equal-weight 5)) ("age" (equal-weight 5)) ("state" each) '
+                         '("const" hide) ("empty" hide) ("flag" each) ("first" year))')
+
+    def test_without_a_weight_the_numbers_are_cut_by_count(self):
+        self.assertShows('(first (stratify-plan t))',
+                         '(("balance" (equal-count 5)) ("rate" (equal-count 5)) ("ltv" (equal-count 5)) '
+                         '("age" (equal-count 5)) ("state" each) ("const" hide) ("empty" hide) ("flag" each) ("first" year))')
+
+    def test_text_with_many_values_keeps_the_top_five(self):
+        self.run_lisp('(define names (make-table "who" (vector "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "k") "x" #(1 2 3 4 5 6 7 8 9 10 11)))')
+        self.assertShows('(first (stratify-plan names))', '(("who" (top 5)) ("x" (equal-count 5)))')
+
+    def test_an_average_and_a_format_for_each_number_that_is_shown(self):
+        self.assertShows('(second (stratify-plan t :weight "balance"))',
+                         '(("rate" weighted-mean "avg rate") ("ltv" weighted-mean "avg ltv") '
+                         '("age" weighted-mean "avg age") ("flag" weighted-mean "avg flag"))')
+        self.assertShows('(second (stratify-plan t))',
+                         '(("balance" mean "avg balance") ("rate" mean "avg rate") ("ltv" mean "avg ltv") '
+                         '("age" mean "avg age") ("flag" mean "avg flag"))')
+
+    def test_the_format_suits_the_numbers(self):
+        self.assertShows('(third (stratify-plan t :weight "balance"))',
+                         '(("count" ",d") ("percent" ".1%") ("total_balance" ",.0f") ("avg rate" ".3f") '
+                         '("avg ltv" ".1%") ("avg age" ".2f") ("avg flag" ".1%"))')
+        self.run_lisp('(define big (make-table "x" #(5 50 500) "y" #(20000 30000 40000) "z" #(25 30 35)))')
+        self.assertShows('(third (stratify-plan big))',
+                         '(("count" ",d") ("percent" ".1%") ("avg x" ".2f") ("avg y" ",.0f") ("avg z" ".2f"))')
+
+    def test_the_plan_makes_a_report(self):
+        shown = self.run_lisp("""
+          (destructuring-bind (bys summaries formats) (stratify-plan t :weight "balance")
+            (length (stratify-all t bys summaries :weight "balance")))""")
+        self.assertEqual(shown, 6)        # the 8 columns but the weight, less the two that are hidden
+
+    def test_a_hidden_column_cannot_be_stratified_by(self):
+        self.assertLispError('(stratify t \'("const" hide) \'())', "marked hide")
+
+
 class TestStratify(LispTestCase):
     """lisp_stratify.py: stratify and stratify-all."""
 

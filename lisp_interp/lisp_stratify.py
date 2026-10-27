@@ -1,4 +1,4 @@
-"""Stratification tables for the Lisp interpreter: stratify and stratify-all.
+"""Stratification tables for the Lisp interpreter: stratify, stratify-all, and stratify-plan.
 
 A STRATIFICATION of a big table (loans, say) is a small table with one row
 per bucket of some column -- coupons from 3.0 to 5.0, 5.0 to 6.0, ...; ten
@@ -20,6 +20,8 @@ column: `how` says how --
                       weight), then all the others as one bucket, "other"
   each                one bucket per distinct value
   year                one bucket per calendar year (for a column of dates)
+  hide                no table (stratify-all leaves the column out; stratify-plan uses it
+                      for a column with nothing to say)
 
 A row whose value is missing (NaN, or '()) goes in a last bucket,
 "missing". A bucket with no rows isn't shown. The summaries are done the way
@@ -160,6 +162,11 @@ def buckets_for_each_year(v, column_name):
     return with_missing_bucket(numbers, labels, missing)
 
 
+def is_hide(how):
+    """Whether `how` is the symbol hide, which marks a column that is not worth a stratification table."""
+    return isinstance(how, Symbol) and str(how) == "hide"
+
+
 def bucket_rows(columns, spec, weights):
     """For one (column how) spec: (column name, each row's bucket number, the
     buckets' labels)."""
@@ -169,6 +176,9 @@ def bucket_rows(columns, spec, weights):
                         "(\"rate\" (3 5 6 7)) or (\"state\" (top 10)) -- not %s" % (_brief(spec),))
     column_name, how = str(parts[0]), parts[1]
     v = find_column(columns, column_name, "stratify")
+    if is_hide(how):
+        raise LispError("stratify: %s is marked hide, so there is nothing to bucket by -- stratify-all leaves "
+                        "such a column out" % column_name)
     if isinstance(how, Symbol) and str(how) == "each":
         return column_name, *buckets_for_each_value(v)
     if isinstance(how, Symbol) and str(how) == "year":
@@ -333,17 +343,102 @@ def stratify(table, by, summaries=NIL, *options):
     return stratify_table(columns, by, specs, weight_name, weight_vector, with_total)
 
 
+def is_hidden_by(by):
+    """Whether a `by` is (column hide)."""
+    parts = pairs_to_list(by) if isinstance(by, Pair) else []
+    return len(parts) == 2 and is_hide(parts[1])
+
+
 def stratify_all(table, bys, summaries=NIL, *options):
     """(stratify-all table bys summaries [:weight column] [:total #f]) -- a
     list of stratification tables, one for each `by` in the list bys, all
-    with the same summaries (see stratify)."""
+    with the same summaries (see stratify). A `by` of (column hide) makes no table."""
     columns, specs, weight_name, weight_vector, with_total = stratify_options(table, summaries, options,
                                                                                "stratify-all")
+    shown = [by for by in pairs_to_list(bys) if not is_hidden_by(by)]
     return list_to_pairs([stratify_table(columns, by, specs, weight_name, weight_vector, with_total)
-                          for by in pairs_to_list(bys)])
+                          for by in shown])
+
+
+# ---------------------------------------------------------------------------
+# stratify-plan: a first look at a table
+# ---------------------------------------------------------------------------
+
+FEWEST_TO_HIDE = 1          # a column with this many distinct values, or fewer, says nothing
+MOST_FOR_EACH = 10          # a column with this many distinct values, or fewer, gets a bucket for each
+BUCKETS = 5                 # a numeric column is cut into this many buckets, and a text column keeps this many values
+
+
+def list_of(*items):
+    return list_to_pairs(list(items))
+
+
+def format_for(values):
+    """The display-table format for these numbers (a numpy array without missing values): whole numbers with commas if
+    some are over 10,000 (dollars, or people, perhaps); a percent if all are from 0 to 1; three decimals if all are under 20
+    (interest rates, perhaps); two decimals for the rest."""
+    if values.max() > 10000:
+        return LispString(",.0f")
+    if values.min() >= 0 and values.max() <= 1:
+        return LispString(".1%")
+    if values.max() < 20:
+        return LispString(".3f")
+    return LispString(".2f")
+
+
+def how_to_bucket(v, present, weighted):
+    """How a first look should bucket a column, given its values that are not missing (and whether there is a weight)."""
+    _, distinct = factorize(present)
+    if len(distinct) <= FEWEST_TO_HIDE:
+        return Symbol("hide")
+    if len(distinct) <= MOST_FOR_EACH:
+        return Symbol("each")
+    if is_date_column(v):
+        return Symbol("year")
+    if not is_numeric_column(v):
+        return list_of(Symbol("top"), BUCKETS)
+    return list_of(Symbol("equal-weight" if weighted else "equal-count"), BUCKETS)
+
+
+def is_numeric_column(v):
+    """Whether the vector holds numbers (not truth values, text or dates)."""
+    return np.issubdtype(v.items.dtype, np.number) and not np.issubdtype(v.items.dtype, np.bool_)
+
+
+def stratify_plan(table, *options):
+    """(stratify-plan table [:weight column]) -- how to make a first look at a table with stratify-all: a list of three
+    things, (bys summaries formats), each ready to be an argument of stratify-all and display-table. Every column
+    except the weight gets a way of bucketing: (column hide) if it is empty or has one value, each if it has 10 values or
+    fewer, year if it is dates, (top 5) if it is text, and otherwise (equal-weight 5), or (equal-count 5) without a weight.
+    Every numeric column that is not hidden gets an average (weighted, with a weight) and a format that suits its numbers
+    (see format_for)."""
+    columns = table_columns(table, "stratify-plan")
+    chosen = keyword_options(options, ("weight",), "stratify-plan")
+    weight_name = None if chosen.get("weight", NIL) is NIL else str(chosen["weight"])
+    weight_vector = None if weight_name is None else find_column(columns, weight_name, "stratify-plan")
+
+    bys, summaries = [], []
+    formats = [list_of(LispString("count"), LispString(",d")), list_of(LispString("percent"), LispString(".1%"))]
+    if weight_vector is not None:
+        weights = floats_of(weight_vector, "stratify-plan")
+        total = np.array([np.nansum(weights)])
+        formats.append(list_of(LispString("total_" + weight_name), format_for(total)))
+    for name, v in columns:
+        if name == weight_name:
+            continue
+        present = v.items[~missing_mask(v)]
+        how = how_to_bucket(v, present, weight_vector is not None)
+        bys.append(list_of(LispString(name), how))
+        if is_numeric_column(v) and not is_hide(how):
+            heading = LispString("avg " + name)
+            function = Symbol("weighted-mean" if weight_vector is not None else "mean")
+            summaries.append(list_of(LispString(name), function, heading))
+            formats.append(list_of(heading, format_for(present.astype(np.float64))))
+    return list_of(list_to_pairs(bys), list_to_pairs(summaries), list_to_pairs(formats))
 
 
 BUILTINS = {
     "stratify": stratify,
     "stratify-all": stratify_all,
+    "stratify-plan": stratify_plan,
 }

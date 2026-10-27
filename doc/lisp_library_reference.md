@@ -4728,6 +4728,7 @@ bucket, and how —
 | `(top n)` | the `n` values with the most weight (or the most rows, without `:weight`), biggest first, then all the rest as `other` |
 | `each` | one bucket per distinct value, in order |
 | `year` | one bucket per calendar year, for a column of dates |
+| `hide` | no table: `stratify-all` leaves the column out (`stratify-plan` marks a column this way when it has nothing to show) |
 
 With `equal-count` and `equal-weight`, the cuts fall between values, so
 rows with the same value are always in the same bucket — which can leave
@@ -4825,6 +4826,45 @@ then show each table:
   (display-table table '(("total_balance" ",.0f") ("percent" ".1%") ("WAC" ".3f") ("WALA" ".1f")))
   (newline))
 (map (lambda (t) (car (table-column-names t))) tables)   ; => ("rate" "age" "balance" "state")
+```
+
+#### `(stratify-plan table [:weight column])`
+A first look at a table you have not seen before, without choosing the
+buckets yourself. It returns a list of three things, `(bys summaries
+formats)`, which are the arguments `stratify-all` and `display-table`
+take. Each column, but the weight column, gets a way of bucketing:
+
+| The column | Its `by` |
+|---|---|
+| empty, or with one distinct value | `hide` (no table) |
+| 10 distinct values or fewer | `each` |
+| dates | `year` |
+| text, with more than 10 values | `(top 5)` |
+| numbers, with a `:weight` | `(equal-weight 5)` |
+| numbers, without | `(equal-count 5)` |
+
+Each numeric column that is not hidden also gets a summary, its average
+(`weighted-mean` with a `:weight`, `mean` without), headed `avg rate` for
+a column `rate`, and a format that suits its numbers: `",.0f"` if any are
+above 10,000 (dollars, or people, perhaps); `".1%"` if all are from 0 to
+1; `".3f"` if all are under 20 (interest rates, perhaps); `".2f"`
+otherwise. `count`, `percent` and the `total_` column get formats too.
+Change any of it before you use it: it is only a list.
+
+```lisp
+(define pool (make-table "balance" #(100000 250000 175000 300000 125000 90000 400000 60000 210000 50000 70000 80000)
+                         "rate"    #(3.25 4.5 5.125 5.75 6.25 6.5 7.0 7.25 3.99 6.0 5.5 5.0)
+                         "state"   (vector "CA" "NY" "CA" "TX" "CA" "NY" "FL" "TX" "CA" "WA" "OR" "NV")
+                         "version" #(1 1 1 1 1 1 1 1 1 1 1 1)))
+(define plan (stratify-plan pool :weight "balance"))
+(first plan)    ; => (("rate" (equal-weight 5)) ("state" each) ("version" hide))
+(second plan)   ; => (("rate" weighted-mean "avg rate"))
+(third plan)    ; => (("count" ",d") ("percent" ".1%") ("total_balance" ",.0f") ("avg rate" ".3f"))
+
+(destructuring-bind (bys summaries formats) plan
+  (dolist (table (stratify-all pool bys summaries :weight "balance"))
+    (display-table table formats)
+    (newline)))
 ```
 
 `examples/stratify_example.lsp` makes a report of eight tables from a

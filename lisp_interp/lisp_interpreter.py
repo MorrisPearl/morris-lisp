@@ -26,7 +26,7 @@ HOW THE CODE IS ORGANIZED
     lisp_vector_math.py   arithmetic, comparisons, statistics, lags on whole vectors
     lisp_regex.py         regex-search, regex-replace, ...: regular expressions
     lisp_tables.py        tables: filter, sort, group, join, describe
-    lisp_stratify.py      stratify, stratify-all: stratification tables
+    lisp_stratify.py      stratify, stratify-all, stratify-plan: stratification tables
     lisp_time_series.py   month numbers and monthly time series
     lisp_regression.py    linear-, lad-, quantile-, logistic-regression, and their spline- forms, model-report, ...
     lisp_simplex.py       lp-read-file, lp-solve: linear programming (uses simplex/)

@@ -6255,7 +6255,7 @@ The Python files:
 | `lisp_vector_math.py` | Arithmetic, comparisons, statistics, and time-series functions on whole vectors (`vector-mul`, `vector>`, `vector-mean`, `vector-lag`, ...) |
 | `lisp_regex.py` | Regular expressions: `regex-search`, `regex-replace`, ... |
 | `lisp_tables.py` | Tables: `table-filter`, `table-sort`, `table-group-by`, `table-join`, ... |
-| `lisp_stratify.py` | Stratification tables: `stratify`, `stratify-all` |
+| `lisp_stratify.py` | Stratification tables: `stratify`, `stratify-all`, `stratify-plan` |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
 | `lisp_help.py` | `help`'s documentation, `documentation`, `apropos`, and the notebook's Tab and Shift-Tab: where the documentation of a name comes from |
 | `lisp_profile.py` | `profile`, `unprofile`, `profile-reset!`, `profile-results`, `show-profile`: the profiling functions (the machinery is in `lisp_core.py`) |
