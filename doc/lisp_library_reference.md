@@ -1999,7 +1999,7 @@ all of `stratify-all`'s, say.
 ```lisp
 (define strata (stratify-all loans '(("fico" (equal-count 5)) ("state" each)) '(("rate" weighted-mean)) :weight "balance"))
 (apply google-sheet creds "Loan strata"
-       '(("count" ",d") ("percent" ".1%") ("total balance" ",.0f") ("rate" ".3f"))
+       '(("count" ",d") ("percent" ".1%") ("total_balance" ",.0f") ("rate" ".3f"))
        strata)
 ; => "https://docs.google.com/spreadsheets/d/.../edit"
 ```
@@ -2065,10 +2065,10 @@ format is `hide`, or that is *just* `(column-name)`, is left out. So a
 list can say which columns to leave out, with no format for the rest:
 
 ```lisp
-(google-sheet creds "Strata" '(("percent" ".1%") ("total balance")) strata)
+(google-sheet creds "Strata" '(("percent" ".1%") ("total_balance")) strata)
 ```
 
-writes every column of every table but `total balance`, with `percent`
+writes every column of every table but `total_balance`, with `percent`
 as a percentage. A format for a column a table doesn't have isn't used,
 so one list can serve all the tables, as for `display-table`.
 
@@ -4697,7 +4697,7 @@ bucketed a different way.
               "age"     #(12 24 36 6 48 60 3 72 18 30)
               "state"   (vector "CA" "NY" "CA" "TX" "CA" "NY" "FL" "TX" "CA" "WA")))
 (define summaries '(("rate" weighted-mean "WAC") ("age" weighted-mean "WALA")))
-(define formats '(("total balance" ",.0f") ("percent" ".1%") ("WAC" ".3f") ("WALA" ".1f")))
+(define formats '(("total_balance" ",.0f") ("percent" ".1%") ("WAC" ".3f") ("WALA" ".1f")))
 
 (display-table (stratify loans '("rate" (4.0 5.0 6.0 7.0)) summaries :weight "balance")
                formats)
@@ -4706,7 +4706,7 @@ bucketed a different way.
 prints
 
 ```
-rate          count  total balance  percent    WAC  WALA
+rate          count  total_balance  percent    WAC  WALA
 ------------  -----  -------------  -------  -----  ----
 under 4.0         2        310,000    17.6%  3.751  16.1
 4.0 to 5.0        1        250,000    14.2%  4.500  24.0
@@ -4764,7 +4764,7 @@ unless you give one, e.g. `("fico" (percentile 10) "FICO 10th")`.
 ```
 
 The table's columns are: the bucket, named after the column; `count`;
-with `:weight`, the total weight — `total balance`, for
+with `:weight`, the total weight — `total_balance`, for
 `:weight "balance"` — and its share of the whole, `percent` (without
 `:weight`, `percent` is the share of the rows); then the summaries. The
 last row is the `total`, unless `:total` is `#f`. The numbers in a
@@ -4774,10 +4774,10 @@ vector's, so a total balance is exact to the cent.
 ```lisp
 (define pool (make-table "rate" #(3.25 4.5 6.25 7.0 nan) "balance" #(100 200 300 400 50)))
 (define by-rate (stratify pool '("rate" (4.0 6.0)) '(("rate" weighted-mean "WAC")) :weight "balance"))
-(table-column-names by-rate)       ; => ("rate" "count" "total balance" "percent" "WAC")
+(table-column-names by-rate)       ; => ("rate" "count" "total_balance" "percent" "WAC")
 (table-column by-rate "rate")      ; => #("under 4.0" "4.0 to 6.0" "6.0 and over" "missing" "total")
 (table-column by-rate "count")     ; => #(1 1 2 1 5)
-(table-column by-rate "total balance")   ; => #(100.0 200.0 700.0 50.0 1050.0)
+(table-column by-rate "total_balance")   ; => #(100.0 200.0 700.0 50.0 1050.0)
 (table-column (stratify pool '("rate" (equal-count 2)) '()) "rate")
                                    ; => #("3.25 to 4.5" "6.25 to 7.0" "missing" "total")
 ```
@@ -4793,7 +4793,7 @@ Two columns at once — each state's loans, split at a 5.0 coupon:
 prints
 
 ```
-state  rate          count  total balance  percent    WAC  WALA
+state  rate          count  total_balance  percent    WAC  WALA
 -----  ------------  -----  -------------  -------  -----  ----
 CA     under 5.0         2        310,000    17.6%  3.751  16.1
 CA     5.0 and over      2        300,000    17.0%  5.594  41.0
@@ -4822,7 +4822,7 @@ then show each table:
     '(("rate" weighted-mean "WAC") ("age" weighted-mean "WALA"))
     :weight "balance"))
 (dolist (table tables)
-  (display-table table '(("total balance" ",.0f") ("percent" ".1%") ("WAC" ".3f") ("WALA" ".1f")))
+  (display-table table '(("total_balance" ",.0f") ("percent" ".1%") ("WAC" ".3f") ("WALA" ".1f")))
   (newline))
 (map (lambda (t) (car (table-column-names t))) tables)   ; => ("rate" "age" "balance" "state")
 ```

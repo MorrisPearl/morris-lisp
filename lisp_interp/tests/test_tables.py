@@ -903,10 +903,10 @@ class TestStratify(LispTestCase):
         self.assertEqual(self.column(by, "rate"),
                          '#("under 4.0" "4.0 to 5.0" "5.0 to 6.0" "6.0 to 7.0" "7.0 and over" "missing" "total")')
         self.assertEqual(self.column(by, "count"), "#(2 1 2 2 2 1 10)")
-        self.assertEqual(self.column(by, "total balance"),
+        self.assertEqual(self.column(by, "total_balance"),
                          "#(310000.0 250000.0 475000.0 215000.0 460000.0 50000.0 1760000.0)")
         self.assertEqual(self.show("(table-column-names %s)" % self.strat(by)),
-                         '("rate" "count" "total balance" "percent" "WAC" "WALA")')
+                         '("rate" "count" "total_balance" "percent" "WAC" "WALA")')
         wac = self.run_lisp('(vector-ref (table-column %s "WAC") 0)' % self.strat(by))
         self.assertAlmostEqual(wac, (3.25 * 100000 + 3.99 * 210000) / 310000, places=5)
         percent = self.run_lisp('(vector-ref (table-column %s "percent") 0)' % self.strat(by))
@@ -925,7 +925,7 @@ class TestStratify(LispTestCase):
     def test_equal_weight(self):
         by = '("ltv" (equal-weight 3))'
         self.assertEqual(self.column(by, "ltv"), '#("60 to 70" "75 to 80" "85 to 95" "total")')
-        self.assertEqual(self.column(by, "total balance"), "#(450000.0 560000.0 750000.0 1760000.0)")
+        self.assertEqual(self.column(by, "total_balance"), "#(450000.0 560000.0 750000.0 1760000.0)")
 
     def test_equal_buckets_keep_equal_values_together(self):
         self.run_lisp("(define t (make-table \"x\" #(1 2 2 2 2 2 3 4) \"w\" #(1 1 1 1 1 1 1 1)))")
@@ -965,7 +965,7 @@ class TestStratify(LispTestCase):
 
     def test_totals_are_kept_in_full_precision(self):
         self.run_lisp("(define t (make-table \"x\" #(1 2) \"w\" (vector 16777216.0 1.0)))")
-        self.assertShows("(table-column (stratify t '(\"x\" each) '((\"w\" sum)) :weight \"w\") \"total w\")",
+        self.assertShows("(table-column (stratify t '(\"x\" each) '((\"w\" sum)) :weight \"w\") \"total_w\")",
                          "#(16777216.0 1.0 16777217.0)")      # 32-bit storage would round the total to ...216
         self.assertShows("(table-column (stratify t '(\"x\" each) '((\"w\" sum)) :weight \"w\") \"w (sum)\")",
                          "#(16777216.0 1.0 16777217.0)")
@@ -988,7 +988,7 @@ class TestStratify(LispTestCase):
         table = ("(stratify t '(\"x\" each) '((\"fico\" median) (\"fico\" weighted-median)"
                  " (\"fico\" (percentile 10)) (\"fico\" (weighted-percentile 90))) :weight \"w\")")
         self.assertShows('(table-column-names %s)' % table,
-                         '("x" "count" "total w" "percent" "fico (median)" "fico (weighted-median)"'
+                         '("x" "count" "total_w" "percent" "fico (median)" "fico (weighted-median)"'
                          ' "fico (percentile 10)" "fico (weighted-percentile 90)")')
         self.assertShows('(table-column %s "fico (median)")' % table, "#(720.0 640.0 710.0)")
         self.assertShows('(table-column %s "fico (weighted-median)")' % table, "#(720.0 640.0 720.0)")

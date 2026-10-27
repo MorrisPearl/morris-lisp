@@ -284,7 +284,7 @@ def stratify_table(columns, by, specs, weight_name, weight_vector, with_total):
         amounts = [_lisp_scalar(x) for x in bucket_weights.items]
         total_weight = float(np.nansum(weights))
         shares = [a / total_weight if total_weight else float("nan") for a in amounts]
-        result.append(("total " + weight_name, amounts + ([total_weight] if with_total else [])))
+        result.append(("total_" + weight_name, amounts + ([total_weight] if with_total else [])))
         result.append(("percent", shares + ([1.0] if with_total else [])))
     else:
         result.append(("percent", [c / n for c in counts] + ([1.0] if with_total else [])))
@@ -323,7 +323,7 @@ def stratify(table, by, summaries=NIL, *options):
     table (unless :total is #f). `by` is (column how) -- see the top of this
     file for `how` -- or a list of them, for a row per combination of
     buckets. The columns are the bucket(s); count; with :weight, the total
-    weight ("total balance", for :weight "balance") and its share of the
+    weight ("total_balance", for :weight "balance") and its share of the
     table's ("percent"; without :weight, the share of the rows); then one
     per summary, (column function [heading]), where function is one of
     lisp_tables.SUMMARY_FUNCTIONS -- such as weighted-mean (by the :weight

@@ -38,7 +38,7 @@
 
 ; --- What each small table shows -----------------------------------------------
 ; Every table has the bucket, the count of loans, their total balance
-; ("total balance", since the weight is the balance column), and its share of
+; ("total_balance", since the weight is the balance column), and its share of
 ; the pool ("percent"); then these, each averaged by balance.
 (define summaries
   '(("rate" weighted-mean "WAC")
@@ -48,7 +48,7 @@
 
 ; How to show the numbers (see display-table).
 (define formats
-  '(("total balance" ",.0f") ("percent" ".1%") ("WAC" ".3f") ("WALA" ".1f") ("LTV" ".1f") ("FICO" ".0f")))
+  '(("total_balance" ",.0f") ("percent" ".1%") ("WAC" ".3f") ("WALA" ".1f") ("LTV" ".1f") ("FICO" ".0f")))
 
 ; --- The tables ----------------------------------------------------------------
 (define tables
