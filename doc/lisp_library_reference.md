@@ -4846,9 +4846,9 @@ take. Each column, but the weight column, gets a way of bucketing:
 Each numeric column that is not hidden also gets a summary, its average
 (`weighted-mean` with a `:weight`, `mean` without), headed `avg rate` for
 a column `rate`, and a format that suits its numbers: `",.0f"` if any are
-above 10,000 (dollars, or people, perhaps); `".1%"` if all are from 0 to
-1; `".3f"` if all are under 20 (interest rates, perhaps); `".2f"`
-otherwise. `count`, `percent` and the `total_` column get formats too.
+above 10,000 or below -10,000 (dollars, or people, perhaps); `".1%"` if
+all are from 0 to 1; `".3f"` if all are under 20 (interest rates,
+perhaps); `",.2f"` otherwise. `count`, `percent` and the `total_` column get formats too.
 Change any of it before you use it: it is only a list.
 
 ```lisp

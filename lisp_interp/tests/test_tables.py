@@ -920,10 +920,10 @@ class TestStratifyPlan(LispTestCase):
     def test_the_format_suits_the_numbers(self):
         self.assertShows('(third (stratify-plan t :weight "balance"))',
                          '(("count" ",d") ("percent" ".1%") ("total_balance" ",.0f") ("avg rate" ".3f") '
-                         '("avg ltv" ".1%") ("avg age" ".2f") ("avg flag" ".1%"))')
+                         '("avg ltv" ".1%") ("avg age" ",.2f") ("avg flag" ".1%"))')
         self.run_lisp('(define big (make-table "x" #(5 50 500) "y" #(20000 30000 40000) "z" #(25 30 35)))')
         self.assertShows('(third (stratify-plan big))',
-                         '(("count" ",d") ("percent" ".1%") ("avg x" ".2f") ("avg y" ",.0f") ("avg z" ".2f"))')
+                         '(("count" ",d") ("percent" ".1%") ("avg x" ",.2f") ("avg y" ",.0f") ("avg z" ",.2f"))')
 
     def test_the_plan_makes_a_report(self):
         shown = self.run_lisp("""

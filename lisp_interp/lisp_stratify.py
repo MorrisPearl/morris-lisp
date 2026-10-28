@@ -375,15 +375,15 @@ def list_of(*items):
 
 def format_for(values):
     """The display-table format for these numbers (a numpy array without missing values): whole numbers with commas if
-    some are over 10,000 (dollars, or people, perhaps); a percent if all are from 0 to 1; three decimals if all are under 20
-    (interest rates, perhaps); two decimals for the rest."""
-    if values.max() > 10000:
+    some are over 10,000 or under -10,000 (dollars, or people, perhaps); a percent if all are from 0 to 1; three decimals if all are under 20
+    (interest rates, perhaps); two decimals, with commas, for the rest."""
+    if (values.max() > 10000 or values.min() < -10000):
         return LispString(",.0f")
     if values.min() >= 0 and values.max() <= 1:
         return LispString(".1%")
     if values.max() < 20:
         return LispString(".3f")
-    return LispString(".2f")
+    return LispString(",.2f")
 
 
 def how_to_bucket(v, present, weighted):
