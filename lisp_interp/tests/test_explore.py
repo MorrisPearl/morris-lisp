@@ -24,9 +24,13 @@ class ExploreTestCase(LispTestCase):
 class TestTableProfile(ExploreTestCase):
     def test_a_row_for_each_column(self):
         self.assertEqual(self.column("(table-profile t)", "column"), '#("balance" "rate" "state" "first")')
-        self.assertEqual(self.column("(table-profile t)", "kind"), '#("number" "number" "text" "date")')
+        self.assertEqual(self.column("(table-profile t)", "kind"), '#("integer" "float" "text" "date")')
         self.assertEqual(self.column("(table-profile t)", "missing"), "#(1 2 1 2)")
         self.assertEqual(self.column("(table-profile t)", "distinct"), "#(11 10 6 10)")
+
+    def test_integers_are_told_from_other_numbers(self):
+        self.run_lisp('''(define n (make-table "whole" #(1 2 3) "fraction" #(1 2.5 3) "gap" #(1 nan 3) "big" #(1e12 2 3)))''')
+        self.assertEqual(self.column("(table-profile n)", "kind"), '#("integer" "float" "integer" "integer")')
 
     def test_numbers_have_their_statistics_and_other_columns_a_range(self):
         profile = "(table-profile t)"

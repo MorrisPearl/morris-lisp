@@ -19,9 +19,12 @@ from lisp_vector_math import floats_of, missing_mask
 
 
 def kind_of(v, present):
-    """What a column holds: number, date, text, or mixed (several kinds, or truth values)."""
+    """What a column holds: integer (numbers that are all whole), float (other numbers), date, text, or mixed (several kinds,
+    or truth values). Whole numbers count as integers however they are stored: a column of integers with a missing value
+    is kept as floats (the missing value is NaN), and is an integer column still."""
     if is_numeric_column(v):
-        return "number"
+        whole = np.issubdtype(present.dtype, np.integer) or bool(np.all(present == np.floor(present)))
+        return "integer" if whole else "float"
     if is_date_column(v):
         return "date"
     if present.size and all(isinstance(x, str) for x in present.tolist()):
@@ -55,7 +58,7 @@ def range_text(present):
 
 
 def table_profile(table):
-    """(table-profile table) -- a table with a row for each column of the table: its kind (number, date, text, or mixed),
+    """(table-profile table) -- a table with a row for each column of the table: its kind (integer, float, date, text, or mixed),
     how many values are missing, how many different values it has, for a number its mean, smallest, median and
     largest, for anything else its range from the lowest to the highest, and its most common value."""
     columns = table_columns(table, "table-profile")
@@ -65,14 +68,14 @@ def table_profile(table):
         missing = missing_mask(v)
         present = v.items[~missing]
         kind = kind_of(v, present)
-        numbers = floats_of(LispVector(present), "table-profile") if kind == "number" and present.size else None
+        numbers = floats_of(LispVector(present), "table-profile") if kind in ("integer", "float") and present.size else None
         rows["column"].append(LispString(name))
         rows["kind"].append(LispString(kind))
         rows["missing"].append(int(missing.sum()))
         rows["distinct"].append(len(set(present.tolist())))
         for label, summary in (("mean", np.mean), ("min", np.min), ("median", np.median), ("max", np.max)):
             rows[label].append(float(summary(numbers)) if numbers is not None else float("nan"))
-        rows["range"].append(LispString(range_text(present) if kind != "number" else ""))
+        rows["range"].append(LispString(range_text(present) if kind not in ("integer", "float") else ""))
         rows["most common"].append(LispString(most_common(present)))
     return make_table_value([(label, table_column(values)) for label, values in rows.items()])
 

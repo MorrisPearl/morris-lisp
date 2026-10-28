@@ -3924,15 +3924,19 @@ of strings or dates are left out. A quick first look at new data:
 #### `(table-profile t)`
 A first look at a table you have not seen before: a table with a row for
 each column, of any kind. Its columns are the `column`'s name; its `kind`
-(`number`, `date`, `text`, or `mixed`); how many values are `missing`;
+(`integer`, `float`, `date`, `text`, or `mixed`); how many values are `missing`;
 how many `distinct` values there are; for a number, its `mean`, `min`,
 `median` and `max` (NaN for other kinds); for dates and text, the `range`
 from the lowest to the highest; and the `most common` value, as text.
+A column is `integer` if every value that is present is a whole number,
+however it is stored: integers with a missing value are kept as floats
+(the missing value is NaN) and still count. (A column of floats that all
+happen to be whole, such as rates of 5.0 and 6.0, is `integer` too.)
 (`table-describe` has more statistics for the numeric columns.)
 
 ```lisp
 (define t (make-table "balance" #(100 200 300 300) "state" (vector "CA" "NY" "CA" "TX")))
-(table-column (table-profile t) "kind")          ; => #("number" "text")
+(table-column (table-profile t) "kind")          ; => #("integer" "text")
 (table-column (table-profile t) "distinct")      ; => #(3 3)
 (table-column (table-profile t) "range")         ; => #("" "CA to TX")
 (table-column (table-profile t) "most common")   ; => #("300" "CA")
