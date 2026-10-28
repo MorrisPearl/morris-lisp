@@ -2,6 +2,8 @@
 
 import math
 
+import re
+
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
 
 
@@ -82,6 +84,57 @@ class TestTableOutliers(ExploreTestCase):
 
     def test_count_is_checked(self):
         self.assertLispError("(table-outliers t :count 0)", ":count")
+
+
+class TestTableCorrelations(ExploreTestCase):
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("""
+          (define c (make-table "x" #(1 2 3 4 5 6) "y" #(6 5 4 3 2 1)
+                                "color" (vector "red" "red" "red" "blue" "blue" "blue")
+                                "size" (vector "s" "m" "l" "s" "m" nan)))""")
+
+    def pairs(self, options=""):
+        table = "(table-correlations c %s)" % options
+        names = lambda column: re.findall(r'"([^"]*)"', self.show('(table-column %s "%s")' % (table, column)))
+        return list(zip(names("first"), names("second")))
+
+    def test_numbers_are_compared_and_the_strongest_pair_is_first(self):
+        self.assertEqual(self.pairs()[0], ("x", "y"))
+        self.assertEqual(self.run_lisp('(vector-ref (table-column (table-correlations c) "correlation") 0)'), -1.0)
+
+    def test_each_value_of_a_column_with_few_values_is_a_column_of_ones_and_zeros(self):
+        pairs = self.pairs()
+        self.assertIn(("x", "color=blue"), pairs)
+        self.assertIn(("y", "color=red"), pairs)
+        self.assertIn(("color=blue", "size=s"), pairs)
+        self.assertNotIn(("x", "color"), pairs)                  # the column itself is not a number
+
+    def test_the_correlation_with_a_value(self):
+        table = "(table-correlations c)"
+        row = self.pairs().index(("x", "color=blue"))
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column %s "correlation") %d)' % (table, row)), 0.8783100656536799)
+
+    def test_columns_from_the_same_source_are_not_paired(self):
+        pairs = self.pairs()
+        self.assertNotIn(("color=blue", "color=red"), pairs)
+        self.assertNotIn(("size=s", "size=m"), pairs)
+
+    def test_a_missing_value_leaves_the_row_out(self):
+        row = self.pairs().index(("x", "size=s"))
+        self.assertEqual(self.run_lisp('(vector-ref (table-column (table-correlations c) "rows") %d)' % row), 5)
+
+    def test_max_distinct_says_how_few_values_a_column_must_have(self):
+        self.assertNotIn(("x", "size=s"), self.pairs(":max-distinct 2"))
+        self.assertIn(("x", "color=blue"), self.pairs(":max-distinct 2"))
+        self.assertEqual(self.pairs(":max-distinct 2")[0], ("x", "y"))
+
+    def test_max_distinct_is_checked(self):
+        self.assertLispError("(table-correlations c :max-distinct 1)", ":max-distinct")
+
+    def test_a_column_that_does_not_vary_has_no_pairs(self):
+        self.run_lisp('(define k (make-table "x" #(1 2 3) "k" #(7 7 7)))')
+        self.assertEqual(self.run_lisp("(table-row-count (table-correlations k))"), 0)
 
 
 class TestPlotStratification(LispTestCase):

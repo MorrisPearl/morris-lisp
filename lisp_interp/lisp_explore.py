@@ -1,4 +1,4 @@
-"""Exploring a table you have not seen before: table-profile, table-missing and table-outliers.
+"""Exploring a table you have not seen before: table-profile, table-missing, table-outliers and table-correlations.
 
 table-describe (lisp_tables.py) summarizes the numeric columns. These look at every column and at what is wrong with
 the data -- what is missing, and where, and what is far from the rest:
@@ -6,6 +6,7 @@ the data -- what is missing, and where, and what is far from the rest:
   table-profile   a row for each column: its kind, how much is missing, how many distinct values, its range
   table-missing   which columns are missing together: a row for each pattern of missing values
   table-outliers  the lowest and highest values of each numeric column, and how far they are from the rest
+  table-correlations  how strongly each pair of columns moves together; a column with few values counts each value
 """
 
 from collections import Counter
@@ -135,8 +136,78 @@ def table_outliers(table, *options):
     return make_table_value([(label, table_column(column)) for label, column in rows.items()])
 
 
+def distinct_values(present):
+    """The different values among the values that are not missing, in order (dates by date); in the order they first
+    occur if they cannot be put in order, such as numbers mixed with text."""
+    values = list(dict.fromkeys(present.tolist()))
+    try:
+        return sorted(values, key=lambda x: x.date if isinstance(x, LispDate) else x)
+    except TypeError:
+        return values
+
+
+def correlation_columns(columns, max_distinct):
+    """The columns that table-correlations compares: (label, number of the table column it comes from, a float for each
+    row, NaN where missing). A numeric column is one, as it is. A column (of any kind) with from 2 to max_distinct
+    different values also gives a column for each value, "name=value", that is 1 in the rows with that value and 0 in the
+    others (NaN where the column is missing) -- a one-hot encoding."""
+    found = []
+    for number, (name, v) in enumerate(columns):
+        missing = missing_mask(v)
+        present = v.items[~missing]
+        if kind_of(v, present) in ("integer", "float"):
+            found.append((name, number, floats_of(v, "table-correlations")))
+        values = distinct_values(present)
+        if 2 <= len(values) <= max_distinct:
+            for value in values:
+                indicator = np.array([1.0 if x == value else 0.0 for x in v.items.tolist()])
+                indicator[missing] = np.nan
+                found.append(("%s=%s" % (name, value_text(value)), number, indicator))
+    return found
+
+
+def correlation(a, b):
+    """The correlation of two columns of floats over the rows where neither is missing, and how many rows that is;
+    NaN when there are fewer than two such rows or one of the columns does not vary in them."""
+    both = ~(np.isnan(a) | np.isnan(b))
+    n = int(both.sum())
+    if n < 2 or np.std(a[both]) == 0 or np.std(b[both]) == 0:
+        return float("nan"), n
+    return float(np.corrcoef(a[both], b[both])[0, 1]), n
+
+
+def table_correlations(table, *options):
+    """(table-correlations table [:max-distinct n]) -- how strongly each pair of columns moves together: a table with a row
+    for each pair, the strongest first (by size, whether positive or negative). Its columns are `first` and `second` (the
+    names), `correlation` (from -1 to 1), and `rows` (how many rows had both). Numeric columns are compared as they are;
+    a column with no more than n different values (5, unless :max-distinct says) also has each of its values compared, as
+    a column "name=value" of 1s and 0s. A pair from the same column, and a pair with no correlation, are left out."""
+    columns = table_columns(table, "table-correlations")
+    max_distinct = keyword_options(options, ("max-distinct",), "table-correlations").get("max-distinct", 5)
+    if not isinstance(max_distinct, int) or isinstance(max_distinct, bool) or max_distinct < 2:
+        raise LispError("table-correlations: :max-distinct is the most different values a column can have to have each "
+                        "value compared, a whole number of 2 or more")
+    compared = correlation_columns(columns, max_distinct)
+    pairs = []
+    for i, (first, source, a) in enumerate(compared):
+        for second, other_source, b in compared[i + 1:]:
+            if source == other_source:
+                continue
+            r, n = correlation(a, b)
+            if r == r:
+                pairs.append((first, second, r, n))
+    pairs.sort(key=lambda pair: -round(abs(pair[2]), 12))                # a stable sort: ties stay in column order
+    return make_table_value([
+        ("first", LispVector([LispString(p[0]) for p in pairs])),
+        ("second", LispVector([LispString(p[1]) for p in pairs])),
+        ("correlation", table_column([p[2] for p in pairs])),
+        ("rows", LispVector([p[3] for p in pairs])),
+    ])
+
+
 BUILTINS = {
     "table-profile": table_profile,
     "table-missing": table_missing,
     "table-outliers": table_outliers,
+    "table-correlations": table_correlations,
 }

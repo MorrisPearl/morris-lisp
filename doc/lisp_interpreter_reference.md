@@ -3972,6 +3972,29 @@ shown as both low and high. Missing values are skipped.
 (table-column (table-outliers t :count 1) "value")    ; => #(100.0 9000.0)
 ```
 
+#### `(table-correlations t [:max-distinct n])`
+How strongly each pair of columns moves together. A table with a row for
+each pair, the strongest first (by size, positive or negative): `first`
+and `second` are the columns' names, `correlation` is from -1 to 1, and
+`rows` is how many rows had a value in both. Numeric columns are compared
+as they are. A column of any kind with no more than `n` different values
+(5, unless `:max-distinct` says) also has each of its values compared, as
+a column `name=value` that is 1 in the rows with that value and 0 in the
+others (a one-hot encoding), so that "is the state CA?" can be compared
+with a rate. Rows where a column is missing are left out of its pairs. A
+pair from the same column (`state=CA` with `state=NY`) is left out, and so
+is a pair with no correlation: fewer than two rows in common, or a column
+that does not vary in them.
+
+```lisp
+(define t (make-table "x" #(1 2 3 4 5 6) "y" #(2 4 6 8 10 12)
+                      "color" (vector "red" "red" "red" "blue" "blue" "blue")))
+(define c (table-correlations t))
+(table-column c "first")         ; => #("x" "x" "x" "y" "y")
+(table-column c "second")        ; => #("y" "color=blue" "color=red" "color=blue" "color=red")
+(table-column c "rows")          ; => #(6 6 6 6 6)
+```
+
 ### Structs
 
 See `defstruct`, under "Structs" in "Special forms and standard macros", above, for the
@@ -6307,7 +6330,7 @@ The Python files:
 | `lisp_regex.py` | Regular expressions: `regex-search`, `regex-replace`, ... |
 | `lisp_tables.py` | Tables: `table-filter`, `table-sort`, `table-group-by`, `table-join`, ... |
 | `lisp_stratify.py` | Stratification tables: `stratify`, `stratify-all`, `stratify-plan` |
-| `lisp_explore.py` | A first look at a table: `table-profile`, `table-missing`, `table-outliers` |
+| `lisp_explore.py` | A first look at a table: `table-profile`, `table-missing`, `table-outliers`, `table-correlations` |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
 | `lisp_help.py` | `help`'s documentation, `documentation`, `apropos`, and the notebook's Tab and Shift-Tab: where the documentation of a name comes from |
 | `lisp_profile.py` | `profile`, `unprofile`, `profile-reset!`, `profile-results`, `show-profile`: the profiling functions (the machinery is in `lisp_core.py`) |
