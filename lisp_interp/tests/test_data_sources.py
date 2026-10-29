@@ -7,7 +7,6 @@ from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mo
 
 import urllib.error
 
-import lisp_gdelt
 import lisp_google
 import lisp_rates
 import lisp_schwab
@@ -1656,95 +1655,6 @@ class TestHttp(LispTestCase):
     def test_alpha_vantage_needs_its_key_in_the_credentials_file(self):
         self.use_credentials({"fred_api_key": "x"})
         self.assertLispError('(alpha-vantage-dividends creds "X")', 'no "alpha_vantage_api_key" entry')
-
-
-class TestGdelt(LispTestCase):
-    """gdelt-tone, with GDELT played by a fake (lisp_http.fetch is replaced):
-    no network, and no waiting -- the waits between requests are recorded
-    instead."""
-
-    # Two days, in hours: GDELT gives a short span of days by the hour
-    TONE = {"timeline": [{"series": "Average Tone", "data": [
-        {"date": "20260105T000000Z", "value": -2.0}, {"date": "20260105T010000Z", "value": 1.0},
-        {"date": "20260106T000000Z", "value": 0.0}, {"date": "20260107T000000Z", "value": 0.0}]}]}
-    COUNTS = {"timeline": [{"series": "Article Count", "data": [
-        {"date": "20260105T000000Z", "value": 1, "norm": 100}, {"date": "20260105T010000Z", "value": 3, "norm": 100},
-        {"date": "20260106T000000Z", "value": 0, "norm": 50}, {"date": "20260107T000000Z", "value": 5, "norm": 1000}]}]}
-
-    def setUp(self):
-        super().setUp()
-        cache = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, cache, True)
-        self.urls = []
-        self.waits = []
-        self.answer = None                          # what the fake GDELT says, if not the timelines above
-
-        def fake_fetch(request, name, shown_url, last_try):
-            self.urls.append(request.full_url)
-            if self.answer is not None:
-                return self.answer
-            return json.dumps(self.TONE if "mode=timelinetone" in request.full_url else self.COUNTS).encode()
-
-        for patcher in (mock.patch.dict(os.environ, {"LISP_HTTP_CACHE": cache}),
-                        mock.patch.object(lisp_http, "fetch", fake_fetch),
-                        mock.patch.object(lisp_gdelt.time, "sleep", self.waits.append),
-                        mock.patch.object(lisp_gdelt, "last_request_time", 0.0)):
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
-    def test_the_tone_is_by_day_and_weighted_by_articles(self):
-        self.run_lisp('(define t (gdelt-tone "\\"mortgage rates\\"" :start-date "2026-01-05" :end-date "2026-01-07"))')
-        self.assertShows("(table-column-names t)", '("date" "tone" "articles" "share")')
-        self.assertShows('(table-column t "date")', "#(2026-01-05 2026-01-06 2026-01-07)")
-        self.assertShows('(table-column t "tone")', "#(0.25 nan 0.0)")          # (-2 x 1 + 1 x 3) / 4; no articles
-        self.assertShows('(table-column t "articles")', "#(4 0 5)")
-        self.assertShows('(table-column t "share")', "#(2.0 0.0 0.5)")          # 4 of 200 is 2%
-        self.assertEqual(len(self.urls), 2)
-        self.assertIn("mode=timelinetone", self.urls[0])
-        self.assertIn("mode=timelinevolraw", self.urls[1])
-        self.assertIn("query=%22mortgage+rates%22", self.urls[0])
-        self.assertIn("startdatetime=20260105000000", self.urls[0])
-        self.assertIn("enddatetime=20260107235959", self.urls[0])
-
-    def test_requests_are_spaced_and_saved_copies_wait_for_nothing(self):
-        self.run_lisp('(gdelt-tone "inflation" :start-date "2026-01-05" :end-date "2026-01-07")')
-        self.assertEqual(len(self.waits), 1)                   # the second request waited
-        self.assertGreater(self.waits[0], lisp_gdelt.SECONDS_BETWEEN_REQUESTS - 1)
-        self.run_lisp('(gdelt-tone "inflation" :start-date "2026-01-05" :end-date "2026-01-07")')
-        self.assertEqual(len(self.urls), 2)                    # both kept in the cache
-        self.assertEqual(len(self.waits), 1)
-
-    def test_the_last_90_days_unless_the_dates_say(self):
-        self.run_lisp('(gdelt-tone "inflation")')
-        start = datetime.date.today() - datetime.timedelta(days=89)
-        self.assertIn("startdatetime=" + start.strftime("%Y%m%d") + "000000", self.urls[0])
-        self.assertIn("enddatetime=" + datetime.date.today().strftime("%Y%m%d") + "235959", self.urls[0])
-
-    def test_no_articles_is_a_table_with_no_rows(self):
-        self.answer = b"{}"
-        self.run_lisp('(define t (gdelt-tone "zzzqqq"))')
-        self.assertShows("(table-row-count t)", "0")
-        self.assertShows("(table-column-names t)", '("date" "tone" "articles" "share")')
-
-    def test_what_gdelt_says_instead_of_an_answer_is_shown_and_not_kept(self):
-        self.answer = b"The specified phrase is too short.\n"
-        for _ in range(2):
-            self.assertLispError('(gdelt-tone "\\"a\\"")', "gdelt-tone: GDELT says: The specified phrase is too short.")
-        self.assertEqual(len(self.urls), 2)                    # not cached
-
-    def test_too_many_requests_is_a_network_error(self):
-        def refuse(request, name, shown_url, last_try):
-            raise lisp_core.lisp_error_of_kind("%s: %s returned HTTP 429 Too Many Requests" % (name, shown_url),
-                                               lisp_core.NETWORK)
-        with mock.patch.object(lisp_http, "fetch", refuse):
-            self.assertShows('(catch-error (gdelt-tone "inflation") (message) :only (network) message)',
-                             '"gdelt-tone: GDELT says it has been asked too often (it allows one request every 5 '
-                             'seconds, and asks for a pause after more); try again in a few minutes"')
-
-    def test_the_dates_are_checked(self):
-        self.assertLispError('(gdelt-tone "x" :start-date "2016-12-31")', "go back only to 2017-01-01")
-        self.assertLispError('(gdelt-tone "x" :start-date "2026-02-01" :end-date "2026-01-01")', "is after the :end-date")
-        self.assertEqual(self.urls, [])
 
 
 class TestSecFilings(LispTestCase):

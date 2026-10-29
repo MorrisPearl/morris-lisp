@@ -53,7 +53,6 @@ HOW THE CODE IS ORGANIZED
     lisp_google.py        google-*  (send tables to a new Google spreadsheet)
     lisp_schwab.py        schwab-*  (your Schwab accounts: positions, quotes, prices, orders)
     lisp_alpha_vantage.py alpha-vantage-dividends  (a stock's dividends, from Alpha Vantage)
-    lisp_gdelt.py         gdelt-tone  (the tone of the news about anything, by day, from GDELT)
     lisp_investment_paths.py  daily-returns, adjust-returns, dividend-schedule, bootstrap-path, option-value
                           (simulated prices of an investment, and an option's value)
     lisp_calendar.py      trading-day?, add-trading-days, trading-days-between, market-open?: the NYSE's trading days

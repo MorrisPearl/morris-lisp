@@ -212,7 +212,6 @@ out, as [section 6](#6-putting-sources-together) shows.
 | An option chain | `(tastytrade-option-chain creds "SPY")`; `fit-vol-smiles` then finds options priced out of line | tastytrade |
 | A futures curve: oil, gold, the S&P 500, ... | `(tastytrade-futures-curve creds "CL")` | tastytrade |
 | The stock market as a whole | `(fred-table creds "SP500")` (the last 10 years), `(fred-table creds "VIXCLS")` (its volatility) | S&P and Cboe, via FRED |
-| How good or bad the news about something is, day by day | `(gdelt-tone "\"mortgage rates\"")` (no key needed) | GDELT |
 
 ### Trade with other countries
 
@@ -532,7 +531,6 @@ borders drawn over it:
 | `census-profile` | A standard profile of any place | Census | [Census data](lisp_library_reference.md#census-data) |
 | `census-get`, `census-variables`, `census-geographies`, `census-datasets` | Any Census dataset | Census | [Census data](lisp_library_reference.md#census-data) |
 | `census-shapes`, `plot-map` | Outlines of places, and maps of them | Census | [Maps](lisp_library_reference.md#maps) |
-| `gdelt-tone` | The tone of the news about anything, by day | GDELT | [GDELT](lisp_library_reference.md#gdelt-the-tone-of-the-news) |
 | `fred-table` | Any FRED series, by date | FRED | [FRED](lisp_library_reference.md#fred-federal-reserve-bank-of-st-louis-data) |
 | `http-get-json`, `http-get-csv`, `http-get-text` | Anything at a web address | any website | [Downloading data from the web](lisp_library_reference.md#downloading-data-from-the-web) |
 | `sec-income-statement`, `sec-balance-sheet`, `sec-cash-flow-statement`, `sec-financials`, `sec-facts`, `sec-concepts`, `sec-company` | Companies' financial statements | SEC | [SEC financial statements](lisp_library_reference.md#sec-financial-statements) |
