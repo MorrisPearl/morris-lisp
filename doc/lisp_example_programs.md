@@ -10,11 +10,11 @@ once. Several of the programs are after chapters of Peter Norvig's classic
 this interpreter, and the notes say where its rules (`#f` is the only false,
 vectors hold only numbers, strings, and dates) change what the book does.
 
-There are four documents. The **language manual**,
+There are five documents. The **language manual**,
 [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the
 syntax, the special forms and macros, and the general builtins. The **library
 manual**, [lisp_library_reference.md](lisp_library_reference.md), covers
-getting data, models, and investments, and the **CMO manual**, [lisp_cmo_manual.md](lisp_cmo_manual.md), covers the structured-deal model.
+getting data, models, and investments, and the **CMO manual**, [lisp_cmo_manual.md](lisp_cmo_manual.md), covers the structured-deal model, and the **forecasting manual**, [lisp_forecasting_manual.md](lisp_forecasting_manual.md), covers forecasting questions.
 **This one is about the programs**: the
 language and library documents say what each function does; this says how
 whole programs are put together out of them. A section name in quotes is a

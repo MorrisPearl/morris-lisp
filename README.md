@@ -37,6 +37,9 @@ whose path is their first argument. Keep it out of the repository.
     `lisp_interp/examples/` (a chess player, a SQL interpreter, ELIZA, a
     Prolog, models of mortgages, and a script for each part of the library),
     and the programming techniques they show.
+  - `doc/lisp_forecasting_manual.md` -- forecasting questions, such as Good
+    Judgment Open's: the chance of each range of a number, "before the date"
+    chances, and combining and scoring forecasts.
 - `lisp_interp/economic_data_guide.md` -- which agency publishes what data,
   and which function gets it.
 

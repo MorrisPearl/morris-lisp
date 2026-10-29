@@ -69,6 +69,7 @@ REFERENCE_DOC = os.path.join(DOC_DIRECTORY, "lisp_interpreter_reference.md")
 LIBRARY_DOC = os.path.join(DOC_DIRECTORY, "lisp_library_reference.md")
 EXAMPLES_DOC = os.path.join(DOC_DIRECTORY, "lisp_example_programs.md")
 CMO_DOC = os.path.join(DOC_DIRECTORY, "lisp_cmo_manual.md")
+FORECASTING_DOC = os.path.join(DOC_DIRECTORY, "lisp_forecasting_manual.md")
 
 
 # ---------------------------------------------------------------------------

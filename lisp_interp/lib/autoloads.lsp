@@ -287,3 +287,10 @@
 
 ; A chart of a stratification table
 (lazy-load "stratify_plot.lsp" plot-stratification)
+
+; Forecasting questions: the chance of each range of a number, "before the date" chances, combining and scoring
+; forecasts (see lisp_forecasting_manual.md)
+(lazy-load "forecasting.lsp"
+  bin-probabilities normal-bins lognormal-bins empirical-bins call-price-bins bin-table
+  probability-remaining decay-schedule combine-forecasts extremize
+  brier-score ordered-brier-score calibration-table)
