@@ -18,7 +18,7 @@ from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mo
 # blocks that would block on stdin, need the network/GUI, or touch the disk
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
-    "fred-table", "tastytrade", "schwab-", "treasury-par-curve", "gsw-curve", "google-", "alpha-vantage-", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(bea-", "(sleep", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
+    "fred-table", "tastytrade", "schwab-", "treasury-par-curve", "gsw-curve", "google-", "alpha-vantage-", "gdelt-", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(bea-", "(sleep", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
     "save-chart", "load-csv", "write-columns-csv", "write-text-file", "display-widget",
     "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
 )
@@ -164,7 +164,7 @@ class TestReferenceDocExamples(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         blocks = []                 # (the document's name, the block, its section if blocks share an environment)
-        for doc, fewest in ((REFERENCE_DOC, 50), (LIBRARY_DOC, 50), (EXAMPLES_DOC, 10), (CMO_DOC, 5)):
+        for doc, fewest in ((REFERENCE_DOC, 50), (LIBRARY_DOC, 50), (EXAMPLES_DOC, 10), (CMO_DOC, 5), (FORECASTING_DOC, 5)):
             with open(doc, encoding="utf-8") as f:
                 text = f.read()
             found = re.findall(r"```lisp\n(.*?)```", text, re.S)
@@ -281,7 +281,7 @@ class TestDocumentLinks(unittest.TestCase):
     those links must go somewhere, or moving a section would leave readers at a dead end."""
 
     def test_every_link_goes_to_a_file_and_a_heading_that_exist(self):
-        documents = [REFERENCE_DOC, LIBRARY_DOC, EXAMPLES_DOC, CMO_DOC, os.path.join(DOC_DIRECTORY, "economic_data_guide.md"),
+        documents = [REFERENCE_DOC, LIBRARY_DOC, EXAMPLES_DOC, CMO_DOC, FORECASTING_DOC, os.path.join(DOC_DIRECTORY, "economic_data_guide.md"),
                      os.path.join(HERE, "..", "README.md")]
         texts = {}
         for path in documents:

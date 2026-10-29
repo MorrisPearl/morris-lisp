@@ -60,7 +60,7 @@ def headers_argument(headers, name):
     return result
 
 
-def download(url, cache_hours, headers, name, shown_url=None, body=None, check=None):
+def download(url, cache_hours, headers, name, shown_url=None, body=None, check=None, wait=None):
     """The bytes at `url`: from the cache if a copy younger than cache_hours
     is saved there, otherwise from the network (saving a copy if
     cache_hours is more than 0). An error message shows shown_url in place
@@ -70,7 +70,9 @@ def download(url, cache_hours, headers, name, shown_url=None, body=None, check=N
     error if the bytes it's passed aren't an answer -- for a web API that
     reports a problem in an answer that says it's fine (HTTP 200) -- it's
     called with each download before it's saved, so a problem isn't
-    kept."""
+    kept. Given wait, a function, it's called just before each request
+    goes out over the network (not for a saved copy) -- for a site that
+    limits how often it may be asked."""
     url = str(url)
     shown_url = shown_url or url
     request_headers = {"User-Agent": USER_AGENT}
@@ -88,6 +90,8 @@ def download(url, cache_hours, headers, name, shown_url=None, body=None, check=N
         request = urllib.request.Request(url, data=body, headers=request_headers)
     except ValueError as e:                     # not a URL
         raise LispError("%s: couldn't download %s: %s" % (name, shown_url, e))
+    if wait:
+        wait()
     data = fetch(request, name, shown_url, last_try=False)
     if data is None:                            # it may have been a passing problem: once more, after a moment
         time.sleep(RETRY_SECONDS)

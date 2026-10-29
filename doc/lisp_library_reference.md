@@ -40,6 +40,7 @@ that use all this are described in
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Schwab (your accounts)](#schwab-your-accounts)
   - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
+  - [GDELT (the tone of the news)](#gdelt-the-tone-of-the-news)
 - [Reporting](#reporting)
   - [Google Sheets](#google-sheets)
   - [Reports with control breaks](#reports-with-control-breaks)
@@ -1987,6 +1988,61 @@ table with no rows.
 ```
 
 `daily-returns` takes this table as its `:dividends`: see "Simulating investment prices".
+### GDELT (the tone of the news)
+
+(In `lisp_gdelt.py`.) How positive or negative the news about something
+is, day by day, from GDELT (https://www.gdeltproject.org): a free project
+that reads news sites around the world, in many languages, as articles
+come out, and scores each article's tone from the words in it. It needs
+no key.
+
+A tone is the share of an article's words that are positive less the
+share that are negative, in percent: about -10 (very negative) to +10
+(very positive), though most articles are between -5 and +5, and news on
+the whole leans a little negative. So what tells you something is the
+change in a tone over time, or one subject's tone next to another's, more
+than whether a tone is above or below 0.
+
+GDELT allows one request every 5 seconds, and each `gdelt-tone` makes two,
+so the second waits; after a burst of requests GDELT may refuse more for
+a few minutes, with a **network** error. Each download is kept for 12
+hours, as the other data functions' are, and a saved copy needs no wait.
+
+#### `(gdelt-tone query [:start-date d :end-date d :cache-hours h])`
+The tone of the news articles that match the query: a table with a row
+for each day, oldest first, of
+
+- `date`;
+- `tone`, the average tone of that day's articles that match (NaN for a
+  day with none);
+- `articles`, how many articles matched;
+- `share`, the percent of all the articles GDELT read that day that
+  matched -- how much of the news was about it.
+
+The days are the last 90, unless `:start-date` and `:end-date` (dates, or
+`"YYYY-MM-DD"`) say otherwise; GDELT's searches go back to 2017.
+`:cache-hours` is how long a download is kept (0: download it every time).
+
+The query is GDELT's own:
+
+| Query | Matches articles |
+|---|---|
+| `"inflation layoffs"` | with both words |
+| `"\"mortgage rates\""` | with the phrase (in quotes, inside the Lisp string) |
+| `"(recession OR layoffs)"` | with either word |
+| `"tariffs -sports"` | with the first word and not the second |
+| `"inflation sourcecountry:US"` | from American news sites |
+| `"inflation sourcelang:english"` | in English |
+
+```lisp
+(define housing (gdelt-tone "\"mortgage rates\" sourcecountry:US" :start-date "2026-01-01"))
+(plot-chart (list (list "tone of news about mortgage rates" (table-column housing "date")
+                        (table-column housing "tone"))))
+```
+
+A day's tone moves around a lot when few articles match it; a weekly or
+monthly average, or a subject with many articles a day, is steadier.
+
 ## Reporting
 ### Google Sheets
 
