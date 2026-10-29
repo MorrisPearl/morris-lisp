@@ -10,7 +10,8 @@ chief executive, a merger), and the rest.
                      oldest first, with its dates, form, and address
   (sec-filing-text creds url [:section s])
                      a filing's words, as plain text -- all of it, or one
-                     section: "risk-factors" or "management-discussion"
+                     section: "risk-factors" or "management-discussion" --
+                     from the annual report, if the 10-K says it's there
   (text-tone text [:word-lists path])
                      how negative, positive, uncertain, ... a text's words
                      are, by the Loughran-McDonald word lists
@@ -194,11 +195,13 @@ def plain_text(document):
     return "\n".join(line for line in lines if line)
 
 
-# Each section: the item numbers it may be (a 10-K's or a 10-Q's), and a
-# word its title has.
+# Each section: the item numbers it may be (a 10-K's or a 10-Q's), a word
+# its title has, and its usual titles when it's part of an annual report.
 SECTIONS = {
-    "risk-factors": ({"1A"}, "risk factors"),
-    "management-discussion": ({"7", "2"}, "management"),
+    "risk-factors": ({"1A"}, "risk factors", ["risk factors"]),
+    "management-discussion": ({"7", "2"}, "management",
+                              ["management's discussion and analysis",
+                               "management's discussion and analysis of financial condition and results of operations"]),
 }
 ITEM_HEADING = re.compile(r"^item\s+(\d+[a-c]?)\b[^\n]{0,200}$", re.I | re.M)
 
@@ -220,7 +223,7 @@ def section_text(text, section, who):
     if section not in SECTIONS:
         raise LispError("%s: there's no section %s -- the sections are %s"
                         % (who, section, ", ".join('"%s"' % name for name in SECTIONS)))
-    items, title_word = SECTIONS[section]
+    items, title_word, _ = SECTIONS[section]
     headings = [(m.start(), m.group(1).upper()) for m in ITEM_HEADING.finditer(text)]
     best = ""
     for i, (start, item) in enumerate(headings):
@@ -236,21 +239,136 @@ def section_text(text, section, who):
     return best.strip()
 
 
+# ---------------------------------------------------------------------------
+# A section that's somewhere else: the annual report
+# ---------------------------------------------------------------------------
+# Some companies -- most of the big banks among them -- write their MD&A,
+# and sometimes their risk factors, as part of their annual report to
+# shareholders, and the 10-K's item only says where it is: 'Information in
+# response to this Item 7 can be found in the 2025 Annual Report to
+# Shareholders under "Financial Review."' The annual report is in the 10-K's
+# own document (after the items), or filed with it as Exhibit 13. Either
+# way, the section is found by the title the item quotes: from a line with
+# just that title to the next heading that starts another part of the
+# report. The title is often at the top of each of its pages, and in a
+# table of contents too, so the longest such stretch is the section.
+
+POINTER_WORDS = 150         # an item with fewer words than this may only say where the section is
+QUOTED = re.compile(r"[\u201c\"]([^\u201d\"]{3,120})[\u201d\"]")
+OTHER_FILING = re.compile(r"\bform 10-k\b")
+THIS_FILING = re.compile(r"\bthis (annual report on )?form 10-k\b")
+
+# The headings that start another part of an annual report, and so end a
+# section -- the whole heading, since an MD&A has headings of its own such as
+# "Consolidated balance sheets and cash flows analysis"
+END_HEADING = re.compile(r"risk factors|controls and procedures|management's report on internal control over financial reporting"
+                         r"|reports? of independent registered public accounting firm|consolidated balance sheets?"
+                         r"|consolidated statements? of [a-z ,']+|(consolidated )?financial statements( and supplementary data)?"
+                         r"|glossary( of [a-z ]+)?")
+
+
+def heading_text(line):
+    """A line as a heading to compare: small letters, plain apostrophes, without ending punctuation."""
+    return line.lower().replace("\u2019", "'").strip().rstrip(".:,;").strip()
+
+
+def pointed_titles(item_text, section):
+    """The titles a short item says its section is under -- the titles it
+    quotes: "Financial Review", or "Risk Factors" for "Financial Review -
+    Risk Factors". If it quotes none (it may be just a list of the pages of
+    the annual report), the section's usual titles, and any title in
+    parentheses on its heading: "Item 2. Management's Discussion and
+    Analysis (Financial Review)". None when the item is long enough to be
+    the section itself, or points to another filing (a 10-Q's "our Annual
+    Report on Form 10-K"), which isn't read."""
+    lowered = item_text.lower().replace("\u2019", "'")
+    if len(WORD.findall(item_text)) >= POINTER_WORDS:
+        return []
+    if OTHER_FILING.search(lowered) and not THIS_FILING.search(lowered):
+        return []
+    titles = []
+    for quoted in QUOTED.findall(item_text):
+        title = heading_text(re.split(r"\s[\u2013\u2014-]\s", quoted)[-1])
+        if title and not title.startswith("item"):          # "Item 1A. Risk Factors" is an item, not a title
+            titles.append(title)
+    if not titles:
+        heading = " ".join(item_text.split("\n")[:2])       # (its "Item 2." may be a line by itself)
+        titles = list(SECTIONS[section][2]) + [heading_text(title) for title in re.findall(r"\(([^)]{3,60})\)", heading)]
+    return titles
+
+
+def titled_section(text, titles):
+    """The longest stretch of text from a line that is one of the titles to
+    the next heading that ends a section (END_HEADING, other than the
+    title itself); "" if there's none. A title line with no such heading
+    after it isn't counted: it isn't the start of a part of the report."""
+    lines = text.split("\n")
+    best = ""
+    for i, line in enumerate(lines):
+        if heading_text(line) not in titles:
+            continue
+        end = None
+        for j in range(i + 1, len(lines)):
+            heading = heading_text(lines[j])
+            if heading not in titles and END_HEADING.fullmatch(heading):
+                end = j
+                break
+        stretch = "\n".join(lines[i:end]) if end else ""
+        if len(stretch) > len(best):
+            best = stretch
+    return best.strip()
+
+
+def exhibit_13_urls(credentials_path, url, who):
+    """The addresses of the annual report filed with a 10-K as Exhibit 13, from
+    the filing's index page (none if it has no Exhibit 13, or no index)."""
+    folder = str(url).rsplit("/", 1)[0]
+    number = folder.rsplit("/", 1)[1]                  # the accession number, without its dashes
+    index_url = "%s/%s-%s-%s-index.htm" % (folder, number[:10], number[10:12], number[12:])
+    try:
+        index = lisp_http.as_text(sec_download(index_url, credentials_path, FILING_CACHE_HOURS, who))
+    except LispError as e:
+        if "HTTP 404" in str(e):
+            return []
+        raise
+    urls = []
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", index, re.S | re.I):
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.S | re.I)
+        link = re.search(r'href="([^"]+)"', row, re.I)
+        if len(cells) >= 4 and link and re.sub(r"<[^>]+>", "", cells[3]).strip().upper().startswith("EX-13"):
+            document = link.group(1).split("/")[-1]
+            urls.append(folder + "/" + document)
+    return urls
+
+
 def sec_filing_text(credentials_path, url, *options):
     """(sec-filing-text creds url [:section s]) -- the words of a filing, as
     plain text, a line for each paragraph: the document at url (a url from
     sec-filings). With :section, just one section of a 10-K or 10-Q:
     "risk-factors" (Item 1A) or "management-discussion" (Item 7 of a 10-K,
-    Item 2 of a 10-Q: management's discussion and analysis). A filing
-    without that section is an error of the kind no-section, which
-    (catch-error ... :only (no-section) ...) can catch."""
+    Item 2 of a 10-Q: management's discussion and analysis). When the item
+    only says the section is in the annual report, under a title it quotes,
+    the section is read from there: later in the same document, or from the
+    annual report filed as Exhibit 13. A filing without that section is an
+    error of the kind no-section, which (catch-error ... :only (no-section)
+    ...) can catch."""
     who = "sec-filing-text"
     options = keyword_options(options, ["section"], who)
     document = lisp_http.as_text(sec_download(str(url), credentials_path, FILING_CACHE_HOURS, who))
     text = plain_text(document)
-    if option(options, "section") is not None:
-        text = section_text(text, str(options["section"]), who)
-    return LispString(text)
+    if option(options, "section") is None:
+        return LispString(text)
+    section = section_text(text, str(options["section"]), who)
+    titles = pointed_titles(section, str(options["section"]))
+    if titles:
+        found = [titled_section(text, titles)]
+        for exhibit_url in exhibit_13_urls(credentials_path, url, who):
+            exhibit = lisp_http.as_text(sec_download(exhibit_url, credentials_path, FILING_CACHE_HOURS, who))
+            found.append(titled_section(plain_text(exhibit), titles))
+        longest = max(found, key=len)
+        if len(WORD.findall(longest)) >= POINTER_WORDS:       # a section, not a line of a table of contents
+            section = longest
+    return LispString(section)
 
 
 # ---------------------------------------------------------------------------

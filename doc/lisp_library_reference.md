@@ -442,11 +442,25 @@ next item's:
 | `"management-discussion"` | Item 7, Management's Discussion and Analysis | Part I, Item 2, the same |
 
 A filing without the section is an error of the kind `no-section`, which
-`catch-error` can catch alone. Some companies, most of the big banks
-among them, put their MD&A (and sometimes their risk factors) in the
-annual report to shareholders, filed with the 10-K as Exhibit 13, and the
-10-K's section only says so -- a section of a few dozen words.
-`sec-filing-text` reads the 10-K's own document, not its exhibits.
+`catch-error` can catch alone.
+
+Some companies, most of the big banks among them, write their MD&A (and
+sometimes their risk factors) as part of their annual report to
+shareholders, and the 10-K's item only says where it is: *Information in
+response to this Item 7 can be found in the 2025 Annual Report to
+Shareholders under "Financial Review."* Then the section is read from
+there, by the title the item quotes (or, if it quotes none, the section's
+usual title, or one in parentheses on its heading): later in the 10-K's
+own document, where JPMorgan and Exxon put their annual reports, or from
+the annual report filed with it as Exhibit 13, as Wells Fargo does. It
+runs from a line with that title to the next heading that starts another
+part of the report (the risk factors, controls and procedures,
+management's report on internal control, the auditors' report, or the
+financial statements). An item that points to another filing -- a
+10-Q's *see the risk factors in our Annual Report on Form 10-K* -- is
+left as it is, a few dozen words; so is one that just says *Not
+applicable*. A section of fewer than 150 words is most likely one of
+these, and the `words` column of `filing-tone` shows it.
 
 ```lisp
 (define latest (vector-ref (table-column (sec-filings creds "AAPL" :forms "10-K" :count 1) "url") 0))

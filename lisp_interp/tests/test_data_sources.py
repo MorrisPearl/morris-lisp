@@ -1802,7 +1802,7 @@ class TestSecFilings(LispTestCase):
         self.env[lisp_core.Symbol("lists")] = lisp_core.LispString(self.word_lists)
 
         archives = "https://www.sec.gov/Archives/edgar/data/1234/"
-        pages = {lisp_sec_filings.SUBMISSIONS_URL % 1234: json.dumps(self.SUBMISSIONS),
+        self.pages = pages = {lisp_sec_filings.SUBMISSIONS_URL % 1234: json.dumps(self.SUBMISSIONS),
                  lisp_sec_filings.OLDER_SUBMISSIONS_URL % "CIK0000001234-submissions-001.json": json.dumps(self.OLDER),
                  archives + "000000123424000002/xyz-2024.htm": self.TEN_K,
                  archives + "000000123423000009/xyz-2023.htm": "<html><body><p>Item 7. Management's Discussion</p>"
@@ -1907,6 +1907,80 @@ class TestSecFilings(LispTestCase):
         with open(not_lists, "w") as f:
             f.write("Word,Negative\nLOSS,2009\n")
         self.assertLispError('(text-tone "a loss" :word-lists "%s")' % not_lists, "it has no positive column")
+
+    # A section of a few hundred words, with none on the word lists
+    FILLER = " ".join(["Revenue grew in each region over the year."] * 30)
+
+    def add_filing(self, name, text, exhibit_13=None):
+        """A filing of the fake SEC's, in the folder of accession 0000001234-25-000001: the
+        document name with text (plain text, not HTML), and its index page -- with an
+        Exhibit 13, if it's given; its url."""
+        folder = "https://www.sec.gov/Archives/edgar/data/1234/000000123425000001/"
+        self.pages[folder + name] = text
+        rows = '<tr><td>1</td><td>10-K</td><td><a href="/Archives/edgar/data/1234/000000123425000001/%s">%s</a></td>' \
+               '<td>10-K</td></tr>' % (name, name)
+        if exhibit_13 is not None:
+            self.pages[folder + "annual.htm"] = exhibit_13
+            rows += ('<tr><td>2</td><td>EXHIBIT 13</td><td><a href="/Archives/edgar/data/1234/000000123425000001/'
+                     'annual.htm">annual.htm</a> iXBRL</td><td>EX-13</td></tr>')
+        self.pages[folder + "0000001234-25-000001-index.htm"] = "<html><table>%s</table></html>" % rows
+        return folder + name
+
+    def section(self, url, section):
+        return self.text('(catch-error (sec-filing-text creds "%s" :section "%s") (m) :only (no-section) m)'
+                         % (url, section))
+
+    def test_a_section_in_the_annual_report_filed_as_exhibit_13_is_read_from_it(self):
+        ten_k = ("Item 1A. Risk Factors\nInformation in response to this Item 1A can be found in the 2025 Annual Report "
+                 "to Shareholders under \u201cFinancial Review \u2013 Risk Factors.\u201d\nItem 1B. Comments\nNone.\n"
+                 "Item 7. Management\u2019s Discussion and Analysis\nInformation in response to this Item 7 can be found "
+                 "in the 2025 Annual Report to Shareholders under \u201cFinancial Review.\u201d\nItem 8. Statements\n")
+        annual = ("<html><body><p>Financial Review</p><p>3</p><p>Risk Factors</p><p>40</p><p>Controls and Procedures</p>"
+                  "<p>Financial Review</p><p>Overview</p><p>%s</p><p>Consolidated balance sheets and cash flows analysis</p>"
+                  "<p>%s</p><p>Risk Factors</p><p>We may see losses. %s</p><p>Controls and Procedures</p><p>Fine.</p>"
+                  "</body></html>") % (self.FILLER, self.FILLER, self.FILLER)
+        url = self.add_filing("xyz-10k.htm", ten_k, exhibit_13=annual)
+        review = self.section(url, "management-discussion")
+        self.assertTrue(review.startswith("Financial Review\nOverview\nRevenue grew"))     # not the table of contents
+        self.assertIn("Consolidated balance sheets and cash flows analysis", review)     # a heading of its own
+        self.assertNotIn("We may see losses", review)
+        risks = self.section(url, "risk-factors")
+        self.assertTrue(risks.startswith("Risk Factors\nWe may see losses."))
+        self.assertTrue(risks.endswith("each region over the year."))
+
+    def test_a_section_later_in_the_same_document_with_its_title_on_each_page_is_read_from_there(self):
+        ten_k = ("Item 7. Management\u2019s Discussion and Analysis\nReference is made to the section entitled "
+                 "\u201cManagement\u2019s Discussion and Analysis\u201d in the Financial Section of this report.\n"
+                 "Item 8. Statements\nSee the Financial Section.\nFinancial Section\n"
+                 "MANAGEMENT\u2019S DISCUSSION AND ANALYSIS\nPage one. %s\n"
+                 "MANAGEMENT\u2019S DISCUSSION AND ANALYSIS\nPage two. %s\n"
+                 "MANAGEMENT\u2019S REPORT ON INTERNAL CONTROL OVER FINANCIAL REPORTING\nControls are good.\n"
+                 % (self.FILLER, self.FILLER))
+        url = self.add_filing("xyz-10k.htm", ten_k)
+        found = self.section(url, "management-discussion")
+        self.assertTrue(found.startswith("MANAGEMENT\u2019S DISCUSSION AND ANALYSIS\nPage one."))
+        self.assertIn("Page two.", found)
+        self.assertNotIn("Controls are good", found)
+
+    def test_a_list_of_pages_is_followed_to_the_title_in_its_parentheses(self):
+        ten_q = ("Item 2. Management\u2019s Discussion and Analysis (Financial Review)\nOverview\n3\nRisk Factors\n52\n"
+                 "Item 3. Market Risk\nSee the Financial Review.\n"
+                 "Financial Review\nOverview\n%s\nRisk Factors\nSee the 10-K.\n" % self.FILLER)
+        url = self.add_filing("xyz-10q.htm", ten_q)
+        self.assertTrue(self.section(url, "management-discussion").startswith("Financial Review\nOverview\nRevenue grew"))
+
+    def test_a_pointer_to_another_filing_or_a_short_answer_stays_as_it_is(self):
+        ten_q = ("Item 1A. Risk Factors\nConsider the factors in Part I, \u201cItem 1A. Risk Factors\u201d in our Annual "
+                 "Report on Form 10-K for the year ended December 31, 2025.\nItem 2. Sales\nNone.\n"
+                 "Risk Factors\n%s\nControls and Procedures\nFine.\n" % self.FILLER)
+        url = self.add_filing("xyz-10q.htm", ten_q)
+        self.assertTrue(self.section(url, "risk-factors").startswith("Item 1A. Risk Factors\nConsider the factors"))
+        # "Not applicable": the only other "Risk Factors" is a line of the table of contents
+        ten_k = ("Contents\nRisk Factors\n4\nControls and Procedures\n9\n"
+                 "Item 1A. Risk Factors\nNot applicable to a smaller reporting company.\nItem 2. Properties\nNone.\n")
+        url = self.add_filing("xyz-10k.htm", ten_k)
+        self.assertEqual(self.section(url, "risk-factors"),
+                         "Item 1A. Risk Factors\nNot applicable to a smaller reporting company.")
 
     def test_filing_tone_scores_each_filing(self):
         lisp_core.run_file(os.path.join(LIB, "filing_tone.lsp"), self.env)
