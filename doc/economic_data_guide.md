@@ -205,6 +205,7 @@ out, as [section 6](#6-putting-sources-together) shows.
 | A company's income statement, balance sheet, or cash flows | `(sec-income-statement creds "AAPL")`, `(sec-balance-sheet creds "AAPL")`, `(sec-cash-flow-statement creds "AAPL")` | SEC |
 | All three statements, laid out for working out margins and returns | `(sec-financials creds "KO")` | SEC |
 | Any other number a company reports | `(sec-concepts creds "AAPL")` to find it, then `sec-facts` | SEC |
+| What a company writes in its filings, and how negative or uncertain it sounds | `(sec-filings creds "AAPL")`, `sec-filing-text`, `(filing-tone creds "AAPL" :section "risk-factors")` | SEC; word lists from Loughran and McDonald |
 | Stock, ETF, option, futures, and crypto prices now | `(tastytrade-quotes creds '("SPY" "QQQ"))` | tastytrade |
 | A stock's or ETF's daily prices, for years | `(schwab-price-history creds "AAPL")` | Schwab |
 | What's in your own accounts | `(schwab-positions creds)` | Schwab |
@@ -535,6 +536,7 @@ borders drawn over it:
 | `fred-table` | Any FRED series, by date | FRED | [FRED](lisp_library_reference.md#fred-federal-reserve-bank-of-st-louis-data) |
 | `http-get-json`, `http-get-csv`, `http-get-text` | Anything at a web address | any website | [Downloading data from the web](lisp_library_reference.md#downloading-data-from-the-web) |
 | `sec-income-statement`, `sec-balance-sheet`, `sec-cash-flow-statement`, `sec-financials`, `sec-facts`, `sec-concepts`, `sec-company` | Companies' financial statements | SEC | [SEC financial statements](lisp_library_reference.md#sec-financial-statements) |
+| `sec-filings`, `sec-filing-text`, `text-tone`, `filing-tone` | What companies write in their filings, and its tone | SEC | [SEC filings](lisp_library_reference.md#sec-filings-what-companies-write) |
 | `fdic-find-bank`, `fdic-balance-sheet`, `fdic-income-statement`, `fdic-ratios`, `fdic-financials`, `fdic-get`, `fdic-fields` | Banks' financial reports | FDIC | [FDIC bank data](lisp_library_reference.md#fdic-bank-data) |
 | `tastytrade-quotes`, `tastytrade-option-chain`, `tastytrade-futures-curve`, `tastytrade-get`, `sofr-calibration-data` | Market prices, option chains, futures curves | tastytrade | [tastytrade](lisp_library_reference.md#tastytrade-real-broker-data) |
 | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-orders` | Your accounts' holdings; quotes; years of daily prices | Schwab | [Schwab](lisp_library_reference.md#schwab-your-accounts) |
@@ -545,6 +547,7 @@ Example programs in [`examples/`](../lisp_interp/examples/) show each source at 
 - `bea_example.lsp`
 - `fred_example.lsp`
 - `sec_example.lsp`
+- `filing_tone_example.lsp`
 - `fdic_example.lsp`
 - `map_example.lsp`
 - `tastytrade_example.lsp`

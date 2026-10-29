@@ -43,6 +43,7 @@ HOW THE CODE IS ORGANIZED
     lisp_fred.py          fred-table                       (downloads from FRED)
     lisp_data_common.py   what the data modules share: the credentials file, years, tables
     lisp_sec.py           sec-income-statement, sec-financials, ... (financial statements from the SEC)
+    lisp_sec_filings.py   sec-filings, sec-filing-text, text-tone (what companies write in their filings, and its tone)
     lisp_fdic.py          fdic-balance-sheet, fdic-financials, fdic-get, ... (bank data from the FDIC)
     lisp_census.py        census-get, census-profile, ... (demographic and economic data from the Census)
     lisp_bls.py           bls-series, bls-local-area, ... (prices, jobs, and pay from the BLS)

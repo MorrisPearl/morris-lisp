@@ -155,6 +155,7 @@ files in `examples/` and `lib/` from anywhere:
 | File | What it shows | Needs |
 |---|---|---|
 | `fred_example.lsp`, `sec_example.lsp`, `fdic_example.lsp`, `census_bls_example.lsp`, `bea_example.lsp` | one data source each | the source's key |
+| `filing_tone_example.lsp` | how negative, positive, and uncertain a company's 10-K risk factors are, year by year, charted | an SEC user agent, and the Loughran-McDonald word lists |
 | `yield_curve_example.lsp` | today's Treasury yield curve from the Treasury and from the Fed: zero rates and forward rates, charted | nothing: free downloads |
 | `map_example.lsp` | maps colored by a value | Census and BEA keys |
 | `plot_chart_example.lsp` | `plot-chart`: lines, symbols, bars, categories, two axes | nothing |

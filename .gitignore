@@ -41,3 +41,6 @@ zhvi_data/zhvi.db
 
 
 slides_support/
+
+# The Loughran-McDonald word lists (free for research, not to be shared): see lisp_sec_filings.py
+data/Loughran-McDonald_MasterDictionary_*.csv

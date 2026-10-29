@@ -1747,6 +1747,183 @@ class TestGdelt(LispTestCase):
         self.assertEqual(self.urls, [])
 
 
+class TestSecFilings(LispTestCase):
+    """sec-filings, sec-filing-text, text-tone, and lib/filing_tone.lsp, with
+    the SEC played by a fake (lisp_http.fetch is replaced) and a few words
+    standing in for the Loughran-McDonald word lists -- no network."""
+
+    SUBMISSIONS = {"cik": "1234", "name": "XYZ Corp", "filings": {
+        "recent": {"accessionNumber": ["0000001234-24-000002", "0000001234-24-000001", "0000001234-23-000009"],
+                   "filingDate": ["2024-11-01", "2024-08-01", "2023-11-03"],
+                   "reportDate": ["2024-09-30", "", "2023-09-30"],
+                   "form": ["10-K", "8-K", "10-K"],
+                   "items": ["", "2.02,9.01", ""],
+                   "primaryDocument": ["xyz-2024.htm", "xyz-8k.htm", "xyz-2023.htm"],
+                   "primaryDocDescription": ["10-K", "8-K", "10-K"]},
+        "files": [{"name": "CIK0000001234-submissions-001.json"}]}}
+    OLDER = {"accessionNumber": ["0000001234-99-000001"], "filingDate": ["1999-12-01"], "reportDate": ["1999-09-30"],
+             "form": ["10-K"], "items": [""], "primaryDocument": [""], "primaryDocDescription": [""]}
+
+    # A 10-K: hidden XBRL tags, a table of contents, then the items
+    TEN_K = """<html><body>
+        <div style="display:none"><ix:header><ix:hidden>Hidden Tag Words</ix:hidden></ix:header></div>
+        <p>Table of Contents</p>
+        <table><tr><td>Item 1A.</td><td>Risk Factors</td><td>9</td></tr>
+               <tr><td>Item 7.</td><td>Management&#8217;s Discussion and Analysis</td><td>20</td></tr></table>
+        <p>Item 1A. Risk Factors</p>
+        <p>Our results may decline. An adverse
+           ruling in litigation could cause a loss.</p>
+        <p>Item 1B. Unresolved Staff Comments</p><p>None.</p>
+        <p>Item 7. Management&#8217;s Discussion and Analysis</p>
+        <p>Sales were strong and margins improved, but growth was not strong.</p>
+        <p>Item 7A. Quantitative and Qualitative Disclosures</p><p>Rates.</p>
+        </body></html>"""
+    EIGHT_K = "<html><body><p>Results were strong.</p></body></html>"
+
+    WORD_LISTS = ("Word,Seq_num,Negative,Positive,Uncertainty,Litigious,Constraining,Source\n"
+                  "ADVERSE,1,2009,0,0,0,0,x\nLOSS,2,2009,0,0,0,0,x\nDECLINE,3,2009,0,0,0,0,x\n"
+                  "LITIGATION,4,2009,0,0,2009,0,x\nMAY,5,0,0,2009,0,0,x\nSTRONG,6,0,2009,0,0,0,x\n"
+                  "IMPROVED,7,0,2009,0,0,0,x\nGROWTH,8,0,-2020,0,0,0,x\nRULING,9,0,0,0,2009,0,x\n")
+
+    def setUp(self):
+        super().setUp()
+        import lisp_sec
+        import lisp_sec_filings
+        self.lisp_sec_filings = lisp_sec_filings
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        self.credentials = os.path.join(folder, "credentials.json")
+        with open(self.credentials, "w") as f:
+            json.dump({"sec_user_agent": "Test Person test@example.com"}, f)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(self.credentials)
+        self.word_lists = os.path.join(folder, "Loughran-McDonald_MasterDictionary_1993-2025.csv")
+        with open(self.word_lists, "w") as f:
+            f.write(self.WORD_LISTS)
+        self.env[lisp_core.Symbol("lists")] = lisp_core.LispString(self.word_lists)
+
+        archives = "https://www.sec.gov/Archives/edgar/data/1234/"
+        pages = {lisp_sec_filings.SUBMISSIONS_URL % 1234: json.dumps(self.SUBMISSIONS),
+                 lisp_sec_filings.OLDER_SUBMISSIONS_URL % "CIK0000001234-submissions-001.json": json.dumps(self.OLDER),
+                 archives + "000000123424000002/xyz-2024.htm": self.TEN_K,
+                 archives + "000000123423000009/xyz-2023.htm": "<html><body><p>Item 7. Management's Discussion</p>"
+                                                               "<p>Sales may decline.</p></body></html>",
+                 archives + "000000123424000001/xyz-8k.htm": self.EIGHT_K,
+                 archives + "000000123499000001/0000001234-99-000001.txt": "ITEM 1. BUSINESS\nXYZ makes things.\n"}
+        self.fetched = []
+
+        def fake_fetch(request, name, shown_url, last_try):
+            self.fetched.append((request.full_url, request.get_header("User-agent")))
+            if request.full_url not in pages:
+                raise lisp_core.LispError("%s: %s returned HTTP 404 Not Found" % (name, shown_url))
+            return pages[request.full_url].encode()
+
+        tickers = {"0": {"cik_str": 1234, "ticker": "XYZ", "title": "XYZ Corp"}}
+        for patcher in (mock.patch.dict(os.environ, {"LISP_HTTP_CACHE": folder + "/cache"}),
+                        mock.patch.object(lisp_http, "fetch", fake_fetch),
+                        mock.patch.object(lisp_sec, "sec_download", lambda url, creds, who: tickers),
+                        mock.patch.dict(lisp_sec_filings._word_lists, clear=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def text(self, src):
+        """The text a Lisp expression gives."""
+        return str(self.run_lisp(src))
+
+    def test_the_filings_are_a_table_oldest_first(self):
+        self.run_lisp('(define f (sec-filings creds "XYZ"))')
+        self.assertShows("(table-column-names f)",
+                         '("filing-date" "report-date" "form" "items" "description" "accession" "url")')
+        self.assertShows('(table-column f "filing-date")', "#(1999-12-01 2023-11-03 2024-08-01 2024-11-01)")
+        self.assertShows('(table-column f "report-date")', "#(1999-09-30 2023-09-30 () 2024-09-30)")
+        self.assertEqual(self.text('(vector-ref (table-column f "items") 2)'), "2.02,9.01")
+        self.assertEqual(self.text('(vector-ref (table-column f "url") 3)'),
+                         "https://www.sec.gov/Archives/edgar/data/1234/000000123424000002/xyz-2024.htm")
+        self.assertEqual(self.text('(vector-ref (table-column f "url") 0)'),   # no main document: the whole filing, as text
+                         "https://www.sec.gov/Archives/edgar/data/1234/000000123499000001/0000001234-99-000001.txt")
+        self.assertTrue(all(agent == "Test Person test@example.com" for _, agent in self.fetched))
+
+    def test_forms_and_count_pick_filings(self):
+        self.assertShows('(table-column (sec-filings creds "XYZ" :forms "10-k") "filing-date")',
+                         "#(1999-12-01 2023-11-03 2024-11-01)")
+        self.assertShows('(table-column (sec-filings creds 1234 :forms \'("10-K" "8-K") :count 2) "form")',
+                         "#(8-K 10-K)")
+        self.assertShows('(table-row-count (sec-filings creds "XYZ" :count 0))', "0")
+
+    def test_the_text_leaves_out_the_tags_and_keeps_paragraphs(self):
+        url = '"https://www.sec.gov/Archives/edgar/data/1234/000000123424000002/xyz-2024.htm"'
+        self.run_lisp("(define t (sec-filing-text creds %s))" % url)
+        text = str(self.run_lisp("t"))
+        self.assertNotIn("Hidden Tag Words", text)
+        self.assertIn("\nItem 1A. Risk Factors\nOur results may decline. An adverse ruling in litigation could cause a loss.\n",
+                      text)
+        self.assertIn("Item 7. Management’s Discussion and Analysis 20", text)     # a row of a table is a line
+
+    def test_a_section_is_its_longest_stretch_not_the_table_of_contents(self):
+        url = '"https://www.sec.gov/Archives/edgar/data/1234/000000123424000002/xyz-2024.htm"'
+        self.assertEqual(self.text('(sec-filing-text creds %s :section "risk-factors")' % url),
+                         "Item 1A. Risk Factors\nOur results may decline. An adverse ruling in litigation could cause a loss.")
+        self.assertEqual(self.text('(sec-filing-text creds %s :section "management-discussion")' % url),
+                         "Item 7. Management’s Discussion and Analysis\n"
+                         "Sales were strong and margins improved, but growth was not strong.")
+        self.assertLispError('(sec-filing-text creds %s :section "business")' % url, "there's no section business")
+
+    def test_a_heading_is_the_section_only_if_its_own_title_says_so(self):
+        # A 10-Q's Part II has another Item 2, whose next lines happen to say "management"
+        text = ("Part I\nItem 2.\nManagement's Discussion and Analysis\nSales grew.\nItem 3. Market Risk\nRates.\n"
+                "Part II\nItem 2. Unregistered Sales of Equity Securities\nManagement bought back many, many, many "
+                "shares in the quarter, more than ever before, as the board had said it would.\nItem 6. Exhibits\n")
+        self.assertEqual(self.lisp_sec_filings.section_text(text, "management-discussion", "t"),
+                         "Item 2.\nManagement's Discussion and Analysis\nSales grew.")
+
+    def test_a_missing_section_is_an_error_of_its_own_kind(self):
+        url = '"https://www.sec.gov/Archives/edgar/data/1234/000000123424000001/xyz-8k.htm"'
+        self.assertEqual(self.text('(catch-error (sec-filing-text creds %s :section "risk-factors") (m) :only (no-section) m)'
+                                   % url),
+                         'sec-filing-text: the filing has no "risk-factors" section that I could find '
+                         '(10-Ks have had one since 2005)')
+
+    def test_text_tone_counts_the_words_on_each_list(self):
+        self.run_lisp('(define tone (text-tone "Our results may decline. An adverse ruling in litigation could '
+                      'cause a loss." :word-lists lists))')
+        self.assertShows('(hash-table-ref tone "words")', "13")
+        self.assertAlmostEqual(self.run_lisp('(hash-table-ref tone "negative")'), 100 * 4 / 13)   # decline adverse litigation loss
+        self.assertAlmostEqual(self.run_lisp('(hash-table-ref tone "uncertainty")'), 100 * 1 / 13)
+        self.assertAlmostEqual(self.run_lisp('(hash-table-ref tone "litigious")'), 100 * 2 / 13)  # ruling, litigation
+        self.assertAlmostEqual(self.run_lisp('(hash-table-ref tone "net-tone")'), -100 * 4 / 13)
+
+    def test_a_positive_word_after_not_and_a_word_taken_off_a_list_are_not_counted(self):
+        # strong, improved: positive; "growth" was taken off the list; "not strong" isn't positive
+        self.run_lisp('(define tone (text-tone "Sales were STRONG and margins improved, but growth was not strong."'
+                      ' :word-lists lists))')
+        self.assertAlmostEqual(self.run_lisp('(hash-table-ref tone "positive")'), 100 * 2 / 11)
+        self.assertShows('(hash-table-ref (text-tone "" :word-lists lists) "negative")', "nan")
+
+    def test_text_tone_finds_the_word_lists_in_downloads_or_says_where_to_get_them(self):
+        with mock.patch.object(self.lisp_sec_filings, "WORD_LISTS_FOLDERS", [os.path.dirname(self.word_lists)]):
+            self.assertShows('(hash-table-ref (text-tone "a loss") "negative")', "50.0")
+        with mock.patch.object(self.lisp_sec_filings, "WORD_LISTS_FOLDERS", [os.path.join(self.word_lists, "nowhere")]):
+            self.assertLispError('(text-tone "a loss")', "download Loughran-McDonald_MasterDictionary_1993-2025.csv")
+        not_lists = os.path.join(os.path.dirname(self.word_lists), "other.csv")
+        with open(not_lists, "w") as f:
+            f.write("Word,Negative\nLOSS,2009\n")
+        self.assertLispError('(text-tone "a loss" :word-lists "%s")' % not_lists, "it has no positive column")
+
+    def test_filing_tone_scores_each_filing(self):
+        lisp_core.run_file(os.path.join(LIB, "filing_tone.lsp"), self.env)
+        self.run_lisp('(define tones (filing-tone creds "XYZ" :section "management-discussion" :word-lists lists))')
+        self.assertShows("(table-column-names tones)",
+                         '("filing-date" "report-date" "form" "words" "negative" "positive" "uncertainty" '
+                         '"litigious" "constraining" "net-tone" "url")')
+        self.assertShows('(table-column tones "filing-date")', "#(1999-12-01 2023-11-03 2024-11-01)")
+        self.assertShows('(table-column tones "words")', "#(0 6 16)")     # the 1999 filing has no MD&A: no words
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column tones "negative") 1)'), 100 / 6)  # decline
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column tones "positive") 2)'), 100 * 2 / 16)
+        self.run_lisp('(define all (filing-tone creds "XYZ" :forms "8-K" :word-lists lists))')   # all of each filing
+        self.assertShows('(table-column all "words")', "#(3)")
+        self.run_lisp("(show-filing-tone tones)")
+        self.assertIn("2024-11-01", self.printed())
+
+
 class TestGoogleSheets(LispTestCase):
     """lisp_google, with Google played by a fake -- no network, and no browser: a thread plays it, going to the
     address the sign-in would send it to."""

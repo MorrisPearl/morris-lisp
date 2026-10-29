@@ -294,3 +294,6 @@
   bin-probabilities normal-bins lognormal-bins empirical-bins call-price-bins bin-table
   probability-remaining decay-schedule combine-forecasts extremize
   brier-score ordered-brier-score calibration-table)
+
+; The tone of a company's filings with the SEC (see "SEC filings: what companies write" in lisp_library_reference.md)
+(lazy-load "filing_tone.lsp" filing-tone show-filing-tone plot-filing-tone)

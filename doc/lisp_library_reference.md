@@ -31,6 +31,7 @@ that use all this are described in
   - [Downloading data from the web](#downloading-data-from-the-web)
   - [FRED (Federal Reserve Bank of St. Louis) data](#fred-federal-reserve-bank-of-st-louis-data)
   - [SEC financial statements](#sec-financial-statements)
+  - [SEC filings: what companies write](#sec-filings-what-companies-write)
   - [FDIC bank data](#fdic-bank-data)
   - [Census data](#census-data)
   - [Maps](#maps)
@@ -381,6 +382,121 @@ A hash table with the company's `"name"` and `"cik"`.
 `examples/sec_example.lsp` shows the three statements for Apple, quarters
 for Microsoft, margins and returns for three companies, and every annual
 EPS figure Coca-Cola has filed.
+
+### SEC filings: what companies write
+
+(In `lisp_sec_filings.py`, and `lib/filing_tone.lsp`.) The SEC financial
+statements are the numbers companies report; these read the words. EDGAR
+keeps every filing: 10-Ks and 10-Qs, 8-Ks (news a company must report
+within days: its results, a new chief executive, a merger), and the rest.
+They take the credentials file's path and a company (a ticker or a CIK
+number), as the financial statements do, and need the same
+`"sec_user_agent"` entry. A filing never changes, so its text is kept for
+a week; a list of filings, for 12 hours.
+
+**The tone of the words.** A filing's words are scored by the
+Loughran-McDonald word lists: lists, made by Tim Loughran and Bill
+McDonald of the University of Notre Dame from reading 10-Ks, of the words
+that make a financial report sound negative, positive, uncertain,
+litigious (about lawsuits), or constraining. Lists made for everyday
+English call words such as "liability", "tax", and "cost" negative, which
+in a 10-K they aren't. The lists are free for research, not for
+commercial use, as one CSV file from
+https://sraf.nd.edu/loughranmcdonald-master-dictionary/. Download it and
+put it in `morris_lisp/data` (git leaves it out) or leave it in your
+Downloads folder: `text-tone` finds it in either, or where `:word-lists`
+says.
+
+What a tone tells you is mostly a change: a company's next 10-K against
+its last, or one company against others in its business. Filings are
+written to sound cautious, so the negative words are always well ahead of
+the positive ones. In 10-Ks' risk factors, about 3 to 5 percent of the
+words are on the negative list, and under 1 percent on the positive.
+
+#### `(sec-filings creds company [:forms f :count n])`
+The company's filings: a table with a row for each, oldest first, of its
+`filing-date`; `report-date`, the end of the period it reports on (`'()`
+for a filing that doesn't report on one); `form` (`"10-K"`, `"10-Q"`,
+`"8-K"`, ...); `items`, for an 8-K the numbers of the items it reports
+(`"2.02"` is results, `"5.02"` a change of officers, `"1.01"` a major
+agreement); `description`; `accession`, the SEC's number for the filing;
+and `url`, its main document, for `sec-filing-text`. `:forms`, a form or a
+list of them, keeps just those; `:count` keeps just the most recent that
+many. A filing from before about 2001 has no main document, and its `url`
+is the whole filing as one text file, the way it was sent to the SEC.
+
+```lisp
+(define apple-8ks (sec-filings creds "AAPL" :forms "8-K" :count 4))
+(display-table apple-8ks '(("url" hide) ("description" hide)))
+```
+
+#### `(sec-filing-text creds url [:section s])`
+The words of a filing, as plain text, a line for each paragraph (or row
+of a table): the document at `url`, a `url` from `sec-filings`. With
+`:section`, just one section of a 10-K or 10-Q, from its heading to the
+next item's:
+
+| `:section` | In a 10-K | In a 10-Q |
+|---|---|---|
+| `"risk-factors"` | Item 1A, Risk Factors (since 2005) | Part II, Item 1A: usually just the changes since the 10-K |
+| `"management-discussion"` | Item 7, Management's Discussion and Analysis | Part I, Item 2, the same |
+
+A filing without the section is an error of the kind `no-section`, which
+`catch-error` can catch alone. Some companies, most of the big banks
+among them, put their MD&A (and sometimes their risk factors) in the
+annual report to shareholders, filed with the 10-K as Exhibit 13, and the
+10-K's section only says so -- a section of a few dozen words.
+`sec-filing-text` reads the 10-K's own document, not its exhibits.
+
+```lisp
+(define latest (vector-ref (table-column (sec-filings creds "AAPL" :forms "10-K" :count 1) "url") 0))
+(define risks (sec-filing-text creds latest :section "risk-factors"))
+(display (substring risks 0 300))
+```
+
+#### `(text-tone text [:word-lists path])`
+The tone of any text's words, by the Loughran-McDonald word lists: a hash
+table of `"words"`, how many words the text has; `"negative"`,
+`"positive"`, `"uncertainty"`, `"litigious"`, and `"constraining"`, the
+percent of its words on each list; and `"net-tone"`, positive less
+negative. A positive word just after "not", "no", "never", and the like
+("not profitable") isn't counted, as Loughran and McDonald suggest. A text
+with no words has NaN for each percent.
+
+```lisp
+(define tone (text-tone "Net sales declined on weak demand, though margins improved."))
+(hash-table-ref tone "negative")   ; => 22.22... -- declined, weak: 2 of the 9 words
+```
+
+#### `(filing-tone creds company [:forms f :section s :count n :word-lists path])`
+A company's filings, each scored by `text-tone` (in `lib/filing_tone.lsp`,
+loaded when it's first called): a table with a row for each filing,
+oldest first, of its `filing-date`, `report-date`, and `form`; `text-tone`'s
+measures, as columns (`words`, `negative`, `positive`, `uncertainty`,
+`litigious`, `constraining`, `net-tone`); and its `url`. `:forms` is
+`"10-K"` unless it says; `:section` scores just that section of each (a
+filing without it has 0 words, and NaN for the rest); `:count` keeps just
+the most recent that many filings.
+
+#### `(show-filing-tone tones)`, `(plot-filing-tone tones [:measures m :title t])`
+A `filing-tone` table shown with each percent to two places; and a chart
+of its measures, filing by filing -- negative, positive, and uncertainty,
+unless `:measures` names others.
+
+```lisp
+(define apple (filing-tone creds "AAPL" :section "risk-factors" :count 10))
+(show-filing-tone apple)
+; filing-date  report-date  form   words  negative  positive  uncertainty  litigious  constraining  net-tone
+; -----------  -----------  ----  ------  --------  --------  -----------  ---------  ------------  --------
+; ...
+; 2023-11-03   2023-09-30   10-K   9,827      4.59      0.50         2.61       1.40          1.13     -4.09
+; 2024-11-01   2024-09-28   10-K   9,954      4.63      0.49         2.49       1.43          1.08     -4.14
+; 2025-10-31   2025-09-27   10-K   9,817      4.75      0.49         2.71       1.68          1.16     -4.26
+(plot-filing-tone apple :measures '("negative" "litigious"))
+```
+
+`examples/filing_tone_example.lsp` shows a company's risk factors, year by
+year, and charts them.
 
 ### FDIC bank data
 
