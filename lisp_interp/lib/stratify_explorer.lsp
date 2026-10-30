@@ -241,7 +241,11 @@ message alone (the form's widgets would make a traceback too long to read)."
                                  (catch-error (action) (message)
                                    (display (format "{}\n" message))))
                                :output output :button-style style)))
-    (widget-set! button "layout" (make-widget "Layout" :width "auto" :align-self "flex-start"))   ; (not stretched across a column)
+    ; As wide as its label, and not stretched across a column. The button's own layout is changed, not replaced: a widget
+    ; that Python lets go of is closed, and the browser, which may not have drawn the button yet, would find its layout
+    ; gone -- and could draw nothing that holds the button ("widget model not found").
+    (widget-set! (widget-get button "layout") "width" "auto")
+    (widget-set! (widget-get button "layout") "align_self" "flex-start")
     button))
 
 (define (stratify-explorer--x tooltip)

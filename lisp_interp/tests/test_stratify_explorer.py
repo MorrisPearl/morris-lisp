@@ -411,3 +411,27 @@ class TestWhatTheButtonsSayWhenSomethingIsWrong(StratifyExplorerTestCase):
         self.form.children[4].children[0].click()                           # Make the tables
         shown = self.printed()
         self.assertEqual(shown.strip(), "rate: the breakpoints are numbers, and five is not one")
+
+
+class TestNoWidgetIsClosed(unittest.TestCase if ipywidgets is None else LispTestCase):
+
+    @unittest.skipIf(ipywidgets is None, "ipywidgets is needed")
+    def test_making_the_form_closes_no_widget_the_browser_may_still_draw(self):
+        """A widget that Python lets go of is closed, and a browser that hasn't drawn it yet then can't draw what holds it
+        ("widget model not found"). So making the form, and working it, must let go of none but those taken away."""
+        closed = []
+        original = ipywidgets.Widget.close
+
+        def close(widget):
+            closed.append(type(widget).__name__)
+            original(widget)
+        with mock.patch.object(ipywidgets.Widget, "close", close):
+            self.run_lisp('(load "stratify_explorer.lsp")')
+            self.run_lisp(LOANS)
+            self.run_lisp('(define explorer (stratify-explorer loans :weight "balance" :name "loans"))')
+            import gc
+            gc.collect()
+            self.assertEqual(closed, [])
+            form = self.run_lisp("explorer")
+            form.children[3].click()                                      # + add a condition
+            self.assertEqual(closed, [])
