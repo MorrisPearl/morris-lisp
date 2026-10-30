@@ -16,8 +16,9 @@ Part 1 is what you do, from the very beginning, to make a set of paths of rates.
 the program does when you do it: where the forward rates come from, and how the volatility that
 option prices imply becomes paths. Part 3 uses the paths, to price a bond, find its
 option-adjusted spread and duration, and look at mortgage rates and callable bonds. Part 4 is
-the paths made from history. Part 5 is the reference: every function, with what it takes and
-gives.
+the paths made from history. Part 5 prices six things from the very beginning, a cell at a time
+in a notebook: a Treasury note, a callable bond, a mortgage, a stock option, a floating-rate note,
+and an interest-rate cap. Part 6 is the reference: every function, with what it takes and gives.
 
 The functions are built in, or in libraries that load themselves when first used: nothing here
 needs a `load`. The numbers in the examples are from 2026-10-30 unless they say otherwise.
@@ -47,7 +48,15 @@ deals, which are priced on these paths, in [lisp_cmo_manual.md](lisp_cmo_manual.
 - [Part 4. Paths from history: investment prices](#part-4-paths-from-history-investment-prices)
   - [Simulating investment prices](#simulating-investment-prices)
   - [Starting paths from today's volatility](#starting-paths-from-todays-volatility)
-- [Part 5. Reference](#part-5-reference)
+- [Part 5. Pricing things, step by step](#part-5-pricing-things-step-by-step)
+  - [A Treasury note](#a-treasury-note)
+  - [A callable bond](#a-callable-bond)
+  - [A mortgage](#a-mortgage)
+  - [A stock option](#a-stock-option)
+  - [A floating-rate note](#a-floating-rate-note)
+  - [An interest-rate cap](#an-interest-rate-cap)
+  - [Other things to price](#other-things-to-price)
+- [Part 6. Reference](#part-6-reference)
   - [Yield curves](#yield-curves)
   - [Paths of rates](#paths-of-rates)
   - [Fitting to option prices](#fitting-to-option-prices)
@@ -81,7 +90,7 @@ the Treasury published: `(curve-par-yield curve 10)` is the 10-year par yield th
 4.98%, which is what the Treasury published for that day.
 
 For another day, give `treasury-zero-curve` a `:date`, and `treasury-par-curve` a `:start-date` that
-reaches it. "Which curve to use" (Part 5) has the Fed's smoother curve, and the SOFR curve.
+reaches it. "Which curve to use" (Part 6) has the Fed's smoother curve, and the SOFR curve.
 
 ### Step 2. The model's three numbers
 
@@ -1147,7 +1156,336 @@ variance is back to the long run's the second day:
 ```
 (The square root of (0.1² + 3 × 0.2²) / 4.)
 
-## Part 5. Reference
+## Part 5. Pricing things, step by step
+
+Here are six things priced from the very beginning, in a Jupyter notebook with the Lisp kernel:
+a Treasury note, a callable bond, a mortgage, a stock option, a floating-rate note, and an
+interest-rate cap. Each block of code is a cell. A cell shows the value of its last expression
+under it; `display-table` shows a table, and `plot-chart` a chart. The numbers are what the cells
+gave on 2026-10-30.
+
+**Two cells that come first**, for all but the stock option: the curve, and the model's three
+numbers (see Part 1, and "How implied volatility sets the numbers" in Part 2, for fitting them to
+today's option prices instead).
+
+```lisp
+(define curve (curve-forward-rates (treasury-zero-curve (treasury-par-curve))))
+(curve-par-yield curve 10)                         ; 0.0498: the 10-year yield, as the Treasury published it
+```
+
+```lisp
+(define a 2.75)                                    ; how fast the short rate follows the long-run level
+(define sigma1 0.031)                              ; the short rate's volatility
+(define sigma2 0.0117)                             ; the long-run level's: the long end of the curve
+```
+
+### A Treasury note
+
+The 4¼% note that matures on August 15, 2035. A Treasury pays half its coupon every six months,
+on the day of the month it matures, and a trade settles the next business day.
+
+**1. Its cash flows.** `bond-cash-flows` steps back from the maturity, six months at a time, to the
+settlement date:
+
+```lisp
+(define settlement (add-trading-days (today) 1))   ; 2026-11-02
+(define maturity (date 2035 8 15))
+(define coupon 0.0425)
+(define flows (bond-cash-flows maturity coupon :settlement settlement))
+(display-table flows)                              ; 18 payments: 2.125 each, and 102.125 at the end
+```
+
+**2. Its price on the curve.** Each payment is worth its amount times the curve's discount factor
+for its day; their sum is the *full* price. The buyer also owes the seller the interest earned since
+the last coupon (*accrued interest*), and prices are quoted without it (*clean*):
+
+```lisp
+(define discounts (curve-discount-factors curve (table-column flows "years")))
+(define full-price (vector-sum (* (table-column flows "amount") discounts)))     ; 96.04
+(define accrued (bond-accrued-interest maturity coupon :settlement settlement))   ; 0.91: 79 of 184 days' coupon
+(- full-price accrued)                                                          ; 95.13: the clean price
+```
+
+Its coupon, 4¼%, is under the 4.80% that the curve gives a 9-year note, so it is below par. The
+curve is made from the Treasury's own yields, so a note's price on it is close to its market price;
+the Treasury's end-of-day prices of every note are on TreasuryDirect, in "FedInvest", to check against.
+
+**3. On the paths.** A note's cash flows don't depend on rates, so the paths only check the curve,
+and give its effective duration. `bond-flows-by-month` puts each payment in the month it is paid,
+for `path-present-values`:
+
+```lisp
+(define by-month (bond-flows-by-month curve flows))
+(define years (/ (vector-length by-month) 12.0))
+(define (paths-on forwards) (simulate-rate-paths forwards sigma1 sigma2 years 2000 :a a :seed 1))
+(define paths (paths-on curve))
+(define (value-on paths oas) (vector-mean (path-present-values by-month (second paths) oas)))
+(value-on paths 0.0)                               ; 96.51, where the curve says 96.04
+```
+
+The paths give 46 cents more than the curve: that is the model's convexity (see "How a path is
+made", in Part 2), which it doesn't correct for, and which grows with the length of the bond. The
+OAS of the curve's price takes it out:
+
+```lisp
+(define oas (ridders (lambda (spread) (- (value-on paths spread) full-price)) -0.05 0.05))   ; 0.00065: 6.5 basis points
+```
+
+**4. Its effective duration and convexity**: the curve moved up and down by 25 basis points, the
+paths made again from the same random numbers, at the same OAS:
+
+```lisp
+(define (moved shift) (paths-on (+ (table-column curve "forward") shift)))
+(define up (value-on (moved 0.0025) oas))          ; 94.30
+(define down (value-on (moved -0.0025) oas))       ; 97.82
+(/ (- down up) (* 2 full-price 0.0025))            ; 7.32 years: the price falls 7.3% for a rise of 1 point in rates
+(/ (- (+ down up) (* 2 full-price)) (* full-price 0.0025 0.0025))     ; 61: its convexity, above 0
+```
+
+### A callable bond
+
+A bond that its issuer may **call**, buying it back at a set price, is worth less than one it
+can't: the issuer calls when rates have fallen, which is just when the bond is worth most to keep.
+(The Treasury doesn't issue callable bonds any more, and the last matured in 2014; agencies, such as
+the Federal Home Loan Banks, and companies do.) Take a 10-year bond with a 5¼% coupon, callable at
+100 in three years.
+
+**1. Its price, and its call's.** `price-callable-bond` values it on the paths: on each, at the call
+date, the issuer calls if what is left to pay is worth more than 100, so the holder gets the smaller
+of the two:
+
+```lisp
+(define (callable forwards oas)
+  (price-callable-bond forwards sigma1 sigma2 10 0.0525 3 100 oas :a a :seed 1 :n-paths 4000))
+(define (bullet forwards oas)                      ; the same bond, with a call price no one would pay
+  (price-callable-bond forwards sigma1 sigma2 10 0.0525 3 1000000 oas :a a :seed 1 :n-paths 4000))
+(callable curve 0.0)                               ; 98.78
+(bullet curve 0.0)                                 ; 102.70: the call is worth 3.9 points to the issuer
+```
+
+**2. Its OAS.** If it trades at 99, the spread over the paths that gives 99 is its OAS: what it
+pays over the Treasury curve, after the call is paid for:
+
+```lisp
+(define oas (ridders (lambda (spread) (- (callable curve spread) 99.0)) -0.05 0.05))    ; -0.00045: -4.5 basis points
+```
+
+**3. Its effective duration**, against the same bond without the call:
+
+```lisp
+(define (effective-duration pricer price)
+  (/ (- (pricer (+ (table-column curve "forward") -0.0025) oas)
+        (pricer (+ (table-column curve "forward") 0.0025) oas))
+     (* 2 price 0.0025)))
+(effective-duration callable 99.0)                 ; 4.97 years
+(effective-duration bullet (bullet curve oas))     ; 7.90 years
+```
+
+The call makes the bond shorter: when rates fall it is called, and gains little; when they rise
+it isn't, and falls like a 10-year bond. `price-callable-bond` is simple: one call date, where a
+real callable can usually be called on any coupon date after the first, and payments every six
+months from today; see its entry in Part 6.
+
+### A mortgage
+
+A 30-year mortgage of $400,000 at 7¼%, made today: what is it worth to the lender? Its payments
+depend on rates, because the borrower pays it off early when rates fall, to refinance. The
+structured-deal library prices it, with the prepayment model fitted to Freddie Mac's loans: a
+"deal" whose collateral is the one loan (see [lisp_cmo_manual.md](lisp_cmo_manual.md) for all it can do).
+
+**1. The loan, as a deal.** The deal needs the Treasury curve as the Treasury publishes it (years
+and percent), which `latest-treasury-points` gives, and what the loan is like, which the prepayment
+model looks at: its rate, size, the borrower's credit score, and its loan-to-value:
+
+```lisp
+(define latest (latest-treasury-points))          ; (2026-10-29 ((0.083 4.06) ... (10.0 4.98) (30.0 5.32)))
+(define deal (new-deal "One mortgage" :closing-date (today) :first-payment (date 2026 12 1)
+                       :treasury-curve (cadr latest)
+                       :collateral (list (make-collateral-piece :balance 400000.0 :wac 7.25 :coupon 7.25 :wam 360 :age 0
+                                                                :credit-score 760 :ltv 80.0 :loan-size 400000))
+                       :speed (prepayment-speed 'model 100)))
+(deal-sequential! deal "POOL" '(("LOAN" 400000.0)))
+```
+
+`:wac` is the borrower's rate, and `:coupon` what the holder is paid, the same here, since there
+is no one to service the loan. The pricing speed is 100% of the prepayment model.
+
+**2. Mortgage rates.** The model prepays when a new mortgage would cost less than this one. A new
+mortgage's rate, on each path, is the path's 10-year yield plus the **mortgage spread**: today's
+30-year rate (7.24%, from FRED's `MORTGAGE30US`) less today's 10-year yield (4.98%):
+
+```lisp
+(deal-set-mortgage-spread! deal 2.26)
+(deal-set-rate-model! deal (make-rate-model :a a :b 0.15 :sigma1 sigma1 :sigma2 sigma2))
+```
+
+**3. Its yield and spread, at par.** If rates follow the curve, the model has the loan prepay at its
+own pace, and the yield and spread are of those cash flows:
+
+```lisp
+(deal-set-price! deal "LOAN" 100)
+(define loan (get-node deal "LOAN"))
+(node-yield loan)                                  ; 7.27 percent
+(node-spread loan)                                 ; 236 basis points over the curve
+(node-average-life loan)                           ; 7.9 years
+(node-duration loan)                               ; 5.1 years
+```
+
+**4. On the paths.** On each path the loan prepays as the model says it would, with that path's
+rates. This runs the loan on each path, and on each again with the curve moved up and down, so it
+takes a while: 40 paths took 40 seconds (use 200 or more for a price to rely on):
+
+```lisp
+(deal-run-paths! deal :paths 40 :seed 1)
+(node-oas loan)                                    ; 173 basis points
+(node-effective-duration loan)                     ; 3.4 years
+```
+
+The OAS is 63 basis points under the spread: that is what the borrower's option to prepay costs
+the lender, a year. And the loan's effective duration is a third shorter than its duration: when
+rates fall, it is paid off, and doesn't gain as a bond would. What the loan is worth at a given
+OAS, say 150 basis points:
+
+```lisp
+(deal-set-oas! deal "LOAN" 150)
+(node-price loan)                                  ; 100.91: a lender who wants 150 over the paths pays this much
+```
+
+### A stock option
+
+A call on Apple that expires on January 15, 2027, struck at 350. This one needs a tastytrade
+account (for the option's price), a Schwab sign-in (for Apple's history; `(schwab-login creds)`),
+and an Alpha Vantage key (for its dividends). Paths of a stock are made from its own history (see
+Part 4), not from the curve.
+
+**1. The market's price.**
+
+```lisp
+(define chain (tastytrade-option-chain creds "AAPL" 4 6))     ; 4 months of expirations, 6 strikes each
+(define option (table-filter chain (vector-and (vector= (table-column chain "type") "Call")
+                                               (vector= (table-column chain "strike") 350.0)
+                                               (vector= (table-column chain "expiration-date") (date 2027 1 15)))))
+(display-table option)
+(define (field name) (vector-ref (table-column option name) 0))
+(define stock (field "underlying-price"))          ; 347.06, at 9:32 on 2026-10-30
+(define mid (field "mid"))                         ; 15.975: between the bid, 15.65, and the ask, 16.30
+```
+
+**2. The interest rate, from the curve.** An option is priced as if the stock grew at the
+interest rate to its expiry (the buyer could hold the stock and borrow instead); the curve gives
+that rate:
+
+```lisp
+(define curve (curve-forward-rates (treasury-zero-curve (treasury-par-curve))))
+(define years (/ (field "days-to-expiration") 365.0))                    ; 0.211: 77 days
+(define rate (/ (- (log (curve-discount-factors curve years))) years))  ; 0.0416: continuously compounded
+```
+
+**3. Black-Scholes.** The volatility that makes Black-Scholes give the market's price is the
+option's *implied volatility*, what the market expects:
+
+```lisp
+(define implied (implied-vol mid "call" stock 350.0 years rate))         ; 0.251: 25.1%
+(bsm-price "call" stock 350.0 years rate implied)                         ; 15.975: the market's price back
+```
+
+**4. Paths from Apple's history.** Ten years of daily returns, with the dividends in them, adjusted
+to grow at the interest rate; a volatility model, so the paths start as calm or as wild as Apple is
+today; the dividends to come; and ten thousand paths, one trading day at a time to the expiry:
+
+```lisp
+(define prices (schwab-price-history creds "AAPL"))
+(define dividends (alpha-vantage-dividends creds "AAPL"))
+(define returns (adjust-returns (daily-returns prices :dividends dividends) (- (exp rate) 1)))
+(define model (volatility-model returns))
+(display-table (table-select model '("next-day-volatility" "long-run-volatility" "half-life")))
+; today's volatility 20.1%, the history's 29.1%; half the gap closes in 17 trading days
+(define days (trading-days-between (today) (date 2027 1 15)))           ; 52 trading days
+(define schedule (dividend-schedule dividends (today) days :repeat-last-year #t))
+(define paths (map (lambda (i) (bootstrap-path returns stock days 1 :seed (+ 1000 i) :dividends schedule
+                                               :volatility model))
+                   (iota 10000)))
+(option-value paths (lambda (path) (max 0 (- (vector-ref path (- days 1)) 350.0))) rate years)
+; (15.07 0.23): the value, and its standard error
+```
+
+**5. Side by side.**
+
+| | Value |
+|---|---|
+| the market: the middle of the bid and ask | 15.98 |
+| Black-Scholes, at the implied volatility (25.1%) | 15.98 |
+| Black-Scholes, at the history's volatility (29.1%) | 18.56 |
+| paths from the history, as wild as it is on average | 18.35 ± 0.29 |
+| paths from the history, starting at today's volatility (20.1%) | 15.07 ± 0.23 |
+
+Apple's ten years have a volatility of 29%, and at that the call would be worth $18.56, more than the
+market's $15.98. But Apple has been calm lately: the volatility model puts it at 20% today, going
+back toward 29% over a few weeks. Paths that start there are worth $15.07, near the market's price,
+and the market's implied volatility, 25.1%, is between the two, as the model's average over the
+option's 52 trading days would be. So the history, taken as it is today, about agrees with the
+market; taken on average, it says the call is cheap. (tastytrade's own implied volatility, 27.3%,
+doesn't give back its middle price in Black-Scholes, because it is worked out another way: so
+`implied-vol` works it out here.)
+
+`lib/option_methods.lsp` does this for every liquid option of a stock at once, with a binomial tree
+too (`option-methods`, in "Valuing options three ways" in the library manual), and
+`lib/option_check.lsp` finds the options furthest from what their stock's history says.
+
+### A floating-rate note
+
+A 5-year note that pays the short rate (as SOFR does) plus ½% a year, monthly, and 100 at the end.
+On each path, its coupon each month is that month's short rate plus the margin:
+
+```lisp
+(define five-years (simulate-rate-paths curve sigma1 sigma2 5 2000 :a a :seed 1))
+(define (floater-flows short-rates margin)
+  (vector-map (lambda (month) (+ (* 100 (/ (+ (vector-ref short-rates month) margin) 12))
+                                 (if (= month 59) 100 0)))
+              (vector-range 60)))
+(define floater (map (lambda (short-rates) (floater-flows short-rates 0.005)) (second five-years)))
+(vector-mean (path-present-values floater (second five-years) 0.005))     ; 100.00
+(vector-mean (path-present-values floater (second five-years) 0.007))     ; 99.12
+```
+
+At an OAS equal to its margin, it is worth exactly 100 on every path: each month it pays the rate
+it is discounted at. So a floater's OAS is its margin when it trades at par, and its price changes
+only with what the market wants over the short rate (here, 70 basis points takes 88 cents off), not
+with where rates go: its effective duration is 0. `examples/sofr_floating_rate_example.lsp` works out
+a floater's coupons from the SOFR futures' curve instead.
+
+### An interest-rate cap
+
+A cap pays when rates rise above a strike: here, for five years, each month that the short rate is
+above 4½%, the difference on $10,000,000, for a month. A borrower at a floating rate buys one, so
+that what they pay can't rise above 4½% plus their margin.
+
+```lisp
+(define (cap-flows short-rates)
+  (* 10000000 (/ (vector-clip (- (vector-take short-rates 60) 0.045) 0 1) 12)))
+(define (cap-value paths) (vector-mean (path-present-values (map cap-flows (second paths)) (second paths) 0.0)))
+(cap-value five-years)                                            ; $352,000
+(cap-value (simulate-rate-paths curve 0 0 5 2))                   ; $117,000, if rates followed the curve
+```
+
+If rates followed the curve, the cap would pay only where the forward rates are above 4½%: $117,000.
+On the paths it pays when rates rise and nothing when they fall, so the volatility is worth $235,000
+more: a cap is an option, and most of its value is the volatility. A *floor*, which pays when
+rates fall below a strike, is the same with `(- 0.045 short-rates)`.
+
+### Other things to price
+
+- **A tranche of a structured deal** (a CMO): [lisp_cmo_manual.md](lisp_cmo_manual.md), "Option-adjusted
+  spread and effective duration", is the mortgage above with the payments divided among bonds.
+- **An option on the 10-year note future**: `note-option-comparison` prices each option of a chain on
+  the paths, next to the market's (Part 6, and `examples/note_option_example.lsp`).
+- **A Treasury bill**, or any payment on one day: its amount times `(curve-discount-factors curve years)`.
+- **An option on a portfolio** of stocks: `bootstrap-paths` makes paths of several stocks from the
+  same days of their history (see "Portfolios", in the library manual).
+- **A swap**, paying a fixed rate for the short rate: the floater less a bond with the fixed rate's
+  coupons, each priced as above; the fixed rate that makes it worth 0 is the swap rate.
+
+## Part 6. Reference
 
 ### Yield curves
 
@@ -1308,6 +1646,44 @@ A vector of monthly forward rates as a forward curve, the table `curve-forward-r
 ```lisp
 (table-column (forward-rates-table (vector 0.06 0.06)) "discount")   ; => #(0.99502488 0.9900745)
 ```
+
+#### `(curve-discount-factors curve years)`
+What 1 paid `years` from now (a number, or a vector of them) is worth today, on a forward curve (the table
+`curve-forward-rates` makes, or a vector of its rates): the product of `1 / (1 + forward / 12)` over the months,
+with its logarithm on a straight line within a month. Past the curve's end it continues at its last rate.
+
+```lisp
+(define flat (forward-rates-table (make-vector 360 0.06)))
+(curve-discount-factors flat (vector 0.5 1))       ; => #(0.97051808 0.94190534)
+```
+
+#### `(bond-cash-flows maturity coupon [:settlement d :face f :frequency n])`
+The cash flows still to come of a bond, as a table: `date`; `years`, from the settlement date to it
+(actual days over 365.25); and `amount`, the coupon, and at maturity the face too. `coupon` is the annual
+rate, a decimal; it is paid `:frequency` (2) times a year, on the dates that step back from the maturity by
+whole months, as a Treasury's are. `:settlement` is today unless it is given (a trade of a Treasury settles
+the next business day: `(add-trading-days (today) 1)`), and `:face` is 100.
+
+```lisp
+(define flows (bond-cash-flows (date 2027 8 15) 0.04 :settlement (date 2026 11 2)))
+(table-column flows "date")                        ; => #(2027-02-15 2027-08-15)
+(table-column flows "amount")                      ; => #(2.0 102.0)
+```
+
+#### `(bond-accrued-interest maturity coupon [:settlement d :face f :frequency n])`
+The interest a bond has earned since its last coupon, which the buyer pays the seller on top of the quoted
+(*clean*) price: the coupon times the share of the coupon period gone by, in actual days, as Treasuries
+count it. The arguments are as for `bond-cash-flows`.
+
+```lisp
+(bond-accrued-interest (date 2027 8 15) 0.04 :settlement (date 2026 11 2))   ; => 0.8586956521739131
+```
+
+#### `(bond-flows-by-month curve flows)`
+A bond's cash flows (a table, as `bond-cash-flows` makes) as a vector with a cash flow for each month, which
+`path-present-values` takes: each payment is in the month it is paid in, grown by the curve's discount factors
+from its day to the month's end, so that on the curve itself it is worth exactly what it is on its day. See
+"A Treasury note", in Part 5.
 
 #### `(gsw-curve [:start-date d :end-date d :cache-hours h])`
 The Fed's fitted curve as a table, the oldest day first, from `:start-date` to

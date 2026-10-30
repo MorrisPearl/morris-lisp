@@ -1370,7 +1370,7 @@ rates of each -- the Treasury's by bootstrapping its par yields, the Fed's from 
 Svensson curve -- and charts them together, then the one-month forward rates a model of interest
 rates starts from. The Treasury's are rougher than the Fed's smooth ones, as the second chart
 shows. The functions are in the library manual's
-[lisp_paths_manual.md](lisp_paths_manual.md) (Part 5, "Yield curves").
+[lisp_paths_manual.md](lisp_paths_manual.md) (Part 6, "Yield curves").
 
 `plot_chart_example.lsp` needs nothing, and is a tour of `plot-chart` in eleven small
 charts: a monthly line over grouped quarterly bars on one date axis; stacked bars with

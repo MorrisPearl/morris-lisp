@@ -453,6 +453,46 @@ class TestExtendingAForwardCurve(YieldCurvesTestCase):
         self.assertTrue((both[61:72] > 0.04).all() == (fed[61:72] > 0.04).all())
 
 
+class TestBondsOnACurve(YieldCurvesTestCase):
+    """curve-discount-factors, bond-cash-flows, bond-accrued-interest and bond-flows-by-month: a bond's own dates and
+    payments, priced on a curve and on paths."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("(define flat (forward-rates-table (make-vector 24 0.06)))")
+
+    def test_discount_factors_on_the_curve_between_its_months_and_past_its_end(self):
+        monthly = 1 / 1.005
+        got = self.numbers("(curve-discount-factors flat (vector 0 0.5 1.0 (/ 1.5 12) 3.0))")
+        np.testing.assert_allclose(got, [1.0, monthly ** 6, monthly ** 12, monthly ** 1.5, monthly ** 36], rtol=1e-12)
+        self.assertAlmostEqual(self.run_lisp("(curve-discount-factors flat 1.0)"), monthly ** 12, places=12)
+        self.assertEqual(self.show("(curve-discount-factors (make-vector 24 0.06) 0.5)"),
+                         self.show("(curve-discount-factors flat 0.5)"))      # a vector of the rates, or the table
+
+    def test_a_bonds_payments_step_back_from_its_maturity(self):
+        self.run_lisp("(define flows (bond-cash-flows (date 2028 2 29) 0.05 :settlement (date 2026 11 2)))")
+        self.assertShows('(table-column flows "date")', "#(2027-02-28 2027-08-29 2028-02-29)")   # (the month's end, when it has no 29th)
+        self.assertShows('(table-column flows "amount")', "#(2.5 2.5 102.5)")
+        np.testing.assert_allclose(self.numbers('(table-column flows "years")'), np.array([118, 300, 484]) / 365.25)
+        self.assertShows('(table-column (bond-cash-flows (date 2027 5 15) 0.06 :settlement (date 2026 11 2) :face 1000 '
+                         ':frequency 4) "amount")', "#(15.0 15.0 1015.0)")
+        self.assertLispError("(bond-cash-flows (date 2026 11 2) 0.05 :settlement (date 2026 11 2))", "matures on or before")
+
+    def test_accrued_interest_is_the_share_of_the_coupon_period_gone_by(self):
+        self.assertAlmostEqual(self.run_lisp("(bond-accrued-interest (date 2035 8 15) 0.0425 :settlement (date 2026 11 2))"),
+                               2.125 * 79 / 184, places=12)
+        self.assertEqual(self.run_lisp("(bond-accrued-interest (date 2035 8 15) 0.0425 :settlement (date 2026 8 15))"), 0)
+
+    def test_flows_by_month_are_worth_on_the_curve_what_the_dated_flows_are(self):
+        self.run_lisp("""(define flows (bond-cash-flows (date 2028 8 15) 0.05 :settlement (date 2026 11 2)))
+                         (define by-month (bond-flows-by-month flat flows))""")
+        self.assertEqual(self.run_lisp("(vector-length by-month)"), 22)              # August 2028 is in the 22nd month
+        on_the_curve = self.run_lisp('(vector-sum (* (table-column flows "amount") (curve-discount-factors flat (table-column flows "years"))))')
+        on_a_flat_path = self.run_lisp("(vector-ref (path-present-values by-month (list (make-vector 22 0.06)) 0.0) 0)")
+        self.assertAlmostEqual(on_a_flat_path, on_the_curve, places=10)
+        self.assertGreater(self.run_lisp("(vector-ref by-month 3)"), 2.5)          # grown from its day to the month's end
+
+
 class TestTheExample(YieldCurvesTestCase):
 
     def test_it_shows_both_curves_for_the_latest_day_and_saves_two_charts(self):

@@ -183,6 +183,66 @@ or the curve itself, if it is a vector of them."
         ((and (table? curve) (assoc "forward" curve)) (table-column curve "forward"))
         (else (error (format "{}: a curve of forward rates is a table with a forward column, as curve-forward-rates makes, or a vector of the rates" who)))))
 
+; ---------------------------------------------------------------------------
+; Bonds on a curve
+; ---------------------------------------------------------------------------
+
+(define (curve-discount-factors curve years)
+  "What 1 paid this many years from now (a number, or a vector of them) is worth today, on a curve of forward rates
+(a table, as curve-forward-rates makes, or a vector of the rates): the product of 1 / (1 + forward / 12) over the
+months, with its logarithm on a straight line within a month. Past the curve's end it continues at its last rate."
+  (let* ((forwards (yield-curves--forwards curve "curve-discount-factors"))
+         (months (vector-length forwards))
+         (step-logs (- (log (+ 1 (/ forwards 12)))))                ; the log of each month's discount
+         (month-ends (vector-append (vector 0.0) (vector-cumsum step-logs)))
+         (at (* 12.0 years))
+         (beyond (if (number? at) (max 0 (- at months)) (vector-clip (- at months) 0 1e9))))   ; months past the curve's end
+    (exp (+ (interpolate at (vector-range (+ months 1)) month-ends)
+            (* beyond (vector-ref step-logs (- months 1)))))))
+
+(define (bond-cash-flows maturity coupon &key (settlement (today)) (face 100) (frequency 2))
+  "The cash flows still to come of a bond, as a table: date, the payment's date; years, from settlement to it (actual
+days over 365.25); and amount, the coupon (and, at maturity, the face). maturity is a date; coupon the annual rate, a
+decimal (0.0425); a coupon is paid frequency (2) times a year, on the dates that step back from the maturity by whole
+months, as a Treasury's do. settlement (today) is the day the bond is bought: its price is for that day."
+  (let* ((months-apart (/ 12 frequency))
+         (dates (reverse (loop for k from 0
+                               for day = (date-add-months maturity (* -1 months-apart k))
+                               while (> day settlement)
+                               collect day)))
+         (count (length dates)))
+    (when (= count 0)
+      (error "bond-cash-flows: the bond matures on or before the settlement date" (date->string maturity)))
+    (make-table "date" (list->vector dates)
+                "years" (/ (days-between settlement (list->vector dates)) 365.25)
+                "amount" (+ (make-vector count (/ (* face coupon) frequency))
+                            (list->vector (loop for i from 1 to count collect (if (= i count) face 0.0)))))))
+
+(define (bond-accrued-interest maturity coupon &key (settlement (today)) (face 100) (frequency 2))
+  "The interest that a bond has earned since its last coupon, which the buyer pays the seller on top of the price: the
+coupon times the share of the coupon period that has gone by, in actual days (as Treasuries count it)."
+  (let* ((months-apart (/ 12 frequency))
+         (next (loop for k from 0
+                     for day = (date-add-months maturity (* -1 months-apart k))
+                     while (> (date-add-months day (- months-apart)) settlement)
+                     finally (return day)))
+         (previous (date-add-months next (- months-apart))))
+    (* (/ (* face coupon) frequency) (/ (days-between previous settlement) (days-between previous next)))))
+
+(define (bond-flows-by-month curve flows)
+  "A bond's cash flows (a table, as bond-cash-flows makes) as a vector with a cash flow for each month, for
+path-present-values: each payment goes in the month it is paid in, grown by the curve's discount factors from its
+day to the month's end, so that on the curve itself it is worth what it is on its day."
+  (let* ((years (table-column flows "years"))
+         (months (vector-map (lambda (t) (max 1 (ceiling (- (* 12 t) 1e-9)))) years))
+         (grown (* (table-column flows "amount")
+                   (/ (curve-discount-factors curve years) (curve-discount-factors curve (/ months 12.0)))))
+         (by-month (make-vector (vector-max months) 0.0)))
+    (loop for i from 0 below (vector-length months)
+          do (let ((month (- (vector-ref months i) 1)))
+               (vector-set! by-month month (+ (vector-ref by-month month) (vector-ref grown i)))))
+    by-month))
+
 (define (forward-rates-table forwards)
   "A vector of monthly forward rates as the table curve-forward-rates makes: months, discount and forward."
   (let ((months (vector-length forwards)))

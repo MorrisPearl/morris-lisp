@@ -54,6 +54,7 @@
 ; Yield curves: the Treasury's par curve and the Fed's fitted curve, zero rates and forward rates
 (lazy-load "yield_curves.lsp"
   treasury-par-curve latest-treasury-points treasury-zero-curve par-curve-zeros curve-forward-rates forward-rates-table extend-forward-curve gsw-curve
+  curve-discount-factors bond-cash-flows bond-accrued-interest bond-flows-by-month
   gsw-parameters gsw-zero-curve
   svensson-zero-rates svensson-forward-rates)
 
