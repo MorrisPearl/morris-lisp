@@ -1,5 +1,5 @@
 """The data sources, each against a stand-in for its web API (the tests never use the
-network): SEC, FDIC, Census, BLS, BEA, Schwab, tastytrade, FRED, Alpha Vantage, and
+network): SEC, FDIC, Census, BLS, BEA, Schwab, FINRA, tastytrade, FRED, Alpha Vantage, and
 downloads from any web API.
 support.py says how to run them."""
 
@@ -1319,6 +1319,115 @@ class TestSchwab(LispTestCase):
                  "a leg's option must be an option's symbol")]:
             with self.subTest(call=call):
                 self.assertLispError(call, fragment)
+
+
+class TestFinra(LispTestCase):
+    """lisp_finra, with FINRA's API played by a fake -- no network. The fake's records are in the form of the samples
+    in FINRA's documentation of its API: one record for each statistic."""
+
+    def setUp(self):
+        super().setUp()
+        import lisp_finra
+        self.lisp_finra = lisp_finra
+        lisp_finra._tokens.clear()
+        self.addCleanup(lisp_finra._tokens.clear)
+        self.credentials = os.path.join(tempfile.mkdtemp(), "credentials.json")
+        self.addCleanup(shutil.rmtree, os.path.dirname(self.credentials), True)
+        with open(self.credentials, "w") as f:
+            json.dump({"finra_client_id": "client-1", "finra_client_secret": "secret-123"}, f)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString(self.credentials)
+        self.requests = []
+        self.records = []
+        patcher = mock.patch.object(lisp_http, "download", self.fake_download)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_download(self, url, cache_hours, headers, who, shown_url=None, body=None):
+        sent = lisp_http.headers_argument(headers, who)
+        self.requests.append((url, sent, json.loads(body) if body else None))
+        if url == self.lisp_finra.TOKEN_URL:
+            return json.dumps({"access_token": "token-%d" % len(self.requests), "expires_in": 43170}).encode()
+        request = json.loads(body)
+        return json.dumps(self.records[request["offset"]:request["offset"] + request["limit"]]).encode()
+
+    def tba(self, date, coupon, settlement, statistic, value, agency="UMBS", product="SINGLE FAMILY 30Y"):
+        return {"reportDate": date, "pricingTableName": "AGENCY PASS-THRU (TBA, STIP, $ ROLLS) - " + product,
+                "agencyCode": agency, "settlementCode": settlement, "couponRateCode": coupon,
+                "categoryCode": statistic, "valueAmount": value}
+
+    def test_tba_prices_have_a_column_for_each_statistic(self):
+        self.records = [self.tba("2026-10-28", c, s, k, v) for c, s, k, v in [
+            ("5.5", "December Settlement", "AVERAGE PRICE", "100.1"),
+            ("5.5", "November Settlement", "AVERAGE PRICE", "100.3"),
+            ("> 6", "November Settlement", "AVERAGE PRICE", None),
+            ("<= 3.5", "November Settlement", "AVERAGE PRICE", "88.0"),
+            ("5.5", "November Settlement", "NUMBER OF TRADES", "42.000000")]]
+        self.run_lisp("(define p (finra-tba-prices creds))")
+        self.assertShows("(table-column-names p)",
+                         '("date" "product" "agency" "settlement" "coupon" "average price" "number of trades")')
+        self.assertShows('(table-column p "coupon")', '#("<= 3.5" "5.5" "> 6" "5.5")')       # by settlement, coupon
+        self.assertShows('(table-column p "settlement")',
+                         '#("November Settlement" "November Settlement" "November Settlement" "December Settlement")')
+        self.assertShows('(table-column p "product")', '#("SINGLE FAMILY 30Y" "SINGLE FAMILY 30Y" "SINGLE FAMILY 30Y" '
+                                                       '"SINGLE FAMILY 30Y")')
+        prices = self.run_lisp('(table-column p "average price")').items.tolist()
+        self.assertEqual(prices[:2], [88.0, 100.3])
+        self.assertTrue(math.isnan(prices[2]))                                  # no price is NaN
+        self.assertEqual(self.run_lisp('(vector-ref (table-column p "number of trades") 1)'), 42.0)
+        self.assertShows('(vector-ref (table-column p "date") 0)', "2026-10-28")
+
+    def test_the_request(self):
+        self.records = [self.tba("2026-10-28", "5.5", "November Settlement", "AVERAGE PRICE", "100.3")]
+        self.run_lisp('(finra-tba-prices creds :start-date "2026-10-01" :end-date (date 2026 10 28) :agency \'("gnma" "umbs"))')
+        token_url, token_headers, _ = self.requests[0]
+        self.assertEqual(token_url, self.lisp_finra.TOKEN_URL)
+        self.assertEqual(token_headers["Authorization"], "Basic " + base64.b64encode(b"client-1:secret-123").decode())
+        url, sent, request = self.requests[1]
+        self.assertEqual(url, "https://api.finra.org/data/group/fixedIncomeMarket/name/agencyTbaPricing")
+        self.assertEqual(sent["Authorization"], "Bearer token-1")
+        self.assertEqual(request["dateRangeFilters"],
+                         [{"fieldName": "reportDate", "startDate": "2026-10-01", "endDate": "2026-10-28"}])
+        self.assertEqual(request["domainFilters"], [{"fieldName": "agencyCode", "values": ["GNMA", "UMBS"]}])
+        self.run_lisp("(finra-mbs-prices creds)")
+        self.assertEqual(len(self.requests), 3)                    # the token is kept: no second one
+        self.assertTrue(self.requests[2][0].endswith("/agencyMbsPricing"))
+
+    def test_many_records_come_a_page_at_a_time(self):
+        self.lisp_finra.PAGE_SIZE, saved = 2, self.lisp_finra.PAGE_SIZE
+        self.addCleanup(setattr, self.lisp_finra, "PAGE_SIZE", saved)
+        self.records = [self.tba("2026-10-%02d" % day, "5", "November Settlement", "AVERAGE PRICE", "99")
+                        for day in range(20, 25)]
+        self.assertEqual(self.run_lisp("(table-row-count (finra-tba-prices creds))"), 5)
+        self.assertEqual([r[2]["offset"] for r in self.requests[1:]], [0, 2, 4])
+
+    def test_specified_pools_and_arms(self):
+        self.records = [{"reportDate": "2026-10-28", "pricingTableName": "AGENCY PASS-THRU (SPECIFIED) - SINGLE FAMILY 15Y",
+                         "agencyCode": "UMBS", "couponRateCode": "4", "categoryCode": "AVERAGE PRICE", "valueAmount": "97.3"}]
+        self.assertShows('(table-column-names (finra-mbs-prices creds))',
+                         '("date" "product" "agency" "coupon" "average price")')
+        self.records = [{"reportDate": "2026-10-28", "pricingTableName": "AGENCY PASS-THRU (SPECIFIED) - ARMS/HYBRIDS",
+                         "agencyCode": "FNMA", "fixedRatePeriodCode": p, "categoryCode": "AVERAGE PRICE",
+                         "valueAmount": "98.1"} for p in ("7/1", "5/1")]
+        self.assertShows('(table-column (finra-arm-prices creds) "period")', '#("5/1" "7/1")')
+
+    def test_no_prices_and_no_credentials(self):
+        self.assertLispError("(finra-tba-prices creds)", "FINRA has no prices for those dates")
+        self.assertLispError('(finra-tba-prices creds :start-date "2026-10-28" :end-date "2026-10-01")', "is after")
+        with open(self.credentials, "w") as f:
+            json.dump({}, f)
+        self.lisp_finra._tokens.clear()
+        self.assertLispError("(finra-tba-prices creds)", 'no "finra_client_id" entry')
+
+    def test_finra_get(self):
+        self.records = [{"reportDate": "2016-07-25", "agencyCode": "FNMA", "categoryCode": "TRADE COUNT",
+                         "valueAmount": "413.000000"}]
+        self.run_lisp('(define t (finra-get creds "fixedIncomeMarket" "agencyMbsTradingActivity" '
+                      ':filters \'(("agencyCode" . "FNMA"))))')
+        self.assertShows('(table-column t "agencyCode")', '#("FNMA")')
+        request = self.requests[-1][2]
+        self.assertEqual(request["compareFilters"],
+                         [{"fieldName": "agencyCode", "fieldValue": "FNMA", "compareType": "EQUAL"}])
+        self.assertNotIn("dateRangeFilters", request)
 
 
 class TestTastytrade(LispTestCase):

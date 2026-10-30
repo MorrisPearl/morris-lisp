@@ -43,6 +43,7 @@ from lisp_core import (
 )
 import lisp_alpha_vantage
 import lisp_bea
+import lisp_finra
 import lisp_bls
 import lisp_calendar
 import lisp_census
@@ -2384,7 +2385,7 @@ SHARED_BUILTIN_TABLES = (
     COMMAND_LINE_BUILTINS, lisp_vector_math.BUILTINS, lisp_tables.BUILTINS, lisp_stratify.BUILTINS, lisp_explore.BUILTINS,
     lisp_time_series.BUILTINS, lisp_csv.BUILTINS, lisp_regression.BUILTINS, lisp_sqlite.BUILTINS, lisp_fred.BUILTINS,
     lisp_sec.BUILTINS, lisp_sec_filings.BUILTINS, lisp_fdic.BUILTINS, lisp_census.BUILTINS, lisp_bls.BUILTINS, lisp_bea.BUILTINS,
-    lisp_maps.BUILTINS, lisp_google.BUILTINS, lisp_schwab.BUILTINS, lisp_alpha_vantage.BUILTINS,
+    lisp_maps.BUILTINS, lisp_google.BUILTINS, lisp_schwab.BUILTINS, lisp_alpha_vantage.BUILTINS, lisp_finra.BUILTINS,
     lisp_http.BUILTINS,
     lisp_tastytrade.BUILTINS, lisp_futures.BUILTINS, lisp_rates.BUILTINS, lisp_simplex.BUILTINS,
     lisp_investment_paths.BUILTINS, lisp_portfolio.BUILTINS, lisp_finance.BUILTINS, lisp_options.BUILTINS,

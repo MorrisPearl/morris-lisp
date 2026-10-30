@@ -40,6 +40,7 @@ that use all this are described in
   - [SQLite](#sqlite)
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Schwab (your accounts)](#schwab-your-accounts)
+  - [FINRA (agency MBS and TBA prices)](#finra-agency-mbs-and-tba-prices)
   - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
 - [Reporting](#reporting)
   - [Google Sheets](#google-sheets)
@@ -2218,6 +2219,86 @@ The parameters, where they have choices:
 your account's activity as they happen, over a WebSocket (its address and
 your sign-in for it are in `/trader/v1/userPreference`'s `streamerInfo`).
 That isn't done here: every function asks once and answers once.
+
+### FINRA (agency MBS and TBA prices)
+
+(In `lisp_finra.py`.) The prices that agency mortgage-backed securities
+traded at each day, from FINRA (https://developer.finra.org), which
+collects every trade in them through TRACE. They are not quotes or a
+model's prices: they summarize the trades of the day, for each kind of
+security.
+
+- **TBAs**: UMBS, Freddie Mac, and Ginnie Mae single-family 15- and
+  30-year, by coupon and settlement month (usually this month and next).
+- **Specified pools**: fixed-rate pass-throughs, by agency and coupon.
+- **ARMs and hybrids**: specified pools, by agency and fixed-rate period
+  (5/1, 7/1, ...).
+
+FINRA's API needs an account, which is free: an Individual account (from
+"Console" on https://developer.finra.org) with a "Public" credential,
+whose fee is $0 a month. FINRA emails a link to set the credential's
+secret. Its client ID and secret go in the credentials file as
+`"finra_client_id"` and `"finra_client_secret"`. The secret runs out
+after a year.
+
+A day's prices come the next morning, and there are none for weekends
+and holidays. Each answer is kept for 12 hours, as the other data
+functions' are (`(http-clear-cache)` deletes them).
+
+Each table has a row for each day, `product` (`SINGLE FAMILY 30Y`, ...),
+`agency`, `settlement` (for TBAs), and `coupon` (or `period`, for ARMs),
+and a column for each of the ten statistics FINRA gives, named as FINRA
+names them, in lower case: the average price, the weighted average price
+(weighted by size), the average of the 5 lowest trades, the quartiles,
+the average of the 5 highest trades, the standard deviation of the
+prices, the dollar volume of the trades (in thousands), and the number of
+trades. A statistic FINRA has no value for is NaN. A coupon is FINRA's
+bucket, as text: `"<= 3.5"`, `"4"`, ... `"> 6"`.
+
+#### `(finra-tba-prices creds [:start-date d :end-date d :agency a])`
+The prices TBAs traded at each day. The last week, unless `:start-date`
+or `:end-date` (dates, or `"YYYY-MM-DD"`) says otherwise. `:agency` is
+`"UMBS"`, `"FHLMC"`, or `"GNMA"`, or a list of them.
+
+```lisp
+(define tbas (finra-tba-prices creds :agency "UMBS"))
+(display-table (table-where tbas "product" "SINGLE FAMILY 30Y"))
+```
+
+#### `(finra-mbs-prices creds [:start-date d :end-date d :agency a])`
+The prices specified pools (fixed-rate pass-throughs) traded at each day,
+in the same form, without `settlement`. Comparing a coupon's price with
+the TBA's shows the pay-up for specified pools.
+
+#### `(finra-arm-prices creds [:start-date d :end-date d :agency a])`
+The prices specified ARM and hybrid pools traded at each day, with a
+`period` column (`5/1`, `7/1`, ...) in place of `coupon`.
+
+#### `(finra-get creds group dataset [:start-date d :end-date d :filters f])`
+Any of the datasets of FINRA's API, as a table with a column for each of
+its fields, as FINRA sends them. `group` and `dataset` are FINRA's names,
+from its catalog (https://developer.finra.org/catalog). `:start-date` and
+`:end-date` ask for those report dates (the last week, if only one is
+given); `:filters` is a list of `(field . value)` pairs, and keeps the
+records whose field has that value. The others a Public credential can
+read include, all in the group `"fixedIncomeMarket"`:
+
+| Dataset | What |
+|---|---|
+| `agencyMbsTradingActivity` | How much traded each day: trades, securities, and dollars, for TBAs, specified pools, and CMOs |
+| `agencyCmoPricing` | Agency CMO prices, by deal vintage |
+| `nonAgencyCmoVintagePricing`, `nonAgencyCmoAbsPricing` | Non-agency CMO and ABS prices |
+| `dailyCmbsPricing`, `weeklyCmbsPricing` | CMBS prices, by deal vintage |
+| `collateralizedObligationPricing` | CBO, CDO, and CLO prices, by rating and vintage |
+| `treasuryDailyAggregates`, `treasuryMonthlyAggregates` | How much of each kind of Treasury traded (no prices) |
+
+```lisp
+(finra-get creds "fixedIncomeMarket" "agencyMbsTradingActivity" :filters '(("agencyCode" . "GNMA")))
+```
+
+These functions were written from FINRA's documentation of its API and
+tested against a stand-in for FINRA; they haven't yet been run against
+FINRA itself.
 
 ### Alpha Vantage (dividends)
 
