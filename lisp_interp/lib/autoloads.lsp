@@ -296,6 +296,10 @@
 ; A chart of a stratification table
 (lazy-load "stratify_plot.lsp" plot-stratification)
 
+; A form in a notebook for choosing how to stratify a table, a section for each column, and making the tables
+(lazy-load "stratify_explorer.lsp"
+  stratify-explorer stratify-explorer-plan stratify-explorer-weight stratify-explorer-tables stratify-explorer-code)
+
 ; Forecasting questions: the chance of each range of a number, "before the date" chances, combining and scoring
 ; forecasts (see lisp_forecasting_manual.md)
 (lazy-load "forecasting.lsp"

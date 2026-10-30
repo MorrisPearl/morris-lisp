@@ -86,7 +86,7 @@ The functions for investment analysis, in the order an analysis uses them.
 2. **Tables and numbers.** In the language manual: "Tables", "Vectors",
    "Vector math and statistics" (`vector-drawdowns` is there), "Displaying
    tables", "Charting", and "Saving variables". Here: "Stratification
-   tables" and "Maps".
+   tables" (and `stratify-explorer`, a form in a notebook for choosing them) and "Maps".
 3. **Dates.** "Dates", in the language manual. Here: "Trading days (the
    NYSE's calendar)", "Monthly time series" (daily data made monthly, and
    several series lined up), and "Day counts and cash flows" (`npv`, `irr`,
@@ -4630,6 +4630,58 @@ A table of several columns labels each bar with the buckets, joined by
     (display-table table formats)
     (plot-stratification table :formats formats)))
 ```
+
+#### `(stratify-explorer table [:weight column] [:name text])`
+(In `lib/stratify_explorer.lsp`.) A **form in a notebook** for choosing how to stratify a table, instead of writing the
+lists of `stratify-all` by hand. It is an *accordion*: a section for each column, which opens when its title is clicked.
+In a column's section:
+
+- a line about the column, from `table-profile`: its kind, how many values are distinct and missing, and its range;
+- **Stratify by this column**: `hide` (no table of it), `each`, `top`, `equal-count`, `equal-weight` (with an `n` for
+  those three), `year`, or `breakpoints`, typed as numbers (`4.0 5.0 6.0`) or, for a column of dates, dates
+  (`2022-01-01 2024-01-01`);
+- **Summarize it in the other tables**: two rows, so that a column can be summarized two ways (an average and a
+  weighted average, the 10th and the 90th percentile). Each row is a function -- any of `stratify`'s -- the percentile,
+  for the percentile functions, the heading of its column in the tables, and the format it is shown in (`".3f"`,
+  `",.0f"`, `".1%"`). Choosing a function fills in a heading (`mean rate`, `wavg rate`, `rate p90`) and the format that
+  suits the column's numbers, unless you have typed your own.
+
+A section's title says what is chosen (`rate: equal-count 5; weighted-mean, mean`). Everything starts from what
+`stratify-plan` suggests. Above the sections are the **weight** column (for the weighted functions and `equal-weight`
+buckets; a choice of none, or of the table's numeric columns), a **Charts** box, and two buttons: **Make the tables**,
+which runs `stratify-all` with what is chosen and shows each table under the form (and its chart, from
+`plot-stratification`, if Charts is ticked), and **Show the code**, which shows the `stratify-all` call that makes the
+same tables, with `:name` for the table, to copy into a cell. A weighted function or `equal-weight` without a weight
+column, or a breakpoint that isn't a number, is an error that says which column, shown under the form.
+
+```lisp
+(define explorer (stratify-explorer loans :weight "balance" :name "loans"))
+explorer                                 ; the form: the value of a cell shows it
+```
+
+What it shows when you choose `top` 2 for `state`, and `mean` as a second summary of `rate`, and press Show the code:
+
+```
+(define strats
+  (stratify-all loans
+    '(("rate" each)
+      ("age" each)
+      ("state" (top 2)))
+    '(("rate" weighted-mean "avg rate")
+      ("rate" mean "mean rate")
+      ("age" weighted-mean "avg age"))
+    :weight "balance"))
+(dolist (table strats)
+  (display-table table '(("count" ",d") ...)))
+```
+
+The form can also be read from a cell:
+
+- `(stratify-explorer-plan explorer)` is what is chosen, as `(bys summaries formats)`: the arguments of `stratify-all`
+  and the formats of `display-table`, as `stratify-plan` gives them.
+- `(stratify-explorer-weight explorer)` is the weight column chosen, or `'()`.
+- `(stratify-explorer-tables explorer)` is the list of tables, as Make the tables makes them.
+- `(stratify-explorer-code explorer)` is the code that Show the code shows, as text.
 
 `examples/stratify_example.lsp` makes a report of eight tables from a
 pool of 5,000 made-up loans, and shows how to load real loan data from
