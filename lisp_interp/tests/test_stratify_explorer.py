@@ -52,8 +52,16 @@ class TestStratifyExplorer(LispTestCase):
         return self.section(column).children[2].children[2]
 
     def summary(self, column, place):
-        """(function, percentile, heading, format) of a column's summary: place 0 is the first, 1 the second."""
-        return self.section(column).children[4 + place].children
+        """(function, percentile, heading, format, x) of a column's summary: place 0 is the first, 1 the second, ..."""
+        return self.section(column).children[4].children[place].children
+
+    def summaries(self, column):
+        return len(self.section(column).children[4].children)
+
+    def add(self, column):
+        """Click the column's button that adds a summary, and give the new one's widgets."""
+        self.section(column).children[5].click()
+        return self.summary(column, self.summaries(column) - 1)
 
     def plan(self):
         bys, summaries, formats = lisp_core.pairs_to_list(self.run_lisp("(stratify-explorer-plan explorer)"))
@@ -73,7 +81,9 @@ class TestStratifyExplorer(LispTestCase):
         self.assertEqual(self.how("balance").value, "hide")             # the weight column
         self.assertEqual(self.summary("rate", 0)[0].value, "weighted-mean")
         self.assertEqual(self.summary("rate", 0)[3].value, ".3f")
-        self.assertEqual(self.summary("rate", 1)[0].value, "(none)")
+        self.assertEqual(self.summaries("rate"), 1)                     # the plan's one summary
+        self.assertEqual(self.summaries("state"), 1)                    # none planned: one row, of none
+        self.assertEqual(self.summary("state", 0)[0].value, "(none)")
         self.assertEqual(list(self.accordion().titles)[:2], ["rate: each; weighted-mean", "balance: hide"])
         self.assertIn("float; 10 distinct, 0 missing; from 3.25 to 7.25", self.section("rate").children[0].value)
 
@@ -99,7 +109,7 @@ class TestStratifyExplorer(LispTestCase):
         self.assertEqual(self.count("state").layout.display, "none")
 
     def test_a_column_can_be_summarized_two_ways_each_with_its_heading_and_format(self):
-        function, percentile, heading, format_box = self.summary("rate", 1)
+        function, percentile, heading, format_box, _ = self.add("rate")
         function.value = "mean"
         self.assertEqual((heading.value, format_box.value), ("mean rate", ".3f"))    # suggested, and the column's format
         function.value = "percentile"
@@ -117,7 +127,7 @@ class TestStratifyExplorer(LispTestCase):
     def test_the_tables_are_stratify_alls_and_the_code_makes_them_again(self):
         self.how("state").value = "top"
         self.count("state").value = 2
-        self.summary("rate", 1)[0].value = "mean"
+        self.add("rate")[0].value = "mean"
         tables = self.show_value(self.run_lisp("(stratify-explorer-tables explorer)"))
         code = self.run_lisp("(stratify-explorer-code explorer)")
         self.assertTrue(str(code).startswith("(define strats\n  (stratify-all loans\n"), code)
@@ -156,7 +166,7 @@ class TestStratifyExplorer(LispTestCase):
         line = self.top(1)
         self.assertEqual(line.description, "chart line")
         self.assertEqual(list(line.options), ["(first summary)", "avg rate", "avg age"])
-        function, _, heading, _ = self.summary("rate", 1)
+        function, _, heading, _, _ = self.add("rate")
         function.value = "mean"                                        # a new summary is a new choice
         self.assertEqual(list(line.options), ["(first summary)", "avg rate", "mean rate", "avg age"])
         line.value = "mean rate"
@@ -178,3 +188,29 @@ class TestStratifyExplorer(LispTestCase):
         self.assertIn("(plot-stratification table :formats formats))", str(self.run_lisp("(stratify-explorer-code explorer)")))
         self.top(2).value = False
         self.assertNotIn("plot-stratification", str(self.run_lisp("(stratify-explorer-code explorer)")))
+
+    def test_any_number_of_summaries_can_be_added_and_taken_away(self):
+        for function, p in (("min", None), ("percentile", 50), ("percentile", 90), ("max", None)):
+            row = self.add("age")
+            row[0].value = function
+            if p is not None:
+                row[1].value = p
+        self.assertEqual(self.summaries("age"), 5)
+        self.assertEqual(self.accordion().titles[2], "age: each; weighted-mean, min, percentile, percentile, max")
+        _, summaries, _ = self.plan()
+        self.assertIn('("age" weighted-mean "avg age") ("age" min "min age") ("age" (percentile 50.0) "age p50.0") '
+                      '("age" (percentile 90.0) "age p90.0") ("age" max "max age")', summaries)
+        self.assertIn("age p90.0", list(self.top(1).options))
+        self.summary("age", 2)[4].click()                       # the x of the 50th percentile
+        self.assertEqual(self.summaries("age"), 4)
+        _, summaries, _ = self.plan()
+        self.assertNotIn("age p50.0", summaries)
+        self.assertNotIn("age p50.0", list(self.top(1).options))
+        self.assertEqual(self.accordion().titles[2], "age: each; weighted-mean, min, percentile, max")
+        while self.summaries("age") > 0:
+            self.summary("age", 0)[4].click()
+        _, summaries, _ = self.plan()
+        self.assertNotIn('"age"', summaries)
+        self.assertEqual(self.accordion().titles[2], "age: each")
+        tables = self.run_lisp("(stratify-explorer-tables explorer)")
+        self.assertEqual(len(lisp_core.pairs_to_list(tables)), 4)

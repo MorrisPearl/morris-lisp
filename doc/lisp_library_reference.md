@@ -4640,13 +4640,15 @@ In a column's section:
 - **Stratify by this column**: `hide` (no table of it), `each`, `top`, `equal-count`, `equal-weight` (with an `n` for
   those three), `year`, or `breakpoints`, typed as numbers (`4.0 5.0 6.0`) or, for a column of dates, dates
   (`2022-01-01 2024-01-01`);
-- **Summarize it in the other tables**: two rows, so that a column can be summarized two ways (an average and a
-  weighted average, the 10th and the 90th percentile). Each row is a function -- any of `stratify`'s -- the percentile,
-  for the percentile functions, the heading of its column in the tables, and the format it is shown in (`".3f"`,
-  `",.0f"`, `".1%"`). Choosing a function fills in a heading (`mean rate`, `wavg rate`, `rate p90`) and the format that
-  suits the column's numbers, unless you have typed your own.
+- **Summarize it in the other tables**: a row for each summary, as many as you like -- **+ add a summary** adds one,
+  and the **x** at the end of a row takes it away -- so a column can be summarized several ways: an average and a
+  weighted average, the min, the average and the max, or the 10th, 50th and 90th percentiles. Each row is a function
+  (any of `stratify`'s), the percentile (for the percentile functions), the heading of its column in the tables, and the
+  format it is shown in (`".3f"`, `",.0f"`, `".1%"`). Choosing a function fills in a heading (`mean rate`, `wavg rate`,
+  `rate p90`) and the format that suits the column's numbers, unless you have typed your own. A column begins with the
+  summary `stratify-plan` suggests, or with one row of none.
 
-A section's title says what is chosen (`rate: equal-count 5; weighted-mean, mean`). Everything starts from what
+A section's title says what is chosen (`rate: equal-count 5; weighted-mean, min, max`). Everything starts from what
 `stratify-plan` suggests. Above the sections are the **weight** column (for the weighted functions and `equal-weight`
 buckets; a choice of none, or of the table's numeric columns); the **chart line**, the summary that the charts draw as
 a line over their bars (`plot-stratification`'s `:column`: the first summary, or any of the headings the form has

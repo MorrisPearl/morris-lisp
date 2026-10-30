@@ -6,8 +6,9 @@
 ;   how the column is stratified: not at all, one bucket for each value, the top n values, n buckets of the same
 ;   count or the same weight, one for each year, or between breakpoints you type;
 ;
-;   how it is summarized in the tables of the other columns: by up to two functions (an average and a weighted
-;   average, say, or the 10th and 90th percentiles), each with the heading of its column in the tables; and
+;   how it is summarized in the tables of the other columns: by as many functions as you like (an average and a
+;   weighted average, say, or the min, the average and the max, or the 10th, 50th and 90th percentiles), each with
+;   the heading of its column in the tables -- a button adds another, and a x on each takes it away; and
 ;
 ;   the format each summary is shown in (",.2f", ".3%", ...).
 ;
@@ -26,13 +27,18 @@
 (require "widgets.lsp")
 
 (defstruct stratify-explorer--column
-  name kind how count breakpoints summaries)    ; summaries: a list of stratify-explorer--summary
+  name kind how count breakpoints
+  usual-format      ; the format that suits its numbers, which a new summary gets
+  planned           ; the summaries stratify-plan suggests, (function heading format), that the form begins with
+  (summaries '())   ; a list of stratify-explorer--summary, in order
+  rows)             ; the box the summaries' rows are in
 
 (defstruct stratify-explorer--summary
-  function percentile heading format (automatic ""))   ; automatic: the heading the form wrote, to replace if it changes
+  function percentile heading format (automatic "")   ; automatic: the heading the form wrote, to replace if it changes
+  row)              ; the row of its widgets, with the x that takes it away
 
 (defstruct stratify-explorer--state
-  table name columns weight charts chart-column output accordion)
+  table name columns weight charts chart-column output (accordion '()))
 
 (define stratify-explorer-ways '("hide" "each" "top" "equal-count" "equal-weight" "year" "breakpoints"))
 
@@ -40,7 +46,6 @@
   '("(none)" "mean" "weighted-mean" "median" "weighted-median" "sum" "min" "max" "stdev" "percentile"
     "weighted-percentile" "mode" "weighted-mode" "representative" "first" "last"))
 
-(define stratify-explorer--summaries-per-column 2)
 (define stratify-explorer--no-weight "(none)")
 (define stratify-explorer--first-summary "(first summary)")   ; the chart's line is the tables' first summary, as plot-stratification's is
 
@@ -125,7 +130,8 @@ chosen, if its format is empty."
          (heading-box (make-widget "Text" :value heading :placeholder "heading" :layout (stratify-explorer--layout "200px")))
          (format-box (make-widget "Text" :value format-text :placeholder ",.2f" :layout (stratify-explorer--layout "110px")))
          (summary (make-stratify-explorer--summary :function choice :percentile percentile :heading heading-box
-                                                   :format format-box :automatic heading))
+                                                   :format format-box :automatic heading
+                                                   :row (widget-row choice percentile heading-box format-box)))
          (suggest (lambda ()
                     ; a new function gets a new heading, unless the user has typed one of their own
                     (let ((typed (widget-get heading-box "value")))
@@ -148,26 +154,59 @@ chosen, if its format is empty."
     (widget-on-change percentile "value" (lambda (p) (suggest)))
     summary))
 
-(define (stratify-explorer--section column profile row)
-  "The widgets in a column's section of the accordion, as one box."
-  (let* ((summaries (stratify-explorer--column-summaries column))
-         (count (stratify-explorer--column-count column))
+(define (stratify-explorer--show-rows column)
+  "Put the column's summaries' rows in its box, in order."
+  (widget-set! (stratify-explorer--column-rows column) "children"
+               (map stratify-explorer--summary-row (stratify-explorer--column-summaries column))))
+
+(define (stratify-explorer--add-summary state column function heading format-text)
+  "Add a summary to the column, at the end -- its function, heading and format, as text -- with a x that takes it away,
+and show it."
+  (let* ((summary (stratify-explorer--summary-widgets (stratify-explorer--column-name column) function heading format-text
+                                                      (stratify-explorer--column-usual-format column)))
+         (remove (make-widget "Button" :description "x" :tooltip "take this summary away"
+                              :layout (stratify-explorer--layout "36px")))
+         (row (stratify-explorer--summary-row summary)))
+    (widget-set! row "children" (append (widget-get row "children") (list remove)))
+    (widget-on-change (stratify-explorer--summary-function summary) "value"
+                      (lambda (chosen) (stratify-explorer--changed state)))
+    (widget-on-change (stratify-explorer--summary-heading summary) "value"
+                      (lambda (heading) (stratify-explorer--offer-chart-columns state)))
+    (widget-on-click remove
+                     (lambda ()
+                       (stratify-explorer--column-summaries-set!
+                         column (filter (lambda (other) (not (eq? other summary))) (stratify-explorer--column-summaries column)))
+                       (stratify-explorer--show-rows column)
+                       (stratify-explorer--changed state))
+                     :output (stratify-explorer--state-output state))
+    (stratify-explorer--column-summaries-set! column (append (stratify-explorer--column-summaries column) (list summary)))
+    (stratify-explorer--show-rows column)
+    (stratify-explorer--changed state)
+    summary))
+
+(define (stratify-explorer--section state column profile row)
+  "The widgets in a column's section of the accordion, as one box: a line about the column, how it is stratified, and
+its summaries, with a button that adds another. It begins with the summaries the plan suggests, or one that is none."
+  (let* ((count (stratify-explorer--column-count column))
          (breakpoints (stratify-explorer--column-breakpoints column))
+         (add (widget-button "+ add a summary" (lambda () (stratify-explorer--add-summary state column "(none)" "" ""))
+                             :output (stratify-explorer--state-output state)))
          (show-fields (lambda (way)
                         (widget-visible count (if (member way '("top" "equal-count" "equal-weight")) #t #f))
                         (widget-visible breakpoints (equal? way "breakpoints")))))
+    (stratify-explorer--column-rows-set! column (widget-column))
+    (dolist (planned (if (null? (stratify-explorer--column-planned column))
+                         (list (list "(none)" "" ""))
+                         (stratify-explorer--column-planned column)))
+      (apply stratify-explorer--add-summary state column planned))
     (show-fields (widget-get (stratify-explorer--column-how column) "value"))
     (widget-on-change (stratify-explorer--column-how column) "value" show-fields)
-    (apply widget-column
-           (append
-             (list (make-widget "HTML" :value (stratify-explorer--profile-line profile row))
+    (widget-column (make-widget "HTML" :value (stratify-explorer--profile-line profile row))
                    (make-widget "HTML" :value "<b>Stratify by this column</b>")
                    (widget-row (stratify-explorer--column-how column) count breakpoints)
-                   (make-widget "HTML" :value "<b>Summarize it in the other tables</b> (function, heading, format)"))
-             (map (lambda (summary)
-                    (widget-row (stratify-explorer--summary-function summary) (stratify-explorer--summary-percentile summary)
-                                (stratify-explorer--summary-heading summary) (stratify-explorer--summary-format summary)))
-                  summaries)))))
+                   (make-widget "HTML" :value "<b>Summarize it in the other tables</b> (function, heading, format)")
+                   (stratify-explorer--column-rows column)
+                   add)))
 
 (define (stratify-explorer--title column)
   "A column's title in the accordion: its name, how it is stratified, and how it is summarized."
@@ -196,31 +235,27 @@ numbers (or that the plan hid)."
           (else ""))))
 
 (define (stratify-explorer--column-of name kind plan-by plan-summaries plan-formats)
-  "The widgets of one column, with what the plan says for it to begin with."
+  "The widgets of one column, with what the plan says for it to begin with. Its summaries are added when its section is
+made (stratify-explorer--section)."
   (destructuring-bind (way count breakpoint-text) (stratify-explorer--way (if (pair? plan-by) (cadr plan-by) 'hide))
-    (let* ((usual (stratify-explorer--usual-format name kind plan-summaries plan-formats))
-           (summaries
-             (loop for place from 0 below stratify-explorer--summaries-per-column
-                   collect (let ((planned (if (< place (length plan-summaries)) (list-ref plan-summaries place) '())))
-                             (if (null? planned)
-                                 (stratify-explorer--summary-widgets name "(none)" "" "" usual)
-                                 (let* ((function (cadr planned))
-                                        (heading (if (> (length planned) 2) (caddr planned) ""))
-                                        (found (assoc heading plan-formats)))
-                                   (stratify-explorer--summary-widgets
-                                     name (if (pair? function) (symbol->string (car function)) (symbol->string function))
-                                     heading (if found (cadr found) "") usual)))))))
-      (make-stratify-explorer--column
-        :name name :kind kind
-        :how (make-widget "Dropdown" :options stratify-explorer-ways :value way :layout (stratify-explorer--layout "150px"))
-        :count (make-widget "IntText" :value count :description "n" :layout (stratify-explorer--layout "120px"))
-        :breakpoints (make-widget "Text" :value breakpoint-text :placeholder "4.0 5.0 6.0"
-                                  :layout (stratify-explorer--layout "260px"))
-        :summaries summaries))))
+    (make-stratify-explorer--column
+      :name name :kind kind
+      :how (make-widget "Dropdown" :options stratify-explorer-ways :value way :layout (stratify-explorer--layout "150px"))
+      :count (make-widget "IntText" :value count :description "n" :layout (stratify-explorer--layout "120px"))
+      :breakpoints (make-widget "Text" :value breakpoint-text :placeholder "4.0 5.0 6.0"
+                                :layout (stratify-explorer--layout "260px"))
+      :usual-format (stratify-explorer--usual-format name kind plan-summaries plan-formats)
+      :planned (map (lambda (planned)
+                      (let* ((function (cadr planned))
+                             (heading (if (> (length planned) 2) (caddr planned) ""))
+                             (found (assoc heading plan-formats)))
+                        (list (if (pair? function) (symbol->string (car function)) (symbol->string function))
+                              heading (if found (cadr found) ""))))
+                    plan-summaries))))
 
 (define (stratify-explorer table &key (weight '()) (name "table"))
-  "A form for choosing how to stratify the table: a section for each column -- how it is stratified, up to two ways it is
-summarized in the other tables, with their headings, and their formats -- which starts from what stratify-plan
+  "A form for choosing how to stratify the table: a section for each column -- how it is stratified, and the ways it is
+summarized in the other tables (as many as you add), with their headings and formats -- which starts from what stratify-plan
 suggests (with :weight, the weight column, if there is one). Above them are the weight column, a box to tick for
 charts, and buttons: Make the tables, which runs stratify-all and shows the tables (and charts) under the form, and Show
 the code, which shows the call that makes them, with :name (\"table\") for the table. It is a widget: the value of a cell
@@ -247,16 +282,12 @@ shows it. stratify-explorer-plan reads what is chosen."
          (charts (make-widget "Checkbox" :value #f :description "Charts"))
          (chart-column (make-widget "Dropdown" :options (list stratify-explorer--first-summary)
                                     :value stratify-explorer--first-summary :description "chart line"))
+         (state (make-stratify-explorer--state :table table :name name :columns columns :weight weight-choice
+                                               :charts charts :chart-column chart-column :output output))
          (accordion (make-widget "Accordion"
                                  :children (loop for column in columns for row from 0
-                                                 collect (stratify-explorer--section column profile row))
-                                 :titles (map stratify-explorer--title columns)))
-         (state (make-stratify-explorer--state :table table :name name :columns columns :weight weight-choice
-                                               :charts charts :chart-column chart-column :output output
-                                               :accordion accordion))
-         (retitle (lambda (value)
-                    (widget-set! accordion "titles" (map stratify-explorer--title columns))
-                    (stratify-explorer--offer-chart-columns state)))
+                                                 collect (stratify-explorer--section state column profile row))))
+         (retitle (lambda (value) (stratify-explorer--changed state)))
          (form (widget-column
                  (widget-row weight-choice chart-column charts
                              (widget-button "Make the tables"
@@ -267,15 +298,12 @@ shows it. stratify-explorer-plan reads what is chosen."
                                             :output output))
                  accordion
                  output)))
+    (stratify-explorer--state-accordion-set! state accordion)
     (dolist (column columns)
       (widget-on-change (stratify-explorer--column-how column) "value" retitle)
       (widget-on-change (stratify-explorer--column-count column) "value" retitle)
-      (widget-on-change (stratify-explorer--column-breakpoints column) "value" retitle)
-      (dolist (summary (stratify-explorer--column-summaries column))
-        (widget-on-change (stratify-explorer--summary-function summary) "value" retitle)
-        (widget-on-change (stratify-explorer--summary-heading summary) "value"
-                          (lambda (heading) (stratify-explorer--offer-chart-columns state)))))
-    (stratify-explorer--offer-chart-columns state)
+      (widget-on-change (stratify-explorer--column-breakpoints column) "value" retitle))
+    (stratify-explorer--changed state)
     (widget-set-tag! form state)
     form))
 
@@ -357,6 +385,14 @@ weight of stratify-explorer-weight) and the formats of display-table."
                                     (not (equal? (widget-get (stratify-explorer--summary-heading summary) "value") ""))))
                              (stratify-explorer--column-summaries column))))
               (stratify-explorer--state-columns state))))
+
+(define (stratify-explorer--changed state)
+  "Something on the form has changed: say what is chosen in the sections' titles, and offer the summaries there are as
+the chart's line. (While the sections are being made there is no accordion yet, and nothing to do.)"
+  (let ((accordion (stratify-explorer--state-accordion state)))
+    (unless (null? accordion)
+      (widget-set! accordion "titles" (map stratify-explorer--title (stratify-explorer--state-columns state)))
+      (stratify-explorer--offer-chart-columns state))))
 
 (define (stratify-explorer--offer-chart-columns state)
   "Make the choices of the chart's line the summaries the form has now: the first summary, as plot-stratification's own
