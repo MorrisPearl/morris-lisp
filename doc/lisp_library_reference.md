@@ -4648,10 +4648,12 @@ In a column's section:
 
 A section's title says what is chosen (`rate: equal-count 5; weighted-mean, mean`). Everything starts from what
 `stratify-plan` suggests. Above the sections are the **weight** column (for the weighted functions and `equal-weight`
-buckets; a choice of none, or of the table's numeric columns), a **Charts** box, and two buttons: **Make the tables**,
-which runs `stratify-all` with what is chosen and shows each table under the form (and its chart, from
+buckets; a choice of none, or of the table's numeric columns); the **chart line**, the summary that the charts draw as
+a line over their bars (`plot-stratification`'s `:column`: the first summary, or any of the headings the form has
+now, which the choice follows as summaries are added and renamed); a **Charts** box; and two buttons: **Make the
+tables**, which runs `stratify-all` with what is chosen and shows each table under the form (and its chart, from
 `plot-stratification`, if Charts is ticked), and **Show the code**, which shows the `stratify-all` call that makes the
-same tables, with `:name` for the table, to copy into a cell. A weighted function or `equal-weight` without a weight
+same tables (and the `plot-stratification` call, if Charts is ticked), with `:name` for the table, to copy into a cell. A weighted function or `equal-weight` without a weight
 column, or a breakpoint that isn't a number, is an error that says which column, shown under the form.
 
 ```lisp
@@ -4671,8 +4673,11 @@ What it shows when you choose `top` 2 for `state`, and `mean` as a second summar
       ("rate" mean "mean rate")
       ("age" weighted-mean "avg age"))
     :weight "balance"))
+(define formats
+  '(("count" ",d")
+    ...))
 (dolist (table strats)
-  (display-table table '(("count" ",d") ...)))
+  (display-table table formats))
 ```
 
 The form can also be read from a cell:
@@ -4680,6 +4685,8 @@ The form can also be read from a cell:
 - `(stratify-explorer-plan explorer)` is what is chosen, as `(bys summaries formats)`: the arguments of `stratify-all`
   and the formats of `display-table`, as `stratify-plan` gives them.
 - `(stratify-explorer-weight explorer)` is the weight column chosen, or `'()`.
+- `(stratify-explorer-chart-column explorer)` is the heading of the summary the charts draw as a line, or `'()` for the
+  first summary.
 - `(stratify-explorer-tables explorer)` is the list of tables, as Make the tables makes them.
 - `(stratify-explorer-code explorer)` is the code that Show the code shows, as text.
 

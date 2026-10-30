@@ -32,7 +32,7 @@
   function percentile heading format (automatic ""))   ; automatic: the heading the form wrote, to replace if it changes
 
 (defstruct stratify-explorer--state
-  table name columns weight charts output accordion)
+  table name columns weight charts chart-column output accordion)
 
 (define stratify-explorer-ways '("hide" "each" "top" "equal-count" "equal-weight" "year" "breakpoints"))
 
@@ -42,6 +42,7 @@
 
 (define stratify-explorer--summaries-per-column 2)
 (define stratify-explorer--no-weight "(none)")
+(define stratify-explorer--first-summary "(first summary)")   ; the chart's line is the tables' first summary, as plot-stratification's is
 
 ; ---------------------------------------------------------------------------
 ; 1. From the plan to the form's values, and back
@@ -244,15 +245,20 @@ shows it. stratify-explorer-plan reads what is chosen."
                                      :value (if (null? weight) stratify-explorer--no-weight weight)
                                      :description "weight"))
          (charts (make-widget "Checkbox" :value #f :description "Charts"))
+         (chart-column (make-widget "Dropdown" :options (list stratify-explorer--first-summary)
+                                    :value stratify-explorer--first-summary :description "chart line"))
          (accordion (make-widget "Accordion"
                                  :children (loop for column in columns for row from 0
                                                  collect (stratify-explorer--section column profile row))
                                  :titles (map stratify-explorer--title columns)))
          (state (make-stratify-explorer--state :table table :name name :columns columns :weight weight-choice
-                                               :charts charts :output output :accordion accordion))
-         (retitle (lambda (value) (widget-set! accordion "titles" (map stratify-explorer--title columns))))
+                                               :charts charts :chart-column chart-column :output output
+                                               :accordion accordion))
+         (retitle (lambda (value)
+                    (widget-set! accordion "titles" (map stratify-explorer--title columns))
+                    (stratify-explorer--offer-chart-columns state)))
          (form (widget-column
-                 (widget-row weight-choice charts
+                 (widget-row weight-choice chart-column charts
                              (widget-button "Make the tables"
                                             (lambda () (widget-clear output) (stratify-explorer--make-tables state #t))
                                             :output output :button-style "primary")
@@ -266,7 +272,10 @@ shows it. stratify-explorer-plan reads what is chosen."
       (widget-on-change (stratify-explorer--column-count column) "value" retitle)
       (widget-on-change (stratify-explorer--column-breakpoints column) "value" retitle)
       (dolist (summary (stratify-explorer--column-summaries column))
-        (widget-on-change (stratify-explorer--summary-function summary) "value" retitle)))
+        (widget-on-change (stratify-explorer--summary-function summary) "value" retitle)
+        (widget-on-change (stratify-explorer--summary-heading summary) "value"
+                          (lambda (heading) (stratify-explorer--offer-chart-columns state)))))
+    (stratify-explorer--offer-chart-columns state)
     (widget-set-tag! form state)
     form))
 
@@ -338,6 +347,36 @@ weight of stratify-explorer-weight) and the formats of display-table."
   "The stratification tables that the form says to make, as a list, as Make the tables makes them."
   (stratify-explorer--tables-of (stratify-explorer--state-of explorer "stratify-explorer-tables")))
 
+(define (stratify-explorer--summary-headings state)
+  "The headings of the summaries the form has now, in order: the columns that the tables have besides their counts."
+  (apply append
+         (map (lambda (column)
+                (map (lambda (summary) (widget-get (stratify-explorer--summary-heading summary) "value"))
+                     (filter (lambda (summary)
+                               (and (not (equal? (widget-get (stratify-explorer--summary-function summary) "value") "(none)"))
+                                    (not (equal? (widget-get (stratify-explorer--summary-heading summary) "value") ""))))
+                             (stratify-explorer--column-summaries column))))
+              (stratify-explorer--state-columns state))))
+
+(define (stratify-explorer--offer-chart-columns state)
+  "Make the choices of the chart's line the summaries the form has now: the first summary, as plot-stratification's own
+line is, and each heading. The one chosen stays chosen if it is still there."
+  (let* ((choice (stratify-explorer--state-chart-column state))
+         (chosen (widget-get choice "value"))
+         (options (cons stratify-explorer--first-summary (stratify-explorer--summary-headings state))))
+    (unless (equal? (widget-get choice "options") options)
+      (widget-set! choice "options" options)
+      (widget-set! choice "value" (if (member chosen options) chosen stratify-explorer--first-summary)))))
+
+(define (stratify-explorer--chart-column-of state)
+  "The heading of the summary the charts' line is of, or '() for the first summary."
+  (let ((chosen (widget-get (stratify-explorer--state-chart-column state) "value")))
+    (if (equal? chosen stratify-explorer--first-summary) '() chosen)))
+
+(define (stratify-explorer-chart-column explorer)
+  "The heading of the summary the form's charts draw as a line, or '() for the first summary."
+  (stratify-explorer--chart-column-of (stratify-explorer--state-of explorer "stratify-explorer-chart-column")))
+
 (define (stratify-explorer--make-tables state show?)
   "Make the tables the form says, and show each (and its chart, if Charts is ticked)."
   (let ((formats (third (stratify-explorer--plan-of state)))
@@ -347,19 +386,26 @@ weight of stratify-explorer-weight) and the formats of display-table."
     (dolist (table tables)
       (display-table table formats)
       (when (widget-get (stratify-explorer--state-charts state) "value")
-        (plot-stratification table :formats formats))
+        (let ((line (stratify-explorer--chart-column-of state)))
+          (if (null? line)
+              (plot-stratification table :formats formats)
+              (plot-stratification table :formats formats :column line))))
       (newline))
     tables))
 
 (define (stratify-explorer-code-of state)
-  "The code that makes the tables the form says, as text."
+  "The code that makes the tables the form says, as text (and their charts, if Charts is ticked)."
   (destructuring-bind (bys summaries formats) (stratify-explorer--plan-of state)
     (let* ((weight (stratify-explorer--weight-of state))
+           (line (stratify-explorer--chart-column-of state))
            (quoted (lambda (items) (string-join (map (lambda (item) (format "{}" item)) items) "\n      "))))
-      (format "(define strats\n  (stratify-all {}\n    '({})\n    '({}){}))\n(dolist (table strats)\n  (display-table table '({})))\n"
+      (format "(define strats\n  (stratify-all {}\n    '({})\n    '({}){}))\n(define formats\n  '({}))\n(dolist (table strats)\n  (display-table table formats){})\n"
               (stratify-explorer--state-name state) (quoted bys) (quoted summaries)
               (if (null? weight) "" (format "\n    :weight \"{}\"" weight))
-              (quoted formats)))))
+              (quoted formats)
+              (cond ((not (widget-get (stratify-explorer--state-charts state) "value")) "")
+                    ((null? line) "\n  (plot-stratification table :formats formats)")
+                    (else (format "\n  (plot-stratification table :formats formats :column \"{}\")" line)))))))
 
 (define (stratify-explorer-code explorer)
   "The code that makes the tables the form says, as text: a stratify-all call, and display-table for each table."

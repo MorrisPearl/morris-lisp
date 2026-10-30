@@ -151,3 +151,30 @@ class TestStratifyExplorer(LispTestCase):
 
     def test_a_widget_that_is_not_an_explorer_is_an_error(self):
         self.assertLispError('(stratify-explorer-plan (make-widget "Button"))', "not a form that stratify-explorer made")
+
+    def test_the_charts_line_is_chosen_from_the_summaries(self):
+        line = self.top(1)
+        self.assertEqual(line.description, "chart line")
+        self.assertEqual(list(line.options), ["(first summary)", "avg rate", "avg age"])
+        function, _, heading, _ = self.summary("rate", 1)
+        function.value = "mean"                                        # a new summary is a new choice
+        self.assertEqual(list(line.options), ["(first summary)", "avg rate", "mean rate", "avg age"])
+        line.value = "mean rate"
+        heading.value = "plain rate"                                   # renamed: the old name is gone, and the first is chosen
+        self.assertEqual(list(line.options), ["(first summary)", "avg rate", "plain rate", "avg age"])
+        self.assertEqual(line.value, "(first summary)")
+        self.assertEqual(self.run_lisp("(stratify-explorer-chart-column explorer)"), lisp_core.NIL)
+        line.value = "avg age"
+        self.assertEqual(self.run_lisp("(stratify-explorer-chart-column explorer)"), "avg age")
+        # the charts draw it, and the code says so, when Charts is ticked
+        self.top(2).value = True
+        self.run_lisp("""(define drawn '())
+                         (define (plot-stratification table &key formats column) (set! drawn (cons column drawn)))""")
+        self.run_lisp("(stratify-explorer--make-tables (widget-tag explorer) #t)")
+        self.assertEqual(self.show_value(self.run_lisp("drawn")), '("avg age" "avg age" "avg age" "avg age")')       # (a chart for each of the four tables)
+        code = str(self.run_lisp("(stratify-explorer-code explorer)"))
+        self.assertIn('(plot-stratification table :formats formats :column "avg age")', code)
+        line.value = "(first summary)"
+        self.assertIn("(plot-stratification table :formats formats))", str(self.run_lisp("(stratify-explorer-code explorer)")))
+        self.top(2).value = False
+        self.assertNotIn("plot-stratification", str(self.run_lisp("(stratify-explorer-code explorer)")))
