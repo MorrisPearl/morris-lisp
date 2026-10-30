@@ -4631,7 +4631,7 @@ A table of several columns labels each bar with the buckets, joined by
     (plot-stratification table :formats formats)))
 ```
 
-#### `(stratify-explorer table [:weight column] [:name text])`
+#### `(stratify-explorer table [:weight column] [:name text] [:plan saved])`
 (In `lib/stratify_explorer.lsp`.) A **form in a notebook** for choosing how to stratify a table, instead of writing the
 lists of `stratify-all` by hand. It is an *accordion*: a section for each column, which opens when its title is clicked.
 In a column's section:
@@ -4640,37 +4640,61 @@ In a column's section:
 - **Stratify by this column**: `hide` (no table of it), `each`, `top`, `equal-count`, `equal-weight` (with an `n` for
   those three), `year`, or `breakpoints`, typed as numbers (`4.0 5.0 6.0`) or, for a column of dates, dates
   (`2022-01-01 2024-01-01`);
+- **+ and by another column**: what else its table is split by, as many columns as you like, each bucketed *as in its
+  section* or in a way of its own -- a table of state, and by rate (under 5 and over) within each state, and by year
+  within that. It is `stratify`'s list of `(column how)`;
 - **Summarize it in the other tables**: a row for each summary, as many as you like -- **+ add a summary** adds one,
   and the **x** at the end of a row takes it away -- so a column can be summarized several ways: an average and a
   weighted average, the min, the average and the max, or the 10th, 50th and 90th percentiles. Each row is a function
   (any of `stratify`'s), the percentile (for the percentile functions), the heading of its column in the tables, and the
   format it is shown in (`".3f"`, `",.0f"`, `".1%"`). Choosing a function fills in a heading (`mean rate`, `wavg rate`,
   `rate p90`) and the format that suits the column's numbers, unless you have typed your own. A column begins with the
-  summary `stratify-plan` suggests, or with one row of none.
+  summary `stratify-plan` suggests, or with one row of none;
+- **Make this table**: its table alone, which is quicker than all of them, on a big table.
 
-A section's title says what is chosen (`rate: equal-count 5; weighted-mean, min, max`). Everything starts from what
-`stratify-plan` suggests. Above the sections are the **weight** column (for the weighted functions and `equal-weight`
-buckets; a choice of none, or of the table's numeric columns); the **chart line**, the summary that the charts draw as
-a line over their bars (`plot-stratification`'s `:column`: the first summary, or any of the headings the form has
-now, which the choice follows as summaries are added and renamed); a **Charts** box; and two buttons: **Make the
-tables**, which runs `stratify-all` with what is chosen and shows each table under the form (and its chart, from
-`plot-stratification`, if Charts is ticked), and **Show the code**, which shows the `stratify-all` call that makes the
-same tables (and the `plot-stratification` call, if Charts is ticked), with `:name` for the table, to copy into a cell. A weighted function or `equal-weight` without a weight
-column, or a breakpoint that isn't a number, is an error that says which column, shown under the form.
+A section's title says what is chosen (`state: top 5, and by rate; representative`). Everything starts from what
+`stratify-plan` suggests. Above the sections:
+
+- the **weight** column (for the weighted functions and `equal-weight` buckets: none, or one of the table's numeric
+  columns); the **chart line**, the summary the charts draw as a line over their bars (`plot-stratification`'s
+  `:column`: the first summary, or any of the headings the form has now, which the choice follows as summaries are added
+  and renamed); and boxes for **charts**, the **total row** (`stratify`'s `:total`), and **grids** (each table as a grid
+  that sorts, `table-grid`, instead of as text);
+- **The rows to use**: conditions, as many as you like (**+ add a condition**, and an **x** on each), which a row must
+  all meet: a column, a test (`=`, `not =`, `<`, `<=`, `>`, `>=`, `one of`, `missing`, `not missing`), and a value -- a
+  number, for a column of numbers; a date (`2025-01-01`), for one of dates; and for `one of`, values with commas between
+  them (`CA, NY, TX`). With none, every row is used;
+- **Make the tables**, which runs `stratify-all` on the rows to use and shows each table under the form (and its chart,
+  if charts is ticked), and **Show the code**, which shows the code that does the same -- the `table-filter` of the rows,
+  the `stratify-all` call, and `display-table` and `plot-stratification` for each table -- with `:name` for the table, to
+  copy into a cell;
+- a **name** (`"loans strata"`, from `:name`), and buttons that write the tables out under it: **Write CSV files**, a file
+  for each table (`loans_strata-rate.csv`, `loans_strata-state-rate.csv`, in the notebook's folder); **Write a Google
+  Sheet**, a spreadsheet of that name with a tab for each table, in their formats (`google-sheet`, with `creds`; sign in
+  with `google-login` first); and **Write a report**, a Markdown file (`loans_strata.md`) with a heading and a table for
+  each, after a line that says which rows were used and the weight.
+
+Two summaries with the same heading are warned of above the sections at once. A weighted function or `equal-weight`
+without a weight column, a breakpoint or a condition's value that isn't a number, or a split by a column that its own
+section hides, is an error that says which column, shown under the form.
 
 ```lisp
 (define explorer (stratify-explorer loans :weight "balance" :name "loans"))
 explorer                                 ; the form: the value of a cell shows it
 ```
 
-What it shows when you choose `top` 2 for `state`, and `mean` as a second summary of `rate`, and press Show the code:
+What Show the code shows for a form with a condition (balances of 60,000 or more), a table of state split by rate too,
+and `mean` as a second summary of `rate`:
 
 ```
+(define rows
+  (table-filter loans
+    (>= (table-column loans "balance") 60000)))
 (define strats
-  (stratify-all loans
+  (stratify-all rows
     '(("rate" each)
       ("age" each)
-      ("state" (top 2)))
+      (("state" each) ("rate" (5.0))))
     '(("rate" weighted-mean "avg rate")
       ("rate" mean "mean rate")
       ("age" weighted-mean "avg age"))
@@ -4682,6 +4706,13 @@ What it shows when you choose `top` 2 for `state`, and `mean` as a second summar
   (display-table table formats))
 ```
 
+**Saving what is chosen.** Setting up the form for a table of thirty columns is work, and a new kernel forgets it.
+`(stratify-explorer-save explorer "loans_strats.lsp")` writes everything the form says -- the boxes, the conditions,
+and for each column how it is stratified, what it is split by, and its summaries -- to a file, as a Lisp list you can
+read. `(stratify-explorer table :plan "loans_strats.lsp")` makes a form that starts from it, another day, or for
+another table of the same columns (a column it hasn't is passed over). `:plan` takes the list itself too, from
+`(stratify-explorer-settings explorer)`.
+
 The form can also be read from a cell:
 
 - `(stratify-explorer-plan explorer)` is what is chosen, as `(bys summaries formats)`: the arguments of `stratify-all`
@@ -4689,8 +4720,10 @@ The form can also be read from a cell:
 - `(stratify-explorer-weight explorer)` is the weight column chosen, or `'()`.
 - `(stratify-explorer-chart-column explorer)` is the heading of the summary the charts draw as a line, or `'()` for the
   first summary.
+- `(stratify-explorer-rows explorer)` is the rows the conditions say to use: the table, filtered.
 - `(stratify-explorer-tables explorer)` is the list of tables, as Make the tables makes them.
 - `(stratify-explorer-code explorer)` is the code that Show the code shows, as text.
+- `(stratify-explorer-settings explorer)` is everything the form says, as the list `stratify-explorer-save` writes.
 
 `examples/stratify_example.lsp` makes a report of eight tables from a
 pool of 5,000 made-up loans, and shows how to load real loan data from
