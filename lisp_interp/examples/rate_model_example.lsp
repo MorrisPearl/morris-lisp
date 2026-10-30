@@ -6,24 +6,18 @@
 ; 10-year Treasury note future (the long end). The model's three numbers -- how fast the short rate follows the
 ; long-run level (a), and the volatility of each (sigma1, sigma2) -- are found for which the model's prices of both
 ; are nearest the market's. Paths are then drawn from the fitted model. They start where the market is today: the
-; 10-year yield of day one is today's. See "Interest rate paths" in the
-; library manual (rate_paths_example.lsp takes the paths apart). Needs a tastytrade account (creds, in init.lsp), and downloads the Treasury's yield curve.
+; 10-year yield of day one is today's. See lisp_paths_manual.md (rate_paths_example.lsp takes the paths apart). Needs a tastytrade account (creds, in init.lsp), and downloads the Treasury's yield curve.
 ; Read-only. Run it from the examples directory:
 ;   python3 ../lisp_interpreter.py rate_model_example.lsp
 ; It saves a chart, rate_model_paths.png.
 
-(load "yield_curves.lsp")
-(load "note_options.lsp")
-
 ; --- Market data: the Treasury's forward curve, SOFR futures and their options, and 10-year note options ---
-(define treasury (table-column (curve-forward-rates (treasury-zero-curve (treasury-par-curve))) "forward"))
-(define sofr-data (sofr-calibration-data creds 40 8 3))
-(define sofr-curve (cdr (sofr-forward-curve (car sofr-data))))
-(define sofr-months (apply max (map third (car sofr-data))))        ; how far out the SOFR futures go
+(define treasury (curve-forward-rates (treasury-zero-curve (treasury-par-curve))))
+(define sofr-data (sofr-calibration-data creds 40 8 3))              ; SOFR futures (car) and options on them (cdr)
 (define note-rows (note-option-rows (tastytrade-option-chain creds "ZN" 12 12) :min-days 20 :max-days 120))
 
 ; --- Calibrate: one model that prices both kinds of option ---
-(define fit (calibrate-rate-model sofr-curve treasury (cdr sofr-data) note-rows sofr-months))
+(define fit (calibrate-rate-model treasury (cdr sofr-data) note-rows))
 (define (fitted name) (cdr (assoc name fit)))
 (display (format "a = {:.2f}, sigma1 = {:.4f}, sigma2 = {:.4f}. The model's volatilities are {:.0%} from the SOFR options' and {:.0%} from the notes'.\n"
                  (fitted 'a) (fitted 'sigma1) (fitted 'sigma2) (fitted 'sofr-error) (fitted 'note-error)))

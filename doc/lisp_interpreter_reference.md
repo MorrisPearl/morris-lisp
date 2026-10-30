@@ -23,7 +23,10 @@ investments. Its first chapter, ["Where things are"](lisp_library_reference.md#w
 [lisp_example_programs.md](lisp_example_programs.md)**, describes the programs in
 `examples/` -- a chess player, a SQL interpreter, ELIZA, a Prolog, models of
 mortgages, and a script for each part of the library -- and explains the
-programming techniques they show.
+programming techniques they show. **Yield curves and simulated paths**, of interest rates
+and of investment prices, are in [lisp_paths_manual.md](lisp_paths_manual.md); structured
+deals in [lisp_cmo_manual.md](lisp_cmo_manual.md); forecasting questions in
+[lisp_forecasting_manual.md](lisp_forecasting_manual.md).
 
 This document aims to cover **every builtin and special form** of the
 language: what its arguments mean, what it returns, and any non-obvious

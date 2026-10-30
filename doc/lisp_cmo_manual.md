@@ -5,11 +5,12 @@ floater and an inverse floater that together are worth what they were cut from. 
 what a deal is made of, how to build one, how each kind of bond is paid, and how losses and shortfalls are handled. The functions are loaded
 when you call one of them (see `lazy-load`), so there is nothing to load; `(load "deal.lsp")` loads them all at once.
 
-There are five documents. The **language manual**, [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the syntax and the
+There are six documents. The **language manual**, [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the syntax and the
 general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is made of are there). The **library manual**,
 [lisp_library_reference.md](lisp_library_reference.md), covers getting data, models, and investments. The **example programs**,
 [lisp_example_programs.md](lisp_example_programs.md), say how whole programs are put together; `examples/deal_example.lsp` is this model's. The **forecasting manual**,
-[lisp_forecasting_manual.md](lisp_forecasting_manual.md), covers questions such as Good Judgment Open's.
+[lisp_forecasting_manual.md](lisp_forecasting_manual.md), covers questions such as Good Judgment Open's. The **paths manual**,
+[lisp_paths_manual.md](lisp_paths_manual.md), covers the yield curves and the paths of interest rates that a deal is priced on.
 **This one is about the deal model.** A section name in quotes is a section of the language manual, unless it says otherwise.
 
 <!-- This list is made from the headings below: after adding or renaming a section, run
@@ -624,7 +625,7 @@ borrowers refinance, and a bond that was bought above par is paid back early, wh
 over the Treasury curve leaves that out, and so does a modified duration. The **option-adjusted spread** (OAS) puts it in, and the **effective duration** says how much a bond falls in value when
 rates rise, *with* the prepayments that follow.
 
-The method is a simulation. The deal is run on many **paths of interest rates**, each a possible future (see "Interest rate paths" in the library manual). On each path the collateral is prepaid
+The method is a simulation. The deal is run on many **paths of interest rates**, each a possible future (see [lisp_paths_manual.md](lisp_paths_manual.md)). On each path the collateral is prepaid
 by a **prepayment model**, which can look at the rates of the path, so the collateral pays differently on each, and so does every bond. A tranche is worth the **average**, over the paths, of
 its cash flows, each discounted along its own path. The OAS of a tranche is the one spread, added to the short rate of every month of every path, that makes that average the money that the buyer pays.
 An OAS of 0 is a price on the Treasury curve (the paths start on it, so their discount factors average to its); the more the borrowers' option is worth, the lower the OAS of a given price.

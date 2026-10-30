@@ -21,9 +21,9 @@
 
 ; --- 1. fetch the current SR3 strip and bootstrap the forward curve ---
 (define sofr-curve-rows (tastytrade-futures-curve-rows creds "SR3" 40))
-(define sofr-curve (sofr-forward-curve sofr-curve-rows))
-(define sofr-months (car sofr-curve))
-(define sofr-forward-rates (cdr sofr-curve))   ; (vector-ref sofr-forward-rates (- month 1))
+(define sofr-curve (sofr-forward-curve sofr-curve-rows))          ; a table: months, discount, forward
+(define sofr-months (table-column sofr-curve "months"))
+(define sofr-forward-rates (table-column sofr-curve "forward"))   ; (vector-ref sofr-forward-rates (- month 1))
 
 (display "SOFR forward curve, first 12 months:") (newline)
 (display-table (make-table "month" (vector-slice sofr-months 0 12)

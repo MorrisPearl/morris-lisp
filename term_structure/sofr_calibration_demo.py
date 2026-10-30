@@ -7,8 +7,7 @@ futures and a few options on those futures via tastytrade, bootstrap a
 SOFR forward curve, then calibrate the model -- (a, sigma1, sigma2), with
 b left fixed; see term_structure_model.calibrate_to_sofr_options()'s docstring
 for why -- so the calibration options price correctly under Monte Carlo.
-Can run the grid-search calibrator, the Nelder-Mead one, or both side by
-side for comparison (--method). Then uses the calibrated model to run a
+Then uses the calibrated model to run a
 small Monte Carlo mortgage-rate example: SOFR curve -> 10y par yield
 + a spread -> a proxy 30y mortgage rate, per Monte Carlo path. The
 spread defaults to an EMPIRICAL one -- today's real 30-year mortgage rate
@@ -18,7 +17,7 @@ offer any MBS/TBA product at all).
 
 Run:
     python3 sofr_calibration_demo.py [path/to/credentials.json]
-        [--method {grid,nelder-mead,both}] [--min-expiry-months N]
+        [--min-expiry-months N]
         [--mortgage-spread-bp BP] [--mortgage-paths N] [--mortgage-years N]
 
 If no credentials path is given, defaults to ~/credentials.json (see
@@ -28,7 +27,6 @@ spread lookup).
 """
 
 import argparse
-import functools
 
 import numpy as np
 
@@ -40,15 +38,10 @@ import term_structure_model as tsm
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("credentials_path", nargs="?", default=None)
-    parser.add_argument("--method", choices=["grid", "nelder-mead", "both"], default="both",
-                         help="Which calibration algorithm(s) to run. 'both' (the default) runs "
-                              "both and prints them side by side; the grid-search result is used "
-                              "for everything downstream (the model-vs-market table and the "
-                              "mortgage Monte Carlo).")
-    parser.add_argument("--min-expiry-months", type=int, default=0,
-                         help="Exclude calibration options with expiry_months <= this value "
-                              "(e.g. 1 to drop 1-month-or-shorter options -- useful for checking "
-                              "whether they're behaving anomalously relative to the rest).")
+    parser.add_argument("--min-expiry-months", type=int, default=3,
+                         help="Leave out calibration options with fewer months than this to expiry "
+                              "(3: the model's volatilities are the same at every date, and can't "
+                              "match the front months, where the Fed's next move is nearly known).")
     parser.add_argument("--mortgage-spread-bp", type=float, default=None,
                          help="Override: use this flat spread (bp) instead of computing it from "
                               "the current FRED 30-year mortgage rate.")
@@ -85,62 +78,27 @@ def main():
           f"1-year forward: {forward_rates[11]:.4%}   "
           f"2-year forward: {forward_rates[23]:.4%}")
 
-    # curve_real_months: how many months of forward_rates are the REAL
-    # (non-extrapolated) part of the curve -- see calibrate_to_sofr_options()'s
-    # docstring. b is left fixed in both calibrators.
-    curve_real_months = curve_futures[-1]['end_months']
-    if args.min_expiry_months > 0:
-        print(f"\nExcluding options with expiry_months <= {args.min_expiry_months} "
-              f"from calibration...")
+    print(f"\nCalibrating (a, sigma1, sigma2) to the options with at least {args.min_expiry_months} months "
+          "to expiry, on the same paths simulate_rate_paths() draws (a Nelder-Mead search; some seconds)...")
+    fit = tsm.calibrate_to_sofr_options(forward_rates, options, min_expiry_months=args.min_expiry_months)
+    a, sigma1, sigma2 = fit['a'], fit['sigma1'], fit['sigma2']
+    print(f"  a={a:.5f}  sigma1={sigma1:.5f}  sigma2={sigma2:.5f}  "
+          f"({fit['options_used']} options; the model's volatilities are {fit['error']:.1%} from the market's)")
 
-    results = {}
-    if args.method in ("grid", "both"):
-        print("\nCalibrating (grid search): grid-searching (a, sigma1, sigma2) "
-              "directly against the fetched option prices. Takes roughly "
-              "10-20 seconds (it's a 3-D search)...")
-        results["grid search"] = tsm.calibrate_to_sofr_options(
-            forward_rates, options, curve_real_months, min_expiry_months=args.min_expiry_months)
-    if args.method in ("nelder-mead", "both"):
-        print("\nCalibrating (Nelder-Mead): simplex search for (a, sigma1, sigma2) "
-              "against the same option prices. Typically a few seconds...")
-        results["Nelder-Mead"] = tsm.calibrate_to_sofr_options_nelder_mead(
-            forward_rates, options, curve_real_months, min_expiry_months=args.min_expiry_months)
-
-    print("\nCalibration results:")
-    for label, (a, theta_bar, sigma1, sigma2, error) in results.items():
-        print(f"  {label:<12}  a={a:.5f}  theta_bar={theta_bar:.4%}  "
-              f"sigma1={sigma1:.5f}  sigma2={sigma2:.5f}  total_sq_error={error:.6f}")
-    if len(results) > 1:
-        print(f"  (module default a = {tsm.SHORT_RATE_REVERSION_SPEED} for reference)")
-
-    # Use the grid-search result (if it ran) for everything downstream --
-    # arbitrary but consistent choice between two methods that, per
-    # calibrate_to_sofr_options_nelder_mead()'s docstring, should usually agree
-    # closely; if they don't, that itself is worth a look.
-    a, theta_bar, sigma1, sigma2, error = results.get("grid search") or results["Nelder-Mead"]
-
-    calibration_options = tsm._filter_calibration_options(options, args.min_expiry_months)
-    price_fn = functools.partial(tsm.price_sofr_future_option_mc, a=a, theta_bar=theta_bar)
-    print(f"\nModel price vs. market price after calibration "
-          f"({'grid search' if 'grid search' in results else 'Nelder-Mead'}):")
-    for option in calibration_options:
-        model_price = price_fn(forward_rates, option, sigma1, sigma2)
+    used = [o for o in options if o['expiry_months'] >= args.min_expiry_months]
+    print("\nModel price vs. market price after calibration:")
+    for option, model_price in zip(used, tsm.price_sofr_future_options_mc(forward_rates, used, sigma1, sigma2, a=a)):
         print(f"  {option['type']:<4} strike {option['strike']:<9.4f} "
               f"expiry {option['expiry_months']}m -> "
               f"model {model_price:.4f}  market {option['market_price']:.4f}")
 
     print(
-        "\nNote: some residual gap between model and market prices is "
-        "expected here even after calibration. The model represents the "
-        "whole future rate path with just two state variables (r, theta) "
-        "gliding along a fixed exponential shape, while the real SR3 curve "
-        "is a genuinely stepped/humped strip of quarterly rates -- a 1-2 "
-        "month SOFR option is very sensitive to exactly that near-term "
-        "shape, more so than the multi-year note-future options this model "
-        "was originally built around (their price integrates coupons across "
-        "a full 10-year curve, which smooths over the same shape mismatch). "
-        "See _fit_sofr_theta_bar()'s docstring in term_structure_model.py "
-        "for more."
+        "\nNote: some gap between the model's prices and the market's is "
+        "expected even after calibration: the model's volatilities are the "
+        "same at every date and every strike, and the market's are not (the "
+        "front months move less, and options far from the money cost more). "
+        "SOFR options say little about the long end (sigma2); for paths of "
+        "long rates, fit to the 10-year note options too (calibrate_rate_model)."
     )
 
     if args.mortgage_spread_bp is not None:

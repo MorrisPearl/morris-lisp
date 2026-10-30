@@ -129,6 +129,7 @@ class TestTheRatePathsExample(LispTestCase):
             self.addCleanup(patcher.stop)
 
     def run_example(self):
+        self.run_lisp('(load "autoloads.lsp")')          # (as the interpreter does when it starts)
         with in_a_temporary_folder() as folder:
             lisp_core.run_file(os.path.join(EXAMPLES, "rate_paths_example.lsp"), self.env)
             for chart in ("rate_paths_curve.png", "rate_paths_fan.png"):
@@ -174,9 +175,12 @@ class TestSofrForwardCurve(LispTestCase):
           (define from-tastytrade (sofr-forward-curve tastytrade-rows))
           (define from-calibration (sofr-forward-curve calibration-rows))""")
         self.assertShows("(equal? from-tastytrade from-calibration)", "#t")
-        self.assertShows("(vector-length (car from-tastytrade))", "360")
-        self.assertShows("(vector-ref (car from-tastytrade) 0)", "1")
-        forwards = self.run_lisp("(cdr from-tastytrade)").items
+        self.assertShows("(table-column-names from-tastytrade)", '("months" "discount" "forward")')   # as curve-forward-rates
+        self.assertShows("(table-row-count from-tastytrade)", "360")
+        self.assertShows('(vector-ref (table-column from-tastytrade "months") 0)', "1")
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column from-tastytrade "discount") 2)'), (1 + 0.04 / 12) ** -3,
+                               places=12)
+        forwards = self.run_lisp('(table-column from-tastytrade "forward")').items
         self.assertAlmostEqual(forwards[0], 0.04, places=10)       # the first quarter's rate, each month of it
         self.assertAlmostEqual(forwards[2], 0.04, places=10)
         self.assertAlmostEqual(forwards[3], 0.035, places=10)      # then the second's

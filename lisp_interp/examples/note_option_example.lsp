@@ -6,15 +6,12 @@
 ; much the SHORT rate moves. A mortgage follows the LONG end, and options on the 10-year note future say how much
 ; that moves. Here the model's prices of the options are set beside the market's, and the volatility of the long
 ; end (sigma2) is found for which they are nearest. See "Fitting the model to option prices" under
-; "Interest rate paths" in the library manual.
+; lisp_paths_manual.md.
 ;
 ; Needs a tastytrade account (creds, in init.lsp) for the options, and downloads the Treasury's yield curve. Read-only:
 ; nothing is placed. Run it from the examples directory:
 ;   python3 ../lisp_interpreter.py note_option_example.lsp
 ; It saves a chart, note_option_smile.png.
-
-(load "yield_curves.lsp")
-(load "note_options.lsp")
 
 ; --- The curve the paths are centered on: the Treasury's forward rates, 360 months ---
 (define forwards (table-column (curve-forward-rates (treasury-zero-curve (treasury-par-curve))) "forward"))

@@ -2,14 +2,11 @@
 ;
 ; How the paths of the interest-rate model are made, one step at a time. A path is today's forward curve, bent
 ; by two random numbers (the "factors") that wander from month to month; each month on each path, the bent curve
-; gives a short rate and a 10-year yield. This program shows each stage, and what is read from it. See "Interest
-; rate paths" in the library manual.
+; gives a short rate and a 10-year yield. This program shows each stage, and what is read from it. See lisp_paths_manual.md.
 ;
 ; Needs no key: it downloads the Treasury's yield curve. Run it from the examples directory:
 ;   python3 ../lisp_interpreter.py rate_paths_example.lsp
 ; It saves two charts, rate_paths_curve.png and rate_paths_fan.png.
-
-(load "yield_curves.lsp")
 
 ; The model's three numbers: how fast the short rate follows the level (a), and the sizes of the random shocks to the
 ; short rate (sigma1) and to the level (sigma2). These are what rate_model_example.lsp fitted to option prices on

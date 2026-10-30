@@ -7,7 +7,7 @@
 ; the LONG end, and a 10-year note option says how much that moves. The
 ; builtins calibrate-to-note-options, calibrate-rate-model and
 ; note-option-comparison fit and check the model against those options:
-; see "Fitting the model to option prices", under "Interest rate paths", in lisp_library_reference.md.
+; see "How implied volatility sets the numbers" in lisp_paths_manual.md.
 ; What this file does is the small step before them: the chain of options,
 ; as tastytrade-option-chain gives it, as the rows they read.
 ;

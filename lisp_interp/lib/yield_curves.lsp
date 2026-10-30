@@ -36,7 +36,7 @@
 ; the forward rates that come out jump where the lines meet.
 ;
 ; Usage:
-;   (load "yield_curves.lsp")
+;   (no load is needed: the functions load this file when first used)
 ;   (define curve (treasury-par-curve))                  ; this year, to date: a row for each day
 ;   (table-column curve "10y")                           ; the 10-year yield, as 0.0429
 ;   (define zeros (treasury-zero-curve curve))           ; the latest day's zero curve
@@ -162,8 +162,9 @@ with the columns
   months    1, 2, ... : the forward rate is for the month that ends then
   discount  what 1 paid at the end of that month is worth now
   forward   the rate for that month, as a rate for a year with monthly interest: a month's money grows by
-            (1 + forward / 12), so discount[month - 1] / discount[month] = 1 + forward / 12 -- as the SOFR
-            curve functions (sofr-forward-curve and the rest) have it
+            (1 + forward / 12), so discount[month - 1] / discount[month] = 1 + forward / 12
+This table is what a curve of forward rates is everywhere: sofr-forward-curve makes the same one, and the paths of
+rates (simulate-rate-paths and the others) take it, or its forward column.
 zero-curve is a table with columns years and zero, such as treasury-zero-curve and gsw-zero-curve make: the zero
 rate of each month is on a smooth curve through those given (and flat beyond them)."
   (let* ((month-numbers (+ 1 (vector-range months)))
@@ -175,19 +176,37 @@ rate of each month is on a smooth curve through those given (and flat beyond the
                 "discount" discounts
                 "forward" (* 12 (- (/ earlier discounts) 1)))))
 
+(define (yield-curves--forwards curve who)
+  "The forward rates of a curve, as a vector: the curve's forward column, if it is a table as curve-forward-rates makes,
+or the curve itself, if it is a vector of them."
+  (cond ((vector? curve) curve)
+        ((and (table? curve) (assoc "forward" curve)) (table-column curve "forward"))
+        (else (error (format "{}: a curve of forward rates is a table with a forward column, as curve-forward-rates makes, or a vector of the rates" who)))))
+
+(define (forward-rates-table forwards)
+  "A vector of monthly forward rates as the table curve-forward-rates makes: months, discount and forward."
+  (let ((months (vector-length forwards)))
+    (make-table "months" (+ 1 (vector-range months))
+                "discount" (exp (vector-cumsum (- (log (+ 1 (/ forwards 12))))))
+                "forward" forwards)))
+
 (define (extend-forward-curve forwards real-months longer-forwards &key (blend-months 12))
   "The forward rates of a curve that is only known to real-months -- the SOFR futures' curve, say, which is flat
 beyond the last futures contract -- carried on by the forward rates of a longer curve. forwards and longer-forwards
-are vectors of one-month forward rates, as curve-forward-rates makes (its forward column) and as the rate-path functions
-(simulate-rate-paths and the rest) take, as long as each other. The result is forwards for the first real-months, then a straight-line change over
-:blend-months (12) to longer-forwards, so that there is no jump where they meet, and longer-forwards from then on."
-  (unless (= (vector-length forwards) (vector-length longer-forwards))
-    (error (format "extend-forward-curve: forwards has {} months and longer-forwards {}: they must be as long as each other"
-                   (vector-length forwards) (vector-length longer-forwards))))
-  (unless (and (number? blend-months) (> blend-months 0))
-    (error "extend-forward-curve: :blend-months is a number of months above 0, not" blend-months))
-  (let ((weights (vector-clip (/ (- (vector-range (vector-length forwards)) real-months) (* 1.0 blend-months)) 0 1)))
-    (+ (* (- 1 weights) forwards) (* weights longer-forwards))))
+are curves of one-month forward rates, as long as each other: tables as curve-forward-rates and sofr-forward-curve make,
+or vectors of the rates. The result is forwards for the first real-months, then a straight-line change over
+:blend-months (12) to longer-forwards, so that there is no jump where they meet, and longer-forwards from then on: a
+table like curve-forward-rates's if forwards is one, and otherwise a vector."
+  (let ((short (yield-curves--forwards forwards "extend-forward-curve"))
+        (long (yield-curves--forwards longer-forwards "extend-forward-curve")))
+    (unless (= (vector-length short) (vector-length long))
+      (error (format "extend-forward-curve: forwards has {} months and longer-forwards {}: they must be as long as each other"
+                     (vector-length short) (vector-length long))))
+    (unless (and (number? blend-months) (> blend-months 0))
+      (error "extend-forward-curve: :blend-months is a number of months above 0, not" blend-months))
+    (let* ((weights (vector-clip (/ (- (vector-range (vector-length short)) real-months) (* 1.0 blend-months)) 0 1))
+           (both (+ (* (- 1 weights) short) (* weights long))))
+      (if (vector? forwards) both (forward-rates-table both)))))
 
 (define (yield-curves--row-on curve day)
   "The last row of the table (as the Treasury's, or the Fed's, oldest day first) that is on or before the day, as a

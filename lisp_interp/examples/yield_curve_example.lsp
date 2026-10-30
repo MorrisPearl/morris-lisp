@@ -3,13 +3,11 @@
 ; Today's US Treasury yield curve from two free sources: the Treasury's own
 ; par yield curve, and the Federal Reserve's smooth fitted curve (Gurkaynak,
 ; Sack, and Wright). From each, the zero rates, and the forward rates that a
-; model of interest rates starts from: see "Yield curves" in the library
-; manual. No API key is needed; it downloads from the Treasury's and the Fed's
+; model of interest rates starts from: see "Yield curves" in
+; lisp_paths_manual.md. No API key is needed; it downloads from the Treasury's and the Fed's
 ; sites. Run it from the examples directory:
 ;   python3 ../lisp_interpreter.py yield_curve_example.lsp
 ; It saves two charts, yield_curve_zero.png and yield_curve_forward.png.
-
-(load "yield_curves.lsp")
 
 ; --- The Treasury's par curve, this year so far, and the zero curve of its latest day ---
 (define treasury (treasury-par-curve))

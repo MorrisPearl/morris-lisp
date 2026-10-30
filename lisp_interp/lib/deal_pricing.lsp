@@ -167,21 +167,12 @@ which start on it, are forgotten. A deal whose pricing speed is of the prepaymen
   (deal-update-analytics! deal)
   (deal-refresh-views! deal 'prices 'info))
 
-(define (interpolate-points points years)
-  "The yield at this many years, by a straight line between the two points that it is between, or the yield of the nearest point, beyond the ends."
-  (let ((lower (car points)))
-    (cond ((<= years (car lower)) (cadr lower))
-          ((null? (cdr points)) (cadr lower))
-          (else (let ((upper (cadr points)))
-                  (if (<= years (car upper))
-                      (+ (cadr lower) (* (- (cadr upper) (cadr lower)) (/ (- years (car lower)) (- (car upper) (car lower)))))
-                      (interpolate-points (cdr points) years)))))))
-
 (define (treasury-yield deal years)
   "The yield of the Treasury curve of the deal at this many years, in percent."
   (when (null? (deal-treasury-curve deal))
     (error "the deal has no Treasury curve, which a spread is to: give it one, (deal-set-treasury-curve! deal '((2 4.1) (3 4.2))), or in (info deal)"))
-  (interpolate-points (deal-treasury-curve deal) years))
+  (let ((points (deal-treasury-curve deal)))      ; a straight line between the points, flat beyond the ends
+    (interpolate years (list->vector (map car points)) (list->vector (map cadr points)))))
 
 ; ---------------------------------------------------------------------------
 ; What a tranche is paid, and what it is worth

@@ -12,7 +12,8 @@ loaded when you call one of them (see `lazy-load`), so there is nothing to load.
 There are other documents. The **language manual**, [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the syntax and
 the general builtins. The **library manual**, [lisp_library_reference.md](lisp_library_reference.md), covers getting data (FRED, BLS, BEA,
 tastytrade and others), models, and investments. The **example programs**, [lisp_example_programs.md](lisp_example_programs.md), say how
-whole programs are put together. **This one is about forecasting questions.**
+whole programs are put together. The **paths manual**, [lisp_paths_manual.md](lisp_paths_manual.md), covers yield curves and simulated
+paths of interest rates and investment prices. **This one is about forecasting questions.**
 
 <!-- This list is made from the headings below: after adding or renaming a section, run
      python3 tools/make_contents.py -->
@@ -304,8 +305,8 @@ The library manual has the functions that get these:
   GDP at the source.
 - **Option prices and implied volatilities**, for `lognormal-bins` and `call-price-bins`:
   [tastytrade](lisp_library_reference.md#tastytrade-real-broker-data). Options on futures (oil, gold, the 10-year note) are there too.
-- **Interest rates**: [Yield curves](lisp_library_reference.md#yield-curves-the-treasurys-and-the-feds) for the Treasury's curve, and the
-  SOFR futures in [Interest rate paths](lisp_library_reference.md#interest-rate-paths-the-two-factor-model) for what the market expects
+- **Interest rates**: [Yield curves](lisp_paths_manual.md#yield-curves) for the Treasury's curve, and the
+  SOFR futures in [lisp_paths_manual.md](lisp_paths_manual.md) for what the market expects
   of the Fed.
 
 And elsewhere, to read in a browser or with `http-get-json`:

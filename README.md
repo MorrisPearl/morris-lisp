@@ -37,6 +37,10 @@ whose path is their first argument. Keep it out of the repository.
     `lisp_interp/examples/` (a chess player, a SQL interpreter, ELIZA, a
     Prolog, models of mortgages, and a script for each part of the library),
     and the programming techniques they show.
+  - `doc/lisp_paths_manual.md` -- yield curves (the Treasury's, the Fed's,
+    SOFR futures'), and simulated paths: of interest rates, from today's curve
+    and option prices, and of investment prices, from their own history. What
+    you do to make them, and what the program does.
   - `doc/lisp_forecasting_manual.md` -- forecasting questions, such as Good
     Judgment Open's: the chance of each range of a number, "before the date"
     chances, and combining and scoring forecasts.

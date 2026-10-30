@@ -1,7 +1,7 @@
 ; deal_paths.lsp
 ; ==============
 ; The option-adjusted spread (OAS) and the effective duration of the tranches of a deal. A deal is run on many paths of interest rates, each a possible future (see
-; "Interest rate paths" in the library manual); on each path the collateral prepays as a model says it does there, so the cash flows of every tranche differ from path to
+; lisp_paths_manual.md); on each path the collateral prepays as a model says it does there, so the cash flows of every tranche differ from path to
 ; path, and the value of a tranche is the average, over the paths, of what its cash flows are worth when each is discounted along its own path.
 ;
 ;   (deal-set-treasury-curve! deal '((1 4.0) (2 4.1) (3 4.2) (5 4.3) (10 4.5)))
@@ -11,7 +11,7 @@
 ;
 ; THE PARTS (each a slot of the deal, which the user can replace).
 ;
-;   the rate model     a, sigma1 and sigma2 (and b), the numbers that make the paths: see "How to generate paths" in the library manual. The paths start on the Treasury curve of
+;   the rate model     a, sigma1 and sigma2 (and b), the numbers that make the paths: see Part 1 of lisp_paths_manual.md. The paths start on the Treasury curve of
 ;                      the deal, and spread out. (rate-model, with the values of the manual to begin with: they are to be worked out from market data.)
 ;   the prepayment model   a function (model piece path): the annual prepayment rate, in percent (a CPR of 6 is 6), for each month of the collateral-piece (a vector with as many
 ;                      as its wam, month 1 being the first payment), given the rate-path, the short rate and the 10-year yield, each a vector with a rate (a decimal) for each month

@@ -4,7 +4,7 @@ sofr_market_data.py
 Fetches real, exchange-traded CME 3-Month SOFR (SR3) futures prices and a
 handful of near-the-money option quotes on those futures, via the
 tastytrade broker API, and shapes them into the plain-number dicts that
-term_structure_model.bootstrap_sofr_curve() / price_sofr_future_option_mc()
+term_structure_model.bootstrap_sofr_curve() / calibrate_to_sofr_options()
 expect.
 
 This module is the ONLY place in the SOFR pipeline that talks to
@@ -268,13 +268,13 @@ def fetch_sofr_calibration_data(credentials_path: str | None = None, n_futures: 
                           contract month, sorted by start_months. Ready to
                           pass straight to
                           term_structure_model.bootstrap_sofr_curve().
-        options       -- list of dicts (see price_sofr_future_option_mc()'s
+        options       -- list of dicts (see price_sofr_future_options_mc()'s
                           docstring), up to n_underlyings*n_strikes*2
                           near-the-money call/put pairs spread across
                           n_underlyings different quarterly contracts (and
                           therefore different expiries). Ready to pass
-                          straight to term_structure_model.calibrate_
-                          volatilities(..., price_fn=price_sofr_future_option_mc).
+                          straight to term_structure_model.calibrate_to_sofr_options()
+                          or calibrate_rate_model().
 
     n_futures     -- how many upcoming SR3 quarterly contracts to use for
                       the curve. Defaults to 40 -- comfortably more than

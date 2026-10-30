@@ -158,7 +158,7 @@ out, as [section 6](#6-putting-sources-together) shows.
 | The Federal Reserve's balance sheet | `(fred-table creds "WALCL")` | Federal Reserve, via FRED |
 | Banks' loans to businesses | `(fred-table creds "BUSLOANS")` | Federal Reserve, via FRED |
 | Exchange rates: dollars per euro, and the dollar against all currencies | `(fred-table creds "DEXUSEU")`, `(fred-table creds "DTWEXBGS")` | Federal Reserve, via FRED |
-| The Treasury's whole yield curve, each day | `(treasury-par-curve)` (see the library manual's [Yield curves](lisp_library_reference.md#yield-curves-the-treasurys-and-the-feds)) | Treasury |
+| The Treasury's whole yield curve, each day | `(treasury-par-curve)` (see [Yield curves](lisp_paths_manual.md#yield-curves)) | Treasury |
 | A smooth curve of zero rates and forward rates, from 1961 | `(gsw-curve)` | Federal Reserve staff |
 
 ### Housing

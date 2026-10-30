@@ -20,8 +20,8 @@ set by ONE of two "Market & Model Setup" panels at the top:
   - "SOFR Curve (tastytrade, live)": fetch real, exchange-traded CME SOFR
     (SR3) futures + a spread of options on them (sofr_market_data.py),
     bootstrap the curve from the futures (bootstrap_sofr_curve), and
-    calibrate a/sigma1/sigma2 to the options (calibrate_to_sofr_options) --
-    all with one click each.
+    calibrate a/sigma1/sigma2 to the options (calibrate_to_sofr_options, on
+    the same paths the tabs draw) -- all with one click each.
 
 Run with:      python3 term_structure_gui.py
 Requires:      pip install PyQt6 matplotlib numpy
@@ -47,7 +47,6 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
-    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -99,36 +98,24 @@ class SofrFetchWorker(QThread):
 
 
 class SofrCalibrationWorker(QThread):
-    """Runs term_structure_model.calibrate_to_sofr_options() or
-    calibrate_to_sofr_options_nelder_mead() off the UI thread.
+    """Runs term_structure_model.calibrate_to_sofr_options() off the UI
+    thread: a Nelder-Mead search that prices the options a hundred times or
+    more, which takes some seconds -- long enough that blocking the UI thread
+    would be a bad idea."""
 
-    The grid search calibrates (a, sigma1, sigma2) together as a 3-D grid
-    search and takes on the order of ten to twenty seconds (see
-    calibrate_to_sofr_options()'s docstring for why that's still fast enough
-    to just do directly); Nelder-Mead is usually a few seconds but isn't
-    guaranteed to find as good a fit -- see
-    calibrate_to_sofr_options_nelder_mead()'s docstring for the trade-off.
-    Either way, long enough that blocking the UI thread would be a bad
-    idea."""
-
-    finished_ok = pyqtSignal(object)  # (a, theta_bar, sigma1, sigma2, error)
+    finished_ok = pyqtSignal(object)  # the fit: a dict with 'a', 'sigma1', 'sigma2', 'error', ...
     failed = pyqtSignal(str)
 
-    def __init__(self, forward_rates, options, curve_real_months, method,
-                 min_expiry_months=0, parent=None):
+    def __init__(self, forward_rates, options, min_expiry_months=3, parent=None):
         super().__init__(parent)
         self.forward_rates = forward_rates
         self.options = options
-        self.curve_real_months = curve_real_months
-        self.method = method  # "grid" or "nelder-mead"
         self.min_expiry_months = min_expiry_months
 
     def run(self):
-        calibrate = (tsm.calibrate_to_sofr_options if self.method == "grid"
-                     else tsm.calibrate_to_sofr_options_nelder_mead)
         try:
-            result = calibrate(self.forward_rates, self.options, self.curve_real_months,
-                                min_expiry_months=self.min_expiry_months)
+            result = tsm.calibrate_to_sofr_options(self.forward_rates, self.options,
+                                                   min_expiry_months=self.min_expiry_months)
         except Exception as e:
             self.failed.emit(str(e))
             return
@@ -292,27 +279,17 @@ class TermStructureWindow(QMainWindow):
         self.sofr_calibrate_button.setEnabled(False)
         self.sofr_calibrate_button.clicked.connect(self._on_calibrate_sofr_clicked)
         calibrate_row.addWidget(self.sofr_calibrate_button)
-
-        self.sofr_method_combo = QComboBox()
-        self.sofr_method_combo.addItem("Grid search (thorough, ~10-20s)", "grid")
-        self.sofr_method_combo.addItem("Nelder-Mead (fast, ~seconds)", "nelder-mead")
-        self.sofr_method_combo.setToolTip(
-            "Which calibration algorithm to run -- see calibrate_to_sofr_options_nelder_mead()'s "
-            "docstring for the trade-off. Run each once and compare the fitted a/sigma1/sigma2 "
-            "if you want to sanity-check the result."
-        )
-        calibrate_row.addWidget(self.sofr_method_combo)
         buttons_col.addLayout(calibrate_row)
 
         min_expiry_row = QHBoxLayout()
-        min_expiry_row.addWidget(QLabel("Exclude options with expiry ≤"))
+        min_expiry_row.addWidget(QLabel("Leave out options with expiry under"))
         self.sofr_min_expiry_spin = QSpinBox()
         self.sofr_min_expiry_spin.setRange(0, 12)
-        self.sofr_min_expiry_spin.setValue(0)
+        self.sofr_min_expiry_spin.setValue(3)
         self.sofr_min_expiry_spin.setToolTip(
-            "0 = use every fetched option. Set to 1 to drop 1-month-or-shorter "
-            "options from calibration -- useful for checking whether they're "
-            "behaving anomalously relative to the rest of the curve."
+            "The model's volatilities are the same at every date, so it can't match the "
+            "front months, where the Fed's next move is nearly known; left in, they push "
+            "sigma1 to 0. 0 uses every fetched option."
         )
         min_expiry_row.addWidget(self.sofr_min_expiry_spin)
         min_expiry_row.addWidget(QLabel("months"))
@@ -379,37 +356,33 @@ class TermStructureWindow(QMainWindow):
         if self._sofr_calibration_worker is not None and self._sofr_calibration_worker.isRunning():
             return
 
-        curve_real_months = self.sofr_curve_futures[-1]['end_months']
-        method = self.sofr_method_combo.currentData()
         min_expiry_months = self.sofr_min_expiry_spin.value()
         self.sofr_calibrate_button.setEnabled(False)
         self.sofr_fetch_button.setEnabled(False)
-        n_used = sum(1 for o in self.sofr_options if o['expiry_months'] > min_expiry_months)
-        method_label = self.sofr_method_combo.currentText()
+        n_used = sum(1 for o in self.sofr_options if o['expiry_months'] >= min_expiry_months)
         self.sofr_status_label.setText(
             f"Calibrating (a, sigma1, sigma2) to {n_used} of {len(self.sofr_options)} SOFR "
-            f"option quotes using {method_label}...")
+            "option quotes...")
 
         self._sofr_calibration_worker = SofrCalibrationWorker(
-            self.forward_rates, self.sofr_options, curve_real_months, method,
-            min_expiry_months=min_expiry_months)
+            self.forward_rates, self.sofr_options, min_expiry_months=min_expiry_months)
         self._sofr_calibration_worker.finished_ok.connect(self._on_sofr_calibration_finished)
         self._sofr_calibration_worker.failed.connect(self._on_sofr_calibration_failed)
         self._sofr_calibration_worker.start()
 
     def _on_sofr_calibration_finished(self, result):
-        a, _, sigma1, sigma2, error = result      # (theta_bar, the second, is for pricing SOFR options only)
+        a, sigma1, sigma2, error = result['a'], result['sigma1'], result['sigma2'], result['error']
         self.sofr_calibrate_button.setEnabled(True)
         self.sofr_fetch_button.setEnabled(True)
 
         self.sofr_a = a
         self.sigma1_input.setValue(sigma1 * 100.0)
         self.sigma2_input.setValue(sigma2 * 100.0)
-        method_label = self.sofr_method_combo.currentText()
         self.sofr_status_label.setText(
-            f"Calibrated ({method_label}): a={a:.4f} "
+            f"Calibrated to {result['options_used']} options: a={a:.4f} "
             f"(module default {tsm.SHORT_RATE_REVERSION_SPEED}), sigma1={sigma1:.5f}, "
-            f"sigma2={sigma2:.5f}, total squared pricing error={error:.5f}."
+            f"sigma2={sigma2:.5f}; the model's volatilities are {error:.1%} from the market's "
+            "(root mean square)."
         )
 
     def _on_sofr_calibration_failed(self, message):

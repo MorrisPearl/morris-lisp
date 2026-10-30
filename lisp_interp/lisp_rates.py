@@ -3,19 +3,24 @@ term_structure/term_structure_model.py (a pure model -- no networking) and
 term_structure/sofr_market_data.py (which fetches SOFR futures and options from
 tastytrade).
 
+A curve of monthly forward rates is what the model starts from: the table that
+curve-forward-rates (yield_curves.lsp) and sofr-forward-curve make, with a
+"forward" column, or a vector of the rates. Every function here takes either.
+
 The curve and the data of SOFR futures (sofr-*):
-  sofr-forward-curve                          build a 360-month forward curve
-                                              from SOFR futures (flat past the
-                                              last one: for the long end, use
-                                              the Treasury's: yield_curves.lsp)
+  sofr-forward-curve                          a 360-month forward curve from SOFR
+                                              futures (flat past the last one: for
+                                              the long end, use the Treasury's)
   sofr-calibration-data                       fetch futures + options (network)
 
 Paths of rates from the two-factor model, which start on any curve (the
 Treasury's is the one to use):
-  simulate-rate-paths,                        Monte Carlo rate scenarios
+  simulate-rate-paths,                        Monte Carlo rate scenarios, and with
+  simulate-mortgage-rate-paths                a mortgage rate on each
   simulate-rate-factors,                      what they are made of: the model's
   rate-curve-on-date, curve-par-yield         two random factors, the curve they
                                               bend on a date, a curve's par yields
+  path-present-values, price-callable-bond    values on the paths
 
 Fitting the model to option prices:
   calibrate-rate-model                        to SOFR and 10-year note options at once
@@ -37,7 +42,7 @@ from lisp_core import (
     pairs_to_list, to_string,
 )
 from lisp_tastytrade import NETWORK_FAILURES
-from lisp_tables import make_table_value
+from lisp_tables import is_table, make_table_value, table_columns
 from lisp_futures import row_field
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "term_structure"))
@@ -49,6 +54,8 @@ try:
     from term_structure_model import simulate_rate_factors as _simulate_rate_factors
     from term_structure_model import calibrate_to_note_options as _calibrate_to_note_options
     from term_structure_model import calibrate_rate_model as _calibrate_rate_model
+    from term_structure_model import simulate_mortgage_rate_paths as _simulate_mortgage_rate_paths
+    from term_structure_model import price_callable_bond_mc as _price_callable_bond
     from term_structure_model import note_option_comparison as _note_option_comparison
     from term_structure_model import simulate_rate_paths as _simulate_rate_paths
     _TERM_STRUCTURE_AVAILABLE = True
@@ -83,17 +90,25 @@ def _sofr_future(row, who):
                     % (who, to_string(list_to_pairs(row))))
 
 
-def sofr_forward_curve_fn(curve_rows):
-    """(sofr-forward-curve curve-rows) -> (cons months-vector forward-rates-vector):
-    a 360-month curve of 1-month forward rates bootstrapped from SOFR futures
-    prices. curve-rows is either (tastytrade-futures-curve-rows creds "SR3"),
-    which needs only the futures' prices, or the curve rows of
-    sofr-calibration-data (its car).
+def forward_curve_table(forward_rates):
+    """A curve of monthly forward rates as the table curve-forward-rates makes: months (1, 2, ...), discount (what 1
+    paid at the end of that month is worth now), and forward (the month's rate: its money grows by 1 + forward / 12)."""
+    forward = np.asarray(forward_rates, dtype=float)
+    discount = np.cumprod(1.0 / (1.0 + forward / 12.0))
+    return make_table_value([("months", LispVector([int(m) for m in range(1, len(forward) + 1)])),
+                             ("discount", LispVector([float(d) for d in discount])),
+                             ("forward", LispVector([float(f) for f in forward]))])
 
-    months-vector is 1..360; element i of forward-rates-vector is the
-    annualized forward rate (a decimal, e.g. 0.045) for month i+1. Past the
-    last listed contract the curve is flat; extend-forward-curve (yield_curves.lsp)
-    carries it on with the Treasury's. The method is
+
+def sofr_forward_curve_fn(curve_rows):
+    """(sofr-forward-curve curve-rows) -> table: a 360-month curve of
+    1-month forward rates bootstrapped from SOFR futures prices, as the table
+    curve-forward-rates makes (months, discount, forward). curve-rows is
+    either (tastytrade-futures-curve-rows creds "SR3"), which needs only the
+    futures' prices, or the curve rows of sofr-calibration-data (its car).
+
+    Past the last listed contract the curve is flat; extend-forward-curve
+    (yield_curves.lsp) carries it on with the Treasury's. The method is
     term_structure_model.bootstrap_sofr_curve(); this only reshapes the rows.
     No network access."""
     who = "sofr-forward-curve"
@@ -101,10 +116,7 @@ def sofr_forward_curve_fn(curve_rows):
     rows = [pairs_to_list(r) for r in pairs_to_list(curve_rows)]
     if not rows:
         raise LispError("%s: curve-rows is empty" % who)
-    result = _bootstrap_sofr_curve([_sofr_future(row, who) for row in rows])
-    months = LispVector([int(m) for m in result["months"]])
-    forward_rates = LispVector([float(fr) for fr in result["forward_rates"]])
-    return Pair(months, forward_rates)
+    return forward_curve_table(_bootstrap_sofr_curve([_sofr_future(row, who) for row in rows])["forward_rates"])
 
 
 def sofr_calibration_data_fn(credentials_path, n_futures=40, n_underlyings=10, n_strikes=3):
@@ -160,9 +172,17 @@ def _check_term_structure(who):
 
 
 def _forward_rates_list(forward_rates, who):
+    """A curve of monthly forward rates, as a Python list: from a vector of them, or from a table with a "forward"
+    column, as curve-forward-rates and sofr-forward-curve make."""
+    if isinstance(forward_rates, Pair) and is_table(forward_rates):
+        columns = dict(table_columns(forward_rates, who))
+        if "forward" not in columns:
+            raise LispError("%s: the table of forward rates has no \"forward\" column (curve-forward-rates and "
+                            "sofr-forward-curve make one that has)" % who)
+        return [float(v) for v in columns["forward"].items]
     if not isinstance(forward_rates, LispVector):
-        raise LispError("%s: forward-rates must be a vector of monthly forward rates, such as (sofr-forward-curve ...) or "
-                        "(table-column (curve-forward-rates zeros) \"forward\") gives" % who)
+        raise LispError("%s: forward-rates must be a curve of monthly forward rates: the table curve-forward-rates or "
+                        "sofr-forward-curve makes, or a vector of the rates" % who)
     return [float(v) for v in forward_rates.items]
 
 
@@ -293,28 +313,39 @@ def calibrate_to_note_options_fn(forward_rates, option_rows, *options):
                   + [("options-used", fit["options_used"]), ("evaluations", fit["evaluations"])])
 
 
-def calibrate_rate_model_fn(sofr_forward_rates, note_forward_rates, sofr_rows, note_rows, curve_real_months, *options):
-    """(calibrate-rate-model sofr-forward-rates treasury-forward-rates
-      sofr-option-rows note-option-rows curve-real-months [:fit :sigma1 :sigma2 :a :sofr-paths :note-paths :seed
-      :ctd-maturity :ctd-coupon :min-days :moneyness-window :sofr-min-months]) -> association list
+def _sofr_option_dicts(rows, who):
+    """The SOFR options for the model: from sofr-calibration-data's rows (type strike expiry-months
+    quarter-start-months quarter-end-months market-price underlying-price)."""
+    dicts = []
+    for row in pairs_to_list(rows):
+        row = pairs_to_list(row)
+        if len(row) != 7:
+            raise LispError("%s: each SOFR option row is (type strike expiry-months quarter-start-months "
+                            "quarter-end-months market-price future-price), as sofr-calibration-data gives; one has %d items"
+                            % (who, len(row)))
+        dicts.append({"type": str(row[0]).lower(), "strike": float(row[1]), "expiry_months": int(row[2]),
+                      "quarter_start_months": int(row[3]), "quarter_end_months": int(row[4]),
+                      "market_price": float(row[5]), "underlying_price": float(row[6])})
+    if not dicts:
+        raise LispError("%s: there are no SOFR option rows" % who)
+    return dicts
+
+
+def calibrate_rate_model_fn(forward_rates, sofr_rows, note_rows, *options):
+    """(calibrate-rate-model forward-rates sofr-option-rows note-option-rows
+      [:fit :sigma1 :sigma2 :a :sofr-paths :note-paths :seed :ctd-maturity :ctd-coupon
+       :min-days :moneyness-window :sofr-min-months]) -> association list
 
     Fits the two-factor model to SOFR futures options and to options on the
-    10-year note future at once. The SOFR options show how much the short
+    10-year note future at once, both priced on the same paths: those that
+    simulate-rate-paths draws. The SOFR options show how much the short
     rate moves (a and sigma1), the note options how much the long end does
-    (sigma2); fitting both fixes a and sigma1 against the SOFR options and
-    sigma2 against the note options, and the model has to agree with both.
+    (sigma2); the model has to agree with both.
 
-      sofr-forward-rates      the SOFR curve (sofr-forward-curve), which
-                              the SOFR options' paths start from
-      treasury-forward-rates  the Treasury's monthly forward curve
-                              (curve-forward-rates), which the note options'
-                              paths are centered on
-      sofr-option-rows        from sofr-calibration-data (the 7-item rows)
-      note-option-rows        as for note-option-comparison
-      curve-real-months       how many months of the SOFR curve come from
-                              futures prices: the last end-months of
-                              sofr-calibration-data's curve rows; theta-bar is fitted to
-                              those months only
+      forward-rates     the Treasury's monthly forward curve (curve-forward-rates),
+                        which the paths are centered on
+      sofr-option-rows  the options of sofr-calibration-data (its cdr)
+      note-option-rows  as for note-option-comparison
 
     The error is the root mean square relative volatility error of the SOFR
     options and that of the note options, put together as the square root of
@@ -327,29 +358,17 @@ def calibrate_rate_model_fn(sofr_forward_rates, note_forward_rates, sofr_rows, n
     errors would decide the fit. :min-days and :moneyness-window are as for
     calibrate-to-note-options.
 
-    The result is ((a . 1.0) (sigma1 . 0.01) (sigma2 . 0.013) (theta-bar . 0.05)
-    (sofr-error . 0.02) (note-error . 0.03) (error . 0.05) (sofr-options-used . 30)
-    (note-options-used . 24) (evaluations . 100)). No network access."""
+    The result is ((a . 1.0) (sigma1 . 0.01) (sigma2 . 0.013) (sofr-error . 0.02)
+    (note-error . 0.03) (error . 0.04) (sofr-options-used . 30) (note-options-used . 24)
+    (evaluations . 100)). No network access."""
     who = "calibrate-rate-model"
     _check_term_structure(who)
     allowed = ["fit", "sigma1", "sigma2", "a", "sofr-paths", "note-paths", "seed", "ctd-maturity", "ctd-coupon",
                "min-days", "moneyness-window", "sofr-min-months"]
     choices = _model_choices(options, who, allowed)
-    sofr_options = []
-    for row in pairs_to_list(sofr_rows):
-        row = pairs_to_list(row)
-        if len(row) < 7:
-            raise LispError("%s: each SOFR option row needs 7 items, ending with the future's price (as "
-                            "sofr-calibration-data gives); one has %d" % (who, len(row)))
-        sofr_options.append({
-            "type": str(row[0]).lower(), "strike": float(row[1]), "expiry_months": int(row[2]),
-            "quarter_start_months": int(row[3]), "quarter_end_months": int(row[4]),
-            "market_price": float(row[5]), "underlying_price": float(row[6])})
-    notes = _note_option_dicts(note_rows, who)
-    fit = _calibrate_rate_model(
-        _forward_rates_list(sofr_forward_rates, who), _forward_rates_list(note_forward_rates, who),
-        sofr_options, notes, int(curve_real_months), **choices)
-    return _alist([("a", fit["a"]), ("sigma1", fit["sigma1"]), ("sigma2", fit["sigma2"]), ("theta-bar", fit["theta_bar"]),
+    fit = _calibrate_rate_model(_forward_rates_list(forward_rates, who), _sofr_option_dicts(sofr_rows, who),
+                                _note_option_dicts(note_rows, who), **choices)
+    return _alist([("a", fit["a"]), ("sigma1", fit["sigma1"]), ("sigma2", fit["sigma2"]),
                    ("sofr-error", fit["sofr_error"]), ("note-error", fit["note_error"]), ("error", fit["error"]),
                    ("sofr-options-used", fit["sofr_options_used"]), ("note-options-used", fit["note_options_used"]),
                    ("evaluations", fit["evaluations"])])
@@ -394,6 +413,58 @@ def simulate_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths
         _forward_rates_list(forward_rates, who), float(sigma1), float(sigma2), float(horizon_years), int(n_paths),
         **_path_keywords(options, who))
     return list_to_pairs([LispVector([float(y) for y in years]), _lisp_paths(short_rate_paths), _lisp_paths(yield_paths)])
+
+
+def simulate_mortgage_rate_paths_fn(forward_rates, sigma1, sigma2, horizon_years, n_paths, mortgage_spread, *options):
+    """(simulate-mortgage-rate-paths forward-rates sigma1 sigma2 horizon-years n-paths mortgage-spread
+      [:a :b :seed :tenor-years]) -> (list years short-rate-paths yield-paths mortgage-rate-paths)
+
+    The paths of simulate-rate-paths (the same arguments, and the same paths for
+    the same :seed), and with them a mortgage rate on each: the par yield of the
+    note of :tenor-years (10) plus mortgage-spread, a decimal (0.0175 is 175
+    basis points). Today's spread is today's mortgage rate less the curve's
+    10-year par yield, (curve-par-yield forward-rates 10), so that the paths'
+    first mortgage rate is today's.
+
+    SIMPLIFICATION: the spread is the same on every path and every month; the
+    real one widens and narrows with the supply of mortgages and how much rates
+    move. See term_structure_model.simulate_mortgage_rate_paths(). No network
+    access."""
+    who = "simulate-mortgage-rate-paths"
+    _check_term_structure(who)
+    years, short_rate_paths, yield_paths, mortgage_paths = _simulate_mortgage_rate_paths(
+        _forward_rates_list(forward_rates, who), float(sigma1), float(sigma2), float(horizon_years), int(n_paths),
+        float(mortgage_spread), **_path_keywords(options, who))
+    return list_to_pairs([LispVector([float(y) for y in years]), _lisp_paths(short_rate_paths),
+                          _lisp_paths(yield_paths), _lisp_paths(mortgage_paths)])
+
+
+def price_callable_bond_fn(forward_rates, sigma1, sigma2, years, coupon, call_years, call_price, oas, *options):
+    """(price-callable-bond forward-rates sigma1 sigma2 years coupon call-years call-price oas
+      [:a :b :n-paths :seed]) -> number
+
+    The price, per 100 of face, of a bond of `years` paying `coupon` (a decimal,
+    every six months) that its issuer may call at call-price at call-years, on
+    the short-rate paths of simulate-rate-paths with an option-adjusted spread
+    of oas (a decimal) added to every rate. On each path the issuer calls if the
+    bond's remaining payments are worth more than call-price then, so the
+    holder gets the smaller of the two. :n-paths (2000), :seed (123).
+
+    SIMPLIFICATIONS: one call date, not every coupon date after it; and the
+    issuer decides on each path knowing that path's later rates, which makes
+    the call worth a little more than it is. See
+    term_structure_model.price_callable_bond_mc(). No network access."""
+    who = "price-callable-bond"
+    _check_term_structure(who)
+    chosen = keyword_options(options, ["a", "b", "n-paths", "seed"], who)
+    conversions = {"a": float, "b": float, "n-paths": int, "seed": int}
+    keywords = {name.replace("-", "_"): conversions[name](value) for name, value in chosen.items()}
+    try:
+        return float(_price_callable_bond(_forward_rates_list(forward_rates, who), float(sigma1), float(sigma2),
+                                          float(years), float(coupon), float(call_years), float(call_price), float(oas),
+                                          **keywords))
+    except ValueError as e:
+        raise LispError("%s: %s" % (who, e))
 
 
 def simulate_rate_factors_fn(sigma1, sigma2, horizon_years, n_paths, *options):
@@ -509,6 +580,8 @@ BUILTINS = {
     "note-option-comparison": note_option_comparison_fn,
     "simulate-rate-paths": simulate_rate_paths_fn,
     "simulate-rate-factors": simulate_rate_factors_fn,
+    "simulate-mortgage-rate-paths": simulate_mortgage_rate_paths_fn,
+    "price-callable-bond": price_callable_bond_fn,
     "rate-curve-on-date": rate_curve_on_date_fn,
     "curve-par-yield": curve_par_yield_fn,
 }

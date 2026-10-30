@@ -10,11 +10,11 @@ once. Several of the programs are after chapters of Peter Norvig's classic
 this interpreter, and the notes say where its rules (`#f` is the only false,
 vectors hold only numbers, strings, and dates) change what the book does.
 
-There are five documents. The **language manual**,
+There are six documents. The **language manual**,
 [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the
 syntax, the special forms and macros, and the general builtins. The **library
 manual**, [lisp_library_reference.md](lisp_library_reference.md), covers
-getting data, models, and investments, and the **CMO manual**, [lisp_cmo_manual.md](lisp_cmo_manual.md), covers the structured-deal model, and the **forecasting manual**, [lisp_forecasting_manual.md](lisp_forecasting_manual.md), covers forecasting questions.
+getting data, models, and investments, and the **CMO manual**, [lisp_cmo_manual.md](lisp_cmo_manual.md), covers the structured-deal model, the **forecasting manual**, [lisp_forecasting_manual.md](lisp_forecasting_manual.md), covers forecasting questions, and the **paths manual**, [lisp_paths_manual.md](lisp_paths_manual.md), covers yield curves and simulated paths of rates and prices.
 **This one is about the programs**: the
 language and library documents say what each function does; this says how
 whole programs are put together out of them. A section name in quotes is a
@@ -1325,8 +1325,8 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   factors; one path's curve three years on, next to today's (a chart); what the path reports from that curve;
   and 200 paths, whose average discount factor is the curve's (the program prints both, 3 basis points apart).
   The second chart shows seven paths, the one followed, and the curve with no volatility, over the factors of the
-  path followed. The library manual's
-  [Interest rate paths](lisp_library_reference.md#interest-rate-paths-the-two-factor-model) says how to make them.
+  path followed. [lisp_paths_manual.md](lisp_paths_manual.md) says how to make them, and
+  what the program does when it does.
 - **`note_option_example.lsp`**: the same rate model, fitted to a different market: options on
   the 10-year Treasury note future (ZN). The SOFR options show how much the short rate moves; a
   mortgage depends on the long end, and these show how much that moves. It reads the options with
@@ -1334,8 +1334,8 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   Monte Carlo prices are nearest the market's (`calibrate-to-note-options`), and prints the
   model's prices and implied volatilities beside the market's (`note-option-comparison`),
   then charts the volatility each price implies by strike: the market's is a smile, the
-  model's nearly flat. The library manual's
-  [Fitting the model to option prices](lisp_library_reference.md#fitting-the-model-to-option-prices)
+  model's nearly flat.
+  [How implied volatility sets the numbers](lisp_paths_manual.md#how-implied-volatility-sets-the-numbers), in lisp_paths_manual.md,
   says how it works, and why the Treasury's curve, not SOFR's, is the one the paths are centered on.
 - **`rate_model_example.lsp`**: the short version of the whole pipeline. It fits the model to SOFR
   options and to 10-year note options together (`calibrate-rate-model`), then draws 200 paths of
@@ -1370,7 +1370,7 @@ rates of each -- the Treasury's by bootstrapping its par yields, the Fed's from 
 Svensson curve -- and charts them together, then the one-month forward rates a model of interest
 rates starts from. The Treasury's are rougher than the Fed's smooth ones, as the second chart
 shows. The functions are in the library manual's
-[Yield curves](lisp_library_reference.md#yield-curves-the-treasurys-and-the-feds) section.
+[lisp_paths_manual.md](lisp_paths_manual.md) (Part 5, "Yield curves").
 
 `plot_chart_example.lsp` needs nothing, and is a tour of `plot-chart` in eleven small
 charts: a monthly line over grouped quarterly bars on one date axis; stacked bars with

@@ -53,7 +53,7 @@
 
 ; Yield curves: the Treasury's par curve and the Fed's fitted curve, zero rates and forward rates
 (lazy-load "yield_curves.lsp"
-  treasury-par-curve latest-treasury-points treasury-zero-curve par-curve-zeros curve-forward-rates extend-forward-curve gsw-curve
+  treasury-par-curve latest-treasury-points treasury-zero-curve par-curve-zeros curve-forward-rates forward-rates-table extend-forward-curve gsw-curve
   gsw-parameters gsw-zero-curve
   svensson-zero-rates svensson-forward-rates)
 
@@ -224,7 +224,7 @@
 (lazy-load "deal_pricing.lsp"
   accrual-end accrued-interest analytics-assign! analyze-tranche check-priceable days-360 deal-clear-price!
   deal-floating-without-index deal-price-tranche! deal-pricing-run deal-pricing-table deal-set-delay! deal-set-price!
-  deal-set-spread! deal-set-treasury-curve! deal-set-yield! deal-settlement deal-update-analytics! interpolate-points
+  deal-set-spread! deal-set-treasury-curve! deal-set-yield! deal-settlement deal-update-analytics!
   money-left-for money-of-children monthly-factor months-from-settlement node-floats? price-for-money priced-by-value
   priced-money tranche-cash-flows treasury-points treasury-yield yield-of-money deal-clear-treasury-curve!
   deal-track-prices! deal-forget-paths! deal-run-paths! deal-set-index-function! deal-set-oas!

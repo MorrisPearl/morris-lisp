@@ -1,5 +1,5 @@
 """The two-factor rate model of term_structure_model.py: options on the 10-year note future (ZN), their Monte Carlo pricer and
-calibration (Step 3b), and the paths that start on the market's curve, with what they are made of; the note-option-rows
+calibration, options on SOFR futures, and the paths that start on the market's curve, with what they are made of; the note-option-rows
 library function; and the builtins (simulate-rate-paths, calibrate-rate-model, ...) that bring them to Lisp.
 
 The numbers that can be worked out by hand are (Bachelier's formula, discount factors, a note's price and duration, the
@@ -713,80 +713,157 @@ class TestCalibration(unittest.TestCase):
         self.assertIn("names no parameter", str(caught.exception))
 
 
-def sofr_options_from(sigma1, sigma2, a, curve_real_months, n_paths):
+def sofr_options_from(sigma1, sigma2, a, n_paths):
     """SOFR futures options whose market prices are the model's own at these parameters."""
-    theta_bar = model._fit_sofr_theta_bar(FORWARDS, curve_real_months, a=a)
     options = []
     for expiry_months, start in ((3, 4), (6, 7), (9, 10), (12, 13)):
         price = 100 - 100 * float(np.mean(FORWARDS[start - 1:start + 2]))
         for strike in (price - 0.25, price, price + 0.25):
             for kind in ("call", "put"):
-                option = {"type": kind, "strike": strike, "expiry_months": expiry_months, "quarter_start_months": start,
-                          "quarter_end_months": start + 3, "underlying_price": price, "market_price": 0.0}
-                option["market_price"] = model.price_sofr_future_option_mc(FORWARDS, option, sigma1, sigma2, n_paths, 42,
-                                                                          a=a, theta_bar=theta_bar)
-                options.append(option)
+                options.append({"type": kind, "strike": strike, "expiry_months": expiry_months, "quarter_start_months": start,
+                                "quarter_end_months": start + 3, "underlying_price": price, "market_price": 0.0})
+    prices = model.price_sofr_future_options_mc(FORWARDS, options, sigma1, sigma2, a=a, n_paths=n_paths)
+    for option, price in zip(options, prices):
+        option["market_price"] = float(price)
     return options
+
+
+class TestTheSofrPricer(unittest.TestCase):
+    """Options on SOFR futures, priced on the same paths as the note options: today's futures price, moved at the
+    option's expiry by the factors' average bend over the future's quarter."""
+
+    def option(self, kind, strike, expiry_months=6, start=7, price=96.0):
+        return {"type": kind, "strike": strike, "expiry_months": expiry_months, "quarter_start_months": start,
+                "quarter_end_months": start + 3, "underlying_price": price}
+
+    def test_with_no_volatility_an_option_is_worth_its_discounted_intrinsic_value(self):
+        options = [self.option("call", 95.5), self.option("put", 95.5), self.option("put", 96.5, 12, 13)]
+        prices = model.price_sofr_future_options_mc(FORWARDS, options, 0.0, 0.0, n_paths=100)
+        for option, price in zip(options, prices):
+            years = model._sofr_expiry_day(option) / DAYS_PER_YEAR
+            discount = model._market_discount_factors(FORWARDS, [years])[0]
+            intrinsic = max(96.0 - option["strike"], 0) if option["type"] == "call" else max(option["strike"] - 96.0, 0)
+            self.assertAlmostEqual(float(price), discount * intrinsic, places=12)
+
+    def test_the_prices_are_the_average_discounted_payoff_of_the_moved_future(self):
+        # The pricer again, from the pieces: the factors on the expiry's day, their average bend over the quarter,
+        # the future centered on today's price, the payoff, the discount.
+        option = self.option("call", 96.1, expiry_months=6, start=7)
+        sigma1, sigma2, a, b = 0.012, 0.011, 1.2, 0.2
+        day = model._sofr_expiry_day(option)
+        delta_r, delta_theta, adjustment = model._simulate_deviations([day], sigma1, sigma2, a, b, 2000, 5)[day]
+        years = day / DAYS_PER_YEAR
+        tau1, tau2 = 7 / 12 - years, 10 / 12 - years
+        weight = (math.exp(-a * tau1) - math.exp(-a * tau2)) / (a * (tau2 - tau1))
+        move = delta_theta + (delta_r - delta_theta) * weight
+        futures = 96.0 - 100 * (move - move.mean())
+        discount = model._market_discount_factors(FORWARDS, [years])[0] * adjustment
+        price = model.price_sofr_future_options_mc(FORWARDS, [option], sigma1, sigma2, a=a, b=b, n_paths=2000, seed=5)[0]
+        self.assertAlmostEqual(float(price), float(np.mean(discount * np.maximum(futures - 96.1, 0))), places=12)
+
+    def test_a_call_less_a_put_is_the_discounted_future_less_the_strike(self):
+        for strike in (95.5, 96.0, 96.5):
+            call, put = model.price_sofr_future_options_mc(
+                FORWARDS, [self.option("call", strike), self.option("put", strike)], 0.012, 0.01, n_paths=20000)
+            discount = model._market_discount_factors(FORWARDS, [model._sofr_expiry_day(self.option("call", strike)) / DAYS_PER_YEAR])[0]
+            self.assertAlmostEqual(float(call - put), discount * (96.0 - strike), delta=0.002)
+
+    def test_the_short_rates_volatility_matters_more_than_the_levels_for_a_near_quarter(self):
+        option = [self.option("call", 96.0, expiry_months=3, start=3)]
+        base = model.price_sofr_future_options_mc(FORWARDS, option, 0.01, 0.01, n_paths=4000)[0]
+        short = model.price_sofr_future_options_mc(FORWARDS, option, 0.012, 0.01, n_paths=4000)[0]
+        level = model.price_sofr_future_options_mc(FORWARDS, option, 0.01, 0.012, n_paths=4000)[0]
+        self.assertGreater(short - base, level - base)
+        self.assertGreater(level, base)
+
+    def test_a_quarter_already_begun_is_averaged_from_the_expiry_on(self):
+        # an option that expires inside its future's quarter: only what is left of the quarter can still move
+        inside = model.price_sofr_future_options_mc(FORWARDS, [self.option("call", 96.0, expiry_months=8, start=7)],
+                                                    0.012, 0.01, n_paths=2000)[0]
+        before = model.price_sofr_future_options_mc(FORWARDS, [self.option("call", 96.0, expiry_months=6, start=7)],
+                                                    0.012, 0.01, n_paths=2000)[0]
+        self.assertGreater(inside, 0.0)
+        self.assertGreater(inside, before)       # (two more months for the rate to move)
+
+
+class TestFittingSofrOptions(unittest.TestCase):
+
+    def test_the_parameters_that_made_the_prices_are_found_again(self):
+        options = sofr_options_from(0.012, 0.01, 1.5, n_paths=1000)
+        fit = model.calibrate_to_sofr_options(FORWARDS, options, fit=("sigma1",), a=1.5, sigma1=0.02, sigma2=0.01,
+                                              n_paths=1000)
+        self.assertAlmostEqual(fit["sigma1"], 0.012, delta=5e-5)
+        self.assertLess(fit["error"], 1e-3)
+        self.assertEqual(fit["options_used"], len(options))
+        self.assertEqual(set(fit), {"a", "b", "sigma1", "sigma2", "error", "options_used", "evaluations"})
+
+    def test_options_too_near_their_expiry_are_left_out(self):
+        options = sofr_options_from(0.012, 0.01, 1.5, n_paths=300)
+        fit = model.calibrate_to_sofr_options(FORWARDS, options, fit=("sigma1",), a=1.5, n_paths=300, min_expiry_months=7)
+        self.assertEqual(fit["options_used"], len(options) // 2)
+        with self.assertRaises(ValueError) as caught:
+            model.calibrate_to_sofr_options(FORWARDS, options, min_expiry_months=13)
+        self.assertIn("no SOFR option can be used", str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            model.calibrate_to_sofr_options(FORWARDS, options, fit=("theta",))
+        self.assertIn("'theta'", str(caught.exception))
 
 
 class TestFittingBothKindsOfOption(unittest.TestCase):
 
     def setUp(self):
-        self.sofr = sofr_options_from(0.012, 0.01, 1.5, 24, n_paths=300)
+        self.sofr = sofr_options_from(0.012, 0.01, 1.5, n_paths=300)
         self.notes = synthetic_options(0.012, 0.01, a=1.5, n_paths=1500)
 
     def test_the_parameters_that_made_both_sets_of_prices_fit_with_no_error(self):
-        fit = model.calibrate_rate_model(FORWARDS, FORWARDS, self.sofr, self.notes, 24, fit=("sigma2",),
-                                                    a=1.5, sigma1=0.012, sigma2=0.02, sofr_paths=300, note_paths=1500)
+        fit = model.calibrate_rate_model(FORWARDS, self.sofr, self.notes, fit=("sigma2",),
+                                         a=1.5, sigma1=0.012, sigma2=0.02, sofr_paths=300, note_paths=1500)
         self.assertAlmostEqual(fit["sigma2"], 0.01, delta=5e-5)
         self.assertLess(fit["error"], 1e-3)
         self.assertEqual(fit["a"], 1.5)
 
     def test_all_three_can_be_fitted_and_the_error_puts_the_two_kinds_together(self):
-        fit = model.calibrate_rate_model(FORWARDS, FORWARDS, self.sofr, self.notes, 24, a=1.0, sigma1=0.02,
-                                                    sigma2=0.02, sofr_paths=300, note_paths=1500)
+        fit = model.calibrate_rate_model(FORWARDS, self.sofr, self.notes, a=1.0, sigma1=0.02,
+                                         sigma2=0.02, sofr_paths=300, note_paths=1500)
         self.assertLess(fit["error"], 0.02)
         self.assertAlmostEqual(fit["error"], math.sqrt(fit["sofr_error"] ** 2 + fit["note_error"] ** 2), places=12)
         self.assertEqual(fit["sofr_options_used"], len(self.sofr))
         self.assertEqual(fit["note_options_used"], len(self.notes))
-        self.assertAlmostEqual(fit["theta_bar"], model._fit_sofr_theta_bar(FORWARDS, 24, a=fit["a"]), places=12)
+        self.assertNotIn("theta_bar", fit)
 
     def test_the_sofr_options_of_the_first_months_are_left_out_by_default(self):
-        fit = model.calibrate_rate_model(FORWARDS, FORWARDS, self.sofr, self.notes, 24, fit=("sigma2",),
-                                                    a=1.5, sigma1=0.012, sofr_paths=300, note_paths=1500)
+        fit = model.calibrate_rate_model(FORWARDS, self.sofr, self.notes, fit=("sigma2",),
+                                         a=1.5, sigma1=0.012, sofr_paths=300, note_paths=1500)
         self.assertEqual(fit["sofr_options_used"], len(self.sofr))                 # the earliest here are at 3 months
-        fit = model.calibrate_rate_model(FORWARDS, FORWARDS, self.sofr, self.notes, 24, fit=("sigma2",),
-                                                    a=1.5, sigma1=0.012, sofr_paths=300, note_paths=1500,
-                                                    sofr_min_expiry_months=7)
+        fit = model.calibrate_rate_model(FORWARDS, self.sofr, self.notes, fit=("sigma2",),
+                                         a=1.5, sigma1=0.012, sofr_paths=300, note_paths=1500,
+                                         sofr_min_expiry_months=7)
         self.assertEqual(fit["sofr_options_used"], len(self.sofr) // 2)
 
     def test_when_the_two_kinds_of_option_disagree_the_fit_is_between_them(self):
-        sofr = sofr_options_from(0.012, 0.008, 1.5, 24, n_paths=300)                 # the short rate's options say 0.008
-        notes = synthetic_options(0.012, 0.014, a=1.5, n_paths=1500)                  # the note's, 0.014
-        fit = model.calibrate_rate_model(FORWARDS, FORWARDS, sofr, notes, 24, fit=("sigma2",), a=1.5,
-                                                    sigma1=0.012, sofr_paths=300, note_paths=1500)
-        self.assertGreater(fit["sigma2"], 0.0085)
-        self.assertLess(fit["sigma2"], 0.0135)
+        sofr = sofr_options_from(0.006, 0.006, 1.5, n_paths=300)                     # the short rate's options say less
+        notes = synthetic_options(0.012, 0.014, a=1.5, n_paths=1500)                  # the note's, more
+        fit = model.calibrate_rate_model(FORWARDS, sofr, notes, fit=("sigma2",), a=1.5,
+                                         sigma1=0.012, sofr_paths=300, note_paths=1500)
         self.assertGreater(fit["sofr_error"], 0.01)
         self.assertGreater(fit["note_error"], 0.01)
+        self.assertLess(fit["sigma2"], 0.014)
 
-    def test_each_kinds_error_is_worked_out_on_its_own_curve_in_units_of_volatility(self):
+    def test_each_kinds_error_is_worked_out_in_units_of_volatility(self):
         patcher = mock.patch.object(model, "_nelder_mead", lambda objective, start, **keywords: (np.array(start), objective(np.array(start))))
         patcher.start()
         self.addCleanup(patcher.stop)
-        sofr_curve = FORWARDS + 0.003
         a, sigma1, sigma2 = 1.5, 0.011, 0.013
-        fit = model.calibrate_rate_model(sofr_curve, FORWARDS, self.sofr, self.notes, 24, fit=("sigma2",), a=a,
-                                                    sigma1=sigma1, sigma2=sigma2, sofr_paths=300, note_paths=1500)
-        theta_bar = model._fit_sofr_theta_bar(sofr_curve, 24, a=a)
+        fit = model.calibrate_rate_model(FORWARDS, self.sofr, self.notes, fit=("sigma2",), a=a,
+                                         sigma1=sigma1, sigma2=sigma2, sofr_paths=300, note_paths=1500)
+        sofr_prices = model.price_sofr_future_options_mc(FORWARDS, self.sofr, sigma1, sigma2, a=a, n_paths=300)
         sofr_errors = []
-        for option in self.sofr:
+        for option, price in zip(self.sofr, sofr_prices):
             years = option["expiry_months"] / 12.0
-            discount = model._market_discount_factors(sofr_curve, [years])[0]
+            discount = model._market_discount_factors(FORWARDS, [years])[0]
             vol = model._implied_normal_vol(option["type"], option["market_price"], option["underlying_price"],
                                             option["strike"], years, discount)
             vega = model._bachelier_vega(option["underlying_price"], option["strike"], vol, years, discount)
-            price = model.price_sofr_future_option_mc(sofr_curve, option, sigma1, sigma2, 300, 42, a=a, theta_bar=theta_bar)
             sofr_errors.append((price - option["market_price"]) / (vega * vol))
         note_prices = model.price_note_future_options_mc(FORWARDS, self.notes, sigma1, sigma2, a=a, n_paths=1500)
         note_errors = []
@@ -798,22 +875,21 @@ class TestFittingBothKindsOfOption(unittest.TestCase):
             note_errors.append((price - option["market_price"]) / (vega * vol))
         self.assertAlmostEqual(fit["sofr_error"], math.sqrt(np.mean(np.square(sofr_errors))), places=12)
         self.assertAlmostEqual(fit["note_error"], math.sqrt(np.mean(np.square(note_errors))), places=12)
-        self.assertAlmostEqual(fit["theta_bar"], theta_bar, places=12)
-        self.assertGreater(fit["sofr_error"], 0.02)                          # (the numbers differ: the curves are not the same)
+        self.assertGreater(fit["sofr_error"], 0.02)                          # (sigma1 is not the one that made them)
 
     def test_each_kind_of_option_needs_some_and_the_sofr_ones_the_price_of_their_future(self):
         with self.assertRaises(ValueError) as caught:
-            model.calibrate_rate_model(FORWARDS, FORWARDS, self.sofr, [], 24)
+            model.calibrate_rate_model(FORWARDS, self.sofr, [])
         self.assertIn("0 note options", str(caught.exception))
         with self.assertRaises(ValueError) as caught:
-            model.calibrate_rate_model(FORWARDS, FORWARDS, [], self.notes, 24)
+            model.calibrate_rate_model(FORWARDS, [], self.notes)
         self.assertIn("0 SOFR options", str(caught.exception))
         without = [{k: v for k, v in o.items() if k != "underlying_price"} for o in self.sofr]
         with self.assertRaises(ValueError) as caught:
-            model.calibrate_rate_model(FORWARDS, FORWARDS, without, self.notes, 24)
+            model.calibrate_rate_model(FORWARDS, without, self.notes)
         self.assertIn("underlying_price", str(caught.exception))
         with self.assertRaises(ValueError):
-            model.calibrate_rate_model(FORWARDS, FORWARDS, self.sofr, self.notes, 24, fit=("b",))
+            model.calibrate_rate_model(FORWARDS, self.sofr, self.notes, fit=("b",))
 
 
 class NoteOptionsLispTestCase(OptionChainTestCase):
@@ -925,7 +1001,7 @@ class TestTheBuiltins(NoteOptionsLispTestCase):
         self.assertEqual(self.alist("options-used"), 4)                  # the call and put at 105.5, for both expiries
 
     def test_the_curve_the_rows_and_the_choices_are_checked(self):
-        self.assertLispError('(calibrate-to-note-options 5 rows)', "forward-rates must be a vector")
+        self.assertLispError('(calibrate-to-note-options 5 rows)', "forward-rates must be a curve of monthly forward rates")
         self.assertLispError("(calibrate-to-note-options forwards '())", "there are no option rows")
         self.assertLispError("(calibrate-to-note-options forwards '((\"call\" 105.0 36 105.5)))", "(type strike days futures-price market-price)")
         self.assertLispError("(calibrate-to-note-options forwards '((\"swap\" 105.0 36 105.5 1.0)))", 'is "call" or "put"')
@@ -968,7 +1044,7 @@ class TestThePathBuiltin(NoteOptionsLispTestCase):
 
     def test_the_choices_and_the_curve_are_checked(self):
         self.assertLispError("(simulate-rate-paths forwards 0.01 0.01 1 4 :speed 2)", ":speed isn't an option")
-        self.assertLispError("(simulate-rate-paths 5 0.01 0.01 1 4)", "forward-rates must be a vector")
+        self.assertLispError("(simulate-rate-paths 5 0.01 0.01 1 4)", "forward-rates must be a curve of monthly forward rates")
         self.assertLispError("(simulate-rate-paths forwards 0.01 0.01 0 4)", "at least a month")
 
     def test_a_horizon_longer_than_the_curve_less_the_tenor_is_fine(self):
@@ -1017,16 +1093,49 @@ class TestTheFactorAndCurveBuiltins(NoteOptionsLispTestCase):
             self.assertAlmostEqual(lisp_core.pairs_to_list(short)[1].items[month], FORWARDS[month], places=6)
 
     def test_the_par_yields_choices_and_curve_are_checked(self):
-        self.assertLispError("(curve-par-yield 5 10)", "forward-rates must be a vector")
+        self.assertLispError("(curve-par-yield 5 10)", "forward-rates must be a curve of monthly forward rates")
         self.assertLispError("(curve-par-yield forwards 10 :start-years 1)", ":start-years isn't an option")
         self.assertLispError("(curve-par-yield forwards 10 :start-months 340)", "ends at")
+
+
+class TestForwardCurvesAndTheNewPathBuiltins(NoteOptionsLispTestCase):
+    """A forward curve can be a vector of rates or the table curve-forward-rates makes; and the mortgage rates and
+    callable bonds on the paths."""
+
+    def test_a_table_with_a_forward_column_is_the_same_curve_as_its_vector(self):
+        self.run_lisp('(define table (make-table "months" (vector-range 1 361) "forward" forwards))')
+        for call in ("(curve-par-yield %s 10)", "(cadr (simulate-rate-paths %s 0.01 0.01 1 4 :seed 2))",
+                     "(table-column (rate-curve-on-date %s 12 0.01 0.0) \"model\")"):
+            self.assertEqual(self.show(call % "table"), self.show(call % "forwards"))
+        self.assertLispError('(curve-par-yield (make-table "rate" forwards) 10)', 'has no "forward" column')
+
+    def test_mortgage_rates_are_the_yields_of_the_same_paths_and_a_spread(self):
+        years, short, yields, mortgage = lisp_core.pairs_to_list(
+            self.run_lisp("(simulate-mortgage-rate-paths forwards 0.01 0.012 2 4 0.0175 :seed 3)"))
+        same = lisp_core.pairs_to_list(self.run_lisp("(simulate-rate-paths forwards 0.01 0.012 2 4 :seed 3)"))
+        np.testing.assert_array_equal(years.items, same[0].items)
+        for got, want in ((short, same[1]), (yields, same[2])):
+            for a, b in zip(lisp_core.pairs_to_list(got), lisp_core.pairs_to_list(want)):
+                np.testing.assert_array_equal(a.items, b.items)
+        for y, m in zip(lisp_core.pairs_to_list(yields), lisp_core.pairs_to_list(mortgage)):
+            np.testing.assert_allclose(m.items, y.items + 0.0175, rtol=1e-12)
+
+    def test_a_callable_bond_is_the_models_price(self):
+        price = self.run_lisp("(price-callable-bond forwards 0.01 0.012 10 0.05 3 100 0.0075 :n-paths 500 :seed 7)")
+        expected = model.price_callable_bond_mc(FORWARDS, 0.01, 0.012, 10, 0.05, 3, 100.0, 0.0075, n_paths=500, seed=7)
+        self.assertAlmostEqual(price, expected, places=10)
+        # with no volatility, and a call price no one would pay, it is the bond itself, on the curve
+        straight = self.run_lisp("(price-callable-bond forwards 0 0 5 0.05 2 1000 0.0 :n-paths 2)")
+        discount = np.cumprod(1 / (1 + FORWARDS / 12))
+        self.assertAlmostEqual(straight, sum(2.5 * discount[m - 1] for m in range(6, 61, 6)) + 100 * discount[59], places=8)
+        self.assertLispError("(price-callable-bond forwards 0.01 0.01 5 0.05 5 100 0.0)", "call_years must be strictly before")
 
 
 class TestTheBuiltinForBothKinds(NoteOptionsLispTestCase):
 
     def setUp(self):
         super().setUp()
-        self.sofr = sofr_options_from(0.012, 0.01, 1.5, 24, n_paths=300)
+        self.sofr = sofr_options_from(0.012, 0.01, 1.5, n_paths=300)
         self.notes = synthetic_options(0.012, 0.01, a=1.5, n_paths=1500)
         self.run_lisp("(define notes %s)" % self.lisp_rows(self.notes))
         self.run_lisp("(define sofr '(%s))" % " ".join('("%s" %r %d %d %d %r %r)' % (
@@ -1034,41 +1143,38 @@ class TestTheBuiltinForBothKinds(NoteOptionsLispTestCase):
             o["market_price"], o["underlying_price"]) for o in self.sofr))
 
     def test_the_fit_agrees_with_both_kinds_of_option(self):
-        self.run_lisp("(define result (calibrate-rate-model forwards forwards sofr notes 24 :fit '(sigma2) :a 1.5 :sigma1 0.012"
+        self.run_lisp("(define result (calibrate-rate-model forwards sofr notes :fit '(sigma2) :a 1.5 :sigma1 0.012"
                       " :sigma2 0.02 :sofr-paths 300 :note-paths 1500))")
         self.assertAlmostEqual(self.alist("sigma2"), 0.01, delta=1e-4)
         self.assertLess(self.alist("error"), 2e-3)
         self.assertEqual(self.alist("a"), 1.5)
         self.assertEqual(self.alist("sofr-options-used"), len(self.sofr))
         self.assertEqual(self.alist("note-options-used"), len(self.notes))
-        self.assertAlmostEqual(self.alist("theta-bar"), model._fit_sofr_theta_bar(FORWARDS, 24, a=1.5), places=8)
-        self.assertShows("(map car result)", "(a sigma1 sigma2 theta-bar sofr-error note-error error sofr-options-used "
+        self.assertShows("(map car result)", "(a sigma1 sigma2 sofr-error note-error error sofr-options-used "
                                               "note-options-used evaluations)")
 
-    def test_the_sofr_options_start_from_the_first_curve_and_the_notes_are_centered_on_the_second(self):
-        sofr_curve = FORWARDS + 0.003
-        self.env[lisp_core.Symbol("sofr-curve")] = lisp_core.LispVector([float(f) for f in sofr_curve])
-        self.run_lisp("(define result (calibrate-rate-model sofr-curve forwards sofr notes 24 :fit '(sigma2) :a 1.5 :sigma1 0.012"
+    def test_it_is_the_models_fit(self):
+        self.run_lisp("(define result (calibrate-rate-model forwards sofr notes :fit '(sigma2) :a 1.5 :sigma1 0.012"
                       " :sofr-paths 300 :note-paths 1500))")
-        expected = model.calibrate_rate_model(sofr_curve, FORWARDS, self.sofr, self.notes, 24, fit=("sigma2",), a=1.5,
-                                                         sigma1=0.012, sofr_paths=300, note_paths=1500)
+        expected = model.calibrate_rate_model(FORWARDS, self.sofr, self.notes, fit=("sigma2",), a=1.5,
+                                              sigma1=0.012, sofr_paths=300, note_paths=1500)
         self.assertAlmostEqual(self.alist("sigma2"), expected["sigma2"], delta=2e-5)
         self.assertAlmostEqual(self.alist("sofr-error"), expected["sofr_error"], delta=1e-4)
         self.assertAlmostEqual(self.alist("note-error"), expected["note_error"], delta=1e-4)
-        self.assertAlmostEqual(self.alist("theta-bar"), expected["theta_bar"], delta=1e-8)
 
     def test_the_first_months_of_the_sofr_options_can_be_kept(self):
-        self.run_lisp("(define result (calibrate-rate-model forwards forwards sofr notes 24 :fit '(sigma2) :a 1.5 :sigma1 0.012"
+        self.run_lisp("(define result (calibrate-rate-model forwards sofr notes :fit '(sigma2) :a 1.5 :sigma1 0.012"
                       " :sofr-paths 300 :note-paths 1500 :sofr-min-months 7))")
         self.assertEqual(self.alist("sofr-options-used"), len(self.sofr) // 2)
 
     def test_the_sofr_rows_need_the_price_of_the_future(self):
-        self.assertLispError("(calibrate-rate-model forwards forwards (list (list \"call\" 95.0 3 4 7 0.2)) notes 24)",
-                             "needs 7 items")
-        self.assertLispError("(calibrate-rate-model forwards forwards sofr '() 24)", "there are no option rows")
-        self.assertLispError("(calibrate-rate-model forwards forwards sofr notes 24 :fit '(b))", "'b'")
-        self.assertLispError("(calibrate-rate-model forwards forwards sofr notes 24 :b 0.2)", ":b isn't an option")
-        self.assertLispError("(calibrate-rate-model forwards forwards sofr notes 24 :min-days 400)",
+        self.assertLispError("(calibrate-rate-model forwards (list (list \"call\" 95.0 3 4 7 0.2)) notes)",
+                             "has 6 items")
+        self.assertLispError("(calibrate-rate-model forwards '() notes)", "there are no SOFR option rows")
+        self.assertLispError("(calibrate-rate-model forwards sofr '())", "there are no option rows")
+        self.assertLispError("(calibrate-rate-model forwards sofr notes :fit '(b))", "'b'")
+        self.assertLispError("(calibrate-rate-model forwards sofr notes :b 0.2)", ":b isn't an option")
+        self.assertLispError("(calibrate-rate-model forwards sofr notes :min-days 400)",
                              "0 note options that can be used")
 
     def test_sofr_calibration_data_has_the_price_of_each_future_in_its_rows(self):

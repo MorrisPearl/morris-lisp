@@ -164,7 +164,7 @@ class TestReferenceDocExamples(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         blocks = []                 # (the document's name, the block, its section if blocks share an environment)
-        for doc, fewest in ((REFERENCE_DOC, 50), (LIBRARY_DOC, 50), (EXAMPLES_DOC, 10), (CMO_DOC, 5), (FORECASTING_DOC, 5)):
+        for doc, fewest in ((REFERENCE_DOC, 50), (LIBRARY_DOC, 50), (EXAMPLES_DOC, 10), (CMO_DOC, 5), (FORECASTING_DOC, 5), (PATHS_DOC, 5)):
             with open(doc, encoding="utf-8") as f:
                 text = f.read()
             found = re.findall(r"```lisp\n(.*?)```", text, re.S)
@@ -281,7 +281,7 @@ class TestDocumentLinks(unittest.TestCase):
     those links must go somewhere, or moving a section would leave readers at a dead end."""
 
     def test_every_link_goes_to_a_file_and_a_heading_that_exist(self):
-        documents = [REFERENCE_DOC, LIBRARY_DOC, EXAMPLES_DOC, CMO_DOC, FORECASTING_DOC, os.path.join(DOC_DIRECTORY, "economic_data_guide.md"),
+        documents = [REFERENCE_DOC, LIBRARY_DOC, EXAMPLES_DOC, CMO_DOC, FORECASTING_DOC, PATHS_DOC, os.path.join(DOC_DIRECTORY, "economic_data_guide.md"),
                      os.path.join(HERE, "..", "README.md")]
         texts = {}
         for path in documents:
