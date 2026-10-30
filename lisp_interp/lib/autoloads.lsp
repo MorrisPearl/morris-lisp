@@ -51,6 +51,13 @@
   position-comparison-expected-price position-comparison-prices position-comparison-contract-size
   position-comparison-unit position-comparison-positions position-comparison-searches)
 
+; A scenario (a price on a date): every position of options, of every expiration on or after the date, ranked
+(lazy-load "trade_scenario.lsp"
+  trade-scenario trade-scenario-for-chain show-trade-scenario trade-scenario-best-of-each-kind
+  trade-scenario-position-in-words trade-scenario-symbol trade-scenario-today-price trade-scenario-price
+  trade-scenario-date trade-scenario-rate trade-scenario-prices trade-scenario-contract-size trade-scenario-unit
+  trade-scenario-underlyings trade-scenario-strikes trade-scenario-trades)
+
 ; Yield curves: the Treasury's par curve and the Fed's fitted curve, zero rates and forward rates
 (lazy-load "yield_curves.lsp"
   treasury-par-curve latest-treasury-points treasury-zero-curve par-curve-zeros curve-forward-rates forward-rates-table extend-forward-curve gsw-curve

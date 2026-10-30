@@ -66,6 +66,7 @@ that use all this are described in
   - [Valuing options three ways](#valuing-options-three-ways)
   - [Call spreads](#call-spreads)
   - [Option spreads](#option-spreads)
+  - [A scenario: every position, every expiration](#a-scenario-every-position-every-expiration)
   - [Portfolios](#portfolios)
 
 ## Where things are
@@ -107,7 +108,9 @@ The functions for investment analysis, in the order an analysis uses them.
    order to trade it. "Option spreads": the same for seventeen kinds of position
    (the other vertical spreads, butterflies, iron condors, straddles, strangles,
    single options, covered calls, protective puts, collars, and owning the stock),
-   and the best of each side by side.
+   and the best of each side by side. "A scenario: every position, every expiration": for a
+   price on any date, every position of every expiration on or after it, ranked by the return on
+   the money it commits, with what it loses if you are wrong and if nothing happens.
 6. **Rates and mortgages.** The Treasury's, the Fed's and SOFR futures' yield curves,
    and the two-factor model of rates, with paths of rates drawn from it and fitted to
    option prices, are in their own manual, [lisp_paths_manual.md](lisp_paths_manual.md); futures curves
@@ -5958,6 +5961,112 @@ options, alone or as the parts of a position with shares -- are the forms
 `schwab-order` makes for a stock and for an option, and have not been
 previewed either. **Always preview** (that places nothing), and read Schwab's
 answer for the commission and any warning, before placing an order.
+
+### A scenario: every position, every expiration
+
+(In `lib/trade_scenario.lsp`; its functions work without loading it.) "Crude oil will be at 70 on December 1."
+"Apple will be at 380 on December 18." What is the best way to trade on it with options, if it comes to pass, and
+what does each way risk if it doesn't? `trade-scenario` gets the options of a stock or a future from tastytrade,
+makes every position of nineteen kinds out of those that expire on or after the date -- the seventeen of "Option
+spreads", and two calendar spreads -- values each on the date, and ranks them in one table.
+
+```lisp
+(define scenario (trade-scenario creds "AAPL" 380.0 (date 2026 12 18)))
+(show-trade-scenario scenario)
+```
+
+**What is different from "Option spreads".** There, the price you expect is on an expiration day, and only that
+day's options count. Here the date can be any day, and every expiration on or after it is searched:
+
+- An option that **expires on the date** is worth what it pays then: a call the price less its strike, or nothing; a
+  put the strike less the price, or nothing. These positions' numbers are exactly those of `option-spreads-for-chain`.
+- An option that **expires later** still has time to run on the date, and is worth more than what it would pay: what
+  the Black-Scholes formula says it is worth (Black's, for a future's option), with the time it has left, at the
+  volatility its own price implies today (the middle of its bid and ask, through `implied-vol`). Keeping each option's
+  volatility as it is today is an assumption: a big move usually changes volatilities too.
+- **Calendar spreads** sell an option that expires on or after the date and buy the same strike's option that
+  expires later: `call-calendar` and `put-calendar`. On the date the near one is worth little, and the far one still
+  has its time, so the spread does best with the price near the strike.
+
+**The numbers of each position**, for one unit (a share, or a barrel), on the date:
+
+| Column | What it holds |
+|---|---|
+| `profit` | what it is worth at the scenario's price less what it costs today: if you are right |
+| `max-loss` | the most it can lose, at any price: if you are wrong. Exact for a position that expires on the date; for one that expires later, the worst of its profits at 300 prices from 0 to three times the higher of today's price and the scenario's |
+| `if-unchanged` | the profit if the price on the date is today's: if nothing happens. Options that expire later have lost some of their time by then |
+| `roi` | the profit over the **money committed**: the cost of a position that costs you (a debit); the most it can lose, for one that pays you (a credit), which is about what a broker holds as margin (for a cash-secured put, the cash to buy the shares). Shares are paid for in full |
+| `ratio` | the profit over the most it can lose, as "Option spreads" ranks |
+| `breakeven-1`, `breakeven-2` | the prices on the date where it breaks even |
+
+The positions are ranked by `roi`, unless `:rank-by` says `ratio` or `profit`.
+
+**Futures.** A future's options are on several futures, one for each delivery month, with prices of their own
+(crude oil's December options are on the January future). The scenario's price is the price of one of them -- the
+future of the options that expire first on or after the date, unless `:underlying` names another -- and each of the
+others is taken to keep its difference from it, as today. The amounts are for one unit; `trade-scenario` knows the
+contract size and unit of the common futures (the list `trade-scenario-futures-units` in `lib/trade_scenario.lsp`: crude oil 1,000 barrels, gold 100
+ounces, the E-mini S&P 50 points, ...), and the display says what a contract's dollars are.
+
+**Strikes.** tastytrade sends each expiration's strikes nearest today's price (`:strikes`, 40 of them). For a
+scenario far from today's price, the best positions may use strikes further out: the display says when the scenario's
+price is beyond the strikes there are, and `:strikes 80` asks for more.
+
+For Apple at 380 on December 18, 2026, from 344 on October 30 (abridged):
+
+```
+The scenario: AAPL at 380.00 on 2026-12-18 (it is at 344.46 now). 4146 positions, from options expiring on 2026-12-18 or later; ...
+kind            expires                  position                                                    cost  max-loss  profit   roi  if-unchanged
+call-butterfly  2026-12-18               buy 1 375.00 call, sell 2 380.00 calls, buy 1 385.00 call   0.67      0.67    4.33  646%         -0.67
+bull-call       2026-12-18               buy 1 375.00 call, sell 1 380.00 call                       1.09      1.09    3.91  359%         -1.09
+call-calendar   2026-12-18 & 2027-01-15  sell 1 380.00 call (2026-12-18), buy 1 380.00 call (2027-01-15)   2.29   2.29    8.09  353%         -1.56
+long-call       2026-12-18               buy 1 360.00 call                                           7.30      7.30   12.70  174%         -7.30
+long-stock                               buy 100 shares                                            344.46    344.46   35.54   10%          0.00
+```
+
+The butterfly makes the most for what it costs, but only if Apple ends near 380: it breaks even at 375.67 and at
+384.33. The calendar makes less of its cost, but over a wider range of prices (356.87 to 412.90), because the
+January call it keeps is worth something wherever Apple is. The long call makes something above 367.30, and more
+the higher Apple goes. The ranking is for the one price; look at `max-loss`, `if-unchanged` and the breakevens to
+choose among them. What is left out: commissions; that the options would be sold on the date at their bids, not at
+the formula's middle; early exercise; and how likely the scenario is.
+
+#### `(trade-scenario creds symbol price date [:kinds k :strikes n :months m :rate r :rank-by b :prices p :min-open-interest n :min-volume n :min-risk r :max-width w :underlying u :contract-size n :unit w])`
+Gets `symbol`'s options -- a stock's (`"AAPL"`), or a future's, by its code in `(tastytrade-products)` (`"CL"`) --
+from tastytrade, and ranks every position that could be traded on the scenario that it is at `price` on `date` (a
+date, or `"YYYY-MM-DD"`): see `trade-scenario-for-chain`. `:strikes` (40) is how many strikes nearest today's price
+to get of each expiration; `:months` how many months of expirations (of a stock's) or of delivery months (of a
+future's), by default three more than the months to the date; `:rate` the interest rate, continuously compounded, by
+default the Treasury curve's to the date. A future's `:contract-size` and `:unit` are from
+`trade-scenario-futures-units` unless they are given; a stock's are 100 and `"share"`. The other options are
+`trade-scenario-for-chain`'s. Returns a `trade-scenario`.
+
+#### `(trade-scenario-for-chain chain price date [:kinds k :rate r :rank-by b :today d :prices p :min-open-interest n :min-volume n :min-risk r :max-width w :underlying u :contract-size n :unit w])`
+The same, for a chain you have: a table as `tastytrade-option-chain` makes (or `schwab-option-chain`'s, with
+`:today`, the day of its prices, since it has no days to expiration). `:kinds` is a list of the names of the kinds
+to search -- those of `(option-spread-kinds)`, and `call-calendar` and `put-calendar` -- by default all of them.
+`:rate` is 0.04 unless it is given. `:rank-by` is `roi` (the default), `ratio`, or `profit`. `:min-volume` is 0 here,
+since a scenario is often looked at when the market is closed; the rest are those of `option-spreads-for-chain`.
+Returns a `trade-scenario`, whose accessors are `trade-scenario-symbol` (the underlying the price is of),
+`-today-price`, `-price`, `-date`, `-rate`, `-prices`, `-contract-size`, `-unit`, `-underlyings` (a table of each
+underlying's price today and in the scenario), `-strikes` (the lowest and highest searched), and `-trades`: the table
+of positions, the best first, with the columns `kind`; `expires` (the expiration, or a calendar's two);
+`underlying`; `shares` (1 if it buys the underlying); for each of up to four options, `type-1`, `quantity-1`
+(negative: sold), `expiration-1`, `symbol-1`, `strike-1` and `price-1` (the ask paid, or the bid got), and so on,
+empty past its last; and `cost`, `max-loss`, `worth`, `profit`, `roi`, `ratio`, `if-unchanged`, `breakeven-1` and
+`breakeven-2`, as above.
+
+#### `(show-trade-scenario scenario [:count n])`
+Says what the scenario is (and, for futures, what each future's price is taken to be), warns if the scenario's price
+is beyond the strikes searched, and shows the best `:count` (15) positions and the best of each kind, with the
+positions in words.
+
+#### `(trade-scenario-best-of-each-kind scenario)`, `(trade-scenario-position-in-words scenario row)`
+The table of the best position of each kind, as `show-trade-scenario` shows it; and one row's position in words
+(`"sell 1 380.00 call (2026-12-18), buy 1 380.00 call (2027-01-15)"`).
+
+`examples/trade_scenario_example.lsp` does it from the command line: `python3 ../lisp_interpreter.py
+trade_scenario_example.lsp CL 70 2026-12-01`.
 
 ### Portfolios
 

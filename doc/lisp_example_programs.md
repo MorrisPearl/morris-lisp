@@ -146,6 +146,7 @@ files in `examples/` and `lib/` from anywhere:
 | `option_methods_example.lsp` | a stock's options valued three ways, next to the market | tastytrade, Schwab, Alpha Vantage |
 | `call_spread_example.lsp` | the best call spread for the price you expect, and a chart of its profit against the stock's price | Schwab |
 | `option_spreads_example.lsp` | the best position of one of seventeen kinds (spread, butterfly, iron condor, covered call, ...) for the price you expect, with profit charts | Schwab |
+| `trade_scenario_example.lsp` | for a price on a date (crude oil at 70 on December 1), every position of options of every expiration on or after it, ranked by the return on the money committed | tastytrade |
 | `option_positions_example.lsp` | the best of every kind side by side, with owning the stock among them, and profit charts | Schwab |
 | `option_payoffs_example.lsp` | what each of the seventeen kinds pays: a chart of its profit against the stock's price, for a made-up chain | nothing: no network |
 | `tastytrade_example.lsp` | quotes, futures curves, option chains, and market metrics | tastytrade |
@@ -1249,6 +1250,13 @@ here are longer tours: a series of steps, each with a comment saying what it sho
   the comments show how to go on to prepare one and have Schwab preview it. The library,
   `lib/call_spreads.lsp`, has tests that check its search against a plain brute force
   on random chains.
+- **`trade_scenario_example.lsp`** asks the question the other way round: not "which spread of this kind, for this
+  expiration?", but "the price will be this on this date: what is the best way to trade on it?". It takes a stock or a
+  future's code, a price and a date, gets the options from tastytrade, and ranks every position of nineteen kinds (the
+  seventeen of `option_spreads_example.lsp`, and calendar spreads) of every expiration on or after the date, each
+  valued on the date -- by what it pays, for the options that expire then, and by the Black-Scholes formula at its own
+  implied volatility, for those that expire later -- with the profit if you are right, the most it can lose, and the
+  profit if nothing happens. `lib/trade_scenario.lsp` builds on `lib/option_spreads.lsp`'s search.
 - **`option_spreads_example.lsp`** is the same for seventeen kinds of position: it takes a stock, a
   kind (`bull-call`, `bear-put`, `iron-condor`, `long-strangle`, `long-call`, `covered-call`,
   `collar`, ...), an expiration, and the price you expect, and ranks every position of the kind
