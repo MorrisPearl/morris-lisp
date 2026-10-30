@@ -130,6 +130,26 @@ class TestSolverLibrary(LispTestCase):
         self.assertAlmostEqual(y, 1.0, places=6)
         self.assertLess(value, 1e-12)
 
+    def test_shrink_moves_every_vertex_halfway_to_the_best(self):
+        # vertices are (value . point); the best one, first, stays
+        self.assertShows("(nm--shrink (lambda (p) (+ (car p) (cadr p))) "
+                         "(list (cons 0 (list 0 0)) (cons 2 (list 2 0)) (cons 4 (list 0 4))))",
+                         "((0 0 0) (1.0 1.0 0.0) (2.0 0.0 2.0))")
+
+    def test_nelder_mead_shrinks_when_contracting_does_not_help(self):
+        # A staircase: flat steps make the contracted point no better than the worst one, so
+        # Nelder-Mead has to shrink the simplex toward its best point to keep going down.
+        self.run_lisp("""(define shrinks 0)
+                         (define shrink-the-simplex nm--shrink)
+                         (define (nm--shrink f simplex)
+                           (set! shrinks (+ shrinks 1))
+                           (shrink-the-simplex f simplex))""")
+        point, value = lisp_core.pairs_to_list(
+            self.run_lisp("(nelder-mead (lambda (p) (floor (* 10 (abs (car p))))) (list 3.0))"))
+        self.assertEqual(value, 0)
+        self.assertLess(abs(lisp_core.pairs_to_list(point)[0]), 0.1)
+        self.assertGreater(self.run_lisp("shrinks"), 0)
+
     def test_implied_volatility_round_trip(self):
         self.run_lisp('(define price (bsm-price "call" 100 105 0.5 0.04 0.25))')
         self.assertAlmostEqual(self.run_lisp('(implied-vol price "call" 100 105 0.5 0.04)'), 0.25, places=8)
@@ -251,6 +271,35 @@ class TestRegression(LispTestCase):
                       "(vector-map (lambda (x) (abs (- x 5))) (vector-range 11)) (list 5)))")
         self.assertIn("x (knot 5)", self.show("(model-report spl)"))
         self.assertShows('(table-column (model-coefficient-table spl) "term")', '#("intercept" "x" "x (knot 5)")')
+
+    def test_suggest_knots_finds_where_the_curve_bends(self):
+        # y = |x - 3| + |x - 7| bends at 3 and at 7, and is straight everywhere else
+        self.run_lisp("""(define x (vector-iterate 0 21 (lambda (x) (+ x 0.5))))
+                         (define y (vector-map (lambda (x) (+ (abs (- x 3)) (abs (- x 7)))) x))""")
+        self.assertShows("(suggest-knots x y 1 2)", "(3.0 7.0)")
+        self.assertShows("(suggest-knots x y 1 1)", "(3.0)")            # both bends are as sharp: the first wins
+        self.assertShows("(suggest-knots x y 1 5)", "(3.0 7.0)")        # only two places bend at all
+        self.assertShows("(suggest-knots x y 1 0)", "()")
+        # A window 3 points wide spreads each bend over the points beside it, so the knots can land a
+        # step early -- but they are still at least 3 points apart, one for each bend.
+        self.assertShows("(suggest-knots x y 3 2)", "(2.5 6.5)")
+        # the knots go straight to spline-regression, which then fits the curve exactly
+        self.run_lisp("(define spl (spline-regression x y (suggest-knots x y 1 2)))")
+        self.assertAlmostEqual(self.run_lisp("(model-predict spl 5)"), 4.0, places=4)
+
+    def test_suggest_knots_averages_the_rows_at_each_x_and_needs_no_order(self):
+        # each x twice, out of order, with y above and below the curve |x - 4| by the same amount
+        self.run_lisp("""(define x #(8 0 1 2 3 4 5 6 7 8 7 6 5 4 3 2 1 0))
+                         (define y (vector-map (lambda (x) (abs (- x 4))) x))
+                         (define noise #(1 1 1 1 1 1 1 1 1 -1 -1 -1 -1 -1 -1 -1 -1 -1))""")
+        self.assertShows("(suggest-knots x (+ y noise) 1 1)", "(4)")
+
+    def test_suggest_knots_errors(self):
+        self.assertLispError("(suggest-knots #(1 2 3) #(1 2) 1 1)", "the same length")
+        self.assertLispError("(suggest-knots #(1 2 3) #(1 2 3) 0 1)", "window must be a positive integer")
+        self.assertLispError("(suggest-knots #(1 2 3) #(1 2 3) 1 -1)", "n must not be negative")
+        self.assertLispError("(suggest-knots #(1 1 2) #(1 2 3) 1 1)", "need at least 3 distinct x values")
+        self.assertLispError("(suggest-knots (list 1 2 3) #(1 2 3) 1 1)", "x and y must be vectors")
 
     def test_train_test_split_helpers(self):
         self.assertShows("(vector-take #(1 2 3 4 5) 3)", "#(1 2 3)")
@@ -1526,6 +1575,25 @@ class TestTemplateLibrary(LispTestCase):
                       (template-bindings (n "safe' OR '1'='1"))))""")
         # the injection attempt matches nothing (a real injection would return 'safe')
         self.assertShows("(vector-length (cdr (car r)))", "0")
+
+    def test_sqlite_execute_template_inserts_and_reads_row_by_row(self):
+        self.run_lisp("""
+          (define conn (sqlite-open ":memory:"))
+          (sqlite-execute conn "CREATE TABLE loans (state TEXT, balance REAL)")
+          (sqlite-execute-template conn "INSERT INTO loans VALUES ({{state}}, {{balance}})"
+                                   (template-bindings (state "CA") (balance 250000)))
+          (sqlite-execute-template conn "INSERT INTO loans VALUES ({{state}}, {{balance}})"
+                                   (template-bindings (state "NY") (balance 400000)))
+          (sqlite-execute-template conn "INSERT INTO loans VALUES ({{state}}, {{balance}})"
+                                   (template-bindings (state "x'); DROP TABLE loans; --") (balance 1)))
+          (define cursor (sqlite-execute-template conn
+                           "SELECT state, balance FROM loans WHERE balance > {{min}} ORDER BY balance"
+                           (template-bindings (min 100))))""")
+        self.assertShows("(sqlite-fetch-row cursor)", '("CA" 250000.0)')
+        self.assertShows("(sqlite-fetch-row cursor)", '("NY" 400000.0)')
+        self.assertShows("(sqlite-fetch-row cursor)", "()")
+        # the hostile value went in as a value, not as SQL: the table is still there, with three rows
+        self.assertShows('(sqlite-fetch-row (sqlite-execute conn "SELECT COUNT(*) FROM loans"))', "(3)")
 
     def test_format_spec_in_a_tag(self):
         self.assertShows('(template-render "{{state:<6}}{{upb:>15,.2f}}{{wac:>8.3f}}" '

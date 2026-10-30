@@ -6438,8 +6438,9 @@ and KenKen programs), so they're skipped unless you set the
 LISP_TEST_SLOW=1 python3 -m unittest discover -s tests
 ```
 
-**What isn't tested.** Anything that needs the network or an account:
-`fred-table`, `tastytrade-*`, and `sofr-calibration-data`. The
+**What isn't tested.** Nothing uses the network or an account: the data
+sources (FRED, tastytrade, Schwab, FINRA, and the others) are tested
+against a stand-in that answers as the real service does. The
 `http-get-*` functions are tested against a small web server that the
 tests start on your own computer. The GUI gets only a check that its error
 report looks right; it runs off-screen, so no window opens, and it's skipped
@@ -6447,6 +6448,21 @@ if PyQt6 isn't installed. The Jupyter kernel is tested by starting a real
 one, which takes a few seconds: its error boxes, and the debug REPL, which a
 scripted stand-in for the browser types into and clicks. Those tests are
 skipped if ipykernel or ipywidgets isn't installed.
+
+**How much of the interpreter the tests run.** `tools/measure_coverage.py`
+runs the tests (all of them, or the files named) and reports, for each
+`lisp_*.py` file, the share of its lines that ran, and for each `lib/*.lsp`
+library, the share of its functions that were called, with the functions
+that never were:
+
+```bash
+python3 tools/measure_coverage.py
+python3 tools/measure_coverage.py tests/test_models.py
+```
+
+A Lisp function counts as covered if it was called once, whatever branches
+inside it ran. Code the tests run in a separate program, such as
+`lisp_interpreter.py`'s command line, shows as never run.
 
 **Reading a failure.** Each failure names the test and shows what was
 expected and what happened. For a test that ran Lisp code, it also shows

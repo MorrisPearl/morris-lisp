@@ -1559,6 +1559,39 @@ class TestTastytrade(LispTestCase):
         self.assertShows('(vector-ref (table-column chain "ask") 0)', "1.2")
         self.assertShows('(vector-ref (table-column chain "implied-volatility") 0)', "0.2")
 
+    def test_futures_curve(self):
+        # Four months from November 2026: /CLX6 /CLZ6 /CLF7 /CLG7. tastytrade has no price for the January
+        # contract, and gives the others' prices as a settlement (close), a last trade, and a mark.
+        def answers(path, params):
+            return 200, {"data": {"items": [{"symbol": "/CLX6", "close": "61.5", "last": "61.9"},
+                                            {"symbol": "/CLZ6", "last": "62.25"},
+                                            {"symbol": "/CLF7", "bid": "62.6"},
+                                            {"symbol": "/CLG7", "mark": "63.0"}]}}
+        with mock.patch.object(lisp_tastytrade.datetime, "date", wraps=datetime.date) as fake_date:
+            fake_date.today.return_value = datetime.date(2026, 11, 15)
+            self.env[lisp_core.Symbol("curve")] = self.run_with_api('(tastytrade-futures-curve creds "cl" 4)', answers)
+            self.assertEqual(self.api.requests,
+                             [("/market-data/by-type", {"future": ["/CLX6", "/CLZ6", "/CLF7", "/CLG7"]})])
+            self.env[lisp_core.Symbol("rows")] = self.run_with_api('(tastytrade-futures-curve-rows creds "CL" 4)',
+                                                                   answers)
+        self.assertShows("(car curve)", "#(2026-11-01 2026-12-01 2027-02-01)")
+        self.assertShows("(cdr curve)", "#(61.5 62.25 63.0)")
+        self.assertShows("rows", '((2026-11-01 "CLX6" -14 61.5) (2026-12-01 "CLZ6" 16 62.25) '
+                                 '(2027-02-01 "CLG7" 78 63.0))')
+        with self.assertRaises(lisp_core.LispError) as caught:
+            self.run_with_api('(tastytrade-futures-curve creds "XYZ")', answers)
+        self.assertIn('unknown product', str(caught.exception))
+
+    def test_the_delivery_month_of_a_futures_symbol(self):
+        month = lambda symbol: lisp_tastytrade._tasty_parse_delivery_month(symbol, datetime.date(2026, 11, 15))
+        self.assertEqual(month("/CLZ6"), datetime.date(2026, 12, 1))
+        self.assertEqual(month("/ESH7"), datetime.date(2027, 3, 1))
+        self.assertEqual(month("/ZNM26"), datetime.date(2026, 6, 1))      # a two-digit year
+        self.assertEqual(month("/CLZ5"), datetime.date(2025, 12, 1))      # last year's, not 2035's
+        self.assertEqual(month("/CLZ3"), datetime.date(2033, 12, 1))      # more than 2 years back: the next decade
+        for nonsense in ("", "/CL", "/CLZ", "/CLA6", "/6"):
+            self.assertIsNone(month(nonsense), nonsense)
+
     def test_test_connection_names_the_accounts(self):
         answers = lambda path, params: (200, {"data": {"items": [{"account": {"account-number": "5WT0001"}},
                                                                  {"account": {"account-number": "5WT0002"}}]}})
