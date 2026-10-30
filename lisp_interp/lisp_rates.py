@@ -4,7 +4,7 @@ term_structure/sofr_market_data.py (which fetches SOFR futures and options from
 tastytrade).
 
 The curve and the data of SOFR futures (sofr-*):
-  sofr-forward-curve, sofr-bootstrap-curve    build a 360-month forward curve
+  sofr-forward-curve                          build a 360-month forward curve
                                               from SOFR futures (flat past the
                                               last one: for the long end, use
                                               the Treasury's: yield_curves.lsp)
@@ -19,7 +19,6 @@ Treasury's is the one to use):
 
 Fitting the model to option prices:
   calibrate-rate-model                        to SOFR and 10-year note options at once
-  calibrate-to-sofr-options                   to options on SOFR futures
   calibrate-to-note-options                   to options on the 10-year note future (ZN)
   note-option-comparison                      the model's prices of ZN options
                                               next to the market's
@@ -34,7 +33,8 @@ import sys
 import numpy as np
 
 from lisp_core import (
-    NETWORK, LispError, LispString, LispVector, Pair, Symbol, keyword_options, lisp_error_of_kind, list_to_pairs, pairs_to_list,
+    NETWORK, LispDate, LispError, LispString, LispVector, Pair, Symbol, keyword_options, lisp_error_of_kind, list_to_pairs,
+    pairs_to_list, to_string,
 )
 from lisp_tastytrade import NETWORK_FAILURES
 from lisp_tables import make_table_value
@@ -47,7 +47,6 @@ try:
     from term_structure_model import rate_curve_on_date as _rate_curve_on_date
     from term_structure_model import curve_par_yield as _curve_par_yield
     from term_structure_model import simulate_rate_factors as _simulate_rate_factors
-    from term_structure_model import calibrate_to_sofr_options as _calibrate_to_sofr_options
     from term_structure_model import calibrate_to_note_options as _calibrate_to_note_options
     from term_structure_model import calibrate_rate_model as _calibrate_rate_model
     from term_structure_model import note_option_comparison as _note_option_comparison
@@ -70,11 +69,26 @@ except ImportError:
 _SOFR_DAYS_PER_MONTH = 30.436875
 
 
+def _sofr_future(row, who):
+    """A SOFR future, for the curve, from a row of either kind: tastytrade-futures-curve-rows's (delivery-month
+    symbol days-to-delivery price) or sofr-calibration-data's (symbol start-months end-months rate)."""
+    if isinstance(row[0], LispDate):
+        days, price = float(row_field(row, 2)), float(row_field(row, 3))
+        end_months = round(days / _SOFR_DAYS_PER_MONTH)     # an SR3 future covers the 3 months before delivery
+        return {"start_months": end_months - 3, "end_months": end_months, "rate": (100.0 - price) / 100.0}
+    if len(row) == 4:
+        return {"start_months": int(row[1]), "end_months": int(row[2]), "rate": float(row[3])}
+    raise LispError("%s: each row should be (delivery-month symbol days price), as tastytrade-futures-curve-rows "
+                    "gives, or (symbol start-months end-months rate), as sofr-calibration-data gives; one is %s"
+                    % (who, to_string(list_to_pairs(row))))
+
+
 def sofr_forward_curve_fn(curve_rows):
     """(sofr-forward-curve curve-rows) -> (cons months-vector forward-rates-vector):
     a 360-month curve of 1-month forward rates bootstrapped from SOFR futures
-    prices. curve-rows is the output of
-    (tastytrade-futures-curve-rows creds "SR3").
+    prices. curve-rows is either (tastytrade-futures-curve-rows creds "SR3"),
+    which needs only the futures' prices, or the curve rows of
+    sofr-calibration-data (its car).
 
     months-vector is 1..360; element i of forward-rates-vector is the
     annualized forward rate (a decimal, e.g. 0.045) for month i+1. Past the
@@ -82,26 +96,12 @@ def sofr_forward_curve_fn(curve_rows):
     carries it on with the Treasury's. The method is
     term_structure_model.bootstrap_sofr_curve(); this only reshapes the rows.
     No network access."""
-    if not _TERM_STRUCTURE_AVAILABLE:
-        raise LispError(
-            "sofr-forward-curve: term_structure_model.py (and numpy) aren't "
-            "available -- see term_structure/ next to lisp_interp/")
+    who = "sofr-forward-curve"
+    _check_term_structure(who)
     rows = [pairs_to_list(r) for r in pairs_to_list(curve_rows)]
     if not rows:
-        raise LispError("sofr-forward-curve: curve-rows is empty")
-
-    sofr_futures = []
-    for r in rows:
-        days = float(row_field(r, 2))
-        price = float(row_field(r, 3))
-        end_months = round(days / _SOFR_DAYS_PER_MONTH)
-        sofr_futures.append({
-            "start_months": end_months - 3,
-            "end_months": end_months,
-            "rate": (100.0 - price) / 100.0,
-        })
-
-    result = _bootstrap_sofr_curve(sofr_futures)
+        raise LispError("%s: curve-rows is empty" % who)
+    result = _bootstrap_sofr_curve([_sofr_future(row, who) for row in rows])
     months = LispVector([int(m) for m in result["months"]])
     forward_rates = LispVector([float(fr) for fr in result["forward_rates"]])
     return Pair(months, forward_rates)
@@ -113,12 +113,11 @@ def sofr_calibration_data_fn(credentials_path, n_futures=40, n_underlyings=10, n
     SOFR futures options, fetched from tastytrade in one session.
 
       curve-futures-rows  (symbol start-months end-months rate), one per contract
-                          -- for sofr-bootstrap-curve
+                          -- for sofr-forward-curve
       options-rows        (type strike expiry-months quarter-start-months
                           quarter-end-months market-price underlying-price),
                           near-the-money calls and puts on n-underlyings
-                          contracts -- for calibrate-to-sofr-options (which does not
-                          use the last number) and calibrate-rate-model
+                          contracts -- for calibrate-rate-model
 
     The options are spread across the whole curve, not just the nearest
     contracts, so the model's two volatilities can be told apart. See
@@ -145,67 +144,6 @@ def sofr_calibration_data_fn(credentials_path, n_futures=40, n_underlyings=10, n
         for o in options
     ])
     return Pair(curve_rows, options_rows)
-
-
-def sofr_bootstrap_curve_fn(curve_futures_rows):
-    """(sofr-bootstrap-curve curve-futures-rows) -> (cons months-vector
-    forward-rates-vector): the same curve as sofr-forward-curve, but from the
-    rows sofr-calibration-data returns. No network access."""
-    if not _TERM_STRUCTURE_AVAILABLE:
-        raise LispError(
-            "sofr-bootstrap-curve: term_structure_model.py (and numpy) aren't "
-            "available -- see term_structure/ next to lisp_interp/")
-    rows = [pairs_to_list(r) for r in pairs_to_list(curve_futures_rows)]
-    if not rows:
-        raise LispError("sofr-bootstrap-curve: curve-futures-rows is empty")
-    sofr_futures = [
-        {"start_months": int(r[1]), "end_months": int(r[2]), "rate": float(r[3])}
-        for r in rows
-    ]
-    result = _bootstrap_sofr_curve(sofr_futures)
-    months = LispVector([int(m) for m in result["months"]])
-    forward_rates = LispVector([float(fr) for fr in result["forward_rates"]])
-    return Pair(months, forward_rates)
-
-
-def calibrate_to_sofr_options_fn(forward_rates, options_rows, curve_real_months,
-                             n_paths=2000, seed=42, n_grid=7, n_rounds=4):
-    """(calibrate-to-sofr-options forward-rates options-rows curve-real-months
-      [n-paths seed n-grid n-rounds]) -> (list a theta-bar sigma1 sigma2 error)
-
-    Fits the two-factor model -- mean-reversion speed `a`, short-rate
-    volatility sigma1, and the volatility sigma2 of the level the short
-    rate reverts to -- to real SOFR futures option prices. It tries a grid
-    of (a, sigma1, sigma2) values, keeps the one that prices the options
-    best, narrows the grid around it, and repeats n-rounds times. theta-bar
-    is refitted at each `a`. See term_structure_model.calibrate_to_sofr_options().
-
-      forward-rates       from sofr-forward-curve or sofr-bootstrap-curve
-      options-rows        from sofr-calibration-data
-      curve-real-months   how many months of the curve come from real prices
-      n-paths             Monte Carlo paths per option price (accuracy vs. speed)
-      n-grid, n-rounds    grid size and number of rounds. Time grows roughly as
-                          n-grid^3 * n-rounds * n-paths * options; the defaults
-                          (2000, 7, 4) take ten to twenty seconds.
-
-    No network access, so it's cheap to rerun with other settings."""
-    if not _TERM_STRUCTURE_AVAILABLE:
-        raise LispError(
-            "calibrate-to-sofr-options: term_structure_model.py (and numpy) aren't "
-            "available -- see term_structure/ next to lisp_interp/")
-    options = [pairs_to_list(r) for r in pairs_to_list(options_rows)]
-    if not options:
-        raise LispError("calibrate-to-sofr-options: options-rows is empty")
-    option_dicts = [{
-        "type": str(o[0]), "strike": float(o[1]), "expiry_months": int(o[2]),
-        "quarter_start_months": int(o[3]), "quarter_end_months": int(o[4]),
-        "market_price": float(o[5]),
-    } for o in options]
-    forward_rates_list = [float(v) for v in forward_rates.items]
-    a, theta_bar, sigma1, sigma2, error = _calibrate_to_sofr_options(
-        forward_rates_list, option_dicts, int(curve_real_months),
-        n_paths=int(n_paths), seed=int(seed), n_grid=int(n_grid), n_rounds=int(n_rounds))
-    return list_to_pairs([float(a), float(theta_bar), float(sigma1), float(sigma2), float(error)])
 
 
 # ---------------------------------------------------------------------------
@@ -366,15 +304,17 @@ def calibrate_rate_model_fn(sofr_forward_rates, note_forward_rates, sofr_rows, n
     (sigma2); fitting both fixes a and sigma1 against the SOFR options and
     sigma2 against the note options, and the model has to agree with both.
 
-      sofr-forward-rates      the SOFR curve (sofr-forward-curve or
-                              sofr-bootstrap-curve), which the SOFR options'
-                              paths start from
+      sofr-forward-rates      the SOFR curve (sofr-forward-curve), which
+                              the SOFR options' paths start from
       treasury-forward-rates  the Treasury's monthly forward curve
                               (curve-forward-rates), which the note options'
                               paths are centered on
       sofr-option-rows        from sofr-calibration-data (the 7-item rows)
       note-option-rows        as for note-option-comparison
-      curve-real-months       as for calibrate-to-sofr-options
+      curve-real-months       how many months of the SOFR curve come from
+                              futures prices: the last end-months of
+                              sofr-calibration-data's curve rows; theta-bar is fitted to
+                              those months only
 
     The error is the root mean square relative volatility error of the SOFR
     options and that of the note options, put together as the square root of
@@ -564,8 +504,6 @@ BUILTINS = {
     "path-present-values": path_present_values_fn,
     "sofr-forward-curve": sofr_forward_curve_fn,
     "sofr-calibration-data": sofr_calibration_data_fn,
-    "sofr-bootstrap-curve": sofr_bootstrap_curve_fn,
-    "calibrate-to-sofr-options": calibrate_to_sofr_options_fn,
     "calibrate-to-note-options": calibrate_to_note_options_fn,
     "calibrate-rate-model": calibrate_rate_model_fn,
     "note-option-comparison": note_option_comparison_fn,

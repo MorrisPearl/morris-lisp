@@ -2,7 +2,7 @@
 ;
 ; Fitting the interest-rate model to options on the 10-year Treasury note future (ZN).
 ;
-; The model of rates can be fitted to SOFR futures options (calibrate-to-sofr-options); those show how
+; The model of rates can be fitted to SOFR futures options (calibrate-rate-model); those show how
 ; much the SHORT rate moves. A mortgage follows the LONG end, and options on the 10-year note future say how much
 ; that moves. Here the model's prices of the options are set beside the market's, and the volatility of the long
 ; end (sigma2) is found for which they are nearest. See "Fitting the model to option prices" under

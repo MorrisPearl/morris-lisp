@@ -150,7 +150,7 @@ out, as [section 6](#6-putting-sources-together) shows.
 | To know | Ask | From |
 |---|---|---|
 | The Federal Reserve's interest rate (federal funds) | `(fred-table creds "FEDFUNDS")` (monthly; `"DFF"` is daily) | Federal Reserve, via FRED |
-| SOFR, the rate that sets floating-rate loans | `(fred-table creds "SOFR")` | New York Fed, via FRED |
+| SOFR, the rate that sets floating-rate loans | `(nyfed-rates "SOFR")` (no key; also its 30-, 90- and 180-day averages, EFFR and the others) | New York Fed |
 | Treasury yields | `(fred-table creds "DGS10")` (10 years; also `"DGS3MO"`, `"DGS2"`, `"DGS30"`) | Treasury, via FRED |
 | The slope of the yield curve: 10 years less 2 | `(fred-table creds "T10Y2Y")` | FRED |
 | Mortgage rates: 30 years, fixed | `(fred-table creds "MORTGAGE30US")` | Freddie Mac, via FRED |

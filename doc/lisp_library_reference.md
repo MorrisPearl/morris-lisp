@@ -30,6 +30,7 @@ that use all this are described in
 - [Getting data](#getting-data)
   - [Downloading data from the web](#downloading-data-from-the-web)
   - [FRED (Federal Reserve Bank of St. Louis) data](#fred-federal-reserve-bank-of-st-louis-data)
+  - [The New York Fed's reference rates (SOFR, EFFR, ...)](#the-new-york-feds-reference-rates-sofr-effr-)
   - [SEC financial statements](#sec-financial-statements)
   - [SEC filings: what companies write](#sec-filings-what-companies-write)
   - [FDIC bank data](#fdic-bank-data)
@@ -205,6 +206,8 @@ string keys (read it with `hash-table-ref`), an array becomes a list,
 ; e.g. (("2026-09-23" 3.87) ("2026-09-22" 3.87) ("2026-09-21" 3.85))
 ```
 
+(`nyfed-rates`, below, gives these rates as a table.)
+
 #### `(http-get-csv url [headings cache-hours headers] [:text columns] [:skip rows] [:missing texts] [:separator char])`
 The CSV file at `url`, as a table, read exactly as `load-csv` reads a file:
 `:text` names the columns to keep as strings, as written, such as zip
@@ -274,6 +277,57 @@ finds a series' ID.
 
 `examples/fred_example.lsp` has more: a whole series, a date range, and
 several series lined up by month.
+
+### The New York Fed's reference rates (SOFR, EFFR, ...)
+
+(In `lisp_nyfed.py`.) The overnight rates the Federal Reserve Bank of New York publishes
+each business day, from its free API: no key or account needed. A rate is named by:
+
+| Name | The rate | From |
+|---|---|---|
+| `"SOFR"` | the Secured Overnight Financing Rate: what overnight loans backed by Treasuries cost; floating-rate loans follow it | April 2, 2018 |
+| `"TGCR"`, `"BGCR"` | the Tri-Party and Broad General Collateral Rates, parts of SOFR's market | April 2, 2018 |
+| `"EFFR"` | the Effective Federal Funds Rate, the rate the Fed sets a target range for | July 3, 2000 |
+| `"OBFR"` | the Overnight Bank Funding Rate | March 1, 2016 |
+| `"SOFR-30"`, `"SOFR-90"`, `"SOFR-180"` | SOFR's average over 30, 90 and 180 days, as many floating-rate loans use it | March 2, 2020 |
+| `"SOFR-INDEX"` | what $1 put in SOFR on April 2, 2018 has grown to, compounding each day | March 2, 2020 |
+
+Rates are in percent, as the Fed publishes them (`3.94`, not `0.0394`). A rate's date is
+the day it is for; the averages and the index are dated the day they are published, which
+is the next business day. FRED has some of these too (`"SOFR"`, `"DFF"`), and FRED's
+`"DFF"` goes back to 1954; these come straight from the Fed, with the rest of what it
+publishes about them.
+
+#### `(nyfed-rates names [:start-date d :end-date d :cache-hours h])`
+One rate, or a list of them, by name, as a table like `fred-table`'s: a `date` column,
+oldest first, and a column for each rate, headed by its name in capitals, with NaN where
+a rate has no value for a date. The table covers each rate's whole history, unless
+`:start-date` or `:end-date` (a date, or `"YYYY-MM-DD"`) says otherwise. Each download is
+kept for 12 hours, unless `:cache-hours` says otherwise (0 downloads it every time).
+
+```lisp
+(define rates (nyfed-rates '("SOFR" "EFFR") :start-date "2025-01-01"))
+(plot-chart (list (list "SOFR" (table-column rates "date") (table-column rates "SOFR"))
+                  (list "EFFR" (table-column rates "date") (table-column rates "EFFR"))))
+```
+
+#### `(nyfed-rate-details name [:start-date d :end-date d :cache-hours h])`
+One rate with all the Fed publishes about it each day, as a table: `date`; `rate`;
+`percentile-1`, `percentile-25`, `percentile-75` and `percentile-99`, the rates that 1%,
+25%, 75% and 99% of the day's dollars traded at or below; `volume-billions`, the dollars
+traded, in billions; and for EFFR, `target-from` and `target-to`, the Fed's target range.
+For `"SOFR-30"`, `"SOFR-90"`, `"SOFR-180"` and `"SOFR-INDEX"` it is all four:
+`average-30-day`, `average-90-day`, `average-180-day` and `index`. The options are as for
+`nyfed-rates`.
+
+```lisp
+(define effr (nyfed-rate-details "EFFR" :start-date "2026-01-01"))
+(table-tail effr 3)       ; date, rate, the percentiles, volume-billions, target-from, target-to
+```
+
+`examples/sofr_and_mortgage_rates.lsp` asks whether the 30-year mortgage rate can be told
+from SOFR. Over the years the two move together, but from week to week a mortgage rate
+follows the 10-year Treasury yield, and SOFR adds nothing once that is known.
 
 ### SEC financial statements
 
@@ -1753,9 +1807,15 @@ adjacent pair has positive day spacing.
 ```
 
 #### `(sofr-forward-curve curve-rows)`
-Pure function — no networking. `curve-rows` is
-`(tastytrade-futures-curve-rows creds "SR3" [n-months])` — one row per
-listed CME 3-Month SOFR future. Bootstraps a 360-month (30-year) curve of
+Pure function — no networking. `curve-rows` is one row per listed CME
+3-Month SOFR future, of either kind:
+
+- `(tastytrade-futures-curve-rows creds "SR3" [n-months])`'s rows, `(delivery-month
+  symbol days-to-delivery price)`, which need only the futures' prices; or
+- the first part of `sofr-calibration-data`'s answer, `(symbol start-months
+  end-months rate)`, when you've fetched the options too.
+
+Bootstraps a 360-month (30-year) curve of
 1-month forward rates implied by those futures prices, reusing
 `term_structure/term_structure_model.py`'s `bootstrap_sofr_curve()`
 as-is (see that function's docstring for the full methodology and its
@@ -1792,12 +1852,11 @@ just futures prices. `n-futures`/`n-underlyings`/`n-strikes` default to
 Returns `(cons curve-futures-rows options-rows)`:
 - `curve-futures-rows` — one row per SR3 contract month used for the
   curve: `(symbol start-months end-months rate)`. Feed to
-  `sofr-bootstrap-curve`.
+  `sofr-forward-curve`.
 - `options-rows` — up to `n-underlyings * n-strikes * 2` near-the-money
   call/put pairs: `(type strike expiry-months quarter-start-months
   quarter-end-months market-price underlying-price)`, the last being the
-  price of the SOFR future the option is on. Feed to `calibrate-to-sofr-options`
-  (which does not use the last number) and `calibrate-rate-model`.
+  price of the SOFR future the option is on. Feed to `calibrate-rate-model`.
 
 Needs the `tastytrade` package, a tastytrade account, and a credentials
 JSON file (see `tasty_api/README.md`).
@@ -1808,16 +1867,8 @@ JSON file (see `tasty_api/README.md`).
 (define options-rows (cdr data))
 ```
 
-#### `(sofr-bootstrap-curve curve-futures-rows)`
-Pure function — no networking. Like `sofr-forward-curve`, but takes
-`sofr-calibration-data`'s `curve-futures-rows` shape (`(symbol
-start-months end-months rate)`) instead of `tastytrade-futures-curve-
-rows`'s — no day-count reshaping needed, since these rows already carry
-`start-months`/`end-months` directly. Same return shape: `(cons
-months-vector forward-rates-vector)`.
-
 ```lisp
-(define curve (sofr-bootstrap-curve curve-futures-rows))
+(define curve (sofr-forward-curve curve-futures-rows))
 (define sofr-forward-rates (cdr curve))
 ```
 
@@ -3203,7 +3254,7 @@ forward rates:
 
 For a model of rates, the forward rates are the starting curve: `(table-column forwards "forward")` is a
 vector of 360 monthly forward rates, in the form the functions of that section take (the `cdr` of what
-`sofr-bootstrap-curve` returns, built from SOFR futures, is another). They are what "Interest rate paths
+`sofr-forward-curve` returns, built from SOFR futures, is another). They are what "Interest rate paths
 (the two-factor model)" makes its paths from. Where the futures end, about 5 years out, a SOFR curve is flat;
 either of these curves, which go to 30 years, can take it from there (`extend-forward-curve`, below).
 Neither is a SOFR curve: they are Treasury curves, and SOFR and Treasury rates differ by a spread that isn't here.
@@ -3237,9 +3288,9 @@ This section makes them from one curve and three numbers, shows what they are ma
 and fits the three numbers to option prices. The paths start on whatever curve you give them,
 and the Treasury's is the one to use. The functions that make them are named for what they do:
 `simulate-...` makes paths (or the pieces of them), `calibrate-...` fits the model to option
-prices, and `rate-curve-on-date` and `curve-par-yield` read a curve. Only the three functions
-about SOFR futures themselves, `sofr-forward-curve`, `sofr-bootstrap-curve` and
-`sofr-calibration-data`, have `sofr-` in their names.
+prices, and `rate-curve-on-date` and `curve-par-yield` read a curve. Only the two functions
+about SOFR futures themselves, `sofr-forward-curve` and `sofr-calibration-data`, have `sofr-`
+in their names.
 
 #### How to generate paths
 
@@ -3252,7 +3303,7 @@ about SOFR futures themselves, `sofr-forward-curve`, `sofr-bootstrap-curve` and
    ```
 
    See "Yield curves" for the others (the Fed's is smoother; your own would do). A curve
-   made from SOFR futures (`sofr-bootstrap-curve`) stops after about 5 years and is flat after that,
+   made from SOFR futures (`sofr-forward-curve`) stops after about 5 years and is flat after that,
    and SOFR rates sit a quarter of a point under Treasury yields, so for anything that
    depends on the long end, such as a mortgage, use the Treasury's.
 
@@ -3366,7 +3417,6 @@ market expects rates to move. Two kinds help, and which function to use follows 
 
 | You have | Use | Finds |
 |---|---|---|
-| options on SOFR futures (`sofr-calibration-data`) | `calibrate-to-sofr-options` | `a`, `sigma1`, `sigma2` (and `theta-bar`, for pricing those options only) |
 | options on the 10-year note future (ZN: `note-option-rows`) | `calibrate-to-note-options` | `sigma2` (and, loosely, others) |
 | both | `calibrate-rate-model` | `a`, `sigma1`, `sigma2`: **the one to use** |
 
@@ -3488,10 +3538,11 @@ implies for that yield then: the first value of each path with no volatility is 
 
 #### `(calibrate-rate-model sofr-forward-rates treasury-forward-rates sofr-option-rows note-option-rows curve-real-months [:fit :sigma1 :sigma2 :a :sofr-paths :note-paths :seed :ctd-maturity :ctd-coupon :min-days :moneyness-window :sofr-min-months])`
 Pure function — no networking. Fits the model to SOFR futures options and to options on the 10-year note
-future together. `sofr-forward-rates` is the SOFR curve (`sofr-bootstrap-curve`), which the SOFR options'
+future together. `sofr-forward-rates` is the SOFR curve (`sofr-forward-curve`), which the SOFR options'
 paths start from, and `treasury-forward-rates` the Treasury's, which the notes' paths are centered on;
 `sofr-option-rows` are `sofr-calibration-data`'s (with the price of the future last); `note-option-rows` are
-those of `note-option-rows`; and `curve-real-months` is as for `calibrate-to-sofr-options`. `:fit` is a list of `a`,
+those of `note-option-rows`; and `curve-real-months` is how many months of the SOFR curve come from futures prices (the
+largest `end-months` of `sofr-calibration-data`'s curve rows); `theta-bar` is fitted to those months only, not to the flat part after them. `:fit` is a list of `a`,
 `sigma1` and `sigma2` (by default all three). `:sofr-paths` (2000) and `:note-paths` (10000) are the numbers
 of paths for each kind. The error is that of `calibrate-to-note-options` for the notes, and the same kind of
 relative volatility error for the SOFR options, the two put together as the square root of the sum of their
@@ -3502,12 +3553,12 @@ the model to option prices". The other options are as for `calibrate-to-note-opt
 
 Returns an association list: `((a . 2.75) (sigma1 . 0.0193) (sigma2 . 0.0122) (theta-bar . 0.0461) (sofr-error
 . 0.14) (note-error . 0.047) (error . 0.148) (sofr-options-used . 18) (note-options-used . 96) (evaluations .
-161))` — `theta-bar` is the value for pricing the SOFR options, as `calibrate-to-sofr-options` gives it (the paths of
+161))` — `theta-bar` is the long-run level the SOFR options are priced with (the paths of
 `simulate-rate-paths` do not use it). Read a value with `(cdr (assoc 'sigma2 fit))`.
 
 ```lisp
 (define data (sofr-calibration-data creds 40 8 3))
-(define fit (calibrate-rate-model (cdr (sofr-bootstrap-curve (car data))) treasury-forwards
+(define fit (calibrate-rate-model (cdr (sofr-forward-curve (car data))) treasury-forwards
                                     (cdr data) rows 62))
 ```
 
@@ -3567,42 +3618,6 @@ each row carries the price of its own. In `note_options.lsp`.
 ```lisp
 (define chain (tastytrade-option-chain creds "ZN" 12 12))
 (define rows (note-option-rows chain))
-```
-
-#### `(calibrate-to-sofr-options forward-rates options-rows curve-real-months [n-paths seed n-grid n-rounds])`
-Pure function — no networking (cheap to re-run with different settings once you've fetched `options-rows` once).
-Fits the model's mean-reversion speed `a` and both volatilities — `sigma1` (the short-rate factor) and `sigma2` (the
-slower-moving mean-reversion-*level* factor) — directly against real SOFR futures option prices, by a "zooming grid
-search": try a grid of `(a, sigma1, sigma2)` combinations, keep whichever prices the options closest, shrink the
-search window around it, repeat `n-rounds` times. Reuses `term_structure_model.py`'s `calibrate_to_sofr_options()`
-as-is — see that function's docstring for the full methodology, including *why* it fits `a` against option prices
-directly rather than against today's curve shape and how `theta_bar` (the long-run level SOFR options' prices are
-worked out from) gets refit in closed form at every candidate `a`.
-
-It uses SOFR options alone, and minimizes the error in price, which the long-dated options dominate. On 2026-10-15
-it gave `a` = 2.76, `sigma1` of about 0 and `sigma2` = 0.015, where `calibrate-rate-model`, which weighs the errors
-in volatility and has the note options too, gave 2.75, 0.019 and 0.012.
-
-- `forward-rates` — `sofr-forward-curve`'s or `sofr-bootstrap-curve`'s second return value.
-- `options-rows` — `sofr-calibration-data`'s second return value (or anything shaped the same way).
-- `curve-real-months` — how many months of `forward-rates` are the REAL (non-extrapolated) part of the curve, i.e.
-  the largest `end-months` among the `curve-futures-rows` used to build it.
-- `n-paths` (default `2000`) — Monte Carlo paths used to price EACH option at EACH candidate tried; an
-  accuracy/speed trade-off for the *calibration* itself, separate from how many scenario paths
-  `simulate-rate-paths` later generates.
-- `seed` (default `42`), `n-grid` (default `7`), `n-rounds` (default `4`) — grid resolution per round / how many
-  times to zoom in. Cost is roughly `O(n-grid³ × n-rounds × n-paths × number of options)` — ten to twenty seconds at
-  these defaults and a handful of options; turn `n-paths`/`n-grid`/`n-rounds` down for a quicker first pass.
-
-Returns `(list a theta-bar sigma1 sigma2 error)` — `error` is the total squared pricing error at the winning
-parameters.
-
-```lisp
-(define fit (calibrate-to-sofr-options sofr-forward-rates options-rows 24
-                                   500 42 5 3))    ; turned down for speed
-(define fitted-a (list-ref fit 0))
-(define fitted-sigma1 (list-ref fit 2))
-(define fitted-sigma2 (list-ref fit 3))
 ```
 
 #### Values on paths of rates

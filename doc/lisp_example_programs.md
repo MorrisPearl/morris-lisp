@@ -156,6 +156,7 @@ files in `examples/` and `lib/` from anywhere:
 |---|---|---|
 | `fred_example.lsp`, `sec_example.lsp`, `fdic_example.lsp`, `census_bls_example.lsp`, `bea_example.lsp` | one data source each | the source's key |
 | `filing_tone_example.lsp` | how negative, positive, and uncertain a company's 10-K risk factors are, year by year, charted | an SEC user agent, and the Loughran-McDonald word lists |
+| `sofr_and_mortgage_rates.lsp` | whether the 30-year mortgage rate can be told from SOFR (it can't; the 10-year yield tells it) | a FRED key |
 | `yield_curve_example.lsp` | today's Treasury yield curve from the Treasury and from the Fed: zero rates and forward rates, charted | nothing: free downloads |
 | `map_example.lsp` | maps colored by a value | Census and BEA keys |
 | `plot_chart_example.lsp` | `plot-chart`: lines, symbols, bars, categories, two axes | nothing |
@@ -1355,6 +1356,13 @@ section for each is in the [library manual](lisp_library_reference.md#getting-da
 `census_bls_example.lsp` and `bea_example.lsp` show how the sources fit together: the
 data functions return **tables**, so a Census table and a BEA table can be matched on a
 shared key and charted, as `map_example.lsp` does.
+
+`sofr_and_mortgage_rates.lsp` puts SOFR's whole history, from the New York Fed (`nyfed-rates`),
+beside Freddie Mac's weekly mortgage rate and the 10-year Treasury yield, from FRED, and fits
+the mortgage rate to each. In levels SOFR looks good (R² 0.86), because both rates were near zero
+in 2021 and high in 2023. In 4-week changes it explains almost nothing, while the 10-year explains
+about 60%, and SOFR adds nothing once the 10-year is known. The lesson is the usual one for two
+series that trend: fit the changes, not just the levels.
 
 `yield_curve_example.lsp` needs no key: it downloads the Treasury's daily par yield curve and
 the Federal Reserve's fitted curve (`treasury-par-curve`, `gsw-curve`), works out the zero

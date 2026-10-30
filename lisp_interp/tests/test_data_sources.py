@@ -1,5 +1,5 @@
 """The data sources, each against a stand-in for its web API (the tests never use the
-network): SEC, FDIC, Census, BLS, BEA, Schwab, FINRA, tastytrade, FRED, Alpha Vantage, and
+network): SEC, FDIC, Census, BLS, BEA, Schwab, FINRA, the New York Fed, tastytrade, FRED, Alpha Vantage, and
 downloads from any web API.
 support.py says how to run them."""
 
@@ -1428,6 +1428,76 @@ class TestFinra(LispTestCase):
         self.assertEqual(request["compareFilters"],
                          [{"fieldName": "agencyCode", "fieldValue": "FNMA", "compareType": "EQUAL"}])
         self.assertNotIn("dateRangeFilters", request)
+
+
+class TestNyFed(LispTestCase):
+    """lisp_nyfed, with the New York Fed's API played by a fake -- no network. The fake's records are as the Fed
+    sends them (newest first)."""
+
+    RECORDS = {
+        "secured/sofr": [{"effectiveDate": "2026-10-28", "type": "SOFR", "percentRate": 3.94, "percentPercentile1": 3.89,
+                          "percentPercentile25": 3.92, "percentPercentile75": 3.99, "percentPercentile99": 4.02,
+                          "volumeInBillions": 3074, "revisionIndicator": ""},
+                         {"effectiveDate": "2026-10-27", "type": "SOFR", "percentRate": 3.95, "percentPercentile1": 3.9,
+                          "percentPercentile25": 3.93, "percentPercentile75": 4.0, "percentPercentile99": 4.05,
+                          "volumeInBillions": 3050, "revisionIndicator": ""}],
+        "unsecured/effr": [{"effectiveDate": "2026-10-28", "type": "EFFR", "percentRate": 3.88, "targetRateFrom": 3.75,
+                            "targetRateTo": 4.00, "volumeInBillions": 116, "revisionIndicator": ""},
+                           {"effectiveDate": "2026-10-26", "type": "EFFR", "percentRate": 3.87, "targetRateFrom": 3.75,
+                            "targetRateTo": 4.00, "volumeInBillions": 109, "revisionIndicator": ""}],
+        "secured/sofrai": [{"effectiveDate": "2026-10-29", "type": "SOFRAI", "average30day": 3.89656,
+                            "average90day": 3.77217, "average180day": 3.71589, "index": 1.26481467,
+                            "revisionIndicator": ""}],
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.urls = []
+        patcher = mock.patch.object(lisp_http, "download", self.fake_download)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fake_download(self, url, cache_hours, headers, who, shown_url=None):
+        self.urls.append((url, cache_hours))
+        path = url.split("/api/rates/")[1].split("/search.json")[0]
+        return json.dumps({"refRates": self.RECORDS.get(path, [])}).encode()
+
+    def test_rates_line_up_by_date_oldest_first(self):
+        self.run_lisp('(define t (nyfed-rates (list "SOFR" "effr" "SOFR-30")))')
+        self.assertShows("(table-column-names t)", '("date" "SOFR" "EFFR" "SOFR-30")')
+        self.assertShows('(table-column t "date")', "#(2026-10-26 2026-10-27 2026-10-28 2026-10-29)")
+        self.assertShows('(table-column t "SOFR")', "#(nan 3.95 3.94 nan)")
+        self.assertShows('(table-column t "EFFR")', "#(3.87 nan 3.88 nan)")
+        self.assertShows('(table-column t "SOFR-30")', "#(nan nan nan 3.89656)")
+
+    def test_the_dates_asked_for(self):
+        self.run_lisp('(nyfed-rates "SOFR")')
+        url, cache_hours = self.urls[-1]
+        self.assertTrue(url.startswith("https://markets.newyorkfed.org/api/rates/secured/sofr/search.json?"
+                                       "startDate=2000-01-01&endDate="), url)      # all of it, to today
+        self.assertEqual(cache_hours, 12)
+        self.run_lisp('(nyfed-rates "SOFR" :start-date "2026-10-01" :end-date (date 2026 10 28) :cache-hours 0)')
+        self.assertEqual(self.urls[-1], ("https://markets.newyorkfed.org/api/rates/secured/sofr/search.json?"
+                                         "startDate=2026-10-01&endDate=2026-10-28", 0))
+
+    def test_details(self):
+        self.run_lisp('(define d (nyfed-rate-details "SOFR"))')
+        self.assertShows("(table-column-names d)", '("date" "rate" "percentile-1" "percentile-25" "percentile-75" '
+                                                   '"percentile-99" "volume-billions")')
+        self.assertShows('(table-column d "percentile-99")', "#(4.05 4.02)")
+        self.run_lisp('(define d (nyfed-rate-details "EFFR"))')
+        self.assertShows("(table-column-names d)", '("date" "rate" "volume-billions" "target-from" "target-to")')
+        self.assertShows('(table-column d "target-to")', "#(4.0 4.0)")
+        self.run_lisp('(define d (nyfed-rate-details "SOFR-INDEX"))')
+        self.assertShows("(table-column-names d)", '("date" "average-30-day" "average-90-day" "average-180-day" "index")')
+
+    def test_errors(self):
+        self.assertLispError('(nyfed-rates "LIBOR")', "there's no rate named 'LIBOR'; the rates are SOFR, TGCR")
+        self.assertLispError('(nyfed-rates "OBFR")', "the New York Fed has no OBFR for those dates (it starts on March 1, 2016)")
+        self.assertLispError('(nyfed-rates "SOFR" :start-date "2026-10-28" :end-date "2026-10-01")', "is after :end-date")
+        self.assertLispError('(nyfed-rates "SOFR" :from "2026-10-28")', ":from")
+        with mock.patch.object(lisp_http, "download", lambda *args: b"<html>Service unavailable</html>"):
+            self.assertLispError('(nyfed-rates "SOFR")', "the New York Fed didn't answer with rates; it says: <html>")
 
 
 class TestTastytrade(LispTestCase):

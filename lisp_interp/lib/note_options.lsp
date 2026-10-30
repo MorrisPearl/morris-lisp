@@ -2,7 +2,7 @@
 ;
 ; Options on the 10-year note future (ZN), shaped for the interest-rate model.
 ;
-; The model of interest rates (calibrate-to-sofr-options) is fitted to SOFR futures
+; The model of interest rates (calibrate-rate-model) is fitted to SOFR futures
 ; options, which show how much the SHORT rate moves. A mortgage depends on
 ; the LONG end, and a 10-year note option says how much that moves. The
 ; builtins calibrate-to-note-options, calibrate-rate-model and

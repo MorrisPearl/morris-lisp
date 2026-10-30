@@ -163,17 +163,44 @@ class TestTheRatePathsExample(LispTestCase):
         self.assertAlmostEqual(thirty, 5.43, places=2)
 
 
+class TestSofrForwardCurve(LispTestCase):
+    """sofr-forward-curve, from either kind of row: tastytrade-futures-curve-rows's or sofr-calibration-data's."""
+
+    def test_both_kinds_of_row_make_the_same_curve(self):
+        # Two SR3 futures: the quarter ending 3 months out at 4% (a price of 96), the next one at 3.5% (96.5).
+        self.run_lisp("""
+          (define tastytrade-rows (list (list (date 2027 2 1) "SR3G7" 91 96.0) (list (date 2027 5 1) "SR3K7" 183 96.5)))
+          (define calibration-rows (list (list "SR3G7" 0 3 0.04) (list "SR3K7" 3 6 0.035)))
+          (define from-tastytrade (sofr-forward-curve tastytrade-rows))
+          (define from-calibration (sofr-forward-curve calibration-rows))""")
+        self.assertShows("(equal? from-tastytrade from-calibration)", "#t")
+        self.assertShows("(vector-length (car from-tastytrade))", "360")
+        self.assertShows("(vector-ref (car from-tastytrade) 0)", "1")
+        forwards = self.run_lisp("(cdr from-tastytrade)").items
+        self.assertAlmostEqual(forwards[0], 0.04, places=10)       # the first quarter's rate, each month of it
+        self.assertAlmostEqual(forwards[2], 0.04, places=10)
+        self.assertAlmostEqual(forwards[3], 0.035, places=10)      # then the second's
+        self.assertAlmostEqual(forwards[359], 0.035, places=10)    # and flat after the last future
+
+    def test_errors(self):
+        self.assertLispError("(sofr-forward-curve '())", "sofr-forward-curve: curve-rows is empty")
+        self.assertLispError('(sofr-forward-curve (list (list "SR3G7" 0 3)))', "each row should be")
+
+
 class TestWhatWasRemoved(LispTestCase):
 
     def test_the_builtins_that_the_curve_functions_replaced_are_gone(self):
-        for name in ("sofr-simulate-rate-paths", "sofr-extend-curve-with-treasury"):
+        for name in ("sofr-simulate-rate-paths", "sofr-extend-curve-with-treasury",
+                     "sofr-bootstrap-curve",          # sofr-forward-curve takes its rows now
+                     "calibrate-to-sofr-options",     # calibrate-rate-model fits the SOFR options with the notes'
+                     "sofr-calibrate-model"):
             self.assertLispError("(%s 1 2 3)" % name, name)
 
     def test_the_builtins_that_were_renamed_are_under_their_new_names_only(self):
         renamed = {"sofr-simulate-curve-paths": "simulate-rate-paths",
                    "sofr-simulate-factor-paths": "simulate-rate-factors", "sofr-curve-on-date": "rate-curve-on-date",
                    "sofr-par-yield": "curve-par-yield", "sofr-calibrate-jointly": "calibrate-rate-model",
-                   "sofr-calibrate-note-options": "calibrate-to-note-options", "sofr-calibrate-model": "calibrate-to-sofr-options",
+                   "sofr-calibrate-note-options": "calibrate-to-note-options",
                    "sofr-note-option-comparison": "note-option-comparison"}
         for old, new in renamed.items():
             self.assertLispError("(%s 1 2 3)" % old, old)                       # no longer a name

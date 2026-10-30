@@ -18,7 +18,7 @@
 ; --- Market data: the Treasury's forward curve, SOFR futures and their options, and 10-year note options ---
 (define treasury (table-column (curve-forward-rates (treasury-zero-curve (treasury-par-curve))) "forward"))
 (define sofr-data (sofr-calibration-data creds 40 8 3))
-(define sofr-curve (cdr (sofr-bootstrap-curve (car sofr-data))))
+(define sofr-curve (cdr (sofr-forward-curve (car sofr-data))))
 (define sofr-months (apply max (map third (car sofr-data))))        ; how far out the SOFR futures go
 (define note-rows (note-option-rows (tastytrade-option-chain creds "ZN" 12 12) :min-days 20 :max-days 120))
 

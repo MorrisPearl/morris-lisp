@@ -6348,6 +6348,7 @@ The Python files:
 | `lisp_sqlite.py` | `sqlite-open`, `sqlite-query`, `sqlite-write-table`, ... |
 | `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
 | `lisp_fred.py` | `fred-table` (downloads from FRED, through `lisp_http.py`) |
+| `lisp_nyfed.py` | `nyfed-rates`, `nyfed-rate-details`: the New York Fed's SOFR, EFFR, and other reference rates |
 | `lisp_data_common.py` | What the data modules share: reading the credentials file, the years and lists of names they take, and making their tables |
 | `lisp_sec.py` | `sec-income-statement`, `sec-balance-sheet`, `sec-financials`, ...: financial statements from the SEC's XBRL data |
 | `lisp_fdic.py` | `fdic-balance-sheet`, `fdic-ratios`, `fdic-financials`, `fdic-get`, ...: banks' Call Report data from the FDIC |
