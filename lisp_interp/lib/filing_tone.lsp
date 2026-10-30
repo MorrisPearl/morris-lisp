@@ -47,6 +47,6 @@ Each filing is downloaded once and kept for a week."
 (define (plot-filing-tone tones &key (measures '("negative" "positive" "uncertainty")) title)
   "A chart of a filing-tone table's measures, filing by filing: the percent of the words that are negative,
 positive, and uncertain, unless :measures names others."
-  (plot-chart (map (lambda (measure) (list measure (table-column tones "filing-date") (table-column tones measure)))
+  (plot-chart (map (lambda (measure) (list measure (table-column tones "filing-date") (table-column tones measure) :symbol #t))
                    measures)
               :title (or title "The tone of the filings") :y-label "percent of the words"))
