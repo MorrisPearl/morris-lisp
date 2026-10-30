@@ -875,6 +875,16 @@ class TestSchwab(LispTestCase):
                                "instrument": {"symbol": "SPY   261218C00700000", "description": "SPY CALL",
                                               "assetType": "OPTION"}}]}
 
+    TRANSACTIONS = [
+        {"activityId": 2, "type": "TRADE", "tradeDate": "2026-10-02T13:30:00+0000", "description": "BUY TRADE",
+         "netAmount": -2300.65,
+         "transferItems": [{"instrument": {"assetType": "CURRENCY", "symbol": "CURRENCY_USD"}, "amount": 0.65,
+                            "cost": -0.65, "feeType": "COMMISSION"},
+                           {"instrument": {"assetType": "EQUITY", "symbol": "AAPL"}, "amount": 10.0, "price": 230.0,
+                            "cost": -2300.0, "positionEffect": "OPENING"}]},
+        {"activityId": 1, "type": "ACH_RECEIPT", "time": "2026-10-01T15:00:00+0000", "description": "DEPOSIT",
+         "netAmount": 5000.0, "transferItems": [{"instrument": {"assetType": "CURRENCY"}, "amount": 5000.0}]}]
+
     def setUp(self):
         super().setUp()
         import lisp_schwab
@@ -914,6 +924,15 @@ class TestSchwab(LispTestCase):
             return 200, {}, {"securitiesAccount": {"accountNumber": "20002222", "positions": self.POSITIONS["20002222"]}}
         if path == "/trader/v1/accounts/HASH1":
             return 200, {}, {"securitiesAccount": {"accountNumber": "10001111", "positions": self.POSITIONS["10001111"]}}
+        if path == "/trader/v1/accounts/HASH1/transactions":
+            return 200, {}, self.TRANSACTIONS
+        if path == "/trader/v1/accounts/HASH2/transactions":
+            return 200, {}, [{"activityId": 3, "type": "DIVIDEND_OR_INTEREST", "tradeDate": "2026-10-15T00:00:00+0000",
+                              "description": "ORDINARY DIVIDEND", "netAmount": 12.5,
+                              "transferItems": [{"instrument": {"assetType": "CURRENCY", "symbol": "CURRENCY_USD"},
+                                                 "amount": 12.5}]}]
+        if path == "/trader/v1/accounts/HASH1/orders/555":
+            return 200, {}, {"orderId": 555, "status": "FILLED"}
         if path == "/marketdata/v1/quotes":
             return 200, {}, {"AAPL": {"quote": {"bidPrice": 229.9, "askPrice": 230.1, "lastPrice": 230.0},
                                       "reference": {"description": "Apple Inc"}}}
@@ -962,6 +981,38 @@ class TestSchwab(LispTestCase):
         tokens = self.lisp_schwab.load_tokens(self.credentials, "t")
         self.lisp_schwab.save_tokens(self.credentials, dict(tokens, access_expires=0, refresh_expires=0))  # a week later
         self.assertLispError("(schwab-accounts creds)", "the Schwab sign-in has run out")
+
+    def test_transactions(self):
+        self.sign_in()
+        self.run_lisp("(define t (schwab-transactions creds))")
+        self.assertShows('(table-column t "account")', '#("Brokerage" "Brokerage" "...2222")')     # by name
+        self.assertShows('(table-column t "type")', '#("ACH_RECEIPT" "TRADE" "DIVIDEND_OR_INTEREST")')  # oldest first
+        self.assertShows('(table-column t "symbol")', '#("" "AAPL" "")')
+        self.assertEqual(self.column("t", "quantity")[1], 10.0)
+        self.assertEqual(self.column("t", "price")[1], 230.0)
+        self.assertEqual(self.column("t", "amount"), [5000.0, -2300.65, 12.5])
+        self.assertEqual(self.column("t", "fees")[1], -0.65)
+        self.assertShows('(vector-ref (table-column t "date") 0)', "2026-10-01")
+
+    def test_transactions_ask_for_what_is_wanted(self):
+        self.sign_in()
+        self.run_lisp('(schwab-transactions creds :account "brokerage" :days 90 :type "dividend_or_interest" :symbol "AAPL")')
+        url = self.requests[-1][1]
+        self.assertIn("/trader/v1/accounts/HASH1/transactions?", url)
+        self.assertIn("types=DIVIDEND_OR_INTEREST", url)
+        self.assertIn("symbol=AAPL", url)
+        self.assertNotIn("HASH2", " ".join(r[1] for r in self.requests))
+        self.assertLispError('(schwab-transactions creds :type "BUYS")', "isn't one of Schwab's kinds of transaction")
+        self.assertLispError("(schwab-transactions creds :days 0)", ":days")
+
+    def test_schwab_get_names_an_account_by_its_name(self):
+        self.sign_in()
+        self.assertEqual(self.run_lisp('(hash-table-ref (schwab-get creds "/trader/v1/accounts/{account}/orders/555" '
+                                       ':account "Brokerage") "status")'), "FILLED")
+        self.run_lisp('(schwab-get creds "/trader/v1/accounts/{account}/transactions" \'(("types" . "TRADE")) :account "2222")')
+        self.assertIn("/trader/v1/accounts/HASH2/transactions?types=TRADE", self.requests[-1][1])
+        self.assertLispError('(schwab-get creds "/trader/v1/accounts/{account}/orders/555")', "say which account")
+        self.assertLispError('(schwab-get creds "/trader/v1/userPreference" :account "IRA")', "has none")
 
     def test_accounts_and_positions(self):
         self.sign_in()

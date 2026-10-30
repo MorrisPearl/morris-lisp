@@ -20,7 +20,10 @@ a week later; then (schwab-login creds) again.
   (schwab-option-chain creds symbol [:expiration d :type t :strikes n])
                                              the options listed on a stock: bids, asks, volume
   (schwab-orders creds [:account a :days n]) the orders of the last n days
-  (schwab-get creds path [parameters])       any of the API's other requests
+  (schwab-transactions creds [:account a :days n :type t :symbol s])
+                                             trades, dividends, interest, fees, deposits, transfers
+  (schwab-get creds path [parameters] [:account a])
+                                             any of the API's other requests
 Orders:
   (schwab-order instruction symbol quantity [:type :price :stop-price :duration :asset-type])
                                              an order, to preview or place
@@ -705,6 +708,83 @@ def schwab_orders(credentials_path, *options):
                            "filled", "type", "price", "duration"])
 
 
+TRANSACTION_TYPES = ["TRADE", "RECEIVE_AND_DELIVER", "DIVIDEND_OR_INTEREST", "ACH_RECEIPT", "ACH_DISBURSEMENT",
+                     "CASH_RECEIPT", "CASH_DISBURSEMENT", "ELECTRONIC_FUND", "WIRE_OUT", "WIRE_IN", "JOURNAL",
+                     "MEMORANDUM", "MARGIN_CALL", "MONEY_MARKET", "SMA_ADJUSTMENT"]
+
+
+def transaction_row(account, transaction):
+    """One transaction: when, what kind, Schwab's description, the security it was in (if any), how much of it and at
+    what price, the money that came in (or, below 0, went out), and the fees."""
+    items = transaction.get("transferItems") or []
+    security = next((item for item in items if not item.get("feeType")
+                     and item.get("instrument", {}).get("assetType") not in ("CURRENCY", None)), {})
+    fees = sum(number(item.get("cost")) for item in items if item.get("feeType") and item.get("cost") is not None)
+    when = str(transaction.get("tradeDate") or transaction.get("time") or "")[:10]
+    try:
+        day = datetime.date.fromisoformat(when)
+        date = LispDate(day.year, day.month, day.day)
+    except ValueError:
+        date = float("nan")
+    return (account, date, transaction.get("type", ""), transaction.get("description", ""),
+            security.get("instrument", {}).get("symbol", ""), number(security.get("amount")),
+            number(security.get("price")), number(transaction.get("netAmount")), fees,
+            number(transaction.get("activityId")))
+
+
+def schwab_transactions(credentials_path, *options):
+    """(schwab-transactions creds [:account a :days n :type t :symbol s]) -- what happened in your accounts in the last
+    n days (30, unless :days says): trades, dividends and interest, fees, deposits, withdrawals and transfers. A table
+    of account, date, type, description, symbol, quantity, price, amount (the money in, or, below 0, out), fees, and
+    transaction-id, oldest first -- in all your accounts, or just :account's. :type is one of Schwab's kinds of
+    transaction, such as "TRADE" or "DIVIDEND_OR_INTEREST", or a list of them (all of them, unless it says); :symbol
+    keeps only one security's."""
+    # Schwab's answer (to /trader/v1/accounts/HASH/transactions) has, for each transaction:
+    #
+    #   activityId, time, user, description, accountNumber, type, status,
+    #   subAccount, tradeDate, settlementDate, positionId, orderId,
+    #   netAmount, activityType
+    #   transferItems (the security, the cash, and each fee): instrument
+    #     (assetType, symbol, description, cusip, instrumentId, closingPrice,
+    #     and for an option putCall, strikePrice, expirationDate, ...),
+    #     amount (how many: below 0 for what went out), cost, price,
+    #     feeType (COMMISSION, SEC_FEE, OPT_REG_FEE, ...), positionEffect
+    #
+    # The table uses accountNumber, tradeDate (or time), type, description,
+    # netAmount, activityId, the security's symbol, amount, and price, and the
+    # sum of the fees' costs. One transaction, with all its fields, is
+    # (schwab-get creds "/trader/v1/accounts/{account}/transactions/ID" :account a).
+    who = "schwab-transactions"
+    options = keyword_options(options, ["account", "days", "type", "symbol"], who)
+    days = options.get("days", 30)
+    if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+        raise LispError("%s: :days is how many days back to look, a whole number of 1 or more" % who)
+    types = [t.upper() for t in text_list(options["type"], who, ":type")] if "type" in options else TRANSACTION_TYPES
+    for kind in types:
+        if kind not in TRANSACTION_TYPES:
+            raise LispError("%s: %s isn't one of Schwab's kinds of transaction -- they are %s"
+                            % (who, kind, ", ".join(TRANSACTION_TYPES)))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    params = {"startDate": iso_time(now - datetime.timedelta(days=days)), "endDate": iso_time(now),
+              "types": ",".join(types)}
+    if "symbol" in options:
+        params["symbol"] = str(options["symbol"])
+    if options.get("account", NIL) is not NIL:
+        accounts = [find_account(credentials_path, options["account"], who)]
+    else:
+        accounts = [(a["accountNumber"], a["hashValue"])
+                    for a in api_get(credentials_path, "/trader/v1/accounts/accountNumbers", who) or []]
+    names = account_names(credentials_path, who)
+    rows = []
+    for account_number, account_hash in accounts:
+        for transaction in api_get(credentials_path, "/trader/v1/accounts/%s/transactions" % account_hash, who,
+                                   params) or []:
+            rows.append(transaction_row(account_name(names, account_number), transaction))
+    rows.sort(key=lambda row: row[1].date if isinstance(row[1], LispDate) else datetime.date.max)
+    return table_from_tuples(rows, ["account", "date", "type", "description", "symbol", "quantity", "price", "amount",
+                                    "fees", "transaction-id"])
+
+
 INSTRUCTIONS = {"EQUITY": ["BUY", "SELL", "SELL_SHORT", "BUY_TO_COVER"],
                 "OPTION": ["BUY_TO_OPEN", "BUY_TO_CLOSE", "SELL_TO_OPEN", "SELL_TO_CLOSE"]}
 ORDER_TYPES = ["MARKET", "LIMIT", "STOP", "STOP_LIMIT"]
@@ -986,18 +1066,34 @@ def schwab_cancel_order(credentials_path, account, order_id):
     return True
 
 
-def schwab_get(credentials_path, path, parameters=NIL):
-    """(schwab-get creds path [parameters]) -- the answer to any of the API's
-    requests for information, as Lisp data: path is its path, such as
-    "/trader/v1/userPreference" or "/marketdata/v1/chains", and parameters
-    a list of (name . value) pairs."""
+def schwab_get(credentials_path, path, *rest):
+    """(schwab-get creds path [parameters] [:account a]) -- the answer to any
+    of the API's requests for information, as Lisp data: path is its path,
+    such as "/trader/v1/userPreference" or "/marketdata/v1/chains", and
+    parameters a list of (name . value) pairs. A path about one account has
+    {account} where the account goes, and :account names it, as everywhere
+    else: "/trader/v1/accounts/{account}/transactions" with :account "IRA"."""
     who = "schwab-get"
+    parameters = NIL
+    if rest and not isinstance(rest[0], Keyword):
+        parameters, rest = rest[0], rest[1:]
+    options = keyword_options(rest, ["account"], who)
+    path = "/" + str(path).lstrip("/")
+    if "{account}" in path:
+        if options.get("account", NIL) is NIL:
+            raise LispError("%s: the path has {account} in it -- say which account with :account, such as :account \"IRA\""
+                            % who)
+        _, account_hash = find_account(credentials_path, options["account"], who)
+        path = path.replace("{account}", account_hash)
+    elif "account" in options:
+        raise LispError("%s: :account goes where the path has {account}, such as "
+                        "\"/trader/v1/accounts/{account}/transactions\" -- this path has none" % who)
     params = {}
     for entry in pairs_to_list(parameters):
         if not isinstance(entry, Pair):
             raise LispError('%s: the parameters are a list of (name . value) pairs, such as ("symbol" . "AAPL")' % who)
         params[str(entry.car)] = str(entry.cdr.car if isinstance(entry.cdr, Pair) else entry.cdr)
-    return json_to_lisp(api_get(credentials_path, "/" + str(path).lstrip("/"), who, params))
+    return json_to_lisp(api_get(credentials_path, path, who, params))
 
 
 BUILTINS = {
@@ -1007,6 +1103,7 @@ BUILTINS = {
     "schwab-quotes": schwab_quotes,
     "schwab-price-history": schwab_price_history,
     "schwab-orders": schwab_orders,
+    "schwab-transactions": schwab_transactions,
     "schwab-get": schwab_get,
     "schwab-option-chain": schwab_option_chain,
     "schwab-order": schwab_order,

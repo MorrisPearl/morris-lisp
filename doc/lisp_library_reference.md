@@ -1871,7 +1871,11 @@ ten `tastytrade-*` builtins; abridged here:
 - what's in each account;
 - quotes, and daily price histories for stocks and ETFs;
 - the options listed on a stock, with their bids and asks;
+- what happened in each account: trades, dividends, fees, deposits;
 - orders, for whenever you want them.
+
+"Everything Schwab's API can do", at the end of this section, lists every
+request Schwab's API takes and how to make it from Lisp.
 
 It needs an app registered on Schwab's developer site, with its key and
 secret in the credentials file as `"Schwab_Client_ID"` and
@@ -2004,7 +2008,39 @@ Schwab keeps 60), in all your accounts or just `:account`'s, as a table:
 `account`, `order-id`, `entered`, `status`, `instruction`, `symbol`,
 `quantity`, `filled`, `type`, `price`, `duration`.
 
-#### `(schwab-get creds path [parameters])`
+#### `(schwab-transactions creds [:account a :days n :type t :symbol s])`
+What happened in your accounts in the last `n` days (30, unless `:days`
+says): trades, dividends and interest, fees, deposits, withdrawals, and
+transfers. A table, oldest first, of:
+
+- `account` (its name), `date`, `type` (Schwab's kind of transaction, as
+  below), `description` (Schwab's words, such as `ORDINARY DIVIDEND`);
+- `symbol`, `quantity`, `price`: the security, if there is one (a
+  deposit has none), how much of it (below 0 for what went out), and at
+  what price;
+- `amount`: the money that came in, or, below 0, went out, fees and all;
+- `fees`: the commission and other fees, as Schwab gives them;
+- `transaction-id`.
+
+`:account` picks one account (by its name, as everywhere). `:type` is one
+of Schwab's kinds of transaction, or a list of them (upper or lower
+case); without it, all of them: `TRADE`, `RECEIVE_AND_DELIVER`,
+`DIVIDEND_OR_INTEREST`, `ACH_RECEIPT`, `ACH_DISBURSEMENT`, `CASH_RECEIPT`,
+`CASH_DISBURSEMENT`, `ELECTRONIC_FUND`, `WIRE_OUT`, `WIRE_IN`, `JOURNAL`,
+`MEMORANDUM`, `MARGIN_CALL`, `MONEY_MARKET`, `SMA_ADJUSTMENT`. `:symbol`
+keeps only one security's. How far back Schwab goes is Schwab's to say;
+it may refuse a long `:days`.
+
+```lisp
+(define dividends (schwab-transactions creds :days 90 :type "DIVIDEND_OR_INTEREST"))
+(table-group-by dividends "account" '(("total" sum "amount")))     ; each account's dividends and interest
+```
+
+The table was checked only against a stand-in for Schwab, made from
+Schwab's documentation of its answer; the comments in `lisp_schwab.py`
+list every field that answer has.
+
+#### `(schwab-get creds path [parameters] [:account a])`
 The answer to any of the API's requests for information, as Lisp data.
 `path` is its path, such as `"/trader/v1/userPreference"` or
 `"/marketdata/v1/chains"`, and `parameters` a list of `(name . value)`
@@ -2014,6 +2050,14 @@ dividends and P/E:
 ```lisp
 (schwab-get creds "/trader/v1/accounts")
 (schwab-get creds "/marketdata/v1/quotes" '(("symbols" . "AAPL") ("fields" . "quote,fundamental")))
+```
+
+Schwab's paths name an account by a code of its own, not by its number.
+Write `{account}` in the path where the account goes, and name the
+account with `:account`, as everywhere else:
+
+```lisp
+(schwab-get creds "/trader/v1/accounts/{account}/orders/1004538291" :account "IRA")     ; one order, every field
 ```
 
 #### Orders: `schwab-order`, `schwab-spread-order`, `schwab-multi-leg-order`, `schwab-preview-order`, `schwab-place-order`, `schwab-cancel-order`
@@ -2084,6 +2128,96 @@ tests use a stand-in for Schwab, and no spread order has been placed by it.
 Preview yours (that places nothing) before you place it. The forms
 `schwab-multi-leg-order` makes for the other strategies, and for a net credit,
 are from the same documentation and have not been previewed with Schwab.
+
+#### Everything Schwab's API can do
+Every request that Schwab's Trader API takes, and how to make it from
+Lisp. The paths and parameters are Schwab's. (Its own documentation, on
+https://developer.schwab.com, needs a sign-in; this list agrees with
+`schwab-py`, a widely used client for the API.) A function in the second
+column gives a table; `schwab-get` gives Schwab's whole answer as Lisp
+data (hash tables and lists). Where a path has `{account}`, give
+`:account` with the account's name.
+
+**Your accounts**
+
+| What | From Lisp | Schwab's request |
+|---|---|---|
+| Each account's balances | `schwab-accounts`; every balance: `(schwab-get creds "/trader/v1/accounts")` | `GET /trader/v1/accounts` (`fields=positions` adds the holdings) |
+| One account | `(schwab-get creds "/trader/v1/accounts/{account}" :account "IRA")` | `GET /trader/v1/accounts/{account}` (`fields`) |
+| What's in each account | `schwab-positions` | the two above, with `fields=positions` |
+| Account numbers and their codes | used inside, to find an account by name | `GET /trader/v1/accounts/accountNumbers` |
+| Your preferences: each account's nickname, and what the streaming service needs | `(schwab-get creds "/trader/v1/userPreference")` | `GET /trader/v1/userPreference` |
+| Transactions | `schwab-transactions` | `GET /trader/v1/accounts/{account}/transactions` (`startDate`, `endDate`, `types`, `symbol`) |
+| One transaction, every field | `(schwab-get creds "/trader/v1/accounts/{account}/transactions/ID" :account "IRA")` | `GET /trader/v1/accounts/{account}/transactions/ID` |
+
+**Orders**
+
+| What | From Lisp | Schwab's request |
+|---|---|---|
+| Orders in all accounts | `schwab-orders` | `GET /trader/v1/orders` (`fromEnteredTime`, `toEnteredTime`, `maxResults`, `status`) |
+| Orders in one account | `(schwab-orders creds :account "IRA")` | `GET /trader/v1/accounts/{account}/orders` (the same) |
+| One order, every field | `(schwab-get creds "/trader/v1/accounts/{account}/orders/ID" :account "IRA")` | `GET /trader/v1/accounts/{account}/orders/ID` |
+| Preview an order | `schwab-preview-order` | `POST /trader/v1/accounts/{account}/previewOrder` |
+| Place an order | `schwab-place-order` | `POST /trader/v1/accounts/{account}/orders` |
+| Cancel an order | `schwab-cancel-order` | `DELETE /trader/v1/accounts/{account}/orders/ID` |
+| Replace an order with another | not done here: cancel it and place the new one | `PUT /trader/v1/accounts/{account}/orders/ID` |
+
+An order's `status` is one of `AWAITING_PARENT_ORDER`,
+`AWAITING_CONDITION`, `AWAITING_STOP_CONDITION`, `AWAITING_MANUAL_REVIEW`,
+`ACCEPTED`, `AWAITING_UR_OUT`, `PENDING_ACTIVATION`, `QUEUED`, `WORKING`,
+`REJECTED`, `PENDING_CANCEL`, `CANCELED`, `PENDING_REPLACE`, `REPLACED`,
+`FILLED`, `EXPIRED`, `NEW`, `AWAITING_RELEASE_TIME`,
+`PENDING_ACKNOWLEDGEMENT`, `PENDING_RECALL`, `UNKNOWN`. To see only the
+orders still working:
+`(schwab-get creds "/trader/v1/orders" '(("status" . "WORKING") ("fromEnteredTime" . "2026-10-01T00:00:00.000Z") ("toEnteredTime" . "2026-10-29T00:00:00.000Z")))`.
+
+**Market data**
+
+| What | From Lisp | Schwab's request |
+|---|---|---|
+| Quotes for several symbols | `schwab-quotes` | `GET /marketdata/v1/quotes` (`symbols`; `fields`: `quote`, `fundamental`, `extended`, `reference`, `regular`; `indicative`) |
+| A quote for one symbol | `(schwab-get creds "/marketdata/v1/AAPL/quotes")` | `GET /marketdata/v1/SYMBOL/quotes` (`fields`) |
+| An option chain | `schwab-option-chain` | `GET /marketdata/v1/chains` (below) |
+| The expiration dates of a stock's options | `(schwab-get creds "/marketdata/v1/expirationchain" '(("symbol" . "SPY")))` | `GET /marketdata/v1/expirationchain` (`symbol`) |
+| Daily, weekly, or monthly prices | `schwab-price-history` | `GET /marketdata/v1/pricehistory` (below) |
+| Prices by the minute | `(schwab-get creds "/marketdata/v1/pricehistory" '(("symbol" . "SPY") ("periodType" . "day") ("period" . "1") ("frequencyType" . "minute") ("frequency" . "5")))` | the same |
+| The biggest movers in an index | `(schwab-get creds "/marketdata/v1/movers/$SPX" '(("sort" . "PERCENT_CHANGE_UP")))` | `GET /marketdata/v1/movers/INDEX` (`sort`, `frequency`) |
+| When markets open and close | `(schwab-get creds "/marketdata/v1/markets" '(("markets" . "equity,option")))` | `GET /marketdata/v1/markets` (`markets`, `date`) |
+| One market's hours | `(schwab-get creds "/marketdata/v1/markets/equity")` | `GET /marketdata/v1/markets/MARKET` (`date`) |
+| Find a security by symbol or description | `(schwab-get creds "/marketdata/v1/instruments" '(("symbol" . "vanguard") ("projection" . "desc-search")))` | `GET /marketdata/v1/instruments` (`symbol`, `projection`) |
+| A security by its CUSIP | `(schwab-get creds "/marketdata/v1/instruments/037833100")` | `GET /marketdata/v1/instruments/CUSIP` |
+
+The parameters, where they have choices:
+
+- **Option chains** (`/chains`): `symbol`; `contractType` (`CALL`, `PUT`,
+  `ALL`); `strikeCount`; `includeUnderlyingQuote`; `strategy`
+  (`SINGLE`, `ANALYTICAL`, `COVERED`, `VERTICAL`, `CALENDAR`, `STRANGLE`,
+  `STRADDLE`, `BUTTERFLY`, `CONDOR`, `DIAGONAL`, `COLLAR`, `ROLL`);
+  `interval`; `strike`; `range` (`ITM`, `NTM`, `OTM`, `SAK`, `SBK`, `SNK`,
+  `ALL`); `fromDate` and `toDate` (`YYYY-MM-DD`); for `ANALYTICAL`,
+  `volatility`, `underlyingPrice`, `interestRate`, and
+  `daysToExpiration`; `expMonth` (`JAN` ... `DEC`, `ALL`); `optionType`
+  (`S`, `NS`, `ALL`); `entitlement` (`PP`, `NP`, `PN`).
+- **Price history** (`/pricehistory`): `symbol`; `periodType` (`day`,
+  `month`, `year`, `ytd`) and `period` (how many of them); `frequencyType`
+  (`minute`, `daily`, `weekly`, `monthly`) and `frequency` (for minutes,
+  1, 5, 10, 15, or 30); `startDate` and `endDate` (milliseconds since
+  1970); `needExtendedHoursData`; `needPreviousClose`.
+- **Movers** (`/movers/INDEX`): the index is `$DJI`, `$COMPX`, `$SPX`,
+  `NYSE`, `NASDAQ`, `OTCBB`, `INDEX_ALL`, `EQUITY_ALL`, `OPTION_ALL`,
+  `OPTION_PUT`, or `OPTION_CALL`; `sort` is `VOLUME`, `TRADES`,
+  `PERCENT_CHANGE_UP`, or `PERCENT_CHANGE_DOWN`; `frequency` is 0, 1, 5,
+  10, 30, or 60.
+- **Market hours** (`/markets`): `markets` is any of `equity`, `option`,
+  `bond`, `future`, `forex`, joined by commas; `date` is `YYYY-MM-DD`.
+- **Instruments** (`/instruments`): `projection` is `symbol-search`,
+  `symbol-regex`, `desc-search`, `desc-regex`, `search`, or `fundamental`
+  (the last gives a stock's fundamentals: P/E, dividend yield, and so on).
+
+**Streaming.** Schwab also sends live quotes, charts, order books, and
+your account's activity as they happen, over a WebSocket (its address and
+your sign-in for it are in `/trader/v1/userPreference`'s `streamerInfo`).
+That isn't done here: every function asks once and answers once.
 
 ### Alpha Vantage (dividends)
 
