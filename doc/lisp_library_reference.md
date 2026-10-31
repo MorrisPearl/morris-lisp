@@ -2284,8 +2284,67 @@ read include, all in the group `"fixedIncomeMarket"`:
 ```
 
 These functions were written from FINRA's documentation of its API and
-tested against a stand-in for FINRA; they haven't yet been run against
-FINRA itself.
+tested against a stand-in for FINRA, and `finra-tba-prices` has since been
+run against FINRA itself (October 2026). FINRA's TBA prices go back to
+October 2016.
+
+#### A database of TBA prices
+
+`finra-tba-prices` gives the last week, or the days you ask for. To keep
+all the history (ten years of it) in one place to ask questions of, the
+library `finra_database.lsp` keeps the TBA prices in a SQLite database
+file and brings it up to date:
+
+#### `(finra-tba-update creds "path/to/finra_tba.db" [:start-date d :end-date d])`
+Makes the database if there isn't one, and fills it from FINRA, a month at
+a time. The first time, it asks for ten years of days (the history is
+about 125,000 rows in a 28 MB file, and takes about twenty minutes to fetch); after that, only for
+what the database lacks, from a week before its last day to today, which
+takes seconds, because FINRA corrects a day's prices now and then, and
+the week replaces what was there. Run it as often as you like: a day's
+prices come the next morning, and there are none for weekends and
+holidays. It prints each month as it asks for it and returns a table of
+what the database has (as `finra-tba-summary` does). `:start-date` and
+`:end-date` ask for those days instead.
+
+#### `(finra-tba-summary "path/to/finra_tba.db")`
+A table of what the database has: for each agency and product, its
+`rows`, `first_day` and `last_day`.
+
+The database has one table, `tba_prices`, with a row for each day,
+product, agency, settlement month and coupon that had trades (FINRA sends
+a row for every coupon every day, with zeros where nothing traded; those
+are not kept):
+
+| Column | What |
+|---|---|
+| `date`, `product`, `agency` | As `finra-tba-prices` has them (`SINGLE FAMILY 30Y` or `15Y`; `FNMA` and `FHLMC` until 2019, `FNMA/UMBS` during the 2019 changeover, `UMBS` since, and `GNMA`, which has only 30-year) |
+| `settlement` | FINRA's name for the settlement month: `November Settlement` |
+| `settlement_month` | The first day of that month, as a date |
+| `coupon` | FINRA's bucket, as text: `4`, `4.5`, ... and, at the ends, `<= 3.5` and `> 6`. FINRA moves the ends with the market (`<= 2`, `<= 3.0`, `> 4`, `> 5.5` in other years) |
+| `coupon_rate` | The number in it (the end buckets give their limit, so use `coupon` to tell `> 6` from `6`) |
+| `average_price`, `weighted_average_price` | The mean of the day's prices, and the mean weighted by size, per 100 of face |
+| `bottom_5_average_price`, `top_5_average_price` | The means of the 5 lowest and 5 highest |
+| `quartile_2_price`, `quartile_3_price`, `quartile_4_price` | The quartiles |
+| `standard_deviation` | Of the day's prices |
+| `volume_thousands`, `trades` | Dollar volume in thousands, and the number of trades |
+
+The key is `(date, product, agency, settlement, coupon)`. It is an
+ordinary SQLite file, so ask it with `sqlite-query`, or from `sqlite3` or
+anything else that reads SQLite. A price history of a coupon for
+next-month settlement, say:
+
+```lisp
+(define db "finra_tba.db")
+(finra-tba-update creds db)          ; the first time takes a while; after that, seconds
+(with-sqlite (conn db)
+  (define history
+    (sqlite-query conn "SELECT date, weighted_average_price AS price, trades FROM tba_prices
+                        WHERE agency = 'UMBS' AND product = 'SINGLE FAMILY 30Y' AND coupon = '5.5'
+                          AND settlement_month = date(date, 'start of month', '+1 month')
+                        ORDER BY date"))
+  (display-table (table-tail history 5)))
+```
 
 ### Alpha Vantage (dividends)
 

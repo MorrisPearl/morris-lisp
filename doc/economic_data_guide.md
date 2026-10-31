@@ -210,6 +210,7 @@ out, as [section 6](#6-putting-sources-together) shows.
 | A stock's or ETF's daily prices, for years | `(schwab-price-history creds "AAPL")` | Schwab |
 | What's in your own accounts | `(schwab-positions creds)` | Schwab |
 | What agency MBS and TBAs traded at each day | `(finra-tba-prices creds)`, `(finra-mbs-prices creds)` | FINRA |
+| Ten years of TBA prices in a database, kept up to date | `(finra-tba-update creds "finra_tba.db")` | FINRA |
 | An option chain | `(tastytrade-option-chain creds "SPY")`; `fit-vol-smiles` then finds options priced out of line | tastytrade |
 | A futures curve: oil, gold, the S&P 500, ... | `(tastytrade-futures-curve creds "CL")` | tastytrade |
 | The stock market as a whole | `(fred-table creds "SP500")` (the last 10 years), `(fred-table creds "VIXCLS")` (its volatility) | S&P and Cboe, via FRED |
@@ -309,7 +310,9 @@ each week. Functions: `schwab-positions`, `schwab-accounts`,
 **FINRA**, which oversees brokers and collects every trade in bonds
 through TRACE. It gives what agency mortgage-backed securities traded at
 each day, from the next morning. It needs a free account. Functions:
-`finra-tba-prices`, `finra-mbs-prices`, `finra-arm-prices`, `finra-get`.
+`finra-tba-prices`, `finra-mbs-prices`, `finra-arm-prices`, `finra-get`;
+and `finra-tba-update`, which keeps a SQLite database of the TBA prices
+since 2016 up to date.
 
 **tastytrade**, a brokerage, not a government agency. It gives what
 markets are trading at now: stocks, ETFs, options, futures, and crypto.
