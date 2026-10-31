@@ -43,6 +43,7 @@ that use all this are described in
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Schwab (your accounts)](#schwab-your-accounts)
   - [FINRA (agency MBS and TBA prices)](#finra-agency-mbs-and-tba-prices)
+  - [A database of market history](#a-database-of-market-history)
   - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
 - [Reporting](#reporting)
   - [Google Sheets](#google-sheets)
@@ -2295,7 +2296,7 @@ all the history (ten years of it) in one place to ask questions of, the
 library `finra_database.lsp` keeps the TBA prices in a SQLite database
 file and brings it up to date:
 
-#### `(finra-tba-update creds "path/to/finra_tba.db" [:start-date d :end-date d])`
+#### `(finra-tba-update creds "path/to/financial_data.db" [:start-date d :end-date d])`
 Makes the database if there isn't one, and fills it from FINRA, a month at
 a time. The first time, it asks for ten years of days (the history is
 about 125,000 rows in a 28 MB file, and takes about twenty minutes to fetch); after that, only for
@@ -2307,7 +2308,7 @@ holidays. It prints each month as it asks for it and returns a table of
 what the database has (as `finra-tba-summary` does). `:start-date` and
 `:end-date` ask for those days instead.
 
-#### `(finra-tba-summary "path/to/finra_tba.db")`
+#### `(finra-tba-summary "path/to/financial_data.db")`
 A table of what the database has: for each agency and product, its
 `rows`, `first_day` and `last_day`.
 
@@ -2335,7 +2336,7 @@ anything else that reads SQLite. A price history of a coupon for
 next-month settlement, say:
 
 ```lisp
-(define db "finra_tba.db")
+(define db "financial_data.db")
 (finra-tba-update creds db)          ; the first time takes a while; after that, seconds
 (with-sqlite (conn db)
   (define history
@@ -2344,6 +2345,79 @@ next-month settlement, say:
                           AND settlement_month = date(date, 'start of month', '+1 month')
                         ORDER BY date"))
   (display-table (table-tail history 5)))
+```
+
+### A database of market history
+
+(In `lib/financial_data.lsp`; the TBA part is `lib/finra_database.lsp`.) One SQLite
+file that keeps ten years of market history, to ask questions of and to compare one
+series with another over time (how the mortgage rate follows the 10-year Treasury, say):
+
+```lisp
+(financial-data-update creds "/Users/morris/morris_lisp/data/financial_data.db")
+```
+
+The first call makes the file and fills it (about twenty minutes, most of it FINRA's
+TBA prices). After that, each call asks each source only for what it lacks, from two
+weeks before the last day the database has to today, which takes seconds. Run it
+whenever you like. It prints each source as it asks, and returns what the database
+has, as `financial-data-summary` does.
+
+#### `(financial-data-update creds "path/to/financial_data.db" [:start-date d :end-date d])`
+Brings the whole database up to date: the TBA prices (`finra-tba-update`, described
+under FINRA above), then each time series, and the current coupons from the TBA prices.
+`:start-date` asks every source from that day instead, replacing what the database has
+from then on; it is how a series is worked out again after its definition changes.
+`:end-date` is today unless given.
+
+#### `(financial-data-summary "path/to/financial_data.db")`
+A table of the time series: for each instrument and term, its `rows`, `first_day` and
+`last_day`.
+
+The `time_series` table has a row for each day, instrument and term, with these columns:
+
+| Column | What |
+|---|---|
+| `date` | The day |
+| `instrument` | What it is (below) |
+| `term` | Which one of the instrument, for those that come in terms (`10Y`); `""` for those that don't |
+| `value` | A rate is in percent, as its source publishes it (4.25 means 4.25%); the SOFR index is dollars |
+
+| Instrument | Terms | What, and from where |
+|---|---|---|
+| `treasury-par` | `1M` `1.5M` `2M` `3M` `4M` `6M` `1Y` `2Y` `3Y` `5Y` `7Y` `10Y` `20Y` `30Y` | The Treasury's par yield curve, every business day (`treasury-par-curve`). A maturity the Treasury did not publish that day has no row: the 1.5M began in 2025 and the 4M in 2022 |
+| `freddie-mac-mortgage-rate` | `30Y` `15Y` | Freddie Mac's weekly survey (Thursdays), from FRED (`MORTGAGE30US`, `MORTGAGE15US`) |
+| `sofr` | `ON` | The Secured Overnight Financing Rate, from the New York Fed (`nyfed-rates`), since April 2018 |
+| `sofr-average` | `30D` `90D` `180D` | The averages of SOFR, since March 2020 |
+| `sofr-index` | `""` | What $1 put in SOFR on April 2, 2018 has grown to, since March 2020 |
+| `current-coupon-FNMA`, `-FHLMC`, `-FNMA-UMBS`, `-UMBS`, `-GNMA` | `30Y` `15Y` | The coupon at which a TBA is worth 100, worked out from the TBA prices (below). The agencies are those of FINRA's data: FNMA and FHLMC until 2019, FNMA-UMBS in 2019, UMBS since; GNMA has only the 30-year |
+
+The key is `(date, instrument, term)`.
+
+**The current coupon.** TBAs trade in coupons half a point apart, so the coupon at which a TBA is worth
+100 is on the line between the coupon priced just under 100 and the one just over it. The prices are
+the day's weighted average, of the settlement month with the most trades (the month being traded). FINRA
+gives the coupons at the two ends of the range as buckets (`<= 3.0`, `> 5.5`), not one by one, so when par is
+beyond the last coupon given alone (5.5 is under 100 and the `> 5.5` bucket over it), the line through the last two
+coupons is carried on to 100, if that is within half a point. A day where it is further, or where there are
+no two coupons half a point apart that trade, has no current coupon, so the series has gaps (the
+UMBS 30-year has a value on about 1,360 of the roughly 1,800 days since the UMBS began). The SQL is `current-coupon-sql`,
+in the library.
+
+#### `(time-series conn instrument [term])`
+One series, as a table of `date` and `value`, oldest first. `conn` is a connection (`with-sqlite`).
+
+#### `(time-series-table conn series)`
+Several series side by side, as a table with a row for each day any of them has a value and a column for each,
+headed by the instrument and term (`"treasury-par 10Y"`), with `nan` where a series has no value that day.
+`series` is a list of `(instrument term)`. Weekly and daily series line up by date.
+
+```lisp
+(define db "/Users/morris/morris_lisp/data/financial_data.db")
+(with-sqlite (conn db)
+  (define rates (time-series-table conn '(("treasury-par" "10Y") ("current-coupon-UMBS" "30Y")
+                                          ("freddie-mac-mortgage-rate" "30Y") ("sofr" "ON"))))
+  (display-table (table-tail rates 5)))
 ```
 
 ### Alpha Vantage (dividends)

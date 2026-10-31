@@ -210,7 +210,7 @@ out, as [section 6](#6-putting-sources-together) shows.
 | A stock's or ETF's daily prices, for years | `(schwab-price-history creds "AAPL")` | Schwab |
 | What's in your own accounts | `(schwab-positions creds)` | Schwab |
 | What agency MBS and TBAs traded at each day | `(finra-tba-prices creds)`, `(finra-mbs-prices creds)` | FINRA |
-| Ten years of TBA prices in a database, kept up to date | `(finra-tba-update creds "finra_tba.db")` | FINRA |
+| Ten years of TBA prices, Treasury, SOFR and mortgage rates in one database, kept up to date | `(financial-data-update creds "financial_data.db")` | FINRA, Treasury, FRED, New York Fed |
 | An option chain | `(tastytrade-option-chain creds "SPY")`; `fit-vol-smiles` then finds options priced out of line | tastytrade |
 | A futures curve: oil, gold, the S&P 500, ... | `(tastytrade-futures-curve creds "CL")` | tastytrade |
 | The stock market as a whole | `(fred-table creds "SP500")` (the last 10 years), `(fred-table creds "VIXCLS")` (its volatility) | S&P and Cboe, via FRED |

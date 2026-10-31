@@ -45,5 +45,5 @@ slides_support/
 # The Loughran-McDonald word lists (free for research, not to be shared): see lisp_sec_filings.py
 data/Loughran-McDonald_MasterDictionary_*.csv
 
-# The database of FINRA TBA prices that lib/finra_database.lsp fills (generated; finra-tba-update makes it)
-data/finra_tba.db
+# The database of market history that lib/financial_data.lsp fills (generated; financial-data-update makes it)
+data/financial_data.db

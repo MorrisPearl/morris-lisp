@@ -313,3 +313,6 @@
 
 ; A SQLite database of FINRA's TBA prices, and the function that brings it up to date (see "FINRA" in lisp_library_reference.md)
 (lazy-load "finra_database.lsp" finra-tba-update finra-tba-summary)
+
+; The database of market history (TBA prices, Treasury, SOFR and mortgage rates, current coupons), and reading it (see "A database of market history" in lisp_library_reference.md)
+(lazy-load "financial_data.lsp" financial-data-update financial-data-summary time-series time-series-table)

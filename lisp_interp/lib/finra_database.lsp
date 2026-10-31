@@ -2,7 +2,7 @@
 ; ==================
 ; A SQLite database of the prices that agency TBAs traded at each day, from FINRA, and the function that brings it up to date.
 ;
-;   (finra-tba-update creds "finra_tba.db")
+;   (finra-tba-update creds "financial_data.db")
 ;
 ; The first time, it makes the database and fills it with ten years of history (FINRA's TBA prices start in January 2017, so that is what there is). After
 ; that, each call asks FINRA only for what the database lacks, from a week before its last day (FINRA corrects a day's prices now and then) to today, so it
@@ -19,7 +19,7 @@
 ;
 ; Query it as you would any SQLite file:
 ;
-;   (with-sqlite (conn "finra_tba.db")
+;   (with-sqlite (conn "financial_data.db")
 ;     (sqlite-query conn "SELECT date, weighted_average_price FROM tba_prices
 ;                         WHERE agency = 'UMBS' AND product = 'SINGLE FAMILY 30Y' AND coupon = '5.5' AND settlement_month = '2026-11-01'
 ;                         ORDER BY date"))
