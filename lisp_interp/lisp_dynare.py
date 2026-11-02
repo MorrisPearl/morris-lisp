@@ -14,6 +14,7 @@ and DYNARE_PATH say where they are, if not in the usual places.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -89,7 +90,7 @@ def number_text(value, who, name):
 
 def prepare_folder(model, folder, parameters, data, who):
     """Copies the model's folder (its .mod, .inc and .m files) and export_results.m into folder, puts the parameters at the
-    marker line of whichever file has it, and writes data, if any, to data.csv."""
+    marker line of the model file or the first file it includes that has it, and writes data, if any, to data.csv."""
     source = os.path.dirname(model)
     for name in os.listdir(source):
         if os.path.splitext(name)[1] in (".mod", ".inc", ".m") and os.path.isfile(os.path.join(source, name)):
@@ -98,15 +99,16 @@ def prepare_folder(model, folder, parameters, data, who):
 
     if parameters:
         lines = "".join("%s = %s;\n" % (name, number_text(value, who, name)) for name, value in parameters)
-        for name in sorted(os.listdir(folder)):
+        with open(model) as f:
+            included = re.findall(r'@#include\s+"([^"]+)"', f.read())
+        for name in [os.path.basename(model)] + included:
             path = os.path.join(folder, name)
-            if os.path.splitext(name)[1] in (".mod", ".inc"):
-                with open(path) as f:
-                    text = f.read()
-                if PARAMETERS_MARKER in text:
-                    with open(path, "w") as f:
-                        f.write(text.replace(PARAMETERS_MARKER, PARAMETERS_MARKER + "\n" + lines, 1))
-                    break
+            with open(path) as f:
+                text = f.read()
+            if PARAMETERS_MARKER in text:
+                with open(path, "w") as f:
+                    f.write(text.replace(PARAMETERS_MARKER, PARAMETERS_MARKER + "\n" + lines, 1))
+                break
         else:
             raise LispError("%s: to be given :parameters, the model needs the line %s where they go" % (who, PARAMETERS_MARKER))
 

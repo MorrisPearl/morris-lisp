@@ -71,6 +71,10 @@ means); then :parameters, a list ((name . value) ...), changes any of them: '((g
   "The parameters an estimate found, as a list ((name . value) ...) that oil-model's :parameters takes: each one's posterior mean (or
 its mode, if the estimate made no draws). A shock's size (\"stderr e_oil\") becomes its parameter in oil_irfs.mod (sigma_oil); the
 measurement error is left out, since it is not part of the economy."
+  (macro-models--estimated-parameters estimate oil-model-shocks))
+
+(define (macro-models--estimated-parameters estimate shocks)
+  "oil-model-estimated-parameters for any model: shocks is its list of (shock-name size-parameter description)."
   (let* ((estimates (hash-table-ref estimate "estimates"))
          (names (table-column estimates "name"))
          (means (table-column estimates "mean"))
@@ -79,7 +83,7 @@ measurement error is left out, since it is not part of the economy."
     (loop for k from 0 below (vector-length names)
           for name = (vector-ref names k)
           for value = (if (= (vector-ref no-mean k) 1) (vector-ref modes k) (vector-ref means k))
-          for shock = (find-if (lambda (entry) (equal? name (string-append "stderr " (first entry)))) oil-model-shocks)
+          for shock = (find-if (lambda (entry) (equal? name (string-append "stderr " (first entry)))) shocks)
           when shock collect (cons (second shock) value)
           when (and (not shock) (not (string-starts-with? name "stderr "))) collect (cons name value))))
 
@@ -129,16 +133,16 @@ makes draws draws; 20000 takes some minutes, and a few thousand are enough for a
   "How the economy responds to one typical surprise of a kind (\"e_z\", one of oil-model-shocks), as a table: a quarter column, then
 GDP, consumption, hours and the real wage (percent from normal), headline and core inflation and the Fed's rate (percentage points a
 year from normal) and the real price of oil; with a \"low\" and a \"high\" column for each, the 90% band, after an estimation."
-  (macro-models--responses result shock 1))
+  (macro-models--responses result shock 1 oil-model-variables))
 
 (define (oil-shock-responses result &key (rise 10))
   "How the economy responds when the real price of oil rises rise percent in the first quarter, as oil-model-responses shows it. The
 model is linear, so a rise twice as large has responses twice as large. (After an estimation, the bands are scaled by the same number,
 which leaves out how unsure the estimate is of the typical size of an oil surprise.)"
   (let* ((oil (table-column (hash-table-ref (hash-table-ref result "responses") "e_oil") "s")))
-    (macro-models--responses result "e_oil" (/ rise (vector-ref oil 0)))))
+    (macro-models--responses result "e_oil" (/ rise (vector-ref oil 0)) oil-model-variables)))
 
-(define (macro-models--responses result shock scale)
+(define (macro-models--responses result shock scale variables)
   (let* ((responses (hash-table-ref result "responses"))
          (table (if (hash-table-has? responses shock)
                     (hash-table-ref responses shock)
@@ -152,17 +156,24 @@ which leaves out how unsure the estimate is of the typical size of an oil surpri
                                  (cons (string-append (second variable) suffix)
                                        (vector-mul (table-column table (string-append (first variable) suffix)) factor)))
                                (filter (lambda (suffix) (member (string-append (first variable) suffix) names)) '("" " low" " high")))))
-                      oil-model-variables)))))
+                      variables)))))
 
 (define (plot-oil-shock results &key (rise 10) (title '()))
   "Charts of what happens when the real price of oil rises rise percent: GDP, consumption, headline and core inflation, the Fed's rate
 and the real wage, a panel each, with the 90% band of an estimate. results is one result (of oil-model or oil-model-estimate), or a list of
 (label result), to compare them: the same shock under different parameters, say, or estimated on different years."
+  (macro-models--plot results (lambda (result) (oil-shock-responses result :rise rise))
+                      '(("GDP" "percent") ("consumption" "percent") ("headline inflation" "points a year")
+                        ("core inflation" "points a year") ("Fed rate" "points a year") ("real wage" "percent"))
+                      (if (null? title) (format "After a {}% rise in the real price of oil" rise) title)
+                      "quarters (1 is the quarter of the rise)"))
+
+(define (macro-models--plot results responses panels title x-label)
+  "The charts of plot-oil-shock and plot-stock-crash: results as they take it, responses a function from a result to its table of
+responses, panels a list of (variable's name, label for the axis)."
   (let* ((labeled (if (hash-table? results) (list (list "model" results)) results))
-         (tables (map (lambda (entry) (oil-shock-responses (second entry) :rise rise)) labeled))
-         (colors (loop for k from 0 below (length labeled) collect (format "C{}" (mod k 10))))
-         (panels '(("GDP" "percent") ("consumption" "percent") ("headline inflation" "points a year") ("core inflation" "points a year")
-                   ("Fed rate" "points a year") ("real wage" "percent"))))
+         (tables (map (lambda (entry) (responses (second entry))) labeled))
+         (colors (loop for k from 0 below (length labeled) collect (format "C{}" (mod k 10)))))
     (plot-panels
      (map (lambda (panel)
             (let ((name (first panel)))
@@ -172,11 +183,11 @@ and the real wage, a panel each, with the 90% band of an estimate. results is on
                     :title name :y-label (second panel) :y-lines (list 0)
                     :legend (if (and (eq? panel (first panels)) (> (length labeled) 1)) "best" #f))))
           panels)
-     :title (if (null? title) (format "After a {}% rise in the real price of oil" rise) title)
-     :x-label "quarters (1 is the quarter of the rise)")))
+     :title title
+     :x-label x-label)))
 
 (define (macro-models--panel-series label table name color)
-  "The series for one result in a panel of plot-oil-shock: its 90% band, if it has one, shaded, then its line."
+  "The series for one result in a panel of macro-models--plot: its 90% band, if it has one, shaded, then its line."
   (let* ((quarters (table-column table "quarter"))
          (line (list label quarters (table-column table name) :color color :line-width 2)))
     (if (member (string-append name " low") (map car table))
@@ -188,14 +199,143 @@ and the real wage, a panel each, with the 90% band of an estimate. results is on
 (define (show-oil-estimates estimate)
   "A table of what an estimate found: for each parameter, what it is, what was believed before the data (the prior's mean), the
 posterior mean (the estimate) and its 90% interval (the data say it is between low and high, with a 90% chance)."
+  (macro-models--show-estimates estimate oil-model-parameter-descriptions))
+
+(define (macro-models--show-estimates estimate descriptions)
   (let* ((estimates (hash-table-ref estimate "estimates"))
          (names (table-column estimates "name")))
     (display-table
      (make-table "parameter" names
-                 "what it is" (vector-map (lambda (name) (let ((found (assoc name oil-model-parameter-descriptions)))
+                 "what it is" (vector-map (lambda (name) (let ((found (assoc name descriptions)))
                                                            (if found (second found) "")))
                                           names)
                  "prior mean" (vector-round (table-column estimates "prior mean") 3)
                  "estimate" (vector-round (table-column estimates "mean") 3)
                  "low" (vector-round (table-column estimates "low") 3)
                  "high" (vector-round (table-column estimates "high") 3)))))
+
+; ===========================================================================
+; The stock-market crash model (dynare/crash_model.inc): a financial accelerator
+; ===========================================================================
+;
+;   (crash-model)                                     the model with its parameters as chosen by hand
+;   (crash-model :parameters '((nu . 0)))             ... with some changed: nu = 0 is an economy without the accelerator
+;   (crash-model-estimate creds)                      its parameters estimated from US data, 1985 to 2008 (some minutes)
+;   (crash-model :from estimate :parameters '(...))   a scenario that starts from the estimated parameters
+;   (stock-crash-responses result :fall 20)           a table: what happens when firms' net worth (the stock market) falls 20%
+;   (plot-stock-crash result :fall 20)                the same as charts; or several results, labeled, to compare them
+;   (show-crash-estimates estimate)                   what the data say about each parameter
+;
+; The model's files are dynare/crash_model.inc, crash_irfs.mod (responses) and crash_estimate.mod (estimation).
+
+(define crash-model-shocks
+  '(("net_worth_shock"    "net_worth_shock_size"    "net worth (the stock market)")
+    ("lender_fear_shock"  "lender_fear_shock_size"  "lenders' fears (the credit spread)")
+    ("demand_shock"       "demand_shock_size"       "demand")
+    ("productivity_shock" "productivity_shock_size" "productivity")
+    ("fed_shock"          "fed_shock_size"          "Fed rate (monetary policy)")
+    ("cost_push_shock"    "cost_push_shock_size"    "cost-push (firms' markups)")))
+
+; As oil-model-variables: Dynare's name, the name shown, and what to multiply by. Inflation, the Fed's rate and the credit spread are per
+; quarter in the model, and shown per year (times 4).
+(define crash-model-variables
+  '(("gdp"           "GDP"              1)
+    ("consumption"   "consumption"      1)
+    ("investment"    "investment"       1)
+    ("hours"         "hours"            1)
+    ("real_wage"     "real wage"        1)
+    ("inflation"     "inflation"        4)
+    ("fed_rate"      "Fed rate"         4)
+    ("net_worth"     "net worth"        1)
+    ("capital_price" "price of capital" 1)
+    ("credit_spread" "credit spread"    4)))
+
+(define crash-model-parameter-descriptions
+  '(("price_stickiness"          "chance a firm can't change its price in a quarter")
+    ("risk_aversion"             "dislike of uneven consumption")
+    ("labor_dislike"             "how fast the wish not to work grows with hours")
+    ("capital_price_response"    "how fast the price of capital rises with investment")
+    ("accelerator"               "the accelerator: rise in the spread for 1% more borrowing")
+    ("wealth_effect"             "how much spending rises with the shares households own")
+    ("fed_inflation_response"    "Fed: rate rise for a point of inflation")
+    ("fed_gdp_response"          "Fed: rate rise for a percent of GDP above normal")
+    ("fed_smoothing"             "Fed: how slowly it moves its rate")
+    ("productivity_persistence"  "how long a productivity change lasts")
+    ("demand_persistence"        "how long a demand change lasts")
+    ("lender_fear_persistence"   "how long lenders' fears last")
+    ("stderr net_worth_shock"    "typical surprise to net worth, percent")
+    ("stderr lender_fear_shock"  "typical surprise to the spread, points a quarter")
+    ("stderr demand_shock"       "typical demand surprise")
+    ("stderr productivity_shock" "typical productivity surprise, percent")
+    ("stderr fed_shock"          "typical Fed rate surprise, points a quarter")
+    ("stderr cost_push_shock"    "typical cost-push surprise")
+    ("stderr credit_spread_data" "the spread's measurement error")))
+
+(define (crash-model &key (parameters '()) (from '()) (quarters 20))
+  "The crash model's responses to each kind of surprise, for quarters quarters, as dynare-run returns them. Its parameters are as
+dynare/crash_model.inc chooses them, or, given :from, an estimate (from crash-model-estimate), as the estimate found them (their
+posterior means); then :parameters, a list ((name . value) ...), changes any of them: '((accelerator . 0)) is an economy with no accelerator."
+  (dynare-run "crash_irfs.mod"
+              :parameters (append (if (null? from) '() (macro-models--estimated-parameters from crash-model-shocks)) parameters)
+              :macros (list (cons 'quarters quarters))))
+
+(define (crash-model-data creds &key (start (date 1985 1 1)) (end (date 2008 7 1)))
+  "The data the crash model is estimated on, from FRED, by the quarter from start to end (the quarters' first days): the growth of
+consumption (PCECC96) and investment (GPDIC1), core inflation (PCEPILFE), the federal funds rate (FEDFUNDS) and the spread of
+Moody's Baa corporate bond yield over the 10-year Treasury (BAA10YM), each in percent a quarter (the spread, a rate a year, divided by 4),
+less its average over these quarters. The default ends before the Fed's rate reached zero at the end of 2008, which the model's Fed rule
+can't capture."
+  (let* ((fred (fred-table creds '("PCECC96" "GPDIC1" "PCEPILFE" "FEDFUNDS" "BAA10YM") :frequency "quarterly"
+                           :start-date (date-add-months start -3) :end-date end))
+         (all (make-table "date"                    (table-column fred "date")
+                          "consumption_growth_data"   (macro-models--growth (table-column fred "PCECC96"))
+                          "investment_growth_data"    (macro-models--growth (table-column fred "GPDIC1"))
+                          "inflation_data"            (macro-models--growth (table-column fred "PCEPILFE"))
+                          "fed_rate_data"             (vector-div (table-column fred "FEDFUNDS") 4)
+                          "credit_spread_data"        (vector-div (table-column fred "BAA10YM") 4)))
+         (complete (table-filter all (vector-and (vector-not (vector-nan? (table-column all "consumption_growth_data")))
+                                                 (vector-not (vector-nan? (table-column all "credit_spread_data")))))))
+    (cons (car complete)
+          (map (lambda (column) (cons (car column) (vector-sub (cdr column) (vector-mean (cdr column))))) (cdr complete)))))
+
+(define (crash-model-estimate creds &key (start (date 1985 1 1)) (end (date 2008 7 1)) (data '()) (draws 4000) (quarters 20)
+                              (echo #f))
+  "The crash model's parameters estimated from US data, start to end (crash-model-data), or from the table :data: dynare-run's result
+for dynare/crash_estimate.mod, with its \"estimates\" (show-crash-estimates shows them) and its \"responses\", with bands. Each of the two
+chains makes draws draws; the default, 4000, takes about a quarter of an hour, and 1000 is enough for a first look. :echo #t shows what Dynare prints."
+  (let ((data (if (null? data) (crash-model-data creds :start start :end end) data)))
+    (display (format "Estimating the crash model on {} quarters, {} to {}, with {} draws in each of two chains; this takes about a quarter of an hour."
+                     (table-row-count data) (vector-ref (table-column data "date") 0)
+                     (vector-ref (table-column data "date") (- (table-row-count data) 1)) draws))
+    (newline)
+    (dynare-run "crash_estimate.mod" :data (cdr data) :echo echo
+                :macros (list (cons 'draws draws) (cons 'quarters quarters)))))
+
+(define (crash-model-responses result shock)
+  "How the economy responds to one typical surprise of a kind (\"net_worth_shock\", one of crash-model-shocks), as a table: a quarter column, then
+GDP, consumption, investment, hours, the real wage, net worth and the price of capital (percent from normal), inflation, the Fed's rate
+and the credit spread (percentage points a year from normal); with a \"low\" and a \"high\" column for each, the 90% band, after an
+estimation."
+  (macro-models--responses result shock 1 crash-model-variables))
+
+(define (stock-crash-responses result &key (fall 20))
+  "How the economy responds when the stock market falls: a surprise to firms' net worth big enough that net worth is fall percent below
+normal in the first quarter (it falls further, or recovers, after that), as crash-model-responses shows it. The model is linear, so a
+fall twice as large has responses twice as large. (After an estimation, the bands are scaled by the same number.)"
+  (let* ((net-worth (table-column (hash-table-ref (hash-table-ref result "responses") "net_worth_shock") "net_worth")))
+    (macro-models--responses result "net_worth_shock" (/ (- fall) (vector-ref net-worth 0)) crash-model-variables)))
+
+(define (plot-stock-crash results &key (fall 20) (title '()))
+  "Charts of what happens when firms' net worth (the stock market) falls fall percent: GDP, consumption, investment, inflation, the Fed's
+rate, the credit spread and net worth itself, a panel each, with the 90% band of an estimate. results is one result (of crash-model or
+crash-model-estimate), or a list of (label result), to compare them: the same crash with and without the accelerator, say."
+  (macro-models--plot results (lambda (result) (stock-crash-responses result :fall fall))
+                      '(("GDP" "percent") ("consumption" "percent") ("investment" "percent") ("inflation" "points a year")
+                        ("Fed rate" "points a year") ("credit spread" "points a year") ("net worth" "percent"))
+                      (if (null? title) (format "After a {}% fall in the stock market (firms' net worth)" fall) title)
+                      "quarters (1 is the quarter of the fall)"))
+
+(define (show-crash-estimates estimate)
+  "A table of what an estimate found: for each parameter, what it is, what was believed before the data (the prior's mean), the
+posterior mean (the estimate) and its 90% interval (the data say it is between low and high, with a 90% chance)."
+  (macro-models--show-estimates estimate crash-model-parameter-descriptions))

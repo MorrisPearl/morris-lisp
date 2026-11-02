@@ -22,6 +22,7 @@ _RISKY_BLOCK_WORDS = (
     "save-chart", "load-csv", "write-columns-csv", "write-text-file", "display-widget",
     "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
     "dynare-run", "oil-model", "oil-shock-responses", "plot-oil-shock", "show-oil-estimates",     # these need Octave and Dynare
+    "crash-model", "stock-crash-responses", "plot-stock-crash", "show-crash-estimates",
 )
 
 

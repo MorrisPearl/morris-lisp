@@ -117,6 +117,15 @@ class TestPreparingTheFolder(unittest.TestCase):
         with open(os.path.join(self.source, "part.inc")) as f:
             self.assertNotIn("2.5", f.read())                 # the model's own file is left as it was
 
+    def test_another_models_file_with_a_marker_in_the_same_folder_is_left_alone(self):
+        with open(os.path.join(self.source, "aaa_other.inc"), "w") as f:      # sorts before part.inc
+            f.write("parameters a;\n%s\n" % lisp_dynare.PARAMETERS_MARKER)
+        lisp_dynare.prepare_folder(os.path.join(self.source, "model.mod"), self.folder, [("a", 2.5)], None, "test")
+        with open(os.path.join(self.folder, "aaa_other.inc")) as f:
+            self.assertNotIn("2.5", f.read())
+        with open(os.path.join(self.folder, "part.inc")) as f:
+            self.assertIn("a = 2.5;", f.read())
+
     def test_parameters_need_a_marker_and_numbers(self):
         with open(os.path.join(self.source, "part.inc"), "w") as f:
             f.write("parameters a;\n")
@@ -236,6 +245,98 @@ class TestOilModelEstimate(LispTestCase):
         self.assertShows('(vector-ref (table-column (table-filter (hash-table-ref scenario "parameters")'
                          ' (vector= (table-column (hash-table-ref scenario "parameters") "name") "core_weight")) "value") 0)', '1.0')
         self.run_lisp('(show-oil-estimates est)')
+
+
+class TestCrashModelData(LispTestCase):
+
+    def test_the_data_are_quarterly_growth_rates_and_the_spread_less_their_averages(self):
+        with mock.patch.object(lisp_fred, "download_series", fake_fred_series):
+            self.run_lisp('(load "macro_models.lsp")'
+                          '(define d (crash-model-data "creds.json" :start (date 1990 1 1) :end (date 1999 10 1)))')
+        self.assertShows('(map car d)', '("date" "consumption_growth_data" "investment_growth_data" "inflation_data" "fed_rate_data" "credit_spread_data")')
+        self.assertShows('(table-row-count d)', '40')
+        for column in ("consumption_growth_data", "investment_growth_data", "fed_rate_data", "credit_spread_data"):
+            self.assertAlmostEqual(self.run_lisp('(vector-mean (table-column d "%s"))' % column), 0, places=10)
+        # The spread is a rate a year, and the model's is a rate a quarter: a fourth of it, less its average
+        spread = fake_fred_series("BAA10YM", None, None, None, 0, "", "quarterly").cdr.items[4 * (1990 - 1984):][:40] / 4
+        self.assertTrue(numpy.allclose(self.run_lisp('(table-column d "credit_spread_data")').items, spread - spread.mean()))
+
+
+@unittest.skipUnless(dynare_installed(), "needs GNU Octave and Dynare")
+class TestCrashModel(LispTestCase):
+    """The crash model (the financial accelerator), run by Dynare."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('(load "macro_models.lsp")'
+                      '(define base (crash-model :quarters 10))'
+                      '(define flat (crash-model :quarters 10 :parameters (list (cons "accelerator" 0))))')
+
+    def column(self, table, name):
+        return self.run_lisp('(table-column %s "%s")' % (table, name)).items
+
+    def test_a_crash_sets_net_worth_to_the_fall_asked_for_and_the_economy_slows(self):
+        self.run_lisp('(define crash (stock-crash-responses base :fall 20))')
+        self.assertShows('(table-row-count crash)', '10')
+        self.assertAlmostEqual(self.column("crash", "net worth")[0], -20)
+        self.assertLess(self.column("crash", "GDP")[0], 0)
+        self.assertLess(self.column("crash", "investment")[0], 0)
+        self.assertGreater(self.column("crash", "credit spread")[0], 0)      # lenders charge more
+        self.assertLess(self.column("crash", "Fed rate")[0], 0)              # and the Fed cuts
+        # Linear: twice the fall, twice the responses
+        self.run_lisp('(define twice (stock-crash-responses base :fall 40))')
+        self.assertTrue(numpy.allclose(self.column("twice", "GDP"), 2 * self.column("crash", "GDP")))
+
+    def test_without_the_accelerator_the_same_crash_does_far_less_harm(self):
+        self.run_lisp('(define crash (stock-crash-responses base :fall 20))'
+                      '(define without (stock-crash-responses flat :fall 20))')
+        self.assertTrue(abs(self.column("without", "GDP")[0]) < 0.25 * abs(self.column("crash", "GDP")[0]))
+        self.assertTrue(abs(self.column("without", "credit spread")[0]) < 1e-6)     # no premium to rise when nu is 0
+        self.assertGreater(self.column("without", "investment")[3], self.column("crash", "investment")[3])
+
+    def test_every_shock_has_responses_and_a_variance_decomposition(self):
+        self.assertShows('(sort (hash-table-keys (hash-table-ref base "responses")))',
+                         '("cost_push_shock" "demand_shock" "fed_shock" "lender_fear_shock" "net_worth_shock" "productivity_shock")')
+        self.assertLess(self.run_lisp('(vector-ref (table-column (crash-model-responses base "lender_fear_shock") "investment") 0)'), 0)
+        self.assertLispError('(crash-model-responses base "oil_shock")', "no responses to oil_shock")
+        shares = self.run_lisp('(hash-table-ref base "variance-decomposition")')
+        rows = numpy.array([p.cdr.items for p in lisp_core.pairs_to_list(shares)[1:]], dtype=float)
+        self.assertTrue(numpy.allclose(rows.sum(axis=0), 100))
+
+    def test_plot_stock_crash_draws_a_panel_for_each_variable_and_a_line_for_each_result(self):
+        charts = []
+        env = lisp_builtins.make_global_env(output=self.out.append, plot=charts.append)
+        self.run_lisp('(load "macro_models.lsp")'
+                      '(plot-stock-crash (list (list "with" (crash-model)) (list "without" (crash-model :parameters (list (cons "accelerator" 0))))))', env)
+        self.assertEqual(len(charts), 1)
+        self.assertEqual(len(charts[0]["panels"]), 7)
+
+
+@unittest.skipUnless(dynare_installed(), "needs GNU Octave and Dynare")
+class TestCrashModelEstimate(LispTestCase):
+    """An estimation of the crash model, with few draws: its estimates, its bands, and a scenario from it."""
+
+    def test_an_estimate_has_estimates_bands_and_can_start_a_scenario(self):
+        with mock.patch.object(lisp_fred, "download_series", fake_fred_series):
+            self.run_lisp('(load "macro_models.lsp")'
+                          '(define est (crash-model-estimate "creds.json" :draws 300 :quarters 10))')
+        self.assertIn("Estimating the crash model on 95 quarters", self.printed())
+        names = [str(n) for n in self.run_lisp('(table-column (hash-table-ref est "estimates") "name")').items]
+        self.assertIn("accelerator", names)
+        self.assertIn("stderr net_worth_shock", names)
+        low, mean, high = (self.run_lisp('(table-column (hash-table-ref est "estimates") "%s")' % c).items for c in ("low", "mean", "high"))
+        self.assertTrue(numpy.all(low <= mean) and numpy.all(mean <= high))
+        columns = [str(p.car) for p in lisp_core.pairs_to_list(self.run_lisp('(stock-crash-responses est :fall 20)'))]
+        self.assertIn("GDP low", columns)
+        self.assertIn("GDP high", columns)
+        parameters = dict((str(p.car), p.cdr) for p in lisp_core.pairs_to_list(self.run_lisp('(macro-models--estimated-parameters est crash-model-shocks)')))
+        self.assertIn("net_worth_shock_size", parameters)
+        self.assertNotIn("stderr credit_spread_data", parameters)
+        self.assertAlmostEqual(parameters["accelerator"], mean[names.index("accelerator")])
+        self.run_lisp('(define scenario (crash-model :from est :parameters (list (cons "accelerator" 0))))')
+        self.assertShows('(vector-ref (table-column (table-filter (hash-table-ref scenario "parameters")'
+                         ' (vector= (table-column (hash-table-ref scenario "parameters") "name") "accelerator")) "value") 0)', '0.0')
+        self.run_lisp('(show-crash-estimates est)')
 
 
 if __name__ == "__main__":

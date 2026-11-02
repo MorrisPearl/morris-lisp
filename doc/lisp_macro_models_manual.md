@@ -44,7 +44,12 @@ structured deals, forecasting questions, and simulated paths of rates and prices
   - [Scenarios from the estimate](#scenarios-from-the-estimate)
 - [The 1970s and the 2000s](#the-1970s-and-the-2000s)
 - [What the model leaves out](#what-the-model-leaves-out)
-- [Stock market crashes and wealth taxes](#stock-market-crashes-and-wealth-taxes)
+- [The stock market crash model](#the-stock-market-crash-model)
+  - [Who is in it, and the financial accelerator](#who-is-in-it-and-the-financial-accelerator)
+  - [Running it](#running-it-1)
+  - [Estimating it](#estimating-it)
+  - [What this model leaves out](#what-this-model-leaves-out)
+- [Wealth taxes](#wealth-taxes)
 - [Reference](#reference)
   - [Setting up Dynare](#setting-up-dynare)
   - [The functions](#the-functions)
@@ -433,7 +438,7 @@ A small model is small on purpose: each part can be understood. But what it leav
   model's GDP response is small.
 - **The US as an oil producer.** Here all oil is imported. Since about 2015 the US has produced about as much oil as it uses, so a higher
   oil price also raises the income of US producers, and their investment, which this model doesn't have.
-- **No investment, no government, no exchange rate.** Spending is consumption and the goods sent abroad for oil.
+- **No investment, no government, no exchange rate.** Spending is consumption and the goods sent abroad for oil. (The crash model has investment.)
 - **The price of oil moves on its own.** In fact it often rises *because* the world economy is booming (Lutz Kilian's work shows that
   oil prices driven by demand and those driven by supply have quite different effects). Here every rise is a supply shock.
 - **Linear.** Responses are proportional to the shock and the same up as down. A 100% rise is treated as ten 10% rises; in fact large
@@ -444,17 +449,136 @@ A small model is small on purpose: each part can be understood. But what it leav
 
 So use the model to understand *mechanisms* and to compare *scenarios*, not to forecast GDP.
 
-## Stock market crashes and wealth taxes
+## The stock market crash model
 
-The same approach can ask about a stock market crash, with a different model: one in which firms and banks borrow against what they own,
-so that a fall in the value of their assets makes them borrow and invest less (the "financial accelerator" of Bernanke, Gertler and
-Gilchrist, or Gertler and Karadi's model of banks). The crash is then a shock to their net worth, and the question is how much it spreads
-to investment, jobs and GDP. That model isn't here yet.
+A second model, in `dynare/crash_model.inc`, asks what a fall in the stock market does. Its variables and parameters have descriptive
+names (`net_worth`, `price_stickiness`, `accelerator`), so that the model file reads as a description of the economy.
+
+### Who is in it, and the financial accelerator
+
+- **Households** work, consume and save at the Fed's interest rate. Their spending also rises a little with the value of the shares they
+  own (`wealth_effect`).
+- **Firms** make goods from labor and capital, and set prices that change only now and then (`price_stickiness`), as in the oil model.
+  They own the capital and pay for part of it with borrowed money.
+- **Lenders** can't see how well a firm will do, so they charge more than the safe interest rate, and the more a firm borrows compared
+  with its own **net worth** (what it owns less what it owes), the more they charge. That extra is the **credit spread** (the model's
+  "external finance premium"), and `accelerator` is how much it rises when borrowing compared with net worth rises 1%.
+- **The Fed** sets its rate by a rule that responds to inflation and GDP, a little at a time.
+
+A fall in firms' net worth, such as a stock market crash, then works like this. The firms are more heavily in debt compared with what they
+own, so the credit spread rises. With borrowing dearer, firms invest less. With less investment, the price of capital falls, and with it
+firms' net worth again. The first blow is made bigger as it goes around: that is the **accelerator** (Bernanke, Gertler and Gilchrist,
+1999). In the model, "the stock market" is firms' net worth.
+
+### Running it
+
+```lisp
+(define base (crash-model))
+(stock-crash-responses base :fall 20)            ; a table: what follows when firms' net worth is 20% below normal in quarter 1
+(plot-stock-crash base :fall 20)                 ; the same, as charts
+
+; The same crash in an economy without the accelerator: the whole financial channel shut
+(define without (crash-model :parameters '((accelerator . 0))))
+(plot-stock-crash (list (list "with the accelerator" base) (list "without" without)) :fall 20)
+```
+
+`crash-model` takes `:parameters`, `:from` (an estimate) and `:quarters` exactly as `oil-model` does, and the whole of [Scenarios: what
+if?](#scenarios-what-if) applies. The responses are linear: a 40% fall does twice what a 20% fall does. The notebook
+`lisp_interp/notebooks/stock_crash_model.ipynb` goes through these steps, a cell each.
+
+Scenarios worth trying:
+
+| Change | What it asks |
+|---|---|
+| `((accelerator . 0))` | What does the financial channel add to a crash? |
+| `((leverage . 3))` against `((leverage . 1.5))` | Do crashes hurt more when firms borrow more? |
+| `((fed_smoothing . 0.2))` against `((fed_smoothing . 0.9))` | Does it matter how fast the Fed cuts its rate? |
+| `((wealth_effect . 0))` | How much of the fall in spending is households feeling poorer, and how much is firms' investment? |
+| `((price_stickiness . 0.5))` | Do sticky prices matter? (with flexible prices, falling prices cushion the blow) |
+
+Other kinds of surprise are tables of one typical surprise, from `(crash-model-responses base shock)`, `shock` being
+`"net_worth_shock"`, `"lender_fear_shock"` (lenders' fears: the credit spread jumps for no other reason), `"demand_shock"`,
+`"productivity_shock"`, `"fed_shock"` or `"cost_push_shock"`.
+
+### Estimating it
+
+```lisp
+(define estimate (crash-model-estimate creds))     ; 1985-2008, about a quarter of an hour (:draws 1000 for a quick look)
+(show-crash-estimates estimate)
+(plot-stock-crash estimate :fall 20)               ; with a 90% band
+(crash-model :from estimate :parameters '((accelerator . 0)))
+```
+
+The data (`crash-model-data`) are five quarterly series from FRED: the growth of consumption (PCECC96) and of investment (GPDIC1), core
+inflation (PCEPILFE), the federal funds rate (FEDFUNDS), and the spread of Moody's Baa corporate bond yields over the 10-year Treasury
+(BAA10YM), each less its average. The spread is how the data say how dear it is for firms to borrow. GDP growth is left out because, in
+this model, GDP is exactly 80% consumption plus 20% investment, so all three series together would fit an exact equation, which real data
+never do (Dynare would stop with a "singular" error).
+
+#### What the data say
+
+For 1985 to 2008 (4,000 draws in each chain, a quarter of an hour), the estimate is:
+
+| Parameter | Prior mean | Estimate | 90% interval |
+|---|---|---|---|
+| `accelerator` | 0.05 | 0.002 | 0.002 to 0.003 |
+| `wealth_effect` | 0.1 | 0.006 | 0.000 to 0.013 |
+| `price_stickiness` | 0.66 | 0.75 | 0.67 to 0.84 |
+| `capital_price_response` | 0.25 | 0.22 | 0.18 to 0.28 |
+| `fed_inflation_response` | 1.5 | 1.42 | 1.33 to 1.51 |
+| `fed_smoothing` | 0.75 | 0.68 | 0.62 to 0.73 |
+| `demand_persistence` | 0.5 | 0.98 | 0.97 to 0.99 |
+
+The headline: **the data of these years find almost no financial accelerator.** The estimate of `accelerator` is a twenty-fifth of the
+prior's, and the interval is narrow. After a 20% fall in firms' net worth, the estimated model has GDP 0.28% below normal at first (90%
+interval: 0.20% to 0.37%), investment 1.6% below, and consumption slightly *above*; the calibrated model, with `accelerator` at 0.05, has
+GDP 2.2% below and investment 13% below. So the answer to "how much worse does a crash get through the financial channel?" depends
+almost entirely on a parameter the data have not pinned down well, and the sample's answer is "hardly at all."
+
+How far to trust that:
+
+- **The sample has no great financial crisis.** It runs from 1985 to the third quarter of 2008: the stock crash of 1987, the savings and
+  loan troubles, 1998, the dot-com bust. The model learns about the accelerator from the times that the credit spread moved with
+  investment. Without a 2008 in the sample, it is not surprising that it finds the accelerator weak. The crisis itself can't be put in,
+  because the Fed's rate hit zero, which the model can't represent.
+- **Net worth is never observed.** The data have no series for it, so its surprises are identified only through the credit spread and
+  investment. The estimate of a typical net worth surprise (26% a quarter, against a prior of 2%) is not believable as a description of
+  the stock market; it is a sign that net worth carries little weight in the estimated economy, so its size is almost free to wander.
+- **Some estimates are odd.** `fed_gdp_response` comes out negative (-0.05), meaning the Fed lowers its rate when GDP is above normal, and
+  `demand_persistence` is 0.98, which says demand shocks are close to permanent. These are signs of misspecification: the model is a
+  sketch, and what it can't explain tends to end up in whichever parameters are free to take it.
+- **A short run.** 4,000 draws is enough for a first look, not a final answer; try `:draws 20000` (about an hour) before relying on a
+  number.
+
+So treat the calibrated model (`accelerator` 0.05, the value Bernanke, Gertler and Gilchrist use) as a picture of *how the channel
+works*, and the estimate as a warning that US data since 1985, before the crisis, don't show it to be strong. Both can be compared
+directly:
+
+```lisp
+(plot-stock-crash (list (list "calibrated" base) (list "estimated" estimate)) :fall 20)
+```
+
+
+### What this model leaves out
+
+- **No banks, only firms' balance sheets.** Gertler and Karadi's model has banks whose own capital is the thing that is lost; the effect
+  is similar, but a crash that hurts banks (2008) rather than firms (2000) has its own channels.
+- **The stock market is firms' net worth.** The model has one kind of asset; real stock markets also move with what investors expect
+  and what they will pay for it, which the model has no room for.
+- **Linear, and no zero lower bound.** A big crash makes the Fed cut its rate to zero, and no further. The model can cut below zero, so
+  for a big enough crash it makes the Fed do more than it could. This is why the estimate stops in 2008, and why it says little about the
+  crash of 2008 itself.
+- **Households hold shares and nothing else**, and they are all the same: the model can't say who loses.
+- **Consumption can rise.** With the real interest rate lower after a crash, households save less; the wealth effect works against
+  that, but it can be too weak to make consumption fall at first. Look at the estimate, not the calibration, for this.
+
+## Wealth taxes
 
 A wealth tax is a different kind of question. Its effects depend on *who* holds the wealth and how they respond (saving less, moving it,
-avoiding the tax), and a model with one "representative" household, like this one, can't say anything about who. It would treat a
+avoiding the tax), and a model with one "representative" household, like these, can't say anything about who. It would treat a
 wealth tax as a tax on capital: less saving, less capital, lower wages in the long run. Serious answers come from models with many
 different households (Guvenen and others, *Use It or Lose It*, 2023, is one), and are about the long run rather than the next few years.
+That is a project of its own, probably not in Dynare.
 
 ## Reference
 
@@ -510,6 +634,33 @@ A table of an estimate's parameters: what each is, its prior mean, the estimate 
 #### `(oil-model-estimated-parameters estimate)`
 An estimate's parameters as a list `((name . value) ...)`, as `oil-model`'s `:from` uses them.
 
+#### `(crash-model [:parameters p :from estimate :quarters n])`
+Runs the stock market crash model (`dynare/crash_irfs.mod`) and returns its responses to each kind of shock, as `dynare-run` returns
+them. `:parameters`, `:from` and `:quarters` are as for `oil-model`; `((accelerator . 0))` is an economy without the financial accelerator.
+
+#### `(crash-model-estimate creds [:start d :end d :data table :draws n :quarters n :echo #t])`
+Estimates the crash model (`dynare/crash_estimate.mod`) on US data, 1985-01-01 to 2008-07-01 unless `:start` and `:end` say, from
+`crash-model-data`, or on the table `:data`; otherwise as `oil-model-estimate`, but each chain makes 4,000 draws by default (about a quarter of an hour).
+
+#### `(crash-model-data creds [:start d :end d])`
+The table the crash model is estimated on: a `date` column and the five series of [Estimating it](#estimating-it), less their averages.
+
+#### `(stock-crash-responses result [:fall f])`
+What happens when firms' net worth is `f` percent below normal in the first quarter (20, unless it says), as a table: `quarter`, then
+`GDP`, `consumption`, `investment`, `hours`, `real wage`, `net worth`, `price of capital` (percent from normal), `inflation`, `Fed rate`
+and `credit spread` (points a year from normal); after an estimation, a `low` and a `high` column for each.
+
+#### `(crash-model-responses result shock)`
+The same table, for one typical surprise of any of the six kinds (`"net_worth_shock"`, `"lender_fear_shock"`, `"demand_shock"`,
+`"productivity_shock"`, `"fed_shock"`, `"cost_push_shock"`).
+
+#### `(plot-stock-crash results [:fall f :title t])`
+Charts of `stock-crash-responses`: a panel each for GDP, consumption, investment, inflation, the Fed's rate, the credit spread and net
+worth. `results` is one result, or a list of `(label result)` to compare.
+
+#### `(show-crash-estimates estimate)`
+A table of a crash model estimate's parameters: what each is, its prior mean, the estimate, and its 90% interval.
+
 #### `(dynare-run model-file [:parameters p :macros m :data table :directory d :echo #t :timeout seconds])`
 Runs Dynare on any model file, for models of your own. `model-file` is a `.mod` file, or the name of one in `lisp_interp/dynare/`.
 The files of its folder (`.mod`, `.inc`, `.m`) are copied into a new folder, or `:directory`, and Dynare runs there; the folder is kept,
@@ -540,6 +691,7 @@ In `lisp_interp/dynare/`:
 | `oil_model.inc` | the oil model: its variables, shocks, parameters and their calibration, and its equations, each with a sentence saying what it means |
 | `oil_irfs.mod` | the model's responses to each shock, for its calibrated (or given) parameters |
 | `oil_estimate.mod` | the model estimated from `data.csv`: the observed variables, the priors, and the estimation's settings |
+| `crash_model.inc`, `crash_irfs.mod`, `crash_estimate.mod` | the same three for the stock market crash model |
 | `export_results.m` | run by `dynare-run` after Dynare, to write what it found for the Lisp side to read |
 
 To write a model of your own, start from a copy of these: Dynare's own manual (<https://www.dynare.org/manual/>) describes the language,
