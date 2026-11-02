@@ -50,6 +50,11 @@ structured deals, forecasting questions, and simulated paths of rates and prices
   - [Running it](#running-it-1)
   - [Estimating it](#estimating-it)
   - [What this model leaves out](#what-this-model-leaves-out)
+- [Four kinds of households](#four-kinds-of-households)
+  - [The four groups](#the-four-groups)
+  - [Running it](#running-it-2)
+  - [What it says](#what-it-says)
+  - [What the four-household model leaves out](#what-the-four-household-model-leaves-out)
 - [Wealth taxes](#wealth-taxes)
 - [Reference](#reference)
   - [Setting up Dynare](#setting-up-dynare)
@@ -671,17 +676,115 @@ directly:
 - **Linear, and no zero lower bound.** A big crash makes the Fed cut its rate to zero, and no further. The model can cut below zero, so
   for a big enough crash it makes the Fed do more than it could. This is why the estimate stops in 2008, and why it says little about the
   crash of 2008 itself.
-- **Households hold shares and nothing else**, and they are all the same: the model can't say who loses.
+- **Households hold shares and nothing else**, and they are all the same: the model can't say who loses. [Four kinds of households](#four-kinds-of-households) splits them.
 - **Consumption can rise.** With the real interest rate lower after a crash, households save less; the wealth effect works against
   that, but it can be too weak to make consumption fall at first. Look at the estimate, not the calibration, for this.
+
+## Four kinds of households
+
+The oil and crash models have one kind of household, so they can say what happens to the economy but not to whom. Yet a crash is not the
+same event for a family living from paycheck to paycheck as for one whose wealth is mostly shares. A third model, in
+`dynare/types_model.inc`, is the crash model with the households split into four groups, so that it can say who gains and who loses
+and whether who they are changes what happens to the economy. Only the households differ: the firms, the accelerator, the prices and the
+Fed are the crash model's.
+
+### The four groups
+
+The groups are the ones the Federal Reserve's [Distributional Financial Accounts](https://www.federalreserve.gov/releases/z1/dataviz/dfa/)
+follow, by how much wealth a household has. The Fed publishes, every quarter, the share of the nation's net worth, and of each kind of
+asset, that each group holds:
+
+| Group | Share of net worth (2026 Q2) | Share of stocks |
+|---|---|---|
+| the bottom 50% | 2.3% | 0.6% |
+| the next 40% (50th to 90th percentile) | 28.8% | 11.4% |
+| the next 9% (90th to 99th) | 36.4% | 37.2% |
+| the top 1% | 32.5% | 50.9% |
+
+`(wealth-by-type creds)` fetches the latest of these numbers from FRED as a table. (The "stocks" are corporate equities and mutual fund
+shares held directly; see [What the four-household model leaves out](#what-the-four-household-model-leaves-out) for what they miss.)
+
+The groups differ in three ways, and each is a parameter for each group, so that a different guess is one `:parameters` away:
+
+1. **How many of them live from paycheck to paycheck** (`hand_to_mouth_...`). That part of the group spends everything it earns, so
+   what happens to its income happens to its spending, whatever the interest rate. The rest are *savers*: they plan ahead, and spend
+   according to the real interest rate and the wealth they hold, not this quarter's pay. Studies of "hand-to-mouth" households (Kaplan,
+   Violante and Weidner, 2014) find about a third of US households, most of them with little wealth; the model puts 70% of the bottom half
+   there, 30% of the next 40%, 10% of the next 9% and none of the top 1%, which makes a third of all spending.
+2. **How much of the stock market they own** (`stock_share_...`: the table above). The savers' spending rises when the shares they own do.
+   The model takes the economy's `wealth_effect` and divides it among the groups by the shares of stocks they own: the top 1% owns half
+   the stocks but does only 8% of the spending, so its spending moves six times as much with the stock market as the economy's does.
+3. **How much their jobs move with the economy** (`earnings_cyclicality_...`). When hours fall 1%, the hours of the bottom half fall
+   1.4%, and the top 1%'s 0.6%: the workers with the least pay are the first to lose their hours and their jobs. The model scales these
+   so that, added up, they equal the economy's hours.
+
+The shares of spending (`consumption_weight_...`) and of earnings (`income_weight_...`) of each group are also parameters. **These are not
+the Fed's data**: they and the hand-to-mouth shares and the cyclicality are rough numbers from studies, written down in
+`types_model.inc` with what they are based on, so that you can see them, and change them.
+
+### Running it
+
+```lisp
+(define base (types-model))                          ; the calibration of types_model.inc
+(types-crash-losses base :fall 20)                   ; how much each group loses in a 20% fall in the stock market
+(plot-types-crash base :fall 20)                     ; the same, as charts
+(types-crash-responses base :fall 20)                ; the whole table: the economy, and income and spending by group
+(types-model-responses base "fed_shock")             ; a different surprise: the Fed raises its rate by a typical surprise
+
+; The Fed's latest data on who owns the stocks, instead of the 2026 Q2 numbers of the calibration
+(define fed (types-model :wealth (wealth-by-type creds)))
+```
+
+`types-model` takes `:parameters` and `:quarters` as `crash-model` does, and the whole of [Scenarios: what if?](#scenarios-what-if)
+applies. The notebook `lisp_interp/notebooks/four_kinds_of_households.ipynb` goes through these steps, a cell each.
+
+### What it says
+
+After a 20% fall in the stock market, with the calibration of `types_model.inc` (percent from each group's normal; the last column is its
+spending on average over the first eight quarters):
+
+| Group | Income, first quarter | Spending, first quarter | Spending, worst | Spending, average of 8 quarters |
+|---|---|---|---|---|
+| the bottom 50% | -5.0 | -2.3 | -2.3 | -0.3 |
+| the next 40% | -3.1 | +1.5 | -0.1 | +1.5 |
+| the next 9% | -2.2 | +0.2 | -0.5 | +0.4 |
+| the top 1% | -1.2 | -8.8 | -8.8 | -6.0 |
+
+- **Who loses income: the bottom half.** Its hours fall most, so its income falls four times as much as the top 1%'s.
+- **Who cuts spending: the top 1%.** It owns half the stocks, and its spending falls by 9%. The bottom half cuts spending because its
+  income falls; the top 1%, because it is poorer.
+- **The middle's spending doesn't fall, and this is the least believable result.** The Fed cuts its rate, and the savers who own few
+  stocks spend more when the interest rate is low; at 70% savers, that outweighs the loss of income for the next 40%. This is the
+  model's interest-rate channel working as written, and economists doubt it is that strong in life. It is also why the middle is the
+  place to look for what the model leaves out (below).
+- **The economy does worse than with one kind of household.** The first quarter's GDP falls 3.1%, against 2.2% in the crash model: the
+  households living from paycheck to paycheck cut spending when their income falls, which cuts income further (the "Keynesian multiplier").
+  `(types-model :parameters '((hand_to_mouth_bottom50 . 0) (hand_to_mouth_next40 . 0) (hand_to_mouth_next9 . 0)))` takes it away, and the
+  economy's responses are then exactly the crash model's: a check that the model changes nothing but the households. (There is a test.)
+
+### What the four-household model leaves out
+
+- **The stocks the Fed counts miss pensions.** Most of the middle's stocks are in retirement accounts, which the "corporate equities and
+  mutual fund shares" of the table above may not fully count. If the middle owns more of the market than the table says, its spending
+  falls with a crash by more; `stock_share_next40` and the others (which must add to 1) can be changed to see how much more. (Giving the next
+  40% a quarter of the market, the notebook's section 4, lowers its first-quarter spending from +1.5% to +1.0%: the interest-rate channel still wins.)
+- **The groups are fixed.** A household never moves from one to another, and nobody in a group is unlike anyone else in it. Models in
+  which wealth differs continuously (HANK models: Kaplan, Moll and Violante, 2018) do this, at a much higher cost in complexity.
+- **No taxes or benefits.** What a household earns moves with its hours, and the average with GDP; there is no government taking from one
+  and giving to another, so the model can't yet say what unemployment insurance or a wealth tax would do.
+- **Housing and debt.** Most of the middle's wealth is its home, and a crash that cuts house prices is a different story (2008). Neither is here.
+- **Not estimated.** The model has no estimate from data, because the data (the Fed's, quarterly, by group) cover spending and income
+  of no group. Its aggregate parameters are the crash model's, chosen by hand.
 
 ## Wealth taxes
 
 A wealth tax is a different kind of question. Its effects depend on *who* holds the wealth and how they respond (saving less, moving it,
-avoiding the tax), and a model with one "representative" household, like these, can't say anything about who. It would treat a
-wealth tax as a tax on capital: less saving, less capital, lower wages in the long run. Serious answers come from models with many
-different households (Guvenen and others, *Use It or Lose It*, 2023, is one), and are about the long run rather than the next few years.
-That is a project of its own, probably not in Dynare.
+avoiding the tax), and a model with one "representative" household can't say anything about who. It would treat a wealth tax as a tax on
+capital: less saving, less capital, lower wages in the long run. The four kinds of households of the [previous section](#four-kinds-of-households)
+are a first step: they would show who pays the tax and who gains from what the government does with it. But the tax's main effects are
+on how the people it falls on save and invest, and that depends on how wealth differs *within* the top 1%, where the model has one household.
+Serious answers come from models with many different households (Guvenen and others, *Use It or Lose It*, 2023, is one), and are about
+the long run rather than the next few years. That is a project of its own, probably not in Dynare.
 
 ## Reference
 
@@ -764,6 +867,30 @@ worth. `results` is one result, or a list of `(label result)` to compare.
 #### `(show-crash-estimates estimate)`
 A table of a crash model estimate's parameters: what each is, its prior mean, the estimate, and its 90% interval.
 
+#### `(wealth-by-type creds)`
+The Federal Reserve's Distributional Financial Accounts for the latest quarter they have, from FRED, as a table of the four groups
+(`"bottom 50%"`, `"next 40% (50-90)"`, `"next 9% (90-99)"`, `"top 1%"`) with the `"net worth share"` and the `"stock share"` of each,
+as fractions that add to 1.
+
+#### `(types-model [:parameters p :wealth table :quarters n])`
+Runs the four-household model (`dynare/types_irfs.mod`) and returns its responses to each kind of shock, as `dynare-run` returns them.
+`:parameters` and `:quarters` are as for `crash-model`; `:wealth`, a table from `wealth-by-type`, replaces the groups' shares of stocks.
+
+#### `(types-model-responses result shock)`
+The same table, for one typical surprise of any of the six kinds of `crash-model-responses` (`"fed_shock"`, say).
+
+#### `(types-crash-responses result [:fall f])`
+What happens when firms' net worth is `f` percent below normal in the first quarter (20, unless it says), as a table: `quarter`, then
+`GDP`, `consumption`, `investment`, `hours`, `net worth` (percent from normal), `inflation`, `Fed rate` and `credit spread` (points a year
+from normal), and the `income: ...` and `spending: ...` of each of the four groups (percent from the group's own normal).
+
+#### `(types-crash-losses result [:fall f :quarters n])`
+A row for each group: its income and its spending in the first quarter, its spending at the worst, and its spending on average over
+the first `n` quarters (8, unless it says).
+
+#### `(plot-types-crash result [:fall f :title t])`
+Charts of `types-crash-responses`: the spending and the income of each group, GDP, the Fed's rate, the credit spread and net worth, a panel each.
+
 #### `(dynare-run model-file [:parameters p :macros m :data table :directory d :echo #t :timeout seconds])`
 Runs Dynare on any model file, for models of your own. `model-file` is a `.mod` file, or the name of one in `lisp_interp/dynare/`.
 The files of its folder (`.mod`, `.inc`, `.m`) are copied into a new folder, or `:directory`, and Dynare runs there; the folder is kept,
@@ -796,6 +923,7 @@ In `lisp_interp/dynare/`:
 | `oil_irfs.mod` | the model's responses to each shock, for its calibrated (or given) parameters |
 | `oil_estimate.mod` | the model estimated from `data.csv`: the observed variables, the priors, and the estimation's settings |
 | `crash_model.inc`, `crash_irfs.mod`, `crash_estimate.mod` | the same three for the stock market crash model |
+| `types_model.inc`, `types_irfs.mod` | the crash model with four kinds of households (no estimate) |
 | `export_results.m` | run by `dynare-run` after Dynare, to write what it found for the Lisp side to read |
 
 To write a model of your own, start from a copy of these: Dynare's own manual (<https://www.dynare.org/manual/>) describes the language,

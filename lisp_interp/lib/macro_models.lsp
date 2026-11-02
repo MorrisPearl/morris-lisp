@@ -339,3 +339,119 @@ crash-model-estimate), or a list of (label result), to compare them: the same cr
   "A table of what an estimate found: for each parameter, what it is, what was believed before the data (the prior's mean), the
 posterior mean (the estimate) and its 90% interval (the data say it is between low and high, with a 90% chance)."
   (macro-models--show-estimates estimate crash-model-parameter-descriptions))
+
+; ===========================================================================
+; The stock-market crash with four kinds of households (dynare/types_model.inc)
+; ===========================================================================
+;
+;   (wealth-by-type creds)                          the Fed's wealth shares of the four groups: their net worth and their stocks
+;   (types-model)                                   the model with its parameters as chosen by hand
+;   (types-model :wealth (wealth-by-type creds))    ... with the groups' stock holdings as the Fed's latest data show them
+;   (types-model :parameters '((hand_to_mouth_bottom50 . 0)))   ... with some changed
+;   (types-model-responses result "fed_shock")    the same for one typical surprise of any kind (the crash model's six)
+;   (types-crash-responses result :fall 20)         a table: what happens to the economy and to each group when firms' net worth falls 20%
+;   (types-crash-losses result :fall 20)            a table: how much each group's income and spending fall
+;   (plot-types-crash result :fall 20)              the same as charts
+;
+; The model's files are dynare/types_model.inc and types_irfs.mod. It is the crash model with the households split in four, by wealth;
+; the section "Four kinds of households" of lisp_macro_models_manual.md explains it.
+
+; Each group: the name used in the model's variables and parameters, how it is shown, and the FRED series for its share of the nation's net
+; worth and of its corporate equities and mutual fund shares (the Fed's Distributional Financial Accounts).
+(define household-types
+  '(("bottom50" "bottom 50%"        "WFRBSB50215" "WFRBSB50203")
+    ("next40"   "next 40% (50-90)"  "WFRBSN40188" "WFRBSN40176")
+    ("next9"    "next 9% (90-99)"   "WFRBSN09161" "WFRBSN09149")
+    ("top1"     "top 1%"            "WFRBST01134" "WFRBST01122")))
+
+(define (wealth-by-type creds)
+  "The Federal Reserve's Distributional Financial Accounts for the latest quarter they have: a table with a row for each of the four groups
+of households (the bottom 50% by wealth, the next 40%, the next 9% and the top 1%) and the share of the nation's net worth (\"net worth
+share\") and of its corporate equities and mutual fund shares (\"stock share\") that the group holds, as fractions that add to 1."
+  (let* ((series (apply append (map (lambda (group) (list (third group) (fourth group))) household-types)))
+         (fred (fred-table creds series :frequency "quarterly" :start-date (date-add-months (today) -12)))
+         (complete (table-filter fred (apply vector-and (map (lambda (id) (vector-not (vector-nan? (table-column fred id)))) series))))
+         (last (- (table-row-count complete) 1)))
+    (display (format "The Fed's Distributional Financial Accounts, quarter of {}" (vector-ref (table-column complete "date") last)))
+    (newline)
+    (let ((shares (lambda (position)
+                    (let ((fractions (map (lambda (group) (/ (vector-ref (table-column complete (position group)) last) 100)) household-types)))
+                      (list->vector (map (lambda (fraction) (/ fraction (apply + fractions))) fractions))))))
+      (make-table "group" (list->vector (map second household-types))
+                  "net worth share" (shares third)
+                  "stock share" (shares fourth)))))
+
+(define (types-model &key (parameters '()) (wealth '()) (quarters 20))
+  "The four-household model's responses to each kind of surprise, for quarters quarters, as dynare-run returns them. Its parameters are as
+dynare/types_model.inc chooses them; :wealth, a table from wealth-by-type, replaces the stock shares with the Fed's latest; then
+:parameters, a list ((name . value) ...), changes any of them: '((hand_to_mouth_bottom50 . 0)) is an economy where the bottom half plan ahead."
+  (dynare-run "types_irfs.mod"
+              :parameters (append (if (null? wealth)
+                                      '()
+                                      (map (lambda (group share) (cons (string-append "stock_share_" (first group)) share))
+                                           household-types (vector->list (table-column wealth "stock share"))))
+                                  parameters)
+              :macros (list (cons 'quarters quarters))))
+
+; As crash-model-variables, with the income and the spending of each group.
+(define types-model-variables
+  (append '(("gdp"           "GDP"            1)
+            ("consumption"   "consumption"    1)
+            ("investment"    "investment"     1)
+            ("hours"         "hours"          1)
+            ("inflation"     "inflation"      4)
+            ("fed_rate"      "Fed rate"       4)
+            ("net_worth"     "net worth"      1)
+            ("credit_spread" "credit spread"  4))
+          (map (lambda (group) (list (string-append "income_" (first group)) (string-append "income: " (second group)) 1))
+               household-types)
+          (map (lambda (group) (list (string-append "consumption_" (first group)) (string-append "spending: " (second group)) 1))
+               household-types)))
+
+(define (types-model-responses result shock)
+  "How the economy and each group of households respond to one typical surprise of a kind (\"fed_shock\", one of crash-model-shocks), as
+a table with the columns of types-crash-responses."
+  (macro-models--responses result shock 1 types-model-variables))
+
+(define (types-crash-responses result &key (fall 20))
+  "How the economy and each group of households respond when the stock market falls: a surprise to firms' net worth big enough that net
+worth is fall percent below normal in the first quarter, as a table: a quarter column, then GDP, consumption, investment, hours (percent
+from normal), inflation, the Fed's rate and the credit spread (points a year from normal), net worth, and the income and the spending of
+each group (percent from that group's normal). The model is linear, so a fall twice as large has responses twice as large."
+  (let* ((net-worth (table-column (hash-table-ref (hash-table-ref result "responses") "net_worth_shock") "net_worth")))
+    (macro-models--responses result "net_worth_shock" (/ (- fall) (vector-ref net-worth 0)) types-model-variables)))
+
+(define (types-crash-losses result &key (fall 20) (quarters 8))
+  "How much each group of households loses in a stock market fall of fall percent: a row for each group, with its income and its spending
+(percent from normal) in the first quarter, its spending at the worst, and its spending on average over the first quarters quarters."
+  (let* ((responses (types-crash-responses result :fall fall))
+         (spending (lambda (group) (table-column responses (string-append "spending: " (second group)))))
+         (income (lambda (group) (table-column responses (string-append "income: " (second group)))))
+         (rounded (lambda (f) (vector-round (list->vector (map f household-types)) 2))))
+    (make-table "group" (list->vector (map second household-types))
+                "income, first quarter" (rounded (lambda (group) (vector-ref (income group) 0)))
+                "spending, first quarter" (rounded (lambda (group) (vector-ref (spending group) 0)))
+                "spending, worst" (rounded (lambda (group) (vector-min (spending group))))
+                (format "spending, average of {} quarters" quarters)
+                (rounded (lambda (group) (vector-mean (vector-slice (spending group) 0 quarters)))))))
+
+(define (plot-types-crash result &key (fall 20) (title '()))
+  "Charts of what happens to the economy and to each group of households when firms' net worth (the stock market) falls fall percent: the
+spending and the income of each group, GDP, the Fed's rate, the credit spread and net worth, a panel each."
+  (let* ((responses (types-crash-responses result :fall fall))
+         (quarters (table-column responses "quarter")))
+    (let ((groups (lambda (kind)
+                    (loop for group in household-types
+                          for k from 0
+                          collect (list (second group) quarters (table-column responses (string-append kind ": " (second group)))
+                                        :color (format "C{}" k) :line-width 2))))
+          (one (lambda (name color) (list (list name quarters (table-column responses name) :color color :line-width 2)))))
+      (plot-panels
+       (list (list (groups "spending") :title "spending by group" :y-label "percent" :y-lines (list 0) :legend "best")
+             (list (groups "income") :title "income by group" :y-label "percent" :y-lines (list 0))
+             (list (one "GDP" "C0") :title "GDP" :y-label "percent" :y-lines (list 0))
+             (list (one "Fed rate" "C0") :title "Fed rate" :y-label "points a year" :y-lines (list 0))
+             (list (one "credit spread" "C0") :title "credit spread" :y-label "points a year" :y-lines (list 0))
+             (list (one "net worth" "C0") :title "net worth" :y-label "percent" :y-lines (list 0)))
+       :title (if (null? title) (format "After a {}% fall in the stock market, by group of households" fall) title)
+       :x-label "quarters (1 is the quarter of the fall)"))))

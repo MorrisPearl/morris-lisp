@@ -321,4 +321,5 @@
 (lazy-load "macro_models.lsp"
   oil-model oil-model-estimate oil-model-data oil-model-estimated-parameters oil-model-responses oil-shock-responses
   plot-oil-shock show-oil-estimates
-  crash-model crash-model-estimate crash-model-data crash-model-responses stock-crash-responses plot-stock-crash show-crash-estimates)
+  crash-model crash-model-estimate crash-model-data crash-model-responses stock-crash-responses plot-stock-crash show-crash-estimates
+  wealth-by-type types-model types-model-responses types-crash-responses types-crash-losses plot-types-crash)

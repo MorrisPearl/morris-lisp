@@ -23,6 +23,7 @@ _RISKY_BLOCK_WORDS = (
     "input", "(read-line", "exit", "load-init", "http-get", "http-clear-cache",
     "dynare-run", "oil-model", "oil-shock-responses", "plot-oil-shock", "show-oil-estimates",     # these need Octave and Dynare
     "crash-model", "stock-crash-responses", "plot-stock-crash", "show-crash-estimates",
+    "wealth-by-type", "types-model", "types-crash-", "plot-types-crash",
 )
 
 

@@ -44,6 +44,22 @@ def fake_fred_series(series_id, credentials_path, start_date, end_date, cache_ho
     return lisp_core.Pair(lisp_core.LispVector([dates[k] for k in kept]), lisp_core.LispVector([values[k] for k in kept]))
 
 
+# The Fed's shares (percent) the fake Distributional Financial Accounts give, for the FRED series wealth-by-type asks for.
+FAKE_WEALTH_SHARES = {"WFRBSB50215": 2.3, "WFRBSN40188": 28.8, "WFRBSN09161": 36.4, "WFRBST01134": 32.5,
+                      "WFRBSB50203": 0.6, "WFRBSN40176": 11.4, "WFRBSN09149": 37.2, "WFRBST01122": 50.9}
+
+
+def fake_wealth_series(series_id, credentials_path, start_date, end_date, cache_hours, who, frequency=None):
+    """Six quarters of each series with the same share, and the last quarter missing for the top 1%'s net worth, as the Fed publishes
+    some series later than others."""
+    assert frequency == "quarterly"
+    dates = [lisp_core.LispDate(year, month, 1) for year, month in ((2025, 1), (2025, 4), (2025, 7), (2025, 10), (2026, 1), (2026, 4))]
+    values = [FAKE_WEALTH_SHARES[series_id]] * 6
+    if series_id == "WFRBST01134":
+        dates, values = dates[:-1], values[:-1]
+    return lisp_core.Pair(lisp_core.LispVector(dates), lisp_core.LispVector(values))
+
+
 def check_draws_of(test, draws_a_chain, parameters):
     """The estimate "est" has draws: two chains of the kept half, a column for each estimated number, whose means are the estimates."""
     test.assertShows('(table-row-count (hash-table-ref est "draws"))', str(2 * draws_a_chain // 2))
@@ -361,6 +377,102 @@ class TestCrashModelEstimate(LispTestCase):
                          ' (vector= (table-column (hash-table-ref scenario "parameters") "name") "accelerator")) "value") 0)', '0.0')
         self.run_lisp('(show-crash-estimates est)')
         check_draws_of(self, 300, 19)
+
+
+class TestWealthByType(LispTestCase):
+
+    def test_the_latest_quarter_all_the_series_have_gives_shares_that_add_to_1(self):
+        with mock.patch.object(lisp_fred, "download_series", fake_wealth_series):
+            self.run_lisp('(load "macro_models.lsp")(define w (wealth-by-type "creds.json"))')
+        self.assertShows('(map car w)', '("group" "net worth share" "stock share")')
+        self.assertShows('(table-column w "group")', '#("bottom 50%" "next 40% (50-90)" "next 9% (90-99)" "top 1%")')
+        self.assertIn("quarter of 2026-01-01", "".join(self.out))       # 2026-04 lacks the top 1%'s net worth
+        net_worth = numpy.array(self.run_lisp('(table-column w "net worth share")').items)
+        stocks = numpy.array(self.run_lisp('(table-column w "stock share")').items)
+        self.assertAlmostEqual(net_worth.sum(), 1)
+        self.assertAlmostEqual(stocks.sum(), 1)
+        self.assertAlmostEqual(net_worth[3], 0.325)
+        self.assertAlmostEqual(stocks[3], 0.509 / 1.001)               # the Fed's 50.9%, made to add to 1 with the others
+
+
+@unittest.skipUnless(dynare_installed(), "needs GNU Octave and Dynare")
+class TestTypesModel(LispTestCase):
+    """The crash model with four kinds of households, run by Dynare."""
+
+    NO_DIFFERENCES = ('(list (cons "hand_to_mouth_bottom50" 0) (cons "hand_to_mouth_next40" 0) (cons "hand_to_mouth_next9" 0)'
+                      ' (cons "hand_to_mouth_top1" 0) (cons "earnings_cyclicality_bottom50" 1) (cons "earnings_cyclicality_next40" 1)'
+                      ' (cons "earnings_cyclicality_next9" 1) (cons "earnings_cyclicality_top1" 1))')
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('(load "macro_models.lsp")'
+                      '(define base (types-model :quarters 10))')
+
+    def column(self, table, name):
+        return numpy.array(self.run_lisp('(table-column %s "%s")' % (table, name)).items)
+
+    def test_households_that_differ_in_nothing_but_their_stocks_add_up_to_the_crash_model(self):
+        # With nobody living from paycheck to paycheck and every group's hours moving as the economy's, the groups' spending adds up to
+        # the crash model's: the stocks they own are all that is left, and the wealth_effect they share out is the crash model's.
+        self.run_lisp('(define same (types-model :quarters 10 :parameters %s))(define crash (crash-model :quarters 10))' % self.NO_DIFFERENCES)
+        for shock in ("net_worth_shock", "fed_shock", "demand_shock", "productivity_shock"):
+            for name in ("gdp", "consumption", "investment", "hours", "inflation", "fed_rate", "net_worth", "credit_spread"):
+                ours = self.column('(hash-table-ref (hash-table-ref same "responses") "%s")' % shock, name)
+                theirs = self.column('(hash-table-ref (hash-table-ref crash "responses") "%s")' % shock, name)
+                self.assertTrue(numpy.allclose(ours, theirs, atol=1e-9), (shock, name))
+
+    def test_a_crash_hurts_the_groups_as_their_jobs_and_stocks_say(self):
+        self.run_lisp('(define crash (types-crash-responses base :fall 20))')
+        self.assertAlmostEqual(self.column("crash", "net worth")[0], -20)
+        income = [self.column("crash", "income: " + group)[0]
+                  for group in ("bottom 50%", "next 40% (50-90)", "next 9% (90-99)", "top 1%")]
+        self.assertEqual(income, sorted(income))                        # the bottom half loses the most income, the top 1% the least
+        self.assertTrue(all(value < 0 for value in income))
+        spending = [self.column("crash", "spending: " + group)[0]
+                    for group in ("bottom 50%", "next 40% (50-90)", "next 9% (90-99)", "top 1%")]
+        self.assertLess(spending[3], spending[0])                       # the top 1%, who own half the stocks, cut spending the most
+        self.assertLess(spending[3], -5)
+        # The groups' spending, added up by their weights, is the economy's
+        weights = [0.29, 0.42, 0.21, 0.08]
+        self.assertTrue(numpy.allclose(sum(w * self.column("crash", "spending: " + g)
+                                           for w, g in zip(weights, ("bottom 50%", "next 40% (50-90)", "next 9% (90-99)", "top 1%"))),
+                                       self.column("crash", "consumption")))
+        # Linear: twice the fall, twice the responses
+        self.run_lisp('(define twice (types-crash-responses base :fall 40))')
+        self.assertTrue(numpy.allclose(self.column("twice", "spending: top 1%"), 2 * self.column("crash", "spending: top 1%")))
+
+    def test_without_a_wealth_effect_the_top_1_percent_cuts_spending_much_less_than_with_it(self):
+        self.run_lisp('(define crash (types-crash-responses base :fall 20))'
+                      '(define without (types-crash-responses (types-model :quarters 10 :parameters (list (cons "wealth_effect" 0))) :fall 20))')
+        # (Spending still changes without it: the real interest rate changes in the crash, and savers who own no stocks respond to that.)
+        self.assertLess(self.column("crash", "spending: top 1%")[0], self.column("without", "spending: top 1%")[0] - 5)
+
+    def test_the_stock_shares_of_the_fed_data_replace_the_defaults(self):
+        # If every group owned a quarter of the stocks, the top 1% (8% of spending) would feel a much smaller wealth effect
+        self.run_lisp('(define even (make-table "group" (vector "a" "b" "c" "d") "stock share" (vector 0.25 0.25 0.25 0.25)))'
+                      '(define crash (types-crash-responses base :fall 20))'
+                      '(define crash-even (types-crash-responses (types-model :quarters 10 :wealth even) :fall 20))')
+        self.assertGreater(self.column("crash-even", "spending: top 1%")[0], self.column("crash", "spending: top 1%")[0])
+        self.assertLess(self.column("crash-even", "spending: bottom 50%")[0], self.column("crash", "spending: bottom 50%")[0] + 1)
+
+    def test_the_losses_table_has_a_row_for_each_group(self):
+        self.run_lisp('(define losses (types-crash-losses base :fall 20 :quarters 4))')
+        self.assertShows('(map car losses)', '("group" "income, first quarter" "spending, first quarter" "spending, worst" "spending, average of 4 quarters")')
+        self.assertShows('(table-row-count losses)', '4')
+        self.assertLess(self.column("losses", "income, first quarter")[0], -4)           # the bottom half's income falls 5%
+
+    def test_another_kind_of_surprise_has_a_column_for_each_group(self):
+        self.run_lisp('(define fed (types-model-responses base "fed_shock"))')
+        self.assertEqual(self.run_lisp('(length (map car fed))'), 17)
+        self.assertLess(self.column("fed", "GDP")[0], 0)                  # a rise in the Fed's rate slows the economy
+        self.assertLess(self.column("fed", "income: bottom 50%")[0], self.column("fed", "income: top 1%")[0])
+
+    def test_plot_types_crash_draws_a_panel_for_the_groups_spending_and_income_and_the_economy(self):
+        charts = []
+        env = lisp_builtins.make_global_env(output=self.out.append, plot=charts.append)
+        self.run_lisp('(load "macro_models.lsp")(plot-types-crash (types-model :quarters 6))', env)
+        self.assertEqual(len(charts), 1)
+        self.assertEqual(len(charts[0]["panels"]), 6)
 
 
 if __name__ == "__main__":
