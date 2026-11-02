@@ -11,7 +11,7 @@ results.shock_stderr = sqrt(diag(M_.Sigma_e));
 results.endo_names = M_.endo_names;
 
 if isfield(oo_, 'irfs')
-    results.irfs = oo_.irfs;                        % one vector a variable and shock: "y_e_oil" is y after e_oil
+    results.irfs = oo_.irfs;                        % one vector a variable and shock: "gdp_oil_price_shock" is gdp after oil_price_shock
 end
 
 if isfield(oo_, 'variance_decomposition') && ~isempty(oo_.variance_decomposition)
@@ -31,6 +31,13 @@ if exist('bayestopt_', 'var') && isfield(bayestopt_, 'name')
     results.prior_names = bayestopt_.name;
     results.prior_mean = bayestopt_.p1;
     results.prior_stdev = bayestopt_.p2;
+end
+if isfield(oo_, 'posterior_mean') && exist('bayestopt_', 'var')
+    % The draws themselves: a row for each draw of the Markov chains (after the first half of each is thrown away, one chain after the
+    % other), a column for each estimated parameter in the order of prior_names; and the log posterior density of each draw.
+    results.draws = GetAllPosteriorDraws(options_, M_.dname, M_.fname, 'all');
+    results.draw_log_posterior = GetAllPosteriorDraws(options_, M_.dname, M_.fname, 0);
+    results.draws_per_chain = size(results.draws, 1) / options_.mh_nblck;
 end
 if isfield(oo_, 'MarginalDensity')
     results.marginal_density = oo_.MarginalDensity;

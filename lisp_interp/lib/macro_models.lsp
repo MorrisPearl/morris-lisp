@@ -4,7 +4,7 @@
 ; quarter by quarter, after a surprise such as a jump in the price of oil. doc/lisp_macro_models_manual.md explains them.
 ;
 ;   (oil-model)                                       the oil model with its parameters as chosen by hand (calibrated)
-;   (oil-model :parameters '((gamma . 0.9)))          ... with some of them changed: a scenario
+;   (oil-model :parameters '((wage_rigidity . 0.9)))  ... with some of them changed: a scenario
 ;   (oil-model-estimate creds)                        its parameters estimated from US data, 1985 to 2008 (some minutes)
 ;   (oil-model :from estimate :parameters '(...))     a scenario that starts from the estimated parameters
 ;   (oil-shock-responses result :rise 10)             a table: what happens when the price of oil rises 10%
@@ -15,45 +15,45 @@
 
 ; The model's shocks: Dynare's name, the parameter that holds its typical size in oil_irfs.mod, and what it is.
 (define oil-model-shocks
-  '(("e_oil" "sigma_oil" "oil price")
-    ("e_a"   "sigma_a"   "productivity")
-    ("e_z"   "sigma_z"   "demand")
-    ("e_i"   "sigma_i"   "Fed rate (monetary policy)")
-    ("e_p"   "sigma_p"   "cost-push (firms' markups)")
-    ("e_w"   "sigma_w"   "wages (workers' bargaining power)")))
+  '(("oil_price_shock"    "oil_price_shock_size"    "oil price")
+    ("productivity_shock" "productivity_shock_size" "productivity")
+    ("demand_shock"       "demand_shock_size"       "demand")
+    ("fed_shock"          "fed_shock_size"          "Fed rate (monetary policy)")
+    ("cost_push_shock"    "cost_push_shock_size"    "cost-push (firms' markups)")
+    ("wage_shock"         "wage_shock_size"         "wages (workers' bargaining power)")))
 
 ; The variables shown: the model's name, the name shown, and what to multiply by. Inflation and the Fed's rate are per quarter in the
 ; model, and shown per year (times 4), as they are reported; the others are percent differences from normal.
 (define oil-model-variables
-  '(("y"    "GDP"                1)
-    ("c"    "consumption"        1)
-    ("n"    "hours"              1)
-    ("w"    "real wage"          1)
-    ("pi_c" "headline inflation" 4)
-    ("pi_q" "core inflation"     4)
-    ("i"    "Fed rate"           4)
-    ("s"    "real oil price"     1)))
+  '(("gdp"                "GDP"                1)
+    ("consumption"        "consumption"        1)
+    ("hours"              "hours"              1)
+    ("real_wage"          "real wage"          1)
+    ("headline_inflation" "headline inflation" 4)
+    ("core_inflation"     "core inflation"     4)
+    ("fed_rate"           "Fed rate"           4)
+    ("real_oil_price"     "real oil price"     1)))
 
 ; What each parameter is, for show-oil-estimates.
 (define oil-model-parameter-descriptions
-  '(("theta"       "chance a firm can't change its price in a quarter")
-    ("gamma"       "real wage rigidity (0: wages adjust at once)")
-    ("sigma"       "dislike of uneven consumption")
-    ("phi"         "how fast the wish not to work grows with hours")
-    ("phi_pi"      "Fed: rate rise for a point of inflation")
-    ("phi_y"       "Fed: rate rise for a percent of GDP above normal")
-    ("rho_i"       "Fed: how slowly it moves its rate")
-    ("core_weight" "Fed: weight on core inflation (rest: headline)")
-    ("rho_a"       "how long a productivity change lasts")
-    ("rho_z"       "how long a demand change lasts")
-    ("rho_s"       "how long an oil price change lasts")
-    ("stderr e_oil"    "typical oil price surprise, percent")
-    ("stderr e_a"      "typical productivity surprise, percent")
-    ("stderr e_z"      "typical demand surprise")
-    ("stderr e_i"      "typical Fed rate surprise, points a quarter")
-    ("stderr e_p"      "typical cost-push surprise")
-    ("stderr e_w"      "typical wage surprise, percent")
-    ("stderr pi_c_obs" "headline inflation's measurement error")))
+  '(("price_stickiness"                "chance a firm can't change its price in a quarter")
+    ("wage_rigidity"                   "real wage rigidity (0: wages adjust at once)")
+    ("risk_aversion"                   "dislike of uneven consumption")
+    ("labor_dislike"                   "how fast the wish not to work grows with hours")
+    ("fed_inflation_response"          "Fed: rate rise for a point of inflation")
+    ("fed_gdp_response"                "Fed: rate rise for a percent of GDP above normal")
+    ("fed_smoothing"                   "Fed: how slowly it moves its rate")
+    ("core_weight"                     "Fed: weight on core inflation (rest: headline)")
+    ("productivity_persistence"        "how long a productivity change lasts")
+    ("demand_persistence"              "how long a demand change lasts")
+    ("oil_price_persistence"           "how long an oil price change lasts")
+    ("stderr oil_price_shock"          "typical oil price surprise, percent")
+    ("stderr productivity_shock"       "typical productivity surprise, percent")
+    ("stderr demand_shock"             "typical demand surprise")
+    ("stderr fed_shock"                "typical Fed rate surprise, points a quarter")
+    ("stderr cost_push_shock"          "typical cost-push surprise")
+    ("stderr wage_shock"               "typical wage surprise, percent")
+    ("stderr headline_inflation_data"  "headline inflation's measurement error")))
 
 ; ---------------------------------------------------------------------------
 ; Running the model
@@ -62,14 +62,14 @@
 (define (oil-model &key (parameters '()) (from '()) (quarters 20))
   "The oil model's responses to each kind of surprise, for quarters quarters, as dynare-run returns them. Its parameters are as
 dynare/oil_model.inc chooses them, or, given :from, an estimate (from oil-model-estimate), as the estimate found them (their posterior
-means); then :parameters, a list ((name . value) ...), changes any of them: '((gamma . 0.9) (core_weight . 1))."
+means); then :parameters, a list ((name . value) ...), changes any of them: '((wage_rigidity . 0.9) (core_weight . 1))."
   (dynare-run "oil_irfs.mod"
               :parameters (append (if (null? from) '() (oil-model-estimated-parameters from)) parameters)
               :macros (list (cons 'quarters quarters))))
 
 (define (oil-model-estimated-parameters estimate)
   "The parameters an estimate found, as a list ((name . value) ...) that oil-model's :parameters takes: each one's posterior mean (or
-its mode, if the estimate made no draws). A shock's size (\"stderr e_oil\") becomes its parameter in oil_irfs.mod (sigma_oil); the
+its mode, if the estimate made no draws). A shock's size (\"stderr oil_price_shock\") becomes its parameter in oil_irfs.mod (oil_price_shock_size); the
 measurement error is left out, since it is not part of the economy."
   (macro-models--estimated-parameters estimate oil-model-shocks))
 
@@ -97,14 +97,14 @@ which the model's Fed rule can't capture."
                            :start-date (date-add-months start -3) :end-date end))
          (core (macro-models--growth (table-column fred "PCEPILFE")))
          (all (make-table "date"     (table-column fred "date")
-                          "dy_obs"   (macro-models--growth (table-column fred "GDPC1"))
-                          "dw_obs"   (macro-models--growth (table-column fred "COMPRNFB"))
-                          "pi_q_obs" core
-                          "pi_c_obs" (macro-models--growth (table-column fred "PCEPI"))
-                          "i_obs"    (vector-div (table-column fred "FEDFUNDS") 4)
-                          "ds_obs"   (vector-sub (macro-models--growth (table-column fred "WTISPLC")) core)))
-         (complete (table-filter all (vector-and (vector-not (vector-nan? (table-column all "dy_obs")))
-                                                 (vector-not (vector-nan? (table-column all "dw_obs")))))))
+                          "gdp_growth_data"   (macro-models--growth (table-column fred "GDPC1"))
+                          "real_wage_growth_data"   (macro-models--growth (table-column fred "COMPRNFB"))
+                          "core_inflation_data" core
+                          "headline_inflation_data" (macro-models--growth (table-column fred "PCEPI"))
+                          "fed_rate_data"    (vector-div (table-column fred "FEDFUNDS") 4)
+                          "real_oil_price_change_data"   (vector-sub (macro-models--growth (table-column fred "WTISPLC")) core)))
+         (complete (table-filter all (vector-and (vector-not (vector-nan? (table-column all "gdp_growth_data")))
+                                                 (vector-not (vector-nan? (table-column all "real_wage_growth_data")))))))
     (cons (car complete)
           (map (lambda (column) (cons (car column) (vector-sub (cdr column) (vector-mean (cdr column))))) (cdr complete)))))
 
@@ -130,7 +130,7 @@ makes draws draws; 20000 takes some minutes, and a few thousand are enough for a
 ; ---------------------------------------------------------------------------
 
 (define (oil-model-responses result shock)
-  "How the economy responds to one typical surprise of a kind (\"e_z\", one of oil-model-shocks), as a table: a quarter column, then
+  "How the economy responds to one typical surprise of a kind (\"demand_shock\", one of oil-model-shocks), as a table: a quarter column, then
 GDP, consumption, hours and the real wage (percent from normal), headline and core inflation and the Fed's rate (percentage points a
 year from normal) and the real price of oil; with a \"low\" and a \"high\" column for each, the 90% band, after an estimation."
   (macro-models--responses result shock 1 oil-model-variables))
@@ -139,8 +139,8 @@ year from normal) and the real price of oil; with a \"low\" and a \"high\" colum
   "How the economy responds when the real price of oil rises rise percent in the first quarter, as oil-model-responses shows it. The
 model is linear, so a rise twice as large has responses twice as large. (After an estimation, the bands are scaled by the same number,
 which leaves out how unsure the estimate is of the typical size of an oil surprise.)"
-  (let* ((oil (table-column (hash-table-ref (hash-table-ref result "responses") "e_oil") "s")))
-    (macro-models--responses result "e_oil" (/ rise (vector-ref oil 0)) oil-model-variables)))
+  (let* ((oil (table-column (hash-table-ref (hash-table-ref result "responses") "oil_price_shock") "real_oil_price")))
+    (macro-models--responses result "oil_price_shock" (/ rise (vector-ref oil 0)) oil-model-variables)))
 
 (define (macro-models--responses result shock scale variables)
   (let* ((responses (hash-table-ref result "responses"))

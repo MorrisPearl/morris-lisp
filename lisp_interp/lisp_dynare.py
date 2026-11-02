@@ -169,7 +169,7 @@ def as_list(value):
 
 
 def split_irf_name(key, variables, shocks):
-    """Dynare names a response "y_e_oil" (y after e_oil); names can have underscores in them, so this finds the shock it ends with."""
+    """Dynare names a response "gdp_oil_price_shock" (gdp after oil_price_shock); names can have underscores in them, so this finds the shock it ends with."""
     for shock in sorted(shocks, key=len, reverse=True):
         if key.endswith("_" + shock) and key[:-len(shock) - 1] in variables:
             return key[:-len(shock) - 1], shock
@@ -236,6 +236,21 @@ def variance_table(results, shocks):
     return make_table_value(columns)
 
 
+def draws_table(results):
+    """The draws of the Markov chains as a table: the chain each is from (1, 2, ...), its number within the chain, its log posterior
+    density (how well it fits the data and the priors together), then a column for each estimated parameter."""
+    names = as_list(results.get("prior_names"))
+    rows = results["draws"]
+    rows = rows if isinstance(rows[0], list) else [rows]
+    per_chain = int(results["draws_per_chain"])
+    columns = [("chain", LispVector([1 + k // per_chain for k in range(len(rows))])),
+               ("draw", LispVector([1 + k % per_chain for k in range(len(rows))])),
+               ("log posterior", LispVector(as_list(results["draw_log_posterior"])))]
+    for j, name in enumerate(names):
+        columns.append((name, LispVector([row[j] for row in rows])))
+    return make_table_value(columns)
+
+
 def results_hash_table(results, folder, log_text):
     """What dynare-run returns, from the dict export_results.m wrote."""
     variables = as_list(results.get("endo_names"))
@@ -262,6 +277,8 @@ def results_hash_table(results, folder, log_text):
         put("variance-decomposition", variance_table(results, shocks))
     if "prior_names" in results:
         put("estimates", estimates_table(results))
+    if "draws" in results:
+        put("draws", draws_table(results))
     if isinstance(results.get("marginal_density"), dict):
         put("log-marginal-density", results["marginal_density"].get("LaplaceApproximation", float("nan")))
     return result
@@ -280,6 +297,8 @@ def make_dynare_builtins(out):
                                     columns for its 90% band
           "estimates"               after an estimation: each estimated parameter's prior mean and stdev, posterior mode, posterior
                                     mean and 90% interval (low, high)
+          "draws"                   after an estimation: the draws the posterior mean and interval are made from, a row each (see
+                                    the macro models manual, "What the estimation produces")
           "log-marginal-density"    after an estimation: how well the model fits the data (higher is better), for comparing models
           "variance-decomposition"  after stoch_simul: the percent of each variable's variance that comes from each shock
           "parameters"              every parameter's value as Dynare last had it (after an estimation, the posterior mode or mean)

@@ -44,6 +44,18 @@ def fake_fred_series(series_id, credentials_path, start_date, end_date, cache_ho
     return lisp_core.Pair(lisp_core.LispVector([dates[k] for k in kept]), lisp_core.LispVector([values[k] for k in kept]))
 
 
+def check_draws_of(test, draws_a_chain, parameters):
+    """The estimate "est" has draws: two chains of the kept half, a column for each estimated number, whose means are the estimates."""
+    test.assertShows('(table-row-count (hash-table-ref est "draws"))', str(2 * draws_a_chain // 2))
+    columns = [str(p.car) for p in lisp_core.pairs_to_list(test.run_lisp('(hash-table-ref est "draws")'))]
+    test.assertEqual(columns[:3], ["chain", "draw", "log posterior"])
+    test.assertEqual(len(columns) - 3, parameters)
+    names = [str(n) for n in test.run_lisp('(table-column (hash-table-ref est "estimates") "name")').items]
+    means = test.run_lisp('(table-column (hash-table-ref est "estimates") "mean")').items
+    for name, mean in zip(names, means):
+        test.assertAlmostEqual(test.run_lisp('(vector-mean (table-column (hash-table-ref est "draws") "%s"))' % name), mean, places=8)
+
+
 class TestReadingResults(unittest.TestCase):
     """What dynare-run makes of export_results.m's results.json, without running Dynare."""
 
@@ -51,6 +63,16 @@ class TestReadingResults(unittest.TestCase):
         self.assertEqual(lisp_dynare.split_irf_name("pi_c_e_oil", ["y", "pi_c", "pi_q"], ["e_oil", "e_i"]), ("pi_c", "e_oil"))
         self.assertEqual(lisp_dynare.split_irf_name("y_e_i", ["y", "pi_c"], ["e_oil", "e_i"]), ("y", "e_i"))
         self.assertEqual(lisp_dynare.split_irf_name("nothing_here", ["y"], ["e_i"]), (None, None))
+
+    def test_draws_make_a_table_with_the_chain_the_draw_and_its_log_posterior_before_a_column_for_each_parameter(self):
+        results = {"prior_names": ["theta", "stderr e_oil"], "draws_per_chain": 2,
+                   "draws": [[0.9, 12.0], [0.91, 12.5], [0.92, 13.0], [0.93, 13.5]], "draw_log_posterior": [-5, -6, -7, -8]}
+        table = lisp_dynare.draws_table(results)
+        columns = lisp_core.pairs_to_list(table)
+        self.assertEqual([str(c.car) for c in columns], ["chain", "draw", "log posterior", "theta", "stderr e_oil"])
+        self.assertEqual(list(columns[0].cdr.items), [1, 1, 2, 2])
+        self.assertEqual(list(columns[1].cdr.items), [1, 2, 1, 2])
+        self.assertEqual(list(columns[3].cdr.items), [0.9, 0.91, 0.92, 0.93])
 
     def test_responses_make_a_table_for_each_shock_with_zeros_for_what_dynare_left_out(self):
         results = {"endo_names": ["y", "pi_c", "s"], "shock_names": ["e_oil", "e_i"],
@@ -142,17 +164,17 @@ class TestOilModelData(LispTestCase):
         with mock.patch.object(lisp_fred, "download_series", fake_fred_series):
             self.run_lisp('(load "macro_models.lsp")'
                           '(define d (oil-model-data "creds.json" :start (date 1990 1 1) :end (date 1999 10 1)))')
-        self.assertShows('(map car d)', '("date" "dy_obs" "dw_obs" "pi_q_obs" "pi_c_obs" "i_obs" "ds_obs")')
+        self.assertShows('(map car d)', '("date" "gdp_growth_data" "real_wage_growth_data" "core_inflation_data" "headline_inflation_data" "fed_rate_data" "real_oil_price_change_data")')
         self.assertShows('(table-row-count d)', '40')
         self.assertShows('(vector-ref (table-column d "date") 0)', '1990-01-01')
-        for column in ("dy_obs", "i_obs", "ds_obs"):
+        for column in ("gdp_growth_data", "fed_rate_data", "real_oil_price_change_data"):
             self.assertAlmostEqual(self.run_lisp('(vector-mean (table-column d "%s"))' % column), 0, places=10)
         # GDP growth is the change in the log, in percent; the oil price is real (less core inflation)
         gdp = fake_fred_series("GDPC1", None, None, None, 0, "", "quarterly").cdr.items
         growth = 100 * numpy.diff(numpy.log(gdp))
         first = 4 * (1990 - 1984)                     # the quarter of 1990-01-01, less one, in the fake's series of growth rates
         expected = growth[first - 1:first - 1 + 40]
-        self.assertTrue(numpy.allclose(self.run_lisp('(table-column d "dy_obs")').items, expected - expected.mean()))
+        self.assertTrue(numpy.allclose(self.run_lisp('(table-column d "gdp_growth_data")').items, expected - expected.mean()))
 
 
 @unittest.skipUnless(dynare_installed(), "needs GNU Octave and Dynare")
@@ -170,8 +192,8 @@ class TestOilModel(LispTestCase):
         oil = {name: self.run_lisp('(table-column oil "%s")' % name).items for name in
                ("real oil price", "headline inflation", "core inflation", "GDP", "consumption", "Fed rate")}
         self.assertAlmostEqual(oil["real oil price"][0], 10)
-        self.assertAlmostEqual(oil["real oil price"][1], 9.5)               # rho_s is 0.95
-        # Headline inflation is core plus oil's share (chi, 0.02) of the oil price's rise, both at an annual rate (times 4)
+        self.assertAlmostEqual(oil["real oil price"][1], 9.5)               # oil_price_persistence is 0.95
+        # Headline inflation is core plus oil's share (oil_consumption_share, 0.02) of the oil price's rise, both at an annual rate (times 4)
         self.assertAlmostEqual(oil["headline inflation"][0] - oil["core inflation"][0], 4 * 0.02 * 10)
         self.assertLess(oil["consumption"][0], 0)
         self.assertGreater(oil["core inflation"][0], 0)
@@ -182,11 +204,11 @@ class TestOilModel(LispTestCase):
 
     def test_a_scenario_changes_the_parameters_it_names_and_no_others(self):
         self.run_lisp('(define base (oil-model))'
-                      '(define rigid (oil-model :parameters (list (cons "gamma" 0.9))))'
+                      '(define rigid (oil-model :parameters (list (cons "wage_rigidity" 0.9))))'
                       '(define (value r name) (vector-ref (table-column (table-filter (hash-table-ref r "parameters")'
                       '                        (vector= (table-column (hash-table-ref r "parameters") "name") name)) "value") 0))')
-        self.assertShows('(value rigid "gamma")', '0.9')
-        self.assertShows('(value rigid "theta")', '0.75')
+        self.assertShows('(value rigid "wage_rigidity")', '0.9')
+        self.assertShows('(value rigid "price_stickiness")', '0.75')
         base_core = self.run_lisp('(table-column (oil-shock-responses base) "core inflation")').items
         rigid_core = self.run_lisp('(table-column (oil-shock-responses rigid) "core inflation")').items
         self.assertGreater(rigid_core[0], base_core[0])     # rigid real wages make the rise in costs, and in core inflation, larger
@@ -194,8 +216,8 @@ class TestOilModel(LispTestCase):
     def test_every_shock_has_responses_and_a_variance_decomposition(self):
         self.run_lisp('(define base (oil-model))')
         self.assertShows('(sort (hash-table-keys (hash-table-ref base "responses")))',
-                         '("e_a" "e_i" "e_oil" "e_p" "e_w" "e_z")')
-        self.assertTrue(self.run_lisp('(vector-ref (table-column (oil-model-responses base "e_i") "Fed rate") 0)') > 0)
+                         '("cost_push_shock" "demand_shock" "fed_shock" "oil_price_shock" "productivity_shock" "wage_shock")')
+        self.assertTrue(self.run_lisp('(vector-ref (table-column (oil-model-responses base "fed_shock") "Fed rate") 0)') > 0)
         self.assertLispError('(oil-model-responses base "e_x")', "no responses to e_x")
         shares = self.run_lisp('(hash-table-ref base "variance-decomposition")')
         rows = numpy.array([p.cdr.items for p in lisp_core.pairs_to_list(shares)[1:]], dtype=float)
@@ -213,7 +235,7 @@ class TestOilModel(LispTestCase):
         charts = []
         env = lisp_builtins.make_global_env(output=self.out.append, plot=charts.append)
         self.run_lisp('(load "macro_models.lsp")'
-                      '(plot-oil-shock (list (list "a" (oil-model)) (list "b" (oil-model :parameters (list (cons "phi_pi" 3))))))', env)
+                      '(plot-oil-shock (list (list "a" (oil-model)) (list "b" (oil-model :parameters (list (cons "fed_inflation_response" 3))))))', env)
         self.assertEqual(len(charts), 1)
         self.assertEqual(len(charts[0]["panels"]), 6)
 
@@ -228,8 +250,8 @@ class TestOilModelEstimate(LispTestCase):
                           '(define est (oil-model-estimate "creds.json" :draws 300 :quarters 10))')
         self.assertIn("Estimating the oil model on 95 quarters", self.printed())
         names = [str(n) for n in self.run_lisp('(table-column (hash-table-ref est "estimates") "name")').items]
-        self.assertIn("theta", names)
-        self.assertIn("stderr e_oil", names)
+        self.assertIn("price_stickiness", names)
+        self.assertIn("stderr oil_price_shock", names)
         low, mean, high = (self.run_lisp('(table-column (hash-table-ref est "estimates") "%s")' % c).items for c in ("low", "mean", "high"))
         self.assertTrue(numpy.all(low <= mean) and numpy.all(mean <= high))
         oil = self.run_lisp('(oil-shock-responses est :rise 10)')
@@ -238,13 +260,14 @@ class TestOilModelEstimate(LispTestCase):
         self.assertIn("GDP high", columns)
         # The estimate's parameters, as a scenario takes them: the shocks' sizes by their parameter names, no measurement error
         parameters = dict((str(p.car), p.cdr) for p in lisp_core.pairs_to_list(self.run_lisp('(oil-model-estimated-parameters est)')))
-        self.assertIn("sigma_oil", parameters)
-        self.assertNotIn("stderr pi_c_obs", parameters)
-        self.assertAlmostEqual(parameters["theta"], mean[names.index("theta")])
+        self.assertIn("oil_price_shock_size", parameters)
+        self.assertNotIn("stderr headline_inflation_data", parameters)
+        self.assertAlmostEqual(parameters["price_stickiness"], mean[names.index("price_stickiness")])
         self.run_lisp('(define scenario (oil-model :from est :parameters (list (cons "core_weight" 1))))')
         self.assertShows('(vector-ref (table-column (table-filter (hash-table-ref scenario "parameters")'
                          ' (vector= (table-column (hash-table-ref scenario "parameters") "name") "core_weight")) "value") 0)', '1.0')
         self.run_lisp('(show-oil-estimates est)')
+        check_draws_of(self, 300, 18)
 
 
 class TestCrashModelData(LispTestCase):
@@ -337,6 +360,7 @@ class TestCrashModelEstimate(LispTestCase):
         self.assertShows('(vector-ref (table-column (table-filter (hash-table-ref scenario "parameters")'
                          ' (vector= (table-column (hash-table-ref scenario "parameters") "name") "accelerator")) "value") 0)', '0.0')
         self.run_lisp('(show-crash-estimates est)')
+        check_draws_of(self, 300, 19)
 
 
 if __name__ == "__main__":

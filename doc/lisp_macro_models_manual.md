@@ -38,6 +38,7 @@ structured deals, forecasting questions, and simulated paths of rates and prices
   - [The idea](#the-idea)
   - [Priors and posteriors](#priors-and-posteriors)
   - [How Dynare does it](#how-dynare-does-it)
+  - [What the estimation produces](#what-the-estimation-produces)
   - [The data](#the-data)
   - [Estimating the model](#estimating-the-model)
   - [Reading the estimates](#reading-the-estimates)
@@ -66,7 +67,7 @@ The notebook `lisp_interp/notebooks/oil_shock_model.ipynb` goes through these st
 (oil-shock-responses base :rise 10)          ; the same, as a table: a row a quarter
 
 ; What if real wages were slow to fall, as in the 1970s?
-(define rigid (oil-model :parameters '((gamma . 0.9))))
+(define rigid (oil-model :parameters '((wage_rigidity . 0.9))))
 (plot-oil-shock (list (list "wages adjust" base) (list "wages rigid" rigid)) :rise 10)
 
 ; The parameters estimated from US data, 1985 to 2008 (five minutes or so)
@@ -93,7 +94,7 @@ raises its rate by surprise. Each is a **shock** (or a surprise). The model says
 economy settles back to normal. That path is an **impulse response**: the response to an impulse. It is the main thing these models
 produce, and it answers "what is the effect of X?" directly: the effect of an oil shock *is* the economy's response to it.
 
-The economy settles back because the shocks fade. The price of oil, once up, comes down slowly (how slowly is a parameter, `rho_s`); a
+The economy settles back because the shocks fade. The price of oil, once up, comes down slowly (how slowly is a parameter, `oil_price_persistence`); a
 surprise in the Fed's rate is undone by the Fed itself. A model like this is about the ups and downs around normal over a few years, not
 about where the economy will be in twenty years.
 
@@ -130,12 +131,12 @@ the sentences beside them.
 - **Households** buy domestic goods and oil (gasoline, heating oil), work, and save or borrow at the Fed's rate. When the real interest
   rate (the Fed's rate less inflation) is high, they spend less now and more later.
 - **Firms** make domestic goods from labor and oil. They set their prices, but change them only now and then (each quarter, a firm has a
-  chance `1 - theta` of being able to). So when costs rise, prices rise only gradually, and inflation lasts a while.
+  chance `1 - price_stickiness` of being able to). So when costs rise, prices rise only gradually, and inflation lasts a while.
 - **Workers** want a real wage that matches how much they work and how well off they are. But real wages may be slow to adjust: the
-  parameter `gamma` says how much of last quarter's wage carries over. With `gamma` near 1, workers resist a cut in what their pay
+  parameter `wage_rigidity` says how much of last quarter's wage carries over. With `wage_rigidity` near 1, workers resist a cut in what their pay
   buys, as they did in the 1970s when many contracts were indexed to prices.
-- **The Fed** follows a **Taylor rule**: it raises its rate when inflation is above normal (by `phi_pi` points for each point of
-  inflation) and when GDP is above normal (by `phi_y`), moving a little each quarter (`rho_i`). The inflation it watches is a mix of
+- **The Fed** follows a **Taylor rule**: it raises its rate when inflation is above normal (by `fed_inflation_response` points for each point of
+  inflation) and when GDP is above normal (by `fed_gdp_response`), moving a little each quarter (`fed_smoothing`). The inflation it watches is a mix of
   **core** inflation (without oil and food) and **headline** inflation (everything), with `core_weight` on core.
 - **Oil** comes from abroad, and its price, compared with the price of domestic goods, moves on its own: the oil shock.
 
@@ -143,14 +144,14 @@ the sentences beside them.
 
 When the real price of oil rises 10%:
 
-1. **Headline inflation jumps at once**: oil is 2% of what households buy (`chi`), so prices rise about 0.2%, or 0.8 points of
+1. **Headline inflation jumps at once**: oil is 2% of what households buy (`oil_consumption_share`), so prices rise about 0.2%, or 0.8 points of
    inflation at an annual rate, in that quarter. That part is over in a quarter: the price of oil stays high, but it doesn't keep rising.
-2. **Firms' costs rise**: oil is 2% of the cost of making things (`alpha`), and, if real wages don't fall, labor costs in domestic goods
+2. **Firms' costs rise**: oil is 2% of the cost of making things (`oil_cost_share`), and, if real wages don't fall, labor costs in domestic goods
    rise too (pay must buy the dearer oil). Firms that can change their price raise it: **core inflation** rises, a little and for longer.
-   How much depends on how sticky prices are (`theta`) and how rigid real wages are (`gamma`): with rigid wages, the cost shock is bigger
+   How much depends on how sticky prices are (`price_stickiness`) and how rigid real wages are (`wage_rigidity`): with rigid wages, the cost shock is bigger
    and lasts longer.
 3. **Households are poorer**: their pay buys less, and the country must send more goods abroad to pay for its oil. **Consumption falls.**
-4. **The Fed raises its rate** in response to the higher inflation; how much depends on `phi_pi` and on whether it looks through the
+4. **The Fed raises its rate** in response to the higher inflation; how much depends on `fed_inflation_response` and on whether it looks through the
    jump in headline inflation (`core_weight` near 1) or responds to it (`core_weight` near 0). A higher rate cuts spending further.
 5. **Hours and GDP**: firms use less oil, and less labor if demand falls. But the goods sent abroad to pay for the oil count in GDP, so
    GDP can fall less than consumption, or even rise a little, while households are worse off. **GDP measures what is made, not how well
@@ -165,21 +166,21 @@ mean. Quarterly rates are per quarter.
 
 | Parameter | Starts at | What it is |
 |---|---|---|
-| `beta` | 0.99 | how much households value next quarter compared with this one (a real interest rate of 4% a year) |
-| `sigma` | 1 | how much households dislike uneven spending; `1 / sigma` is how much spending moves with the real interest rate |
-| `phi` | 1 | how fast the wish not to work grows with hours |
-| `alpha` | 0.02 | oil's share of the cost of making domestic goods |
-| `chi` | 0.02 | oil's share of what households buy |
+| `patience` | 0.99 | how much households value next quarter compared with this one (a real interest rate of 4% a year) |
+| `risk_aversion` | 1 | how much households dislike uneven spending; `1 / risk_aversion` is how much spending moves with the real interest rate |
+| `labor_dislike` | 1 | how fast the wish not to work grows with hours |
+| `oil_cost_share` | 0.02 | oil's share of the cost of making domestic goods |
+| `oil_consumption_share` | 0.02 | oil's share of what households buy |
 | `markup` | 1.2 | firms' prices over their costs, in normal times |
-| `theta` | 0.75 | the chance a firm can't change its price in a quarter (0.75: prices last a year, on average) |
-| `gamma` | 0.5 | real wage rigidity: 0, wages adjust at once; near 1, they hardly adjust |
-| `phi_pi` | 1.5 | the Fed's rate rise for a point of inflation (more than 1, so the real rate rises) |
-| `phi_y` | 0.125 | the Fed's rate rise for a percent of GDP above normal |
-| `rho_i` | 0.8 | how slowly the Fed moves its rate toward what its rule says |
+| `price_stickiness` | 0.75 | the chance a firm can't change its price in a quarter (0.75: prices last a year, on average) |
+| `wage_rigidity` | 0.5 | real wage rigidity: 0, wages adjust at once; near 1, they hardly adjust |
+| `fed_inflation_response` | 1.5 | the Fed's rate rise for a point of inflation (more than 1, so the real rate rises) |
+| `fed_gdp_response` | 0.125 | the Fed's rate rise for a percent of GDP above normal |
+| `fed_smoothing` | 0.8 | how slowly the Fed moves its rate toward what its rule says |
 | `core_weight` | 0.5 | the weight the Fed puts on core inflation (the rest is on headline) |
-| `rho_s` | 0.95 | how long an oil price change lasts: 0.95 keeps 95% of it each quarter, so half is gone after 13 quarters |
-| `rho_a`, `rho_z` | 0.95, 0.8 | how long a change in productivity, and in demand, lasts |
-| `sigma_oil` | 12 | the typical size of an oil price surprise, in percent (and `sigma_a`, `sigma_z`, `sigma_i`, `sigma_p`, `sigma_w` for the others) |
+| `oil_price_persistence` | 0.95 | how long an oil price change lasts: 0.95 keeps 95% of it each quarter, so half is gone after 13 quarters |
+| `productivity_persistence`, `demand_persistence` | 0.95, 0.8 | how long a change in productivity, and in demand, lasts |
+| `oil_price_shock_size` | 12 | the typical size of an oil price surprise, in percent (and `productivity_shock_size`, `demand_shock_size`, `fed_shock_size`, `cost_push_shock_size`, `wage_shock_size` for the others) |
 
 ## Running it
 
@@ -201,7 +202,7 @@ Each row of the table is a quarter after the rise; quarter 1 is the quarter it h
 - **GDP, consumption, hours, real wage**: percent difference from normal. −0.3 is 0.3% lower than it would have been.
 - **headline inflation, core inflation, Fed rate**: percentage points *a year* above normal, the way they are reported. 0.8 means
   inflation is 0.8 points higher: 3.0% instead of 2.2%, say.
-- **real oil price**: percent above normal; it starts at `:rise` and fades as `rho_s` says.
+- **real oil price**: percent above normal; it starts at `:rise` and fades as `oil_price_persistence` says.
 
 With the hand-chosen parameters, a 10% rise in the price of oil lowers GDP by about 0.05% and consumption by about 0.4%, raises
 headline inflation by about 1 point for one quarter and core inflation by 0.1 to 0.2 points for a few years, and the Fed raises its rate
@@ -218,7 +219,7 @@ The model follows the economy for 20 quarters (five years) after a shock unless 
 ```
 
 Twenty quarters shows the whole path back to normal for most shocks; ten shows the first years more closely. The first quarters are the
-model's surest part; far out, the responses depend most on how long the shock itself is assumed to last (`rho_s`).
+model's surest part; far out, the responses depend most on how long the shock itself is assumed to last (`oil_price_persistence`).
 
 ## Scenarios: what if?
 
@@ -227,8 +228,8 @@ as it was. To compare scenarios, give `plot-oil-shock` a list of `(label result)
 
 ```lisp
 (define base (oil-model))
-(define hawk (oil-model :parameters '((phi_pi . 3))))              ; a Fed twice as tough on inflation
-(define dove (oil-model :parameters '((phi_pi . 1.1))))            ; a Fed that barely moves
+(define hawk (oil-model :parameters '((fed_inflation_response . 3))))              ; a Fed twice as tough on inflation
+(define dove (oil-model :parameters '((fed_inflation_response . 1.1))))            ; a Fed that barely moves
 (plot-oil-shock (list (list "usual Fed" base) (list "tough Fed" hawk) (list "easy Fed" dove)) :rise 20)
 ```
 
@@ -236,14 +237,14 @@ as it was. To compare scenarios, give `plot-oil-shock` a list of `(label result)
 
 | Question | Change | What to look for |
 |---|---|---|
-| What if wages chase prices, as in the 1970s? | `(gamma . 0.9)` | a bigger, longer rise in core inflation, a bigger fall in GDP |
+| What if wages chase prices, as in the 1970s? | `(wage_rigidity . 0.9)` | a bigger, longer rise in core inflation, a bigger fall in GDP |
 | What if the Fed looks through oil? | `(core_weight . 1)` against `(core_weight . 0)` | the Fed's rate, and how much GDP it costs to hold inflation down |
-| What if the Fed is tougher, or easier? | `(phi_pi . 3)`, `(phi_pi . 1.1)` | less inflation for more lost output, and the other way round |
-| What if prices change more often? | `(theta . 0.5)` | inflation rises faster and fades faster |
-| What if the oil shock is temporary? | `(rho_s . 0.5)` | half of it gone each quarter: smaller effects, mostly on headline inflation |
-| What if the economy used as much oil as in the 1970s? | `(alpha . 0.04) (chi . 0.04)` | everything about twice as large |
+| What if the Fed is tougher, or easier? | `(fed_inflation_response . 3)`, `(fed_inflation_response . 1.1)` | less inflation for more lost output, and the other way round |
+| What if prices change more often? | `(price_stickiness . 0.5)` | inflation rises faster and fades faster |
+| What if the oil shock is temporary? | `(oil_price_persistence . 0.5)` | half of it gone each quarter: smaller effects, mostly on headline inflation |
+| What if the economy used as much oil as in the 1970s? | `(oil_cost_share . 0.04) (oil_consumption_share . 0.04)` | everything about twice as large |
 
-Several changes go in one list: `(oil-model :parameters '((gamma . 0.9) (alpha . 0.04) (chi . 0.04)))` is roughly the 1970s economy.
+Several changes go in one list: `(oil-model :parameters '((wage_rigidity . 0.9) (oil_cost_share . 0.04) (oil_consumption_share . 0.04)))` is roughly the 1970s economy.
 
 A scenario is not a forecast. It says how much difference one link makes, holding the others as they are, which is what a model is
 best at. The size of an effect depends on the parameters; whether it is bigger or smaller under a change is usually what can be trusted.
@@ -254,16 +255,16 @@ The model has six kinds of shock. `oil-model-responses` shows the response to a 
 
 | Shock | What it is |
 |---|---|
-| `"e_oil"` | the real price of oil |
-| `"e_a"` | productivity: workers can make more with the same effort |
-| `"e_z"` | demand: households want to spend more now |
-| `"e_i"` | monetary policy: the Fed raises its rate by more than its rule says |
-| `"e_p"` | cost-push: firms raise their prices more than their costs explain |
-| `"e_w"` | wages: workers win higher pay than the labor market explains |
+| `"oil_price_shock"` | the real price of oil |
+| `"productivity_shock"` | productivity: workers can make more with the same effort |
+| `"demand_shock"` | demand: households want to spend more now |
+| `"fed_shock"` | monetary policy: the Fed raises its rate by more than its rule says |
+| `"cost_push_shock"` | cost-push: firms raise their prices more than their costs explain |
+| `"wage_shock"` | wages: workers win higher pay than the labor market explains |
 
 ```lisp
 (define base (oil-model))
-(oil-model-responses base "e_i")              ; a quarter-point surprise rise in the Fed's rate
+(oil-model-responses base "fed_shock")              ; a quarter-point surprise rise in the Fed's rate
 (hash-table-ref base "variance-decomposition") ; how much of each variable's ups and downs each kind of shock explains, in percent
 ```
 
@@ -288,7 +289,7 @@ almost nothing. So the method used here, **Bayesian estimation**, starts from wh
 the data change it:
 
 - The **prior** for a parameter is what is believed beforehand: a range of likely values, given as a mean and a standard deviation.
-  The prior for `theta` (sticky prices) has a mean of 0.66 and a standard deviation of 0.1: prices probably last two or three
+  The prior for `price_stickiness` (sticky prices) has a mean of 0.66 and a standard deviation of 0.1: prices probably last two or three
   quarters, maybe more, maybe less. Priors come from other studies and from common sense (a share must be between 0 and 1).
 - The **posterior** is what is believed after the data: the prior, weighed by the likelihood. Where the data have a lot to say, the
   posterior ends up far from the prior and narrow; where they have little, the posterior looks like the prior.
@@ -298,13 +299,16 @@ prior and the data. A narrow interval means the data are sure; a wide one, that 
 
 ### How Dynare does it
 
-Dynare does two things, which together take a few minutes:
+Dynare does two things:
 
 1. **The posterior mode**: it searches for the single best set of parameters, the one that does best on prior and likelihood together.
 2. **Draws**: to see how sure it can be, it then takes a long random walk through sets of parameters, each step a small change from the
    last, keeping a step more often when the new set does better ("Markov chain Monte Carlo", or MCMC). The sets it visits are a
    sample from the posterior: a parameter the data pin down hardly moves along the walk, and one they don't wanders widely. It walks
-   twice (two **chains**), 20,000 steps each, and throws away the first half of each walk, while it was still finding its way.
+   twice (two **chains**), 20,000 steps each for the oil model, and throws away the first half of each walk, while it was still
+   finding its way.
+
+The next section says exactly what a step is, and what is random in it.
 
 From the draws come the means and intervals of the parameters, and also **bands** around the impulse responses: the responses of each
 of thousands of sets of parameters, of which the band holds the middle 90%.
@@ -313,18 +317,117 @@ Dynare also reports the **log marginal density**: how well the model as a whole 
 but between two models (or the same model with a change, estimated on the same data), the higher one fits better; a difference of more
 than a few points is a lot.
 
+### What the estimation produces
+
+The estimation does not produce a time series, or a forecast, or a set of surprises. It produces **draws of the parameter values**.
+
+**The quantities being estimated.** A set of numbers, one for each of:
+
+- each *behavioral and structural parameter* that has a prior (`price_stickiness`, `wage_rigidity`, `fed_smoothing`, ...: 11 for the oil
+  model, 12 for the crash model);
+- the *typical size* of each kind of surprise (`stderr oil_price_shock` and its five fellows: the standard deviation of that shock);
+- the *size of the measurement error* of headline inflation (the oil model) or of the credit spread (the crash model).
+
+That is 18 numbers for the oil model and 19 for the crash model. Call such a set of numbers a **parameter vector**. These are the only
+unknowns. Everything else in the model (beta, the shares, `markup`, and so on) is fixed at the value in the model file, and the
+particular surprises of particular quarters are not estimated: they are worked out from the data for any given parameter vector, as
+described in [The idea](#the-idea), and used only to judge how well that vector fits.
+
+**What a draw is.** One draw is one complete parameter vector, all 18 (or 19) numbers at once. The estimation produces thousands of
+draws, and `(hash-table-ref estimate "draws")` returns them as a table with a row for each:
+
+```lisp
+(define estimate (oil-model-estimate creds :draws 300))
+(define draws (hash-table-ref estimate "draws"))
+(table-head draws 4)
+```
+
+| chain | draw | log posterior | stderr oil_price_shock | stderr productivity_shock | ... | price_stickiness | wage_rigidity | ... |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1 | -481.85 | 12.823 | 0.694 | ... | 0.941 | 0.921 | ... |
+| 1 | 2 | -485.50 | 13.094 | 0.718 | ... | 0.940 | 0.922 | ... |
+| 1 | 3 | -485.59 | 13.178 | 0.589 | ... | 0.942 | 0.919 | ... |
+| 1 | 4 | -485.59 | 13.178 | 0.589 | ... | 0.942 | 0.919 | ... |
+
+(Real output, with 300 draws a chain, so 150 are kept from each of the two chains and `draws` has 300 rows.) The columns are the
+`chain` the draw is from, its number within the chain, its `log posterior` (a score for how well this parameter vector fits the data and
+the priors together: higher is better), and then a column for each of the 18 numbers, named as in `show-oil-estimates`. Rows are in the
+order the chain visited them. The first half of every chain has already been thrown away.
+
+**What changes from one draw to the next.** Each draw is a small random change to the one before. The step from draw *t* to draw *t*+1
+is:
+
+1. **Propose.** Take the current vector and add a random change to all 18 numbers at once: a draw from a multivariate normal
+   distribution centered on zero. Its spread is set from the data: its covariance is the inverse of the matrix of second derivatives of
+   the log posterior at the posterior mode (so the proposal moves more along parameters the data are unsure of, and less along those they
+   have pinned down, and moves them together when the data cannot tell them apart), times a scale factor (`jscale`) that Dynare
+   adjusts at the start (`mh_tune_jscale`) so that about a third of proposals are accepted.
+2. **Score.** Work out the log posterior of the proposed vector: the log of the prior probability of its numbers, plus the log
+   likelihood of the data given it (the Kalman filter; see [The idea](#the-idea)). This takes most of the time, and involves no
+   randomness: the data are fixed, the model is solved exactly for the proposed numbers, and the same vector always scores the same.
+3. **Accept or reject.** If the proposal scores higher than the current vector, move to it. If it scores lower, move to it anyway with
+   a probability equal to the ratio of the two posterior densities (a proposal 10% as probable is accepted one time in ten), decided by
+   comparing that probability with a random number between 0 and 1. If it is rejected, the next draw is **a copy of the current one**.
+
+So most columns change a little from one draw to the next, and sometimes nothing changes, as with draws 3 and 4 above: the proposal
+after draw 3 was rejected. A new vector is never accepted when it is impossible (a persistence of 1.2, say, or a variance below zero):
+its prior probability is zero.
+
+**Where the randomness is.** In exactly two places in every step: the **random change** proposed in step 1, and the **random number**
+that decides acceptance in step 3. The data, the model's equations and the priors are not random. Nor are the economy's shocks: the
+estimation never simulates the economy. The randomness is a device for exploring the posterior, in the way a person might wander
+over a hill, going up more often than down, to learn its shape: the draws are the places visited, and a part of the hill that is
+high and wide is visited often.
+
+Two more places randomness comes in, once:
+
+- **The start.** Each chain begins at a random vector near the posterior mode (a normal draw around it), so the two chains start in
+  different places. If after the first half is thrown away they are visiting the same region, the walk has settled; if they are in
+  different places, it hasn't (more draws are needed).
+- **The responses' bands** are worked out from a random subsample of the kept draws: at most 1,200 of them, each picked at random
+  from all the kept draws of both chains (so a draw may be picked twice).
+
+Dynare starts its random number generator from a fixed seed (zero) unless told otherwise, so the same data, model and number of draws
+give **the same draws every time**; changing `:draws` gives different ones, and so, a little, different estimates. The numbers move by
+more with fewer draws; that is one way to see how much of a result is the method's noise rather than the data's message.
+
+**What is made from the draws.** Each estimate is a summary of one column:
+
+| In `show-oil-estimates` | How it is calculated from the draws |
+|---|---|
+| `estimate` | the **mean** of the column: the average of that number over all kept draws of both chains |
+| `low`, `high` | the narrowest interval holding 90% of the column (Dynare's "highest posterior density interval") |
+| `prior mean` | not from the draws: the mean of the prior |
+
+The other results use draws too: the responses' bands (each draw implies a set of responses, by solving the model with that parameter
+vector; the line is the mean over the subsample at each quarter, and the band holds the middle 90%), and the `log-marginal-density`.
+The **posterior mode**, which Dynare finds before the draws and starts them from, is a single parameter vector that is not one of the
+draws (it is in `(hash-table-ref estimate "estimates")`, column `mode`).
+
+A worked example: for 300 draws, to see how the `estimate` of `price_stickiness` is made, and how sure the data leave us:
+
+```lisp
+(define stickiness (table-column draws "price_stickiness"))
+(vector-mean stickiness)                  ; the estimate: 0.9450, equal to the "mean" column of the estimates
+(vector-min stickiness) (vector-max stickiness)   ; the walk wandered from 0.932 to 0.962
+```
+
+If the walk had stayed in one place the draws would all be the same, and the interval would be a point; if the data said nothing, the
+draws would spread over the prior's whole range. A parameter that the data inform lies in between: the interval is narrower than the
+prior's.
+
 ### The data
 
 `oil-model-data` gets six series from FRED, by the quarter, each as a percent per quarter:
 
 | Column | FRED series | What it is |
 |---|---|---|
-| `dy_obs` | GDPC1 | real GDP growth |
-| `dw_obs` | COMPRNFB | real wage growth (compensation an hour in the nonfarm business sector, in today's prices) |
-| `pi_q_obs` | PCEPILFE | core inflation (PCE prices without food and energy, the Fed's favorite measure) |
-| `pi_c_obs` | PCEPI | headline inflation (all PCE prices) |
-| `i_obs` | FEDFUNDS | the federal funds rate, divided by 4 to make it per quarter |
-| `ds_obs` | WTISPLC | the change in the real price of oil (West Texas Intermediate, less core inflation) |
+| `gdp_growth_data` | GDPC1 | real GDP growth |
+| `real_wage_growth_data` | COMPRNFB | real wage growth (compensation an hour in the nonfarm business sector, in today's prices) |
+| `core_inflation_data` | PCEPILFE | core inflation (PCE prices without food and energy, the Fed's favorite measure) |
+| `headline_inflation_data` | PCEPI | headline inflation (all PCE prices) |
+| `fed_rate_data` | FEDFUNDS | the federal funds rate, divided by 4 to make it per quarter |
+| `real_oil_price_change_data` | WTISPLC | the change in the real price of oil (West Texas Intermediate, less core inflation) |
 
 Each column has its average over the sample taken away: the model explains the ups and downs, not the averages (why GDP grew 2.8% a
 year in these years is another question). Headline inflation also has a **measurement error**, an allowance for its differences from
@@ -358,10 +461,10 @@ Things to look at:
 - **Did the data move it?** Compare the estimate with the prior mean. If they are close and the interval is about as wide as the prior
   (mean ± 1.6 standard deviations), the data said little: the result is the prior coming back. The shocks' sizes and how long they last
   are always well estimated; how households and firms behave less so.
-- **Is it believable?** Small models often find prices stickier than surveys of firms do (a `theta` of 0.9 or more says prices last
+- **Is it believable?** Small models often find prices stickier than surveys of firms do (a `price_stickiness` of 0.9 or more says prices last
   ten quarters or more, where surveys say about a year). That is a sign the model is missing something that makes inflation sluggish, and
-  `theta` is standing in for it. The responses can still be right even when one parameter is doing another's job.
-- **The Fed**: `phi_pi`, `phi_y`, `rho_i` and `core_weight` are what the Fed did in those years, not what it should have done.
+  `price_stickiness` is standing in for it. The responses can still be right even when one parameter is doing another's job.
+- **The Fed**: `fed_inflation_response`, `fed_gdp_response`, `fed_smoothing` and `core_weight` are what the Fed did in those years, not what it should have done.
 
 `(oil-shock-responses estimate :rise 10)` has the responses with their bands: a `GDP low` and a `GDP high` column beside `GDP`, and so on.
 `plot-oil-shock` shades the band.
@@ -408,17 +511,17 @@ And the estimates behind them that differ most:
 
 | Parameter | 1966–1984 | 1985–2008 | What it says |
 |---|---|---|---|
-| `gamma` | 0.97 (0.95 to 0.99) | 0.94 (0.92 to 0.97) | real wages were more rigid |
-| `theta` | 0.89 (0.85 to 0.92) | 0.95 (0.93 to 0.96) | prices changed more often (high inflation makes firms change them more often) |
-| `rho_i` | 0.75 | 0.84 | the Fed moved its rate faster... |
-| `stderr e_i` | 0.35 | 0.12 | ...and surprised more: three times as much |
-| `stderr e_z` | 4.0 | 2.7 | demand was more unsteady |
+| `wage_rigidity` | 0.97 (0.95 to 0.99) | 0.94 (0.92 to 0.97) | real wages were more rigid |
+| `price_stickiness` | 0.89 (0.85 to 0.92) | 0.95 (0.93 to 0.96) | prices changed more often (high inflation makes firms change them more often) |
+| `fed_smoothing` | 0.75 | 0.84 | the Fed moved its rate faster... |
+| `stderr fed_shock` | 0.35 | 0.12 | ...and surprised more: three times as much |
+| `stderr demand_shock` | 4.0 | 2.7 | demand was more unsteady |
 
 What this says:
 
 - **Core inflation is where the periods differ.** The same oil shock raised core inflation about five times as much in 1966–1984, and
   for longer, and the Fed's rate twice as much. Most of the difference is wages: run the 1966–1984 estimate again with flexible real
-  wages, `(oil-model :from early :parameters '((gamma . 0.2)))`, and the rise in core inflation all but goes away (0.005 points instead
+  wages, `(oil-model :from early :parameters '((wage_rigidity . 0.2)))`, and the rise in core inflation all but goes away (0.005 points instead
   of 0.17), while the real wage falls at once (−0.37% in the first quarter instead of −0.02%). When workers accept the cut in what their
   pay buys, the oil shock doesn't become an inflation; when they resist it, it does. This is Blanchard and Galí's main point.
 - **Consumption falls about as much in both.** Households are poorer by about the same amount: the oil shock is a loss of income either
@@ -621,7 +724,7 @@ price`; after an estimation, a `low` and a `high` column for each, its 90% band.
 responses, so it leaves out how unsure the estimate is of the size of a typical oil surprise.
 
 #### `(oil-model-responses result shock)`
-The same table, for one typical surprise of any of the six kinds (`"e_oil"`, `"e_a"`, `"e_z"`, `"e_i"`, `"e_p"`, `"e_w"`; see [Other
+The same table, for one typical surprise of any of the six kinds (`"oil_price_shock"`, `"productivity_shock"`, `"demand_shock"`, `"fed_shock"`, `"cost_push_shock"`, `"wage_shock"`; see [Other
 kinds of surprise](#other-kinds-of-surprise)).
 
 #### `(plot-oil-shock results [:rise r :title t])`
@@ -669,6 +772,7 @@ with Dynare's own output files and its log, `dynare.log`. Returns a hash table:
 | Key | What it holds |
 |---|---|
 | `"responses"` | a hash table from each shock's name to a table of the responses to one typical surprise: `quarter`, then a column for each variable; after an estimation with `bayesian_irf`, the posterior mean, with `<variable> low` and `<variable> high` columns |
+| `"draws"` | after an estimation: the draws, a row each: `chain`, `draw` (its number within the chain), `log posterior`, and a column for each estimated parameter, shock size and measurement error, named as in `"estimates"`; see [What the estimation produces](#what-the-estimation-produces) |
 | `"estimates"` | after an estimation: a row for each estimated parameter: `name`, `prior mean`, `prior stdev`, `mode`, `mean`, `low`, `high` |
 | `"log-marginal-density"` | after an estimation: how well the model fits the data |
 | `"variance-decomposition"` | after `stoch_simul`: a row for each variable, a column for each shock, in percent |
