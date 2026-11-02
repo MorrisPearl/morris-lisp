@@ -7,7 +7,8 @@ Vantage; any web API, and SQLite), statistical models (regression, linear
 programming, and stratification), dates and cash flows, and investments
 (option prices, the volatility smile, option checks, and portfolios), and
 maps. Yield curves, and simulated paths of interest rates and of investment
-prices, are in their own manual, [lisp_paths_manual.md](lisp_paths_manual.md). Most are builtins,
+prices, are in their own manual, [lisp_paths_manual.md](lisp_paths_manual.md), and macroeconomic models (Dynare)
+in [lisp_macro_models_manual.md](lisp_macro_models_manual.md). Most are builtins,
 written in Python; the rest are libraries in `lib/`, written in Lisp.
 
 The language itself, and the general builtins these all work with --
@@ -254,7 +255,7 @@ directory (see "Maps").
 
 ### FRED (Federal Reserve Bank of St. Louis) data
 
-#### `(fred-table creds ids [:start-date d :end-date d :cache-hours h])`
+#### `(fred-table creds ids [:start-date d :end-date d :frequency f :cache-hours h])`
 One FRED series, or a list or vector of them, by ID (`"UNRATE"`,
 `"DGS10"`), as a table, like the other data functions give:
 
@@ -266,6 +267,9 @@ One FRED series, or a list or vector of them, by ID (`"UNRATE"`,
 `creds` is the credentials file's path; its `"fred_api_key"` entry goes
 with each request. The table covers all of each series, unless
 `:start-date` or `:end-date` (a date, or `"YYYY-MM-DD"`) says otherwise.
+`:frequency "quarterly"` (or `"weekly"`, `"monthly"`, `"annual"`) has FRED
+average each series over each period, dated its first day: a monthly
+series becomes the average of each quarter's three months.
 Each download is kept for 12 hours, unless `:cache-hours` says otherwise
 (0 downloads it every time). FRED's site (https://fred.stlouisfed.org)
 finds a series' ID.

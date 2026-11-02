@@ -26,7 +26,8 @@ mortgages, and a script for each part of the library -- and explains the
 programming techniques they show. **Yield curves and simulated paths**, of interest rates
 and of investment prices, are in [lisp_paths_manual.md](lisp_paths_manual.md); structured
 deals in [lisp_cmo_manual.md](lisp_cmo_manual.md); forecasting questions in
-[lisp_forecasting_manual.md](lisp_forecasting_manual.md).
+[lisp_forecasting_manual.md](lisp_forecasting_manual.md); macroeconomic models, run with Dynare, in
+[lisp_macro_models_manual.md](lisp_macro_models_manual.md).
 
 This document aims to cover **every builtin and special form** of the
 language: what its arguments mean, what it returns, and any non-obvious
@@ -6352,6 +6353,7 @@ The Python files:
 | `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
 | `lisp_fred.py` | `fred-table` (downloads from FRED, through `lisp_http.py`) |
 | `lisp_nyfed.py` | `nyfed-rates`, `nyfed-rate-details`: the New York Fed's SOFR, EFFR, and other reference rates |
+| `lisp_dynare.py` | `dynare-run`: macroeconomic models, run by Dynare under GNU Octave (see [lisp_macro_models_manual.md](lisp_macro_models_manual.md)) |
 | `lisp_data_common.py` | What the data modules share: reading the credentials file, the years and lists of names they take, and making their tables |
 | `lisp_sec.py` | `sec-income-statement`, `sec-balance-sheet`, `sec-financials`, ...: financial statements from the SEC's XBRL data |
 | `lisp_fdic.py` | `fdic-balance-sheet`, `fdic-ratios`, `fdic-financials`, `fdic-get`, ...: banks' Call Report data from the FDIC |

@@ -42,6 +42,7 @@ HOW THE CODE IS ORGANIZED
     lisp_http.py          http-get-json, http-get-csv, ... (downloads from any web API)
     lisp_fred.py          fred-table                       (downloads from FRED)
     lisp_nyfed.py         nyfed-rates, nyfed-rate-details  (the New York Fed's SOFR, EFFR, ...)
+    lisp_dynare.py        dynare-run                       (macroeconomic models, run by Dynare under Octave)
     lisp_data_common.py   what the data modules share: the credentials file, years, tables
     lisp_sec.py           sec-income-statement, sec-financials, ... (financial statements from the SEC)
     lisp_sec_filings.py   sec-filings, sec-filing-text, text-tone (what companies write in their filings, and its tone)

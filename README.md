@@ -44,6 +44,9 @@ whose path is their first argument. Keep it out of the repository.
   - `doc/lisp_forecasting_manual.md` -- forecasting questions, such as Good
     Judgment Open's: the chance of each range of a number, "before the date"
     chances, and combining and scoring forecasts.
+  - `doc/lisp_macro_models_manual.md` -- macroeconomic models run with Dynare:
+    what happens to GDP, inflation, wages and the Fed's rate after an oil
+    shock, scenarios, and what estimating a model from US data means.
 - `lisp_interp/economic_data_guide.md` -- which agency publishes what data,
   and which function gets it.
 

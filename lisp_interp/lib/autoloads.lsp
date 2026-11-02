@@ -316,3 +316,8 @@
 
 ; The database of market history (TBA prices, Treasury, SOFR and mortgage rates, current coupons), and reading it (see "A database of market history" in lisp_library_reference.md)
 (lazy-load "financial_data.lsp" financial-data-update financial-data-summary time-series time-series-table)
+
+; Macroeconomic models run with Dynare: the oil model, its scenarios and its estimate from US data (see lisp_macro_models_manual.md)
+(lazy-load "macro_models.lsp"
+  oil-model oil-model-estimate oil-model-data oil-model-estimated-parameters oil-model-responses oil-shock-responses
+  plot-oil-shock show-oil-estimates)

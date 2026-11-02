@@ -53,6 +53,7 @@ import lisp_csv
 import lisp_debug
 import lisp_help
 import lisp_profile
+import lisp_dynare
 import lisp_coverage
 import lisp_explore
 import lisp_fdic
@@ -2442,6 +2443,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_help.make_help_builtins(env, out))
     env.update(lisp_debug.make_debug_builtins(env, out))
     env.update(lisp_profile.make_profile_builtins(env, out))
+    env.update(lisp_dynare.make_dynare_builtins(out))
     env.update(lisp_coverage.make_coverage_builtins(env, out))
 
     # Remember each builtin's Lisp name, for error messages (see
