@@ -6,6 +6,8 @@ __pycache__/
 lisp_interp/Untitled*.ipynb
 lisp_interp/*/Untitled*.ipynb
 /*/Untitled*.ipynb
+nb
+nb/*.*
 
 lisp_interp/notebooks/.virtual_documents/
 
