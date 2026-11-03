@@ -55,7 +55,11 @@ structured deals, forecasting questions, and simulated paths of rates and prices
   - [Running it](#running-it-2)
   - [What it says](#what-it-says)
   - [What the four-household model leaves out](#what-the-four-household-model-leaves-out)
-- [Wealth taxes](#wealth-taxes)
+- [A wealth tax on the top 1%](#a-wealth-tax-on-the-top-1)
+  - [How the tax works in the model](#how-the-tax-works-in-the-model)
+  - [Running it](#running-it-3)
+  - [What it says, and what is assumption](#what-it-says-and-what-is-assumption)
+  - [What this model leaves out](#what-this-model-leaves-out-1)
 - [Reference](#reference)
   - [Setting up Dynare](#setting-up-dynare)
   - [The functions](#the-functions)
@@ -770,21 +774,110 @@ spending on average over the first eight quarters):
   40% a quarter of the market, the notebook's section 4, lowers its first-quarter spending from +1.5% to +1.0%: the interest-rate channel still wins.)
 - **The groups are fixed.** A household never moves from one to another, and nobody in a group is unlike anyone else in it. Models in
   which wealth differs continuously (HANK models: Kaplan, Moll and Violante, 2018) do this, at a much higher cost in complexity.
-- **No taxes or benefits.** What a household earns moves with its hours, and the average with GDP; there is no government taking from one
-  and giving to another, so the model can't yet say what unemployment insurance or a wealth tax would do.
+- **Almost no taxes or benefits.** What a household earns moves with its hours, and the average with GDP. The only tax is the wealth tax of
+  [the next section](#a-wealth-tax-on-the-top-1); unemployment insurance and the rest are left out.
 - **Housing and debt.** Most of the middle's wealth is its home, and a crash that cuts house prices is a different story (2008). Neither is here.
 - **Not estimated.** The model has no estimate from data, because the data (the Fed's, quarterly, by group) cover spending and income
   of no group. Its aggregate parameters are the crash model's, chosen by hand.
 
-## Wealth taxes
+## A wealth tax on the top 1%
 
-A wealth tax is a different kind of question. Its effects depend on *who* holds the wealth and how they respond (saving less, moving it,
-avoiding the tax), and a model with one "representative" household can't say anything about who. It would treat a wealth tax as a tax on
-capital: less saving, less capital, lower wages in the long run. The four kinds of households of the [previous section](#four-kinds-of-households)
-are a first step: they would show who pays the tax and who gains from what the government does with it. But the tax's main effects are
-on how the people it falls on save and invest, and that depends on how wealth differs *within* the top 1%, where the model has one household.
-Serious answers come from models with many different households (Guvenen and others, *Use It or Lose It*, 2023, is one), and are about
-the long run rather than the next few years. That is a project of its own, probably not in Dynare.
+What would a tax on the wealth of the top 1% do? The four-household model can try, because it has the top 1% as a group of its own. It
+is an experiment under assumptions, and this section is as much about the assumptions as about the answer: several of the results below
+come from an assumption rather than from anything in the data, and the section says which.
+
+### How the tax works in the model
+
+The tax is a rate, in percent of the top 1%'s wealth a year (`wealth_tax`). In `types_model.inc`:
+
+1. **The tax collects** the rate times the top 1%'s wealth, less the part that is avoided: `(1 - tax_avoidance) * rate * 0.325 * 5.6`. The
+   0.325 is the top 1%'s share of households' net worth and 5.6 is households' net worth in years of GDP (both from the Fed, 2026 Q2). A
+   tax of 1% a year with a fifth of it avoided collects 1.46% of GDP.
+2. **The top 1% is poorer** by the tax each quarter (`top1_wealth_lost`), less what it makes up by saving (`wealth_rebuilding`, 4% of the
+   loss a year). As it gets poorer, its spending falls (`wealth_spending_top1`: 0.5 means a 1% loss of wealth cuts spending 0.5%).
+3. **Part of the tax comes out of firms' net worth** (`tax_from_firm_equity`, a quarter of it): shareholders have their firms pay out more,
+   or sell shares that nobody buys. Firms' net worth is what the financial accelerator works on, so this part raises the credit spread and
+   cuts investment.
+4. **The revenue goes somewhere** (`revenue_to_...`): back to households, which the calibration does equally per household (half to the
+   bottom 50% of households, 40% to the next 40%, and so on), or spent on goods and services (`revenue_to_purchases`), or to retire debt,
+   which in this model changes nothing. Households that live from paycheck to paycheck spend what they get; savers, in this model, do not
+   change their spending for a payment.
+
+The tax is a surprise that fades very slowly (`wealth_tax_persistence`, 0.995 a quarter: after ten years it is 82% of what it started
+at), so it is close to a permanent tax. A tax of 1% on the top 1%'s wealth is a clean experiment, but a coarse one: the proposals in the
+news tax wealth above $50 million or so, a small part of the top 1%, which begins at roughly $10 million.
+
+### Running it
+
+```lisp
+(define tax (types-model :quarters 40))              ; forty quarters, ten years
+(wealth-tax-responses tax :rate 1)                   ; a table: a tax of 1% of the top 1%'s wealth a year
+(plot-wealth-tax tax :rate 1)                        ; the same, as charts
+
+; The same tax under different assumptions, side by side
+(compare-wealth-taxes
+  (list (list "as assumed" tax)
+        (list "half avoided" (types-model :quarters 40 :parameters '((tax_avoidance . 0.5))))
+        (list "none from firms" (types-model :quarters 40 :parameters '((tax_from_firm_equity . 0))))))
+```
+
+The notebook `lisp_interp/notebooks/wealth_tax_top_1_percent.ipynb` goes through these steps, a cell each.
+
+### What it says, and what is assumption
+
+A tax of 1% a year on the top 1%'s wealth, under the assumptions of `types_model.inc`. Percent from normal, except the revenue, in percent
+of GDP; the first line is the calibration and the rest change one assumption each:
+
+| Assumptions | After | GDP | Investment | Bottom 50% spending | Top 1% spending | Revenue |
+|---|---|---|---|---|---|---|
+| as assumed | 1 year | -0.12 | -1.26 | +1.8 | -1.7 | 1.43 |
+| | 10 years | -0.29 | -0.93 | +1.4 | -4.3 | 1.20 |
+| none avoided | 1 year | -0.15 | -1.57 | +2.2 | -2.1 | 1.79 |
+| | 10 years | -0.36 | -1.16 | +1.8 | -5.3 | 1.50 |
+| half avoided | 1 year | -0.07 | -0.78 | +1.1 | -1.0 | 0.90 |
+| | 10 years | -0.18 | -0.58 | +0.9 | -2.7 | 0.75 |
+| all revenue to the bottom half | 1 year | -0.12 | -1.32 | +3.8 | -2.2 | 1.43 |
+| | 10 years | -0.30 | -0.97 | +3.0 | -4.8 | 1.20 |
+| revenue spent by the government | 1 year | +0.44 | -0.76 | 0.0 | -2.6 | 1.43 |
+| | 10 years | +0.28 | -0.52 | 0.0 | -4.8 | 1.20 |
+| revenue retires debt | 1 year | -0.11 | -1.12 | 0.0 | -0.4 | 1.43 |
+| | 10 years | -0.26 | -0.84 | -0.1 | -3.2 | 1.20 |
+| nothing paid out of firms' net worth | 1 year | -0.03 | -0.35 | +1.8 | -1.6 | 1.43 |
+| | 10 years | -0.06 | -0.17 | +1.5 | -3.8 | 1.20 |
+| twice as much paid out of firms' net worth | 1 year | -0.21 | -2.16 | +1.8 | -1.7 | 1.43 |
+| | 10 years | -0.52 | -1.69 | +1.3 | -4.8 | 1.20 |
+
+What to take from it, and what not to:
+
+- **Who pays and who gets it is the model's strongest result, and it follows from the arithmetic.** The top 1% is poorer and spends less,
+  by 1.7% in the first year and 4% by the tenth. The groups that get the revenue and live from paycheck to paycheck spend more. If the revenue
+  retires debt, nobody gets it and nothing changes for them.
+- **The size of the effect on the economy is an assumption, not a finding.** It is small (GDP less than half a percent lower after ten
+  years) and nearly all of it comes from `tax_from_firm_equity`: with none of the tax paid out of firms' net worth, investment barely
+  moves (-0.2%), and with twice as much it falls by 1.7%. Nothing in the model or the data says how much of a wealth tax is paid out of
+  business assets, and that is the question the debate is about.
+- **What the revenue is used for matters as much as the tax.** Spent on goods and services, the same tax raises GDP 0.3% to 0.4%; paid
+  out, it changes it little; used to retire debt, it does nothing for demand.
+- **Avoidance changes the size, not the shape.** The model has avoidance as a share of the tax, so half the avoidance is half the revenue
+  and half of every effect. It can't say how avoidance grows with the rate, or how much it costs the people who do it.
+
+### What this model leaves out
+
+- **The tax's long-run effect on saving and capital.** The standard argument against a wealth tax is that it cuts the saving that builds
+  capital. In this model, firms' investment is financed from their own net worth and borrowing, and household saving doesn't enter, so the
+  only link from the tax to investment is the part paid out of firms' net worth. A model of the long run (decades) would need household
+  saving behind the capital stock.
+- **Differences inside the top 1%.** The tax falls on a group of households with the same wealth and the same responses. Real wealth
+  taxes have thresholds inside the top 1%, and the people they hit are more likely to hold private businesses, move abroad, or hire
+  lawyers than the average of the top 1% would.
+- **Savers' response to a payment.** Savers in the model don't change their spending when they get a payment, so the revenue's effect on
+  spending is from households that live from paycheck to paycheck only. The effect on the savers who get it is left out, and would add to it.
+- **The tax as a change in returns.** A wealth tax lowers what saving earns, which makes households want to spend sooner, and poorer
+  households want to spend less. With the log utility of the model's households the two exactly cancel in how much they spend out of their
+  wealth, so only the second is in the model (`wealth_spending_top1`).
+- **The government's budget.** Nothing is borrowed, other taxes don't change, and the debt retired changes nothing.
+- **A linear model.** The tax enters as a small change around an economy without it; a tax of a few percent is about as large as that
+  is safe. For the long-run questions above, Guvenen and others (*Use It or Lose It*, 2023) use models with many different households.
 
 ## Reference
 
@@ -891,6 +984,19 @@ the first `n` quarters (8, unless it says).
 #### `(plot-types-crash result [:fall f :title t])`
 Charts of `types-crash-responses`: the spending and the income of each group, GDP, the Fed's rate, the credit spread and net worth, a panel each.
 
+#### `(wealth-tax-responses result [:rate r])`
+What happens when the wealth tax on the top 1% is `r` percent of its wealth a year (1, unless it says), as a table with the columns of
+`types-crash-responses` and `wealth tax`, `tax revenue` and `government purchases` (percent of GDP) and `top 1% wealth lost` (percent of its
+wealth). `result` is from `(types-model :quarters 40)`; the tax fades slowly (`wealth_tax_persistence`).
+
+#### `(plot-wealth-tax result [:rate r :title t])`
+Charts of `wealth-tax-responses`: the spending and the income of each group, GDP, investment, the revenue and how much poorer the tax
+makes the top 1%.
+
+#### `(compare-wealth-taxes results [:rate r :quarters q])`
+The same tax under different assumptions: `results` is a list of `(label result)`. A row for each result and each of the quarters
+`q` (`(4 20 40)`, unless it says): GDP, investment, consumption, the spending of the bottom 50% and of the top 1%, and the revenue.
+
 #### `(dynare-run model-file [:parameters p :macros m :data table :directory d :echo #t :timeout seconds])`
 Runs Dynare on any model file, for models of your own. `model-file` is a `.mod` file, or the name of one in `lisp_interp/dynare/`.
 The files of its folder (`.mod`, `.inc`, `.m`) are copied into a new folder, or `:directory`, and Dynare runs there; the folder is kept,
@@ -923,7 +1029,7 @@ In `lisp_interp/dynare/`:
 | `oil_irfs.mod` | the model's responses to each shock, for its calibrated (or given) parameters |
 | `oil_estimate.mod` | the model estimated from `data.csv`: the observed variables, the priors, and the estimation's settings |
 | `crash_model.inc`, `crash_irfs.mod`, `crash_estimate.mod` | the same three for the stock market crash model |
-| `types_model.inc`, `types_irfs.mod` | the crash model with four kinds of households (no estimate) |
+| `types_model.inc`, `types_irfs.mod` | the crash model with four kinds of households, and a wealth tax on the top 1% (no estimate) |
 | `export_results.m` | run by `dynare-run` after Dynare, to write what it found for the Lisp side to read |
 
 To write a model of your own, start from a copy of these: Dynare's own manual (<https://www.dynare.org/manual/>) describes the language,

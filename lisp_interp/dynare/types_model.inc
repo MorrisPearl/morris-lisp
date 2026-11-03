@@ -17,6 +17,12 @@
 //      stocks, the bottom half almost none (0.6%).
 //   3. How much their jobs move with the economy. When hours fall, they fall more for the bottom half than for the top (earnings_cyclicality).
 //
+//
+// The model also has a government with one tax: a WEALTH TAX on the top 1%, zero unless the caller sets it (the wealth_tax_shock). The
+// section "A wealth tax on the top 1%" of the manual explains it; in short, the top 1% pays a percentage of its wealth each year, part of
+// which is avoided; the revenue goes back to households, or is spent, or retires debt (the caller says); and the top 1% spends less as it
+// gets poorer. Each assumption is a parameter, below, with what it is based on.
+//
 // Each group's share of the nation's spending, of its wages and of its stocks are the weights below. Every variable is a percent
 // difference from its normal level, as in crash_model.inc; each group's consumption and income are percent differences from that
 // group's own normal.
@@ -45,6 +51,10 @@ var
     income_next40             // ... of the 50th to 90th percentile
     income_next9              // ... of the 90th to 99th
     income_top1               // ... of the top 1%
+    wealth_tax                // the wealth tax on the top 1%: percent of its wealth a year (0 in normal times)
+    wealth_tax_revenue        // what the tax collects, after what is avoided: percent of GDP
+    top1_wealth_lost          // how much poorer the tax has made the top 1%: percent of its wealth
+    government_purchases      // what the government buys with the revenue: percent of GDP
     consumption_bottom50      // the spending of the bottom half
     consumption_next40        // ... of the 50th to 90th percentile
     consumption_next9         // ... of the 90th to 99th
@@ -58,6 +68,7 @@ varexo
     productivity_shock        // a surprise in productivity
     fed_shock                 // a surprise in the Fed's rate (monetary policy)
     cost_push_shock           // a surprise in inflation not explained by costs (a "cost-push" shock)
+    wealth_tax_shock          // a surprise in the wealth tax: a rise in the rate, in points a year
 ;
 
 parameters
@@ -71,6 +82,9 @@ parameters
     stock_share_bottom50 stock_share_next40 stock_share_next9 stock_share_top1
     hand_to_mouth_bottom50 hand_to_mouth_next40 hand_to_mouth_next9 hand_to_mouth_top1
     earnings_cyclicality_bottom50 earnings_cyclicality_next40 earnings_cyclicality_next9 earnings_cyclicality_top1
+    wealth_tax_shock_size wealth_tax_persistence tax_avoidance wealth_rebuilding wealth_spending_top1 tax_from_firm_equity
+    household_wealth_to_gdp wealth_share_top1
+    revenue_to_bottom50 revenue_to_next40 revenue_to_next9 revenue_to_top1 revenue_to_purchases
 ;
 
 // The calibration of everything but the households: as in crash_model.inc.
@@ -135,6 +149,23 @@ earnings_cyclicality_next40   = 1.0;
 earnings_cyclicality_next9    = 0.8;
 earnings_cyclicality_top1     = 0.6;
 
+// The wealth tax. NOT the Fed's data, except where it says so: these are assumptions, and the manual shows how much they matter.
+wealth_tax_shock_size       = 1;        // the size of a typical surprise to the tax: 1 point a year (1% of the top 1%'s wealth each year)
+wealth_tax_persistence      = 0.995;    // how long a change in the tax lasts: 0.995 a quarter is a tax that is nearly permanent (it lasts decades)
+tax_avoidance               = 0.2;      // the part of the tax that is avoided and never collected: moving wealth abroad, valuing it low, giving it away
+wealth_rebuilding           = 0.01;     // the part of the wealth the tax has taken that the top 1% makes up each quarter by saving (4% a year)
+wealth_spending_top1        = 0.5;      // how much the top 1%'s spending falls when its wealth falls 1% (spending 2% of wealth a year is spending 1% of it, a half)
+tax_from_firm_equity        = 0.25;     // the part of what the tax collects that comes out of firms' net worth (payouts to shareholders to pay it, sales of shares nobody buys)
+household_wealth_to_gdp     = 5.6;      // households' net worth in years of GDP: the Fed's Financial Accounts, 2026 Q2 ($185.7 trillion; GDP $33.0 trillion)
+wealth_share_top1           = 0.325;    // the top 1%'s share of households' net worth: the Fed's Distributional Financial Accounts, 2026 Q2
+// What is done with the revenue, as shares of it (the rest retires government debt, which in this model has no effect). The calibration pays it
+// out equally to every household: the bottom half of households get half of it, the next 40% get 40% of it, and so on.
+revenue_to_bottom50         = 0.50;
+revenue_to_next40           = 0.40;
+revenue_to_next9            = 0.09;
+revenue_to_top1             = 0.01;
+revenue_to_purchases        = 0;        // the part spent on goods and services, instead
+
 // Parameters given by the caller go here.
 
 model(linear);
@@ -156,6 +187,11 @@ model(linear);
     # hours_move_next9    = earnings_cyclicality_next9 / cyclicality_total;
     # hours_move_top1     = earnings_cyclicality_top1 / cyclicality_total;
 
+    // What the tax collects, as a share of GDP, is in terms of the top 1%'s wealth in years of GDP; and firms' net worth, in quarters of GDP, is what
+    // capital is worth (capital's share of what is made, over what a unit of capital yields each quarter) over leverage.
+    # top1_wealth_to_gdp = wealth_share_top1 * household_wealth_to_gdp;
+    # net_worth_to_gdp = capital_share / (rental_share * (1 / patience + 0.005)) / leverage;
+
     // Households that plan ahead. A saver who owns no stocks spends less now when the real interest rate is high (it pays to wait); a
     // saver's spending is that, plus a rise when there is a demand shock, and when the shares the saver owns are worth more. (These are
     // the Euler equations of all the savers, written so that what they have in common appears once: they differ only in the stocks they own.)
@@ -163,11 +199,16 @@ model(linear);
     real_rate = fed_rate - inflation(+1);
 
     // Households that live from paycheck to paycheck spend what they earn. What households earn together moves with GDP (what firms do not
-    // pay in wages comes back as profits and as government benefits); a group's income moves more than that if its hours do.
-    income_bottom50 = gdp + (hours_move_bottom50 - 1) * hours;
-    income_next40   = gdp + (hours_move_next40 - 1) * hours;
-    income_next9    = gdp + (hours_move_next9 - 1) * hours;
-    income_top1     = gdp + (hours_move_top1 - 1) * hours;
+    // pay in wages comes back as profits and as government benefits); a group's income moves more than that if its hours do. And what the
+    // government pays out of the wealth tax to a group adds to its income, in percent of what the group spends.
+    income_bottom50 = gdp + (hours_move_bottom50 - 1) * hours
+        + revenue_to_bottom50 * wealth_tax_revenue / (consumption_share * consumption_weight_bottom50);
+    income_next40   = gdp + (hours_move_next40 - 1) * hours
+        + revenue_to_next40 * wealth_tax_revenue / (consumption_share * consumption_weight_next40);
+    income_next9    = gdp + (hours_move_next9 - 1) * hours
+        + revenue_to_next9 * wealth_tax_revenue / (consumption_share * consumption_weight_next9);
+    income_top1     = gdp + (hours_move_top1 - 1) * hours
+        + revenue_to_top1 * wealth_tax_revenue / (consumption_share * consumption_weight_top1);
 
     // What each group spends: the part that lives from paycheck to paycheck spends its wages, the rest spends as savers do.
     consumption_bottom50 = hand_to_mouth_bottom50 * income_bottom50
@@ -176,8 +217,10 @@ model(linear);
         + (1 - hand_to_mouth_next40) * (saver_consumption + (demand + wealth_effect_next40 * net_worth) / risk_aversion);
     consumption_next9 = hand_to_mouth_next9 * income_next9
         + (1 - hand_to_mouth_next9) * (saver_consumption + (demand + wealth_effect_next9 * net_worth) / risk_aversion);
+    // The top 1%, who pay the wealth tax, also spend less as the tax makes them poorer.
     consumption_top1 = hand_to_mouth_top1 * income_top1
-        + (1 - hand_to_mouth_top1) * (saver_consumption + (demand + wealth_effect_top1 * net_worth) / risk_aversion);
+        + (1 - hand_to_mouth_top1) * (saver_consumption + (demand + wealth_effect_top1 * net_worth) / risk_aversion
+                                      - wealth_spending_top1 * top1_wealth_lost);
 
     // The economy's consumption is the groups' added up.
     consumption = consumption_weight_bottom50 * consumption_bottom50 + consumption_weight_next40 * consumption_next40
@@ -208,11 +251,19 @@ model(linear);
     credit_spread = accelerator * (capital_price + capital - net_worth) + lender_fear;
 
     // Net worth: what the firms made on their capital, less what they owe on what they borrowed, added to the net worth they had.
+    // And what the wealth tax takes from them: the part of the revenue that is paid out of firms' net worth, as a share of it.
     net_worth = net_worth_survival * (leverage * capital_return - (leverage - 1) * real_rate(-1) + net_worth(-1))
-        + net_worth_shock;
+        + net_worth_shock - tax_from_firm_equity * wealth_tax_revenue / net_worth_to_gdp;
+
+    // The wealth tax. The rate follows its surprises; what it collects is the rate times the top 1%'s wealth, less what is avoided; the top 1% is
+    // that much poorer each quarter (a quarter of the rate a year), less what it makes up by saving; and the government spends some of the revenue.
+    wealth_tax = wealth_tax_persistence * wealth_tax(-1) + wealth_tax_shock;
+    wealth_tax_revenue = (1 - tax_avoidance) * wealth_tax * top1_wealth_to_gdp;
+    top1_wealth_lost = (1 - wealth_rebuilding) * top1_wealth_lost(-1) + (1 - tax_avoidance) * wealth_tax / 4;
+    government_purchases = revenue_to_purchases * wealth_tax_revenue;
 
     // What is made is bought.
-    gdp = consumption_share * consumption + investment_share * investment;
+    gdp = consumption_share * consumption + investment_share * investment + government_purchases;
 
     // The Fed's rule.
     fed_rate = fed_smoothing * fed_rate(-1)

@@ -463,9 +463,51 @@ class TestTypesModel(LispTestCase):
 
     def test_another_kind_of_surprise_has_a_column_for_each_group(self):
         self.run_lisp('(define fed (types-model-responses base "fed_shock"))')
-        self.assertEqual(self.run_lisp('(length (map car fed))'), 17)
+        self.assertEqual(self.run_lisp('(length (map car fed))'), 21)
         self.assertLess(self.column("fed", "GDP")[0], 0)                  # a rise in the Fed's rate slows the economy
         self.assertLess(self.column("fed", "income: bottom 50%")[0], self.column("fed", "income: top 1%")[0])
+
+    def test_without_a_wealth_tax_the_tax_variables_stay_at_zero(self):
+        self.run_lisp('(define crash (types-crash-responses base :fall 20))')
+        for name in ("wealth tax", "tax revenue", "top 1% wealth lost", "government purchases"):
+            self.assertTrue(numpy.allclose(self.column("crash", name), 0), name)
+
+    def test_a_wealth_tax_collects_what_the_top_1_percent_owns_times_the_rate_less_what_is_avoided(self):
+        self.run_lisp('(define tax-model (types-model :quarters 12))(define tax (wealth-tax-responses tax-model :rate 1))')
+        self.assertAlmostEqual(self.column("tax", "wealth tax")[0], 1)
+        self.assertAlmostEqual(self.column("tax", "tax revenue")[0], (1 - 0.2) * 1 * 0.325 * 5.6)         # % of GDP
+        self.assertAlmostEqual(self.column("tax", "top 1% wealth lost")[0], (1 - 0.2) * 1 / 4)             # % of its wealth, a quarter's tax
+        # Paid out equally to every household, it raises what the bottom half spends and lowers what the top 1% does
+        self.assertGreater(self.column("tax", "spending: bottom 50%")[0], 1)
+        self.assertLess(self.column("tax", "spending: top 1%")[0], 0)
+        self.assertLess(self.column("tax", "spending: top 1%")[11], self.column("tax", "spending: top 1%")[0])       # poorer and poorer
+        self.run_lisp('(define double (wealth-tax-responses tax-model :rate 2))')
+        self.assertTrue(numpy.allclose(self.column("double", "GDP"), 2 * self.column("tax", "GDP")))
+
+    def test_the_wealth_taxs_effects_follow_the_assumptions(self):
+        nobody = '(list (cons "revenue_to_bottom50" 0) (cons "revenue_to_next40" 0) (cons "revenue_to_next9" 0) (cons "revenue_to_top1" 0)'
+        self.run_lisp('(define avoided (wealth-tax-responses (types-model :quarters 8 :parameters (list (cons "tax_avoidance" 1))) :rate 1))'
+                      '(define debt (wealth-tax-responses (types-model :quarters 8 :parameters %s)) :rate 1))' % nobody +
+                      '(define spent (wealth-tax-responses (types-model :quarters 8 :parameters %s (cons "revenue_to_purchases" 1))) :rate 1))' % nobody)
+        for name in ("tax revenue", "GDP", "spending: top 1%"):
+            self.assertTrue(numpy.allclose(self.column("avoided", name), 0), name)       # all avoided, so nothing collected or changed
+        self.assertTrue(numpy.allclose(self.column("debt", "spending: bottom 50%"), 0, atol=0.3))      # revenue to retire debt reaches nobody (it was 1.8 when paid out)
+        self.assertTrue(numpy.allclose(self.column("spent", "government purchases"), self.column("spent", "tax revenue")))
+        self.assertGreater(self.column("spent", "GDP")[0], self.column("debt", "GDP")[0])           # spending it supports demand
+
+    def test_compare_wealth_taxes_has_a_row_for_each_result_and_quarter(self):
+        self.run_lisp('(define table (compare-wealth-taxes (list (list "a" (types-model :quarters 10))'
+                      ' (list "b" (types-model :quarters 10 :parameters (list (cons "tax_avoidance" 0.5))))) :quarters (list 1 5 10)))')
+        self.assertShows('(table-row-count table)', '6')
+        self.assertShows('(map car table)', '("assumptions" "quarter" "GDP" "investment" "consumption" "spending: bottom 50%" "spending: top 1%" "tax revenue")')
+        revenue = self.column("table", "tax revenue")
+        self.assertAlmostEqual(revenue[3], revenue[0] * 0.5 / 0.8, delta=0.02)          # half avoided rather than a fifth: five eighths the revenue
+
+    def test_plot_wealth_tax_draws_six_panels(self):
+        charts = []
+        env = lisp_builtins.make_global_env(output=self.out.append, plot=charts.append)
+        self.run_lisp('(load "macro_models.lsp")(plot-wealth-tax (types-model :quarters 8))', env)
+        self.assertEqual(len(charts[0]["panels"]), 6)
 
     def test_plot_types_crash_draws_a_panel_for_the_groups_spending_and_income_and_the_economy(self):
         charts = []

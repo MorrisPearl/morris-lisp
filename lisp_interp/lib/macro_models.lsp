@@ -402,7 +402,11 @@ dynare/types_model.inc chooses them; :wealth, a table from wealth-by-type, repla
             ("inflation"     "inflation"      4)
             ("fed_rate"      "Fed rate"       4)
             ("net_worth"     "net worth"      1)
-            ("credit_spread" "credit spread"  4))
+            ("credit_spread" "credit spread"  4)
+            ("wealth_tax"           "wealth tax"            1)
+            ("wealth_tax_revenue"   "tax revenue"           1)
+            ("top1_wealth_lost"     "top 1% wealth lost"    1)
+            ("government_purchases" "government purchases"  1))
           (map (lambda (group) (list (string-append "income_" (first group)) (string-append "income: " (second group)) 1))
                household-types)
           (map (lambda (group) (list (string-append "consumption_" (first group)) (string-append "spending: " (second group)) 1))
@@ -438,20 +442,71 @@ each group (percent from that group's normal). The model is linear, so a fall tw
 (define (plot-types-crash result &key (fall 20) (title '()))
   "Charts of what happens to the economy and to each group of households when firms' net worth (the stock market) falls fall percent: the
 spending and the income of each group, GDP, the Fed's rate, the credit spread and net worth, a panel each."
-  (let* ((responses (types-crash-responses result :fall fall))
-         (quarters (table-column responses "quarter")))
+  (macro-models--plot-groups (types-crash-responses result :fall fall)
+                             '(("GDP" "percent") ("Fed rate" "points a year") ("credit spread" "points a year") ("net worth" "percent"))
+                             (if (null? title) (format "After a {}% fall in the stock market, by group of households" fall) title)
+                             "quarters (1 is the quarter of the fall)"))
+
+(define (macro-models--plot-groups responses panels title x-label)
+  "Charts of a table of types-model responses: a panel of the four groups' spending and one of their income, then a panel for each of
+panels, a list of (the variable's name in the table, label for the axis)."
+  (let ((quarters (table-column responses "quarter")))
     (let ((groups (lambda (kind)
                     (loop for group in household-types
                           for k from 0
                           collect (list (second group) quarters (table-column responses (string-append kind ": " (second group)))
-                                        :color (format "C{}" k) :line-width 2))))
-          (one (lambda (name color) (list (list name quarters (table-column responses name) :color color :line-width 2)))))
+                                        :color (format "C{}" k) :line-width 2)))))
       (plot-panels
-       (list (list (groups "spending") :title "spending by group" :y-label "percent" :y-lines (list 0) :legend "best")
-             (list (groups "income") :title "income by group" :y-label "percent" :y-lines (list 0))
-             (list (one "GDP" "C0") :title "GDP" :y-label "percent" :y-lines (list 0))
-             (list (one "Fed rate" "C0") :title "Fed rate" :y-label "points a year" :y-lines (list 0))
-             (list (one "credit spread" "C0") :title "credit spread" :y-label "points a year" :y-lines (list 0))
-             (list (one "net worth" "C0") :title "net worth" :y-label "percent" :y-lines (list 0)))
-       :title (if (null? title) (format "After a {}% fall in the stock market, by group of households" fall) title)
-       :x-label "quarters (1 is the quarter of the fall)"))))
+       (append (list (list (groups "spending") :title "spending by group" :y-label "percent" :y-lines (list 0) :legend "best")
+                     (list (groups "income") :title "income by group" :y-label "percent" :y-lines (list 0)))
+               (map (lambda (panel)
+                      (list (list (list (first panel) quarters (table-column responses (first panel)) :color "C0" :line-width 2))
+                            :title (first panel) :y-label (second panel) :y-lines (list 0)))
+                    panels))
+       :title title
+       :x-label x-label))))
+
+; ===========================================================================
+; A wealth tax on the top 1% (dynare/types_model.inc)
+; ===========================================================================
+;
+;   (define tax (types-model :quarters 40))                       the model, with the assumptions of types_model.inc
+;   (wealth-tax-responses tax :rate 1)                            a table: what a tax of 1% of the top 1%'s wealth a year does
+;   (plot-wealth-tax tax :rate 1)                                 the same as charts
+;   (compare-wealth-taxes (list (list "no avoidance" a) ...))     a table: the same tax under different assumptions, side by side
+;
+; The assumptions are parameters (tax_avoidance, wealth_rebuilding, wealth_spending_top1, tax_from_firm_equity, revenue_to_...), changed as
+; any are: (types-model :quarters 40 :parameters '((tax_avoidance . 0.5))). The section "A wealth tax on the top 1%" of the manual explains them.
+
+(define (wealth-tax-responses result &key (rate 1))
+  "What happens when the wealth tax on the top 1% is rate percent of its wealth a year, as a table with the columns of types-crash-responses
+(plus \"wealth tax\", \"tax revenue\" and \"government purchases\", percent of GDP, and \"top 1% wealth lost\", percent of its wealth). The tax
+is rate in the first quarter and fades slowly after that (wealth_tax_persistence). Run types-model with :quarters 40, or more, to see ten years."
+  (let* ((tax (table-column (hash-table-ref (hash-table-ref result "responses") "wealth_tax_shock") "wealth_tax")))
+    (macro-models--responses result "wealth_tax_shock" (/ rate (vector-ref tax 0)) types-model-variables)))
+
+(define (plot-wealth-tax result &key (rate 1) (title '()))
+  "Charts of what a wealth tax on the top 1% of rate percent of its wealth a year does: the spending and the income of each group, GDP,
+investment, what the tax collects (percent of GDP) and how much poorer it makes the top 1%, a panel each."
+  (macro-models--plot-groups (wealth-tax-responses result :rate rate)
+                             '(("GDP" "percent") ("investment" "percent") ("tax revenue" "percent of GDP") ("top 1% wealth lost" "percent"))
+                             (if (null? title) (format "A wealth tax of {}% a year on the top 1%" rate) title)
+                             "quarters (1 is the quarter the tax starts)"))
+
+(define (compare-wealth-taxes results &key (rate 1) (quarters '(4 20 40)))
+  "The same wealth tax under different assumptions, side by side: results is a list of (label result), each from types-model. A row for each
+result and each of the quarters quarters after the tax starts (4, 20 and 40 are one, five and ten years): GDP, investment, consumption, the
+spending of the bottom 50% and of the top 1% (percent from normal), and what the tax collects (percent of GDP)."
+  (let* ((rows (apply append (map (lambda (entry)
+                                    (let ((table (wealth-tax-responses (second entry) :rate rate)))
+                                      (map (lambda (quarter) (list (first entry) quarter table)) quarters)))
+                                  results)))
+         (column (lambda (name) (vector-round (list->vector (map (lambda (row) (vector-ref (table-column (third row) name) (- (second row) 1))) rows)) 2))))
+    (make-table "assumptions" (list->vector (map first rows))
+                "quarter" (list->vector (map second rows))
+                "GDP" (column "GDP")
+                "investment" (column "investment")
+                "consumption" (column "consumption")
+                "spending: bottom 50%" (column "spending: bottom 50%")
+                "spending: top 1%" (column "spending: top 1%")
+                "tax revenue" (column "tax revenue"))))
