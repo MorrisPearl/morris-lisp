@@ -177,9 +177,8 @@ industry's average); the squares of the two add up, weighted, to the square of t
 
 (define (industry-returns--with-ranks stocks)
   "The stocks with a column, return-rank, of where each return stands among all of them, from near 0 for the lowest to 1 for the highest."
-  (let* ((sorted (table-sort stocks "return"))
-         (count (table-row-count sorted)))
-    (table-add-columns sorted (list (cons "return-rank" (vector-div (list->vector (iota count 1)) count))))))
+  (table-add-columns stocks
+    (list (cons "return-rank" (vector-div (vector-rank (table-column stocks "return")) (table-row-count stocks))))))
 
 (define (industry-variation db-path)
   "How well do the industries separate returns? A table of measures, with a column for each way of weighting the stocks:

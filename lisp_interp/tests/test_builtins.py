@@ -987,6 +987,12 @@ class TestVectorMath(LispTestCase):
         self.assertShows("(vector-clip #(5 50 150) 10 100)", "#(10 50 100)")
         self.assertShows("(vector-clip #(5 150) '() 100)", "#(5 100)")
 
+    def test_vector_rank(self):
+        self.assertShows("(vector-rank #(30 10 20))", "#(3.0 1.0 2.0)")
+        self.assertShows("(vector-rank #(5 7 5 9))", "#(1.5 3.0 1.5 4.0)")
+        self.assertShows("(vector-rank #(2 nan 1))", "#(2.0 nan 1.0)")
+        self.assertShows("(vector-rank #())", "#()")
+
     def test_needs_a_vector_and_equal_lengths(self):
         self.assertLispError("(vector-add 1 2)", "at least one vector")
         self.assertLispError("(vector-mul #(1 2) #(1 2 3))", "different lengths")

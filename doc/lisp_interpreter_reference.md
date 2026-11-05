@@ -3139,6 +3139,17 @@ to the even neighbor, like `round`.
 (vector-round #(2.5 3.5))            ; => #(2.0 4.0)
 ```
 
+#### `(vector-rank v)`
+Where each element stands among the others: 1 for the smallest, up to the number of
+elements for the largest. Equal elements share the average of the ranks they cover, and
+a missing value (`nan`) stays missing. Ranks are what to use when a few extreme values
+would decide an average or a spread.
+
+```lisp
+(vector-rank #(30 10 20))           ; => #(3.0 1.0 2.0)
+(vector-rank #(5 7 5 9))            ; => #(1.5 3.0 1.5 4.0)
+```
+
 #### `(vector-clip v low high)`
 Each element limited to the range `low` to `high`; pass `'()` for no limit
 on one side. Useful for capping outliers, e.g. an LTV over 150.
