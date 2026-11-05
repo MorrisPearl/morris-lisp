@@ -211,6 +211,7 @@ out, as [section 6](#6-putting-sources-together) shows.
 | What's in your own accounts | `(schwab-positions creds)` | Schwab |
 | What agency MBS and TBAs traded at each day | `(finra-tba-prices creds)`, `(finra-mbs-prices creds)` | FINRA |
 | Ten years of TBA prices, Treasury, SOFR and mortgage rates in one database, kept up to date | `(financial-data-update creds "financial_data.db")` | FINRA, Treasury, FRED, New York Fed |
+| Whether industries separate stocks' returns: a year's return of every stock (price and dividend, weighted by market cap) | `(stock-returns-update creds db)`, `(industry-variation db)` | Schwab |
 | An option chain | `(tastytrade-option-chain creds "SPY")`; `fit-vol-smiles` then finds options priced out of line | tastytrade |
 | A futures curve: oil, gold, the S&P 500, ... | `(tastytrade-futures-curve creds "CL")` | tastytrade |
 | The stock market as a whole | `(fred-table creds "SP500")` (the last 10 years), `(fred-table creds "VIXCLS")` (its volatility) | S&P and Cboe, via FRED |

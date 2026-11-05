@@ -324,3 +324,4 @@
   crash-model crash-model-estimate crash-model-data crash-model-responses stock-crash-responses plot-stock-crash show-crash-estimates
   wealth-by-type types-model types-model-responses types-crash-responses types-crash-losses plot-types-crash
   wealth-tax-responses plot-wealth-tax compare-wealth-taxes)
+(lazy-load "industry_returns.lsp" stock-returns-update industry-returns industry-variation)

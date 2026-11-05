@@ -45,6 +45,7 @@ that use all this are described in
   - [Schwab (your accounts)](#schwab-your-accounts)
   - [FINRA (agency MBS and TBA prices)](#finra-agency-mbs-and-tba-prices)
   - [A database of market history](#a-database-of-market-history)
+  - [Do industries separate returns?](#do-industries-separate-returns)
   - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
 - [Reporting](#reporting)
   - [Google Sheets](#google-sheets)
@@ -2423,6 +2424,64 @@ headed by the instrument and term (`"treasury-par 10Y"`), with `nan` where a ser
                                           ("freddie-mac-mortgage-rate" "30Y") ("sofr" "ON"))))
   (display-table (table-tail rates 5)))
 ```
+
+### Do industries separate returns?
+
+(In `lib/industry_returns.lsp`.) Stocks are put in industries on the idea that those in
+one industry move together. Is that so? These functions take the table `ticker_industry`
+(columns `ticker` and `industry`) in the database `financial_data.db`, get each stock's
+return over the last year from Schwab, and compare how far apart stocks are *within* an
+industry with how far apart the industries are *from each other*.
+
+```lisp
+(define db "/Users/morris/morris_lisp/data/financial_data.db")
+(stock-returns-update creds db)          ; slow, once: 4,800 stocks take about two hours
+(display-table (industry-returns db))    ; each industry's return
+(display-table (industry-variation db))  ; within against between
+```
+
+A stock's return is what its price gained over the year, plus its dividend, as a fraction
+of the price it started at: `(end price - start price + dividend) / start price`. The prices
+are the closes of the first and last days Schwab has in the year. The dividend is Schwab's
+`dividendAmount`, which is what the stock pays in a year *at its current rate*; Schwab's
+price history has no dividends in it, so a company that raised, cut, began or stopped its
+dividend in the year is only approximated. The weights are Schwab's `marketCap`, which is
+today's.
+
+#### `(stock-returns-update creds "path/to/financial_data.db" [:end-date d])`
+Asks Schwab for the market cap and dividend of the stocks (400 to a request), and for each
+stock's prices for the year ending `:end-date` (today), and keeps them in the table
+`stock_returns`: `ticker`, `year_end`, `start_date`, `end_date`, `start_price`, `end_price`,
+`dividend`, `market_cap`, `return` and `note`. A stock Schwab has no prices for (a delisted
+one, or a ticker it spells differently) has no return and a `note` that says why. Each stock
+is saved as it is done, and a second call, for the same `:end-date`, skips those it has, so a
+run that is stopped (or that finds the Schwab sign-in has run out: `(schwab-login creds)`)
+carries on where it left off. It returns a table of how many stocks have a return, and how many
+do not, by reason. It only reads from Schwab.
+
+#### `(industry-returns "path/to/financial_data.db")`
+A table with a row for each industry, largest first by market cap: `stocks` in it,
+`market-cap`, `weighted-return` (the industry's return, each stock weighted by its market cap),
+`average-return` (the plain average of the stocks' returns) and `stdev-of-returns` (how far apart
+the stocks in it are). Stocks without a return or a market cap are left out.
+
+#### `(industry-variation "path/to/financial_data.db")`
+How well the industries separate returns. A table with a row for each measure, and a column
+for weighting every stock equally and one for weighting by market cap:
+
+| Measure | What |
+|---|---|
+| `stdev-of-all-returns` | How far a stock's return is from the average of all stocks', typically |
+| `stdev-within-industries` | How far it is from the average of its own industry, typically |
+| `stdev-between-industries` | How far its industry's average is from the average of all, typically |
+| `share-explained-by-industry` | The between-industries variation as a share of the total (R-squared): 0 if knowing the industry tells you nothing, 1 if every stock in an industry had the same return |
+| `share-by-chance` | What that share would be if the stocks were put into the industries at random: the industries less 1, over the stocks less 1. It is above 0 because the average of a few stocks moves with them. Equal weights only |
+| `stocks`, `industries` | How many of each |
+
+A stock's distance from the average of all splits into its industry's distance from the average
+plus its own distance from its industry, and the squares add up:
+`stdev-within² + stdev-between² = stdev-of-all²`. If `share-explained-by-industry` is not much above
+`share-by-chance`, the industries are not separating returns.
 
 ### Alpha Vantage (dividends)
 
