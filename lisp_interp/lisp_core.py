@@ -494,6 +494,10 @@ class LispError(Exception):
 # (see lisp_http.py, and Google, Schwab and tastytrade).
 NETWORK = "network"
 
+# The kind of error of text that stops in the middle of a form: a ( or a string that isn't closed yet. The console reads
+# another line when it gets one.
+UNFINISHED = "unfinished"
+
 
 def lisp_error_of_kind(message, kind):
     """A LispError with this message, of this kind (a string such as NETWORK, or None)."""
@@ -604,7 +608,8 @@ def tokenize(text):
         elif c in '"|':                     # a string, "..." or |...|
             characters, after = read_string(text, i, c)
             if after is None:
-                raise LispError("the string that starts on line %d is never closed -- a %s is missing" % (line, c))
+                raise lisp_error_of_kind("the string that starts on line %d is never closed -- a %s is missing" % (line, c),
+                                         UNFINISHED)
             tokens.append(('"' + characters + '"', line))
             line += text.count('\n', i, after)
             i = after
@@ -668,7 +673,7 @@ def read_from(tokens):
                 break
             items.append(read_from(tokens))
         if not tokens.more():
-            raise LispError("missing ')': the ( on line %d is never closed" % line)
+            raise lisp_error_of_kind("missing ')': the ( on line %d is never closed" % line, UNFINISHED)
         tokens.take()  # discard ")"
         result = tail
         for item in reversed(items):
@@ -679,14 +684,14 @@ def read_from(tokens):
         while tokens.more() and tokens.peek() != ")":
             items.append(read_from(tokens))
         if not tokens.more():
-            raise LispError("missing ')': the #( on line %d is never closed" % line)
+            raise lisp_error_of_kind("missing ')': the #( on line %d is never closed" % line, UNFINISHED)
         tokens.take()  # discard ")"
         return LispVector(items)
     elif token == ")":
         raise LispError("unexpected ')' on line %d -- there are more )s than (s before it" % line)
     elif token in ("'", "`", ",", ",@"):
         if not tokens.more():
-            raise LispError("nothing follows the %s on line %d" % (token, line))
+            raise lisp_error_of_kind("nothing follows the %s on line %d" % (token, line), UNFINISHED)
         name = {"'": "quote", "`": "quasiquote", ",": "unquote", ",@": "unquote-splicing"}[token]
         return list_to_pairs([Symbol(name), read_from(tokens)])
     else:
@@ -2752,12 +2757,15 @@ def set_debug_repl(function):
 # ---------------------------------------------------------------------------
 
 def run_file(path, env):
+    """Evaluates the forms of the Lisp file at path, in env, and returns the value of the last one ('() if it has none)."""
     with open(path) as f:
         text = f.read()
     coverage_state.files.append(path)           # (for coverage: what file a function is defined in)
+    value = NIL
     try:
         for expr in parse(text):
-            seval(expr, env)
+            value = seval(expr, env)
     finally:
         coverage_state.files.pop()
+    return value
 

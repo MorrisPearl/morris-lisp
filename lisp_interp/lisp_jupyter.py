@@ -14,7 +14,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lisp_builtins import load_init_file, make_global_env, markdown_table, print_table
+from lisp_builtins import markdown_table, print_table
+from lisp_runner import new_environment
 from lisp_charts import chart_summary_text, draw_chart_on_axes
 
 try:
@@ -162,13 +163,12 @@ _env = None
 
 
 def get_env():
-    """The environment every cell of this kernel runs in, created (with
-    init.lsp loaded) the first time it's needed. Restarting the kernel
+    """The environment every cell of this kernel runs in, created (as
+    lisp_runner.new_environment makes one) the first time it's needed. Restarting the kernel
     starts a new process, and so a new environment."""
     global _env
     if _env is None:
-        _env = make_global_env(output=_notebook_output, plot=_notebook_plot,
+        _env = new_environment(output=_notebook_output, plot=_notebook_plot,
                                table=_notebook_table, markdown=_notebook_markdown,
                                html=_notebook_html, svg=_notebook_svg, widget=_notebook_widget)
-        load_init_file(_env)
     return _env

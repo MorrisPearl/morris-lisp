@@ -24,6 +24,10 @@ It also runs at a console, or on a file:
     python3 lisp_interpreter.py              # the console
     python3 lisp_interpreter.py file.lsp     # run a file
 
+and from another Python program, with `lisp_interp/lisp_runner.py`:
+`import lisp_runner; lisp_runner.run_file("file.lsp")` runs a file and
+returns the value of its last form.
+
 The data functions read their keys from a credentials file, a JSON object
 such as `{"fred_api_key": "...", "sec_user_agent": "Jane Smith jane@example.com"}`,
 whose path is their first argument. Keep it out of the repository.

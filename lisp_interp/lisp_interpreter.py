@@ -9,6 +9,7 @@ HOW TO RUN IT
     python3 lisp_interpreter.py              the console REPL (also: python3 lisp_interpreter.py -)
     python3 lisp_interpreter.py file.lsp     run a file
     python3 lisp_interpreter.py file.lsp KO  run a file, giving it words: (command-line-arguments) is ("KO")
+    From another Python program: import lisp_runner, and call lisp_runner.run_file("file.lsp") (see lisp_runner.py).
 Put -v, -vv, -vvv, or --verbose=N before the file name to trace procedure
 calls as they happen (see (verbose n) in lisp_interpreter_reference.md).
 Every fresh environment first loads macros_init.lsp and loop.lsp (the
@@ -18,7 +19,9 @@ exists (see make_global_env and load_init_file in lisp_builtins.py).
 LISP_PATH, then lib/ and examples/.
 
 HOW THE CODE IS ORGANIZED
-    lisp_interpreter.py   this file: the command line, console REPL, and batch mode
+    lisp_interpreter.py   this file: the command line
+    lisp_runner.py        running Lisp from Python: a new environment, a file, some text, or the console --
+                          what the command line uses, and what another Python program can import
     lisp_core.py          data types, reader, evaluator, printer -- the language itself
                           (and the machinery of the debugger)
     lisp_builtins.py      the general built-in procedures, and make_global_env(),
@@ -134,63 +137,20 @@ structured-deal (CMO) model of lib/deal.lsp is in lisp_cmo_manual.md)
 import os
 import sys
 
-from lisp_core import (
-    LispAbort, LispError, NIL, Pair, Symbol, TOP_LEVEL_MAX_ITEMS, VERBOSE_CALLS, format_call_stack, format_error_report,
-    format_lisp_traceback, parse, run_file, seval, set_verbose_level, to_string,
-)
-from lisp_tables import is_table
-from lisp_builtins import load_init_file, make_global_env, set_command_line_arguments
+from lisp_core import LispAbort, LispError, VERBOSE_CALLS, format_error_report, format_lisp_traceback, set_verbose_level
+from lisp_builtins import set_command_line_arguments
+import lisp_runner
 
 
-def repl(env):
-    """The console read-eval-print loop. A form is evaluated once its
-    parentheses balance, so a definition can span several lines. Its value
-    is shown as a notebook cell's is: a table as display-table shows it, and
-    only the first 100 elements of a list or vector. Control-C stops what is
-    running (and shows where it was), or, while typing, throws away the lines
-    typed so far."""
-    print("Simple Lisp interpreter. Type (exit) to quit, (help name) for help with a name, and (apropos \"text\") to look for one.")
-    buffer = ""
-    while True:
-        try:
-            line = input("  ... " if buffer else "lisp> ")
-        except EOFError:
-            print()
-            break
-        except KeyboardInterrupt:
-            print()
-            buffer = ""
-            continue
-        buffer += line + "\n"
-        if buffer.count("(") <= buffer.count(")"):
-            try:
-                for expr in parse(buffer):
-                    if isinstance(expr, Pair) and expr.car == Symbol("exit"):
-                        return
-                    result = seval(expr, env)
-                    if is_table(result) and result is not NIL:
-                        env[Symbol("display-table")](result)
-                    else:
-                        print(to_string(result, TOP_LEVEL_MAX_ITEMS))
-            except LispAbort:
-                print("Aborted -- back at the top level.")
-            except KeyboardInterrupt as e:
-                print(format_call_stack(getattr(e, "lisp_trace", None) or [],
-                                        "Interrupted while running (most recent call last):") + "Interrupted.")
-            except Exception as e:
-                print(format_error_report(e), end="")
-            buffer = ""
-
-
-def run_script(path, env):
-    """Run a script file in batch mode. A Lisp error is reported as the REPL
-    reports it -- the chain of calls, then the message -- on stderr, with exit
-    status 1. (Set LISP_PYTHON_TRACEBACK=1 to see Python's traceback of the
-    interpreter too.) Any other exception is a bug in the interpreter: the
-    Lisp call chain is printed, then Python's traceback. An (abort) ends the
-    run, with exit status 1."""
+def run_script(path, arguments):
+    """Run a script file, giving it the words after its name. A Lisp error is
+    reported as the console reports it -- the chain of calls, then the message
+    -- on stderr, with exit status 1. (Set LISP_PYTHON_TRACEBACK=1 to see
+    Python's traceback of the interpreter too.) Any other exception is a bug
+    in the interpreter: the Lisp call chain is printed, then Python's
+    traceback. An (abort) ends the run, with exit status 1."""
     try:
-        run_file(path, env)
+        lisp_runner.run_file(path, arguments=arguments)
     except LispAbort:
         sys.stdout.flush()
         sys.stderr.write("Aborted.\n")
@@ -231,13 +191,11 @@ def main():
             sys.exit(2)
         set_verbose_level(level)
 
-    set_command_line_arguments(args[1:])        # the words after the script's name (or "-")
-    env = make_global_env()
-    load_init_file(env)
     if not args or args[0] == "-":
-        repl(env)
+        set_command_line_arguments(args[1:])        # the words after "-"
+        lisp_runner.repl()
     else:
-        run_script(args[0], env)
+        run_script(args[0], args[1:])
 
 
 if __name__ == "__main__":

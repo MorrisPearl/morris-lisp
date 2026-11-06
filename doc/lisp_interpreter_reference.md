@@ -167,6 +167,31 @@ end.
     for any left off: `(destructuring-bind (&optional (symbol "BRK/B"))
     (command-line-arguments) ...)`, as `examples/option_methods_example.lsp`
     does. They're strings; `string->number` makes a number of one.
+- **From another Python program** -- import `lisp_runner.py`, and call
+  `run_file` with the name of a `.lsp` file; it runs the file in a new
+  environment (a notebook's: the builtins, the libraries, and the init file)
+  and returns the value of its last form:
+
+  ```python
+  import sys
+  sys.path.insert(0, "/path/to/morris_lisp/lisp_interp")   # the folder lisp_runner.py is in
+  import lisp_runner
+
+  value = lisp_runner.run_file("model.lsp")                # the value of the file's last form
+  lisp_runner.run_file("prices.lsp", arguments=["KO", "6"])    # its (command-line-arguments) is ("KO" "6")
+
+  env = lisp_runner.new_environment()                      # one environment for several things in turn
+  lisp_runner.run_file("setup.lsp", env)
+  lisp_runner.run_text("(+ 1 2)", env)                     # 3
+  ```
+
+  What the program displays goes to standard output, unless
+  `new_environment(output=texts.append)` collects it. A Lisp error raises
+  `lisp_core.LispError`; `lisp_core.format_error_report(error)` is the report
+  the console prints. A value comes back as the interpreter holds it -- a list
+  is a `lisp_core.Pair`, a vector a `lisp_core.LispVector` (its `.items` a
+  numpy array) -- and `lisp_core.to_string(value)` is the text the console
+  would show. `lisp_runner.repl(env)` opens the console.
 - **Verbose flags** -- `-v`, `-vv`, `-vvv` (levels 1-3), `--verbose` (level 1),
   or `--verbose=N` (N = 0-3) may come before the script name: `python3
   lisp_interpreter.py -vv script.lsp` traces every procedure call as the
@@ -6332,7 +6357,8 @@ The Python files:
 
 | File | What's in it |
 |---|---|
-| `lisp_interpreter.py` | The command line (what runs when you type `python3 lisp_interpreter.py ...`), the console REPL, and batch mode |
+| `lisp_interpreter.py` | The command line: what runs when you type `python3 lisp_interpreter.py ...` |
+| `lisp_runner.py` | Running Lisp from Python: `new_environment`, `run_file`, `run_text`, and `repl` (the console) -- what the command line and the Jupyter kernel use, and what another Python program can import |
 | `lisp_core.py` | The language itself: data types, the reader, environments, the evaluator and special forms, call tracing, and the printer. It imports none of the other files. |
 | `lisp_builtins.py` | The general built-in procedures (numbers, lists, strings, making and reading vectors, dates, hash tables, output, ...) and `make_global_env()`, which builds a new environment containing every builtin |
 | `lisp_vector_math.py` | Arithmetic, comparisons, statistics, and time-series functions on whole vectors (`vector-mul`, `vector>`, `vector-mean`, `vector-lag`, ...) |
