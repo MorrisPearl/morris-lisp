@@ -236,6 +236,22 @@ MONTHLY = {"AAA": closes(100.0, BANK), "BBB": closes(50.0, [2 * r for r in BANK]
 
 MONTHLY_SCHWAB = """
 (define monthly-asked '())
+; the stocks that pay dividends: (ticker annual-dividend payments-a-year ex-date), as Schwab's fundamentals have them
+(define monthly-dividends '())
+(define (schwab-get creds path params)
+  (let ((answer (make-hash-table)))
+    (hash-table-set! answer "instruments"
+      (map (lambda (stock)
+             (let ((instrument (make-hash-table)) (facts (make-hash-table)))
+               (hash-table-set! facts "symbol" (car stock))
+               (hash-table-set! facts "dividendAmount" (cadr stock))
+               (hash-table-set! facts "dividendFreq" (caddr stock))
+               (if (not (equal? (cadddr stock) "")) (hash-table-set! facts "dividendDate" (cadddr stock)))
+               (hash-table-set! instrument "symbol" (car stock))
+               (hash-table-set! instrument "fundamental" facts)
+               instrument))
+           (filter (lambda (stock) (string-search (cdr (assoc "symbol" params)) (car stock))) monthly-dividends)))
+    answer))
 (define (schwab-price-history creds ticker &key start-date end-date frequency)
   (set! monthly-asked (append monthly-asked (list ticker)))
   (let ((closes (assoc ticker monthly-closes)))
@@ -291,17 +307,39 @@ class TestMonthlyReturns(IndustryReturnsTestCase):
         self.update()
         self.assertShows("monthly-asked", "()")
 
-    def test_a_months_return_is_the_change_in_price_and_a_twelfth_of_the_dividend(self):
+    def return_of(self, ticker, month_index):
+        return self.run_lisp('(vector-ref (table-column (monthly-returns db :years 1) "%s") %d)' % (ticker, month_index))
+
+    def test_a_quarterly_dividend_is_a_quarter_of_the_years_in_each_month_with_an_ex_date(self):
+        # AAA pays 4.00 a year, quarterly, and its last ex-date was August 14, 2026: so also in May and February 2026 and November 2025
+        self.run_lisp("""(set! monthly-dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0")))""")
         self.update()
-        connection = sqlite3.connect(self.database)
-        connection.execute("CREATE TABLE stock_returns (ticker TEXT PRIMARY KEY, year_end TEXT, start_date TEXT, end_date TEXT, start_price REAL, "
-                           "end_price REAL, dividend REAL, market_cap REAL, return REAL, note TEXT)")
-        connection.execute("INSERT INTO stock_returns VALUES ('AAA', '', '', '', 1, 1, 12.0, 100.0, 0, '')")
-        connection.commit()
-        connection.close()
-        # November 2025: the price goes from 100 to 102 (BANK[0] is 2%), and a month's dividend is 1: (102 - 100 + 1) / 100
-        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column (monthly-returns db :years 1) "AAA") 0)'), 0.03)
-        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column (monthly-returns db :years 1) "BBB") 0)'), 0.04)
+        # November 2025: the price goes from 100 to 102 (BANK[0] is 2%), and the dividend is 1: (102 - 100 + 1) / 100
+        self.assertAlmostEqual(self.return_of("AAA", 0), 0.03)
+        # December 2025 has no ex-date: the price change alone
+        self.assertAlmostEqual(self.return_of("AAA", 1), BANK[1])
+        months_with_dividends = [i for i in range(12) if abs(self.return_of("AAA", i) - BANK[i]) > 1e-12]
+        self.assertEqual(months_with_dividends, [0, 3, 6, 9])          # November, February, May, August
+
+    def test_the_ex_dates_go_forward_from_schwabs_as_well_as_back(self):
+        # an ex-date of May 31, 2026, paid twice a year: November 2025 and May 2026 (and May 31 less 6 months is November, not December 1)
+        self.run_lisp("""(set! monthly-dividends '(("AAA" 2.0 2 "2026-05-31 00:00:00.0") ("CCC" 1.2 12 "2025-12-02 00:00:00.0")))""")
+        self.update()
+        self.assertEqual([i for i in range(12) if abs(self.return_of("AAA", i) - BANK[i]) > 1e-12], [0, 6])
+        # CCC pays monthly, and Schwab's ex-date is in December 2025: every month has a dividend of 0.10, before it and after it
+        self.assertEqual([i for i in range(12) if abs(self.return_of("CCC", i) - OIL[i]) > 1e-12], list(range(12)))
+
+    def test_a_dividend_without_an_ex_date_is_a_twelfth_every_month(self):
+        self.run_lisp("""(set! monthly-dividends '(("CCC" 12.0 0 "")))""")
+        self.update()
+        # November 2025: CCC goes from 20 to 19.8 (OIL[0] is -1%), with a dividend of 1: (19.8 - 20 + 1) / 20
+        self.assertAlmostEqual(self.return_of("CCC", 0), 0.04)
+
+    def test_the_dividends_are_kept_and_counted(self):
+        self.run_lisp("""(set! monthly-dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0") ("BBB" 0.0 0 "")))""")
+        self.update()
+        self.assertEqual(self.stored("SELECT * FROM stock_dividends ORDER BY ticker"), [("AAA", 4.0, 4, "2026-08-14"), ("BBB", 0.0, 0, "")])
+        self.assertShows('(table-column (stock-dividends-update creds db) "paying_dividends")', "#(1)")
 
     def test_only_the_stocks_with_every_month_are_in_the_returns(self):
         self.update()

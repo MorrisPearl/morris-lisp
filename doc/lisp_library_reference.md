@@ -2507,14 +2507,25 @@ stocks' returns went up and down.
 (display-table (cdr (assoc "industries" components)))
 ```
 
-A month's return is `(this month's close - last month's close + a month's dividend) / last month's
-close`, where a month's dividend is a twelfth of Schwab's `dividendAmount` (kept in `stock_returns`):
-the current dividend, taken to be the same number of dollars every month. The Canadian stocks (tickers
+A month's return is `(this month's close - last month's close + the dividend paid that month) / last
+month's close`. The dividend is the current one, the same number of dollars each time: Schwab's
+`dividendAmount` (a year's dividends at the current rate) over `dividendFreq` (payments a year: 4 for
+most, 12 for some, 2 for some foreign companies), in each month with an ex-dividend date, the day the price
+falls by the dividend. The ex-dates are Schwab's `dividendDate` (the latest or the next) and every
+12 / `dividendFreq` months before and after it. A stock with a dividend but no ex-date, or a number of payments
+that doesn't divide the year into whole months, gets a twelfth of it every month. The Canadian stocks (tickers
 ending `.TO`) are left out.
+
+#### `(stock-dividends-update creds "path/to/financial_data.db")`
+Schwab's dividend facts for every stock but the Canadian ones, kept in the table `stock_dividends`
+(`ticker`, `annual_dividend`, `payments_per_year`, `ex_date`) in place of what it had: a few requests,
+400 stocks at a time. `monthly-prices-update` calls it first. Returns how many stocks it has, and how many
+pay a dividend.
 
 #### `(monthly-prices-update creds "path/to/financial_data.db" [:years n :end-date d])`
 Each stock's month-end close for the last `:years` (2) whole years, from Schwab, kept in the table
-`monthly_prices` (`ticker`, `month`, `close`, with `month` the first day of the month). The last month is
+`monthly_prices` (`ticker`, `month`, `close`, with `month` the first day of the month), after bringing the
+dividends up to date with `stock-dividends-update`. The last month is
 the one before the month of `:end-date` (today), so only whole months are used. Like
 `stock-returns-update`, it keeps going from where it stopped when it is called again, and it notes the
 stocks Schwab has no prices for (in `monthly_prices_asked`). An error that would happen for every stock,

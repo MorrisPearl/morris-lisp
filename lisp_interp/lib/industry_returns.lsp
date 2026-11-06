@@ -228,12 +228,16 @@ A share well above share-by-chance means the industries are separating returns; 
 ;   (monthly-returns "financial_data.db")               a table with a row for each month and a column of each stock's returns
 ;   (return-components "financial_data.db")             the principal components of those returns
 ;
-; A month's return is (this month's close - last month's close + the dividend for a month) / last month's close, where the dividend for a month is a
-; twelfth of Schwab's dividendAmount (from stock_returns): the current dividend, taken to be the same number of dollars every month. Only whole months are
-; used: the last is the month before the one the update is run in. The Canadian stocks (tickers ending in .TO) are left out.
+; A month's return is (this month's close - last month's close + the dividend paid that month) / last month's close. The dividend is the current one, taken to
+; be the same number of dollars each time: Schwab's dividendAmount (a year's dividends at the current rate) over dividendFreq (how many payments a year: 4 for
+; most, 12 for some, 2 for some foreign companies), in each month that has an ex-dividend date (the day the price falls by the dividend). The ex-dates are
+; Schwab's dividendDate (the latest, or the next) and the dates every 12 / dividendFreq months before it. A stock with a dividend but no ex-date, or with a
+; number of payments a year that doesn't divide a year into whole months, gets a twelfth of its dividend every month. Only whole months are used: the last
+; is the month before the one the update is run in. The Canadian stocks (tickers ending in .TO) are left out.
 ;
-; The tables: monthly_prices (ticker, month, close), with month the first day of the month the close is at the end of; and monthly_prices_asked (ticker,
-; last_month, months, note), a row for each stock asked for, so that a run that is stopped picks up where it left off.
+; The tables: monthly_prices (ticker, month, close), with month the first day of the month the close is at the end of; monthly_prices_asked (ticker,
+; last_month, months, note), a row for each stock asked for, so that a run that is stopped picks up where it left off; and stock_dividends (ticker,
+; annual_dividend, payments_per_year, ex_date), the dividends as Schwab has them now, which monthly-prices-update gets afresh each time (a few requests).
 
 (define monthly-returns-years 2)          ; how many years of monthly returns
 
@@ -276,10 +280,46 @@ A share well above share-by-chance means the industries are separating returns; 
     (sqlite-execute conn "DELETE FROM monthly_prices_asked WHERE ticker = ?" (list ticker))
     (sqlite-execute conn "INSERT INTO monthly_prices_asked VALUES (?, ?, ?, ?)" (list ticker (date->string last-month) months note))))
 
+(define (stock-dividends--create conn)
+  (sqlite-execute conn "CREATE TABLE IF NOT EXISTS stock_dividends (ticker TEXT PRIMARY KEY, annual_dividend REAL, payments_per_year INTEGER, ex_date TEXT)"))
+
+(define (stock-dividends--batch creds tickers)
+  "Schwab's dividend facts for the tickers, as a table of ticker, annual_dividend, payments_per_year and ex_date (\"\" if there is none)."
+  (let* ((answer (stock-returns--ask-schwab
+                   (lambda () (schwab-get creds "/marketdata/v1/instruments"
+                                          (list (cons "symbol" (stock-returns--join-with-commas tickers)) (cons "projection" "fundamental"))))))
+         (facts (filter (lambda (f) f)
+                        (map (lambda (instrument) (hash-table-ref instrument "fundamental"))
+                             (hash-table-ref answer "instruments" '()))))
+         (ex-date (lambda (f) (let ((text (hash-table-ref f "dividendDate" "")))
+                                (if (>= (string-length text) 10) (substring text 0 10) "")))))
+    (make-table "ticker" (list->vector (map (lambda (f) (hash-table-ref f "symbol")) facts))
+                "annual_dividend" (list->vector (map (lambda (f) (hash-table-ref f "dividendAmount" 0.0)) facts))
+                "payments_per_year" (list->vector (map (lambda (f) (hash-table-ref f "dividendFreq" 0)) facts))
+                "ex_date" (list->vector (map ex-date facts)))))
+
+(define (stock-dividends-update creds db-path)
+  "Gets Schwab's dividend facts for every stock in ticker_industry but the Canadian ones (a year's dividends at the current rate, how many payments a
+year, and the latest or next ex-dividend date) and keeps them in the table stock_dividends, in place of what it had. Asks for stock-returns-batch at a time.
+Returns how many stocks it has, and how many of them pay a dividend."
+  (with-sqlite (conn db-path)
+    (stock-dividends--create conn)
+    (let ((tickers (vector->list (table-column (sqlite-query conn "SELECT ticker FROM ticker_industry WHERE ticker NOT LIKE '%.TO' ORDER BY ticker")
+                                               "ticker"))))
+      (sqlite-execute conn "DELETE FROM stock_dividends")
+      (let loop ((remaining tickers))
+        (if (pair? remaining)
+            (let ((count (min stock-returns-batch (length remaining))))
+              (let ((found (stock-dividends--batch creds (stock-returns--first count remaining))))
+                (if (> (table-row-count found) 0) (sqlite-write-table conn "stock_dividends" found 'append)))
+              (loop (list-tail remaining count)))))
+      (sqlite-query conn "SELECT COUNT(*) AS stocks, SUM(annual_dividend > 0) AS paying_dividends FROM stock_dividends"))))
+
 (define (monthly-prices-update creds db-path &key (years monthly-returns-years) (end-date '()))
   "Gets each stock's month-end closes for the last :years (2) whole years, before the month of :end-date (today), from Schwab, and keeps them in the table
-monthly_prices of the database at db-path. Skips the stocks it already has, so it can be stopped and called again. Returns a table of how many stocks it has
+monthly_prices of the database at db-path; first it brings the dividends up to date (stock-dividends-update). Skips the stocks it already has, so it can be stopped and called again. Returns a table of how many stocks it has
 a whole run of months for, how many it has some months for, and how many none, by reason."
+  (display "dividends: ") (display (stock-dividends-update creds db-path)) (newline)
   (with-sqlite (conn db-path)
     (monthly-prices--create conn)
     (let* ((end (if (null? end-date) (today) (if (string? end-date) (string->date end-date) end-date)))
@@ -302,24 +342,45 @@ a whole run of months for, how many it has some months for, and how many none, b
 (define (monthly-returns--long conn years)
   "The monthly returns, a row for each stock and month: ticker, month, return and market_cap, for the stocks that have a return in every one of the last
 :years of months monthly_prices has."
-  (stock-returns--create conn)      ; (the dividends and market caps come from it; without it, there are none)
+  (stock-returns--create conn)      ; (the market caps come from it; without it, there are none)
+  (stock-dividends--create conn)    ; (and the dividends from this)
   (let* ((last-month (vector-ref (table-column (sqlite-query conn "SELECT MAX(month) AS last FROM monthly_prices") "last") 0))
          (first-month (date->string (date-add-months (string->date (date->string last-month)) (- (* 12 years))))))
     (sqlite-query conn
-      "WITH priced AS (
+      "WITH RECURSIVE
+       -- the month of each ex-dividend date: the month of Schwab's, and every 12 / payments_per_year months before it, back to the first month,
+       -- and after it, up to the last (step is -1 going back, +1 going forward; the months are counted from the first of the month, as SQLite
+       -- takes May 31 less 3 months to be March 3)
+       ex_months (ticker, month, payment, months_apart, step) AS (
+         SELECT ticker, date(ex_date, 'start of month'), annual_dividend / payments_per_year, 12 / payments_per_year, step
+           FROM stock_dividends, (SELECT -1 AS step UNION ALL SELECT 1)
+          WHERE annual_dividend > 0 AND ex_date != '' AND payments_per_year IN (1, 2, 3, 4, 6, 12)
+         UNION ALL
+         SELECT ticker, date(month, printf('%+d months', step * months_apart)), payment, months_apart, step FROM ex_months
+          WHERE (step < 0 AND month >= ?) OR (step > 0 AND month <= ?)),
+       paid AS (SELECT ticker, month, SUM(payment) AS dividend
+                  FROM (SELECT DISTINCT ticker, month, payment FROM ex_months)     -- (Schwab's own month is there twice, once for each step)
+                 GROUP BY ticker, month),
+       -- a stock with a dividend but no ex-date, or an odd number of payments a year: a twelfth of it each month
+       spread AS (SELECT ticker, annual_dividend / 12.0 AS dividend FROM stock_dividends
+                   WHERE annual_dividend > 0 AND NOT (ex_date != '' AND payments_per_year IN (1, 2, 3, 4, 6, 12))),
+       priced AS (
          SELECT p.ticker, p.month, p.close,
                 LAG(p.close) OVER (PARTITION BY p.ticker ORDER BY p.month) AS previous_close,
-                COALESCE(r.dividend, 0) / 12.0 AS monthly_dividend,
+                COALESCE(paid.dividend, spread.dividend, 0) AS dividend,
                 COALESCE(r.market_cap, 0) AS market_cap
-           FROM monthly_prices p LEFT JOIN stock_returns r ON r.ticker = p.ticker
+           FROM monthly_prices p
+                LEFT JOIN paid ON paid.ticker = p.ticker AND paid.month = p.month
+                LEFT JOIN spread ON spread.ticker = p.ticker
+                LEFT JOIN stock_returns r ON r.ticker = p.ticker
           WHERE p.month >= ? AND p.month <= ?),
        returns AS (
-         SELECT ticker, month, (close - previous_close + monthly_dividend) / previous_close AS return, market_cap
+         SELECT ticker, month, (close - previous_close + dividend) / previous_close AS return, market_cap
            FROM priced WHERE previous_close > 0)
        SELECT ticker, month, return, market_cap FROM returns
         WHERE ticker IN (SELECT ticker FROM returns GROUP BY ticker HAVING COUNT(*) = ?)
         ORDER BY ticker, month"
-      '() '() (list first-month (date->string last-month) (* 12 years)))))
+      '() '() (list first-month (date->string last-month) first-month (date->string last-month) (* 12 years)))))
 
 (define (monthly-returns db-path &key (years monthly-returns-years))
   "A table of the stocks' monthly returns: a month column, and a column for each stock that has a return in every one of the last :years (2) of months,
