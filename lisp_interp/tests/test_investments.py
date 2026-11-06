@@ -2150,3 +2150,23 @@ class TestVarimax(LispTestCase):
 
     def test_rotate_takes_only_varimax(self):
         self.assertLispError('(principal-components groups :rotate "promax")', "varimax")
+
+    def test_weights_make_the_heavy_columns_decide_the_components(self):
+        # the y columns count for little: the first component is then the x group's (the market and a), not everything
+        weights = "(list %s)" % " ".join('(cons "%s" %s)' % (name, "100.0" if name[0] == "x" else "1.0")
+                                         for name in ["x1", "x2", "x3", "y1", "y2", "y3"])
+        weighted = self.part_numbers("(principal-components groups :count 2 :weights %s)" % weights)
+        first = np.abs(weighted["correlations"][:, 0])
+        self.assertTrue(np.all(first[:3] > 0.95))
+        self.assertTrue(np.all(first[3:] < first[:3]))
+        # the weighted first component explains more of the weighted variation than the plain one does of the plain
+        self.assertGreater(weighted["shares"][0], self.plain["shares"][0])
+
+    def test_a_column_of_weight_0_still_has_its_correlations(self):
+        weights = "(list %s)" % " ".join('(cons "%s" %s)' % (name, "0.0" if name == "y3" else "1.0")
+                                         for name in ["x1", "x2", "x3", "y1", "y2", "y3"])
+        weighted = self.part_numbers("(principal-components groups :count 2 :weights %s)" % weights)
+        self.assertGreater(weighted["explained"][5], 0.9)            # y3 is like y1 and y2, which the components explain
+
+    def test_weights_need_one_for_each_column(self):
+        self.assertLispError('(principal-components groups :weights (list (cons "x1" 1.0)))', "has none for")

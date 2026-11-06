@@ -2545,10 +2545,13 @@ none, by reason.
 A table with a `period` column and a column of returns for each stock that has a return in every one of the
 periods, named by its ticker.
 
-#### `(return-components "path/to/financial_data.db" [:frequency f :years n :count k :standardize b :rotate "varimax"])`
+#### `(return-components "path/to/financial_data.db" [:frequency f :years n :count k :standardize b :rotate "varimax" :weights w])`
 The principal components (`principal-components`, under [Portfolios](#portfolios)) of the returns: the
 `:count` (5) patterns that explain the most. With `:standardize #t` (the default) the stocks' returns are
-first put on one scale, so that a small stock whose price jumps around does not decide the patterns. A list
+first put on one scale, so that a small stock whose price jumps around does not decide the patterns. With `:weights
+"market-cap"` each stock counts in proportion to its market cap (from `stock_returns`), as in an index fund,
+so the components are the big companies'; with `"equal"` (the default) every stock counts the same, and the
+thousands of small companies shape them. A list
 of four tables, read with `(cdr (assoc "stocks" components))`:
 
 | Table | Columns |
@@ -6570,7 +6573,7 @@ the daily returns' covariance times the days in a year (252, unless
 (display-table (correlation-matrix both))
 ```
 
-#### `(principal-components table [:count k] [:standardize b] [:rotate "varimax"])`
+#### `(principal-components table [:count k] [:standardize b] [:rotate "varimax"] [:weights w])`
 The few combinations of a table's columns that explain most of how they vary
 together: principal component analysis. The table has a column of numbers
 for each thing (each stock's returns, say) and a row for each observation
@@ -6592,7 +6595,13 @@ put on the same scale, its standard deviation made 1, so that the components
 explain how the columns move together rather than which columns move most;
 `#f` leaves them as they are. A component's sign is chosen so that its
 loadings add up to more than 0 (the first is then "everything going up").
-Every number must be there.
+Every number must be there. `:weights`, a list of `(name . weight)` with one
+for each column, makes each column count in proportion to its weight (a
+stock's market cap, say): its numbers are multiplied by the square root of
+its weight, so that its variance, which is what the components explain, is in
+proportion. The components are then those that explain the most of the
+weighted variation; the `correlations` and `explained` are still each
+column's own, so a column of weight 0 has them too.
 
 ```lisp
 (define moves (make-table "month" #("a" "b" "c" "d")

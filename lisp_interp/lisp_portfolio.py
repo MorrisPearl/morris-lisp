@@ -7,7 +7,7 @@
   (portfolio-value prices weights [:start-prices p] [:rebalance n] [:start-value v])
                                            a portfolio's value along a table of prices
   (covariance-matrix returns [:days-per-year n]), (correlation-matrix returns)
-  (principal-components table [:count k] [:standardize b] [:rotate "varimax"])
+  (principal-components table [:count k] [:standardize b] [:rotate "varimax"] [:weights w])
                                            the few combinations that explain most of many columns' variation
   (portfolio-volatility weights covariance)
   (minimum-variance-weights covariance [:long-only #t])
@@ -369,7 +369,7 @@ def varimax_rotation(covariances, tolerance=1e-10, most_sweeps=1000):
 
 
 def principal_components(table, *options):
-    """(principal-components table [:count k] [:standardize b] [:rotate "varimax"]) -- the
+    """(principal-components table [:count k] [:standardize b] [:rotate "varimax"] [:weights w]) -- the
     principal components of the table's columns of numbers (one column for
     each thing, such as a stock's returns, and one row for each observation,
     such as a month). The other columns, such as a date, are carried along.
@@ -402,9 +402,13 @@ def principal_components(table, *options):
     longer of length 1. The components are in order of how much they
     explain, and each one's sign is chosen so that the columns' correlations
     with it add up to more than 0. Every number must be there: a column with
-    a missing value is an error."""
+    a missing value is an error. :weights, a list of (name . weight) with
+    one for each column, makes each column count in proportion to its
+    weight (a stock's market cap, say), so that the components are those
+    that explain the most of the weighted variation; the correlations and
+    explained shares are still each column's own."""
     who = "principal-components"
-    options = keyword_options(options, ["count", "standardize", "rotate"], who)
+    options = keyword_options(options, ["count", "standardize", "rotate", "weights"], who)
     rotate = options.get("rotate", False)
     if rotate is not False and str(rotate) != "varimax":
         raise LispError('%s: :rotate is "varimax", or #f for none, not %s' % (who, rotate))
@@ -433,10 +437,21 @@ def principal_components(table, *options):
             raise LispError("%s: %s never changes, so it can't be put on the same scale as the others"
                             % (who, numeric[int(np.argmax(spread == 0))][0]))
         centered = centered / spread
+    # With weights, each column counts in proportion to its weight: its numbers are multiplied by the square root of
+    # its weight (over the average weight), so that its variance, which is what the components explain, is.
+    if "weights" in options:
+        names = [name for name, _ in numeric]
+        by_name = named_numbers(options["weights"], names, ":weights", who)
+        weights = np.array([by_name[name] for name in names])
+        if np.any(weights < 0) or weights.sum() <= 0:
+            raise LispError("%s: :weights must be 0 or more, and not all 0" % who)
+        weighted = centered * np.sqrt(weights / weights.mean())
+    else:
+        weighted = centered
 
     # The singular value decomposition: centered = left @ diag(sizes) @ directions. Each row of directions is a
     # component (the weights of the columns that make it), and sizes squared / (rows - 1) is its variance.
-    left, sizes, directions = np.linalg.svd(centered, full_matrices=False)
+    left, sizes, directions = np.linalg.svd(weighted, full_matrices=False)
     variances = sizes ** 2 / (rows - 1)
     total_variance = variances.sum()
     # Each column's covariance with each component, the component scaled to a variance of 1 (a row for each column,
@@ -454,10 +469,14 @@ def principal_components(table, *options):
     covariances, unit_weights, component_variances = covariances[:, order], unit_weights[:, order], component_variances[order]
     signs = np.where(covariances.sum(axis=0) < 0, -1.0, 1.0)
     covariances = covariances * signs
-    loadings = unit_weights * signs * np.sqrt(component_variances)      # a component's value is the columns times these
-    scores = centered @ loadings
-    column_variances = centered.var(axis=0, ddof=1)
-    correlations = covariances / np.sqrt(column_variances)[:, None]
+    loadings = unit_weights * signs * np.sqrt(component_variances)      # a component's value is the (weighted) columns times these
+    scores = weighted @ loadings
+    # Each column's correlation with each component, from the columns as they were before weighting (so that a
+    # column of weight 0 has them too). The components are unrelated to each other, so the share of a column's
+    # variation they explain together is its correlations' squares added up.
+    real = component_variances > 1e-12 * total_variance       # (a component that explains nothing has no correlations)
+    unit_scores = np.where(real, scores / np.sqrt(np.where(real, component_variances, 1.0)), 0.0)
+    correlations = (centered.T @ unit_scores) / (rows - 1) / centered.std(axis=0, ddof=1)[:, None]
     explained = (correlations ** 2).sum(axis=1)
     shares = component_variances / total_variance
 

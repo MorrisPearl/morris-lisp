@@ -182,7 +182,7 @@ industry's average); the squares of the two add up, weighted, to the square of t
     (list (cons "stdev-of-all-returns" (sqrt (/ total-squares total-weight)))
           (cons "stdev-within-industries" (sqrt (/ within-squares total-weight)))
           (cons "stdev-between-industries" (sqrt (/ (max between-squares 0.0) total-weight)))     ; (it can come out a hair below 0)
-          (cons "share-explained-by-industry" (/ between-squares total-squares)))))
+          (cons "share-explained-by-industry" (if (> total-squares 0) (/ between-squares total-squares) 0.0)))))
 
 (define (industry-returns--with-ranks stocks)
   "The stocks with a column, return-rank, of where each return stands among all of them, from near 0 for the lowest to 1 for the highest."
@@ -476,7 +476,7 @@ industries of at least return-components-label-size stocks whose stocks move mos
          (share (cdr (assoc "share-explained-by-industry" (industry-variation--measures stocks pc-name "equal")))))
     (list share (car strongest) (cdr strongest) label)))
 
-(define (return-components db-path &key (frequency "weekly") (years '()) (count 5) (standardize #t) (rotate #f))
+(define (return-components db-path &key (frequency "weekly") (years '()) (count 5) (standardize #t) (rotate #f) (weights "equal"))
   "The principal components of the stocks' weekly (or, with :frequency \"monthly\", monthly) returns over the last :years (3 for weekly, 2 for monthly): the
 :count (5) patterns of moving together that explain the most of how the stocks' returns went up and down. With :standardize #t (the default) each stock's
 returns are first put on the same scale, so that the components explain how the stocks move together, not just which stocks move the most. With :rotate
@@ -500,13 +500,16 @@ Read one with (cdr (assoc \"stocks\" components)); stock-components lists each s
     (let* ((long (periodic-returns--long conn frequency (stock-prices--years frequency years)))
            (wide (table-pivot long "period" "ticker" '(sum "return")))
            (periods (table-row-count wide))
-           (pca (principal-components wide :count count :standardize standardize :rotate rotate))
+           (facts (sqlite-query conn "SELECT i.ticker AS ticker, i.industry AS industry, COALESCE(r.market_cap, 0) AS market_cap
+                                        FROM ticker_industry i LEFT JOIN stock_returns r ON r.ticker = i.ticker"))
+           (market-caps (map cons (vector->list (table-column facts "ticker")) (vector->list (table-column facts "market_cap"))))
+           (pca (cond ((equal? weights "equal") (principal-components wide :count count :standardize standardize :rotate rotate))
+                      ((equal? weights "market-cap") (principal-components wide :count count :standardize standardize :rotate rotate :weights market-caps))
+                      (else (error "return-components: :weights is \"equal\" or \"market-cap\", not" weights))))
            (pc-names (map (lambda (i) (string-append "pc" (number->string i))) (iota (min count (- periods 1)) 1)))
            (market (table-group-by long "period" '(("market-return" weighted-mean "return" "market_cap"))))
            (scores (table-join (cdr (assoc "scores" pca)) market "period"))
            (market-returns (table-column scores "market-return"))
-           (facts (sqlite-query conn "SELECT i.ticker AS ticker, i.industry AS industry, COALESCE(r.market_cap, 0) AS market_cap
-                                        FROM ticker_industry i LEFT JOIN stock_returns r ON r.ticker = i.ticker"))
            (explained (table-select (cdr (assoc "loadings" pca)) '("column" "explained")))
            (stocks (table-join (table-join (cdr (assoc "correlations" pca)) explained "column") (table-rename-column facts "ticker" "column") "column"))
            (stocks (table-rename-column stocks "column" "ticker"))
@@ -555,8 +558,8 @@ the stock's returns with the component: below 0, it moves against it), and share
                       (set! rows (cons (list ticker industry rank (car pair) (cdr (assoc (car pair) labels)) (cdr pair) (* (cdr pair) (cdr pair)))
                                        rows)))
                     chosen (iota top 1))
-          (set! rows (cons (list ticker industry (+ top 1) "the other components" "" nan (- explained chosen-share)) rows))
-          (set! rows (cons (list ticker industry (+ top 2) "its own" "" nan (- 1.0 explained)) rows))))
+          (set! rows (cons (list ticker industry (+ top 1) "the other components" "" nan (max 0.0 (- explained chosen-share))) rows))
+          (set! rows (cons (list ticker industry (+ top 2) "its own" "" nan (max 0.0 (- 1.0 explained))) rows))))
       (map list
            (vector->list (table-column stocks "ticker"))
            (vector->list (table-column stocks "industry"))

@@ -425,7 +425,11 @@ class TestWeeklyReturns(PricesTestCase):
         self.assertShows('(table-column %s "component")' % described, '#("pc1" "pc2")')
         self.assertShows('(vector-round (table-column %s "industry-share") 6)' % described, "#(1.0 1.0)")
         self.assertShows('(vector-round (vector-abs (table-column %s "best-industry-correlation")) 6)' % described, "#(1.0 1.0)")
-        self.assertShows('(sort (vector->list (table-column %s "best-industry")))' % described, '("Banks" "Oil")')
+        # with two industries, being a bank is not being in oil, so each is as strongly associated with each component, one with it, one against it:
+        # the best for both is Banks (the first), with the bank component and against the oil one
+        self.assertShows('(table-column %s "best-industry")' % described, '#("Banks" "Banks")')
+        self.assertAlmostEqual(self.run_lisp('(* (vector-ref (table-column %s "best-industry-correlation") 0) '
+                                             '(vector-ref (table-column %s "best-industry-correlation") 1))' % (described, described)), -1.0)
         # with four stocks and two industries, the share by chance is (2 - 1) / (4 - 1); no industry has the 10 stocks a label needs
         self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column %s "industry-share-by-chance") 0)' % described), 1 / 3)
         self.assertShows('(table-column %s "label")' % described, '#("" "")')
@@ -488,3 +492,18 @@ class TestWeeklyReturns(PricesTestCase):
         self.run_lisp('(define changes (rate-changes db "treasury-par" "10Y"))')
         self.assertShows('(table-column changes "period")', '#("2026-10-19" "2026-10-26")')
         self.assertShows('(vector-round (table-column changes "treasury-par 10Y change") 6)', "#(-0.05 0.1)")
+
+    def test_market_cap_weights_let_the_big_stocks_decide(self):
+        connection = sqlite3.connect(self.database)
+        connection.execute("CREATE TABLE stock_returns (ticker TEXT PRIMARY KEY, year_end TEXT, start_date TEXT, end_date TEXT, start_price REAL, "
+                           "end_price REAL, dividend REAL, market_cap REAL, return REAL, note TEXT)")
+        for ticker, cap in (("AAA", 1000.0), ("BBB", 1000.0), ("CCC", 1.0), ("DDD", 1.0)):
+            connection.execute("INSERT INTO stock_returns VALUES (?, '', '', '', 1, 1, 0, ?, 0, '')", (ticker, cap))
+        connection.commit()
+        connection.close()
+        self.update()
+        self.run_lisp('(define components (return-components db :years 1 :count 1 :weights "market-cap"))')
+        # the banks are nearly all the weight, so the one component is theirs: it explains them, not the oil companies
+        self.assertShows('(vector-round (table-column (cdr (assoc "stocks" components)) "explained") 2)', "#(1.0 1.0 0.0 0.0)")
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column (cdr (assoc "components" components)) "variance-share") 0)'), 1.0, places=2)
+        self.assertLispError('(return-components db :years 1 :weights "size")', "market-cap")
