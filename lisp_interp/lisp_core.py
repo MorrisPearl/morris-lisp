@@ -577,9 +577,9 @@ def read_string(text, start, quote_mark):
 
 
 def tokenize(text):
-    """Turn source text into a list of tokens, each a (token, line) pair: the token's text, and the number of the line it
-    starts on (1 for the first), for error messages. A string's token is its characters between double quote marks, which
-    is how atom() tells it from a symbol."""
+    """Turn source text into a list of tokens, each a (token, line, start, end) tuple: the token's text; the number of the
+    line it starts on (1 for the first), for error messages; and where in the text it starts and ends. A string's token is
+    its characters between double quote marks, which is how atom() tells it from a symbol."""
     tokens = []
     i, n, line = 0, len(text), 1
     while i < n:
@@ -593,31 +593,31 @@ def tokenize(text):
             while i < n and text[i] != '\n':
                 i += 1
         elif c == '#' and i + 1 < n and text[i + 1] == '(':
-            tokens.append(("#(", line))     # start of a vector literal
+            tokens.append(("#(", line, i, i + 2))     # start of a vector literal
             i += 2
         elif c in "()'`":
-            tokens.append((c, line))
+            tokens.append((c, line, i, i + 1))
             i += 1
         elif c == ',':
             if i + 1 < n and text[i + 1] == '@':
-                tokens.append((',@', line))
+                tokens.append((',@', line, i, i + 2))
                 i += 2
             else:
-                tokens.append((',', line))
+                tokens.append((',', line, i, i + 1))
                 i += 1
         elif c in '"|':                     # a string, "..." or |...|
             characters, after = read_string(text, i, c)
             if after is None:
                 raise lisp_error_of_kind("the string that starts on line %d is never closed -- a %s is missing" % (line, c),
                                          UNFINISHED)
-            tokens.append(('"' + characters + '"', line))
+            tokens.append(('"' + characters + '"', line, i, after))
             line += text.count('\n', i, after)
             i = after
         else:
             j = i
             while j < n and text[j] not in " \t\r\n()'\"`," and text[j] != ';':
                 j += 1
-            tokens.append((text[i:j], line))
+            tokens.append((text[i:j], line, i, j))
             i = j
     return tokens
 
@@ -642,9 +642,17 @@ class Tokens:
 
     def take(self):
         """The next token, as a (token, line) pair, moving past it."""
-        item = self.items[self.position]
+        token, line, _, _ = self.items[self.position]
         self.position += 1
-        return item
+        return token, line
+
+    def start_of(self, index):
+        """Where in the text the token at index begins."""
+        return self.items[index][2]
+
+    def end_of(self, index):
+        """Where in the text the token at index ends."""
+        return self.items[index][3]
 
 
 def parse(text):

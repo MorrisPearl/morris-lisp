@@ -106,7 +106,7 @@
 ;     `maybe-flag` is simply left out of the bindings.
 ;
 ; A template can be rendered directly as a string, or parsed once with
-; template-parse and rendered many times (e.g. once per row of a report)
+; template--parse and rendered many times (e.g. once per row of a report)
 ; without re-parsing -- template-render/template-render-sql accept
 ; either a raw template string or an already-parsed node list.
 ;
@@ -142,7 +142,7 @@ included."
   (if x #t #f))
 
 ; ---------------------------------------------------------------------
-; Parser: template-parse turns a template string into a list of nodes --
+; Parser: template--parse turns a template string into a list of nodes --
 ;   (text "literal text")
 ;   (var name spec)       spec is "" when the tag has none
 ;   (each itemvar listname sepvar-or-'() body-nodes)
@@ -276,7 +276,7 @@ being '() at end-of-string."
                   (list-ref rest-result 1)
                   (list-ref rest-result 2)))))))))
 
-(define (template-parse template-string)
+(define (template--parse template-string)
   "Parse a template string into a node list -- see the file header for
 the syntax, and template-render/template-render-sql for rendering it.
 Pre-parsing with this (once) is only worth it if you're about to render
@@ -336,8 +336,8 @@ string directly otherwise."
     (else (error "template-render: unknown node kind" kind))))
 
 (define (template--parsed template)
-  "The template's nodes: it, if it is already parsed, or what template-parse makes of the string."
-  (if (string? template) (template-parse template) template))
+  "The template's nodes: it, if it is already parsed, or what template--parse makes of the string."
+  (if (string? template) (template--parse template) template))
 
 ; ---------------------------------------------------------------------
 ; Plain-text rendering: a {{name}} is its value, formatted.
@@ -348,7 +348,7 @@ string directly otherwise."
 
 (define (template-render template bindings)
   "Render `template` (a template string, or an already-parsed node list
-from template-parse) against `bindings` (a list of (name value) pairs --
+from template--parse) against `bindings` (a list of (name value) pairs --
 see template-bindings) to a plain string. See the file header for
 {{name}}/{{#each}}/{{#if}} syntax. NOT meant for building a SQL string
 out of untrusted data -- use template-render-sql for that."

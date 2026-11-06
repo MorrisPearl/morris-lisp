@@ -67,6 +67,7 @@ HOW THE CODE IS ORGANIZED
     lisp_rates.py         interest-rate paths and their fit to option prices (simulate-rate-paths, calibrate-rate-model, ...), and
                           SOFR curves (sofr-*; sofr-calibration-data downloads from tastytrade)
     lisp_kernel.py        the Jupyter kernel (with lisp_jupyter.py)
+    lisp_notebook_files.py  file-to-notebook, set-slide-types, notebook-to-slides: notebooks as files
     lisp_jupyter_debug.py the debug REPL in Jupyter, made with ipywidgets
 Each module that adds builtins lists them in a BUILTINS table at its end;
 lisp_builtins.make_global_env() adds those tables to every environment.
@@ -74,7 +75,7 @@ lisp_core.py imports none of the other files, so it can be read on its own.
     macros_init.lsp, loop.lsp  the standard macros, written in Lisp
     lib/                  Lisp libraries to load: solver.lsp, template.lsp, ...
     examples/             example programs, and the data they read
-    notebooks/            Jupyter notebooks that use it; scratch/ has experiments, not part of it
+    notebooks/            Jupyter notebooks that use it
     tools/                build_pool_dataset.py (Freddie Mac data -> CSV)
 
 WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md; the

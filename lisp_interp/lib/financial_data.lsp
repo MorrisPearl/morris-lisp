@@ -81,14 +81,14 @@ are left out."
   '(("1m" "1M") ("1.5m" "1.5M") ("2m" "2M") ("3m" "3M") ("4m" "4M") ("6m" "6M") ("1y" "1Y") ("2y" "2Y") ("3y" "3Y") ("5y" "5Y")
     ("7y" "7Y") ("10y" "10Y") ("20y" "20Y") ("30y" "30Y")))
 
-(define (update-treasury conn to start-date)
+(define (financial-data--update-treasury conn to start-date)
   (let ((from (time-series--start conn "treasury-par" start-date)))
     (time-series--say "Treasury par yields" from to)
     (time-series--replace conn "treasury-par" from
       (time-series--rows "treasury-par" (treasury-par-curve :start-date from :end-date to)
                          (map (lambda (pair) (list (car pair) (cadr pair) 100)) treasury-par-terms)))))   ; the Treasury's are fractions: 0.0512
 
-(define (update-mortgage-rates conn creds to start-date)
+(define (financial-data--update-mortgage-rates conn creds to start-date)
   (let ((from (time-series--start conn "freddie-mac-mortgage-rate" start-date)))
     (time-series--say "Freddie Mac mortgage rates (FRED)" from to)
     (time-series--replace conn "freddie-mac-mortgage-rate" from
@@ -96,7 +96,7 @@ are left out."
                          (fred-table creds '("MORTGAGE30US" "MORTGAGE15US") :start-date from :end-date to :cache-hours 0)
                          '(("MORTGAGE30US" "30Y" 1) ("MORTGAGE15US" "15Y" 1))))))
 
-(define (update-sofr conn to start-date)
+(define (financial-data--update-sofr conn to start-date)
   (let ((from (time-series--start conn "sofr%" start-date)))
     (time-series--say "SOFR (New York Fed)" from to)
     (time-series--replace conn "sofr%" from
@@ -156,7 +156,7 @@ are left out."
    SELECT date, 'current-coupon-' || REPLACE(agency, '/', '-') AS instrument, SUBSTR(product, -3) AS term, current_coupon AS value
    FROM chosen WHERE place = 1 ORDER BY date, instrument, term")
 
-(define (update-current-coupons conn to start-date)
+(define (financial-data--update-current-coupons conn to start-date)
   (let ((from (time-series--start conn "current-coupon-%" start-date)))
     (time-series--say "Current coupons, from the TBA prices" from to)
     (time-series--replace conn "current-coupon-%" from
@@ -179,10 +179,10 @@ from :start-date for all of them (to work out a series again). It makes the data
     (finra-tba-update creds db-path :start-date from :end-date to)
     (with-sqlite (conn db-path)
       (time-series--create conn)
-      (update-treasury conn to from)
-      (update-mortgage-rates conn creds to from)
-      (update-sofr conn to from)
-      (update-current-coupons conn to from))
+      (financial-data--update-treasury conn to from)
+      (financial-data--update-mortgage-rates conn creds to from)
+      (financial-data--update-sofr conn to from)
+      (financial-data--update-current-coupons conn to from))
     (financial-data-summary db-path)))
 
 (define (financial-data-summary db-path)

@@ -6217,7 +6217,7 @@ the program, and ask what was found:
 
 ```lisp
 (load "sql.lsp")                          ; the SQL interpreter, for something to watch
-(profile 'peg-match-item 'peg-call-rule 'tokenize 'string-downcase)
+(profile 'peg--match-item 'peg--call-rule 'tokenize 'string-downcase)
 (sql "SELECT 1 + 2")
 (show-profile)                            ; a table, the function that took the most time first
 (unprofile)                               ; stop watching them all
@@ -6347,7 +6347,6 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 | `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `option_methods.lsp` (a stock's options valued three ways), `template.lsp`, `column_engine.lsp`, `model_utils.lsp`, `parser.lsp` (a framework for parsers of small languages: see ["A parser framework"](lisp_library_reference.md#a-parser-framework) in the library manual) |
 | `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, with its opening book, `chess_book.lsp`, a KenKen solver, and an SQL interpreter, `sql.lsp`. They are described, and the techniques they show explained, in [lisp_example_programs.md](lisp_example_programs.md). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `notebooks/` | Jupyter notebooks that use the interpreter (on the `morris_lisp` kernel) |
-| `scratch/` | Experiments: not part of the interpreter, and not tested |
 | `tools/` | `make_contents.py`, which rebuilds the Contents of each document from its headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; `make_chess_book.py`, which makes the chess program's opening book from PGN files of games; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 
 `load` finds files in `lib/` and `examples/` from anywhere (see "Where
@@ -6402,6 +6401,7 @@ The Python files:
 | `lisp_portfolio.py` | `combine-returns`, `bootstrap-paths`, `portfolio-value`, `covariance-matrix`, `correlation-matrix`, `minimum-variance-weights`, `mean-variance-weights`, ...: portfolios |
 | `lisp_rates.py` | `simulate-rate-paths`, `calibrate-rate-model`, ...: paths of interest rates, and their fit to option prices; `sofr-*`: SOFR curves (uses `term_structure/`) |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |
+| `lisp_notebook_files.py` | `file-to-notebook`, `set-slide-types`, `notebook-to-slides`: notebooks as files, and slideshows of them |
 | `lisp_jupyter_debug.py` | The debug REPL in Jupyter, made with ipywidgets |
 | `tests/` | The tests, a file for each part (see "Running the tests"): `python3 -m unittest discover -s tests` |
 

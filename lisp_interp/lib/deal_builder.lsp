@@ -56,42 +56,42 @@
 ; Reading what was typed
 ; ---------------------------------------------------------------------------
 
-(define (form-answer answers name)
+(define (deal-builder--form-answer answers name)
   "What is in the field called name."
   (cdr (assoc name answers)))
 
-(define (form-name answers field what)
+(define (deal-builder--form-name answers field what)
   "The name typed in a field, which is not blank."
-  (let ((text (string-trim (form-answer answers field))))
+  (let ((text (string-trim (deal-builder--form-answer answers field))))
     (when (equal? text "")
       (error (format "give the name of {}" what)))
     text))
 
-(define (form-optional-name answers field)
+(define (deal-builder--form-optional-name answers field)
   "The name typed in a field, or '() if it is blank."
-  (let ((text (string-trim (form-answer answers field))))
+  (let ((text (string-trim (deal-builder--form-answer answers field))))
     (if (equal? text "") '() text)))
 
-(define (form-number text what)
+(define (deal-builder--form-number text what)
   "The number written in text, which can have commas in it (60,000,000), or an error that says what it was to be."
   (let ((number (catch-error (string->number (string-replace text "," "")) (message) #f)))
     (unless number
       (error (format "{} is not a number, for {}" text what)))
     number))
 
-(define (form-percent-to-decimal percent)
+(define (deal-builder--form-percent-to-decimal percent)
   "A rate that was typed in percent, as a decimal: 8.5 is 0.085."
   (/ percent 100.0))
 
-(define (form-decimal-to-percent decimal)
+(define (deal-builder--form-decimal-to-percent decimal)
   "A rate that is a decimal, in percent for a field: 0.085 is 8.5 (to six places, so that 7% is not 7.000000000000001)."
   (/ (round (* decimal 1e8)) 1e6))
 
-(define (form-losses answers)
+(define (deal-builder--form-losses answers)
   "The loss rule that was chosen, as the symbol that the plans take."
-  (string->symbol (form-answer answers "losses")))
+  (string->symbol (deal-builder--form-answer answers "losses")))
 
-(define (form-line line)
+(define (deal-builder--form-line line)
   "A line that describes a child, \"A1 60000000\" or \"Z 10000000 z\" for a Z bond, as (name balance z): the balance is #f if the line
 leaves it out (\"A2\"), and z is #t for a Z bond."
   (let* ((words (string-split line))
@@ -100,14 +100,14 @@ leaves it out (\"A2\"), and z is #t for a Z bond."
     (when (> (length others) 1)
       (error (format "a line is a name, a balance, and z if it is a Z bond, not \"{}\"" line)))
     (list (car words)
-          (if (null? others) #f (form-number (car others) (format "the balance of {}" (car words))))
+          (if (null? others) #f (deal-builder--form-number (car others) (format "the balance of {}" (car words))))
           (some is-z (cdr words)))))
 
-(define (form-children text parent)
+(define (deal-builder--form-children text parent)
   "The children written in text, one to a line, as the list that sequential-plan takes, (name balance) or (name balance z). The last
 line can leave its balance out: that child is what is left of the parent's."
   (let* ((lines (filter (lambda (line) (not (null? (string-split line)))) (string-split text "\n")))
-         (entries (map form-line lines)))
+         (entries (map deal-builder--form-line lines)))
     (when (null? entries)
       (error "write the tranches, one to a line: a name and a balance"))
     (let ((left-out (filter (lambda (entry) (not (cadr entry))) entries)))
@@ -121,16 +121,16 @@ line can leave its balance out: that child is what is left of the parent's."
                (if (caddr entry) (list (car entry) balance 'z) (list (car entry) balance))))
            entries))))
 
-(define (form-children-text deal split)
-  "The children of the split written as form-children reads them: one to a line, with its balance, and z for a Z bond."
+(define (deal-builder--form-children-text deal split)
+  "The children of the split written as deal-builder--form-children reads them: one to a line, with its balance, and z for a Z bond."
   (string-join (map (lambda (name)
                       (let ((node (get-node deal name)))
                         (format "{} {}{}" name (vector-ref (node-balance node) 0) (if (node-z-flag node) " z" ""))))
                     (split-children split))
                "\n"))
 
-(define (form-lives text)
-  "The children written in text, one to a line, as the list that average-life-plan takes: (name years), or (name) for the one that has no
+(define (deal-builder--form-lives text)
+  "The children written in text, one to a line, as the list that deal--average-life-plan takes: (name years), or (name) for the one that has no
 average life, and is what is left."
   (let ((lines (filter (lambda (line) (not (null? (string-split line)))) (string-split text "\n"))))
     (when (null? lines)
@@ -141,16 +141,16 @@ average life, and is what is left."
                (error (format "a line is a name and the average life, in years, not \"{}\"" line)))
              (if (= (length words) 1)
                  (list (car words))
-                 (list (car words) (form-number (cadr words) (format "the average life of {}" (car words)))))))
+                 (list (car words) (deal-builder--form-number (cadr words) (format "the average life of {}" (car words)))))))
          lines)))
 
-(define (form-lives-text deal split)
-  "The children of the split written as form-lives reads them: a name and its life, or only the name for the one that has none."
+(define (deal-builder--form-lives-text deal split)
+  "The children of the split written as deal-builder--form-lives reads them: a name and its life, or only the name for the one that has none."
   (string-join (map (lambda (name life) (if (null? life) name (format "{} {}" name life)))
                     (split-children split) (average-life-split-lives split))
                "\n"))
 
-(define (form-coupon-percent parent)
+(define (deal-builder--form-coupon-percent parent)
   "The coupon of the parent, in percent, or 0 if it has none: for the values to start the fields with."
   (if (null? (node-coupon parent)) 0.0 (* 100.0 (coupon-at (node-coupon parent) 0.0 0))))
 
@@ -172,13 +172,13 @@ average life, and is what is left."
                     (list "losses" 'dropdown "Losses" "reverse" form-loss-rules))
       :defaults (lambda (parent) (list (cons "tranches" (format "{}1\n{}2" (node-name parent) (node-name parent)))))
       :describe (lambda (deal split)
-                  (list (cons "tranches" (form-children-text deal split))
+                  (list (cons "tranches" (deal-builder--form-children-text deal split))
                         (cons "accretion" (if (null? (sequential-split-accretion-to split)) "" (sequential-split-accretion-to split)))
                         (cons "losses" (format "{}" (split-loss-rule split)))))
       :plan (lambda (parent answers)
-              (sequential-plan (form-children (form-answer answers "tranches") parent)
-                               :accretion-to (form-optional-name answers "accretion")
-                               :losses (form-losses answers))))
+              (sequential-plan (deal-builder--form-children (deal-builder--form-answer answers "tranches") parent)
+                               :accretion-to (deal-builder--form-optional-name answers "accretion")
+                               :losses (deal-builder--form-losses answers))))
     (make-split-form
       :title "Average life"
       :label "sequential by average life"
@@ -187,11 +187,11 @@ average life, and is what is left."
                     (list "losses" 'dropdown "Losses" "reverse" form-loss-rules))
       :defaults (lambda (parent) (list (cons "tranches" (format "{}1 2\n{}2 5\n{}3" (node-name parent) (node-name parent) (node-name parent)))))
       :describe (lambda (deal split)
-                  (list (cons "tranches" (form-lives-text deal split))
+                  (list (cons "tranches" (deal-builder--form-lives-text deal split))
                         (cons "losses" (format "{}" (split-loss-rule split)))))
       :plan (lambda (parent answers)
-              (average-life-plan (form-lives (form-answer answers "tranches"))
-                                 :losses (form-losses answers))))
+              (deal--average-life-plan (deal-builder--form-lives (deal-builder--form-answer answers "tranches"))
+                                 :losses (deal-builder--form-losses answers))))
     (make-split-form
       :title "Pro rata"
       :label "pro rata"
@@ -200,11 +200,11 @@ average life, and is what is left."
                     (list "losses" 'dropdown "Losses" "pro-rata" form-loss-rules))
       :defaults (lambda (parent) (list (cons "tranches" (format "{}1\n{}2" (node-name parent) (node-name parent)))))
       :describe (lambda (deal split)
-                  (list (cons "tranches" (form-children-text deal split))
+                  (list (cons "tranches" (deal-builder--form-children-text deal split))
                         (cons "losses" (format "{}" (split-loss-rule split)))))
       :plan (lambda (parent answers)
-              (pro-rata-plan (form-children (form-answer answers "tranches") parent)
-                             :losses (form-losses answers))))
+              (pro-rata-plan (deal-builder--form-children (deal-builder--form-answer answers "tranches") parent)
+                             :losses (deal-builder--form-losses answers))))
     (make-split-form
       :title "PAC"
       :label "PAC and companion"
@@ -223,9 +223,9 @@ average life, and is what is left."
                         (cons "high" (pac-split-high-psa split))
                         (cons "losses" (format "{}" (split-loss-rule split)))))
       :plan (lambda (parent answers)
-              (pac-plan (form-name answers "pac" "the PAC") (form-name answers "companion" "the companion")
-                        (form-answer answers "low") (form-answer answers "high")
-                        :losses (form-losses answers))))
+              (pac-plan (deal-builder--form-name answers "pac" "the PAC") (deal-builder--form-name answers "companion" "the companion")
+                        (deal-builder--form-answer answers "low") (deal-builder--form-answer answers "high")
+                        :losses (deal-builder--form-losses answers))))
     (make-split-form
       :title "Floater/inverse"
       :label "floater and inverse floater"
@@ -236,16 +236,16 @@ average life, and is what is left."
                     (list "margin" 'number "Margin %" 0.5))
       :defaults (lambda (parent) (list (cons "floater" (format "{}-F" (node-name parent)))
                                        (cons "inverse" (format "{}-I" (node-name parent)))
-                                       (cons "cap" (+ 3.0 (form-coupon-percent parent)))))
+                                       (cons "cap" (+ 3.0 (deal-builder--form-coupon-percent parent)))))
       :describe (lambda (deal split)
                   (list (cons "floater" (car (split-children split)))
                         (cons "inverse" (cadr (split-children split)))
-                        (cons "cap" (form-decimal-to-percent (floater-inverse-split-cap split)))
-                        (cons "margin" (form-decimal-to-percent (floater-inverse-split-margin split)))))
+                        (cons "cap" (deal-builder--form-decimal-to-percent (floater-inverse-split-cap split)))
+                        (cons "margin" (deal-builder--form-decimal-to-percent (floater-inverse-split-margin split)))))
       :plan (lambda (parent answers)
-              (floater-inverse-plan (form-name answers "floater" "the floater") (form-name answers "inverse" "the inverse floater")
-                                    :cap (form-percent-to-decimal (form-answer answers "cap"))
-                                    :margin (form-percent-to-decimal (form-answer answers "margin")))))
+              (floater-inverse-plan (deal-builder--form-name answers "floater" "the floater") (deal-builder--form-name answers "inverse" "the inverse floater")
+                                    :cap (deal-builder--form-percent-to-decimal (deal-builder--form-answer answers "cap"))
+                                    :margin (deal-builder--form-percent-to-decimal (deal-builder--form-answer answers "margin")))))
     (make-split-form
       :title "Premium/discount"
       :label "premium and discount"
@@ -256,17 +256,17 @@ average life, and is what is left."
                     (list "discount-coupon" 'number "Discount coupon %" 4.0))
       :defaults (lambda (parent) (list (cons "premium" (format "{}-P" (node-name parent)))
                                        (cons "discount" (format "{}-D" (node-name parent)))
-                                       (cons "premium-coupon" (+ 1.0 (form-coupon-percent parent)))
-                                       (cons "discount-coupon" (- (form-coupon-percent parent) 1.0))))
+                                       (cons "premium-coupon" (+ 1.0 (deal-builder--form-coupon-percent parent)))
+                                       (cons "discount-coupon" (- (deal-builder--form-coupon-percent parent) 1.0))))
       :describe (lambda (deal split)
                   (list (cons "premium" (car (split-children split)))
                         (cons "discount" (cadr (split-children split)))
-                        (cons "premium-coupon" (form-decimal-to-percent (premium-discount-split-premium-coupon split)))
-                        (cons "discount-coupon" (form-decimal-to-percent (premium-discount-split-discount-coupon split)))))
+                        (cons "premium-coupon" (deal-builder--form-decimal-to-percent (premium-discount-split-premium-coupon split)))
+                        (cons "discount-coupon" (deal-builder--form-decimal-to-percent (premium-discount-split-discount-coupon split)))))
       :plan (lambda (parent answers)
-              (premium-discount-plan (form-name answers "premium" "the premium bond") (form-name answers "discount" "the discount bond")
-                                     :premium-coupon (form-percent-to-decimal (form-answer answers "premium-coupon"))
-                                     :discount-coupon (form-percent-to-decimal (form-answer answers "discount-coupon")))))
+              (premium-discount-plan (deal-builder--form-name answers "premium" "the premium bond") (deal-builder--form-name answers "discount" "the discount bond")
+                                     :premium-coupon (deal-builder--form-percent-to-decimal (deal-builder--form-answer answers "premium-coupon"))
+                                     :discount-coupon (deal-builder--form-percent-to-decimal (deal-builder--form-answer answers "discount-coupon")))))
     (make-split-form
       :title "IO/PO"
       :label "IO and PO"
@@ -281,26 +281,26 @@ average life, and is what is left."
                         (cons "po" (cadr (split-children split)))
                         (cons "io-coupon" (if (null? (io-po-split-io-coupon split))
                                               ""
-                                              (format "{}" (form-decimal-to-percent (io-po-split-io-coupon split)))))))
+                                              (format "{}" (deal-builder--form-decimal-to-percent (io-po-split-io-coupon split)))))))
       :plan (lambda (parent answers)
-              (io-po-plan (form-name answers "io" "the IO") (form-name answers "po" "the PO")
-                          :io-coupon (let ((text (string-trim (form-answer answers "io-coupon"))))
+              (io-po-plan (deal-builder--form-name answers "io" "the IO") (deal-builder--form-name answers "po" "the PO")
+                          :io-coupon (let ((text (string-trim (deal-builder--form-answer answers "io-coupon"))))
                                        (if (equal? text "")
                                            '()
-                                           (form-percent-to-decimal (form-number text "the coupon of the IO")))))))))
+                                           (deal-builder--form-percent-to-decimal (deal-builder--form-number text "the coupon of the IO")))))))))
 
 ; ---------------------------------------------------------------------------
 ; What the clicks and the buttons do
 ; ---------------------------------------------------------------------------
 
-(define (without-traceback thunk)
+(define (deal-builder--without-traceback thunk)
   "Calls (thunk). If it raises an error, displays what is wrong, as a line, without the traceback that a callback would show: the user
 who clicked a button has typed something that cannot be used, and the message says what."
   (catch-error (thunk)
     (message)
     (display (format "Error: {}\n" message))))
 
-(define (deal-gui-say gui text)
+(define (deal-gui--say gui text)
   "Shows a line under the panel."
   (widget-capture (deal-gui-messages gui) (lambda () (display text))))
 
@@ -309,7 +309,7 @@ who clicked a button has typed something that cannot be used, and the message sa
 (define chart-column "balance chart")
 (define chart-width 130)
 
-(define (priced-column-texts deal names)
+(define (deal-builder--priced-column-texts deal names)
   "The columns of what a price says about each of the tranches called names, as text (blank for what a tranche has not got), as a table: so that a price can be typed
 as + or ?, and a cell cleared."
   (let ((texts (lambda (slot spec)
@@ -326,43 +326,43 @@ as + or ?, and a cell cleared."
                 "money" (texts node-money "{:,.2f}")
                 "delay" (texts node-delay "{}"))))
 
-(define (balance-charts deal names)
+(define (deal-builder--balance-charts deal names)
   "A little chart of the balance of each of the tranches called names, month by month, as the HTML of an svg, for a column of the grid: from the deal run at its pricing speed
-(see deal-pricing-run), all on one scale, that of the biggest balance, over the months of the longest, so that a small tranche is a small chart and a short one a short one. They
+(see deal-pricing--run), all on one scale, that of the biggest balance, over the months of the longest, so that a small tranche is a small chart and a short one a short one. They
 are blank if the deal has no collateral yet, or has a floating tranche and no index to run it with."
-  (if (or (= (deal-periods deal) 0) (deal-floating-without-index deal))
+  (if (or (= (deal-periods deal) 0) (deal-pricing--floating-without-index deal))
       (list->vector (map (lambda (name) "") names))
-      (let ((run (deal-pricing-run deal)))
+      (let ((run (deal-pricing--run deal)))
         (sparklines (map (lambda (name) (node-balance (get-node run name))) names) :width (- chart-width 10) :height 16))))
 
-(define (deal-gui-table gui)
+(define (deal-gui--table gui)
   "The table for the grid: the outline of the deal, with a column beside the split to click to see the cash flows of a tranche, a chart of the balance of each, and the
 columns of what a price says about each (see deal_pricing.lsp)."
   (let* ((deal (deal-gui-deal gui))
          (names (map car (deal-outline-entries deal))))
     (append (deal-outline deal)
             (list (cons "cash flows" (list->vector (map (lambda (name) "view") names)))
-                  (cons chart-column (balance-charts deal names)))
-            (priced-column-texts deal names))))
+                  (cons chart-column (deal-builder--balance-charts deal names)))
+            (deal-builder--priced-column-texts deal names))))
 
-(define (deal-gui-update-prices! gui)
+(define (deal-gui--update-prices! gui)
   "Works out the slots that a price gives, of every tranche, again (the deal may have changed), and says what could not be."
   (dolist (problem (deal-update-analytics! (deal-gui-deal gui)))
-    (deal-gui-say gui (format "{}\n" problem))))
+    (deal-gui--say gui (format "{}\n" problem))))
 
-(define (deal-gui-refresh! gui)
+(define (deal-gui--refresh! gui)
   "Shows the tranches of the deal as they are now, and puts away what was being done to one of them: the deal has changed."
   (deal-gui-names-set! gui (map car (deal-outline-entries (deal-gui-deal gui))))
-  (deal-gui-update-prices! gui)
-  (grid-set-table! (deal-gui-grid gui) (deal-gui-table gui))
+  (deal-gui--update-prices! gui)
+  (grid-set-table! (deal-gui-grid gui) (deal-gui--table gui))
   (widget-clear (deal-gui-flows gui))
-  (deal-gui-put-away! gui))
+  (deal-gui--put-away! gui))
 
-(define (deal-gui-type-number text what)
+(define (deal-gui--type-number text what)
   "The number typed in a cell, for what it is of."
-  (form-number (string-trim text) what))
+  (deal-builder--form-number (string-trim text) what))
 
-(define (deal-gui-typed! gui column row text)
+(define (deal-gui--typed! gui column row text)
   "The user typed text in a cell of the grid, in column, in the row of a tranche. A price (a number, or + or ?), a yield, a spread or a delay is given to the tranche, and what is
 worked out from it is shown; a cleared cell takes the price away. What is typed in any other column is put back, with what is wrong said."
   (let* ((deal (deal-gui-deal gui))
@@ -370,27 +370,27 @@ worked out from it is shown; a cleared cell takes the price away. What is typed 
          (word (string-trim text))
          (done #f))
     (widget-clear (deal-gui-messages gui))
-    (without-traceback
+    (deal-builder--without-traceback
       (lambda ()
         (cond ((not (member column typed-columns))
                (error (format "{} is worked out, not typed: type a price, a yield, a spread, an oas or a delay" column)))
               ((equal? column "delay")
-               (deal-set-delay! deal name (deal-gui-type-number word (format "the delay of {}" name))))
+               (deal-set-delay! deal name (deal-gui--type-number word (format "the delay of {}" name))))
               ((equal? word "")
                (deal-clear-price! deal name))
               ((equal? column "price")
-               (deal-set-price! deal name (if (member word '("+" "?")) word (deal-gui-type-number word (format "the price of {}" name)))))
+               (deal-set-price! deal name (if (member word '("+" "?")) word (deal-gui--type-number word (format "the price of {}" name)))))
               ((equal? column "yield")
-               (deal-set-yield! deal name (deal-gui-type-number word (format "the yield of {}" name))))
+               (deal-set-yield! deal name (deal-gui--type-number word (format "the yield of {}" name))))
               ((equal? column "oas")
-               (deal-set-oas! deal name (deal-gui-type-number word (format "the oas of {}" name))))
+               (deal-set-oas! deal name (deal-gui--type-number word (format "the oas of {}" name))))
               (else
-               (deal-set-spread! deal name (deal-gui-type-number word (format "the spread of {}" name)))))
+               (deal-set-spread! deal name (deal-gui--type-number word (format "the spread of {}" name)))))
         (set! done #t)))
     (unless done                                        ; (the cell has what was typed in it, which is not what the deal has)
-      (deal-gui-refresh! gui))))
+      (deal-gui--refresh! gui))))
 
-(define (show-node-flows deal name)
+(define (deal-builder--show-node-flows deal name)
   "Shows the cash flows of the tranche called name, from the last run of the deal: what it is, its average life, and a table with a row for the first month and
 the end of each year."
   (let* ((node (get-node deal name))
@@ -405,16 +405,16 @@ the end of each year."
                           '(("balance" ",.2f") ("principal" ",.2f") ("interest" ",.2f") ("accrual" ",.2f") ("loss" ",.2f") ("shortfall" ",.2f"))
                           :max-rows #f)))))
 
-(define (deal-gui-show-flows! gui row)
+(define (deal-gui--show-flows! gui row)
   "The user clicked view for a tranche: its cash flows are shown under the grid. The deal is run first, at the pricing speed, if it has changed since the last run."
   (let ((deal (deal-gui-deal gui))
         (name (list-ref (deal-gui-names gui) row)))
     (widget-clear (deal-gui-flows gui))
     (unless (deal-ran deal)
       (deal-run! deal :index (deal-index deal)))
-    (widget-capture (deal-gui-flows gui) (lambda () (show-node-flows deal name)))))
+    (widget-capture (deal-gui-flows gui) (lambda () (deal-builder--show-node-flows deal name)))))
 
-(define (deal-gui-show-delete! gui asking)
+(define (deal-gui--show-delete! gui asking)
   "Shows the row under the panel with the button that takes away the split (asking is button) or the two that ask whether to (sure),
 or none of them if asking is the empty list."
   (widget-visible (deal-gui-delete-row gui) (not (null? asking)))
@@ -422,23 +422,23 @@ or none of them if asking is the empty list."
   (widget-visible (deal-gui-confirm-button gui) (eq? asking 'sure))
   (widget-visible (deal-gui-cancel-button gui) (eq? asking 'sure)))
 
-(define (deal-gui-form-for gui split)
+(define (deal-gui--form-for gui split)
   "The form of the tab for splits of the kind that split is, or #f if there is none."
   (find-if (lambda (form) (equal? (split-form-label form) (split-label split))) (deal-gui-forms gui)))
 
-(define (deal-gui-put-away! gui)
+(define (deal-gui--put-away! gui)
   "Nothing is chosen: the panel and the button that takes away a split are put away."
   (deal-gui-chosen-set! gui '())
   (widget-visible (deal-gui-panel gui) #f)
-  (deal-gui-show-delete! gui '()))
+  (deal-gui--show-delete! gui '()))
 
-(define (deal-gui-offer-to-divide! gui node)
+(define (deal-gui--offer-to-divide! gui node)
   "The chosen tranche is not divided: the panel has the defaults of each tab, to divide it."
   (let ((panel (deal-gui-panel gui)))
-    (deal-gui-show-delete! gui '())
+    (deal-gui--show-delete! gui '())
     (if (= (vector-ref (node-balance node) 0) 0.0)
         (begin (widget-visible panel #f)
-               (deal-gui-say gui (format "{} has no balance, so it cannot be divided yet: the collateral is entered with (collateral deal).\n" (node-name node))))
+               (deal-gui--say gui (format "{} has no balance, so it cannot be divided yet: the collateral is entered with (collateral deal).\n" (node-name node))))
         (begin
           (widget-actions-heading panel (format "Divide <b>{}</b>, which has a balance of {:,.2f}, by:" (node-name node) (vector-ref (node-balance node) 0)))
           (widget-actions-button-label! panel 1 "Add the tranches to the deal")
@@ -447,12 +447,12 @@ or none of them if asking is the empty list."
               (widget-actions-set! panel (split-form-title form) (car default) (cdr default))))
           (widget-visible panel #t)))))
 
-(define (deal-gui-offer-to-change! gui node)
+(define (deal-gui--offer-to-change! gui node)
   "The chosen tranche is divided: the panel shows its split, to change, and the button to take the split away."
   (let* ((panel (deal-gui-panel gui))
          (split (node-split node))
-         (form (deal-gui-form-for gui split)))
-    (deal-gui-show-delete! gui 'button)
+         (form (deal-gui--form-for gui split)))
+    (deal-gui--show-delete! gui 'button)
     (cond (form
            (widget-actions-heading panel (format "<b>{}</b> is divided by a {} split into {}. Change it:"
                                                  (node-name node) (split-label split) (string-join (split-children split) ", ")))
@@ -464,10 +464,10 @@ or none of them if asking is the empty list."
            (widget-visible panel #t))
           (else
            (widget-visible panel #f)
-           (deal-gui-say gui (format "{} is divided by a {} split, which no tab of the panel is for, so it cannot be changed here, only taken away.\n"
+           (deal-gui--say gui (format "{} is divided by a {} split, which no tab of the panel is for, so it cannot be changed here, only taken away.\n"
                                      (node-name node) (split-label split)))))))
 
-(define (deal-gui-choose! gui row)
+(define (deal-gui--choose! gui row)
   "The user clicked row of the grid: the tranche in it is chosen, to divide, or to change the split of."
   (let* ((name (list-ref (deal-gui-names gui) row))
          (node (get-node (deal-gui-deal gui) name)))
@@ -475,37 +475,37 @@ or none of them if asking is the empty list."
     (widget-actions-clear (deal-gui-panel gui))
     (deal-gui-chosen-set! gui name)
     (if (null? (node-split node))
-        (deal-gui-offer-to-divide! gui node)
-        (deal-gui-offer-to-change! gui node))))
+        (deal-gui--offer-to-divide! gui node)
+        (deal-gui--offer-to-change! gui node))))
 
-(define (deal-gui-parent gui)
+(define (deal-gui--parent gui)
   "The node that was chosen."
   (when (null? (deal-gui-chosen gui))
     (error "click a tranche first, to say which one is to be divided"))
   (get-node (deal-gui-deal gui) (deal-gui-chosen gui)))
 
-(define (deal-gui-plan gui title answers)
+(define (deal-gui--plan gui title answers)
   "The plan for dividing the chosen tranche as the answers on the tab called title say."
   (let ((form (find-if (lambda (form) (equal? (split-form-title form) title)) (deal-gui-forms gui))))
-    ((split-form-plan form) (deal-gui-parent gui) answers)))
+    ((split-form-plan form) (deal-gui--parent gui) answers)))
 
-(define (average-lives-of trial names)
+(define (deal-builder--average-lives-of trial names)
   "The average life, in years, of each of the nodes of the trial deal, a list: found by running a copy of the deal, at the pricing speed.
 nan for a node that is paid no principal, such as an interest-only bond."
-  (let ((run (deal-run-copy trial (deal-pricing-flows trial) #t)))
+  (let ((run (deal--run-copy trial (deal--pricing-flows trial) #t)))
     (map (lambda (name)
            (let ((principal (node-principal (get-node run name))))
              (if (> (vector-sum principal) 0.0) (average-life principal) nan)))
          names)))
 
-(define (show-plan-effect deal trial parent-name)
+(define (deal-builder--show-plan-effect deal trial parent-name)
   "Shows what the nodes below the parent are in the trial deal, which has a plan applied to it: their balances, and what each is of its
 own parent's, their average lives, and what they are in the deal itself (a node that is new has no balance there)."
-  (let* ((entries (cdr (deal-outline-below trial parent-name 0)))
+  (let* ((entries (cdr (deal--outline-below trial parent-name 0)))
          (names (map car entries))
          (balance-in (lambda (a-deal name) (vector-ref (node-balance (get-node a-deal name)) 0)))
          (was (map (lambda (name) (if (hash-table-ref (deal-nodes deal) name) (balance-in deal name) nan)) names))
-         (share (map (lambda (name) (let ((parent (balance-in trial (node-name (deal-parent-of trial name)))))
+         (share (map (lambda (name) (let ((parent (balance-in trial (node-name (deal--parent-of trial name)))))
                                       (if (= parent 0.0) 0.0 (/ (balance-in trial name) parent))))
                      names))
          (indented (map (lambda (entry) (string-append (format-value "" (format ">{}" (* 2 (- (cdr entry) 1)))) (car entry))) entries))
@@ -513,63 +513,63 @@ own parent's, their average lives, and what they are in the deal itself (a node 
                           (if (some (lambda (value) (= value value)) was) (list "was" (list->vector was)) '())      ; (a node that is new has no balance, nan, which is not equal to itself)
                           (list "balance" (list->vector (map (lambda (name) (balance-in trial name)) names))
                                 "share of its parent" (list->vector share)
-                                "average life" (list->vector (average-lives-of trial names))))))
+                                "average life" (list->vector (deal-builder--average-lives-of trial names))))))
     (display (format "{} ({:,.2f}) divided by a {} split into:\n" parent-name (balance-in trial parent-name)
                      (split-label (node-split (get-node trial parent-name)))))
     (display-table (apply make-table columns) '(("was" ",.2f") ("balance" ",.2f") ("share of its parent" ".2%") ("average life" ".2f")))))
 
-(define (deal-gui-show-sizes! gui title answers)
+(define (deal-gui--show-sizes! gui title answers)
   "The button that shows the sizes: the plan is tried on a copy of the deal, so that what is wrong with it is said, and what the tranches
 below the chosen one would be is shown."
-  (let* ((parent (deal-gui-parent gui))
-         (trial (deal-trial-of-plan (deal-gui-deal gui) (node-name parent) (deal-gui-plan gui title answers))))
-    (show-plan-effect (deal-gui-deal gui) trial (node-name parent))))
+  (let* ((parent (deal-gui--parent gui))
+         (trial (deal-trial-of-plan (deal-gui-deal gui) (node-name parent) (deal-gui--plan gui title answers))))
+    (deal-builder--show-plan-effect (deal-gui-deal gui) trial (node-name parent))))
 
-(define (deal-gui-apply! gui title answers)
+(define (deal-gui--apply! gui title answers)
   "The button that adds the tranches to the deal, or changes the split: the grid shows them, and the panel is put away."
-  (let* ((parent (deal-gui-parent gui))
-         (plan (deal-gui-plan gui title answers))
+  (let* ((parent (deal-gui--parent gui))
+         (plan (deal-gui--plan gui title answers))
          (adding (null? (node-split parent)))
          (children (string-join (split-children (split-plan-split plan)) ", ")))
     (if adding
         (deal-add-plan! (deal-gui-deal gui) (node-name parent) plan)
         (deal-replace-split! (deal-gui-deal gui) (node-name parent) plan))
-    (deal-gui-say gui (if adding
+    (deal-gui--say gui (if adding
                           (format "Added {} under {}, by a {} split. Click a tranche to divide it, or to change its split.\n"
                                   children (node-name parent) (split-label (split-plan-split plan)))
                           (format "Changed the split of {}: it is a {} split into {}, and what is under them is worked out again. Click a tranche to divide it, or to change its split.\n"
                                   (node-name parent) (split-label (split-plan-split plan)) children)))))
 
-(define (deal-gui-ask-whether-to-delete! gui)
+(define (deal-gui--ask-whether-to-delete! gui)
   "The button that takes away the split: says what would go, and asks."
-  (let* ((parent (deal-gui-parent gui))
-         (below (cdr (deal-tree-names (deal-gui-deal gui) (node-name parent)))))
-    (deal-gui-say gui (format "Take away the split of {}, and {}, {}? That cannot be undone.\n"
+  (let* ((parent (deal-gui--parent gui))
+         (below (cdr (deal--tree-names (deal-gui-deal gui) (node-name parent)))))
+    (deal-gui--say gui (format "Take away the split of {}, and {}, {}? That cannot be undone.\n"
                               (node-name parent)
                               (if (= (length below) 1) "the tranche under it" (format "the {} tranches under it" (length below)))
                               (string-join below ", ")))
-    (deal-gui-show-delete! gui 'sure)))
+    (deal-gui--show-delete! gui 'sure)))
 
-(define (deal-gui-delete! gui)
+(define (deal-gui--delete! gui)
   "The button that confirms: takes away the split and everything under it."
-  (let* ((parent (deal-gui-parent gui))
+  (let* ((parent (deal-gui--parent gui))
          (gone (deal-delete-split! (deal-gui-deal gui) (node-name parent))))
     (widget-clear (deal-gui-messages gui))
-    (deal-gui-say gui (format "Took away the split of {}, and {}. {} is not divided.\n" (node-name parent) (string-join gone ", ") (node-name parent)))))
+    (deal-gui--say gui (format "Took away the split of {}, and {}. {} is not divided.\n" (node-name parent) (string-join gone ", ") (node-name parent)))))
 
-(define (deal-gui-keep! gui)
+(define (deal-gui--keep! gui)
   "The button that says not to take the split away."
   (widget-clear (deal-gui-messages gui))
-  (deal-gui-show-delete! gui 'button)
-  (deal-gui-say gui "Kept.\n"))
+  (deal-gui--show-delete! gui 'button)
+  (deal-gui--say gui "Kept.\n"))
 
 ; ---------------------------------------------------------------------------
 ; The builder
 ; ---------------------------------------------------------------------------
 
-(define (deal-gui-button label style function messages)
+(define (deal-gui--button label style function messages)
   "A button as wide as its label, which calls the function, whose errors it shows without a traceback, with what it displays under the panel."
-  (let ((button (widget-button label (lambda () (without-traceback function)) :output messages :button-style style)))
+  (let ((button (widget-button label (lambda () (deal-builder--without-traceback function)) :output messages :button-style style)))
     (widget-set! (widget-get button "layout") "width" "auto")
     button))
 
@@ -581,19 +581,19 @@ of it can make at the same time."
   (let* ((messages (widget-output))
          (flows (widget-output))
          (gui (make-deal-gui :deal deal :forms forms :messages messages :flows flows :names (map car (deal-outline-entries deal))))
-         (priced (deal-gui-update-prices! gui))
-         (grid (table-grid (deal-gui-table gui) :editable #t :selection-mode "cell"
+         (priced (deal-gui--update-prices! gui))
+         (grid (table-grid (deal-gui--table gui) :editable #t :selection-mode "cell"
                            :renderers (list (list chart-column (html-renderer :width chart-width)))))
          (panel (widget-actions (map (lambda (form) (append (list (split-form-title form) (split-form-help form)) (split-form-fields form)))
                                      forms)
                                 :style style
                                 :buttons (list (cons "Calculate the sizes"
-                                                     (lambda (title answers) (without-traceback (lambda () (deal-gui-show-sizes! gui title answers)))))
+                                                     (lambda (title answers) (deal-builder--without-traceback (lambda () (deal-gui--show-sizes! gui title answers)))))
                                                (cons "Add the tranches to the deal"
-                                                     (lambda (title answers) (without-traceback (lambda () (deal-gui-apply! gui title answers))))))))
-         (delete-button (deal-gui-button "Take away this split, and all under it" "danger" (lambda () (deal-gui-ask-whether-to-delete! gui)) messages))
-         (confirm-button (deal-gui-button "Yes, take them away" "danger" (lambda () (deal-gui-delete! gui)) messages))
-         (cancel-button (deal-gui-button "No, keep them" "" (lambda () (deal-gui-keep! gui)) messages))
+                                                     (lambda (title answers) (deal-builder--without-traceback (lambda () (deal-gui--apply! gui title answers))))))))
+         (delete-button (deal-gui--button "Take away this split, and all under it" "danger" (lambda () (deal-gui--ask-whether-to-delete! gui)) messages))
+         (confirm-button (deal-gui--button "Yes, take them away" "danger" (lambda () (deal-gui--delete! gui)) messages))
+         (cancel-button (deal-gui--button "No, keep them" "" (lambda () (deal-gui--keep! gui)) messages))
          (delete-row (widget-row delete-button confirm-button cancel-button)))
     (deal-gui-grid-set! gui grid)
     (deal-gui-panel-set! gui panel)
@@ -603,13 +603,13 @@ of it can make at the same time."
     (deal-gui-cancel-button-set! gui cancel-button)
     (grid-on-click grid
                    (lambda (column row value)
-                     (without-traceback (lambda () (cond ((equal? column "cash flows") (deal-gui-show-flows! gui row))
+                     (deal-builder--without-traceback (lambda () (cond ((equal? column "cash flows") (deal-gui--show-flows! gui row))
                                                          ((or (member column priced-columns) (equal? column chart-column)) '())
-                                                         (else (deal-gui-choose! gui row))))))
+                                                         (else (deal-gui--choose! gui row))))))
                    :output messages)
-    (grid-on-edit grid (lambda (column row value) (deal-gui-typed! gui column row value)) :output messages)
-    (deal-gui-put-away! gui)
-    (deal-add-view! deal '(tranches prices) (lambda () (deal-gui-refresh! gui)))
+    (grid-on-edit grid (lambda (column row value) (deal-gui--typed! gui column row value)) :output messages)
+    (deal-gui--put-away! gui)
+    (deal-add-view! deal '(tranches prices) (lambda () (deal-gui--refresh! gui)))
     (widget-column grid flows panel delete-row messages)))
 
 (define (bonds deal &key (forms (standard-split-forms)) (style "tabs"))

@@ -31,7 +31,7 @@ HAND_DEAL = """
 of collateral to work them out from."
   (let* ((deal (new-deal name :shortfalls shortfalls))
          (pool (get-node deal "POOL")))
-    (deal-set-periods! deal (vector-length principals))
+    (deal--set-periods! deal (vector-length principals))
     (node-balance-set! pool balances)
     (node-principal-set! pool principals)
     (unless (null? interest) (node-interest-set! pool interest))

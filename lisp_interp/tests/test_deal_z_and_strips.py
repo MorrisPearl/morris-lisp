@@ -225,7 +225,7 @@ class TestInterestOnlyAndPrincipalOnly(StripsTestCase):
         self.deal_of(25.0, months=4)
         self.run_lisp('(deal-add-tranche! deal "IO" 100.0) (deal-add-tranche! deal "PO" 100.0)')
         self.assertLispError("""(deal-add-split! deal "POOL" (make-io-po-split :children '("IO" "PO")))""", "the IO of an IO/PO split is a notional bond that follows the PO")
-        self.run_lisp('(deal-forget-node! deal "IO") (deal-forget-node! deal "PO")')
+        self.run_lisp('(deal--forget-node! deal "IO") (deal--forget-node! deal "PO")')
         self.run_lisp('(deal-add-tranche! deal "IO" 100.0 :notional #t :follows "PO") (deal-add-tranche! deal "PO" 100.0)')
         self.run_lisp("""(deal-add-split! deal "POOL" (make-io-po-split :children '("IO" "PO")))""")
         self.run_lisp("(deal-run! deal)")

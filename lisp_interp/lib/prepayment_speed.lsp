@@ -47,11 +47,11 @@ The opposite of annual-rate: (monthly-rate 6.0) is 0.00514."
 
 (define speed-types '(psa cpr smm model))
 
-(define (model-speed? curve)
-  "Whether the speed is a share of a prepayment model (its type is model), which has no prepayments of its own: a deal works them out (see deal-project-pieces)."
+(define (prepayment-speed--model-speed? curve)
+  "Whether the speed is a share of a prepayment model (its type is model), which has no prepayments of its own: a deal works them out (see deal--project-pieces)."
   (eq? (speed-curve-type curve) 'model))
 
-(define (speed-piece-of piece)
+(define (prepayment-speed--speed-piece-of piece)
   "A piece of a speed as (from to months), with the months '() for a piece that goes on for ever. An error that says what is wrong with it."
   (unless (and (list? piece) (<= 2 (length piece) 3) (every number? (filter (lambda (x) (not (null? x))) piece)))
     (error (format "a piece of a speed is (from to months), or (from to) for the rest of the time, not {}" piece)))
@@ -72,7 +72,7 @@ The opposite of annual-rate: (monthly-rate 6.0) is 0.00514."
 top of the file). A piece with no months, (from to), is for the rest of the time, and so must be the last, and have the same speed at both ends."
   (unless (member type speed-types)
     (error (format "the type of a speed is psa, cpr, smm or model, not {}" type)))
-  (let ((pieces (map speed-piece-of (if (number? spec) (list (list spec spec)) spec))))
+  (let ((pieces (map prepayment-speed--speed-piece-of (if (number? spec) (list (list spec spec)) spec))))
     (when (null? pieces)
       (error "a speed has a number, or a list of pieces"))
     (dolist (piece (butlast pieces))
@@ -94,7 +94,7 @@ top of the file). A piece with no months, (from to), is for the rest of the time
                                   pieces)
                              ", then ")))))
 
-(define (speed-in-month pieces month start)
+(define (prepayment-speed--speed-in-month pieces month start)
   "The speed in the month (1, 2, ...) of the pieces, the first of which begins after `start` months: a piece goes from its `from` to its
 `to` in a straight line, is at its `to` in its last month, and the speed holds at the last `to` after the last piece."
   (let* ((piece (car pieces))
@@ -104,20 +104,20 @@ top of the file). A piece with no months, (from to), is for the rest of the time
     (cond ((null? length) (+ 0.0 to))
           ((<= month (+ start length)) (+ from (* (- to from) (/ (- month start) (+ 0.0 length)))))
           ((null? (cdr pieces)) (+ 0.0 to))
-          (else (speed-in-month (cdr pieces) month (+ start length))))))
+          (else (prepayment-speed--speed-in-month (cdr pieces) month (+ start length))))))
 
 (define (speed-values curve months)
   "The speed in each of the months, 1 to the months, as a vector, in the units of the type."
   (let ((speeds (make-vector months 0.0)))
     (loop for month from 1 to months
-          do (vector-set! speeds (- month 1) (speed-in-month (speed-curve-pieces curve) month 0)))
+          do (vector-set! speeds (- month 1) (prepayment-speed--speed-in-month (speed-curve-pieces curve) month 0)))
     speeds))
 
-(define (speed-smms curve age months)
+(define (prepayment-speed--speed-smms curve age months)
   "The single monthly mortality, a decimal, in each of the months, 1 to months, of loans that are `age` months old when the first of
 them begins: a vector. A PSA speed is a multiple of the PSA curve at the age that the loans have in the month. A speed of a model has none of its own."
-  (when (model-speed? curve)
-    (error (format "{} is a share of a prepayment model, which looks at rates: a deal works out what it prepays (see deal-project-pieces), not a speed alone"
+  (when (prepayment-speed--model-speed? curve)
+    (error (format "{} is a share of a prepayment model, which looks at rates: a deal works out what it prepays (see deal--project-pieces), not a speed alone"
                    (describe-speed curve))))
   (let ((speeds (speed-values curve months))
         (smms (make-vector months 0.0))
@@ -202,7 +202,7 @@ from the sale, which the severity takes in), so the interest is the coupon of al
         (list "mi percent" collateral-piece-mi-percent collateral-piece-mi-percent-set!)))
 ; the slots of a collateral-piece that say what its loans are like: (the column of a table of collateral that has it, the accessor, the setter)
 
-(define (missing-number? x)
+(define (prepayment-speed--missing-number? x)
   "Whether x is nan, the number that a table has where a value is missing (it is the one number that is not equal to itself)."
   (and (number? x) (not (= x x))))
 
@@ -214,7 +214,7 @@ if it is neither."
          (make-collateral-piece :balance (car x) :wac (cadr x) :coupon (caddr x) :wam (cadddr x) :age (if (= (length x) 5) (list-ref x 4) 0)))
         (else (error (format "a piece of collateral is (balance wac coupon wam [age]), numbers, not {}" x)))))
 
-(define (collateral-piece-check piece)
+(define (prepayment-speed--collateral-piece-check piece)
   "An error unless the piece (a collateral-piece, or a list of (balance wac coupon wam [age])) is one that can be projected."
   (let* ((piece (collateral-piece-of piece))
          (wac (collateral-piece-wac piece))
@@ -231,9 +231,9 @@ if it is neither."
       (error (format "the wam of a piece of collateral is the months that are left, a whole number above 0, not {}" wam)))
     (unless (and (integer? age) (>= age 0))
       (error (format "the age of a piece of collateral is the months that have gone, a whole number from 0, not {}" age)))
-    (collateral-characteristics-check piece)))
+    (prepayment-speed--collateral-characteristics-check piece)))
 
-(define (collateral-characteristics-check piece)
+(define (prepayment-speed--collateral-characteristics-check piece)
   "An error unless what the piece says about its loans (see collateral-piece), where it says anything, makes sense."
   (let ((known (lambda (x) (not (null? x))))
         (check (lambda (name value ok? meaning)
@@ -260,13 +260,13 @@ if it is neither."
       (when (> (apply + purpose) 1)
         (error (format "the cash-out share and the refinance share of a piece of collateral are {} together: they are parts of one balance, so no more than 1" (apply + purpose)))))))
 
-(define (collateral-pieces-in-use pieces)
+(define (prepayment-speed--collateral-pieces-in-use pieces)
   "The pieces, as collateral-pieces, that have a balance: one with none is an empty row, and is left out. An error unless the others can be projected, and there is one.
 The pieces can be collateral-pieces, or lists of (balance wac coupon wam [age])."
   (let* ((all (map collateral-piece-of pieces))
          (used (filter (lambda (piece) (not (= (collateral-piece-balance piece) 0))) all)))
     (dolist (piece used)
-      (collateral-piece-check piece)
+      (prepayment-speed--collateral-piece-check piece)
       (when (< (collateral-piece-balance piece) 0)
         (error (format "the balance of a piece of collateral is from 0, not {}" (collateral-piece-balance piece)))))
     (when (null? used)
@@ -285,7 +285,7 @@ of collateral that a prepayment model gives."
 longest piece. (smms-of piece) gives the single monthly mortality, a decimal, of each of the months of a piece, as a vector: how fast it prepays. If defaults-of is given,
 (defaults-of piece) gives (mdrs severities), how many of the loans of each month default and what is lost (see project-pool), and the defaulted loans are sold lag months
 later. One with no balance is left out."
-  (let* ((used (collateral-pieces-in-use pieces))
+  (let* ((used (prepayment-speed--collateral-pieces-in-use pieces))
          (months (+ (apply max (map collateral-piece-wam used)) (if (null? defaults-of) 0 lag)))
          (principal (make-vector months 0.0))
          (interest (make-vector months 0.0))
@@ -313,7 +313,7 @@ later. One with no balance is left out."
   "The cash flows of all the pieces of collateral at the speed (a speed-curve), added together: (principal interest balance gross-interest loss), each a vector, as project-pool
 gives, as long as the longest piece. A piece is a collateral-piece, or a list (balance wac coupon wam [age]); one with no balance is left out."
   (project-pieces-with pieces
-                       (lambda (piece) (speed-smms curve (collateral-piece-age piece) (collateral-piece-wam piece)))))
+                       (lambda (piece) (prepayment-speed--speed-smms curve (collateral-piece-age piece) (collateral-piece-wam piece)))))
 
 (define (pool-coupons interest balances)
   "The rate of interest of the pool in each month, a decimal for the year: twelve times the interest over the balance at the start

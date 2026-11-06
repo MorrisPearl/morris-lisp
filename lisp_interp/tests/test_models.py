@@ -1616,7 +1616,7 @@ class TestTemplateLibrary(LispTestCase):
                              "{{a:.2f}}")
 
     def test_parse_once_render_many_times(self):
-        self.run_lisp('(define parsed (template-parse "n={{n}}"))')
+        self.run_lisp('(define parsed (template--parse "n={{n}}"))')
         self.assertShows("(template-render parsed (template-bindings (n 1)))", '"n=1"')
         self.assertShows("(template-render parsed (template-bindings (n 2)))", '"n=2"')
 

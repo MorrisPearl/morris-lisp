@@ -5733,9 +5733,10 @@ one with the lower strike, and sell the one with the higher** -- a *bull
 call spread* -- if you expect the stock to be at a certain price on that
 day? Every pair is ranked by the profit at the price you expect, as a share
 of the most you could lose. (This is the first and simplest of seventeen kinds
-of position that [Option spreads](#option-spreads) ranks the same way; the work
-is done there, and these functions are its `bull-call` kind under their
-original names, which stay as they were.)
+of position that [Option spreads](#option-spreads) ranks the same way. These
+functions are its `bull-call` kind under names of their own: what they find,
+show, chart and order is what `option-spreads`, `show-option-spreads`,
+`plot-option-profit` and `option-spread-order` do for `'bull-call`.)
 
 **What a spread is.** A call lets you buy the stock at its strike on the
 expiration day, so at expiration it is worth the stock's price less the
@@ -5778,6 +5779,8 @@ first is the best.
                           "bid" (vector 6.0 3.0 1.2) "ask" (vector 6.2 3.2 1.4) "mid" (vector 6.1 3.1 1.3)
                           "volume" (vector 5 5 5) "open-interest" (vector 10 10 10)))
 (define search (call-spreads-for-chain chain day 108))
+(table-column (spread-search-spreads search) "strike-1")   ; => #(100.0 100.0 105.0)
+(table-column (spread-search-spreads search) "strike-2")   ; => #(110.0 105.0 110.0)
 (table-column (spread-search-spreads search) "ratio")      ; => #(0.6 0.5625001 0.5)
 (table-column (spread-search-spreads search) "cost")       ; => #(5.0 3.1999998 2.0)
 ```
@@ -5786,29 +5789,22 @@ first is the best.
 Gets the stock's calls that expire on `expiration` (a date, or
 `"YYYY-MM-DD"`) from Schwab (`schwab-option-chain`) -- live bids and asks
 while the market is open; it says so, and the quotes are the last close's, if
-it is closed -- and ranks every pair: see `call-spreads-for-chain`. Returns a
-`spread-search`.
+it is closed -- and ranks every pair: `(option-spreads creds symbol 'bull-call
+...)`, with `:min-cost` its `:min-risk`. Returns a `spread-search`.
 
 #### `(call-spreads-for-chain chain expiration expected-price [:prices p :min-open-interest n :min-volume n :min-cost c :underlying u :contract-size n :unit w])`
-The same for a chain you already have: a table as `schwab-option-chain` or
-`tastytrade-option-chain` makes (`:underlying`, `:contract-size`, and `:unit`
-are for a future's options, as in `option-spreads-for-chain`). Returns a
-`spread-search`, whose accessors
-are `spread-search-stock`, `-stock-price`, `-expiration`, `-expected-price`,
-`-prices`, `-contract-size`, `-unit`, and `-spreads`: the table of spreads, a
-row for each pair, the best first, with the columns
-
-| Column | What it holds (prices are for a share) |
-|---|---|
-| `long-symbol`, `short-symbol` | the options bought and sold |
-| `long-strike`, `short-strike` | their strikes |
-| `long-price`, `short-price` | what is paid for the first, and got for the second |
-| `cost` | the net: the most that can be lost |
-| `worth` | what the spread is worth at `expected-price` on the day |
-| `profit` | `worth` less `cost` |
-| `ratio` | `profit` as a share of `cost`: 1.5 is 150% |
-| `breakeven` | the stock's price at which the spread is worth its cost |
-| `max-profit` | the most that can be made: the strikes' difference less `cost` |
+The same for a chain you already have: `(option-spreads-for-chain chain
+'bull-call ...)`. Its table of spreads (`spread-search-spreads`) has a row
+for each pair, the best first, with the columns of every option spread (see
+"Option spreads"): `symbol-1` and `strike-1` are the call bought, `symbol-2`
+and `strike-2` the call sold, `price-1` and `price-2` what is paid for the
+first and got for the second, `cost` the net (for this spread, also
+`max-loss`, the most that can be lost), `worth` and `profit` at
+`expected-price` on the day, `ratio` the profit as a share of the most that
+can be lost, `max-profit` the strikes' difference less the cost, and
+`breakeven-1` the stock's price at which the spread is worth its cost (none,
+for a spread that costs more than the strikes are apart, which can never make
+a profit). Prices are for a share.
 
 The options:
 
@@ -5831,6 +5827,8 @@ The options:
 - A pair that would pay you to buy it, or costs a tenth of a cent or less --
   from quotes that don't agree -- has no most you can lose to divide by, and
   is left out; so is one that costs less than `:min-cost` (0).
+- `:underlying`, `:contract-size`, and `:unit` are for a future's options, as
+  in `option-spreads-for-chain`.
 
 **The ratio favors cheap spreads.** A spread that costs a few cents has a
 huge ratio if the stock gets to the higher strike, but there is almost no
@@ -5841,29 +5839,22 @@ ex-dividend date, if it is in the money). `:min-cost` leaves out the very
 cheap; looking at the next few spreads, not only the first, shows how the
 ratio falls off.
 
-#### `(show-call-spreads search [:count n])`
-Shows the best spread in words -- what to buy and sell, what it costs for a
-share and for a contract of 100, what it makes at the expected price, where it
-breaks even, and the most it can make -- and a table of it and the next
-`:count` (10) best.
-
-#### `(plot-call-spreads search [:rows rows :low l :high h :points n])`
-Charts the profit of one of the spreads -- the best, unless `:rows` (a list of row
-numbers) says -- on the expiration day, against the price the stock might have then. It is
-flat at a loss of the spread's cost with the stock at the lower strike or less, rises
-dollar for dollar between the strikes, and is flat at a gain of the strikes' difference
-less the cost at the higher strike or more; it crosses 0 at the breakeven. It is
-`plot-option-profit`'s chart (see "Option spreads"), whose options these are, of the
-bull call spread. `save-chart` saves it.
-
-#### `(call-spread-order search [:row r :contracts c :price p])`
-An order for one of the spreads, as a hash table in Schwab's form, made by
-`schwab-spread-order`: buy the call with the lower strike, sell the one with
-the higher, `:contracts` (1) of each, with a limit on the net debit of `:price`
--- the spread's `cost`, unless it is given. `:row` picks the spread: 0, the
-best, is the default; 1 the next; and so on. **It sends nothing.** With bids
-and asks, the order at the cost is likely to fill at once: it pays what is
-asked for the call bought, and takes what is bid for the call sold. A lower
+#### `(show-call-spreads search [:count n])`, `(plot-call-spreads search [:rows rows :low l :high h :points n])`, `(call-spread-order search [:row r :contracts c :price p])`
+`show-option-spreads`, `plot-option-profit`, and `option-spread-order` (see
+"Option spreads"), under these names. `show-call-spreads` shows the best
+spread in words -- what to buy and sell, what it costs for a share and for a
+contract of 100, what it makes at the expected price, where it breaks even,
+and the most it can make -- and a table of it and the next `:count` (10)
+best. `plot-call-spreads` charts the profit of a spread on the expiration
+day against the price the stock might have then: flat at a loss of the cost
+with the stock at the lower strike or less, rising dollar for dollar between
+the strikes, and flat at a gain of the strikes' difference less the cost at
+the higher strike or more. `call-spread-order` makes an order for one of the
+spreads, as a hash table in Schwab's form: buy the call with the lower
+strike, sell the one with the higher, `:contracts` (1) of each, with a limit
+on the net debit of `:price` -- the spread's `cost`, unless it is given; `:row`
+picks the spread (0, the best, is the default). **It sends nothing.** With
+bids and asks, the order at the cost is likely to fill at once. A lower
 `:price` may fill at a better price, or not at all.
 
 #### `(show-spread-order order)`

@@ -297,8 +297,6 @@ def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, groups=None,
     for iteration in range(1, max_iterations + 1):
         iterations_used = iteration
         prob, factor, irls_weight = probability_and_irls_weight(beta)     # n each
-        if (floor, ceiling) == (0.0, 1.0):
-            irls_weight = prob * (1.0 - prob)
         gradient = X.T @ (w * (y_arr - prob) * factor)                   # p
         information = (X.T * (w * irls_weight)) @ X                       # p x p
         log_likelihood = log_likelihood_of(prob)
@@ -329,40 +327,10 @@ def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, groups=None,
     coefficients, intercept = _unstandardize_coefficients(float(beta[0]), beta[1:].tolist(), means, scales)
 
     prob, factor, irls_weight = probability_and_irls_weight(beta)
-    if (floor, ceiling) == (0.0, 1.0):
-        irls_weight = prob * (1.0 - prob)
     measures = measures_of_fit(prob, y_arr, w, "probability")
     shares = not is_all_0_or_1(y_arr)
-
-    # Standard errors from the inverse of the information matrix at the
-    # fitted coefficients. The weights are first rescaled to average 1, so
-    # they say how much each row matters relative to the others, not how
-    # many copies of it there are -- otherwise weighting by loan balance
-    # (in dollars) would make the standard errors absurdly small.
-    #
-    # That takes each y to be a 0 or a 1, whose scatter about its chance p
-    # is p (1 - p). A share -- the part of a pool that prepaid -- is an
-    # average over many loans, and scatters far less, so for shares the
-    # standard errors come from the scatter of y about the fit instead: the
-    # sandwich of clustered_covariance, with each row its own group. With
-    # groups, it's that sandwich with the groups, for 0s and 1s too. Each
-    # row's score is the slope of its log-likelihood: weight * (y - p) *
-    # factor * x.
+    std_errors = logistic_standard_errors(X, w, y_arr, prob, factor, irls_weight, shares, groups, means, scales)
     total_weight = float(w.sum())
-    relative_w = w * (n / total_weight)
-    # (A fit that didn't converge can have no information left: then they're
-    # nan, quietly.)
-    information = (X.T * (relative_w * irls_weight)) @ X
-    try:
-        with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
-            covariance = np.linalg.inv(information)
-            if groups is not None or shares:
-                covariance = clustered_covariance(covariance, X * (relative_w * (y_arr - prob) * factor)[:, None],
-                                                  groups if groups is not None else np.arange(n))
-            variances = np.diag(_original_scale_covariance(covariance, means, scales))
-            std_errors = np.sqrt(np.where(variances >= 0, variances, np.nan))
-    except np.linalg.LinAlgError:
-        std_errors = np.full(p, np.nan)
 
     # How much y scatters about the fit, compared with 0s and 1s, in the
     # units of the weights: for 0s and 1s, the average weight; for shares,
@@ -389,6 +357,44 @@ def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, groups=None,
     if groups is not None:
         stats["groups"] = int(groups.max()) + 1
     return LispModel("logistic", coefficients, intercept, stats, floor=floor, ceiling=ceiling)
+
+
+def logistic_standard_errors(X, w, y, prob, factor, irls_weight, shares, groups, means, scales):
+    """The standard errors of a logistic fit's coefficients, the intercept first, on the scale of the original predictors
+    (whose means and scales these are). X has a column of 1s and then the standardized predictors; prob, factor and
+    irls_weight are each row's, at the fitted coefficients (see fit_logistic's probability_and_irls_weight); shares says
+    whether y is shares rather than 0s and 1s."""
+    n, p = X.shape
+    # Standard errors from the inverse of the information matrix at the
+    # fitted coefficients. The weights are first rescaled to average 1, so
+    # they say how much each row matters relative to the others, not how
+    # many copies of it there are -- otherwise weighting by loan balance
+    # (in dollars) would make the standard errors absurdly small.
+    #
+    # That takes each y to be a 0 or a 1, whose scatter about its chance p
+    # is p (1 - p). A share -- the part of a pool that prepaid -- is an
+    # average over many loans, and scatters far less, so for shares the
+    # standard errors come from the scatter of y about the fit instead: the
+    # sandwich of clustered_covariance, with each row its own group. With
+    # groups, it's that sandwich with the groups, for 0s and 1s too. Each
+    # row's score is the slope of its log-likelihood: weight * (y - p) *
+    # factor * x.
+    relative_w = w * (n / float(w.sum()))
+    # (A fit that didn't converge can have no information left: then they're
+    # nan, quietly.)
+    information = (X.T * (relative_w * irls_weight)) @ X
+    try:
+        with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+            covariance = np.linalg.inv(information)
+            if groups is not None or shares:
+                covariance = clustered_covariance(covariance, X * (relative_w * (y - prob) * factor)[:, None],
+                                                  groups if groups is not None else np.arange(n))
+            variances = np.diag(_original_scale_covariance(covariance, means, scales))
+            std_errors = np.sqrt(np.where(variances >= 0, variances, np.nan))
+    except np.linalg.LinAlgError:
+        std_errors = np.full(p, np.nan)
+
+    return std_errors
 
 
 FIT = "fit"                     # a :floor or :ceiling to be fit to the data
@@ -606,6 +612,72 @@ def fit_quantile(columns, ys, quantile, weights=None, groups=None, max_iteration
     quantile of y. `columns`, `ys`, `weights`, and `groups` are as for
     fit_linear. Returns a LispModel of the given kind.
 
+    The fit is found by quantile_fit_through_points, on standardized
+    predictors, as in fit_linear, and its standard errors by
+    quantile_standard_errors."""
+    k = len(columns)
+    n = len(ys)
+    p = k + 1
+    if not 0 < quantile < 1:
+        raise LispError("%s: the quantile must be between 0 and 1, 0.9 for the 90th percentile, not %s"
+                        % (who, quantile))
+    if n < p:
+        raise LispError("%s: %d observation(s) is too few to fit %d coefficients" % (who, n, p))
+    for col in columns:
+        if len(col) != n:
+            raise LispError("%s: all vectors must be the same length" % who)
+    if weights is None:
+        weights = [1.0] * n
+
+    std_columns, means, scales = _standardize_columns(columns)
+    X = np.column_stack([np.ones(n)] + [np.asarray(col, dtype=np.float64) for col in std_columns])
+    w = np.asarray(weights, dtype=np.float64)
+    y = np.asarray(ys, dtype=np.float64)
+
+    beta, total, iterations, converged = quantile_fit_through_points(X, y, w, quantile, max_iterations)
+    coefficients, intercept = _unstandardize_coefficients(float(beta[0]), beta[1:].tolist(), means, scales)
+    residuals = y - X @ beta
+    on_fit_tolerance = quantile_on_fit_tolerance(y)
+
+    # How good the fit is, as R-squared says for least squares: 1 - the sum
+    # / that sum about the quantile of y (a fit with no predictors). Koenker
+    # and Machado's R1.
+    total_without = float((w * check_loss(y - weighted_quantile(y, w, quantile), quantile)).sum())
+    pseudo_r_squared = (1 - total / total_without) if total_without > 0 else float("nan")
+
+    std_errors, degrees_of_freedom = quantile_standard_errors(X, w, residuals, quantile, groups, means, scales,
+                                                              on_fit_tolerance)
+
+    below, above = int((residuals < -on_fit_tolerance).sum()), int((residuals > on_fit_tolerance).sum())
+    stats = {
+        "quantile": quantile,
+        "measures": measures_of_fit(X @ beta, y, w, "lad" if kind == "lad" else "quantile", quantile),
+        "loss": total,                          # the sum of check_loss
+        "sum_abs_deviations": float((w * np.abs(residuals)).sum()),
+        "pseudo_r_squared": pseudo_r_squared,
+        "iterations": iterations,
+        "converged": converged,
+        "n": n,
+        "below_on_above": [below, n - below - above, above],    # how many points are below the fit, on it, above it
+        "std_errors": std_errors.tolist(),      # intercept first, then each coefficient
+        "test": "t",
+        "degrees_of_freedom": degrees_of_freedom,
+    }
+    if groups is not None:
+        stats["groups"] = int(groups.max()) + 1
+    return LispModel(kind, coefficients, intercept, stats)
+
+
+def quantile_on_fit_tolerance(y):
+    """How close to the fit a point must be, to count as on it: a billionth of the biggest y."""
+    return 1e-9 * float(np.abs(y).max())
+
+
+def quantile_fit_through_points(X, y, w, quantile, max_iterations):
+    """The coefficients of the quantile fit of y with the weights w -- beta: the intercept, then one for each column
+    of X after the first, which is all 1s -- with the sum of check_loss they make, how many steps it took, and
+    whether it got to the best fit.
+
     There's no formula for it, as there is for least squares, but one fact
     makes it easy to find: some best fit goes exactly through p of the
     points, p being the number of coefficients, counting the intercept --
@@ -626,26 +698,8 @@ def fit_quantile(columns, ys, quantile, weights=None, groups=None, max_iteration
        it: then no fit is better, since the sum has no local minimum that
        isn't the minimum.
 
-    Each step is exact, and it usually takes only a few. Fitting is done on
-    standardized predictors, as in fit_linear."""
-    k = len(columns)
-    n = len(ys)
-    p = k + 1
-    if not 0 < quantile < 1:
-        raise LispError("%s: the quantile must be between 0 and 1, 0.9 for the 90th percentile, not %s"
-                        % (who, quantile))
-    if n < p:
-        raise LispError("%s: %d observation(s) is too few to fit %d coefficients" % (who, n, p))
-    for col in columns:
-        if len(col) != n:
-            raise LispError("%s: all vectors must be the same length" % who)
-    if weights is None:
-        weights = [1.0] * n
-
-    std_columns, means, scales = _standardize_columns(columns)
-    X = np.column_stack([np.ones(n)] + [np.asarray(col, dtype=np.float64) for col in std_columns])
-    w = np.asarray(weights, dtype=np.float64)
-    y = np.asarray(ys, dtype=np.float64)
+    Each step is exact, and it usually takes only a few."""
+    p = X.shape[1]
 
     def loss(beta):
         return float((w * check_loss(y - X @ beta, quantile)).sum())
@@ -666,7 +720,7 @@ def fit_quantile(columns, ys, quantile, weights=None, groups=None, max_iteration
     total = loss(beta)
 
     # 2 and 3. Swing the fit about each p - 1 of the points it goes through.
-    on_fit_tolerance = 1e-9 * float(np.abs(y).max())
+    on_fit_tolerance = quantile_on_fit_tolerance(y)
     converged = False
     iterations = 0
     while iterations < max_iterations and total > 0:
@@ -693,16 +747,13 @@ def fit_quantile(columns, ys, quantile, weights=None, groups=None, max_iteration
         total, beta = best_total, best_beta
     if total == 0:
         converged = True
+    return beta, total, iterations, converged
 
-    coefficients, intercept = _unstandardize_coefficients(float(beta[0]), beta[1:].tolist(), means, scales)
-    residuals = y - X @ beta
 
-    # How good the fit is, as R-squared says for least squares: 1 - the sum
-    # / that sum about the quantile of y (a fit with no predictors). Koenker
-    # and Machado's R1.
-    total_without = float((w * check_loss(y - weighted_quantile(y, w, quantile), quantile)).sum())
-    pseudo_r_squared = (1 - total / total_without) if total_without > 0 else float("nan")
-
+def quantile_standard_errors(X, w, residuals, quantile, groups, means, scales, on_fit_tolerance):
+    """The standard errors of a quantile fit's coefficients, the intercept first, on the scale of the original
+    predictors (whose means and scales these are), and their degrees of freedom. X has a column of 1s and then the
+    standardized predictors; residuals are y less the fit; a point closer to the fit than on_fit_tolerance is on it."""
     # Standard errors. The coefficients' covariance is quantile * (1 -
     # quantile) * sparsity^2 * A^-1 B A^-1, with A = X'WX and B = X'W^2X --
     # just (X'X)^-1 without weights -- where the sparsity is 1 / the density
@@ -732,6 +783,7 @@ def fit_quantile(columns, ys, quantile, weights=None, groups=None, max_iteration
     # it's above the fit; quantile - 1, if below; 0, if on it), with one
     # degree of freedom fewer than the number of groups. (With every row its
     # own group, the meat averages out to quantile * (1 - quantile) * B.)
+    n, p = X.shape
     degrees_of_freedom = n - p
     off_fit = residuals[np.abs(residuals) > on_fit_tolerance]
     if degrees_of_freedom > 0 and len(off_fit) > 0:
@@ -754,24 +806,7 @@ def fit_quantile(columns, ys, quantile, weights=None, groups=None, max_iteration
     else:
         std_errors = np.full(p, np.nan)
 
-    below, above = int((residuals < -on_fit_tolerance).sum()), int((residuals > on_fit_tolerance).sum())
-    stats = {
-        "quantile": quantile,
-        "measures": measures_of_fit(X @ beta, y, w, "lad" if kind == "lad" else "quantile", quantile),
-        "loss": total,                          # the sum of check_loss
-        "sum_abs_deviations": float((w * np.abs(residuals)).sum()),
-        "pseudo_r_squared": pseudo_r_squared,
-        "iterations": iterations,
-        "converged": converged,
-        "n": n,
-        "below_on_above": [below, n - below - above, above],    # how many points are below the fit, on it, above it
-        "std_errors": std_errors.tolist(),      # intercept first, then each coefficient
-        "test": "t",
-        "degrees_of_freedom": degrees_of_freedom,
-    }
-    if groups is not None:
-        stats["groups"] = int(groups.max()) + 1
-    return LispModel(kind, coefficients, intercept, stats)
+    return std_errors, degrees_of_freedom
 
 
 def sparsity_bandwidth(quantile, n):

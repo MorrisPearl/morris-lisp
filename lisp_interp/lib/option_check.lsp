@@ -91,7 +91,7 @@ bid, ask, and mid; then the implied volatilities are found again."
            (premium (- (american-price type underlying-price strike T rate iv-mid :dividends dividends :steps 100)
                        (american-price type underlying-price strike T rate iv-mid :dividends dividends :steps 100
                                        :early-exercise #f))))
-      (with-smile-columns (table-add-columns options (list (cons "early-exercise" premium)
+      (vol-smile--with-smile-columns (table-add-columns options (list (cons "early-exercise" premium)
                                                                  (cons "bid" (- bid premium))
                                                                  (cons "ask" (- ask premium))
                                                                  (cons "mid" (- mid premium))))
@@ -304,11 +304,11 @@ values: they are not adjusted for risk."
            (schedule (if (null? dividends)
                          '()
                          (dividend-schedule dividends start-date last-day :repeat-last-year #t)))
-           (as-quoted (with-smile-columns ahead rate schedule start-date))
+           (as-quoted (vol-smile--with-smile-columns ahead rate schedule start-date))
            (all-options (if early-exercise
                             (option-check--without-early-exercise as-quoted schedule start-date rate)
                             as-quoted))
-           (options (liquid-options all-options max-vol-spread out-of-the-money-only)))
+           (options (vol-smile--liquid-options all-options max-vol-spread out-of-the-money-only)))
       (option-check--require-fitting-prices all-options forward-tolerance)
       (when (= (table-row-count options) 0)
         (error "check-option-chain: no option is liquid enough to check -- see max-vol-spread"))

@@ -152,7 +152,7 @@ class TestWhatTheModelsShare(ModelsCase):
         self.assertNotIn("incentive_bp (knot 300)", self.run_lisp("(model-report model)"))   # (the incentives here are from -150 to 250 basis points)
 
     def test_what_the_model_says_of_each_row_is_its_prediction(self):
-        predicted = self.vector("(predicted-outcomes model data)")
+        predicted = self.vector("(freddie-loans--predicted-outcomes model data)")
         first = self.run_lisp("(model-predict model (map (lambda (column) (vector-ref (cdr column) 0)) (loan-data-predictors data)))")
         self.assertAlmostEqual(predicted[0], first)
         self.assertTrue(((predicted > 0) & (predicted < 1)).all())
@@ -164,7 +164,7 @@ class TestWhatTheModelsShare(ModelsCase):
         prepaid, balance = self.sql("""SELECT SUM(smm * scheduled_upb), SUM(scheduled_upb) FROM loan_months WHERE sample_bucket < 80 AND months_delinquent < 4
                                        AND credit_score IS NOT NULL AND exit_code IS NULL AND period = '2020-03-01'""")[0]
         self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column months "actual CPR") 2)'), 100 * (1 - (1 - prepaid / balance) ** 12))
-        predicted, weights = self.vector("(predicted-outcomes model data)"), self.vector("(loan-data-weights data)")
+        predicted, weights = self.vector("(freddie-loans--predicted-outcomes model data)"), self.vector("(loan-data-weights data)")
         march = np.array([str(d) == "2020-03-01" for d in self.run_lisp("(loan-data-periods data)").items])
         smm = (predicted[march] * weights[march]).sum() / weights[march].sum()
         self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column months "predicted CPR") 2)'), 100 * (1 - (1 - smm) ** 12))

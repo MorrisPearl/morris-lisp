@@ -63,26 +63,26 @@
   "A prepayment model that does not look at the rates: the collateral prepays at the speed (see prepayment-speed), whatever they are. Its answer is the rate, in percent,
 that the speed is for each month of the piece."
   (lambda (piece path)
-    (annual-rate (speed-smms speed (collateral-piece-age piece) (collateral-piece-wam piece)))))
+    (annual-rate (prepayment-speed--speed-smms speed (collateral-piece-age piece) (collateral-piece-wam piece)))))
 
-(define (model-at-speed model speed)
+(define (deal-paths--model-at-speed model speed)
   "The prepayment model, as a share of it that the speed of the model (prepayment-speed 'model ...) says, in each month: 105 is 105% of the rates it gives (no more than 99)."
   (lambda (piece path)
     (vector-clip (* (model piece path) (/ (speed-values speed (collateral-piece-wam piece)) 100.0)) 0.0 99.0)))
 
-(define (deal-base-prepayment-model deal)
+(define (deal-paths--base-prepayment-model deal)
   "The deal's prepayment model: the one it was given (deal-set-prepayment-model!), or the one fitted to Freddie Mac's loans, told the deal's growth of home prices and
 mortgage spread."
   (if (null? (deal-prepayment-model deal))
       (freddie-prepayment-model :home-price-growth (deal-home-price-growth deal) :mortgage-spread (deal-mortgage-spread deal))
       (deal-prepayment-model deal)))
 
-(define (deal-prepayment-model-in-use deal)
-  "The prepayment model that the paths are prepaid by: if the pricing speed of the deal is of the model, the deal's prepayment model at that speed (see model-at-speed);
+(define (deal-paths--prepayment-model-in-use deal)
+  "The prepayment model that the paths are prepaid by: if the pricing speed of the deal is of the model, the deal's prepayment model at that speed (see deal-paths--model-at-speed);
 otherwise one that prepays at the pricing speed, whatever the rates."
   (let ((speed (deal-pricing-speed deal)))
-    (if (model-speed? speed)
-        (model-at-speed (deal-base-prepayment-model deal) speed)
+    (if (prepayment-speed--model-speed? speed)
+        (deal-paths--model-at-speed (deal-paths--base-prepayment-model deal) speed)
         (static-prepayment-model speed))))
 
 (define (deal-forward-path deal months)
@@ -102,7 +102,7 @@ both are told the deal's growth of home prices and mortgage spread."
          (severities ((apply freddie-severity-model :lag (deal-liquidation-lag deal) settings) piece path)))
     (list (smms-from-cprs cdrs (collateral-piece-wam piece)) severities)))
 
-(define (deal-defaults-of deal path-of)
+(define (deal-paths--defaults-of deal path-of)
   "What project-pieces-with is to be given as defaults-of: '() if the deal's loans do not default (deal-defaults is 0), and otherwise a function of a piece, the defaults
 of the piece on its path of rates, (path-of piece)."
   (if (= (deal-defaults deal) 0)
@@ -113,19 +113,19 @@ of the piece on its path of rates, (path-of piece)."
   "The single monthly mortality, a decimal, of each month of the piece at a speed of the prepayment model: what the deal's prepayment model says it is if rates follow the
 forward curve, times the share that the speed says."
   (let ((months (collateral-piece-wam piece)))
-    (smms-from-cprs ((model-at-speed (deal-base-prepayment-model deal) speed) piece (deal-forward-path deal months)) months)))
+    (smms-from-cprs ((deal-paths--model-at-speed (deal-paths--base-prepayment-model deal) speed) piece (deal-forward-path deal months)) months)))
 
-(define (deal-rate-model-in-use deal)
+(define (deal-paths--rate-model-in-use deal)
   "The rate model of the deal, or, if it has none, one with the numbers of the library manual."
   (if (null? (deal-rate-model deal)) (make-rate-model) (deal-rate-model deal)))
 
-(define (deal-index-of-short-rates deal short-rates)
+(define (deal-paths--index-of-short-rates deal short-rates)
   "The index that the floating tranches of the deal are of, for a path of short rates: what the index function of the deal makes of it (the short rates, if it has none)."
   (if (null? (deal-index-function deal))
       short-rates
       ((deal-index-function deal) short-rates)))
 
-(define (deal-zero-curve deal)
+(define (deal-paths--zero-curve deal)
   "The zero curve of the deal's Treasury curve, as par-curve-zeros makes it from the par yields: a table of years, par, discount and zero (a continuously compounded rate).
 An error if the deal has no curve."
   (let ((points (deal-treasury-curve deal)))
@@ -136,34 +136,34 @@ An error if the deal has no curve."
 (define (deal-forward-curve deal)
   "The monthly forward rates, a vector of 360 decimals, of the Treasury curve of the deal, which the paths of rates start on: those of its zero curve (see curve-forward-rates).
 An error if it has no curve."
-  (table-column (curve-forward-rates (deal-zero-curve deal)) "forward"))
+  (table-column (curve-forward-rates (deal-paths--zero-curve deal)) "forward"))
 
 ; ---------------------------------------------------------------------------
 ; The deal on a path
 ; ---------------------------------------------------------------------------
 
-(define (path-collateral-flows deal pieces model path)
+(define (deal-paths--path-collateral-flows deal pieces model path)
   "The cash flows of the collateral on a path: each piece prepays as the model says it does on the path, and, if the deal's loans default, defaults as the default model
 says it does there. (principal interest balance loss), as long as the deal."
-  (deal-pad-flows deal (project-pieces-with pieces
+  (deal--pad-flows deal (project-pieces-with pieces
                                             (lambda (piece) (smms-from-cprs (model piece path) (collateral-piece-wam piece)))
-                                            :defaults-of (deal-defaults-of deal (lambda (piece) path))
+                                            :defaults-of (deal-paths--defaults-of deal (lambda (piece) path))
                                             :lag (deal-liquidation-lag deal))))
 
-(define (path-tranche-flows deal collateral-flows index names)
+(define (deal-paths--path-tranche-flows deal collateral-flows index names)
   "What each of the tranches called names is paid in each month, a vector for each, when the collateral pays the cash flows, and the floating coupons are of the index (a vector
 with a number for each month): the principal and the interest, from a run of a copy of the deal."
-  (let ((run (deal-run-copy deal collateral-flows #t index)))
+  (let ((run (deal--run-copy deal collateral-flows #t index)))
     (map (lambda (name)
            (let ((node (get-node run name)))
              (+ (node-principal node) (node-interest node))))
          names)))
 
-(define (run-path-set deal forwards n-paths seed label)
+(define (deal-paths--run-path-set deal forwards n-paths seed label)
   "A path-run: n-paths paths made on the forward rates, from the seed, the collateral prepaid by the prepayment model on each, and the deal run on each. It says how far it has
 got, as label."
-  (let* ((model (deal-prepayment-model-in-use deal))
-         (rates (deal-rate-model-in-use deal))
+  (let* ((model (deal-paths--prepayment-model-in-use deal))
+         (rates (deal-paths--rate-model-in-use deal))
          (years (max 1 (ceiling (/ (deal-periods deal) 12.0))))
          (simulated (simulate-rate-paths forwards (rate-model-sigma1 rates) (rate-model-sigma2 rates) years n-paths
                                          :a (rate-model-a rates) :b (rate-model-b rates) :seed seed))
@@ -172,7 +172,7 @@ got, as label."
          (count (length short-paths))
          (every (max 1 (quotient count 10)))
          (pieces (deal-pieces deal))
-         (names (deal-tree-names deal (deal-root deal)))
+         (names (deal--tree-names deal (deal-root deal)))
          (collected (make-hash-table)))
     (dolist (name names)
       (hash-table-set! collected name '()))
@@ -180,7 +180,7 @@ got, as label."
           for long in long-paths
           for number from 1
           do (let* ((path (make-rate-path :short-rates short :long-yields long :first-payment (deal-first-payment deal)))
-                    (flows (path-tranche-flows deal (path-collateral-flows deal pieces model path) (deal-index-of-short-rates deal short) names)))
+                    (flows (deal-paths--path-tranche-flows deal (deal-paths--path-collateral-flows deal pieces model path) (deal-paths--index-of-short-rates deal short) names)))
                (for-each (lambda (name flow) (hash-table-set! collected name (cons flow (hash-table-ref collected name)))) names flows)
                (when (or (= (remainder number every) 0) (= number count))
                  (display (format "{}: {} of {} paths\n" label number count)))))
@@ -192,13 +192,13 @@ got, as label."
 ; What the tranches are worth on the paths
 ; ---------------------------------------------------------------------------
 
-(define (path-run-money run name oas fraction)
+(define (deal-paths--path-run-money run name oas fraction)
   "What the tranche called name is worth on the paths of the run: the average, over the paths, of its cash flows discounted along each at the short rates and the oas (a
 decimal), the first payment being fraction of a month from the start."
   (let ((values (path-present-values (hash-table-ref (path-run-flows run) name) (path-run-rates run) oas fraction)))
     (/ (vector-sum values) (vector-length values))))
 
-(define (path-sets-cached sets key compute)
+(define (deal-paths--path-sets-cached sets key compute)
   "What (compute) gives, which is kept in the sets under the key, so that it is worked out once."
   (let ((found (hash-table-ref (path-sets-cache sets) key)))
     (or found
@@ -206,11 +206,11 @@ decimal), the first payment being fraction of a month from the start."
           (hash-table-set! (path-sets-cache sets) key value)
           value))))
 
-(define (path-sets-oas sets name money fraction)
+(define (deal-paths--path-sets-oas sets name money fraction)
   "The OAS, a decimal, of the tranche called name that is paid for with this money: the spread at which it is worth that on the paths. An error if there is none, between -100% and 500%."
-  (path-sets-cached sets (format "oas {} {}" name money)
+  (deal-paths--path-sets-cached sets (format "oas {} {}" name money)
     (lambda ()
-      (let ((excess (lambda (oas) (- (path-run-money (path-sets-base sets) name oas fraction) money))))
+      (let ((excess (lambda (oas) (- (deal-paths--path-run-money (path-sets-base sets) name oas fraction) money))))
         (unless (and (> (excess -1.0) 0.0) (< (excess 5.0) 0.0))
           (error (format "no OAS, from -10000 to 50000 basis points, makes {} worth {:,.2f} on the paths" name money)))
         (ridders excess -1.0 5.0 :tolerance 1e-13)))))
@@ -225,23 +225,23 @@ proportion that its value falls by for a rise of one in rates, (down - up) / (2 
 much its effective duration changes as rates do, (down + up - 2 x value) / (value x shift^2). Below 0 for something that gains less when rates fall than it loses when they rise."
   (/ (+ down up (* -2.0 value)) (* value shift shift)))
 
-(define (path-sets-moneys sets name oas fraction)
+(define (deal-paths--path-sets-moneys sets name oas fraction)
   "What the tranche called name is worth at this OAS (a decimal) on the paths on the curve moved down, on the curve, and on the curve moved up: (down value up)."
-  (map (lambda (run) (path-run-money run name oas fraction))
+  (map (lambda (run) (deal-paths--path-run-money run name oas fraction))
        (list (path-sets-down sets) (path-sets-base sets) (path-sets-up sets))))
 
-(define (path-sets-effective-duration sets name oas fraction)
+(define (deal-paths--path-sets-effective-duration sets name oas fraction)
   "The effective duration of the tranche called name at this OAS (a decimal), in years (see effective-duration), from its value on the paths on the curve, and on it moved
 down and up, at the same OAS."
-  (path-sets-cached sets (format "duration {} {}" name oas)
+  (deal-paths--path-sets-cached sets (format "duration {} {}" name oas)
     (lambda ()
-      (let ((moneys (path-sets-moneys sets name oas fraction)))
+      (let ((moneys (deal-paths--path-sets-moneys sets name oas fraction)))
         (effective-duration (car moneys) (cadr moneys) (caddr moneys) (path-sets-shift sets))))))
 
-(define (path-sets-effective-convexity sets name oas fraction)
+(define (deal-paths--path-sets-effective-convexity sets name oas fraction)
   "The effective convexity of the tranche called name at this OAS (a decimal), in years squared (see effective-convexity), from its value on the paths on the curve, and
 on it moved down and up, at the same OAS. Below 0 for a tranche that the borrowers' option shortens as rates fall."
-  (path-sets-cached sets (format "convexity {} {}" name oas)
+  (deal-paths--path-sets-cached sets (format "convexity {} {}" name oas)
     (lambda ()
-      (let ((moneys (path-sets-moneys sets name oas fraction)))
+      (let ((moneys (deal-paths--path-sets-moneys sets name oas fraction)))
         (effective-convexity (car moneys) (cadr moneys) (caddr moneys) (path-sets-shift sets))))))

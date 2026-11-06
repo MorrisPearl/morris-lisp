@@ -13,7 +13,7 @@ from collections import Counter
 
 import numpy as np
 
-from lisp_core import LispDate, LispError, LispString, LispVector, NIL, keyword_options
+from lisp_core import LispDate, LispError, LispString, LispVector, keyword_options
 from lisp_stratify import is_date_column, is_numeric_column, table_column, value_text
 from lisp_tables import make_table_value, row_count, table_columns
 from lisp_vector_math import floats_of, missing_mask

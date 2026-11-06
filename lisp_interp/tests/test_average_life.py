@@ -1,5 +1,5 @@
 """The average life of a bond, and the split that works out the sizes of its children from the average lives that they are to have
-(lib/deal.lsp: average-life, deal-average-life, average-life-split, average-life-plan, deal-average-life!)."""
+(lib/deal.lsp: average-life, deal-average-life, average-life-split, deal--average-life-plan, deal-average-life!)."""
 
 import numpy as np
 
@@ -128,7 +128,7 @@ class TestSizingByAverageLife(AverageLifeCase):
     def test_a_change_of_the_lives_is_a_change_of_the_sizes(self):
         self.run_lisp('''(deal-average-life! deal "POOL" '(("A1" 2.0) ("A2")))''')
         small = self.size("A1")
-        self.run_lisp('''(deal-replace-split! deal "POOL" (average-life-plan '(("A1" 6.0) ("A2"))))''')
+        self.run_lisp('''(deal-replace-split! deal "POOL" (deal--average-life-plan '(("A1" 6.0) ("A2"))))''')
         self.assertGreater(self.size("A1"), small)
         self.assertAlmostEqual(self.lives_after_run(("A1",))[0], 6.0, places=8)
 
@@ -162,7 +162,7 @@ class TestSizingByAverageLife(AverageLifeCase):
         self.assertLispError('''(deal-average-life! deal "POOL" '("A1" ("A2")))''', "a child is (name years)")
 
     def test_a_z_bond_cannot_be_a_child(self):
-        self.run_lisp('''(define plan (average-life-plan '(("A1" 2.0) ("A2"))))
+        self.run_lisp('''(define plan (deal--average-life-plan '(("A1" 2.0) ("A2"))))
                          (deal-add-tranche! deal "A1" 1.0 :z #t)
                          (deal-add-tranche! deal "A2" 1.0)''')
         self.assertLispError('(deal-add-split! deal "POOL" (split-plan-split plan))', "A1 is a Z bond")
@@ -177,7 +177,7 @@ class TestSizingByAverageLife(AverageLifeCase):
         self.assertAlmostEqual(self.lives_after_run(("A1",))[0], 2.0, places=8)
 
     def test_the_sizes_a_plan_would_have_are_shown_without_changing_the_deal(self):
-        self.run_lisp('''(define plan (average-life-plan '(("A1" 2.0) ("A2"))))''')
+        self.run_lisp('''(define plan (deal--average-life-plan '(("A1" 2.0) ("A2"))))''')
         sizes = self.run_lisp('(split-plan-sizes deal (get-node deal "POOL") plan)')
         self.assertAlmostEqual(sizes.car + sizes.cdr.car, 150000000.0, places=3)
         self.assertShows("(deal-names deal)", '("POOL")')
