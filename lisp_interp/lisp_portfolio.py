@@ -7,6 +7,8 @@
   (portfolio-value prices weights [:start-prices p] [:rebalance n] [:start-value v])
                                            a portfolio's value along a table of prices
   (covariance-matrix returns [:days-per-year n]), (correlation-matrix returns)
+  (principal-components table [:count k] [:standardize b])
+                                           the few combinations that explain most of many columns' variation
   (portfolio-volatility weights covariance)
   (minimum-variance-weights covariance [:long-only #t])
   (mean-variance-weights expected-returns covariance risk-aversion [:long-only #t])
@@ -329,6 +331,96 @@ def portfolio_volatility(weights, covariance):
     return float(np.sqrt(max(w @ matrix @ w, 0.0)))
 
 
+# ---------------------------------------------------------------------------
+# Principal components
+# ---------------------------------------------------------------------------
+
+def principal_components(table, *options):
+    """(principal-components table [:count k] [:standardize b]) -- the
+    principal components of the table's columns of numbers (one column for
+    each thing, such as a stock's returns, and one row for each observation,
+    such as a month). The other columns, such as a date, are carried along.
+    Returns a list of four tables, by name:
+
+      ("variance" . table)  component (1, 2, ...), variance-share (the share of
+                            all the columns' variation it explains), and
+                            cumulative-share
+      ("loadings" . table)  column (each column's name), pc1 ... pck (how much
+                            of each component it is made of: the weights, whose
+                            squares add up to 1 for each component), and
+                            explained (the share of that column's variation the
+                            k components explain together)
+      ("correlations" . table)  column, then pc1 ... pck: the correlation of
+                            each column with each component, from -1 to 1 (the
+                            easiest way to say how much a column moves with a
+                            component); their squares add up to explained
+      ("scores" . table)    the table's other columns, then pc1 ... pck: each
+                            component's value in each row
+
+    :count is how many components to keep (5). With :standardize #t (the
+    default) each column is first put on the same scale (its standard
+    deviation made 1), so the components explain correlation, and a column
+    that varies a lot doesn't decide them; #f leaves the scales as they are.
+    Each component's sign is chosen so that its loadings add up to more than
+    0. Every number must be there: a column with a missing value is an
+    error."""
+    who = "principal-components"
+    options = keyword_options(options, ["count", "standardize"], who)
+    columns = table_columns(table, who)
+    numeric = [(name, vector) for name, vector in columns
+               if np.issubdtype(vector.items.dtype, np.number) and vector.items.dtype != np.bool_]
+    others = [(name, vector) for name, vector in columns if not any(name == n for n, _ in numeric)]
+    if len(numeric) < 2:
+        raise LispError("%s: it takes a table with at least two columns of numbers" % who)
+    data = np.column_stack([floats_of(vector, who) for _, vector in numeric])
+    rows = data.shape[0]
+    if rows < 2:
+        raise LispError("%s: it takes at least two rows" % who)
+    for j, (name, _) in enumerate(numeric):
+        if not np.all(np.isfinite(data[:, j])):
+            raise LispError("%s: every number must be there, but %s has one missing" % (who, name))
+    count = options.get("count", 5)
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise LispError("%s: :count must be a whole number, 1 or more, not %s" % (who, count))
+    count = min(count, rows - 1, data.shape[1])
+
+    centered = data - data.mean(axis=0)
+    if is_true(options.get("standardize", True)):
+        spread = centered.std(axis=0, ddof=1)
+        if np.any(spread == 0):
+            raise LispError("%s: %s never changes, so it can't be put on the same scale as the others"
+                            % (who, numeric[int(np.argmax(spread == 0))][0]))
+        centered = centered / spread
+
+    # The singular value decomposition: centered = left @ diag(sizes) @ directions.
+    # Each row of directions is a component's loadings, and sizes squared / (rows - 1) its variance.
+    left, sizes, directions = np.linalg.svd(centered, full_matrices=False)
+    variances = sizes ** 2 / (rows - 1)
+    shares = variances / variances.sum()
+    loadings = directions[:count].T                         # a row for each column, a column for each component
+    signs = np.where(loadings.sum(axis=0) < 0, -1.0, 1.0)
+    loadings = loadings * signs
+    scores = centered @ loadings
+    column_variances = centered.var(axis=0, ddof=1)
+    correlations = loadings * np.sqrt(variances[:count]) / np.sqrt(column_variances)[:, None]
+    explained = (correlations ** 2).sum(axis=1)
+
+    names = ["pc%d" % (i + 1) for i in range(count)]
+    variance_table = make_table_value([("component", to_vector(np.arange(1, count + 1))),
+                                       ("variance-share", to_vector(shares[:count])),
+                                       ("cumulative-share", to_vector(np.cumsum(shares)[:count]))])
+    loadings_table = make_table_value([("column", LispVector([LispString(name) for name, _ in numeric]))] +
+                                      [(names[i], to_vector(loadings[:, i])) for i in range(count)] +
+                                      [("explained", to_vector(explained))])
+    correlations_table = make_table_value([("column", LispVector([LispString(name) for name, _ in numeric]))] +
+                                          [(names[i], to_vector(correlations[:, i])) for i in range(count)])
+    scores_table = make_table_value(others + [(names[i], to_vector(scores[:, i])) for i in range(count)])
+    return list_to_pairs([Pair(LispString("variance"), variance_table),
+                          Pair(LispString("loadings"), loadings_table),
+                          Pair(LispString("correlations"), correlations_table),
+                          Pair(LispString("scores"), scores_table)])
+
+
 BUILTINS = {
     "combine-returns": combine_returns,
     "bootstrap-paths": bootstrap_paths,
@@ -338,4 +430,5 @@ BUILTINS = {
     "portfolio-volatility": portfolio_volatility,
     "minimum-variance-weights": minimum_variance_weights,
     "mean-variance-weights": mean_variance_weights,
+    "principal-components": principal_components,
 }

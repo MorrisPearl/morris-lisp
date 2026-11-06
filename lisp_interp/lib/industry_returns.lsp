@@ -6,6 +6,8 @@
 ;   (industry-returns "financial_data.db")              each industry's return, weighted by market capitalization
 ;   (industry-variation "financial_data.db")            how much stocks differ within an industry, against how much industries differ from each other
 ;
+; and, further down, monthly returns over two years and their principal components (monthly-prices-update, monthly-returns, return-components).
+;
 ; A stock's return over a year is what its price gained, plus the dividend, as a fraction of the price it started at:
 ;
 ;     return = (end price - start price + dividend) / start price
@@ -64,6 +66,13 @@ A ticker Schwab doesn't know is not in it."
               (hash-table-ref answer "instruments" '()))
     found))
 
+(define (stock-returns--why-none message)
+  "The note to keep for a stock Schwab gave an error for, from the error's message. An error that will happen for every stock -- the sign-in has run
+out, or Schwab can't be reached -- is not kept as a note; it stops the run (which can be started again, and carries on from there)."
+  (cond ((string-search message "has no prices") "Schwab has no prices for it")
+        ((or (string-search message "schwab-login") (string-search message "couldn't reach")) (error message))
+        (else message)))
+
 (define (stock-returns--prices creds ticker start-date end-date)
   "The first and last closing prices of the ticker in the dates, as (start-date start-price end-date end-price), or a string saying why there are none."
   (catch-error
@@ -72,7 +81,7 @@ A ticker Schwab doesn't know is not in it."
       (let ((dates (table-column prices "date")) (closes (table-column prices "close")))
         (list (vector-ref dates 0) (vector-ref closes 0)
               (vector-ref dates (- (vector-length dates) 1)) (vector-ref closes (- (vector-length closes) 1)))))
-    (message) (if (string-search message "has no prices") "Schwab has no prices for it" message)))
+    (message) (stock-returns--why-none message)))
 
 (define (stock-returns--save conn ticker year-end prices facts)
   "Replaces the ticker's row in stock_returns. prices is what stock-returns--prices gave, facts is (market-cap dividend) or #f."
@@ -210,3 +219,149 @@ A share well above share-by-chance means the industries are separating returns; 
                   "equal-weights" (list->vector (append (map cdr equal-weighted) (map cdr extra)))
                   "market-cap-weights" (list->vector (append (map cdr by-market-cap) (list nan stock-count industry-count)))
                   "return-ranks" (list->vector (append (map cdr by-rank) (list chance stock-count industry-count)))))))
+
+; ---------------------------------------------------------------------------------------------------------------------------------------------------------
+; Monthly returns, and the few patterns that explain much of them (principal components)
+; ---------------------------------------------------------------------------------------------------------------------------------------------------------
+;
+;   (monthly-prices-update creds "financial_data.db")   each stock's closing price at the end of each month for the last two years, from Schwab
+;   (monthly-returns "financial_data.db")               a table with a row for each month and a column of each stock's returns
+;   (return-components "financial_data.db")             the principal components of those returns
+;
+; A month's return is (this month's close - last month's close + the dividend for a month) / last month's close, where the dividend for a month is a
+; twelfth of Schwab's dividendAmount (from stock_returns): the current dividend, taken to be the same number of dollars every month. Only whole months are
+; used: the last is the month before the one the update is run in. The Canadian stocks (tickers ending in .TO) are left out.
+;
+; The tables: monthly_prices (ticker, month, close), with month the first day of the month the close is at the end of; and monthly_prices_asked (ticker,
+; last_month, months, note), a row for each stock asked for, so that a run that is stopped picks up where it left off.
+
+(define monthly-returns-years 2)          ; how many years of monthly returns
+
+(define (monthly-prices--create conn)
+  (sqlite-execute conn "CREATE TABLE IF NOT EXISTS monthly_prices (ticker TEXT, month TEXT, close REAL, PRIMARY KEY (ticker, month))")
+  (sqlite-execute conn "CREATE TABLE IF NOT EXISTS monthly_prices_asked (ticker TEXT PRIMARY KEY, last_month TEXT, months INTEGER, note TEXT)"))
+
+(define (monthly-prices--last-month day)
+  "The first day of the last whole month before the month of day."
+  (date-add-months (date (date-year day) (date-month day) 1) -1))
+
+(define (monthly-prices--wanted conn last-month)
+  "The tickers of ticker_industry, but for the Canadian ones, not yet asked for with this last month, in order."
+  (vector->list
+    (table-column
+      (sqlite-query conn "SELECT ticker FROM ticker_industry
+                           WHERE ticker NOT LIKE '%.TO'
+                             AND ticker NOT IN (SELECT ticker FROM monthly_prices_asked WHERE last_month = ?)
+                           ORDER BY ticker"
+                    '() '() (list (date->string last-month)))
+      "ticker")))
+
+(define (monthly-prices--save conn creds ticker first-month last-month)
+  "Asks Schwab for the ticker's monthly closes from first-month to last-month, and replaces what monthly_prices has for it."
+  (let* ((prices (catch-error (stock-returns--ask-schwab
+                                (lambda () (schwab-price-history creds ticker :frequency "monthly"
+                                                                 :start-date first-month :end-date (date-end-of-month last-month))))
+                   (message) message))
+         (whole-months (if (string? prices) '() (table-filter prices (vector<= (table-column prices "date") last-month))))
+         (months (if (null? whole-months) 0 (table-row-count whole-months)))
+         (note (cond ((string? prices) (stock-returns--why-none prices))
+                     ((= months 0) "Schwab has no whole months for it")
+                     (else ""))))
+    (sqlite-execute conn "DELETE FROM monthly_prices WHERE ticker = ?" (list ticker))
+    (if (> months 0)
+        (sqlite-write-table conn "monthly_prices"
+          (table-add-columns (table-select (table-rename-column whole-months "date" "month") '("month" "close"))
+                             (list (cons "ticker" ticker)))
+          'append))
+    (sqlite-execute conn "DELETE FROM monthly_prices_asked WHERE ticker = ?" (list ticker))
+    (sqlite-execute conn "INSERT INTO monthly_prices_asked VALUES (?, ?, ?, ?)" (list ticker (date->string last-month) months note))))
+
+(define (monthly-prices-update creds db-path &key (years monthly-returns-years) (end-date '()))
+  "Gets each stock's month-end closes for the last :years (2) whole years, before the month of :end-date (today), from Schwab, and keeps them in the table
+monthly_prices of the database at db-path. Skips the stocks it already has, so it can be stopped and called again. Returns a table of how many stocks it has
+a whole run of months for, how many it has some months for, and how many none, by reason."
+  (with-sqlite (conn db-path)
+    (monthly-prices--create conn)
+    (let* ((end (if (null? end-date) (today) (if (string? end-date) (string->date end-date) end-date)))
+           (last-month (monthly-prices--last-month end))
+           (first-month (date-add-months last-month (- (* 12 years))))   ; the close before the first month's return
+           (wanted (monthly-prices--wanted conn last-month)))
+      (display (length wanted)) (display " stocks to get") (newline)
+      (let loop ((remaining wanted) (done 0))
+        (if (pair? remaining)
+            (begin
+              (monthly-prices--save conn creds (car remaining) first-month last-month)
+              (sleep stock-returns-pause)
+              (if (= (remainder (+ done 1) 400) 0) (begin (display (+ done 1)) (display " done") (newline)))
+              (loop (cdr remaining) (+ done 1)))))
+      (sqlite-query conn
+        "SELECT CASE WHEN note != '' THEN note WHEN months = ? THEN 'every month' ELSE 'some months' END AS what, COUNT(*) AS stocks
+           FROM monthly_prices_asked WHERE last_month = ? GROUP BY what ORDER BY stocks DESC, what"
+        '() '() (list (+ (* 12 years) 1) (date->string last-month))))))
+
+(define (monthly-returns--long conn years)
+  "The monthly returns, a row for each stock and month: ticker, month, return and market_cap, for the stocks that have a return in every one of the last
+:years of months monthly_prices has."
+  (stock-returns--create conn)      ; (the dividends and market caps come from it; without it, there are none)
+  (let* ((last-month (vector-ref (table-column (sqlite-query conn "SELECT MAX(month) AS last FROM monthly_prices") "last") 0))
+         (first-month (date->string (date-add-months (string->date (date->string last-month)) (- (* 12 years))))))
+    (sqlite-query conn
+      "WITH priced AS (
+         SELECT p.ticker, p.month, p.close,
+                LAG(p.close) OVER (PARTITION BY p.ticker ORDER BY p.month) AS previous_close,
+                COALESCE(r.dividend, 0) / 12.0 AS monthly_dividend,
+                COALESCE(r.market_cap, 0) AS market_cap
+           FROM monthly_prices p LEFT JOIN stock_returns r ON r.ticker = p.ticker
+          WHERE p.month >= ? AND p.month <= ?),
+       returns AS (
+         SELECT ticker, month, (close - previous_close + monthly_dividend) / previous_close AS return, market_cap
+           FROM priced WHERE previous_close > 0)
+       SELECT ticker, month, return, market_cap FROM returns
+        WHERE ticker IN (SELECT ticker FROM returns GROUP BY ticker HAVING COUNT(*) = ?)
+        ORDER BY ticker, month"
+      '() '() (list first-month (date->string last-month) (* 12 years)))))
+
+(define (monthly-returns db-path &key (years monthly-returns-years))
+  "A table of the stocks' monthly returns: a month column, and a column for each stock that has a return in every one of the last :years (2) of months,
+named by its ticker."
+  (with-sqlite (conn db-path)
+    (table-pivot (monthly-returns--long conn years) "month" "ticker" '(sum "return"))))
+
+(define (return-components db-path &key (count 5) (years monthly-returns-years) (standardize #t))
+  "The principal components of the stocks' monthly returns: the :count (5) patterns of moving together that explain the most of how the stocks' returns
+went up and down, from (monthly-returns db-path). With :standardize #t (the default) each stock's returns are first put on the same scale, so that the
+components explain how the stocks move together, not just which stocks move the most. Returns a list of four tables, by name:
+  (\"variance\" . table)    component, variance-share (the share of all the stocks' variation it explains), cumulative-share, share-if-unrelated (what
+                           each component would explain if the stocks moved independently: 1 / (months - 1)), and correlation-with-market (with the
+                           market-cap-weighted return of all the stocks)
+  (\"stocks\" . table)      ticker, industry, market_cap, pc1 ... (the correlation of the stock's returns with each component, from -1 to 1: how
+                           closely it moves with it), and explained (the share of the stock's variation the components explain together: the
+                           correlations' squares added up)
+  (\"industries\" . table)  industry, stocks, and the average of its stocks' correlations and explained shares; largest first
+  (\"months\" . table)      month, pc1 ... (each component's value that month), and market-return
+Read one with (cdr (assoc \"stocks\" components))."
+  (with-sqlite (conn db-path)
+    (let* ((long (monthly-returns--long conn years))
+           (wide (table-pivot long "month" "ticker" '(sum "return")))
+           (months (table-row-count wide))
+           (pca (principal-components wide :count count :standardize standardize))
+           (pc-names (map (lambda (i) (string-append "pc" (number->string i))) (iota (min count (- months 1)) 1)))
+           (market (table-group-by long "month" '(("market-return" weighted-mean "return" "market_cap"))))
+           (scores (table-join (cdr (assoc "scores" pca)) market "month"))
+           (market-returns (table-column scores "market-return"))
+           (variance (table-add-columns (cdr (assoc "variance" pca))
+                       (list (cons "share-if-unrelated" (/ 1.0 (- months 1)))
+                             (cons "correlation-with-market"
+                                   (list->vector (map (lambda (name) (vector-correlation (table-column scores name) market-returns)) pc-names))))))
+           (facts (sqlite-query conn "SELECT i.ticker AS ticker, i.industry AS industry, COALESCE(r.market_cap, 0) AS market_cap
+                                        FROM ticker_industry i LEFT JOIN stock_returns r ON r.ticker = i.ticker"))
+           (explained (table-select (cdr (assoc "loadings" pca)) '("column" "explained")))
+           (stocks (table-join (table-join (cdr (assoc "correlations" pca)) explained "column") (table-rename-column facts "ticker" "column") "column"))
+           (stocks (table-rename-column stocks "column" "ticker"))
+           (stocks (table-select stocks (append '("ticker" "industry" "market_cap") pc-names '("explained"))))
+           (industries (table-sort (table-group-by stocks "industry"
+                                     (append '(("stocks" count "ticker"))
+                                             (map (lambda (name) (list name 'mean name)) pc-names)
+                                             '(("explained" mean "explained"))))
+                                   "stocks" #t)))
+      (list (cons "variance" variance) (cons "stocks" stocks) (cons "industries" industries) (cons "months" scores)))))

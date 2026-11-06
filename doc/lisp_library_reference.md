@@ -2494,6 +2494,58 @@ plus its own distance from its industry, and the squares add up:
 `stdev-within² + stdev-between² = stdev-of-all²`. If `share-explained-by-industry` is not much above
 `share-by-chance`, the industries are not separating returns.
 
+#### Monthly returns, and the patterns that explain them
+
+The same file has a second look at the stocks: two years of monthly returns, and their
+principal components, the few patterns of moving together that explain much of how all the
+stocks' returns went up and down.
+
+```lisp
+(monthly-prices-update creds db)              ; slow, once: about an hour and a half
+(define components (return-components db))
+(display-table (cdr (assoc "variance" components)))
+(display-table (cdr (assoc "industries" components)))
+```
+
+A month's return is `(this month's close - last month's close + a month's dividend) / last month's
+close`, where a month's dividend is a twelfth of Schwab's `dividendAmount` (kept in `stock_returns`):
+the current dividend, taken to be the same number of dollars every month. The Canadian stocks (tickers
+ending `.TO`) are left out.
+
+#### `(monthly-prices-update creds "path/to/financial_data.db" [:years n :end-date d])`
+Each stock's month-end close for the last `:years` (2) whole years, from Schwab, kept in the table
+`monthly_prices` (`ticker`, `month`, `close`, with `month` the first day of the month). The last month is
+the one before the month of `:end-date` (today), so only whole months are used. Like
+`stock-returns-update`, it keeps going from where it stopped when it is called again, and it notes the
+stocks Schwab has no prices for (in `monthly_prices_asked`). An error that would happen for every stock,
+a sign-in that has run out or Schwab not answering, stops it instead. It returns how many stocks have
+every month, how many some, and how many none, by reason.
+
+#### `(monthly-returns "path/to/financial_data.db" [:years n])`
+A table with a `month` column and a column of returns for each stock that has a return in every one of the
+months, named by its ticker.
+
+#### `(return-components "path/to/financial_data.db" [:count k :years n :standardize b])`
+The principal components (`principal-components`, under [Portfolios](#portfolios)) of the monthly returns: the `:count` (5)
+patterns that explain the most. With `:standardize #t` (the default) the stocks' returns are first put on
+one scale, so that a small stock whose price jumps around does not decide the patterns. A list of four
+tables, read with `(cdr (assoc "stocks" components))`:
+
+| Table | Columns |
+|---|---|
+| `"variance"` | `component`, `variance-share` (the share of all the stocks' variation it explains), `cumulative-share`, `share-if-unrelated` and `correlation-with-market` |
+| `"stocks"` | `ticker`, `industry`, `market_cap`, `pc1` ... (the correlation of the stock's returns with each component, from -1 to 1) and `explained` (the share of its variation the components explain: the correlations' squares added up) |
+| `"industries"` | `industry`, `stocks`, and the average of its stocks' `pc1` ... and `explained`; largest first |
+| `"months"` | `month`, `pc1` ... (each component's value that month) and `market-return` (all the stocks' return, weighted by market cap) |
+
+`share-if-unrelated` is what each component would explain if the stocks moved independently of each other:
+1 over the months less 1 (with 24 months, about 4%). A component well above it is a real pattern. With two
+years of months there can be no more than 23 components, and the later ones are partly noise.
+`correlation-with-market` says whether a component is the whole market moving (the first usually is). The
+`industries` table shows which industries move with which components, which is how to say what a component
+is: a component that the banks are strongly correlated with, and the software companies weakly or negatively, is
+something that moves banks and software in opposite directions, such as interest rates.
+
 ### Alpha Vantage (dividends)
 
 (In `lisp_alpha_vantage.py`.) The dividends a stock has paid, from Alpha
@@ -6445,6 +6497,41 @@ the daily returns' covariance times the days in a year (252, unless
 (vector-round (table-column (correlation-matrix both) "B") 4)   ; => #(0.35 1.0)
 (display-table (correlation-matrix both))
 ```
+
+#### `(principal-components table [:count k] [:standardize b])`
+The few combinations of a table's columns that explain most of how they vary
+together: principal component analysis. The table has a column of numbers
+for each thing (each stock's returns, say) and a row for each observation
+(each month); its other columns, such as the month, are carried along. The
+first component is the combination of the columns that varies the most, the
+second the one that varies the most of what is left, and so on. The answer
+is a list of four tables, read with `assoc`:
+
+| Table | Columns |
+|---|---|
+| `"variance"` | `component` (1, 2, ...), `variance-share` (the share of all the columns' variation it explains) and `cumulative-share` |
+| `"loadings"` | `column` (each column's name), `pc1` ... (how much of each component the column is: the weights, whose squares add up to 1 for each component) and `explained` (the share of that column's variation the components kept explain together) |
+| `"correlations"` | `column`, then `pc1` ...: the correlation of each column with each component, from -1 to 1, the easiest way to say how closely a column moves with a component. Their squares add up to `explained` |
+| `"scores"` | the other columns, then `pc1` ...: each component's value in each row |
+
+`:count` is how many components to keep (5), and there are never more than
+the rows less 1. With `:standardize #t` (the default) each column is first
+put on the same scale, its standard deviation made 1, so that the components
+explain how the columns move together rather than which columns move most;
+`#f` leaves them as they are. A component's sign is chosen so that its
+loadings add up to more than 0 (the first is then "everything going up").
+Every number must be there.
+
+```lisp
+(define moves (make-table "month" #("a" "b" "c" "d")
+                          "x" #(1.0 2.0 3.0 6.0) "y" #(2.0 4.0 6.0 12.0) "z" #(0.0 3.0 -4.0 1.0)))
+(define pca (principal-components moves))
+(vector-round (table-column (cdr (assoc "variance" pca)) "variance-share") 4)   ; => #(0.6667 0.3333 0.0)
+(vector-round (table-column (cdr (assoc "loadings" pca)) "pc1") 4)              ; => #(0.7071 0.7071 0.0)
+```
+
+x and y move together exactly, so they are one component, two thirds of the
+variation; z, unrelated to them, is the other third.
 
 #### `(minimum-variance-weights covariance [:long-only #t])`, `(mean-variance-weights expected-returns covariance risk-aversion [:long-only #t])`
 The weights, adding to 1, that make a portfolio's variance least, or its

@@ -215,3 +215,118 @@ class TestIndustryVariation(IndustryReturnsTestCase):
         self.assertShows("(procedure? stock-returns-update)", "#t")
         self.assertShows("(procedure? industry-returns)", "#t")
         self.assertShows("(procedure? industry-variation)", "#t")
+
+
+# Monthly closes for the principal components: AAA and BBB go up and down with one pattern (bank), CCC and DDD with another (oil), from October 2025
+# to November 2026 (November is a month not yet over, which is to be left out). QQQQ is missing a month. ZZZ has no prices, and the Canadian XYZ.TO is not
+# to be asked for at all.
+BANK = [0.02, -0.03, 0.05, 0.01, -0.02, 0.04, -0.01, 0.03, -0.04, 0.02, 0.01, -0.02, 0.03]
+OIL = [-0.01, 0.04, -0.03, 0.02, 0.05, -0.02, 0.01, -0.05, 0.03, 0.02, -0.03, 0.04, 0.01]
+
+
+def closes(start, returns):
+    prices = [start]
+    for change in returns:
+        prices.append(prices[-1] * (1 + change))
+    return prices
+
+
+MONTHLY = {"AAA": closes(100.0, BANK), "BBB": closes(50.0, [2 * r for r in BANK]),
+           "CCC": closes(20.0, OIL), "DDD": closes(10.0, [3 * r for r in OIL]), "QQQQ": closes(5.0, BANK)}
+
+MONTHLY_SCHWAB = """
+(define monthly-asked '())
+(define (schwab-price-history creds ticker &key start-date end-date frequency)
+  (set! monthly-asked (append monthly-asked (list ticker)))
+  (let ((closes (assoc ticker monthly-closes)))
+    (if (not closes)
+        (error (string-append "schwab-price-history: Schwab has no prices for " ticker " in those dates"))
+        (let* ((months (map (lambda (i) (date-add-months (date 2025 10 1) i)) (iota (length (cdr closes)))))
+               (table (make-table "date" (list->vector months) "close" (list->vector (cdr closes)))))
+          (if (equal? ticker "QQQQ")
+              (table-filter table (list->vector (map (lambda (day) (if (= (date-month day) 3) 0 1)) months)))     ; no March
+              table)))))
+"""
+
+
+class TestMonthlyReturns(IndustryReturnsTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.make_industries([("EEE.TO", "Oil")])
+        connection = sqlite3.connect(self.database)
+        connection.executemany("INSERT INTO ticker_industry VALUES (?, ?)", [("QQQQ", "Banks")])
+        connection.commit()
+        connection.close()
+        alist = " ".join('("%s" %s)' % (ticker, " ".join(repr(p) for p in prices)) for ticker, prices in MONTHLY.items())
+        self.run_lisp("(define monthly-closes '(%s))" % alist)
+        self.run_lisp(MONTHLY_SCHWAB)
+
+    def make_industries(self, rows):
+        if os.path.exists(self.database) and rows != INDUSTRIES:
+            connection = sqlite3.connect(self.database)
+            connection.executemany("INSERT INTO ticker_industry VALUES (?, ?)", rows)
+            connection.commit()
+            connection.close()
+        else:
+            super().make_industries(rows)
+
+    def update(self):
+        return self.run_lisp('(monthly-prices-update creds db :years 1 :end-date "2026-11-05")')
+
+    def test_the_whole_months_are_kept_and_the_canadian_stocks_are_not_asked_for(self):
+        self.update()
+        self.assertEqual(self.stored("SELECT MIN(month), MAX(month), COUNT(*) FROM monthly_prices WHERE ticker = 'AAA'"),
+                         [("2025-10-01", "2026-10-01", 13)])
+        self.assertShows("(member \"EEE.TO\" monthly-asked)", "#f")
+
+    def test_the_summary_says_which_stocks_have_every_month(self):
+        self.assertShows('(table-column (monthly-prices-update creds db :years 1 :end-date "2026-11-05") "what")',
+                         '#("every month" "Schwab has no prices for it" "some months")')
+        self.assertShows('(table-column (monthly-prices-update creds db :years 1 :end-date "2026-11-05") "stocks")', "#(4 1 1)")
+
+    def test_a_second_call_asks_for_nothing(self):
+        self.update()
+        self.run_lisp("(set! monthly-asked '())")
+        self.update()
+        self.assertShows("monthly-asked", "()")
+
+    def test_a_months_return_is_the_change_in_price_and_a_twelfth_of_the_dividend(self):
+        self.update()
+        connection = sqlite3.connect(self.database)
+        connection.execute("CREATE TABLE stock_returns (ticker TEXT PRIMARY KEY, year_end TEXT, start_date TEXT, end_date TEXT, start_price REAL, "
+                           "end_price REAL, dividend REAL, market_cap REAL, return REAL, note TEXT)")
+        connection.execute("INSERT INTO stock_returns VALUES ('AAA', '', '', '', 1, 1, 12.0, 100.0, 0, '')")
+        connection.commit()
+        connection.close()
+        # November 2025: the price goes from 100 to 102 (BANK[0] is 2%), and a month's dividend is 1: (102 - 100 + 1) / 100
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column (monthly-returns db :years 1) "AAA") 0)'), 0.03)
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column (monthly-returns db :years 1) "BBB") 0)'), 0.04)
+
+    def test_only_the_stocks_with_every_month_are_in_the_returns(self):
+        self.update()
+        self.assertShows("(table-column-names (monthly-returns db :years 1))", '("month" "AAA" "BBB" "CCC" "DDD")')
+        self.assertShows("(table-row-count (monthly-returns db :years 1))", "12")
+
+    def test_two_patterns_explain_all_of_four_stocks_that_follow_two_patterns(self):
+        self.update()
+        self.run_lisp("(define components (return-components db :years 1 :count 3))")
+        shares = self.run_lisp('(vector->list (table-column (cdr (assoc "variance" components)) "cumulative-share"))')
+        self.assertAlmostEqual(shares.cdr.car, 1.0)            # two components explain everything
+        self.assertAlmostEqual(shares.cdr.cdr.car, 1.0)
+        self.assertShows('(vector-round (table-column (cdr (assoc "stocks" components)) "explained") 6)', "#(1.0 1.0 1.0 1.0)")
+        # with 12 months, a component of stocks that moved independently would explain 1/11 of the variation
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column (cdr (assoc "variance" components)) "share-if-unrelated") 0)'), 1 / 11)
+
+    def test_an_error_that_would_happen_for_every_stock_stops_the_run(self):
+        self.run_lisp('(define (schwab-price-history creds ticker &key start-date end-date frequency) '
+                      '(error "schwab-price-history: the Schwab sign-in has run out -- sign in again with (schwab-login creds)"))')
+        self.assertLispError('(monthly-prices-update creds db :years 1 :end-date "2026-11-05")', "sign in again")
+        self.assertEqual(self.stored("SELECT COUNT(*) FROM monthly_prices_asked"), [(0,)])
+
+    def test_the_stocks_table_has_each_stocks_industry_and_the_industries_table_averages_them(self):
+        self.update()
+        components = "(return-components db :years 1 :count 2)"
+        self.assertShows('(table-column (cdr (assoc "stocks" %s)) "industry")' % components, '#("Banks" "Banks" "Oil" "Oil")')
+        self.assertShows('(table-column-names (cdr (assoc "industries" %s)))' % components, '("industry" "stocks" "pc1" "pc2" "explained")')
+        self.assertShows('(table-column-names (cdr (assoc "months" %s)))' % components, '("month" "pc1" "pc2" "market-return")')

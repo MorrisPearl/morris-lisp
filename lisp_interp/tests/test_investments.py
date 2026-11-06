@@ -2041,3 +2041,57 @@ class TestPortfolio(LispTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPrincipalComponents(LispTestCase):
+    """principal-components: the few combinations of a table's columns that explain most of their variation."""
+
+    def setUp(self):
+        super().setUp()
+        # x and y move together exactly; z is unrelated to them (its correlation with them is 0)
+        self.run_lisp('(define t (make-table "month" #("a" "b" "c" "d") "x" #(1.0 2.0 3.0 6.0) "y" #(2.0 4.0 6.0 12.0) "z" #(0.0 3.0 -4.0 1.0)))')
+
+    def part(self, name, expression="(principal-components t)"):
+        return '(cdr (assoc "%s" %s))' % (name, expression)
+
+    def test_two_columns_that_move_together_are_one_component(self):
+        self.run_lisp('(define two (make-table "x" #(1.0 2.0 3.0 6.0) "y" #(2.0 4.0 6.0 12.0)))')
+        self.assertShows('(vector-round (table-column %s "variance-share") 6)' % self.part("variance", "(principal-components two)"), "#(1.0 0.0)")
+        self.assertShows('(vector-round (table-column %s "pc1") 6)' % self.part("loadings", "(principal-components two)"), "#(0.707107 0.707107)")
+
+    def test_the_shares_add_up_and_each_columns_explained_share_reaches_1_with_all_components(self):
+        self.assertShows('(vector-round (table-column %s "cumulative-share") 6)' % self.part("variance"), "#(0.666667 1.0 1.0)")
+        self.assertShows('(vector-round (table-column %s "explained") 6)' % self.part("loadings"), "#(1.0 1.0 1.0)")
+
+    def test_count_keeps_that_many_and_no_more_than_the_rows_allow(self):
+        self.assertShows('(table-column-names %s)' % self.part("loadings", "(principal-components t :count 1)"), '("column" "pc1" "explained")')
+        # z has nothing to do with x and y, so one component explains none of it
+        self.assertShows('(vector-round (table-column %s "explained") 6)' % self.part("loadings", "(principal-components t :count 1)"), "#(1.0 1.0 0.0)")
+        self.assertShows('(table-row-count %s)' % self.part("variance", "(principal-components t :count 10)"), "3")
+
+    def test_the_scores_carry_the_other_columns_and_are_the_data_times_the_loadings(self):
+        scores = self.part("scores")
+        self.assertShows('(table-column-names %s)' % scores, '("month" "pc1" "pc2" "pc3")')
+        self.assertShows('(table-column %s "month")' % scores, '#("a" "b" "c" "d")')
+        # the scores add up to 0 (the columns are centred first), and the first rises with x
+        self.assertShows('(round (* 1000000 (vector-sum (table-column %s "pc1"))))' % scores, "0")
+        self.assertShows('(< (vector-ref (table-column %s "pc1") 0) (vector-ref (table-column %s "pc1") 3))' % (scores, scores), "#t")
+
+    def test_the_correlations_say_how_closely_each_column_moves_with_each_component(self):
+        # x and y are the first component exactly; z, unrelated to them, is the second
+        self.assertShows('(vector-round (vector-abs (table-column %s "pc1")) 6)' % self.part("correlations"), "#(1.0 1.0 0.0)")
+        self.assertShows('(vector-round (vector-abs (table-column %s "pc2")) 6)' % self.part("correlations"), "#(0.0 0.0 1.0)")
+
+    def test_the_sign_makes_the_loadings_add_up_to_more_than_0(self):
+        self.run_lisp('(define falling (make-table "x" #(1.0 2.0 3.0 6.0) "y" #(-2.0 -4.0 -6.0 -11.0) "w" #(1.0 2.0 3.1 6.0)))')
+        self.assertShows('(> (vector-sum (table-column %s "pc1")) 0)' % self.part("loadings", "(principal-components falling)"), "#t")
+
+    def test_without_standardizing_the_column_that_varies_most_decides_the_first_component(self):
+        self.run_lisp('(define scales (make-table "big" #(100.0 -100.0 50.0 -50.0) "small" #(1.0 1.0 -1.0 -1.0)))')
+        self.assertShows('(vector-round (table-column %s "pc1") 3)' % self.part("loadings", "(principal-components scales :standardize #f)"), "#(1.0 0.0)")
+        self.assertShows('(vector-round (table-column %s "variance-share") 3)' % self.part("variance", "(principal-components scales)"), "#(0.5 0.5)")
+
+    def test_a_missing_number_or_a_column_that_never_changes_is_an_error(self):
+        self.assertLispError('(principal-components (make-table "x" #(1.0 nan 3.0) "y" #(1.0 2.0 4.0)))', "x has one missing")
+        self.assertLispError('(principal-components (make-table "x" #(1.0 2.0 3.0) "y" #(5.0 5.0 5.0)))', "y never changes")
+        self.assertLispError('(principal-components (make-table "x" #(1.0 2.0 3.0)))', "at least two columns")
