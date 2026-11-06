@@ -460,3 +460,31 @@ class TestWeeklyReturns(PricesTestCase):
         self.run_lisp("""(define (schwab-price-history creds ticker &key start-date end-date frequency)
                            (error "schwab-price-history: couldn't reach Schwab: timed out"))""")
         self.assertLispError('(stock-prices-update creds db :years 1 :end-date "2026-11-05")', "reach Schwab")
+
+    def test_another_things_returns_go_with_the_components_as_its_pattern_does(self):
+        # BANKFUND's price follows the bank pattern, three times over: it is a stand-in for something that goes with one group of stocks
+        self.run_lisp("(set! weekly-closes (cons (cons \"BANKFUND\" '(%s)) weekly-closes))"
+                      % " ".join(repr(p) for p in closes(30.0, [3 * r for r in WEEKLY_BANK])))
+        self.update()
+        self.run_lisp('(define components (return-components db :years 1 :count 2 :rotate "varimax"))')
+        self.run_lisp('(define others (other-returns creds \'("BANKFUND" "AAA") :years 1 :end-date "2026-11-05"))')
+        self.assertShows('(table-column-names others)', '("period" "BANKFUND" "AAA")')
+        self.assertShows('(table-row-count others)', "53")
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column others "BANKFUND") 0)'), 3 * WEEKLY_BANK[0])
+        self.run_lisp('(define compared (components-and-others components others))')
+        self.assertShows('(table-column-names compared)', '("name" "pc1" "pc2" "explained" "periods")')
+        # it goes with the bank component as AAA does, and the components explain all of both
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column compared "explained") 0)'), 1.0)
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column compared "pc1") 0)'), self.run_lisp('(vector-ref (table-column compared "pc1") 1)'))
+        self.assertShows('(table-column compared "periods")', "#(53 53)")
+
+    def test_a_rates_change_is_from_the_last_day_of_one_week_to_the_last_day_of_the_next(self):
+        connection = sqlite3.connect(self.database)
+        connection.execute("CREATE TABLE time_series (date TEXT, instrument TEXT, term TEXT, value REAL)")
+        connection.executemany("INSERT INTO time_series VALUES (?, 'treasury-par', '10Y', ?)",
+                               [("2026-10-12", 4.0), ("2026-10-16", 4.1), ("2026-10-19", 4.2), ("2026-10-23", 4.05), ("2026-10-30", 4.15)])
+        connection.commit()
+        connection.close()
+        self.run_lisp('(define changes (rate-changes db "treasury-par" "10Y"))')
+        self.assertShows('(table-column changes "period")', '#("2026-10-19" "2026-10-26")')
+        self.assertShows('(vector-round (table-column changes "treasury-par 10Y change") 6)', "#(-0.05 0.1)")

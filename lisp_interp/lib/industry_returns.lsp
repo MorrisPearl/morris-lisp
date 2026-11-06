@@ -570,3 +570,79 @@ the stock's returns with the component: below 0, it moves against it), and share
                   "label" (list->vector (map (lambda (r) (list-ref r 4)) rows))
                   "correlation" (list->vector (map (lambda (r) (list-ref r 5)) rows))
                   "share" (list->vector (map (lambda (r) (list-ref r 6)) rows))))))
+
+; ---------------------------------------------------------------------------------------------------------------------------------------------------------
+; How other things -- bonds, oil, currencies, gold, crops -- go with the components
+; ---------------------------------------------------------------------------------------------------------------------------------------------------------
+;
+;   (define others (table-join (other-returns creds '("IEF" "USO" "FXE" "GLD" "SOYB"))
+;                              (rate-changes db "treasury-par" "10Y") "period"))
+;   (display-table (components-and-others components others))
+;
+; other-returns gets the weekly (or monthly) price returns of anything Schwab has prices for, such as exchange-traded funds that hold Treasury notes (IEF),
+; crude oil futures (USO), euros (FXE), gold (GLD) or soybean futures (SOYB), over the same periods as the stocks'. They are price changes alone: a fund's
+; distributions are left out. rate-changes gives a rate's change from one period to the next instead, from the time_series table (the Treasury 10-year:
+; when it goes up, a note's price goes down).
+
+(define (other-returns--period-text value)
+  (if (string? value) value (date->string value)))
+
+(define (other-returns creds symbols &key (frequency "weekly") (years '()) (end-date '()))
+  "A table of period and a column for each of the symbols: its price return in each whole week (or month) of the last :years (3 for weekly, 2 for monthly),
+from Schwab. A symbol Schwab has no prices for is an error."
+  (stock-prices--check frequency)
+  (let* ((end (if (null? end-date) (today) (if (string? end-date) (string->date end-date) end-date)))
+         (last-period (stock-prices--last-period frequency end))
+         (first-period (stock-prices--first-period frequency last-period (stock-prices--years frequency years)))
+         (one (lambda (symbol)
+                (let* ((prices (stock-returns--ask-schwab
+                                 (lambda () (schwab-price-history creds symbol :frequency frequency :start-date first-period
+                                                                  :end-date (stock-prices--end-of-period frequency last-period)))))
+                       (whole (table-filter prices (vector<= (table-column prices "date") last-period)))
+                       (closes (vector->list (table-column whole "close")))
+                       (periods (map other-returns--period-text (cdr (vector->list (table-column whole "date")))))
+                       (returns (map (lambda (before after) (/ (- after before) before)) (reverse (cdr (reverse closes))) (cdr closes))))
+                  (make-table "period" (list->vector periods) symbol (list->vector returns))))))
+    (reduce (lambda (so-far next) (table-join so-far next "period")) (map one (cdr symbols)) (one (car symbols)))))
+
+(define (rate-changes db-path instrument term &key (frequency "weekly"))
+  "A table of period and the change in a rate of the time_series table (such as \"treasury-par\" \"10Y\") from the last day it has in one week (or month) to
+the last day it has in the next, in percentage points; the column is named for the instrument and term, with \" change\" after."
+  (stock-prices--check frequency)
+  (with-sqlite (conn db-path)
+    (let ((changes (sqlite-query conn
+                     (string-append
+                       "WITH by_period AS (
+                          SELECT " (stock-prices--period-sql frequency "date") " AS period, MAX(date) AS last_day FROM time_series
+                           WHERE instrument = ? AND term = ? GROUP BY period),
+                        ends AS (
+                          SELECT b.period, t.value FROM by_period b JOIN time_series t ON t.date = b.last_day AND t.instrument = ? AND t.term = ?)
+                        SELECT period, value - LAG(value) OVER (ORDER BY period) AS change FROM ends ORDER BY period")
+                     '() '() (list instrument term instrument term))))
+      (let ((found (table-filter changes (vector= (vector-nan? (table-column changes "change")) 0))))
+        (make-table "period" (list->vector (map other-returns--period-text (vector->list (table-column found "period"))))
+                    (string-append instrument " " term " change") (table-column found "change"))))))
+
+(define (components-and-others components others)
+  "How each column of others (a table with a period column, and columns of returns or changes, such as other-returns and rate-changes make) goes with the
+components that return-components found: a table with a row for each column, of its correlation with each component (pc1, ...), explained (the share of its
+variation the components explain together: as they are unrelated to each other, the correlations' squares added up), and periods (how many of the
+components' periods it has; it is compared over those)."
+  (let* ((scores (cdr (assoc "periods" components)))
+         (scores (table-add-columns (table-select scores (cdr (table-column-names scores)))
+                   (list (cons "period" (list->vector (map other-returns--period-text (vector->list (table-column scores "period"))))))))
+         (described (cdr (assoc "components" components)))
+         (pc-names (vector->list (table-column described "component")))
+         (names (filter (lambda (name) (not (equal? name "period"))) (table-column-names others)))
+         (rows (map (lambda (name)
+                      (let* ((both (table-join scores (table-select others (list "period" name)) "period"))
+                             (values (table-column both name))
+                             (correlations (map (lambda (pc) (vector-correlation (table-column both pc) values)) pc-names)))
+                        (append (list name) correlations (list (apply + (map (lambda (c) (* c c)) correlations)) (table-row-count both)))))
+                    names)))
+    (apply make-table
+           (append (list "name" (list->vector (map car rows)))
+                   (apply append (map (lambda (pc i) (list pc (list->vector (map (lambda (row) (list-ref row i)) rows))))
+                                      pc-names (iota (length pc-names) 1)))
+                   (list "explained" (list->vector (map (lambda (row) (list-ref row (+ 1 (length pc-names)))) rows))
+                         "periods" (list->vector (map (lambda (row) (list-ref row (+ 2 (length pc-names)))) rows)))))))

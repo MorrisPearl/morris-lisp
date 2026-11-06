@@ -2586,6 +2586,38 @@ against it) and `share` (of the stock's variation: the correlation squared). A s
 (display-table (table-where mine "ticker" "JPM"))
 ```
 
+#### How other things go with the components
+
+Bonds, oil, currencies, gold and crops are not in the stocks' components, but they can be compared with them: a
+component that moves with Treasury notes is probably interest rates, one that moves with oil is probably energy.
+
+```lisp
+(define others (table-join (other-returns creds '("IEF" "USO" "FXE" "GLD" "SOYB"))
+                           (rate-changes db "treasury-par" "10Y") "period"))
+(display-table (components-and-others components others))
+```
+
+#### `(other-returns creds symbols [:frequency f :years n :end-date d])`
+A table of `period` and a column for each symbol: its price return in each whole week (or month) of the last
+`:years`, from Schwab, the same periods as the stocks'. Exchange-traded funds stand in for things that aren't
+stocks: IEF holds 7- to 10-year Treasury notes, USO crude oil futures, FXE euros, GLD gold, SOYB soybean futures.
+They are price changes alone (a fund's distributions are left out); a fund of futures also loses a little, slowly,
+each time it replaces the futures that are about to run out, which hardly matters week to week.
+
+#### `(rate-changes "path/to/financial_data.db" instrument term [:frequency f])`
+A table of `period` and the change in a rate of the `time_series` table (see [A database of market
+history](#a-database-of-market-history)), such as `"treasury-par" "10Y"`, from the last day it has in one week (or
+month) to the last day in the next, in percentage points. The column is named for the rate, with `" change"`
+after: `"treasury-par 10Y change"`. When the yield goes up, a note's price goes down, so it goes with the
+components the other way from IEF.
+
+#### `(components-and-others components others)`
+How each column of `others` (a table with a `period` column, as `other-returns` and `rate-changes` make, joined as
+you like) goes with the components `return-components` found: a row for each column, with its correlation with each
+component (`pc1`, ...), `explained` (the share of its variation the components explain together: as they are
+unrelated to each other, the correlations' squares added up) and `periods` (how many of the components' periods it
+has; it is compared over those).
+
 ### Alpha Vantage (dividends)
 
 (In `lisp_alpha_vantage.py`.) The dividends a stock has paid, from Alpha
