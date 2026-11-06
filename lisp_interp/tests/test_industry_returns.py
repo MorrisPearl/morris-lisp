@@ -442,3 +442,21 @@ class TestWeeklyReturns(PricesTestCase):
         # not exactly): it explains nearly all of AAA, and the two components together explain all of it, so none of AAA is its own
         self.assertShows('(vector-round (table-column (table-head mine 3) "share") 2)', "#(1.0 0.0 0.0)")
         self.assertShows('(round-to-nearest (vector-ref (table-column mine "correlation") 0) 0.01)', "1.0")
+
+    def test_a_request_the_network_drops_is_tried_again(self):
+        self.run_lisp("(define stock-returns-retry-pause 0)")
+        self.run_lisp('''(define dropped 0)
+                         (define first-history schwab-price-history)
+                         (define (schwab-price-history creds ticker &key start-date end-date frequency)
+                           (if (and (equal? ticker "AAA") (< dropped 2))
+                               (begin (set! dropped (+ dropped 1)) (error "schwab-price-history: couldn't reach Schwab: timed out"))
+                               (first-history creds ticker :start-date start-date :end-date end-date :frequency frequency)))''')
+        self.update()
+        self.assertShows("dropped", "2")
+        self.assertEqual(self.stored("SELECT note FROM weekly_prices_asked WHERE ticker = 'AAA'"), [("",)])
+
+    def test_a_network_that_stays_down_stops_the_run(self):
+        self.run_lisp("(define stock-returns-retry-pause 0)")
+        self.run_lisp("""(define (schwab-price-history creds ticker &key start-date end-date frequency)
+                           (error "schwab-price-history: couldn't reach Schwab: timed out"))""")
+        self.assertLispError('(stock-prices-update creds db :years 1 :end-date "2026-11-05")', "reach Schwab")

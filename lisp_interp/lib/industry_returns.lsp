@@ -36,14 +36,14 @@
   (reduce (lambda (so-far word) (string-append so-far "," word)) (cdr words) (car words)))
 
 (define (stock-returns--ask-schwab thing)
-  "Calls thing (a function of no arguments that asks Schwab), and if Schwab says there have been too many requests, waits and calls it again, up to
-three times."
+  "Calls thing (a function of no arguments that asks Schwab), and if Schwab says there have been too many requests, or can't be reached (the network
+dropped a request), waits and calls it again, up to three times in all."
   (let loop ((tries-left 3))
     (let ((answer (catch-error (list (thing)) (message)
-                    (if (and (> tries-left 1) (string-search message "HTTP 429"))
-                        'too-many-requests
+                    (if (and (> tries-left 1) (or (string-search message "HTTP 429") (string-search message "couldn't reach")))
+                        'try-again
                         (error message)))))
-      (if (eq? answer 'too-many-requests)
+      (if (eq? answer 'try-again)
           (begin (sleep stock-returns-retry-pause) (loop (- tries-left 1)))
           (car answer)))))
 
