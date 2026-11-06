@@ -174,11 +174,69 @@ class TestCommonLispListFunctions(LispTestCase):
         self.assertShows("(let ((total 0)) (dolist (x '(1 2 3)) (incf total x)) total)", "6")
         # pop's own temporary can't clash with the program's names
         self.assertShows("(let ((first-item '(a b))) (pop first-item))", "a")
-        self.assertLispError("(push 1 (car stack))", "push: expected a variable to push onto, not (car stack)")
-        self.assertLispError("(incf 5)", "incf: expected a variable, not 5")
+        self.assertLispError("(incf 5)", "incf: expected a variable, or a place such as (vector-ref v i), not 5")
+
+    def test_setf_on_each_kind_of_place(self):
+        self.assertShows("(let ((x 1)) (list (setf x 2) x))", "(2 2)")
+        self.assertShows("(let ((v (vector 1 2 3))) (setf (vector-ref v 0) 9) v)", "#(9 2 3)")
+        self.assertShows("(let ((l (list 1 2 3))) (setf (car l) 'a) (setf (nth 2 l) 'c) (setf (list-ref l 1) 'b) l)",
+                         "(a b c)")
+        self.assertShows("(let ((p (cons 1 2))) (setf (cdr p) 3) (setf (first p) 0) p)", "(0 . 3)")
+        self.assertShows("(let ((h (make-hash-table))) (setf (hash-table-ref h 'a) 1) (hash-table-ref h 'a))", "1")
+        self.run_lisp("(defstruct point x y)")
+        self.assertShows("(let ((p (make-point :x 1 :y 2))) (setf (point-x p) 5) (setf (struct-ref p 'y) 6) p)",
+                         "#S(point :x 5 :y 6)")
+
+    def test_setf_returns_the_value_and_evaluates_each_part_of_the_place_once(self):
+        self.run_lisp("""(define calls 0)
+                         (define v (vector 0 0))
+                         (define (the-vector) (incf calls) v)
+                         (define (index) (incf calls) 1)""")
+        self.assertShows("(setf (vector-ref (the-vector) (index)) 7)", "7")
+        self.assertShows("(list v calls)", "(#(0 7) 2)")
+
+    def test_incf_decf_push_and_pop_on_places(self):
+        self.run_lisp("(defstruct account balance (history '()))")
+        self.run_lisp("(define a (make-account :balance 100))")
+        self.assertShows("(incf (account-balance a) 50)", "150")
+        self.assertShows("(decf (account-balance a))", "149")
+        self.assertShows("(push 'deposit (account-history a))", "(deposit)")
+        self.assertShows("(push 'fee (account-history a))", "(fee deposit)")
+        self.assertShows("(pop (account-history a))", "fee")
+        self.assertShows("(account-history a)", "(deposit)")
+        self.assertShows("(let ((counts (vector 0 0 0))) (incf (vector-ref counts 1)) (incf (vector-ref counts 1) 2) counts)",
+                         "#(0 3 0)")
+
+    def test_setf_of_something_that_is_not_a_place(self):
+        self.assertLispError("(let ((x 1)) (setf (frob x) 2))", "setf: can't set (frob x) -- a place is")
+        self.assertLispError("(setf 5 2)", "setf: expected a variable, or a place such as (vector-ref v i), not 5")
+        self.assertLispError("(push 1 \"text\")", "push: expected a variable, or a place")
 
 
 class TestNumbers(LispTestCase):
+
+    def test_trigonometry_in_radians(self):
+        self.assertAlmostEqual(self.run_lisp("pi"), math.pi)
+        self.assertAlmostEqual(self.run_lisp("(sin (/ pi 6))"), 0.5)
+        self.assertAlmostEqual(self.run_lisp("(cos pi)"), -1.0)
+        self.assertAlmostEqual(self.run_lisp("(tan (/ pi 4))"), 1.0)
+        self.assertAlmostEqual(self.run_lisp("(asin 1)"), math.pi / 2)
+        self.assertAlmostEqual(self.run_lisp("(acos 1)"), 0.0)
+        self.assertAlmostEqual(self.run_lisp("(atan 1)"), math.pi / 4)
+        self.assertAlmostEqual(self.run_lisp("(atan 1 -1)"), 3 * math.pi / 4)      # the point (-1, 1): its quarter is known
+        self.assertShows("(sin (vector 0 0))", "#(0.0 0.0)")
+        self.assertShows("(atan #(0 0) #(1 -1))", "#(0.0 3.141592653589793)")
+        self.assertLispError("(asin 2)", "asin")
+        self.assertLispError("(sin \"x\")", "sin: not a number")
+
+    def test_max_and_min_of_vectors_are_element_by_element(self):
+        self.assertShows("(max #(3 1 2) 2)", "#(3 2 2)")
+        self.assertShows("(apply min (list #(3 1 2) #(1 5 0)))", "#(1 1 0)")
+        self.assertShows("(apply min (list #(3 1 2)))", "#(3 1 2)")     # one vector: itself, as with any number of them
+        self.assertShows("(vector-max #(3 1 2))", "3")                   # its largest element
+        self.assertShows("(max 3)", "3")
+        self.assertLispError("(max '(1 5 2))", "max: (1 5 2) is a list -- (apply max list) is the largest of its elements")
+        self.assertShows("(min (date 2026 1 2) (date 2025 6 1))", "2025-06-01")        # dates too
 
     def test_addition_and_multiplication_identities(self):
         self.assertShows("(+)", "0")
@@ -364,6 +422,19 @@ class TestRandom(LispTestCase):
         self.assertShows("(random-int 5 5)", "5")
         self.assertLispError("(random-int 6 1)")
 
+    def test_random_normal_is_reproducible_and_has_its_mean_and_standard_deviation(self):
+        self.run_lisp("(random-seed 7)")
+        first = self.run_lisp("(list (random-normal) (random-normal 100 15))")
+        self.run_lisp("(random-seed 7)")
+        self.assertEqual(self.run_lisp("(list (random-normal) (random-normal 100 15))"), first)
+        self.run_lisp("(random-seed 7) (define draws (random-normal-vector 200000 5 2))")
+        self.assertEqual(self.run_lisp("(vector-length draws)"), 200000)
+        self.assertAlmostEqual(self.run_lisp("(vector-mean draws)"), 5, delta=0.02)
+        self.assertAlmostEqual(self.run_lisp("(vector-stdev draws)"), 2, delta=0.02)
+        self.run_lisp("(random-seed 7)")
+        self.assertTrue(self.run_lisp("(equal? draws (random-normal-vector 200000 5 2))"))
+        self.assertLispError("(random-normal-vector -1)", "n must be a whole number, 0 or more")
+
 
 class TestComparisonAndPredicates(LispTestCase):
 
@@ -419,6 +490,18 @@ class TestComparisonAndPredicates(LispTestCase):
 
 
 class TestLists(LispTestCase):
+
+    def test_nth_is_list_ref_with_the_arguments_the_other_way(self):
+        self.assertShows("(nth 0 '(a b c))", "a")
+        self.assertShows("(nth 2 '(a b c))", "c")
+        self.assertLispError("(nth 3 '(a b c))", "nth: index 3 out of range (0..2)")
+        self.assertLispError("(nth 1.5 '(a b c))", "nth: the index must be a whole number")
+        self.assertLispError("(nth 0 #(1 2))", "nth: expected a list")
+
+    def test_list_is_only_a_proper_list(self):
+        self.assertShows("(list (list? '()) (list? '(1 2)) (list? '(1 . 2)) (list? '(1 2 . 3)) (list? 5) (list? #(1)))",
+                         "(#t #t #f #f #f #f)")
+        self.assertShows("(let ((l (list 1 2 3))) (set-cdr! (cddr l) l) (list? l))", "#f")      # circular
 
     def test_cons_car_cdr(self):
         self.assertShows("(cons 1 2)", "(1 . 2)")

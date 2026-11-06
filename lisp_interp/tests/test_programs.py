@@ -1,4 +1,4 @@
-"""Whole programs: the command line, the GUI's error report, the KenKen solver, the chess
+"""Whole programs: the command line, the console, the KenKen solver, the chess
 program, and the example scripts.
 support.py says how to run them."""
 
@@ -9,7 +9,7 @@ from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mo
 
 
 def run_cli(*args, stdin=None, env_extra=None, cwd=None):
-    """Run the interpreter as a subprocess with no init file, no GUI."""
+    """Run the interpreter as a subprocess with no init file."""
     env = dict(os.environ, LISP_INIT_FILE=os.path.join(tempfile.gettempdir(), "no-such-init.lsp"))
     env.update(env_extra or {})
     return subprocess.run([sys.executable, INTERPRETER] + list(args), input=stdin,
@@ -200,83 +200,31 @@ class TestDebuggerCommandLine(unittest.TestCase):
         self.assertEqual(r.stdout, "(break f (5))\n10\n")
 
 
-class TestGuiErrorReport(unittest.TestCase):
-    """The GUI's log shows the same call-chain error report as the console.
-    Runs in a subprocess on Qt's offscreen platform so no window ever opens
-    and no QApplication lingers in the test process."""
+class TestConsole(unittest.TestCase):
+    """The console REPL, which the interpreter opens with no arguments: it shows a value as a notebook cell does,
+    and Control-C stops what is running and says where it was."""
 
-    PROGRAM = r"""
-import sys
-sys.path.insert(0, %r)
-import lisp_gui
-if not lisp_gui.PYQT_AVAILABLE:
-    print("NO-QT"); sys.exit(0)
-from PyQt6.QtWidgets import QApplication
-app = QApplication([])
-w = lisp_gui.LispMainWindow()
-w.output_view.clear()
-w.input_edit.setPlainText("(define (inner x) (car x)) (define (outer x) (list (inner x))) (outer 5)")
-w._on_run()
-print(w.output_view.toPlainText())
-w.output_view.clear()
-w.input_edit.setPlainText("(verbose 2) (define (sq n) (* n n)) (sq 4)")
-w._on_run()
-w.output_view.clear()
-w.input_edit.setPlainText("(sq 3)")
-w._on_run()
-print("=====")
-print(w.output_view.toPlainText())
-w.input_edit.setPlainText('(display-table (make-table "id" (vector "a" "b") "n" #(1.5 2)) (list (list "n" ".2f")))')
-w._on_run()
-print("=====")
-print(w.table_model.names, w.table_model.columns, w.table_model.aligns, w.tabs.tabText(w.tabs.currentIndex()))
-""" % HERE
+    def test_with_no_arguments_it_is_the_console(self):
+        r = run_cli(stdin='(+ 1 2)\n(define t (make-table "a" #(1 2)))\nt\n(vector-range 0 500)\n(exit)\n')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("lisp> 3\n", r.stdout)
+        self.assertIn("a\n-\n1\n2\n", r.stdout)                                      # a table, as display-table shows it
+        self.assertIn("#(0 1 2 3 ", r.stdout)
+        self.assertIn(" 99 ... (400 more))", r.stdout)                                 # a long vector, cut short
 
-    def test_the_gui_log_shows_the_traceback_and_the_verbose_trace(self):
-        env = dict(os.environ, QT_QPA_PLATFORM="offscreen",
-                   LISP_INIT_FILE=os.path.join(tempfile.gettempdir(), "no-such-init.lsp"))
-        r = subprocess.run([sys.executable, "-c", self.PROGRAM], capture_output=True, text=True,
-                           env=env, timeout=120)
-        if "NO-QT" in r.stdout:
-            self.skipTest("PyQt6/matplotlib not installed")
-        self.assertEqual(r.returncode, 0, r.stderr[-800:])
-        failing, traced, table = r.stdout.split("=====")
-        self.assertIn("Lisp traceback (most recent call last):\n  (outer 5)\n  (inner 5)\nError: car: not a pair: 5",
-                      failing)
-        self.assertIn("> (sq 3)\n< (sq 3) => 9\n=> 9", traced)
-        self.assertEqual(table.strip(), "['id', 'n'] [['a', 'b'], ['1.50', '2.00']] ['left', 'right'] Table")
-
-    ABORT_PROGRAM = r"""
-import sys
-sys.path.insert(0, %r)
-import lisp_gui
-if not lisp_gui.PYQT_AVAILABLE:
-    print("NO-QT"); sys.exit(0)
-from PyQt6.QtWidgets import QApplication
-app = QApplication([])
-w = lisp_gui.LispMainWindow()
-w.output_view.clear()
-w.input_edit.setPlainText("(define (f x) x) (abort) (f 1)")
-w._on_run()
-print(w.output_view.toPlainText())
-w.output_view.clear()
-w.input_edit.setPlainText("(+ 1 2)")
-w._on_run()
-print("=====")
-print(w.output_view.toPlainText())
-""" % HERE
-
-    def test_abort_in_the_gui_says_so_and_the_window_carries_on(self):
-        env = dict(os.environ, QT_QPA_PLATFORM="offscreen",
-                   LISP_INIT_FILE=os.path.join(tempfile.gettempdir(), "no-such-init.lsp"))
-        r = subprocess.run([sys.executable, "-c", self.ABORT_PROGRAM], capture_output=True, text=True,
-                           env=env, timeout=120)
-        if "NO-QT" in r.stdout:
-            self.skipTest("PyQt6/matplotlib not installed")
-        self.assertEqual(r.returncode, 0, r.stderr[-800:])
-        aborted, next_run = r.stdout.split("=====")
-        self.assertIn("Aborted.", aborted)
-        self.assertIn("=> 3", next_run)
+    def test_control_c_stops_what_is_running_and_the_console_carries_on(self):
+        env = dict(os.environ, LISP_INIT_FILE=os.path.join(tempfile.gettempdir(), "no-such-init.lsp"))
+        process = subprocess.Popen([sys.executable, INTERPRETER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True, env=env)
+        process.stdin.write("(define (spin n) (spin (+ n 1)))\n(define (start) (list (spin 0)))\n(start)\n")
+        process.stdin.flush()
+        time.sleep(3)
+        process.send_signal(signal.SIGINT)
+        output, errors = process.communicate("(+ 1 2)\n(exit)\n", timeout=60)
+        self.assertEqual(process.returncode, 0, errors)
+        self.assertIn("Interrupted while running (most recent call last):\n  (start)\n  (spin ", output)
+        self.assertIn("Interrupted.\n", output)
+        self.assertIn("lisp> 3\n", output)
 
 
 class TestKenKen(unittest.TestCase):

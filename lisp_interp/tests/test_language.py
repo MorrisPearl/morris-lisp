@@ -7,6 +7,30 @@ from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mo
 
 class TestReader(LispTestCase):
 
+    def test_a_syntax_error_says_on_which_line(self):
+        self.assertLispError("(define (f x)\n  (let ((y 1))\n    (+ x y))\n(f 2)", "missing ')': the ( on line 1 is never closed")
+        self.assertLispError("(+ 1 2)\n\n(+ 3 4))", "unexpected ')' on line 3 -- there are more )s than (s before it")
+        self.assertLispError("(list 1\n #(2 3)\n #(4", "missing ')': the #( on line 3 is never closed")
+        self.assertLispError("(list 1)\n'", "nothing follows the ' on line 2")
+
+    def test_a_string_that_is_never_closed_is_reported_as_one(self):
+        self.assertLispError('(display "abc)', 'the string that starts on line 1 is never closed -- a " is missing')
+        self.assertLispError('(list 1)\n(display |abc)', "the string that starts on line 2 is never closed -- a | is missing")
+
+    def test_a_string_over_several_lines_counts_its_lines(self):
+        self.assertLispError('(list "one\ntwo\nthree")\n)', "unexpected ')' on line 4")
+
+    def test_a_dotted_list_has_one_thing_after_its_dot(self):
+        self.assertShows("'(a b . c)", "(a b . c)")
+        self.assertLispError("'(a . b c)", "the list that starts on line 1 has more than one thing after its dot")
+        self.assertLispError("'(a . )", "the list that starts on line 1 has nothing after its dot")
+
+    def test_a_long_text_is_read_quickly(self):
+        text = "(" + " ".join(str(i) for i in range(300000)) + ")"
+        started = time.time()
+        self.assertEqual(len(lisp_core.pairs_to_list(next(lisp_core.parse(text)))), 300000)
+        self.assertLess(time.time() - started, 5)      # (it once took about the square of the length: 6 seconds)
+
     def test_numbers(self):
         self.assertEqual(self.run_lisp("42"), 42)
         self.assertEqual(self.run_lisp("-7"), -7)
@@ -1206,6 +1230,17 @@ class TestErrorsAndCatchError(LispTestCase):
 class TestErrorMessages(LispTestCase):
     """An error names the procedure or special form that went wrong."""
 
+    def test_an_unbound_name_suggests_the_names_spelled_nearly_the_same(self):
+        self.assertLispError("(tabel-head 1)", "unbound symbol: tabel-head -- did you mean table-head?")
+        self.assertLispError("(let ((balance 5)) (* balanse 2))", "unbound symbol: balanse -- did you mean balance?")
+        with self.assertRaises(lisp_core.LispError) as raised:
+            self.run_lisp("xyzzy")
+        self.assertEqual(str(raised.exception), "unbound symbol: xyzzy")
+        self.run_lisp("(define (helper--one x) x)")
+        with self.assertRaises(lisp_core.LispError) as raised:
+            self.run_lisp("(helper-one 1)")
+        self.assertNotIn("helper--one", str(raised.exception))      # a library's own names aren't suggested
+
     def test_a_builtin_given_the_wrong_number_of_arguments(self):
         self.assertLispError("(cons 1)", "cons: expected 2 arguments, got 1")
         self.assertLispError("(car 1 2)", "car: expected 1 argument, got 2")
@@ -1354,6 +1389,24 @@ class TestCatchAndThrow(LispTestCase):
 
     def test_malformed(self):
         self.assertLispError("(catch)", "expected (catch tag body...)")
+
+
+class TestPrintingLongValuesAndBuiltins(LispTestCase):
+    """What the console and a notebook cell show for a value: a long list or vector only in part, a builtin by its name."""
+
+    def test_a_long_list_or_vector_shows_its_first_elements_and_how_many_more(self):
+        show = lambda src, n=lisp_core.TOP_LEVEL_MAX_ITEMS: lisp_core.to_string(self.run_lisp(src), n)
+        self.assertEqual(show("(vector-range 0 5)", 3), "#(0 1 2 ... (2 more))")
+        self.assertTrue(show("(iota 1005)").endswith(" 98 99 ... (905 more))"))
+        self.assertEqual(show("(list (iota 5) (iota 2))", 3), "((0 1 2 ... (2 more)) (0 1))")
+        self.assertEqual(show("(iota 3)", 3), "(0 1 2)")
+        self.assertEqual(lisp_core.to_string(self.run_lisp("(vector-range 0 500)")).count(" "), 499)    # (to-string: all of it)
+
+    def test_a_builtin_prints_as_its_name(self):
+        self.assertShows("car", "#<builtin car>")
+        self.run_lisp("(print car) (display (list car))")
+        self.assertEqual(self.printed(), "#<builtin car>\n(#<builtin car>)")
+        self.assertShows("(list + vector-mean)", "(#<builtin +> #<builtin vector-mean>)")
 
 
 class TestPrintingStrings(LispTestCase):
@@ -1583,7 +1636,19 @@ class TestLoadPath(LispTestCase):
 
 
 class TestStandardMacros(LispTestCase):
-    """macros_init.lsp: while and do."""
+    """macros_init.lsp: while, do, dotimes, and time."""
+
+    def test_dotimes_counts_from_zero_and_returns_its_result(self):
+        self.assertShows("(let ((seen '())) (dotimes (i 4) (push i seen)) seen)", "(3 2 1 0)")
+        self.assertShows("(let ((total 0)) (dotimes (i 5 total) (incf total i)))", "10")
+        self.assertShows("(dotimes (i 3 i))", "3")                     # the variable is the count when result is evaluated
+        self.assertShows("(dotimes (i 0 'none))", "none")
+        self.assertShows("(let ((n 0)) (dotimes (i 100000) (incf n)) n)", "100000")      # a tail call each time: no deep stack
+        self.assertLispError("(dotimes i 3)", "dotimes: expected (dotimes (var count [result]) body...)")
+
+    def test_time_shows_how_long_and_returns_the_value(self):
+        self.assertShows("(time (+ 1 2))", "3")
+        self.assertRegex(self.printed(), r"^time: \d+\.\d{3} seconds\n$")
 
     def test_while_runs_several_body_forms_until_the_test_is_false(self):
         self.run_lisp('(define i 0) (define out "")')
@@ -2058,7 +2123,7 @@ class TestLoop(LispTestCase):
         # Like return in Common Lisp, it belongs to the loop it's written in. (The loop only
         # sets up a place for it to go when it sees a return in its own clauses.)
         self.run_lisp("(define (check x) (if (> x 2) (return x)))")
-        self.assertLispError("(loop for x in '(1 2 3 4) do (check x))", "nothing catches loop-nil")
+        self.assertLispError("(loop for x in '(1 2 3 4) do (check x))", "return: not inside a loop")
         self.assertShows("(catch 'loop-nil (loop for x in '(1 2 3 4) do (check x)))", "3")     # throw and catch do it
 
     def test_return_leaves_only_the_innermost_loop(self):
@@ -2082,8 +2147,23 @@ class TestLoop(LispTestCase):
         ])
 
     def test_return_and_return_from_outside_a_loop_are_errors(self):
-        self.assertLispError("(return 5)", "nothing catches loop-nil")
+        self.assertLispError("(return 5)", "return: not inside a loop -- return leaves a dolist, dotimes, do, while, or loop")
         self.assertLispError("(return-from nowhere 5)", "nothing catches nowhere")
+
+    def test_return_leaves_dolist_dotimes_do_and_while_too(self):
+        self.assertAll([
+            ("(dolist (x '(1 2 3 4)) (when (> x 2) (return (* x 10))))", "30"),
+            ("(dotimes (i 10) (when (= i 3) (return 'three)))", "three"),
+            ("(do ((i 0 (+ i 1))) ((= i 10) 'end) (when (= i 4) (return 'early)))", "early"),
+            ("(let ((i 0)) (while #t (set! i (+ i 1)) (when (> i 5) (return i))))", "6"),
+            ("(dolist (x '(1 2)) (return))", "()"),
+            ("(dolist (x '(1 2 3) 'finished) x)", "finished"),          # no return: the result, as before
+            ("(dolist (x '(1 2 3)) (dolist (y '(10 20)) (when (= y 20) (return y))) (when (= x 2) (return 'outer)))", "outer"),
+        ])
+
+    def test_only_a_loop_that_uses_return_is_wrapped_in_a_catch(self):
+        self.assertNotIn("catch", lisp_core.to_string(self.run_lisp("(macroexpand-1 '(dolist (x xs) (print x)))")))
+        self.assertIn("(catch (quote loop-nil)", lisp_core.to_string(self.run_lisp("(macroexpand-1 '(dolist (x xs) (return x)))")))
 
     def test_return_works_from_a_loop_in_a_function_called_again_and_again(self):
         self.run_lisp("(define (first-big xs) (loop for x in xs when (> x 10) return x))")
@@ -2217,6 +2297,11 @@ class TestInitFileAndRunFile(LispTestCase):
         self.assertShows("(define i 0) (while (< i 5) (set! i (+ i 1))) i", "5")
         self.assertShows("(do ((i 0 (+ i 1))) ((= i 5) i))", "5")
         self.assertShows("(loop for i from 1 to 3 collect i)", "(1 2 3)")
+
+    def test_the_libraries_functions_are_there_whatever_the_init_file_is(self):
+        self.assertLispError("industry-returns", "unbound symbol")         # (a test's environment has no autoloads)
+        lisp_builtins.load_init_file(self.env, "/definitely/not/here/init.lsp")
+        self.assertTrue(self.run_lisp("(procedure? industry-returns)"))
 
     def test_the_standard_macros_load_even_without_an_init_file(self):
         lisp_builtins.load_init_file(self.env, "/definitely/not/here/init.lsp")

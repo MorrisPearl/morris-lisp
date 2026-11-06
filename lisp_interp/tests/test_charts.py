@@ -277,17 +277,15 @@ class TestPlotChart(LispTestCase):
         self.assertEqual(self.fig.get_suptitle(), "Both")
         self.assertEqual([len([p for p in a.patches if p.get_x() == 2]) for a in (top, bottom)], [1, 1])  # shaded
         self.assertFalse(any(t.get_visible() and t.get_text() for t in top.get_xticklabels()))
-        self.run_lisp('(plot-chart (list (list "a" #(1 2) #(3 4))))')                # the GUI's next chart
-        lisp_charts.draw_chart_on_axes(self.fig, ax, self.specs[-1])
-        self.assertEqual((self.fig.axes, self.fig.get_suptitle()), ([ax], ""))
-        self.assertEqual(ax.get_subplotspec().get_geometry(), (1, 1, 0, 0))
 
     def test_the_figure_s_title_is_above_the_top_panel_s(self):
         # six panels with titles, on a tall figure, where matplotlib's own layout overlaps the two titles
         panel = '(list (list (list "a" #(1 2 3) #(1 2 3))) :title "a panel")'
-        top = self.drawn('(plot-panels (list %s) :title "All of them" :height 16)' % " ".join([panel] * 6))
-        self.fig.set_size_inches(8, 16)
-        lisp_charts.draw_chart_on_axes(self.fig, top, self.specs[-1])       # (laid out for this size)
+        self.run_lisp('(plot-panels (list %s) :title "All of them" :height 16)' % " ".join([panel] * 6))
+        self.fig = lisp_charts.Figure(figsize=(8, 16))
+        lisp_charts.FigureCanvasAgg(self.fig)
+        top = self.fig.add_subplot(111)
+        lisp_charts.draw_chart_on_axes(self.fig, top, self.specs[-1])
         renderer = self.fig.canvas.get_renderer()
         figure_title = self.fig._suptitle.get_window_extent(renderer)
         self.assertGreaterEqual(figure_title.y0, top.title.get_window_extent(renderer).y1)
@@ -315,15 +313,6 @@ class TestPlotChart(LispTestCase):
         self.run_lisp('(plot-chart (list (list "a" names (vector-map (lambda (n) 1) names) :bars #t)) :horizontal #t)')
         self.assertEqual(self.specs[-1]["height"], 1.5 + 0.25 * 40)          # tall enough for 40 labels
         self.assertLispError('(plot-chart (list (list "a" #(1) #(1))) :width 0)', ":width is the chart's width")
-
-    def test_a_new_chart_in_the_same_figure_starts_fresh(self):
-        """The GUI draws each chart on the same axes."""
-        ax = self.drawn('(plot-chart (list (list "a" #(1 2) #(3 4) :bars #t :secondary #t)) :horizontal #t)')
-        self.run_lisp('(plot-chart (list (list "a" #(1 2) #(3 4))))')
-        lisp_charts.draw_chart_on_axes(self.fig, ax, self.specs[-1])
-        self.assertEqual(self.fig.axes, [ax])
-        self.assertFalse(ax.yaxis_inverted())
-        self.assertEqual(ax.get_zorder(), 0)
 
     def test_the_console_summary_and_saving(self):
         self.env = lisp_builtins.make_global_env(output=self.out.append)
@@ -543,9 +532,6 @@ class TestMaps(LispTestCase):
         self.assertEqual(len(fig.axes), 2)                                   # the map, and its color bar
         legend = [t.get_text() for t in ax.get_legend().get_texts()]
         self.assertEqual(legend, ["no data", "$2,500", "$1,000", "$250"])
-        self.run_lisp('(plot-chart (list (list "a" #(1 2) #(3 4))))')        # the GUI's next chart
-        lisp_charts.draw_chart_on_axes(fig, ax, self.specs[-1])
-        self.assertEqual((fig.axes, ax.axison, ax.get_aspect()), ([ax], True, "auto"))
 
     def test_symbols_on_other_places_and_mistakes(self):
         self.run_lisp('(define c (census-shapes "county"))'

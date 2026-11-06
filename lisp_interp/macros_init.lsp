@@ -12,12 +12,14 @@
 ;   (assert test [message...])
 ;   (with-sqlite (var path) body...)
 ;   (with-columns (column...) table body...)
+;   (dotimes (var count [result]) body...)
 ;   (when test body...)
 ;   (unless test body...)
-;   (push item variable), (pop variable), (incf variable [n]), (decf variable [n])
 ;   (vector-update! v i op arg...), (vector-increment! v i [n])
 ;   (with-vector-precision mode body...)
 ;   (case key-expr ((key...) body...)... [(else body...)])
+;   (setf place value), (incf place [n]), (decf place [n]), (push item place), (pop place)
+;   (time expression)
 ;   (destructuring-bind pattern expression body...)
 ;   (lazy-load file name...)
 ;   (help name)
@@ -203,10 +205,29 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
       `(let (,(car bindings))
          (let* ,(cdr bindings) ,@body))))
 
+; (return [value]) inside dolist, dotimes, do, while, or loop
+; Leaves the loop at once, and makes it return value ('() if there's none).
+; return is a throw (see "catch throw" in lisp_interpreter_reference.md), so
+; a loop whose body uses return is wrapped in a catch for it. Only a loop
+; that uses return gets the catch, because every catch that is in effect
+; counts against how deeply functions can call themselves (about 250 deep).
+; The return and return-from macros, and loop, are in loop.lsp.
+(define (block--uses-return? forms)
+  "Whether the symbol return is anywhere in forms (at any depth)."
+  (cond ((pair? forms) (or (block--uses-return? (car forms)) (block--uses-return? (cdr forms))))
+        (else (eq? forms 'return))))
+
+(define (block--around body expansion)
+  "expansion, the code of a loop, wrapped in the catch that return throws to if body uses return."
+  (if (block--uses-return? body)
+      `(catch 'loop-nil ,expansion)
+      expansion))
+
 ; (dolist (var list [result]) body...)
 ; Evaluates the body forms once for each element of list (a list or a
 ; vector), with var bound to that element, then returns the value of result
-; ('() if there's none; var is '() while it's evaluated).
+; ('() if there's none; var is '() while it's evaluated). (return value)
+; leaves it early.
 ;
 ;   (define total 0)
 ;   (dolist (x '(1 2 3) total)
@@ -237,20 +258,57 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
         (loop-name (gensym "dolist-loop"))
         (remaining (gensym "dolist-remaining"))
         (items (gensym "dolist-items")))
-    `(let ((,items ,list-expr))
-       (define (,loop-name ,remaining)
-         (if (null? ,remaining)
-             (let ((,var '())) ,result-expr)
-             (let ((,var (car ,remaining)))
-               ,@body
-               (,loop-name (cdr ,remaining)))))
-       (,loop-name (cond ((list? ,items) ,items)
-                         ((vector? ,items) (vector->list ,items))
-                         (else (error "dolist: expected a list or a vector, not" ,items)))))))
+    (block--around body
+      `(let ((,items ,list-expr))
+         (define (,loop-name ,remaining)
+           (if (null? ,remaining)
+               (let ((,var '())) ,result-expr)
+               (let ((,var (car ,remaining)))
+                 ,@body
+                 (,loop-name (cdr ,remaining)))))
+         (,loop-name (cond ((list? ,items) ,items)
+                           ((vector? ,items) (vector->list ,items))
+                           (else (error "dolist: expected a list or a vector, not" ,items))))))))
+
+; (dotimes (var count [result]) body...)
+; Evaluates the body forms count times, with var bound to 0, 1, ..., count - 1,
+; then returns the value of result ('() if there's none; var is count while
+; it's evaluated). (return value) leaves it early.
+;
+;   (define total 0)
+;   (dotimes (i 4 total)
+;     (set! total (+ total i)))  ; => 6  (0 + 1 + 2 + 3)
+;
+; expands to a local function that calls itself with the next number:
+;
+;   (let ((%dotimes-count-2 4))
+;     (define (%dotimes-loop-1 i)
+;       (if (< i %dotimes-count-2)
+;           (begin (set! total (+ total i)) (%dotimes-loop-1 (+ i 1)))
+;           total))
+;     (%dotimes-loop-1 0))
+(defmacro dotimes (spec . body)
+  (if (not (and (list? spec)
+                (or (= (length spec) 2) (= (length spec) 3))
+                (symbol? (car spec))))
+      (error "dotimes: expected (dotimes (var count [result]) body...), not" spec)
+      '())
+  (let ((var (car spec))
+        (result-expr (if (= (length spec) 3) (caddr spec) ''()))
+        (loop-name (gensym "dotimes-loop"))
+        (count (gensym "dotimes-count")))
+    (block--around body
+      `(let ((,count ,(cadr spec)))
+         (define (,loop-name ,var)
+           (if (< ,var ,count)
+               (begin ,@body (,loop-name (+ ,var 1)))
+               ,result-expr))
+         (,loop-name 0)))))
 
 ; (while test body...)
 ; Evaluates test; if it's true, evaluates the body forms and starts again.
-; Stops the first time test is false, and returns '().
+; Stops the first time test is false, and returns '() -- or, if the body does
+; (return value), stops there and returns value.
 ;
 ;   (define i 0)
 ;   (while (< i 3)
@@ -265,7 +323,8 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
 ;           (begin (display i) (set! i (+ i 1)) (%while-loop-1))
 ;           '()))
 ;     (%while-loop-1))
-(defmacro while (test . body)
+(define (while--code test body)
+  "The code of a while loop, without the catch for return."
   (let ((loop-name (gensym "while-loop")))
     `(let ()
        (define (,loop-name)
@@ -274,6 +333,15 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
              '()))
        (,loop-name))))
 
+(defmacro while (test . body)
+  (block--around body (while--code test body)))
+
+; while--without-catch is while without the catch for return. loop (loop.lsp)
+; is made of one, because a return in a loop's clauses must leave the loop
+; itself, which has a catch of its own.
+(defmacro while--without-catch (test . body)
+  (while--code test body))
+
 ; (do ((var init [step])...) (end-test result...) body...)
 ; Common Lisp's do loop. Binds each var to its init, then repeats:
 ;   1. if end-test is true, evaluate the result forms and return the last
@@ -281,7 +349,8 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
 ;   2. otherwise evaluate the body forms, then give each var the value of
 ;      its step (a var with no step keeps its value), and go back to 1.
 ; All the steps are computed before any var changes, so each step sees the
-; values from the time around the loop just finished.
+; values from the time around the loop just finished. (return value) in the
+; body leaves the loop at once.
 ;
 ;   (do ((i 0 (+ i 1))
 ;        (total 0 (+ total i)))
@@ -319,12 +388,13 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
          (end-test (car end-clause))
          (results (cdr end-clause))
          (result-form (if (null? results) ''() (cons 'begin results))))
-    `(let ()
-       (define (,loop-name ,@vars)
-         (if ,end-test
-             ,result-form
-             (begin ,@body (,loop-name ,@steps))))
-       (,loop-name ,@inits))))
+    (block--around body
+      `(let ()
+         (define (,loop-name ,@vars)
+           (if ,end-test
+               ,result-form
+               (begin ,@body (,loop-name ,@steps))))
+         (,loop-name ,@inits)))))
 
 ; (assert test [message...])
 ; Does nothing if test is true. If it's false, stops with an error naming
@@ -448,44 +518,6 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
 (defmacro unless (test . body)
   `(if ,test '() (begin ,@body)))
 
-; (push item variable), (pop variable)
-; push puts item on the front of the list in variable, and returns the new
-; list; pop takes the first item off, and returns it -- as in Common Lisp,
-; but only for a variable (there's no setf here).
-;
-;   (define stack '())
-;   (push 1 stack)       ; stack is (1)
-;   (push 2 stack)       ; stack is (2 1)
-;   (pop stack)          ; => 2, and stack is (1)
-(defmacro push (item variable)
-  (unless (symbol? variable)
-    (error "push: expected a variable to push onto, not" variable))
-  `(begin (set! ,variable (cons ,item ,variable)) ,variable))
-
-(defmacro pop (variable)
-  (unless (symbol? variable)
-    (error "pop: expected a variable to pop from, not" variable))
-  (let ((first-item (gensym)))
-    `(let ((,first-item (car ,variable)))
-       (set! ,variable (cdr ,variable))
-       ,first-item)))
-
-; (incf variable [n]), (decf variable [n])
-; Add n (1 unless given) to the number in variable, or take it away, and
-; return the new value -- as in Common Lisp, but only for a variable.
-;
-;   (incf count)         ; (set! count (+ count 1))
-;   (decf balance 100)   ; (set! balance (- balance 100))
-(defmacro incf (variable . n)
-  (unless (symbol? variable)
-    (error "incf: expected a variable, not" variable))
-  `(begin (set! ,variable (+ ,variable ,(if (null? n) 1 (car n)))) ,variable))
-
-(defmacro decf (variable . n)
-  (unless (symbol? variable)
-    (error "decf: expected a variable, not" variable))
-  `(begin (set! ,variable (- ,variable ,(if (null? n) 1 (car n)))) ,variable))
-
 ;   (vector-update! v i op arg...)
 ; Replaces element i of the vector v with (op element arg...), and returns the new value of the element (as the vector holds
 ; it: a single-precision vector rounds it). v and i are evaluated once each,
@@ -496,7 +528,7 @@ can be a name is checked by %scope-lambda, as for any procedure.)"
 ;   (vector-update! best i max score)           ; keep the larger of the element and score
 ;   (vector-update! v i (lambda (x) (* x x)))   ; square it
 ;
-; (vector-increment! v i [n]) is the commonest case: it adds n (1 unless given) to the element, as incf does to a variable.
+; (vector-increment! v i [n]) is the commonest case: it adds n (1 unless given) to the element, as (incf (vector-ref v i) n) does.
 (defmacro vector-update! (vector index op . args)
   (let ((v (gensym)) (i (gensym)) (new-value (gensym)))
     `(let ((,v ,vector) (,i ,index))
@@ -575,6 +607,116 @@ the last clause, the only place an else clause is allowed."
   (let ((key-var (gensym "case-key")))
     `(let ((,key-var ,key-expr))
        (cond ,@(case--cond-clauses key-var clauses)))))
+
+; (setf place value)
+; Puts value in place, and returns it, as Common Lisp's setf does. A place
+; is a variable, or what one of these reads:
+;
+;   (setf x 5)                         ; (set! x 5)
+;   (setf (car pair) 1)                ; also cdr, first, and rest
+;   (setf (nth 2 items) 'c)            ; also (list-ref items 2)
+;   (setf (vector-ref v i) 0.5)
+;   (setf (hash-table-ref h 'a) 1)
+;   (setf (point-x p) 3)               ; a struct's slot, by its accessor
+;   (setf (struct-ref p 'x) 3)
+;
+; A struct's slot works because defstruct makes a setter for each accessor:
+; point-x-set! for point-x. So (setf (f arg...) value) is (f-set! arg...
+; value) for any f that has such a setter. The parts of a place, such as the
+; v and i of (vector-ref v i), are each evaluated once.
+;
+; (incf place [n]) and (decf place [n]) add n (1 unless given) to the number
+; in a place, or take it away, and return the new value; (push item place)
+; puts item on the front of the list in a place, and returns the new list;
+; (pop place) takes the first item off, and returns it:
+;
+;   (incf count)                       ; (set! count (+ count 1))
+;   (decf balance 100)
+;   (incf (vector-ref counts bucket))  ; add 1 to an element
+;   (define stack '())
+;   (push 1 stack)                     ; stack is (1)
+;   (push 2 stack)                     ; stack is (2 1)
+;   (pop stack)                        ; => 2, and stack is (1)
+;
+; (incf (vector-ref v (next-bucket))) expands to
+;
+;   (let ((%place-1 v) (%place-2 (next-bucket)))
+;     (begin (vector-set! %place-1 %place-2 (+ (vector-ref %place-1 %place-2) 1))
+;            (vector-ref %place-1 %place-2)))
+;
+; so next-bucket is called once.
+(define (setf--setting-form place expression written)
+  "The code that puts expression's value in place, a call such as (vector-ref v i) whose arguments are
+names (setf--expand has given each argument a name, so that it is evaluated once). written is the place as the
+program wrote it, for an error."
+  (let ((name (car place))
+        (arguments (cdr place)))
+    (case name
+      ((car first) `(set-car! ,@arguments ,expression))
+      ((cdr rest) `(set-cdr! ,@arguments ,expression))
+      ((nth) `(set-car! (list-tail ,(cadr arguments) ,(car arguments)) ,expression))
+      ((list-ref) `(set-car! (list-tail ,(car arguments) ,(cadr arguments)) ,expression))
+      ((vector-ref) `(vector-set! ,@arguments ,expression))
+      ((hash-table-ref) `(hash-table-set! ,(car arguments) ,(cadr arguments) ,expression))   ; (not the default, if given)
+      ((struct-ref) `(struct-set! ,@arguments ,expression))
+      (else
+       (let ((setter (string->symbol (string-append (symbol->string name) "-set!"))))
+         (if (procedure? (catch-error (eval setter) (message) #f))
+             `(,setter ,@arguments ,expression)
+             (error "setf: can't set" written "-- a place is a variable, or what car, cdr, first, rest, nth,"
+                    "list-ref, vector-ref, hash-table-ref, struct-ref, or a struct's accessor reads")))))))
+
+(define (setf--expand place who make-code)
+  "The code that (make-code current set) gives, for place: current is the code that reads the place's value, and
+(set expression) is the code that puts expression's value in it. Each argument of a place such as (vector-ref (f) i)
+is evaluated once, first. who names the macro, for an error."
+  (cond ((symbol? place)
+         (make-code place (lambda (expression) `(set! ,place ,expression))))
+        ((and (pair? place) (symbol? (car place)) (list? place))
+         (let* ((names (map (lambda (argument) (gensym "place")) (cdr place)))
+                (current (cons (car place) names)))
+           `(let ,(map list names (cdr place))
+              ,(make-code current (lambda (expression) (setf--setting-form current expression place))))))
+        (else (error who "expected a variable, or a place such as (vector-ref v i), not" place))))
+
+(defmacro setf (place value)
+  (setf--expand place "setf:"
+    (lambda (current set) `(begin ,(set value) ,current))))
+
+(defmacro incf (place . n)
+  (setf--expand place "incf:"
+    (lambda (current set) `(begin ,(set `(+ ,current ,(if (null? n) 1 (car n)))) ,current))))
+
+(defmacro decf (place . n)
+  (setf--expand place "decf:"
+    (lambda (current set) `(begin ,(set `(- ,current ,(if (null? n) 1 (car n)))) ,current))))
+
+(defmacro push (item place)
+  (let ((item-value (gensym "item")))
+    `(let ((,item-value ,item))
+       ,(setf--expand place "push:"
+          (lambda (current set) `(begin ,(set `(cons ,item-value ,current)) ,current))))))
+
+(defmacro pop (place)
+  (let ((old-list (gensym "old-list")))
+    (setf--expand place "pop:"
+      (lambda (current set)
+        `(let ((,old-list ,current))
+           ,(set `(cdr ,old-list))
+           (car ,old-list))))))
+
+; (time expression)
+; Evaluates expression, shows how long it took, and returns its value -- as
+; %time does in a Python notebook.
+;
+;   (time (simulate-rate-paths curve model 1000))     ; shows  time: 2.481 seconds
+(defmacro time (expression)
+  (let ((start (gensym "time-start"))
+        (value (gensym "time-value")))
+    `(let* ((,start (%clock-seconds))
+            (,value ,expression))
+       (display (format "time: {:.3f} seconds\n" (- (%clock-seconds) ,start)))
+       ,value)))
 
 ; (destructuring-bind pattern expression body...)
 ; Evaluates expression, which gives a list, binds the variables in pattern

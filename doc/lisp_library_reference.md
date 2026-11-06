@@ -47,6 +47,7 @@ that use all this are described in
   - [A database of market history](#a-database-of-market-history)
   - [Do industries separate returns?](#do-industries-separate-returns)
   - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
+  - [A parser framework](#a-parser-framework)
 - [Reporting](#reporting)
   - [Google Sheets](#google-sheets)
   - [Reports with control breaks](#reports-with-control-breaks)
@@ -81,8 +82,9 @@ The functions for investment analysis, in the order an analysis uses them.
    and SOFR rates. "FRED (Federal Reserve Bank of St. Louis) data", "SEC
    financial statements", "FDIC bank data", "BLS data", "BEA data",
    "Census data", and "Alpha Vantage (dividends)". Anything else on the
-   web: "Downloading data from the web". Files: "SQLite", and `load-csv`
-   (under "Input / output", in the language manual). Each gives a
+   web: "Downloading data from the web". Files: "SQLite", `load-csv`
+   (under "Input / output", in the language manual), and, for text in a
+   small language of its own, "A parser framework". Each gives a
    **table**, so they all work the same way after that. And the other way:
    "Google Sheets" sends tables out, to a spreadsheet, and "Reports with
    control breaks" writes a table as a text report, with totals for each group.
@@ -128,8 +130,8 @@ The functions for investment analysis, in the order an analysis uses them.
 the interpreter is, except the libraries in `lib/`, which are loaded with
 `(load "name.lsp")`: `vol_smile.lsp`, `option_check.lsp`, `option_methods.lsp`,
 `solver.lsp`, `column_engine.lsp`, `template.lsp`, and `model_utils.lsp`, among others. (Their functions can be
-called without loading them, too, once `lib/autoloads.lsp` is loaded, as
-`init.lsp` does: see `lazy-load`.) The rule: what has to be fast, or talks
+called without loading them, too: every notebook, console, and script loads
+`lib/autoloads.lsp`, which makes a stand-in for each: see `lazy-load`.) The rule: what has to be fast, or talks
 to the world outside, is a builtin, written in Python; a model made of
 those is a library, written in Lisp, to be read and changed.
 
@@ -829,8 +831,8 @@ Every dataset, as a table of `title`, `dataset` (the name to give
 - a symbol on each place, sized by a value (a *proportional symbol* map);
 - or both.
 
-A map goes where every chart goes: inline in a notebook, the GUI's chart
-tab, or a one-line summary at the console. `save-chart` saves it.
+A map goes where every chart goes: inline in a notebook, or a one-line
+summary at the console. `save-chart` saves it.
 
 **The outlines** come from the Census Bureau's cartographic boundary
 files (https://www.census.gov/geographies/mapping-files.html). These are
@@ -1906,7 +1908,7 @@ about a few times.
   Without it, Schwab's page opens in your own browser instead. After you
   sign in, that browser ends on an error page at `https://127.0.0.1/...`;
   paste that address when asked.
-- It works from the console, a notebook, or the GUI.
+- It works from a notebook or the console.
 
 Nothing is cached: every call asks Schwab.
 
@@ -2654,6 +2656,100 @@ table with no rows.
 
 `daily-returns` takes this table as its `:dividends`: see Part 4 of [lisp_paths_manual.md](lisp_paths_manual.md).
 
+### A parser framework
+
+`lib/parser.lsp` reads text in a small language -- a query language, a
+calculator, a configuration file, a data format -- by a **table of rules**,
+instead of a function for each part of the grammar. The text is cut into
+tokens with regular expressions, and the rules say what the tokens make.
+It is no more powerful than recursive descent: a rule that has to guess
+which way to go tries one way, and if that fails tries the next. The SQL
+interpreter in `examples/sql.lsp` is read by it, and the library is meant to be
+read, too; [the example programs](lisp_example_programs.md#a-language-from-a-table-the-parser-framework)
+explain how it works and what to learn from it.
+
+```lisp
+(load "parser.lsp")
+
+(define-grammar calculator
+  (token skip   "\\s+")                              ; spaces: read, and thrown away
+  (token number "\\d+(?:\\.\\d+)?"  string->number)  ; the text is made a number
+  (token symbol "[-+*/()]")
+
+  (rule expression ((chain term ("+" . +) ("-" . -))))
+  (rule term       ((chain factor ("*" . *) ("/" . /))))
+  (rule factor     (number))
+  (rule factor     ("(" expression ")")))
+
+(grammar-parse calculator "2 + 3 * (4 - 1)")         ; the tree (+ 2 (* 3 (- 4 1)))
+(eval (grammar-parse calculator "2 + 3 * (4 - 1)"))  ; 11
+```
+
+`define-grammar` is a macro, so load the library by hand (it isn't one of the
+autoloaded ones); `make-grammar` makes the same grammar from a list of rows, for
+a grammar a program builds. `(grammar-parse grammar text [:start rule])` returns
+the value of the text, or signals an error that says what was expected where.
+`(grammar-tokens grammar text)` shows how the text was cut up, as a list of
+`(kind text)`, to see what the token rows make of it.
+
+**Token rows**, `(token kind regular-expression [function])`. At each place in the
+text the regular expressions are tried in the order of the rows, and the first
+that matches takes its piece (not the longest, so `<=` goes before `<`, and
+keywords before names). The token's value is the text, or what the function makes
+of it. A token of kind `skip` is read and thrown away. A character no row matches is a
+token of kind `unknown`, which no rule accepts, so it's an error where it is. The
+expressions can't capture groups (use `(?:...)`) or begin with a flag such as `(?i)`
+(write `(?i:...)` around what it applies to); the grammar says so when it's made.
+
+**Rule rows**, `(rule name (item ...) [action])`. Several rows with the same name are
+alternatives, tried in the order written; the first whose items all match is the
+rule's value. An item is:
+
+| Item | Matches | Its value |
+|---|---|---|
+| `"text"` | a token with that text | none |
+| `kind` | a token of that kind (a name from a token row) | the token's value |
+| `name` | the rule of that name | what the rule makes |
+| `end` | only the end of the text | none |
+| `(opt item ...)` | the items, or nothing | their value, or `'()` |
+| `(flag item ...)` | the items, or nothing | `#t` or `#f` |
+| `(star item ...)`, `(plus item ...)` | the items again and again (`plus`: at least once) | the list of their values |
+| `(sep-by sep item ...)` | the items one or more times with `sep` between | the list of their values |
+| `(or item ...)` | the first of the items that matches | its value |
+| `(one-of "a" "b")` | one of these texts | the text as written in the rule |
+| `(seq item ...)` | the items in a row | their value |
+| `(drop item ...)` | the items | none |
+| `(not item ...)` | succeeds, reading nothing, if the items do not match | none |
+| `(chain operand ("+" . add) ...)` | an operand, and more of them each after an operator, grouped from the left | `(add left right)`, or the procedure's value |
+
+The value of several items together (the items of a rule, or inside an `opt`,
+`star`, and so on) is the value of the one that has a value, or the list of the
+values of several, or `#t` if none has one. A rule's **action** is a procedure called
+with the value of each item of the row that has one; what it returns is the rule's
+value. With no action the value is that of the items together. `(node-builder 'x)`
+makes the action that returns `(x value ...)`, for a tree. A `chain` operator's node is
+a symbol, which makes the tree `(node left right)` (so `("+" . +)` makes Lisp that
+`eval` can run), or, in a grammar made by `make-grammar`, a procedure.
+
+Other rows: `(option ignore-case #t)` (the texts in rules match in any case, and a
+message shows them in capitals), `(option start name)`, `(option error-prefix "sql:")`,
+`(option end-name "the end of the statement")`, and `(describe name "a number")`, which
+says what a rule or kind of token is called in a message.
+
+**When the text doesn't fit** the error says what could have come next at the furthest
+place the text was read to, and what was there:
+`sql: expected ; or the end of the statement but found t3 (at character 19)`. Parts that
+are optional aren't listed while something else was required, and a rule with a
+`describe` is named by it instead of by each thing it tried.
+
+How it works: the rules are tried in order at each place in the tokens, and what each rule
+found at each place is remembered. A rule that is tried again at a place -- as it is when
+an alternative that went some way fails and the next one starts the same way -- costs
+nothing, so the time is in proportion to the length of the text, however many alternatives
+begin alike. (This is the "packrat" method, and the grammars it reads, "parsing expression
+grammars".) A rule that begins with itself, as `sum = sum "+" product`, would never stop,
+and the error says so: write it as a `chain`, `star`, or `sep-by`.
+
 ## Reporting
 ### Google Sheets
 
@@ -2712,7 +2808,7 @@ code for the tokens, and the browser shows a page saying you can close it.
 Your password never reaches the program. The tokens are kept in
 `google_tokens.json`, next to the credentials file, readable only by you;
 the access token lasts an hour and is renewed as needed. It works from
-the console, a notebook, or the GUI. If you aren't signed in,
+a notebook or the console. If you aren't signed in,
 `google-sheet` says so. (Schwab's sign-in shows its page in a small
 window of its own; Google doesn't allow that, which is why this one uses
 your browser.)
@@ -5153,9 +5249,16 @@ grown at the interest rate. `black-implied-vol` finds the volatility as
 (format "{:.4f}" (black-price "call" 105.13 100 1 0.9512 0.2))   ; => "10.4520"
 ```
 
-#### `(normal-cdf x)`
-The chance that a standard normal number is below `x`: `0.5 (1 + erf(x /
-sqrt 2))`.
+#### `(normal-cdf x)`, `(normal-quantile p)`
+`normal-cdf` is the chance that a standard normal number is below `x`:
+`0.5 (1 + erf(x / sqrt 2))`. `normal-quantile` goes the other way: the number
+that a standard normal number is below with chance `p` (between 0 and 1).
+Either can be given a vector.
+
+```lisp
+(normal-cdf 0)                 ; => 0.5
+(normal-quantile 0.975)        ; => 1.9599639845400534
+```
 
 #### `(american-price type spot strike time rate vol [:dividend-yield q] [:dividends table] [:steps n] [:early-exercise #f])`
 The price of an option that can be exercised before it expires, by a
@@ -6251,8 +6354,8 @@ numbers: `(list 0)`, the best, is the default; 1 is the next) says -- as above. 
 several rows, the positions are lines on one chart, with each one's legs in the
 legend, to compare them: the best three bull call spreads, say, whose lines cross
 at the prices where one starts to beat another. The options are those of
-`option-profit-curve`. Returns nothing; the chart goes where any other does: the
-GUI's chart tab, a Jupyter cell, or a summary at the console, which is why a script
+`option-profit-curve`. Returns nothing; the chart goes where any other does: a
+Jupyter cell, or a summary at the console, which is why a script
 follows it with `save-chart`.
 
 ```lisp

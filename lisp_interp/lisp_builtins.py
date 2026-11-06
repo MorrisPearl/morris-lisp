@@ -305,26 +305,67 @@ def signum(x):
     return float(sign) if isinstance(x, float) else sign
 
 
+def check_not_a_list(args, who):
+    """An error if one of the arguments of min or max is a list: (max '(1 5 2)) would otherwise be the list itself."""
+    for a in args:
+        if isinstance(a, Pair):
+            raise LispError("%s: %s is a list -- (apply %s list) is the %s of its elements" % (
+                who, _brief(a), who, "largest" if who == "max" else "smallest"))
+
+
 def lisp_min(*args):
     """(min x ...) -- the smallest. With vectors, the smallest at each
-    position: (min v 100) limits every element to at most 100. (For the
-    smallest element of one vector, use vector-min.)"""
+    position: (min v 100) limits every element to at most 100, and (apply min
+    vectors) is the smallest at each position of any number of vectors -- so
+    (min v), of one vector, is v. For the smallest element of a vector, use
+    vector-min."""
     if not args:
         raise LispError("min: expected at least 1 argument, got 0")
     if any_vector(args):
         return lisp_vector_math.elementwise("min", args, np.minimum)
+    check_not_a_list(args, "min")
     return min(args)
 
 
 def lisp_max(*args):
     """(max x ...) -- the largest. With vectors, the largest at each
-    position: (max v 0) replaces every negative element with 0. (For the
-    largest element of one vector, use vector-max.)"""
+    position: (max v 0) replaces every negative element with 0, and (apply max
+    vectors) is the largest at each position of any number of vectors -- so
+    (max v), of one vector, is v. For the largest element of a vector, use
+    vector-max."""
     if not args:
         raise LispError("max: expected at least 1 argument, got 0")
     if any_vector(args):
         return lisp_vector_math.elementwise("max", args, np.maximum)
+    check_not_a_list(args, "max")
     return max(args)
+
+
+# The trigonometric functions. Angles are in radians: pi radians is 180 degrees.
+
+def trigonometric(name, scalar_function, array_function, description):
+    """The builtin for one trigonometric function, such as sin: of a number, or of each element of a vector."""
+    def function(x):
+        if isinstance(x, LispVector):
+            return lisp_vector_math.unary(name, x, array_function)
+        check_numbers((x,), name)
+        return scalar_function(x)
+    function.__doc__ = "(%s x) -- %s; for a vector, of each element." % (name, description)
+    return function
+
+
+def lisp_atan(y, x=None):
+    """(atan y [x]) -- the angle, in radians, whose tangent is y; with x, the angle of the point (x, y) from the
+    x axis, between -pi and pi (Python's atan2), which knows which quarter the point is in. For vectors, of each element."""
+    if x is None:
+        if isinstance(y, LispVector):
+            return lisp_vector_math.unary("atan", y, np.arctan)
+        check_numbers((y,), "atan")
+        return math.atan(y)
+    if any_vector((y, x)):
+        return lisp_vector_math.elementwise("atan", (y, x), np.arctan2)
+    check_numbers((y, x), "atan")
+    return math.atan2(y, x)
 
 
 def chain_compare(op, args):
@@ -370,6 +411,24 @@ def random_int_fn(lo, hi):
         raise LispError("random-int: %s" % e)
 
 
+def random_normal_fn(mean=0.0, sd=1.0):
+    """(random-normal [mean sd]) -- a pseudo-random number from the normal distribution (the bell curve) with this
+    mean and standard deviation (0 and 1 unless given)."""
+    check_numbers((mean, sd), "random-normal")
+    return random.gauss(mean, sd)
+
+
+def random_normal_vector_fn(n, mean=0.0, sd=1.0):
+    """(random-normal-vector n [mean sd]) -- a vector of n pseudo-random numbers from the normal distribution with this
+    mean and standard deviation (0 and 1 unless given): much faster than n calls of random-normal. random-seed
+    decides them too, as it does random-normal's."""
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise LispError("random-normal-vector: n must be a whole number, 0 or more, not %s" % (_brief(n),))
+    check_numbers((mean, sd), "random-normal-vector")
+    numbers = np.random.default_rng(random.getrandbits(64)).normal(mean, sd, n)     # seeded from the shared generator
+    return lisp_vector_math.to_vector(numbers)
+
+
 NUMBER_BUILTINS = {
     "+": add,
     "-": sub,
@@ -399,6 +458,13 @@ NUMBER_BUILTINS = {
     "ceiling": lisp_ceiling,
     "truncate": lisp_truncate,
     "round": lisp_round,
+    "pi": math.pi,
+    "sin": trigonometric("sin", math.sin, np.sin, "the sine of the angle x, in radians"),
+    "cos": trigonometric("cos", math.cos, np.cos, "the cosine of the angle x, in radians"),
+    "tan": trigonometric("tan", math.tan, np.tan, "the tangent of the angle x, in radians"),
+    "asin": trigonometric("asin", math.asin, np.arcsin, "the angle, in radians, whose sine is x"),
+    "acos": trigonometric("acos", math.acos, np.arccos, "the angle, in radians, whose cosine is x"),
+    "atan": lisp_atan,
     "=": comparison("=", operator.eq),
     "<": comparison("<", operator.lt),
     ">": comparison(">", operator.gt),
@@ -407,6 +473,8 @@ NUMBER_BUILTINS = {
     "random-seed": random_seed_fn,
     "random-float": random_float_fn,
     "random-int": random_int_fn,
+    "random-normal": random_normal_fn,
+    "random-normal-vector": random_normal_vector_fn,
 }
 
 
@@ -648,12 +716,36 @@ def lisp_reduce(f, seq, *init):
     return acc
 
 
-def list_ref(lst, n):
-    items = list_items(lst, "list-ref")
+def list_ref(lst, n, who="list-ref"):
+    items = list_items(lst, who)
+    if isinstance(n, bool) or not isinstance(n, (int, float)) or n != int(n):
+        raise LispError("%s: the index must be a whole number, not %s" % (who, _brief(n)))
     n = int(n)
     if n < 0 or n >= len(items):
-        raise LispError("list-ref: index %d out of range (0..%d)" % (n, len(items) - 1))
+        raise LispError("%s: index %d out of range (0..%d)" % (who, n, len(items) - 1))
     return items[n]
+
+
+def lisp_nth(n, lst):
+    """(nth n list) -- element n of the list, counting from 0: Common Lisp's name for (list-ref list n), with the
+    arguments the other way around. (For a vector, use vector-ref.)"""
+    return list_ref(lst, n, "nth")
+
+
+def is_proper_list(x):
+    """(list? x) -- whether x is a list: '(), or pairs whose last cdr is '(). A dotted pair such as (1 . 2) is not
+    one, and nor is a list made circular with set-cdr!."""
+    slow = fast = x
+    while True:
+        for _ in range(2):              # fast goes two pairs for each of slow's one; if they meet, the list is circular
+            if fast is NIL:
+                return True
+            if not isinstance(fast, Pair):
+                return False
+            fast = fast.cdr
+        slow = slow.cdr
+        if fast is slow:
+            return False
 
 
 def lisp_last(lst, n=1):
@@ -891,6 +983,7 @@ LIST_BUILTINS = {
     "reverse": lisp_reverse,
     "length": lisp_length,
     "list-ref": list_ref,
+    "nth": lisp_nth,
     "list-tail": list_tail,
     "last": lisp_last,
     "butlast": lisp_butlast,
@@ -898,7 +991,7 @@ LIST_BUILTINS = {
     "member": lisp_member,
     "null?": lambda p: p is NIL,
     "pair?": lambda p: isinstance(p, Pair),
-    "list?": lambda p: p is NIL or isinstance(p, Pair),
+    "list?": is_proper_list,
     "map": lisp_map,
     "filter": lisp_filter,
     "sort": lisp_sort,
@@ -1588,7 +1681,7 @@ DATE_BUILTINS = {
 
 class OutputChannel:
     """Where one environment's display/newline/print text goes: normally the
-    callback make_global_env() was given (the console, the GUI log, or a
+    callback make_global_env() was given (the console, or a
     notebook cell), or a file while (redirect-output "file") is in effect."""
 
     def __init__(self, write_to_default):
@@ -1893,13 +1986,13 @@ def make_output_builtins(out, markdown, html, svg):
 
     def reset_output():
         """(reset-output) -- close the redirect-output file and go back to the
-        console/GUI/notebook."""
+        console or the notebook."""
         out.close_file()
         return NIL
 
     def display_markdown(text):
         """(display-markdown string) -- rendered as Markdown in a Jupyter
-        notebook; elsewhere (console, GUI, redirected output) the Markdown text
+        notebook; elsewhere (console, redirected output) the Markdown text
         is written as it is, which is still readable."""
         if not isinstance(text, LispString):
             raise LispError("display-markdown: expected a string, got %r" % (text,))
@@ -1911,7 +2004,7 @@ def make_output_builtins(out, markdown, html, svg):
 
     def display_html(html_text, text=None):
         """(display-html html [text]) -- html rendered in a Jupyter notebook;
-        elsewhere (console, GUI, redirected output), text is written instead:
+        elsewhere (console, redirected output), text is written instead:
         the same thing without HTML. Without text, the HTML itself is written."""
         for name, value in (("html", html_text), ("text", text)):
             if value is not None and not isinstance(value, LispString):
@@ -1924,7 +2017,7 @@ def make_output_builtins(out, markdown, html, svg):
 
     def display_svg(svg_text, text=None):
         """(display-svg svg [text]) -- the picture that svg, a string "<svg ...>...</svg>",
-        draws, by itself in a Jupyter notebook; elsewhere (console, GUI,
+        draws, by itself in a Jupyter notebook; elsewhere (console,
         redirected output), text is written instead, or, without it, a line
         that says there is a picture. An error if svg is not an <svg> element
         of well-formed XML."""
@@ -2086,7 +2179,7 @@ DISPLAY_TABLE_MAX_ROWS = 20    # display-table's :max-rows, unless it's given
 
 def make_display_table_builtin(out, show_table):
     """display-table, which formats a table's values as text and hands them
-    to show_table (the GUI's Table tab, a notebook, or the console). What it
+    to show_table (a notebook, or the console). What it
     hands over is a list of (column name, the cells' text, alignment)
     tuples; the alignment is "right" for a column of numbers, else "left"."""
 
@@ -2352,8 +2445,8 @@ def make_introspection_builtins(env, out):
 
 # The words after a script's name on the command line: for
 #   python3 lisp_interpreter.py option_methods_example.lsp KO 6
-# they are ["KO", "6"]. lisp_interpreter.py's main sets them; in the GUI and
-# Jupyter there are none.
+# they are ["KO", "6"]. lisp_interpreter.py's main sets them; at the console and
+# in Jupyter there are none.
 command_line_words = []
 
 
@@ -2364,8 +2457,8 @@ def set_command_line_arguments(words):
 def command_line_arguments():
     """(command-line-arguments) -- the words after the script's name on the
     command line, as a list of strings: ("KO" "6") for
-    `python3 lisp_interpreter.py file.lsp KO 6`. '() if there are none, and in
-    the GUI and Jupyter. A number is a string too: string->number makes it
+    `python3 lisp_interpreter.py file.lsp KO 6`. '() if there are none, and at
+    the console and in Jupyter. A number is a string too: string->number makes it
     one."""
     return list_to_pairs([LispString(word) for word in command_line_words])
 
@@ -2399,7 +2492,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     """Build a fresh global environment holding every built-in procedure.
 
     The seven optional arguments say where this environment's output goes,
-    so the same interpreter can run in the console, the GUI, or Jupyter:
+    so the same interpreter can run at the console or in Jupyter:
       output    receives the text written by display/newline/print
       plot      receives each chart spec from the plot- functions (see lisp_charts)
       table     receives each table from display-table, as a list of
@@ -2469,6 +2562,9 @@ MACROS_INIT_FILE = os.path.join(HERE, "macros_init.lsp")
 LOOP_FILE = os.path.join(HERE, "loop.lsp")
 STANDARD_MACRO_FILES = (MACROS_INIT_FILE, LOOP_FILE)
 
+# The libraries' functions, as lazy-loads (see lazy-load in macros_init.lsp), which load_init_file loads first.
+AUTOLOADS_FILE = os.path.join(HERE, "lib", "autoloads.lsp")
+
 # Your own definitions, which every new environment loads next. Set the
 # LISP_INIT_FILE environment variable to use a different file.
 DEFAULT_INIT_FILE = os.path.join(HERE, "init.lsp")
@@ -2491,11 +2587,15 @@ def load_standard_macros(env):
 
 
 def load_init_file(env, path=None):
-    """Load the init file (path, or LISP_INIT_FILE, or init.lsp) into env.
-    Called once for each new environment, before anything else runs. A
-    missing file is silently skipped. An error in it (or an (abort)) is
-    reported to stderr but doesn't stop the interpreter starting, so you can
-    still fix it."""
+    """Make env ready for a person to use: load lib/autoloads.lsp, so that every
+    library's functions can be called without loading the library first, and
+    then the init file (path, or LISP_INIT_FILE, or init.lsp), for their own
+    definitions. Called once for each new environment, before anything else
+    runs, by the console, batch mode, and Jupyter (the tests' environments
+    skip it). A missing init file is silently skipped. An error in it (or an
+    (abort)) is reported to stderr but doesn't stop the interpreter starting,
+    so you can still fix it."""
+    run_file(AUTOLOADS_FILE, env)
     init_path = path or os.environ.get("LISP_INIT_FILE", DEFAULT_INIT_FILE)
     if not init_path or not os.path.exists(init_path):
         return

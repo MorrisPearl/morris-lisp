@@ -19,8 +19,7 @@ one figure, sharing one X axis.
 
 As with lisp_charts' other charts, each is made in two steps: a builder
 turns the Lisp values into a plain-data spec (a dict, checked), and draw()
-draws a spec with matplotlib -- for the GUI's chart tab, a Jupyter cell,
-or save-chart.
+draws a spec with matplotlib -- for a Jupyter cell, or save-chart.
 """
 
 import datetime

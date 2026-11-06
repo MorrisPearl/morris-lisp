@@ -4,10 +4,11 @@ vectors, dates, regression, charts, SQLite, and access to FRED and
 tastytrade market data.
 
 HOW TO RUN IT
-    python3 lisp_interpreter.py              open the GUI (needs PyQt6 + matplotlib)
+    In a Jupyter notebook: run  python3 install_lisp_kernel.py  once, then choose
+    the "morris_lisp" kernel (see lisp_kernel.py). That is how it is usually used.
+    python3 lisp_interpreter.py              the console REPL (also: python3 lisp_interpreter.py -)
     python3 lisp_interpreter.py file.lsp     run a file
     python3 lisp_interpreter.py file.lsp KO  run a file, giving it words: (command-line-arguments) is ("KO")
-    python3 lisp_interpreter.py -            the console REPL
 Put -v, -vv, -vvv, or --verbose=N before the file name to trace procedure
 calls as they happen (see (verbose n) in lisp_interpreter_reference.md).
 Every fresh environment first loads macros_init.lsp and loop.lsp (the
@@ -62,7 +63,6 @@ HOW THE CODE IS ORGANIZED
     lisp_portfolio.py     combine-returns, bootstrap-paths, portfolio-value, covariance-matrix, mean-variance-weights, ...
     lisp_rates.py         interest-rate paths and their fit to option prices (simulate-rate-paths, calibrate-rate-model, ...), and
                           SOFR curves (sofr-*; sofr-calibration-data downloads from tastytrade)
-    lisp_gui.py           the PyQt6 window
     lisp_kernel.py        the Jupyter kernel (with lisp_jupyter.py)
     lisp_jupyter_debug.py the debug REPL in Jupyter, made with ipywidgets
 Each module that adds builtins lists them in a BUILTINS table at its end;
@@ -86,8 +86,9 @@ structured-deal (CMO) model of lib/deal.lsp is in lisp_cmo_manual.md)
     cond, and, or, defmacro, defstruct, with-struct, catch-error,
     unwind-protect, catch (with the throw function), breakpoint, backtrace
   - standard macros written in Lisp (macros_init.lsp): let, let*, dolist,
-    while, do, when, unless, case, assert, with-sqlite, with-columns,
-    save-variables
+    dotimes, while, do, when, unless, case, setf (with push, pop, incf, and
+    decf, on a variable or any place setf knows), time, assert, with-sqlite,
+    with-columns, save-variables; return leaves any of the loops
   - loop, the Common Lisp loop macro (loop.lsp): for x in / on / across,
     counting, collect / sum / count / maximize, when / unless, return, ...
   - macro expansion is remembered, so each macro call is expanded only once
@@ -103,7 +104,8 @@ structured-deal (CMO) model of lib/deal.lsp is in lisp_cmo_manual.md)
   - arithmetic and comparisons on whole vectors: (* balance rate), (> v 0)
   - length, map, filter, reduce, ... on lists, vectors, and strings
   - error messages that name the procedure that went wrong
-  - hash tables, strings, regular expressions, sorting, pseudo-random numbers
+  - hash tables, strings, regular expressions, sorting, trigonometry,
+    pseudo-random numbers (uniform and normal)
   - format, for numbers with commas and decimals in fixed-width fields
   - fast math and statistics on whole vectors, with NaN for missing values
   - tables: filter, sort, group-by, join, and summarize columns of data,
@@ -133,15 +135,20 @@ import os
 import sys
 
 from lisp_core import (
-    LispAbort, LispError, Pair, Symbol, VERBOSE_CALLS, format_error_report,
+    LispAbort, LispError, NIL, Pair, Symbol, TOP_LEVEL_MAX_ITEMS, VERBOSE_CALLS, format_call_stack, format_error_report,
     format_lisp_traceback, parse, run_file, seval, set_verbose_level, to_string,
 )
+from lisp_tables import is_table
 from lisp_builtins import load_init_file, make_global_env, set_command_line_arguments
 
 
 def repl(env):
     """The console read-eval-print loop. A form is evaluated once its
-    parentheses balance, so a definition can span several lines."""
+    parentheses balance, so a definition can span several lines. Its value
+    is shown as a notebook cell's is: a table as display-table shows it, and
+    only the first 100 elements of a list or vector. Control-C stops what is
+    running (and shows where it was), or, while typing, throws away the lines
+    typed so far."""
     print("Simple Lisp interpreter. Type (exit) to quit, (help name) for help with a name, and (apropos \"text\") to look for one.")
     buffer = ""
     while True:
@@ -150,6 +157,10 @@ def repl(env):
         except EOFError:
             print()
             break
+        except KeyboardInterrupt:
+            print()
+            buffer = ""
+            continue
         buffer += line + "\n"
         if buffer.count("(") <= buffer.count(")"):
             try:
@@ -157,9 +168,15 @@ def repl(env):
                     if isinstance(expr, Pair) and expr.car == Symbol("exit"):
                         return
                     result = seval(expr, env)
-                    print(to_string(result))
+                    if is_table(result) and result is not NIL:
+                        env[Symbol("display-table")](result)
+                    else:
+                        print(to_string(result, TOP_LEVEL_MAX_ITEMS))
             except LispAbort:
                 print("Aborted -- back at the top level.")
+            except KeyboardInterrupt as e:
+                print(format_call_stack(getattr(e, "lisp_trace", None) or [],
+                                        "Interrupted while running (most recent call last):") + "Interrupted.")
             except Exception as e:
                 print(format_error_report(e), end="")
             buffer = ""
@@ -205,20 +222,6 @@ def verbose_flag_level(arg):
     return None
 
 
-def launch_gui_or_repl():
-    """Open the GUI if PyQt6 and matplotlib are installed; otherwise say
-    so and run the console REPL instead."""
-    import lisp_gui    # imported here so the rest of the interpreter never needs PyQt6
-    if lisp_gui.PYQT_AVAILABLE:
-        lisp_gui.launch_gui()
-        return
-    print("PyQt6 and matplotlib are required for the GUI:\n\n    pip install PyQt6 matplotlib\n")
-    print("Falling back to the console REPL.\n")
-    env = make_global_env()
-    load_init_file(env)
-    repl(env)
-
-
 def main():
     args = sys.argv[1:]
     while args and verbose_flag_level(args[0]) is not None:
@@ -228,14 +231,10 @@ def main():
             sys.exit(2)
         set_verbose_level(level)
 
-    if not args:
-        launch_gui_or_repl()
-        return
-
     set_command_line_arguments(args[1:])        # the words after the script's name (or "-")
     env = make_global_env()
     load_init_file(env)
-    if args[0] == "-":
+    if not args or args[0] == "-":
         repl(env)
     else:
         run_script(args[0], env)

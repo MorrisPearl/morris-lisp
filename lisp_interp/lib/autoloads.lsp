@@ -3,9 +3,9 @@
 ; The functions of the libraries that come with the interpreter (lib/), so
 ; that they can be called without loading the library first: each is a
 ; lazy-load (see macros_init.lsp), and the first call of any of a
-; library's functions loads it. init.lsp loads this file:
-;
-;   (load "autoloads.lsp")
+; library's functions loads it. Every environment that a person uses (a
+; notebook's, the console's, a script's) loads this file before the init
+; file: see load_init_file in lisp_builtins.py.
 ;
 ; Only functions can be lazy-loaded -- not a library's macros or variables
 ; -- so a library is still loaded by hand for those: column_engine.lsp (its
@@ -31,7 +31,7 @@
   option-values-options option-values-symbol option-values-price option-values-volatility
   option-values-rate option-values-paths)
 
-; Parsers for small languages (see "A parser framework" in lisp_interpreter_reference.md)
+; Parsers for small languages (see "A parser framework" in lisp_library_reference.md)
 (lazy-load "parser.lsp"
   make-grammar grammar-parse grammar-tokens node-builder)
 

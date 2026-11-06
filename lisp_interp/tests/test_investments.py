@@ -21,6 +21,13 @@ class TestOptionPrices(LispTestCase):
         self.assertAlmostEqual(self.price("(normal-cdf 0)"), 0.5, places=12)
         self.assertAlmostEqual(self.price("(normal-cdf 1.96)"), 0.9750021, places=6)
 
+    def test_normal_quantile_is_the_opposite_of_normal_cdf(self):
+        self.assertAlmostEqual(self.price("(normal-quantile 0.975)"), 1.959964, places=6)
+        self.assertAlmostEqual(self.price("(normal-quantile 0.5)"), 0.0, places=12)
+        self.assertAlmostEqual(self.price("(normal-cdf (normal-quantile 0.123))"), 0.123, places=12)
+        self.assertEqual(self.show("(normal-quantile (vector 0.5 nan))"), "#(0.0 nan)")
+        self.assertLispError("(normal-quantile 1)", "normal-quantile: p must be a chance between 0 and 1")
+
     def test_put_call_parity_holds_with_a_dividend_yield(self):
         call = self.price('(bsm-price "call" 100 110 0.75 0.04 0.3 :dividend-yield 0.02)')
         put = self.price('(bsm-price "put" 100 110 0.75 0.04 0.3 :dividend-yield 0.02)')

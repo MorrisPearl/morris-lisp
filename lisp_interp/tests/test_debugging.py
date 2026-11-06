@@ -1046,7 +1046,7 @@ class ScriptedFrontend:
     class Cell:
         def __init__(self, msg_id):
             self.msg_id = msg_id
-            self.streams, self.results, self.errors = [], [], []
+            self.streams, self.results, self.errors, self.displays = [], [], [], []
             self.done = False
             self.finished_at = None
 
@@ -1096,6 +1096,9 @@ class ScriptedFrontend:
                     cell.results.append(content["data"]["text/plain"])
                 elif kind == "error":
                     cell.errors.append("%s: %s" % (content["ename"], content["evalue"]))
+                    cell.error_traceback = content["traceback"]
+                elif kind == "display_data":
+                    cell.displays.append(content["data"])
                 elif kind == "status" and content["execution_state"] == "idle":
                     cell.done = True
                     cell.finished_at = time.time()
@@ -1183,6 +1186,60 @@ class TestKernelReadLine(unittest.TestCase):
         self.assertTrue(fe.wait_for(lambda: cell.done))
         self.assertEqual(cell.errors, [])
         self.assertEqual(cell.results, ['"Hello, Kim"'])
+
+
+class TestKernelCells(unittest.TestCase):
+    """What a cell shows in a real Jupyter kernel: a table as display-table shows it, a long vector cut short, a builtin
+    by its name; a cell with a syntax error does nothing; and Kernel > Interrupt says where the program was."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.frontend = start_test_kernel(cls.tmp, "lisp-cells-test")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.frontend.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_a_table_is_shown_as_a_table(self):
+        cell = self.frontend.run('(make-table "name" (vector "a" "b") "balance" #(1.5 2))')
+        self.assertEqual(cell.errors, [])
+        self.assertEqual(cell.results, [])
+        markdown = cell.displays[0]["text/markdown"]
+        self.assertIn("| name | balance |", markdown)
+        self.assertIn("| a | 1.5 |", markdown)
+
+    def test_a_long_table_shows_its_first_rows_and_says_how_many_there_are(self):
+        cell = self.frontend.run('(make-table "n" (vector-range 0 1000))')
+        self.assertIn("(the first 20 of 1,000 rows -- :max-rows shows more)\n", cell.streams)
+
+    def test_a_long_vector_or_list_is_cut_short(self):
+        cell = self.frontend.run("(vector-range 0 1000000)")
+        self.assertTrue(cell.results[0].startswith("#(0 1 2 3"))
+        self.assertTrue(cell.results[0].endswith(" 99 ... (999,900 more))"))
+        cell = self.frontend.run("(iota 150)")
+        self.assertTrue(cell.results[0].endswith(" 99 ... (50 more))"))
+
+    def test_a_builtin_is_shown_by_its_name(self):
+        self.assertEqual(self.frontend.run("car").results, ["#<builtin car>"])
+
+    def test_a_cell_with_a_syntax_error_does_nothing(self):
+        cell = self.frontend.run("(define cell-test-x 5)\n(define cell-test-y (+ 1 2)")
+        self.assertEqual(cell.errors, ["LispError: missing ')': the ( on line 2 is never closed"])
+        cell = self.frontend.run("cell-test-x")
+        self.assertIn("unbound symbol: cell-test-x", cell.errors[0])
+
+    def test_interrupt_stops_the_cell_and_shows_where_it_was(self):
+        fe = self.frontend
+        cell = fe.start("(define (spin n) (spin (+ n 1)))\n(define (start) (list (spin 0)))\n(start)")
+        fe.wait_for(lambda: False, timeout=2)           # let it run a while
+        fe.km.interrupt_kernel()
+        self.assertTrue(fe.wait_for(lambda: cell.done, timeout=30))
+        self.assertEqual(cell.errors, ["Interrupted: the cell was stopped (Kernel > Interrupt)"])
+        self.assertEqual(cell.error_traceback[:2], ["Interrupted while running (most recent call last):", "  (start)"])
+        self.assertTrue(cell.error_traceback[2].startswith("  (spin "))
+        self.assertEqual(fe.run("(+ 1 2)").results, ["3"])          # and the kernel carries on
 
 
 class TestJupyterDebugger(unittest.TestCase):
