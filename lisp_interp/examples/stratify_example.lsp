@@ -23,18 +23,18 @@
 ; --- A made-up pool of loans -------------------------------------------------
 (random-seed 1)
 (define n 5000)
-(define (make-column value) (list->vector (loop repeat n collect (value))))
+(define (random-column value) (list->vector (loop repeat n collect (value))))
 (define states '("CA" "TX" "FL" "NY" "IL" "WA" "AZ" "NC" "GA" "CO"))
 
 (define loans
   (make-table
-    "balance"   (make-column (lambda () (round (random-float 40000 800000))))
-    "rate"      (make-column (lambda () (/ (round (* 8 (random-float 2.75 8.25))) 8.0)))   ; eighths
-    "age"       (make-column (lambda () (random-int 0 120)))
-    "ltv"       (make-column (lambda () (round (random-float 40 97))))
-    "fico"      (make-column (lambda () (random-int 600 820)))
-    "state"     (make-column (lambda () (list-ref states (random-int 0 (- (length states) 1)))))
-    "first-pay" (make-column (lambda () (date-add-months (date 2016 1 1) (random-int 0 107))))))
+    "balance"   (random-column (lambda () (round (random-float 40000 800000))))
+    "rate"      (random-column (lambda () (/ (round (* 8 (random-float 2.75 8.25))) 8.0)))   ; eighths
+    "age"       (random-column (lambda () (random-int 0 120)))
+    "ltv"       (random-column (lambda () (round (random-float 40 97))))
+    "fico"      (random-column (lambda () (random-int 600 820)))
+    "state"     (random-column (lambda () (list-ref states (random-int 0 (- (length states) 1)))))
+    "first-pay" (random-column (lambda () (date-add-months (date 2016 1 1) (random-int 0 107))))))
 
 ; --- What each small table shows -----------------------------------------------
 ; Every table has the bucket, the count of loans, their total balance

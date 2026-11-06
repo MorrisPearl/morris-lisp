@@ -5283,7 +5283,7 @@ again quickly). Trying to is an error naming the variable, and nothing is
 written.
 
 **A struct's procedures.** A struct with a procedure in a slot, such as
-the `f` of `(defstruct tranche (money 0.0) (f (lambda (x) (* x 3))))`, can
+the `f` of `(defstruct account (money 0.0) (f (lambda (x) (* x 3))))`, can
 be saved with `:leave-out-procedures #t`. The slots that hold procedures
 are left out of the file, and `load-variables` gives them their defaults.
 So a struct whose procedure wasn't its slot's default gets the default
@@ -5291,9 +5291,9 @@ back, not its own. A procedure anywhere but in a struct's slot is still an
 error.
 
 ```lisp
-(defstruct tranche (money 0.0) (f (lambda (x) (* x 3))))
-(define senior (make-tranche :money 100.0))
-(save-variables "tranches.json" senior :leave-out-procedures #t)   ; => (senior)
+(defstruct account (money 0.0) (f (lambda (x) (* x 3))))
+(define savings (make-account :money 100.0))
+(save-variables "accounts.json" savings :leave-out-procedures #t)   ; => (savings)
 ```
 
 #### `(load-variables path)`
@@ -5316,9 +5316,9 @@ saved slot that the struct type no longer has is an error. A table's rows
 (see `table-rows`) need no `defstruct`.
 
 ```lisp
-(defstruct tranche (money 0.0) (f (lambda (x) (* x 3))))
-(load-variables "tranches.json")                  ; => (senior)
-((tranche-f senior) 2)                            ; => 6, from the default
+(defstruct account (money 0.0) (f (lambda (x) (* x 3))))
+(load-variables "accounts.json")                  ; => (savings)
+((account-f savings) 2)                            ; => 6, from the default
 ```
 
 - A vector comes back stored the same way: whole numbers stay whole numbers, and decimals are stored in the precision in

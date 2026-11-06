@@ -100,20 +100,20 @@ and a month more for each one after it."
   "What a dollar is worth a month later, at the yield (percent, bond equivalent): (1 + yield / 200) to the minus a sixth."
   (expt (+ 1.0 (/ yield 200.0)) (/ -1.0 6.0)))
 
-(define (present-value flows months yield)
+(define (deal-pricing--present-value flows months yield)
   "What the cash flows (a vector) are worth at the yield, when each is the months (a vector) from the closing date."
   (vector-sum (* flows (expt (monthly-factor yield) months))))
 
-(define (modified-duration flows months yield)
+(define (deal-pricing--modified-duration flows months yield)
   "How much the value of the cash flows falls, in proportion, for a rise of one (100 percentage points) in the yield, in years."
   (/ (vector-sum (* flows (/ months 12.0) (expt (monthly-factor yield) months)))
-     (* (present-value flows months yield) (+ 1.0 (/ yield 200.0)))))
+     (* (deal-pricing--present-value flows months yield) (+ 1.0 (/ yield 200.0)))))
 
 (define (yield-of-money flows months money)
   "The yield, in percent, at which the cash flows are worth the money: found by Ridders' method between -100 and 1000 percent. An error if there is none."
   (when (<= money 0.0)
     (error (format "the money is {:,.2f}: it has to be more than 0 to have a yield" money)))
-  (let ((excess (lambda (yield) (- (present-value flows months yield) money))))
+  (let ((excess (lambda (yield) (- (deal-pricing--present-value flows months yield) money))))
     (unless (and (> (excess -100.0) 0.0) (< (excess 1000.0) 0.0))
       (error (format "no yield, from -100% to 1000%, makes the cash flows worth {:,.2f}: they add up to {:,.2f}" money (vector-sum flows))))
     (ridders excess -100.0 1000.0 :tolerance 1e-12)))
@@ -240,7 +240,7 @@ effective convexity are of the paths of rates that were run (see deal-run-paths!
                  (yield (cond ((not (null? given-money)) (yield-of-money flows months given-money))
                               ((eq? priced-by 'yield) value)
                               (else (+ (treasury-yield deal life) (/ value 100.0)))))
-                 (money (if (null? given-money) (present-value flows months yield) given-money))
+                 (money (if (null? given-money) (deal-pricing--present-value flows months yield) given-money))
                  (price (if (eq? priced-by 'price) value (* 100.0 (/ (- money accrued) balance))))
                  (spread (cond ((eq? priced-by 'spread) value)
                                ((or (null? life) (null? (deal-treasury-curve deal))) '())
@@ -249,8 +249,8 @@ effective convexity are of the paths of rates that were run (see deal-run-paths!
                             ((null? sets) '())
                             (else (* 10000.0 (path-sets-oas sets name money fraction))))))
             (make-tranche-analytics
-              :price price :yield yield :spread spread :duration (modified-duration flows months yield) :average-life life
-              :dv01 (- (present-value flows months yield) (present-value flows months (+ yield 0.01)))
+              :price price :yield yield :spread spread :duration (deal-pricing--modified-duration flows months yield) :average-life life
+              :dv01 (- (deal-pricing--present-value flows months yield) (deal-pricing--present-value flows months (+ yield 0.01)))
               :money money :oas oas
               :effective-duration (if (null? sets) '() (path-sets-effective-duration sets name (/ oas 10000.0) fraction))
               :effective-convexity (if (null? sets) '() (path-sets-effective-convexity sets name (/ oas 10000.0) fraction))))))))

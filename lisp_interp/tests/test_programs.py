@@ -1575,7 +1575,7 @@ class TestExampleScripts(unittest.TestCase):
 
     def test_the_debugging_example_logs_calls_and_reports_the_error_stop(self):
         out = self.results["debugging_example.lsp"].stdout
-        self.assertIn("   called: level-payment (200000 6.0 360)\n   called: monthly-rate (6.0)\n", out)
+        self.assertIn("   called: level-payment (200000 6.0 360)\n   called: monthly-interest-rate (6.0)\n", out)
         self.assertIn("   payment = 1199.1\n", out)
         self.assertIn("The breakpoints are ((level-payment (> balance 500000)))\n"
                       "   called: level-payment (800000 6.0 360)\n", out)
