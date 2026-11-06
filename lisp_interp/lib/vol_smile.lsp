@@ -143,8 +143,8 @@ out-of-the-money-only, only calls with K >= 0 and puts with K <= 0."
                 ask is below it, \"\" otherwise
   edge          how far: the bid less model-price, or model-price less the
                 ask (0 for neither)"
-  (with-columns (Y T type forward strike discount bid ask iv-mid) options
-    (let* ((fitted-Y (- Y (model-residuals model (vol-smile--smile-predictors options terms) Y)))
+  (with-columns (T type forward strike discount bid ask iv-mid) options
+    (let* ((fitted-Y (model-predict model (vol-smile--smile-predictors options terms)))
            (fitted-iv (sqrt (/ (max fitted-Y 0) T)))
            (model-price (black-price (= type "Call") forward strike T discount fitted-iv))
            (rich (> bid model-price))

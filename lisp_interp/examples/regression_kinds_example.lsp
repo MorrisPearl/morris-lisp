@@ -69,10 +69,9 @@
 
 ; --- One chart each, the same points, and each model's curve ------------------------
 (define grid (- (/ (vector-range 201) 40.0) 2))         ; -2 to 3 points, finely
-(define (curve model) (vector-map (lambda (x) (model-predict model x)) grid))
 (define the-data (list "data" incentive prepaid :symbol "circle" :symbol-size 4))
 (define (panel entry)
-  (list (list the-data (list (model-kind (cdr entry)) grid (curve (cdr entry)) :line #t))
+  (list (list the-data (list (model-kind (cdr entry)) grid (model-predict (cdr entry) grid) :line #t))
         :title (car entry) :y-label "share prepaid" :y-min -0.1 :y-max 0.7))
 (plot-panels (map panel models)
              :title "Six kinds of regression on the same data, and two with a floor and ceiling"
@@ -81,8 +80,10 @@
 
 ; --- More: a band, a smooth curve, and a fitted floor and ceiling --------------------
 ;   spline-quantile at 0.25, 0.5, and 0.75: the curves a quarter, half,
-;     and three quarters of the points are below -- a band around the data.
-;     (Not the 10th and 90th percentiles: with about 10 points in each of
+;     and three quarters of the points are below. Between the first and
+;     the last is a band, shaded (:fill), that half the points are in: how
+;     spread out the months are at each incentive, not how sure the curve
+;     is. (Not the 10th and 90th percentiles: with about 10 points in each of
 ;     the spline's pieces, those would be set by the single lowest or
 ;     highest point of a piece -- here, the months out of line. A
 ;     percentile far from the middle needs many points.)
@@ -95,7 +96,9 @@
 ;     is this model's way of taking such points in -- the floor is how
 ;     often a point like that turns up -- and why, with few points, a floor
 ;     and ceiling known from outside the data can be better.
-(define quantiles (map (lambda (q) (cons q (spline-quantile incentive prepaid q knots))) '(0.25 0.5 0.75)))
+(define band-bottom (spline-quantile incentive prepaid 0.25 knots))
+(define band-middle (spline-quantile incentive prepaid 0.5 knots))
+(define band-top (spline-quantile incentive prepaid 0.75 knots))
 (define more-fits
   (list (cons "spline-lad, smooth, 5 knots" (lambda (x y) (spline-lad x y 5 '() :smooth #t)))
         (cons "logistic-regression, floor and ceiling fitted"
@@ -103,10 +106,11 @@
 (define more-models (fit-all more-fits))
 (define fitted (cdr (second more-models)))
 (plot-panels
-  (list (list (cons the-data (map (lambda (entry) (list (format "{:.0%}" (car entry)) grid (curve (cdr entry)) :line #t))
-                                  quantiles))
+  (list (list (list the-data
+                    (list "25th to 75th percentile" grid (model-predict band-top grid) :fill (model-predict band-bottom grid))
+                    (list "50th percentile" grid (model-predict band-middle grid) :line #t))
               :title "spline-quantile: the 25th, 50th, and 75th percentiles" :y-label "share prepaid"
-              :y-min -0.1 :y-max 0.7 :legend "upper left")
+              :y-min -0.1 :y-max 0.7)
         (panel (first more-models))
         (panel (cons (format "logistic-regression, floor and ceiling fitted: {:.3f} and {:.3f}"
                              (model-floor fitted) (model-ceiling fitted))

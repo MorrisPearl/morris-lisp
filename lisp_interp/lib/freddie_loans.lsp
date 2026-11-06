@@ -53,13 +53,7 @@ averages of groups of loans are closer together than the loans are, so a knot th
 
 (define (freddie-loans--predicted-outcomes model data)
   "What the model says the outcome of each row of the loan-data is: a vector."
-  (- (loan-data-outcomes data) (model-residuals model (loan-data-predictors data) (loan-data-outcomes data))))
-
-(define (freddie-loans--model-predictions model columns)
-  "What the model says of each row of the columns, a list of (name . vector) in the order of its predictors: a vector. (The residuals of rows whose outcomes are 0 are
-the predictions, less than 0.)"
-  (let ((zeros (make-vector (vector-length (cdr (car columns))) 0.0)))
-    (- zeros (model-residuals model columns zeros))))
+  (model-predict model (loan-data-predictors data)))
 
 (define (freddie-loans--outcomes-by-period model data)
   "A table, a row for each period: the outcome of all the rows of the loan-data of the period together (their outcomes, weighted by their weights), and what the model
@@ -110,11 +104,9 @@ misses of a model on loans it was not fitted to, in the time that it was fitted 
 (define (model-curve model predictors loan name values)
   "What the model says of the loan (a list of (predictor value)) as one of its predictors, name, takes each of the values (a vector), the others staying as the
 loan has them: a vector."
-  (vector-map (lambda (value)
-                (model-predict model (map (lambda (predictor)
-                                            (if (equal? (predictor-name predictor) name) value (cadr (assoc (predictor-name predictor) loan))))
-                                          predictors)))
-              values))
+  (model-predict model (map (lambda (predictor)
+                              (if (equal? (predictor-name predictor) name) values (cadr (assoc (predictor-name predictor) loan))))
+                            predictors)))
 
 ; ---------------------------------------------------------------------------
 ; A piece of collateral along a path of rates, for a model of a deal

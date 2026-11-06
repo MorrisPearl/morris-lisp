@@ -222,15 +222,15 @@ the mortgage insurance and the investor share are the piece's."
   "A default model for a deal, (model piece path): the model fitted to Freddie Mac's loans (fit, or, if it is '(), the one that comes with the library: freddie-default--fit),
 which gives the CDR, in percent, of each month of the piece of collateral on the path of rates, from what it looks at (default-model-columns)."
   (lambda (piece path)
-    (annual-rate (freddie-loans--model-predictions (if (null? fit) (freddie-default--fit) fit)
-                                    (default-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread)))))
+    (annual-rate (model-predict (if (null? fit) (freddie-default--fit) fit)
+                                (default-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread)))))
 
 (define (freddie-severity-model &key (home-price-growth 3.0) (mortgage-spread 1.75) (lag 18) (fit '()))
   "A severity model for a deal, (model piece path): the model fitted to Freddie Mac's sales of defaulted loans (fit, or, if it is '(), the one that comes with the library:
 freddie-default--severity-fit), which gives the severity, a decimal from 0 to 1, of the loans of the piece that default in each month, sold lag months later
 (severity-model-columns)."
   (lambda (piece path)
-    (vector-clip (freddie-loans--model-predictions (if (null? fit) (freddie-default--severity-fit) fit)
-                                    (severity-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread :lag lag))
+    (vector-clip (model-predict (if (null? fit) (freddie-default--severity-fit) fit)
+                                (severity-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread :lag lag))
                  0.0 1.0)))
 

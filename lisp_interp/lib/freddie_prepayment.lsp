@@ -125,8 +125,8 @@ library: freddie-prepayment-fit), which gives the CPR, in percent, of each month
 (prepayment-model-columns). home-price-growth is how much home prices grow, percent a year, and mortgage-spread how far the rate of a new mortgage is above the
 10-year Treasury yield, percent."
   (lambda (piece path)
-    (annual-rate (freddie-loans--model-predictions (if (null? fit) (freddie-prepayment-fit) fit)
-                                    (prepayment-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread)))))
+    (annual-rate (model-predict (if (null? fit) (freddie-prepayment-fit) fit)
+                                (prepayment-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread)))))
 
 (define (prepayment-s-curve model &key (loan typical-prepayment-loan))
   "A table of the CPR that the model says the loan (a list of (predictor value)) prepays at, for each incentive from -200 to 400 basis points, in steps of 25."

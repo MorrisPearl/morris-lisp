@@ -1245,8 +1245,16 @@ def _is_probabilistic(model):
 
 
 def model_predict(model, x_arg):
+    """(model-predict m x) -- what the model says y is.
+      For one row, x is a number (or a date, or a category), for a model of one predictor, or a list of them, one
+      for each predictor, in the order the model was fit with; the prediction is a number.
+      For many rows, x is a vector, for a model of one predictor, or a list of vectors, one for each predictor,
+      as the model was fit with; the predictions are a vector, one for each row. A (name . vector) pair will do
+      for a vector, and a number in the list, among the vectors, is that predictor's value in every row."""
     if not _is_model(model):
         raise LispError("model-predict: not a model: %r" % (model,))
+    if _holds_vectors(x_arg):
+        return to_vector(predict_all(model, _prediction_columns(model, x_arg)))
     if isinstance(x_arg, Pair) or x_arg is NIL:
         xs = [numeric_value(v) for v in pairs_to_list(x_arg)]
     else:
@@ -1256,6 +1264,36 @@ def model_predict(model, x_arg):
             "model-predict: model has %d predictor(s), but %d given"
             % (model.k, len(xs)))
     return model.predict(xs)
+
+
+def _is_named_vector(value):
+    """Whether the value is a (name . vector) pair, as sqlite-query gives a column."""
+    return isinstance(value, Pair) and isinstance(value.cdr, LispVector)
+
+
+def _holds_vectors(x_arg):
+    """Whether model-predict's x is for many rows: a vector, or a list with a vector in it."""
+    if isinstance(x_arg, LispVector) or _is_named_vector(x_arg):
+        return True
+    return isinstance(x_arg, Pair) and any(isinstance(item, LispVector) or _is_named_vector(item)
+                                           for item in pairs_to_list(x_arg))
+
+
+def _prediction_columns(model, x_arg):
+    """model-predict's x, for many rows, as a column for each of the model's predictors: a vector's values, or a
+    number (or a date, or a category) repeated for every row."""
+    items = [x_arg] if isinstance(x_arg, LispVector) or _is_named_vector(x_arg) else pairs_to_list(x_arg)
+    values = [item.cdr if _is_named_vector(item) else item for item in items]
+    if len(values) != model.k:
+        raise LispError("model-predict: model has %d predictor(s), but %d given" % (model.k, len(values)))
+    lengths = sorted({len(value.items) for value in values if isinstance(value, LispVector)})
+    if len(lengths) > 1:
+        raise LispError("model-predict: the vectors must all be the same length, a value for each row, "
+                        "not of lengths %s" % ", ".join(str(n) for n in lengths))
+    rows = lengths[0]
+    return [[numeric_value(v) for v in value.items.tolist()] if isinstance(value, LispVector)
+            else [numeric_value(value)] * rows
+            for value in values]
 
 
 def model_slope(model):
@@ -1413,8 +1451,11 @@ def model_coefficient_table(model):
 def predict_all(model, columns):
     """The model's predictions for every row at once, as a numpy array.
     `columns` is a list of predictor columns (lists of numbers)."""
+    if len(columns[0]) == 0:
+        return np.empty(0)                       # no rows, no predictions
     if isinstance(model, LispSplineModel):
-        return predict_all(model.inner_model, _spline_expand_columns(columns, model.predictor_specs))
+        return predict_all(model.inner_model,
+                           _spline_expand_columns(columns, model.predictor_specs, model.predictor_names))
     X = np.column_stack([np.asarray(col, dtype=np.float64) for col in columns])
     z = model.intercept + X @ np.asarray(model.coefficients, dtype=np.float64)
     return model.floor + (model.ceiling - model.floor) * _sigmoid_vec(z) if model.kind == "logistic" else z
@@ -1709,11 +1750,11 @@ def _spline_expand_row(values, specs, names=None):
     return row
 
 
-def _spline_expand_columns(columns, specs):
+def _spline_expand_columns(columns, specs, names=None):
     """columns: one column (list of n values) per original predictor.
     Returns the same expansion as _spline_expand_row, but column-wise."""
     n = len(columns[0]) if columns else 0
-    rows = [_spline_expand_row([col[i] for col in columns], specs) for i in range(n)]
+    rows = [_spline_expand_row([col[i] for col in columns], specs, names) for i in range(n)]
     n_features = len(rows[0]) if rows else 0
     return [[row[j] for row in rows] for j in range(n_features)]
 

@@ -179,6 +179,56 @@ class TestRegression(LispTestCase):
         self.assertAlmostEqual(float(c.items[1]), 3.0, places=3)
         self.assertAlmostEqual(self.run_lisp("(model-predict m (list 10 10))"), 51.0, places=2)
 
+    def test_predicting_many_rows_at_once(self):
+        # y = 1 + 2*a + 3*b
+        self.run_lisp("""
+          (define line (linear-regression #(1 2 3 4 5) #(3 5 7 9 11)))
+          (define a #(1 2 3 4 5 6))
+          (define b #(2 1 4 3 6 5))
+          (define m (linear-regression (list a b) (+ 1 (* 2 a) (* 3 b))))""")
+        self.assertEqual([round(v, 9) for v in self.run_lisp("(model-predict line #(10 20 30))").items], [21, 41, 61])
+        for x in ("(list #(10 20) #(10 0))",                         # a vector for each predictor
+                  '(list (cons "a" #(10 20)) (cons "b" #(10 0)))'):  # or (name . vector) pairs, as sqlite-query gives
+            self.assertEqual([round(v, 9) for v in self.run_lisp("(model-predict m %s)" % x).items], [51, 41], x)
+        # a number among the vectors is that predictor's value in every row
+        self.assertEqual([round(v, 9) for v in self.run_lisp("(model-predict m (list #(10 20) 0))").items], [21, 41])
+        self.assertEqual([round(v, 9) for v in self.run_lisp('(model-predict line (cons "x" #(1 2)))').items], [3, 5])
+        self.assertShows("(model-predict line #())", "#()")
+
+    def test_predicting_many_rows_gives_what_one_row_at_a_time_does(self):
+        self.run_lisp("""
+          (define x #(20 30 40 50 60 70 80 90))
+          (define kind #("own" "rent" "own" "rent" "own" "rent" "own" "rent"))
+          (define y #(9 15 33 38 52 58 74 77))
+          (define spline (spline-lad (list (cons "income" x) (cons "kind" kind)) y (list 2 'categorical)))
+          (define smooth (spline-regression (list x kind) y (list 3 'categorical) '() :smooth #t))
+          (define logistic (logistic-regression x #(0 0 1 0 1 0 1 1) :ceiling 0.9))
+          (define upper (quantile-regression x y 0.75))
+          (define on-dates (linear-regression (vector (date 2024 1 1) (date 2024 2 1) (date 2024 3 1)) #(1 2 3)))""")
+        for model, many, one_at_a_time in (
+                ("spline", '(list #(25 45 85) #("rent" "own" "rent"))', ['(list 25 "rent")', '(list 45 "own")', '(list 85 "rent")']),
+                ("smooth", '(list #(25 45 85) "own")', ['(list 25 "own")', '(list 45 "own")', '(list 85 "own")']),
+                ("logistic", "#(25 45 85)", ["25", "45", "85"]),
+                ("upper", "#(25 45 85)", ["25", "45", "85"]),
+                ("on-dates", "(vector (date 2024 4 1) (date 2024 5 1))", ["(date 2024 4 1)", "(date 2024 5 1)"])):
+            predictions = self.run_lisp("(model-predict %s %s)" % (model, many)).items.tolist()
+            self.assertEqual(len(predictions), len(one_at_a_time))
+            for prediction, x in zip(predictions, one_at_a_time):
+                self.assertAlmostEqual(prediction, self.run_lisp("(model-predict %s %s)" % (model, x)), places=12)
+
+    def test_predicting_many_rows_errors(self):
+        self.run_lisp("""
+          (define line (linear-regression #(1 2 3 4 5) #(3 5 7 9 11)))
+          (define m (linear-regression (list #(1 2 3 4) #(1 3 2 5)) #(1 2 4 4)))
+          (define spline (spline-regression (list (cons "income" #(20 30 40 50 60 70)) (cons "kind" #("own" "rent" "own" "rent" "own" "rent")))
+                                            #(9 15 33 38 52 58) (list 1 'categorical)))""")
+        self.assertLispError("(model-predict line (list #(1 2) #(3 4)))", "model-predict: model has 1 predictor(s), but 2 given")
+        self.assertLispError("(model-predict m #(1 2))", "model-predict: model has 2 predictor(s), but 1 given")
+        self.assertLispError("(model-predict m (list #(1 2) #(3 4 5)))",
+                             "model-predict: the vectors must all be the same length, a value for each row, not of lengths 2, 3")
+        self.assertLispError('(model-predict spline (list #(45 50) #("rent" "lease")))',
+                             "kind value 'lease' was not one of the categories")
+
     def test_weights_of_zero_exclude_an_observation(self):
         # the outlier at x=5 is weighted out, so the line through the rest is exact
         self.run_lisp("""

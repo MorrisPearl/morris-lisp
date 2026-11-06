@@ -3487,7 +3487,8 @@ All of the eight,
 `model-predict`, and `model-evaluate` accept **either a single vector of X
 values (one predictor) or a Lisp list of several vectors** — `(list x1 x2
 ...)` — for multiple predictors. Every predictor vector and the Y vector
-must be the same length. Predictors are standardized internally before
+must be the same length. (`model-predict` also takes one row's values,
+below.) Predictors are standardized internally before
 fitting (for numerical stability) and converted back to the original scale
 afterward, so this is transparent to you; date values anywhere a number is
 expected are silently converted to their ordinal day count.
@@ -3730,10 +3731,18 @@ predicting the quantile of `y` for every row.
 (define upper (quantile-regression x y 0.9))
 (define lower (quantile-regression x y 0.1))
 (list (format "{:.1f}" (model-intercept upper)) (format "{:.1f}" (model-intercept lower)))   ; => ("8.3" "-8.7")
+(plot-chart (list (list "data" x y :symbol "circle")       ; the band, shaded from one fit to the other
+                  (list "10th to 90th percentile" x (model-predict upper x) :fill (model-predict lower x)))
+            :title "The band that 80% of the points are in")
 ```
 (The noise is spread evenly from -10 to 10, so the 90th percentile is 8
 above the line `y = x / 2`, and the 10th, 8 below it: these 400 points
-give about that.)
+give about that.) `plot-chart`'s `:fill` shades from one series' values to
+another's, here from the 90th percentile's predictions down to the 10th's.
+
+The band shows how spread out the points are at each `x`, not how sure the
+fit is: more points won't make it narrower, only more exact. How sure the
+fit is shows in `model-report`'s standard errors.
 
 #### `(logistic-regression x y [weights] [:floor f :ceiling c :groups g])`
 Maximum-likelihood fit of `p = sigmoid(intercept + sum(coefficients[i] *
@@ -4313,20 +4322,38 @@ model.
 ```
 
 #### `(model-predict m x)`
-Predicts the fitted value at a new point. `x` may be a bare number or date
-when `m` has exactly one predictor, or `(list x1 x2 ...)` (in the same
-order the model was fit with) for a multi-predictor model — a
-single-predictor model accepts either form. Raises an error if the number
-of values given doesn't match the model's predictor count. Returns a plain
-number: the fitted value for `"linear"`/`"spline"` models, or a `[0, 1]`
-probability for `"logistic"`/`"spline-logistic"` models.
+What the model says `y` is, for one row or for many.
+
+- **One row:** `x` is a number (or a date, or a category) for a model of
+  one predictor, or `(list x1 x2 ...)`, one value for each predictor in the
+  order the model was fit with. The prediction is a number.
+- **Many rows:** `x` is a vector for a model of one predictor, or a list of
+  vectors, one for each predictor, just as the model was fit with. The
+  predictions are a vector, one for each row. A `(name . vector)` pair, as
+  `sqlite-query` gives a column, will do for a vector. A number in the
+  list, among the vectors, is that predictor's value in every row: hold
+  every predictor but one where it is, and see what the model says as that
+  one changes.
+
+The prediction is the fitted value, or, for a logistic model, the
+probability: between 0 and 1, or between its floor and ceiling. It is an
+error if `x` doesn't have a value for each of the model's predictors, or
+the vectors aren't all the same length.
 
 ```lisp
-(define m (linear-regression (list income age) rent))
-(model-predict m (list 50000 30))      ; two predictors -> a list
-(define m2 (linear-regression income rent))
-(model-predict m2 50000)               ; one predictor -> bare number is fine too
+(define a #(1 2 3 4 5 6))
+(define b #(2 1 4 3 6 5))
+(define m (linear-regression (list a b) (+ 1 (* 2 a) (* 3 b))))   ; y = 1 + 2a + 3b
+(model-predict m (list 10 10))                 ; => 51.0
+(model-predict m (list #(10 20) #(10 0)))      ; => #(51.0 41.0)
+(model-predict m (list #(10 20 30) 0))         ; => #(21.0 41.0 61.0)
+(define line (linear-regression a (+ 1 (* 2 a))))
+(model-predict line 10)                        ; => 21.0
+(model-predict line #(10 20))                  ; => #(21.0 41.0)
 ```
+
+A fitted curve for a chart is the model's predictions at many points:
+`(list "fitted" grid (model-predict m grid) :line #t)`.
 
 [`model_utils.lsp`](../lisp_interp/lib/model_utils.lsp)'s `(model->function m)` wraps this into
 an ordinary Lisp function, one argument per predictor, instead of a list:

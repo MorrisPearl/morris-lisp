@@ -129,7 +129,7 @@
   loan-data-weights loan-data-weights-set! loan-data? make-loan-data make-predictor model-curve freddie-loans--outcomes-by-period
   plot-rate-by-month freddie-loans--predicted-outcomes predictor-group-sql predictor-group-sql-set! predictor-knots
   predictor-knots-set! predictor-name predictor-name-set! predictor-sql predictor-sql-set! predictor? rate-by-month
-  rate-misses freddie-loans--model-predictions freddie-loans--calendar-months piece-on-path freddie-loans--piece-value freddie-loans--scheduled-balance-left)
+  rate-misses freddie-loans--calendar-months piece-on-path freddie-loans--piece-value freddie-loans--scheduled-balance-left)
 
 ; A default model and a severity model fitted to Freddie Mac's loans, from the same database
 (lazy-load "freddie_default.lsp"
