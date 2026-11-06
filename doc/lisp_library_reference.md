@@ -431,6 +431,17 @@ filing), `form` (`10-K`, `10-Q`, ...), `filed`, `frame` (the calendar
 period the SEC assigns it, as `CY2024Q3`), and `accession` (the filing's
 number). For anything the statements don't include.
 
+#### `(sec-values creds company concepts [:period "annual" :count 5])`
+Any concepts, laid out as `sec-financials` lays out the statements: a row per period (oldest first: `period-end`, `fiscal-year`,
+`fiscal-period`) and a column for each concept, named as the concept is. A balance (a value at a moment, such as `"Assets"`) is its value at
+the end of the period; a flow (such as `"Revenues"`) is its value for the period, worked out for a fourth quarter from the year less the
+nine months, as for the statements. A period or a concept the company has no value for is missing. `concepts` is a list of names as
+`sec-concepts` gives them, or one name. `vendor-financing`, in the macroeconomic models manual, is built on it.
+
+```lisp
+(sec-values creds "NVDA" '("Revenues" "EquitySecuritiesFvNi") :period "quarterly" :count 4)
+```
+
 #### `(sec-concepts creds company)`
 Every concept the company has reported: a table with its `taxonomy`,
 `concept`, `label`, `unit`, how many `facts`, and the end of the `first`

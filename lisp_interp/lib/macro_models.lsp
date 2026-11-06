@@ -406,7 +406,10 @@ dynare/types_model.inc chooses them; :wealth, a table from wealth-by-type, repla
             ("wealth_tax"           "wealth tax"            1)
             ("wealth_tax_revenue"   "tax revenue"           1)
             ("top1_wealth_lost"     "top 1% wealth lost"    1)
-            ("government_purchases" "government purchases"  1))
+            ("government_purchases" "government purchases"  1)
+            ("ai_investment"        "AI investment"         1)
+            ("ai_stocks"            "AI stocks"             1)
+            ("ai_productivity"      "AI productivity"       1))
           (map (lambda (group) (list (string-append "income_" (first group)) (string-append "income: " (second group)) 1))
                household-types)
           (map (lambda (group) (list (string-append "consumption_" (first group)) (string-append "spending: " (second group)) 1))
@@ -510,3 +513,118 @@ spending of the bottom 50% and of the top 1% (percent from normal), and what the
                 "spending: bottom 50%" (column "spending: bottom 50%")
                 "spending: top 1%" (column "spending: top 1%")
                 "tax revenue" (column "tax revenue"))))
+
+; ===========================================================================
+; A shock to the AI companies (dynare/types_model.inc)
+; ===========================================================================
+;
+;   (ai-bust-scenarios)                                   the three scenarios: a moratorium, a solvency crisis, demand more elastic than thought
+;   (define busts (ai-bust-models))                       the model run for each of them: a list of (label result)
+;   (ai-bust-responses (second (first busts)))            a table: what happens, quarter by quarter, in one scenario
+;   (compare-ai-busts busts)                              a table: the scenarios side by side, after one, two and five years
+;   (compare-ai-busts (ai-bust-parts (second (second (ai-bust-scenarios)))))   a table: one scenario, and each of its parts alone
+;   (plot-ai-busts busts)                                 charts: the scenarios side by side
+;   (plot-ai-bust (second (first busts)))                 charts: one scenario, with each group of households
+;   (ai-investment-data creds)                            the data on the boom: investment in computers, from the BEA (FRED)
+;
+; Each scenario is a list of the ai_ parameters of types_model.inc; any of them can be changed, and any other parameter of the model, as
+; types-model's :parameters changes them. The section "A shock to the AI companies" of the manual explains the parameters and the scenarios.
+
+(define (ai-bust-scenarios)
+  "The three scenarios, as a list of (label parameters): the parameters are the ai_ parameters of dynare/types_model.inc that make each
+scenario what it is (the others keep their values there). Every number is an assumption, said in the manual's section \"A shock to the AI
+companies\":
+  moratorium          no new data centers: AI investment falls 0.75% of GDP, slowly (projects underway are finished, and some of the
+                      investment goes abroad); AI shares fall 15%; lenders don't mind.
+  solvency crisis     an AI company can't pay for the chips and the leases it committed to: AI investment falls 1% of GDP, fast; AI
+                      shares fall 40%; the credit spread rises 1 point a year (losses at private-credit funds and their lenders).
+  elastic demand      AI is sold near its cost, because buyers switch to whatever is cheapest: AI investment falls 0.5% of GDP; AI
+                      shares fall 35%; the spread rises a quarter point; the firms that use AI get 0.2% more productive, as it is cheaper."
+  (list (list "moratorium"
+              '((ai_investment_cut . 0.75) (ai_investment_delay . 0.8) (ai_stock_fall . 15) (ai_credit_stress . 0)
+                (ai_productivity_gain . 0)))
+        (list "solvency crisis"
+              '((ai_investment_cut . 1.0) (ai_investment_delay . 0.5) (ai_stock_fall . 40) (ai_credit_stress . 1.0)
+                (ai_productivity_gain . 0)))
+        (list "elastic demand"
+              '((ai_investment_cut . 0.5) (ai_investment_delay . 0.7) (ai_stock_fall . 35) (ai_credit_stress . 0.25)
+                (ai_productivity_gain . 0.2)))))
+
+(define (ai-bust-models &key (scenarios (ai-bust-scenarios)) (parameters '()) (quarters 20))
+  "The four-household model run for each scenario: a list of (label result), for compare-ai-busts and plot-ai-busts. scenarios is a list of
+(label parameters), as ai-bust-scenarios gives it; :parameters, a list ((name . value) ...), changes any parameter in every scenario:
+'((ai_domestic_share . 0.3)) is a world where more of the AI investment is imported."
+  (map (lambda (scenario)
+         (list (first scenario) (types-model :parameters (append (second scenario) parameters) :quarters quarters)))
+       scenarios))
+
+(define (ai-bust-parts scenario-parameters &key (parameters '()) (quarters 20))
+  "One scenario, and each of its parts alone, as a list of (label result) for compare-ai-busts and plot-ai-busts: \"all\", then
+\"investment only\" (the fall in AI investment, nothing else), \"stocks only\" (the fall in AI shares), \"credit only\" (lenders' fears)
+and \"productivity only\" (cheaper AI for other firms), leaving out a part the scenario doesn't have. scenario-parameters is the second of
+an entry of ai-bust-scenarios. The model is linear, so the parts add up to all of it: the table says which part does what."
+  (let* ((size (lambda (name) (cdr (assoc name scenario-parameters))))
+         (zero '((ai_investment_cut . 0) (ai_stock_fall . 0) (ai_credit_stress . 0) (ai_productivity_gain . 0)))
+         (only (lambda (name) (append scenario-parameters zero (list (cons name (size name))))))
+         (parts (filter (lambda (part) (not (= (size (second part)) 0)))
+                        '(("investment only" ai_investment_cut) ("stocks only" ai_stock_fall)
+                          ("credit only" ai_credit_stress) ("productivity only" ai_productivity_gain)))))
+    (ai-bust-models :scenarios (cons (list "all" scenario-parameters)
+                                     (map (lambda (part) (list (first part) (only (second part)))) parts))
+                    :parameters parameters :quarters quarters)))
+
+(define (ai-bust-responses result)
+  "What happens, quarter by quarter, after the AI bust of a result of types-model (ai-bust-models makes them): a table with the columns of
+types-crash-responses, and \"AI investment\" (percent of GDP from normal), \"AI stocks\" and \"AI productivity\" (percent)."
+  (macro-models--responses result "ai_shock" 1 types-model-variables))
+
+(define (compare-ai-busts results &key (quarters '(1 4 8 20)))
+  "Scenarios side by side: results is a list of (label result), as ai-bust-models makes it. A row for each scenario and each of the quarters
+quarters after the bust starts (4, 8 and 20 are one, two and five years): GDP, consumption, the economy's own investment (not the AI
+companies'), the spending of the bottom 50% and of the top 1% (percent from normal), the Fed's rate and the credit spread (points a year),
+and AI investment (percent of GDP). The last row of a scenario's GDP column, compared with its AI investment, says how much of the bust the
+rest of the economy makes up."
+  (let* ((rows (apply append (map (lambda (entry)
+                                    (let ((table (ai-bust-responses (second entry))))
+                                      (map (lambda (quarter) (list (first entry) quarter table)) quarters)))
+                                  results)))
+         (column (lambda (name) (vector-round (list->vector (map (lambda (row) (vector-ref (table-column (third row) name) (- (second row) 1))) rows)) 2))))
+    (make-table "scenario" (list->vector (map first rows))
+                "quarter" (list->vector (map second rows))
+                "GDP" (column "GDP")
+                "consumption" (column "consumption")
+                "other investment" (column "investment")
+                "spending: bottom 50%" (column "spending: bottom 50%")
+                "spending: top 1%" (column "spending: top 1%")
+                "Fed rate" (column "Fed rate")
+                "credit spread" (column "credit spread")
+                "AI investment" (column "AI investment"))))
+
+(define (plot-ai-busts results &key (title "After a shock to the AI companies"))
+  "Charts of scenarios side by side, results a list of (label result) as ai-bust-models makes it: GDP, consumption, the economy's own
+investment, the Fed's rate, the credit spread and AI investment, a panel each."
+  (macro-models--plot results ai-bust-responses
+                      '(("GDP" "percent") ("consumption" "percent") ("investment" "percent") ("Fed rate" "points a year")
+                        ("credit spread" "points a year") ("AI investment" "percent of GDP"))
+                      title
+                      "quarters (1 is the quarter the bust starts)"))
+
+(define (plot-ai-bust result &key (title "After a shock to the AI companies, by group of households"))
+  "Charts of one scenario (a result of types-model, as ai-bust-models makes them): the spending and the income of each group of households,
+GDP, the Fed's rate, the economy's own investment and AI investment, a panel each."
+  (macro-models--plot-groups (ai-bust-responses result)
+                             '(("GDP" "percent") ("Fed rate" "points a year") ("investment" "percent") ("AI investment" "percent of GDP"))
+                             title
+                             "quarters (1 is the quarter the bust starts)"))
+
+(define (ai-investment-data creds &key (start (date 2019 1 1)))
+  "The data on the AI boom, from the BEA's national accounts (through FRED), by the quarter from start: GDP and business investment in
+computers and peripheral equipment (B935RC1Q027SBEA), in billions of dollars a year, and that investment as a percent of GDP. Servers for data
+centers are most of it now; before the boom it was about half a percent of GDP. (Data-center buildings, power and software are in other
+series, and much of the equipment is imported: see the manual.)"
+  (let* ((fred (fred-table creds '("GDP" "B935RC1Q027SBEA") :frequency "quarterly" :start-date start))
+         (computers (table-column fred "B935RC1Q027SBEA")))
+    (make-table "date" (table-column fred "date")
+                "GDP" (table-column fred "GDP")
+                "computer investment" computers
+                "percent of GDP" (vector-round (vector-mul (vector-div computers (table-column fred "GDP")) 100) 2))))

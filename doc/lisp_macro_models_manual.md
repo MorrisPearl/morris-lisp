@@ -60,6 +60,13 @@ structured deals, forecasting questions, and simulated paths of rates and prices
   - [Running it](#running-it-3)
   - [What it says, and what is assumption](#what-it-says-and-what-is-assumption)
   - [What this model leaves out](#what-this-model-leaves-out-1)
+- [A shock to the AI companies](#a-shock-to-the-ai-companies)
+  - [How big the boom is](#how-big-the-boom-is)
+  - [How the bust works in the model](#how-the-bust-works-in-the-model)
+  - [Running it](#running-it-4)
+  - [What it says](#what-it-says-1)
+  - [Who pays for the AI companies' purchases](#who-pays-for-the-ai-companies-purchases)
+  - [What this model can't say](#what-this-model-cant-say)
 - [Reference](#reference)
   - [Setting up Dynare](#setting-up-dynare)
   - [The functions](#the-functions)
@@ -879,6 +886,201 @@ What to take from it, and what not to:
 - **A linear model.** The tax enters as a small change around an economy without it; a tax of a few percent is about as large as that
   is safe. For the long-run questions above, Guvenen and others (*Use It or Lose It*, 2023) use models with many different households.
 
+## A shock to the AI companies
+
+What happens to the rest of the economy if the companies building artificial intelligence stop spending? Three ways it could happen:
+
+- **A moratorium** on building new data centers.
+- **A solvency crisis**: a company can't pay for the chips it committed to buy or the data centers it committed to lease.
+- **Demand more elastic than thought**: buyers switch to whatever AI is cheapest, so it sells near its cost, and the companies can't earn
+  back what they spent.
+
+The four-household model has a shock for this, the **AI bust** (`ai_shock` in `types_model.inc`), made of four parts, each a parameter.
+This section says what they are, what the model says about the three scenarios, which of its answers come from assumptions, and what a
+model like this can't say about the question at all.
+
+### How big the boom is
+
+Business investment in computers and peripheral equipment (the BEA's national accounts, through FRED: most of it is now servers for data
+centers) was about $150 billion a year in 2023, half a percent of GDP. In the third quarter of 2026 it was $504 billion a year, 1.5% of
+GDP. So the boom in this one line is about 1% of GDP, before the data-center buildings, the power plants and lines, and the software:
+
+```lisp
+(ai-investment-data creds)            ; GDP, computer investment, and it as a percent of GDP, by the quarter since 2019
+```
+
+Much of that equipment is imported: chips from Taiwan and Korea, servers assembled in Mexico and Taiwan. GDP counts what is made in the
+US, so imports are subtracted from it; what reaches US GDP is the buildings, the power equipment, the installation, and the design and
+profits of US chip companies. Nobody publishes that share; the model takes it to be half (`ai_domestic_share`).
+
+### How the bust works in the model
+
+The bust starts at 1 and fades slowly (`ai_bust_persistence`, 0.98 a quarter: two thirds of it is left after five years). It has four parts:
+
+1. **AI investment falls** by `ai_investment_cut` percent of GDP. It falls part of the way each quarter (`ai_investment_delay`), as
+   projects already underway are finished or abandoned. Only `ai_domestic_share` of it is spending on things made in the US. The model's
+   own investment (firms' capital) is separate, and responds to interest rates and credit as before.
+2. **AI shares fall** by `ai_stock_fall` percent, at once. They are `ai_market_share` (30%) of the stock market, and households own them as
+   they own other stocks: the top 1% half of them, the bottom 50% almost none. So a 40% fall is a 12% fall of the market, and each group's
+   spending falls by its wealth effect, as in a crash.
+3. **Lenders grow fearful**: `ai_credit_stress` points a year are added to the credit spread, and fade as lenders' fears do (0.9 a quarter).
+   This stands for the losses of private-credit funds, insurers and banks that lent against data centers and chips, and for lenders'
+   caution afterwards. The model can't work out how big that is from the debts: it is an input.
+4. **AI gets cheaper for the firms that use it**: their productivity rises by `ai_productivity_gain` percent, part of the way each
+   quarter (`ai_productivity_delay`). This is the other side of AI selling near its cost.
+
+The three scenarios (`ai-bust-scenarios`) are sets of these numbers. Every one is an assumption:
+
+| Scenario | AI investment cut (% of GDP) | How fast | AI shares | Credit spread | Productivity |
+|---|---|---|---|---|---|
+| moratorium | 0.75 | slowly (20% of the way a quarter) | -15% | none | none |
+| solvency crisis | 1.0 | fast (half the way a quarter) | -40% | +1 point a year | none |
+| elastic demand | 0.5 | 30% of the way a quarter | -35% | +0.25 | +0.2% |
+
+The moratorium cuts investment slowly and by less than the boom, because projects underway are finished and part of the investment goes
+abroad (when Singapore stopped new data centers from 2019 to 2022, they were built across the border in Malaysia and Indonesia instead).
+The solvency crisis is like the telecom bust of 2001–2002: the Nasdaq fell much further than 40%, but the AI companies include
+Microsoft, Alphabet and Amazon, which pay for most of their building from what they earn. The credit spread (Baa corporate bonds over
+Treasuries) rose about a point then. In the elastic-demand case, AI that sells near its cost is cheaper for the firms that use it: if they
+spend $100 billion a year on it and the price halves, they save 0.15% of GDP, and use more of it.
+
+### Running it
+
+```lisp
+(define busts (ai-bust-models))       ; the model, run for each scenario: a list of (label result)
+(compare-ai-busts busts)              ; a table: the scenarios side by side, after 1, 4, 8 and 20 quarters
+(plot-ai-busts busts)                 ; charts: the same
+(plot-ai-bust (second (second busts)))   ; charts: the solvency crisis, with each group of households
+
+; Each part of a scenario alone: the model is linear, so the parts add up to the whole
+(compare-ai-busts (ai-bust-parts (second (second (ai-bust-scenarios)))))
+
+; Any parameter changed in every scenario, or a scenario of your own
+(ai-bust-models :parameters '((ai_domestic_share . 0.3)))
+(ai-bust-models :scenarios (list (list "a mild bust" '((ai_investment_cut . 0.3) (ai_stock_fall . 10)))))
+```
+
+The notebook `lisp_interp/notebooks/ai_bust.ipynb` goes through these steps, a cell each.
+
+### What it says
+
+Percent from normal, except the Fed's rate and the credit spread (points a year) and AI investment (percent of GDP). Quarter 1 is the
+quarter the bust starts:
+
+| Scenario | Quarter | GDP | Consumption | Other investment | Bottom 50% spending | Top 1% spending | Fed rate | Credit spread | AI investment |
+|---|---|---|---|---|---|---|---|---|---|
+| moratorium | 1 | +0.06 | +0.19 | -0.07 | +0.34 | -2.0 | +0.05 | 0 | -0.15 |
+| | 4 | -0.08 | +0.17 | +0.01 | +0.19 | -1.8 | +0.02 | 0 | -0.43 |
+| | 20 | -0.07 | +0.21 | +0.16 | +0.15 | -1.1 | -0.09 | 0 | -0.55 |
+| solvency crisis | 1 | -0.91 | -0.06 | -3.07 | -0.30 | -6.2 | -0.46 | +1.16 | -0.50 |
+| | 4 | -0.31 | +0.32 | -0.60 | +0.36 | -5.0 | -0.56 | +0.73 | -0.90 |
+| | 20 | -0.09 | +0.19 | +0.54 | +0.32 | -3.3 | -0.17 | +0.03 | -0.70 |
+| elastic demand | 1 | -0.28 | -0.07 | -0.76 | +0.16 | -5.3 | -0.22 | +0.29 | -0.15 |
+| | 4 | -0.01 | +0.17 | +0.17 | +0.46 | -4.6 | -0.35 | +0.19 | -0.37 |
+| | 20 | +0.14 | +0.27 | +0.52 | +0.48 | -3.1 | -0.36 | +0.04 | -0.36 |
+
+Each part of the solvency crisis alone (`ai-bust-parts`):
+
+| Part | Quarter | GDP | Consumption | Other investment | Top 1% spending | Fed rate |
+|---|---|---|---|---|---|---|
+| investment only | 1 | +0.09 | +0.45 | -0.10 | +0.6 | +0.10 |
+| | 4 | -0.17 | +0.34 | +0.02 | +0.7 | +0.05 |
+| stocks only | 1 | -0.17 | -0.27 | +0.26 | -6.2 | -0.18 |
+| | 4 | +0.04 | -0.09 | +0.55 | -5.7 | -0.28 |
+| credit only | 1 | -0.83 | -0.24 | -3.23 | -0.6 | -0.38 |
+| | 4 | -0.18 | +0.07 | -1.17 | +0.1 | -0.33 |
+
+And the same scenarios with one assumption changed (GDP, percent from normal):
+
+| Change | Quarter 1 | Quarter 4 | Quarter 20 |
+|---|---|---|---|
+| solvency crisis, as assumed | -0.91 | -0.31 | -0.09 |
+| ... credit spread +2 points, not 1 | -1.75 | -0.49 | -0.12 |
+| ... the Fed slow to cut (`fed_smoothing` 0.95, not 0.8) | -1.67 | -0.39 | -0.11 |
+| ... 70% of AI investment made in the US, not 50% | -0.88 | -0.38 | -0.13 |
+| ... the bust fades faster (0.9 a quarter, not 0.98) | -1.30 | -0.23 | +0.02 |
+| moratorium, 30% made in the US | +0.01 | -0.04 | -0.03 |
+| moratorium, 70% made in the US | +0.11 | -0.11 | -0.12 |
+| elastic demand, no productivity gain | -0.28 | -0.08 | -0.01 |
+| elastic demand, a 0.5% productivity gain | -0.28 | +0.09 | +0.37 |
+
+What to take from it, and what not to:
+
+- **The credit part is what makes a recession.** Alone, the fall in AI investment and the fall in AI shares do little to GDP; a point on
+  the credit spread takes 0.8% off GDP in the first quarter, through the rest of the economy's investment (down 3%). The solvency crisis is
+  the dangerous scenario because it is the one with losses for lenders, and how bad it is depends almost entirely on how much lenders'
+  fear rises (`ai_credit_stress`) and how fast the Fed cuts. Both are inputs to the model, not results. This is the 2001 pattern:
+  investment fell, the Fed cut from 6.5% to 1.75%, and consumption kept growing.
+- **A slow, foreseen cut in AI spending is the kind of thing the Fed offsets.** The moratorium takes less than a tenth of a percent off GDP.
+  Part of that is the model's assumption that half the investment is imported, but even at 70% made in the US the effect is about 0.1%.
+  The resources the AI companies stop using go to other things.
+- **The fall in AI shares mostly moves spending between groups.** The top 1%, which owns half the stocks, spends 5–6% less in the
+  solvency crisis; the bottom half, which owns almost none, spends a little more, as interest rates fall. That is the four-household
+  model's strongest kind of result: it follows from who owns what (the Fed's data).
+- **In the elastic-demand case the rest of the economy can come out ahead.** It is a transfer from the AI companies' shareholders (whose
+  shares fall) to the firms and people who use AI (who pay less for it). After five years GDP is higher, if cheaper AI raises
+  productivity; how much is an assumption (from -0.01% with no gain to +0.37% with a 0.5% gain).
+- **The model's households spend sooner than real ones would.** When AI investment falls and nothing else does, consumption rises at once
+  (+0.45% in the first quarter). Two things cause it: the AI investment gives the model's households nothing back in these years (its
+  servers don't make the model's goods), so less of it leaves more for them, as a cut in government purchases would; and savers in a
+  model like this respond at once to interest rates many years ahead. Real households would take longer, and workers who built data
+  centers would take time to find other work, so the first quarters are more hopeful here than they would be.
+
+### Who pays for the AI companies' purchases
+
+The solvency crisis hurts lenders because much of the building is paid for with borrowed money: Oracle's bonds, private-credit funds
+that lend against data centers and chips, and the chip makers themselves. `vendor-financing` shows the last, for any company, from what it
+reports to the SEC: the stakes it buys in other companies (often its customers), the gains it books when they rise, and the debts of others
+it guarantees, beside its revenue (billions of dollars):
+
+```lisp
+(vendor-financing creds "NVDA")
+```
+
+For Nvidia, in the quarters to July 2026 (its fiscal year 2027 starts at the end of January 2026):
+
+| Quarter ending | Revenue | Private stakes | Public stakes | New money in stakes | Per dollar of sales | Gains on stakes | Share of pretax income | Guarantees |
+|---|---|---|---|---|---|---|---|---|
+| 2025-10-26 | 57.0 | 8.2 | | | | 1.4 | 4% | 0.9 |
+| 2026-01-25 | 68.1 | 22.3 | 12.9 | | | 5.5 | 11% | |
+| 2026-04-26 | 81.6 | 42.3 | 30.2 | 21.5 | 26 cents | 15.9 | 23% | |
+| 2026-07-26 | 96.2 | 47.9 | 42.8 | 10.3 | 11 cents | 7.8 | 11% | 108.5 |
+
+So, in the first half of its fiscal year 2027, Nvidia put about 18 cents into stakes in other companies for each dollar of its sales,
+and the rise in the value of those stakes was 11% to 23% of its income before taxes. Its 10-Q for that quarter (`sec-filings`,
+`sec-filing-text`) says more than the numbers do:
+
+- The stakes are "in AI model makers, infrastructure financiers, and other private companies": $99 billion in all, with $25 billion more
+  committed. Not all of them are customers (a stake in Intel is not a purchase of Nvidia's chips), so 18 cents is an upper limit on the
+  part of its sales paid for with its own money, and a rough one: a customer that gets money from Nvidia also gets it from others.
+- It guarantees $108.5 billion of others' obligations, $105 billion of it for leases of data centers being built in Ohio for OpenAI, under
+  which Nvidia pays the landlord if OpenAI doesn't. These begin as the buildings are finished, from 2028.
+- It has agreed to buy $36 billion of computing over about six years from "AI clouds" that buy its chips, if they can't sell it to others.
+- It gives some customers up to a year to pay.
+
+This is vendor financing, the same thing the makers of telecom equipment (Lucent, Nortel) did for their customers in the late 1990s.
+For the model, it means two things: in a solvency crisis, the chip maker's own shares fall with its customers' (it owns their shares and
+stands behind their leases), which is part of `ai_stock_fall`; and the gains on its stakes, a fifth of its income in one quarter, are
+profits that a fall in its customers' value would take back.
+
+### What this model can't say
+
+The model is a way to add up a few channels on a common footing (spending, share prices, credit, the Fed, and who owns what) and to see
+which of them matters. It is not a model of the AI industry, and these are outside it:
+
+- **One good.** The model's economy makes one thing. It can't say what happens to electricity prices, to the utilities that built for data
+  centers that won't come, to construction workers in Virginia or Ohio, or to the price of memory chips for phones. Those were the most
+  concrete parts of the question, and they need a model with several sectors, or no model: the utilities' own filings say more.
+- **Defaults are inputs.** A linear model can't have a cascade, where one company's failure causes another's. How much credit stress a
+  solvency crisis causes is `ai_credit_stress`, set by hand; nothing in the model connects it to the size of the debts.
+- **No rest of the world.** Imports are a fixed share of AI investment. What happens in Taiwan and Korea, where the chips are made, or to
+  the dollar, is not in it.
+- **AI capital makes nothing.** The servers and buildings in AI investment don't add to what the model's economy makes. That is right for
+  a bust in which they turn out to be worth little, and wrong for one in which they keep working at a lower price.
+- **Forward-looking households.** As above: the model's savers respond to interest rates far in the future, at once.
+- **The zero lower bound.** The Fed is free to cut as far as its rule says. With its rate at 3.6% to 3.9% in 2026, that is reasonable for these
+  scenarios; it would not be for a bust that came after the Fed had already cut to zero.
+
 ## Reference
 
 ### Setting up Dynare
@@ -997,6 +1199,40 @@ makes the top 1%.
 The same tax under different assumptions: `results` is a list of `(label result)`. A row for each result and each of the quarters
 `q` (`(4 20 40)`, unless it says): GDP, investment, consumption, the spending of the bottom 50% and of the top 1%, and the revenue.
 
+#### `(ai-bust-scenarios)`
+The three AI scenarios, as a list of `(label parameters)`: `"moratorium"`, `"solvency crisis"` and `"elastic demand"`, each with the `ai_`
+parameters of `types_model.inc` that make it what it is. See [A shock to the AI companies](#a-shock-to-the-ai-companies).
+
+#### `(ai-bust-models [:scenarios s :parameters p :quarters n])`
+The four-household model run for each scenario (those of `ai-bust-scenarios`, or `s`, a list of `(label parameters)`): a list of
+`(label result)`. `:parameters` changes any parameter in every scenario; `:quarters` is 20 unless it says.
+
+#### `(ai-bust-parts scenario-parameters [:parameters p :quarters n])`
+One scenario and each of its parts alone (`"all"`, `"investment only"`, `"stocks only"`, `"credit only"`, `"productivity only"`, leaving
+out a part it doesn't have), as a list of `(label result)`. The parts add up to the whole.
+
+#### `(ai-bust-responses result)`
+What happens after the AI bust of a result, quarter by quarter, as a table with the columns of `types-crash-responses` and `AI investment`
+(percent of GDP), `AI stocks` and `AI productivity` (percent).
+
+#### `(compare-ai-busts results [:quarters q])`
+Scenarios side by side: a row for each `(label result)` and each of the quarters `q` (`(1 4 8 20)`, unless it says): GDP, consumption,
+other investment, the spending of the bottom 50% and the top 1%, the Fed's rate, the credit spread, and AI investment.
+
+#### `(plot-ai-busts results [:title t])`
+Charts of scenarios side by side: GDP, consumption, other investment, the Fed's rate, the credit spread and AI investment.
+
+#### `(plot-ai-bust result [:title t])`
+Charts of one scenario: the spending and the income of each group of households, GDP, the Fed's rate, other investment and AI investment.
+
+#### `(ai-investment-data creds [:start d])`
+GDP and business investment in computers and peripheral equipment (FRED's `B935RC1Q027SBEA`), billions of dollars a year, and the
+investment as a percent of GDP, by the quarter from `d` (2019, unless it says).
+
+#### `(vendor-financing creds ticker [:count n])`
+A company's stakes in other companies, the gains on them and the debts of others it guarantees, beside its revenue, for the last `n`
+quarters (8, unless it says), from the SEC (`sec-values`); see [Who pays for the AI companies' purchases](#who-pays-for-the-ai-companies-purchases).
+
 #### `(dynare-run model-file [:parameters p :macros m :data table :directory d :echo #t :timeout seconds])`
 Runs Dynare on any model file, for models of your own. `model-file` is a `.mod` file, or the name of one in `lisp_interp/dynare/`.
 The files of its folder (`.mod`, `.inc`, `.m`) are copied into a new folder, or `:directory`, and Dynare runs there; the folder is kept,
@@ -1029,7 +1265,7 @@ In `lisp_interp/dynare/`:
 | `oil_irfs.mod` | the model's responses to each shock, for its calibrated (or given) parameters |
 | `oil_estimate.mod` | the model estimated from `data.csv`: the observed variables, the priors, and the estimation's settings |
 | `crash_model.inc`, `crash_irfs.mod`, `crash_estimate.mod` | the same three for the stock market crash model |
-| `types_model.inc`, `types_irfs.mod` | the crash model with four kinds of households, and a wealth tax on the top 1% (no estimate) |
+| `types_model.inc`, `types_irfs.mod` | the crash model with four kinds of households, a wealth tax on the top 1%, and a shock to the AI companies (no estimate) |
 | `export_results.m` | run by `dynare-run` after Dynare, to write what it found for the Lisp side to read |
 
 To write a model of your own, start from a copy of these: Dynare's own manual (<https://www.dynare.org/manual/>) describes the language,

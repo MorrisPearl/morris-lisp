@@ -24,6 +24,7 @@ _RISKY_BLOCK_WORDS = (
     "dynare-run", "oil-model", "oil-shock-responses", "plot-oil-shock", "show-oil-estimates",     # these need Octave and Dynare
     "crash-model", "stock-crash-responses", "plot-stock-crash", "show-crash-estimates",
     "wealth-by-type", "types-model", "types-crash-", "plot-types-crash", "wealth-tax-responses", "plot-wealth-tax", "compare-wealth-taxes",
+    "ai-bust", "compare-ai-busts", "plot-ai-bust", "ai-investment-data", "vendor-financing",
 )
 
 

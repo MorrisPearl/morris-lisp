@@ -205,6 +205,9 @@ out, as [section 6](#6-putting-sources-together) shows.
 | A company's income statement, balance sheet, or cash flows | `(sec-income-statement creds "AAPL")`, `(sec-balance-sheet creds "AAPL")`, `(sec-cash-flow-statement creds "AAPL")` | SEC |
 | All three statements, laid out for working out margins and returns | `(sec-financials creds "KO")` | SEC |
 | Any other number a company reports | `(sec-concepts creds "AAPL")` to find it, then `sec-facts` | SEC |
+| Any numbers a company reports, a row per quarter or year | `(sec-values creds "NVDA" '("Revenues" "EquitySecuritiesFvNi") :period "quarterly")` | SEC |
+| A company's stakes in other companies (often its customers), the gains on them and its guarantees, beside its revenue | `(vendor-financing creds "NVDA")` | SEC |
+| Business investment in computers (the AI boom), and as a percent of GDP | `(ai-investment-data creds)` | FRED (BEA) |
 | What a company writes in its filings, and how negative or uncertain it sounds | `(sec-filings creds "AAPL")`, `sec-filing-text`, `(filing-tone creds "AAPL" :section "risk-factors")` | SEC; word lists from Loughran and McDonald |
 | Stock, ETF, option, futures, and crypto prices now | `(tastytrade-quotes creds '("SPY" "QQQ"))` | tastytrade |
 | A stock's or ETF's daily prices, for years | `(schwab-price-history creds "AAPL")` | Schwab |
@@ -543,7 +546,7 @@ borders drawn over it:
 | `census-shapes`, `plot-map` | Outlines of places, and maps of them | Census | [Maps](lisp_library_reference.md#maps) |
 | `fred-table` | Any FRED series, by date | FRED | [FRED](lisp_library_reference.md#fred-federal-reserve-bank-of-st-louis-data) |
 | `http-get-json`, `http-get-csv`, `http-get-text` | Anything at a web address | any website | [Downloading data from the web](lisp_library_reference.md#downloading-data-from-the-web) |
-| `sec-income-statement`, `sec-balance-sheet`, `sec-cash-flow-statement`, `sec-financials`, `sec-facts`, `sec-concepts`, `sec-company` | Companies' financial statements | SEC | [SEC financial statements](lisp_library_reference.md#sec-financial-statements) |
+| `sec-income-statement`, `sec-balance-sheet`, `sec-cash-flow-statement`, `sec-financials`, `sec-values`, `sec-facts`, `sec-concepts`, `sec-company` | Companies' financial statements | SEC | [SEC financial statements](lisp_library_reference.md#sec-financial-statements) |
 | `sec-filings`, `sec-filing-text`, `text-tone`, `filing-tone` | What companies write in their filings, and its tone | SEC | [SEC filings](lisp_library_reference.md#sec-filings-what-companies-write) |
 | `fdic-find-bank`, `fdic-balance-sheet`, `fdic-income-statement`, `fdic-ratios`, `fdic-financials`, `fdic-get`, `fdic-fields` | Banks' financial reports | FDIC | [FDIC bank data](lisp_library_reference.md#fdic-bank-data) |
 | `tastytrade-quotes`, `tastytrade-option-chain`, `tastytrade-futures-curve`, `tastytrade-get`, `sofr-calibration-data` | Market prices, option chains, futures curves | tastytrade | [tastytrade](lisp_library_reference.md#tastytrade-real-broker-data) |

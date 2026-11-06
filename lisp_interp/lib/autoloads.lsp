@@ -323,5 +323,9 @@
   plot-oil-shock show-oil-estimates
   crash-model crash-model-estimate crash-model-data crash-model-responses stock-crash-responses plot-stock-crash show-crash-estimates
   wealth-by-type types-model types-model-responses types-crash-responses types-crash-losses plot-types-crash
-  wealth-tax-responses plot-wealth-tax compare-wealth-taxes)
+  wealth-tax-responses plot-wealth-tax compare-wealth-taxes
+  ai-bust-scenarios ai-bust-models ai-bust-parts ai-bust-responses compare-ai-busts plot-ai-busts plot-ai-bust ai-investment-data)
 (lazy-load "industry_returns.lsp" stock-returns-update industry-returns industry-variation)
+
+; A company's stakes in other companies (often its customers), the gains on them and its guarantees, beside its revenue, from the SEC
+(lazy-load "vendor_financing.lsp" vendor-financing)

@@ -23,6 +23,12 @@
 // which is avoided; the revenue goes back to households, or is spent, or retires debt (the caller says); and the top 1% spends less as it
 // gets poorer. Each assumption is a parameter, below, with what it is based on.
 //
+// The model also has an AI BUST: a fall in the spending and the share prices of the companies building artificial intelligence, zero
+// unless the caller sets its size (the ai_shock). The section "A shock to the AI companies" of the manual explains it; in short, the AI
+// companies' investment falls (only the part of it made in the US counts in GDP: the rest is imported), their shares fall (households
+// own them as they own other stocks), lenders may grow fearful (the credit spread), and the AI that other firms use may get cheaper
+// (their productivity). Each part is a parameter; the Lisp function ai-bust-scenarios gives three sets of them.
+//
 // Each group's share of the nation's spending, of its wages and of its stocks are the weights below. Every variable is a percent
 // difference from its normal level, as in crash_model.inc; each group's consumption and income are percent differences from that
 // group's own normal.
@@ -55,6 +61,10 @@ var
     wealth_tax_revenue        // what the tax collects, after what is avoided: percent of GDP
     top1_wealth_lost          // how much poorer the tax has made the top 1%: percent of its wealth
     government_purchases      // what the government buys with the revenue: percent of GDP
+    ai_bust                   // how much of the AI bust is still going on: 1 when it starts, fading slowly (0 in normal times)
+    ai_investment             // the AI companies' investment (data centers, chips, servers): percent of GDP, from normal
+    ai_stocks                 // the value of the AI companies' shares: percent from normal
+    ai_productivity           // what cheaper AI adds to other firms' productivity: percent
     consumption_bottom50      // the spending of the bottom half
     consumption_next40        // ... of the 50th to 90th percentile
     consumption_next9         // ... of the 90th to 99th
@@ -69,6 +79,7 @@ varexo
     fed_shock                 // a surprise in the Fed's rate (monetary policy)
     cost_push_shock           // a surprise in inflation not explained by costs (a "cost-push" shock)
     wealth_tax_shock          // a surprise in the wealth tax: a rise in the rate, in points a year
+    ai_shock                  // the AI bust: its size is in the ai_ parameters, so its typical size is 1
 ;
 
 parameters
@@ -85,6 +96,8 @@ parameters
     wealth_tax_shock_size wealth_tax_persistence tax_avoidance wealth_rebuilding wealth_spending_top1 tax_from_firm_equity
     household_wealth_to_gdp wealth_share_top1
     revenue_to_bottom50 revenue_to_next40 revenue_to_next9 revenue_to_top1 revenue_to_purchases
+    ai_bust_persistence ai_investment_cut ai_investment_delay ai_domestic_share ai_stock_fall ai_market_share ai_credit_stress
+    ai_productivity_gain ai_productivity_delay
 ;
 
 // The calibration of everything but the households: as in crash_model.inc.
@@ -166,6 +179,18 @@ revenue_to_next9            = 0.09;
 revenue_to_top1             = 0.01;
 revenue_to_purchases        = 0;        // the part spent on goods and services, instead
 
+// The AI bust. All zero but the shares and the speeds: the caller (ai-bust-scenarios) gives a scenario's sizes. NOT the Fed's data, except
+// where it says so; the manual shows how much they matter.
+ai_bust_persistence         = 0.98;     // how slowly the bust fades: 0.98 a quarter leaves two thirds of it after five years
+ai_investment_cut           = 0;        // how much the AI companies' investment falls, in percent of GDP (the boom is about 1.5% of GDP: see the manual)
+ai_investment_delay         = 0.7;      // how slowly the cut comes: each quarter, investment moves 30% of the way to the cut (projects underway are finished)
+ai_domestic_share           = 0.5;      // the part of AI investment made in the US (buildings, power, installation, US chip makers' design and profits); the rest is imported
+ai_stock_fall               = 0;        // how much the AI companies' shares fall, in percent
+ai_market_share             = 0.3;      // the AI companies' part of the US stock market (Nvidia, Microsoft, Alphabet, Amazon, Meta, Broadcom, Oracle and others)
+ai_credit_stress            = 0;        // how much lenders' fear adds to the credit spread when the bust starts, in points a year (it fades as lender_fear does)
+ai_productivity_gain        = 0;        // how much cheaper AI adds to the productivity of the firms that use it, in percent, once it has spread
+ai_productivity_delay       = 0.9;      // how slowly that gain comes: each quarter, it moves 10% of the way
+
 // Parameters given by the caller go here.
 
 model(linear);
@@ -192,6 +217,10 @@ model(linear);
     # top1_wealth_to_gdp = wealth_share_top1 * household_wealth_to_gdp;
     # net_worth_to_gdp = capital_share / (rental_share * (1 / patience + 0.005)) / leverage;
 
+    // The stocks households own: firms' net worth, and the shares of the AI companies, which are a part (ai_market_share) of the market. (In
+    // the crash and the wealth tax, the AI shares don't move, and this is net worth alone.)
+    # household_stocks = net_worth + ai_market_share * ai_stocks;
+
     // Households that plan ahead. A saver who owns no stocks spends less now when the real interest rate is high (it pays to wait); a
     // saver's spending is that, plus a rise when there is a demand shock, and when the shares the saver owns are worth more. (These are
     // the Euler equations of all the savers, written so that what they have in common appears once: they differ only in the stocks they own.)
@@ -212,14 +241,14 @@ model(linear);
 
     // What each group spends: the part that lives from paycheck to paycheck spends its wages, the rest spends as savers do.
     consumption_bottom50 = hand_to_mouth_bottom50 * income_bottom50
-        + (1 - hand_to_mouth_bottom50) * (saver_consumption + (demand + wealth_effect_bottom50 * net_worth) / risk_aversion);
+        + (1 - hand_to_mouth_bottom50) * (saver_consumption + (demand + wealth_effect_bottom50 * household_stocks) / risk_aversion);
     consumption_next40 = hand_to_mouth_next40 * income_next40
-        + (1 - hand_to_mouth_next40) * (saver_consumption + (demand + wealth_effect_next40 * net_worth) / risk_aversion);
+        + (1 - hand_to_mouth_next40) * (saver_consumption + (demand + wealth_effect_next40 * household_stocks) / risk_aversion);
     consumption_next9 = hand_to_mouth_next9 * income_next9
-        + (1 - hand_to_mouth_next9) * (saver_consumption + (demand + wealth_effect_next9 * net_worth) / risk_aversion);
+        + (1 - hand_to_mouth_next9) * (saver_consumption + (demand + wealth_effect_next9 * household_stocks) / risk_aversion);
     // The top 1%, who pay the wealth tax, also spend less as the tax makes them poorer.
     consumption_top1 = hand_to_mouth_top1 * income_top1
-        + (1 - hand_to_mouth_top1) * (saver_consumption + (demand + wealth_effect_top1 * net_worth) / risk_aversion
+        + (1 - hand_to_mouth_top1) * (saver_consumption + (demand + wealth_effect_top1 * household_stocks) / risk_aversion
                                       - wealth_spending_top1 * top1_wealth_lost);
 
     // The economy's consumption is the groups' added up.
@@ -232,7 +261,7 @@ model(linear);
 
     // Firms make goods from capital (the capital they had at the start of the quarter) and labor, and hire until an hour's work adds
     // what it costs and a unit of capital adds what it earns.
-    gdp = productivity + capital_share * capital(-1) + (1 - capital_share) * hours;
+    gdp = productivity + ai_productivity + capital_share * capital(-1) + (1 - capital_share) * hours;
     marginal_cost = real_wage + hours - gdp;
     capital_earnings = marginal_cost + gdp - capital(-1);
 
@@ -262,8 +291,8 @@ model(linear);
     top1_wealth_lost = (1 - wealth_rebuilding) * top1_wealth_lost(-1) + (1 - tax_avoidance) * wealth_tax / 4;
     government_purchases = revenue_to_purchases * wealth_tax_revenue;
 
-    // What is made is bought.
-    gdp = consumption_share * consumption + investment_share * investment + government_purchases;
+    // What is made is bought: by households, by firms, by the government, and by the AI companies (the part of their investment made in the US).
+    gdp = consumption_share * consumption + investment_share * investment + government_purchases + ai_domestic_share * ai_investment;
 
     // The Fed's rule.
     fed_rate = fed_smoothing * fed_rate(-1)
@@ -272,7 +301,14 @@ model(linear);
     // The shocks.
     productivity = productivity_persistence * productivity(-1) + productivity_shock;
     demand = demand_persistence * demand(-1) + demand_shock;
-    lender_fear = lender_fear_persistence * lender_fear(-1) + lender_fear_shock;
+    lender_fear = lender_fear_persistence * lender_fear(-1) + lender_fear_shock + ai_credit_stress / 4 * ai_shock;
+
+    // The AI bust. It starts at 1 and fades slowly. Investment moves part of the way to its cut each quarter, as projects underway are finished
+    // or abandoned; the shares fall at once; cheaper AI raises other firms' productivity part of the way each quarter.
+    ai_bust = ai_bust_persistence * ai_bust(-1) + ai_shock;
+    ai_investment = ai_investment_delay * ai_investment(-1) - (1 - ai_investment_delay) * ai_investment_cut * ai_bust;
+    ai_stocks = -ai_stock_fall * ai_bust;
+    ai_productivity = ai_productivity_delay * ai_productivity(-1) + (1 - ai_productivity_delay) * ai_productivity_gain * ai_bust;
 end;
 
 steady;

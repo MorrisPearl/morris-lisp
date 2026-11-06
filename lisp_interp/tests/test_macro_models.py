@@ -463,7 +463,7 @@ class TestTypesModel(LispTestCase):
 
     def test_another_kind_of_surprise_has_a_column_for_each_group(self):
         self.run_lisp('(define fed (types-model-responses base "fed_shock"))')
-        self.assertEqual(self.run_lisp('(length (map car fed))'), 21)
+        self.assertEqual(self.run_lisp('(length (map car fed))'), 24)
         self.assertLess(self.column("fed", "GDP")[0], 0)                  # a rise in the Fed's rate slows the economy
         self.assertLess(self.column("fed", "income: bottom 50%")[0], self.column("fed", "income: top 1%")[0])
 
@@ -515,6 +515,87 @@ class TestTypesModel(LispTestCase):
         self.run_lisp('(load "macro_models.lsp")(plot-types-crash (types-model :quarters 6))', env)
         self.assertEqual(len(charts), 1)
         self.assertEqual(len(charts[0]["panels"]), 6)
+
+
+
+class TestAiInvestmentData(LispTestCase):
+
+    def test_computer_investment_is_shown_as_a_percent_of_gdp(self):
+        with mock.patch.object(lisp_fred, "download_series", fake_fred_series):
+            self.run_lisp('(load "macro_models.lsp")(define d (ai-investment-data "creds.json" :start (date 2000 1 1)))')
+        self.assertShows('(map car d)', '("date" "GDP" "computer investment" "percent of GDP")')
+        gdp = numpy.array(self.run_lisp('(table-column d "GDP")').items)
+        computers = numpy.array(self.run_lisp('(table-column d "computer investment")').items)
+        self.assertTrue(numpy.allclose(self.run_lisp('(table-column d "percent of GDP")').items, numpy.round(100 * computers / gdp, 2)))
+
+
+@unittest.skipUnless(dynare_installed(), "needs GNU Octave and Dynare")
+class TestAiBust(LispTestCase):
+    """The shock to the AI companies, in the four-household model."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('(load "macro_models.lsp")'
+                      '(define solvency (second (second (ai-bust-scenarios))))')
+
+    def column(self, table, name):
+        return numpy.array(self.run_lisp('(table-column %s "%s")' % (table, name)).items)
+
+    def test_without_an_ai_bust_the_ai_variables_stay_at_zero(self):
+        self.run_lisp('(define crash (types-crash-responses (types-model :quarters 8) :fall 20))')
+        for name in ("AI investment", "AI stocks", "AI productivity"):
+            self.assertTrue(numpy.allclose(self.column("crash", name), 0), name)
+
+    def test_the_bust_follows_its_parameters(self):
+        # The solvency crisis: investment moves half way to a cut of 1% of GDP each quarter, as the bust fades by 0.98 a quarter
+        self.run_lisp('(define r (ai-bust-responses (types-model :quarters 8 :parameters solvency)))')
+        investment = self.column("r", "AI investment")
+        self.assertAlmostEqual(investment[0], -0.5)
+        self.assertAlmostEqual(investment[1], 0.5 * -0.5 - 0.5 * 1.0 * 0.98)
+        self.assertAlmostEqual(self.column("r", "AI stocks")[0], -40)
+        self.assertAlmostEqual(self.column("r", "AI stocks")[4], -40 * 0.98 ** 4)
+        self.assertGreater(self.column("r", "credit spread")[0], 1)          # lenders' 1 point a year, and the accelerator adds to it
+        self.assertLess(self.column("r", "GDP")[0], -0.5)
+        self.assertLess(self.column("r", "spending: top 1%")[0], -5)         # the top 1% owns half the stocks
+
+    def test_only_the_part_of_ai_investment_made_in_the_us_reaches_gdp(self):
+        imported = '(append solvency (list (cons "ai_stock_fall" 0) (cons "ai_credit_stress" 0) (cons "ai_domestic_share" 0)))'
+        self.run_lisp('(define r (ai-bust-responses (types-model :quarters 8 :parameters %s)))' % imported)
+        self.assertLess(self.column("r", "AI investment")[0], -0.4)
+        for name in ("GDP", "consumption", "investment", "Fed rate"):
+            self.assertTrue(numpy.allclose(self.column("r", name), 0), name)
+
+    def test_the_parts_add_up_to_the_whole(self):
+        self.run_lisp('(define parts (ai-bust-parts (second (third (ai-bust-scenarios))) :quarters 8))'
+                      '(define tables (map (lambda (entry) (ai-bust-responses (second entry))) parts))')
+        self.assertShows('(map first parts)', '("all" "investment only" "stocks only" "credit only" "productivity only")')
+        for name in ("GDP", "spending: bottom 50%", "Fed rate"):
+            columns = [numpy.array(self.run_lisp('(table-column (list-ref tables %d) "%s")' % (k, name)).items) for k in range(5)]
+            self.assertTrue(numpy.allclose(columns[0], sum(columns[1:])), name)
+        # A scenario without a part leaves it out: the moratorium has no credit stress and no productivity gain
+        self.assertShows('(map first (ai-bust-parts (second (first (ai-bust-scenarios))) :quarters 4))',
+                         '("all" "investment only" "stocks only")')
+
+    def test_compare_ai_busts_has_a_row_for_each_scenario_and_quarter(self):
+        self.run_lisp('(define busts (ai-bust-models :quarters 8))(define table (compare-ai-busts busts :quarters (list 1 4)))')
+        self.assertShows('(map first busts)', '("moratorium" "solvency crisis" "elastic demand")')
+        self.assertShows('(table-row-count table)', '6')
+        self.assertShows('(map car table)', '("scenario" "quarter" "GDP" "consumption" "other investment" "spending: bottom 50%" '
+                         '"spending: top 1%" "Fed rate" "credit spread" "AI investment")')
+        gdp = self.column("table", "GDP")
+        self.assertLess(gdp[2], gdp[0])                       # the solvency crisis does more harm at first than the moratorium
+        # :parameters changes every scenario: all of the investment imported, the moratorium's GDP is moved by its stocks alone
+        self.run_lisp('(define imported (compare-ai-busts (ai-bust-models :quarters 8 :parameters (list (cons "ai_domestic_share" 0)))'
+                      ' :quarters (list 1)))')
+        self.assertNotAlmostEqual(self.column("imported", "GDP")[0], gdp[0])
+
+    def test_the_plots_draw_six_panels(self):
+        charts = []
+        env = lisp_builtins.make_global_env(output=self.out.append, plot=charts.append)
+        self.run_lisp('(load "macro_models.lsp")(define busts (ai-bust-models :quarters 6))'
+                      '(plot-ai-busts busts)(plot-ai-bust (second (first busts)))', env)
+        self.assertEqual(len(charts), 2)
+        self.assertEqual([len(chart["panels"]) for chart in charts], [6, 6])
 
 
 if __name__ == "__main__":
