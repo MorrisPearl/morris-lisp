@@ -5,9 +5,10 @@ floater and an inverse floater that together are worth what they were cut from. 
 what a deal is made of, how to build one, how each kind of bond is paid, and how losses and shortfalls are handled. The functions are loaded
 when you call one of them (see `lazy-load`), so there is nothing to load; `(load "deal.lsp")` loads them all at once.
 
-There are eight documents. The **language manual**, [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the syntax and the
+There are nine documents. The **language manual**, [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the syntax and the
 general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is made of are there). The **library manual**,
-[lisp_library_reference.md](lisp_library_reference.md), covers getting data, models, and investments. The **example programs**,
+[lisp_library_reference.md](lisp_library_reference.md), covers getting data, models, and investments. The **regression manual**,
+[lisp_regression_manual.md](lisp_regression_manual.md), covers fitting models to data. The **example programs**,
 [lisp_example_programs.md](lisp_example_programs.md), say how whole programs are put together; `examples/deal_example.lsp` is this model's. The **forecasting manual**,
 [lisp_forecasting_manual.md](lisp_forecasting_manual.md), covers questions such as Good Judgment Open's. The **paths manual**,
 [lisp_paths_manual.md](lisp_paths_manual.md), covers the yield curves and the paths of interest rates that a deal is priced on. The

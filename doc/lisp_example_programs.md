@@ -10,11 +10,11 @@ once. Several of the programs are after chapters of Peter Norvig's classic
 this interpreter, and the notes say where its rules (`#f` is the only false,
 vectors hold only numbers, strings, and dates) change what the book does.
 
-There are eight documents. The **language manual**,
+There are nine documents. The **language manual**,
 [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the
 syntax, the special forms and macros, and the general builtins. The **library
 manual**, [lisp_library_reference.md](lisp_library_reference.md), covers
-getting data, models, and investments, and the **CMO manual**, [lisp_cmo_manual.md](lisp_cmo_manual.md), covers the structured-deal model, the **forecasting manual**, [lisp_forecasting_manual.md](lisp_forecasting_manual.md), covers forecasting questions, and the **paths manual**, [lisp_paths_manual.md](lisp_paths_manual.md), covers yield curves and simulated paths of rates and prices, and the **macro models manual**, [lisp_macro_models_manual.md](lisp_macro_models_manual.md), covers models of the whole economy, run with Dynare, and the **data guide**, [economic_data_guide.md](economic_data_guide.md), says which agency publishes what data.
+getting data, models, and investments, the **regression manual**, [lisp_regression_manual.md](lisp_regression_manual.md), covers fitting models to data, and the **CMO manual**, [lisp_cmo_manual.md](lisp_cmo_manual.md), covers the structured-deal model, the **forecasting manual**, [lisp_forecasting_manual.md](lisp_forecasting_manual.md), covers forecasting questions, and the **paths manual**, [lisp_paths_manual.md](lisp_paths_manual.md), covers yield curves and simulated paths of rates and prices, and the **macro models manual**, [lisp_macro_models_manual.md](lisp_macro_models_manual.md), covers models of the whole economy, run with Dynare, and the **data guide**, [economic_data_guide.md](economic_data_guide.md), says which agency publishes what data.
 **This one is about the programs**: the
 language and library documents say what each function does; this says how
 whole programs are put together out of them. A section name in quotes is a
@@ -1369,8 +1369,10 @@ shared key and charted, as `map_example.lsp` does.
 beside Freddie Mac's weekly mortgage rate and the 10-year Treasury yield, from FRED, and fits
 the mortgage rate to each. In levels SOFR looks good (R² 0.86), because both rates were near zero
 in 2021 and high in 2023. In 4-week changes it explains almost nothing, while the 10-year explains
-about 60%, and SOFR adds nothing once the 10-year is known. The lesson is the usual one for two
-series that trend: fit the changes, not just the levels.
+most of them, and SOFR adds nothing once the 10-year is known. The lesson is the usual one for two
+series that trend: fit the changes, not just the levels. Its standard errors allow for the misses
+running in streaks, as a time series' do (`:lags`: see "Rows in time order: :lags", in the
+[regression manual](lisp_regression_manual.md#rows-in-time-order-lags)).
 
 `yield_curve_example.lsp` needs no key: it downloads the Treasury's daily par yield curve and
 the Federal Reserve's fitted curve (`treasury-par-curve`, `gsw-curve`), works out the zero

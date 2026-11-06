@@ -45,6 +45,10 @@ they say the interpreter does is what it does.
 - `doc/lisp_library_reference.md` -- the library: getting data,
   statistical models, dates and cash flows, and investments. Its first
   chapter, "Where things are", is a map.
+- `doc/lisp_regression_manual.md` -- regression: least squares, least
+  absolute deviation, quantiles, logistic, Poisson, ridge and lasso, a
+  formula of your own, and splines of them; standard errors for rows in
+  groups or in time order; using, measuring, and cross-validating a model.
 - `doc/lisp_example_programs.md` -- the example programs in
   `lisp_interp/examples/` (a chess player, a SQL interpreter, ELIZA, a
   Prolog, models of mortgages, and a script for each part of the library),

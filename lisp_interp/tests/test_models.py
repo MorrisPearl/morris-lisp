@@ -4,6 +4,8 @@ support.py says how to run them."""
 
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
 
+import lisp_regression
+
 
 class TestDayCounts(LispTestCase):
     """day-count and year-fraction under each basis (lisp_finance.py)."""
@@ -916,7 +918,7 @@ class TestClusteredStandardErrors(LispTestCase):
         import lisp_regression
         groups, n, x, z, noise, w = self.grouped_data()
         y = 1 + 2 * x - z + noise
-        model = lisp_regression.fit_linear([x.tolist(), z.tolist()], y.tolist(), w.tolist(), groups)
+        model = lisp_regression.fit_linear([x.tolist(), z.tolist()], y.tolist(), w.tolist(), lisp_regression.AlikeRows(groups))
         plain = lisp_regression.fit_linear([x.tolist(), z.tolist()], y.tolist(), w.tolist())
         self.assertEqual(model.coefficients, plain.coefficients)          # it doesn't change the fit
         X = np.column_stack([np.ones(n), x, z])
@@ -933,7 +935,7 @@ class TestClusteredStandardErrors(LispTestCase):
         X = np.column_stack([np.ones(n), x, z])
         for floor, ceiling in ((0.0, 1.0), (0.05, 0.9)):
             model = lisp_regression.fit_logistic([x.tolist(), z.tolist()], y.tolist(), w.tolist(), floor, ceiling,
-                                                 groups)
+                                                 lisp_regression.AlikeRows(groups))
             s = 1 / (1 + np.exp(-(X @ np.array([model.intercept] + model.coefficients))))
             p = floor + (ceiling - floor) * s
             dp_dz = (ceiling - floor) * s * (1 - s)
@@ -955,7 +957,8 @@ class TestClusteredStandardErrors(LispTestCase):
         A_inverse = np.linalg.inv((X.T * w) @ X)
         for quantile in (0.5, 0.8):
             plain = lisp_regression.fit_quantile([x.tolist(), z.tolist()], y.tolist(), quantile, w.tolist())
-            model = lisp_regression.fit_quantile([x.tolist(), z.tolist()], y.tolist(), quantile, w.tolist(), groups)
+            model = lisp_regression.fit_quantile([x.tolist(), z.tolist()], y.tolist(), quantile, w.tolist(),
+                                                 lisp_regression.AlikeRows(groups))
             self.assertEqual(model.coefficients, plain.coefficients)
             sparsity_squared = plain.stats["std_errors"][1] ** 2 / (
                 quantile * (1 - quantile) * (A_inverse @ ((X.T * w ** 2) @ X) @ A_inverse)[1, 1])
@@ -1072,7 +1075,7 @@ class TestMeasuresOfFit(LispTestCase):
         chance = 1 / (1 + np.exp(-(-1.5 + 0.8 * x)))
         shares = np.clip(chance + rng.normal(scale=0.01, size=300), 0, 1)       # shares scatter far less than 0s and 1s
         model = lisp_regression.fit_logistic([x.tolist()], shares.tolist())
-        robust = lisp_regression.fit_logistic([x.tolist()], shares.tolist(), groups=np.arange(300))
+        robust = lisp_regression.fit_logistic([x.tolist()], shares.tolist(), alike=lisp_regression.AlikeRows(np.arange(300)))
         self.assertEqual(model.stats["std_errors"], robust.stats["std_errors"])
         self.assertFalse(model.stats["y_is_0_or_1"])
         X = np.column_stack([np.ones(300), x])
@@ -1314,6 +1317,335 @@ class TestLogisticFloorAndCeiling(LispTestCase):
                       self.show("(model-report plain)"))
         self.assertLispError("(spline-logistic x (* 3 y) (list 1.5))", "spline-logistic: every y must be between 0 and 1")
         self.assertLispError("(spline-regression x y 3 #t)", "spline-logistic fits a spline with a logistic link")
+
+
+def coefficient_column(test, src, column):
+    """A column of the model-coefficient-table of the model src makes, as a numpy array."""
+    table = test.run_lisp("(model-coefficient-table %s)" % src)
+    return np.asarray({str(pair.car): pair.cdr for pair in lisp_core.pairs_to_list(table)}[column].items, dtype=float)
+
+
+def define_vectors(test, **vectors):
+    """Gives each name the vector of numbers, in the test's environment."""
+    for name, values in vectors.items():
+        test.env[lisp_core.Symbol(name)] = lisp_vector_math.to_vector(np.asarray(values, dtype=float))
+
+
+class TestNeweyWestStandardErrors(LispTestCase):
+    """:lags -- standard errors for rows in time order whose neighbors are
+    alike (newey_west_covariance). The expected values are statsmodels':
+    OLS with HAC and its small-sample correction, as Stata's newey has; and
+    a logit with HAC, without a correction."""
+
+    def setUp(self):
+        super().setUp()
+        rng = np.random.default_rng(7)
+        n = 120
+        x = np.cumsum(rng.normal(size=n))           # a slowly wandering predictor
+        z = rng.normal(size=n)
+        e = np.zeros(n)
+        for t in range(1, n):
+            e[t] = 0.8 * e[t - 1] + rng.normal()    # misses that run in streaks
+        y = 1 + 0.5 * x - 0.3 * z + e
+        b = (y + rng.normal(size=n) > np.median(y)).astype(float)
+        define_vectors(self, x=x, z=z, y=y, b=b)
+
+    def test_least_squares_with_lags_is_newey_west(self):
+        np.testing.assert_allclose(coefficient_column(self, "(linear-regression (list x z) y :lags 5)", "std_error"),
+                                   [0.857716351136, 0.057797708841, 0.110891113876], rtol=1e-9)
+        # The usual ones, which take every row to be new, are much smaller for x, which wanders slowly as the misses
+        # do; for z, which jumps about from row to row, they're not.
+        np.testing.assert_allclose(coefficient_column(self, "(linear-regression (list x z) y)", "std_error"),
+                                   [0.320924575405, 0.02325311958, 0.13164879017], rtol=1e-9)
+        # a t test with n - p degrees of freedom
+        table_p = coefficient_column(self, "(linear-regression (list x z) y :lags 5)", "p_value")
+        t = coefficient_column(self, "(linear-regression (list x z) y :lags 5)", "t_value")
+        self.assertAlmostEqual(table_p[1], lisp_regression.two_sided_p_value(t[1], "t", 117), places=12)
+        self.assertIn("lags             = 5  (the standard errors allow for rows up to 5 apart, in time order, being "
+                      "alike: Newey-West's)", self.show("(model-report (linear-regression (list x z) y :lags 5))"))
+
+    def test_logistic_with_lags(self):
+        np.testing.assert_allclose(coefficient_column(self, "(logistic-regression (list x z) b :lags 3)", "std_error"),
+                                   [2.717503373591, 0.180809672672, 0.210372079686], rtol=1e-6)
+
+    def test_every_kind_with_standard_errors_takes_lags(self):
+        for src in ("(lad-regression (list x z) y :lags 3)", "(quantile-regression (list x z) y 0.8 :lags 3)",
+                    "(spline-regression (list x z) y 2 '() :lags 3)", "(spline-logistic x b 2 '() :lags 3)",
+                    "(spline-lad x y 2 '() :lags 3)", "(spline-quantile x y 0.25 2 '() :lags 3)",
+                    "(poisson-regression x (+ 20 y) :lags 3)", "(spline-poisson x (+ 20 y) 2 '() :lags 3)",
+                    "(nonlinear-regression x y (lambda (x a b) (+ a (* b x))) (list 0 1) :lags 3)"):
+            self.assertIn("lags             = 3", self.show("(model-report %s)" % src), src)
+        # a straight line's formula, fit by nonlinear-regression, has least squares' standard errors
+        np.testing.assert_allclose(
+            coefficient_column(self, "(nonlinear-regression x y (lambda (x a b) (+ a (* b x))) (list 0 1) :lags 4)",
+                               "std_error"),
+            coefficient_column(self, "(linear-regression x y :lags 4)", "std_error"), rtol=1e-5)
+
+    def test_lags_errors(self):
+        self.assertLispError("(linear-regression x y :lags 0)", ":lags must be a whole number from 1 to one less than "
+                                                                 "the number of rows (120), not 0")
+        self.assertLispError("(linear-regression x y :lags 120)", "not 120")
+        self.assertLispError("(linear-regression x y :lags 2.5)", "not 2.5")
+        self.assertLispError("(linear-regression x y :lags 2 :groups (vector-map (lambda (i) (quotient i 10)) "
+                             "(vector-range 120)))", "linear-regression: give :groups or :lags, not both")
+
+
+class TestPoissonRegression(LispTestCase):
+    """poisson-regression and spline-poisson: models of counts. The expected
+    values are statsmodels' GLM with a Poisson family and its dispersion
+    estimated from Pearson's chi-squared (R's quasipoisson)."""
+
+    def setUp(self):
+        super().setUp()
+        rng = np.random.default_rng(11)
+        n = 150
+        z = rng.normal(size=n)
+        s = np.sin(np.arange(n) / 7.0)
+        average = np.exp(0.2 + 0.3 * z + 0.4 * s)
+        count = rng.negative_binomial(2, 2 / (2 + average)).astype(float)     # counts that vary more than Poisson's
+        exposure = rng.integers(10, 200, size=n).astype(float)                # loans in each pool
+        defaults = rng.poisson(exposure * np.exp(-3 + 0.4 * z)).astype(float)
+        define_vectors(self, z=z, s=s, count=count, exposure=exposure, rate=defaults / exposure)
+
+    def test_coefficients_and_standard_errors(self):
+        np.testing.assert_allclose(coefficient_column(self, "(poisson-regression (list z s) count)", "coefficient"),
+                                   [0.206523978546, 0.26112161601, 0.515836074314], rtol=1e-9)
+        np.testing.assert_allclose(coefficient_column(self, "(poisson-regression (list z s) count)", "std_error"),
+                                   [0.114753096282, 0.112544635827, 0.153148774859], rtol=1e-8)
+        report = self.show("(model-report (poisson-regression (list z s) count))")
+        self.assertIn("dispersion       = 2.12204", report)
+        self.assertIn("term        coefficient     std error    z value    p value", report)
+        self.assertShows("(model-kind (poisson-regression z count))", '"poisson"')
+
+    def test_lags(self):
+        np.testing.assert_allclose(coefficient_column(self, "(poisson-regression (list z s) count :lags 4)", "std_error"),
+                                   [0.109047038011, 0.11758153855, 0.164134900178], rtol=1e-8)
+
+    def test_rates_weighted_by_exposure_are_the_counts_fit(self):
+        # as statsmodels' fit to the counts, with log(exposure) as an offset
+        np.testing.assert_allclose(coefficient_column(self, "(poisson-regression z rate exposure)", "coefficient"),
+                                   [-3.010672263084, 0.413120860858], rtol=1e-9)
+        np.testing.assert_allclose(coefficient_column(self, "(poisson-regression z rate exposure)", "std_error"),
+                                   [0.037982301139, 0.040049020027], rtol=1e-8)
+        self.assertIn("dispersion       = 1.07344", self.show("(model-report (poisson-regression z rate exposure))"))
+
+    def test_predictions_and_an_exact_fit(self):
+        self.run_lisp("(define x (vector-range 10)) (define m (poisson-regression x (exp (+ 0.5 (* 0.2 x)))))")
+        self.assertAlmostEqual(self.run_lisp("(model-intercept m)"), 0.5, places=8)
+        self.assertAlmostEqual(self.run_lisp("(model-slope m)"), 0.2, places=8)
+        self.assertAlmostEqual(self.run_lisp("(model-predict m 20)"), math.exp(4.5), places=5)
+        np.testing.assert_allclose(self.run_lisp("(model-predict m #(0 1))").items, np.exp([0.5, 0.7]), rtol=1e-8)
+        self.assertIn("pseudo R-squared = 1 ", self.show("(model-report m)"))
+
+    def test_a_spline_of_a_count(self):
+        self.run_lisp("(define spline (spline-poisson (list (cons \"z\" z) (cons \"s\" s)) count 2))")
+        self.assertShows("(model-kind spline)", '"spline-poisson"')
+        self.assertIn("spline model of a count, y = exp(the spline), predicting y:", self.show("(model-report spline)"))
+        self.assertGreater(min(self.run_lisp("(model-predict spline (list z s))").items), 0)
+
+    def test_a_group_of_zeros_does_not_converge_and_says_so(self):
+        # every count of the second group is 0: its coefficient heads for minus infinity
+        report = self.show("(model-report (poisson-regression #(0 0 0 0 0 1 1 1 1 1) #(1 2 0 3 1 0 0 0 0 0)))")
+        self.assertIn("did NOT converge: a coefficient is heading for minus infinity", report)
+
+    def test_errors(self):
+        self.assertLispError("(poisson-regression #(1 2 3) #(0 1 -1))", "every y must be 0 or more, a count or a rate "
+                                                                         "(got -1")
+        self.assertLispError("(poisson-regression #(1 2 3) #(0 0 0))", "every y is 0, so there is nothing to fit")
+
+
+class TestRidgeAndLasso(LispTestCase):
+    """ridge-regression and lasso-regression: least squares with a cost for
+    the coefficients' sizes, on the standardized scale."""
+
+    # Two predictors that are exactly standardized (mean 0, standard deviation 1) and uncorrelated, so that each
+    # least-squares coefficient is the average of x * y, and ridge divides it by 1 + penalty, lasso moves it toward 0.
+    ORTHOGONAL = """(define a #(1 -1 1 -1 1 -1 1 -1))
+                    (define b #(1 1 -1 -1 1 1 -1 -1))
+                    (define y #(5.0 1.2 3.1 -0.4 4.6 1.9 2.2 0.1))"""
+
+    def least_squares_coefficients(self):
+        y = np.array([5.0, 1.2, 3.1, -0.4, 4.6, 1.9, 2.2, 0.1])
+        return [np.mean(np.array([1, -1, 1, -1, 1, -1, 1, -1]) * y), np.mean(np.array([1, 1, -1, -1, 1, 1, -1, -1]) * y)]
+
+    def test_uncorrelated_predictors(self):
+        self.run_lisp(self.ORTHOGONAL)
+        ols = self.least_squares_coefficients()
+        for penalty in (0, 0.5, 3):
+            np.testing.assert_allclose(self.run_lisp("(model-coefficients (ridge-regression (list a b) y %s))" % penalty)
+                                       .items, np.array(ols) / (1 + penalty), rtol=1e-12)
+        for penalty in (0, 0.5, 1.0):
+            expected = [math.copysign(max(abs(c) - penalty, 0), c) for c in ols]
+            np.testing.assert_allclose(self.run_lisp("(model-coefficients (lasso-regression (list a b) y %s))" % penalty)
+                                       .items, expected, rtol=1e-9, atol=1e-12)
+        # (lasso at 1.0 leaves b out: its least-squares coefficient, 0.6375, is nearer 0 than that)
+        self.assertIn("(left out)", self.show("(model-report (lasso-regression (list a b) y 1.0))"))
+        self.assertAlmostEqual(self.run_lisp("(model-intercept (lasso-regression (list a b) y 1.0))"), np.mean(
+            [5.0, 1.2, 3.1, -0.4, 4.6, 1.9, 2.2, 0.1]), places=12)
+
+    def correlated(self):
+        rng = np.random.default_rng(3)
+        n = 80
+        P = rng.normal(size=(n, 5))
+        P[:, 1] = P[:, 0] + 0.2 * rng.normal(size=n)          # two that go together
+        y = P @ np.array([1.0, 0.5, 0.0, 0.3, 0.0]) + rng.normal(size=n)
+        weight = rng.integers(1, 4, size=n).astype(float)
+        define_vectors(self, y=y, weight=weight, **{"p%d" % j: P[:, j] for j in range(5)})
+        Z = (P - P.mean(0)) / P.std(0)
+        return Z, y, weight
+
+    def test_lasso_and_ridge_are_at_their_best(self):
+        # At the best fit, for each predictor: lasso's pull (share * z * residual summed) is the penalty, with the
+        # coefficient's sign, for one that is in, and no stronger than the penalty for one left out; ridge's is the
+        # penalty times the coefficient.
+        Z, y, weight = self.correlated()
+        share = weight / weight.sum()
+        for kind, penalty in (("lasso", 0.05), ("lasso", 0.3), ("ridge", 0.2)):
+            src = "(%s-regression (list p0 p1 p2 p3 p4) y %s weight)" % (kind, penalty)
+            standardized = coefficient_column(self, src, "standardized")[1:]
+            predictions = self.run_lisp("(model-predict %s (list p0 p1 p2 p3 p4))" % src).items
+            pull = (Z - share @ Z).T @ (share * (y - predictions))
+            if kind == "ridge":
+                np.testing.assert_allclose(pull, penalty * standardized, atol=1e-10)
+            else:
+                kept = standardized != 0
+                np.testing.assert_allclose(pull[kept], penalty * np.sign(standardized[kept]), atol=1e-8)
+                self.assertTrue(np.all(np.abs(pull[~kept]) <= penalty + 1e-10))
+            self.assertAlmostEqual(float(share @ (y - predictions)), 0.0, places=10)    # the intercept costs nothing
+
+    def test_a_penalty_of_0_is_least_squares_and_weights_count_as_copies(self):
+        self.correlated()
+        np.testing.assert_allclose(self.run_lisp("(model-coefficients (ridge-regression (list p0 p1) y 0 weight))").items,
+                                   self.run_lisp("(model-coefficients (linear-regression (list p0 p1) y weight))").items,
+                                   rtol=1e-9)
+        np.testing.assert_allclose(self.run_lisp("(model-coefficients (lasso-regression (list p0 p1) y 0 weight))").items,
+                                   self.run_lisp("(model-coefficients (linear-regression (list p0 p1) y weight))").items,
+                                   rtol=1e-7)
+
+    def test_at_the_penalty_that_leaves_every_predictor_out(self):
+        self.correlated()
+        report = self.show("(model-report (lasso-regression (list p0 p1 p2 p3 p4) y 0.1))")
+        leaving_all_out = float(report.split("at ")[1].split(" or more")[0])
+        self.assertShows("(model-coefficients (lasso-regression (list p0 p1 p2 p3 p4) y %r))" % (leaving_all_out * 1.001),
+                         "#(0.0 0.0 0.0 0.0 0.0)")
+        self.assertIn("predictors kept  = 0 of 5", self.show("(model-report (lasso-regression (list p0 p1 p2 p3 p4) y %r))"
+                                                             % (leaving_all_out * 1.001)))
+
+    def test_choosing_the_penalty_by_cross_validation(self):
+        self.correlated()
+        self.run_lisp("(define m (lasso-regression (list p0 p1 p2 p3 p4) y (list 0.01 0.1 0.3 1.0) :folds 4 :seed 2))")
+        report = self.show("(model-report m)")
+        self.assertIn("penalties tried, by 4-fold cross-validation:", report)
+        tried = [line.split() for line in report.splitlines() if "cross-validated RMSE" in line]
+        self.assertEqual([float(line[0]) for line in tried], [0.01, 0.1, 0.3, 1.0])
+        errors = [float(line[3]) for line in tried]
+        chosen = [float(line[0]) for line in tried if "chosen" in " ".join(line)]
+        self.assertEqual(chosen, [[0.01, 0.1, 0.3, 1.0][errors.index(min(errors))]])
+        # the error of each is cross-validate's, with the same folds
+        rmse = self.run_lisp("(table-column (cross-validate (lambda (x y) (lasso-regression x y 0.3)) "
+                             "(list p0 p1 p2 p3 p4) y :folds 4 :seed 2) \"rmse\")").items[-1]
+        self.assertAlmostEqual(errors[2], rmse, places=4)
+        self.assertShows("(model-kind (ridge-regression (list p0 p1) y #(0.1 1)))", '"ridge"')
+
+    def test_errors(self):
+        self.correlated()
+        self.assertLispError("(ridge-regression p0 y -1)", "the penalty must be a number, 0 or more, or a list of them")
+        self.assertLispError("(lasso-regression p0 y '())", "the list of penalties to choose among is empty")
+        self.assertLispError("(ridge-regression p0 y 1 :folds 3)", ":folds and :seed are for choosing among several")
+        self.assertLispError("(ridge-regression p0 y 1 :lags 3)", ":lags isn't an option")
+
+
+class TestNonlinearRegression(LispTestCase):
+    """nonlinear-regression: the parameters of a formula of your own, by least squares."""
+
+    def test_a_decay_with_no_noise_is_found_exactly(self):
+        self.run_lisp("""(define x (vector-range 30))
+                         (define y (+ 0.5 (* 3 (exp (* -0.2 x)))))
+                         (define m (nonlinear-regression x y (lambda (x level size rate) (+ level (* size (exp (* rate x)))))
+                                                         (list 0 1 -0.05)))""")
+        np.testing.assert_allclose(self.run_lisp("(model-coefficients m)").items, [0.5, 3.0, -0.2], rtol=1e-7)
+        report = self.show("(model-report m)")
+        self.assertIn("Nonlinear model:  y = (+ level (* size (exp (* rate x))))", report)
+        self.assertIn("parameter      estimate     std error    t value    p value", report)
+        self.assertIn("(converged)", report)
+        self.assertAlmostEqual(self.run_lisp("(model-predict m 40)"), 0.5 + 3 * math.exp(-8), places=7)
+        np.testing.assert_allclose(self.run_lisp("(model-predict m #(0 40))").items, [3.5, 0.5 + 3 * math.exp(-8)],
+                                   rtol=1e-7)
+        self.assertShows("(model-kind m)", '"nonlinear"')
+
+    def test_a_straight_line_is_least_squares(self):
+        self.run_lisp("""(define x #(1 2 3 4 5 6 7 8 9 10))
+                         (define y #(2.1 3.9 6.2 8.1 9.8 12.2 13.9 16.1 18.0 20.2))
+                         (define w #(1 2 1 2 1 2 1 2 1 2))
+                         (define (line x a b) (+ a (* b x)))""")
+        for weights in ("", " w"):
+            linear = "(linear-regression x y%s)" % weights
+            nonlinear = "(nonlinear-regression x y line (list 0 1)%s)" % weights
+            np.testing.assert_allclose(coefficient_column(self, nonlinear, "coefficient"),
+                                       coefficient_column(self, linear, "coefficient"), rtol=1e-6)
+            np.testing.assert_allclose(coefficient_column(self, nonlinear, "std_error"),
+                                       coefficient_column(self, linear, "std_error"), rtol=1e-6)
+            np.testing.assert_allclose(coefficient_column(self, nonlinear, "p_value"),
+                                       coefficient_column(self, linear, "p_value"), rtol=1e-4)
+
+    def test_several_predictors_names_and_cross_validation(self):
+        self.run_lisp("""(define month (vector-range 1 25))
+                         (define incentive (vector-map (lambda (m) (- (mod (* 7 m) 11) 4)) month))
+                         (define cpr (+ (* 30 (sigmoid (* 1.5 incentive))) (* 0.2 month)))
+                         (define (s-curve m i height steepness growth) (+ (* height (sigmoid (* steepness i))) (* growth m)))
+                         (define m (nonlinear-regression (list (cons "month" month) (cons "incentive" incentive))
+                                                         (cons "cpr" cpr) s-curve (list 20 1 0)))""")
+        np.testing.assert_allclose(self.run_lisp("(model-coefficients m)").items, [30, 1.5, 0.2], rtol=1e-6)
+        self.assertIn("Nonlinear model:  cpr = (+ (* height (sigmoid (* steepness i))) (* growth m))\n"
+                      "  (where m is month, i is incentive)", self.show("(model-report m)"))
+        self.assertShows('(table-column (model-coefficient-table m) "term")', '#("height" "steepness" "growth")')
+        rmse = self.run_lisp("(table-column (cross-validate (lambda (x y) (nonlinear-regression x y s-curve "
+                             "(list 20 1 0))) (list month incentive) cpr :folds 3) \"rmse\")").items
+        self.assertLess(max(rmse), 1e-5)
+
+    def test_what_a_nonlinear_model_does_not_have(self):
+        self.run_lisp("(define m (nonlinear-regression #(1 2 3 4) #(2 4 6 8.1) (lambda (x a) (* a x)) (list 1)))")
+        self.assertLispError("(model-intercept m)", "a nonlinear model has parameters, not an intercept")
+        self.assertLispError("(model-slope m)", "a nonlinear model has parameters, not a slope")
+        path = os.path.join(tempfile.mkdtemp(), "saved.json")
+        self.assertLispError("(save-variables %s m)" % lisp_core.to_string(lisp_core.LispString(path)),
+                             "a nonlinear model can't be saved: its formula is a procedure")
+
+    def test_errors(self):
+        self.run_lisp("(define x #(1 2 3 4 5 6)) (define y #(2 4 6 8 10 12.5))")
+        self.assertLispError("(nonlinear-regression x y (lambda (x a) (* a x)) (list 1 2))",
+                             "the formula takes 2 argument(s), but there are 1 predictor(s) and 2 start value(s)")
+        self.assertLispError("(nonlinear-regression x y car (list 1))", "the formula must be a lambda of the predictors")
+        self.assertLispError("(nonlinear-regression x y (lambda (x a) (* a x)) 1)", "start must be a list of numbers")
+        self.assertLispError("(nonlinear-regression x y (lambda (x a) (* a (log (- x 3)))) (list 1))",
+                             "the formula doesn't give a number for every row at the start values")
+        self.assertLispError("(nonlinear-regression x y (lambda (x a) (vector 1 2)) (list 1))",
+                             "the formula gave 2 values, for 6 rows")
+        self.assertLispError("(nonlinear-regression x y (lambda (x a) (* a x)) (list 1) :lags 9)", ":lags must be")
+
+
+class TestSavingTheNewKinds(LispTestCase):
+    """A Poisson, ridge, or lasso model saved and loaded again is the same model."""
+
+    def test_saved_and_loaded(self):
+        import lisp_regression
+        self.run_lisp("""(define x #(1 2 3 4 5 6 7 8))
+                         (define z #(2 1 4 3 6 5 8 9))
+                         (define count #(0 1 1 2 4 5 9 12))""")
+        for src in ("(poisson-regression (list x z) count)", "(spline-poisson x count 1)",
+                    "(ridge-regression (list x z) count 0.3)", "(lasso-regression (list x z) count (list 0.1 1) :folds 2)"):
+            model = self.run_lisp(src)
+            again = lisp_regression.model_from_data(lisp_regression.model_data(model))
+            self.env[lisp_core.Symbol("again")] = again
+            self.env[lisp_core.Symbol("model")] = model
+            self.assertEqual(self.show("(model-report again)"), self.show("(model-report model)"), src)
+            self.assertEqual(self.show("(model-predict again (list x z))" if "spline" not in src else
+                                       "(model-predict again x)"),
+                             self.show("(model-predict model (list x z))" if "spline" not in src else
+                                       "(model-predict model x)"), src)
+
+    def test_sigmoid_of_a_vector(self):
+        np.testing.assert_allclose(self.run_lisp("(sigmoid #(0 2))").items, [0.5, 1 / (1 + math.exp(-2))], rtol=1e-12)
 
 
 class TestLinearProgramming(LispTestCase):

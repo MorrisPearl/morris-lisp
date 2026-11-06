@@ -27,19 +27,23 @@
                  (vector-ref (table-column weekly "date") 0) (vector-ref (table-column weekly "date") (- (table-row-count weekly) 1))))
 
 ; --- The levels: both look good, because both rates rose and fell together -----------------------
+; A regression of one level on another misses in streaks that last months -- whatever it leaves
+; out changes slowly -- so the standard errors allow for weeks up to 12 apart being alike
+; (:lags 12, Newey-West's). Without it they would be several times too small.
 (display "The mortgage rate from SOFR:\n")
-(display (model-report (linear-regression (list (cons "SOFR" sofr-rate)) mortgage)))
+(display (model-report (linear-regression (list (cons "SOFR" sofr-rate)) mortgage :lags 12)))
 (display "\n\nThe mortgage rate from the 10-year Treasury yield:\n")
-(display (model-report (linear-regression (list (cons "DGS10" ten-year)) mortgage)))
+(display (model-report (linear-regression (list (cons "DGS10" ten-year)) mortgage :lags 12)))
 
 ; --- The changes: what moves a mortgage rate from one month to the next ---------------------------
-; Changes over 4 weeks, taking every 4th week so that no two changes share a week.
-(define every-4th (vector= (vector-map (lambda (i) (mod i 4)) (vector-range (table-row-count weekly))) 0))
-(define (changes v) (vector-drop (vector-diff (vector-select v every-4th) 1) 1))
+; Each week's change over the 4 weeks before it. A week's change shares 3 of its weeks with each of
+; the next 3 weeks' changes, so the standard errors allow for changes up to 3 weeks apart being alike
+; (:lags 3).
+(define (changes v) (vector-drop (vector-diff v 4) 4))
 (display "\n\nThe 4-week change in the mortgage rate, from the changes in SOFR and the 10-year:\n")
 (display (model-report (linear-regression (list (cons "SOFR change" (changes sofr-rate))
                                                 (cons "10-year change" (changes ten-year)))
-                                          (changes mortgage))))
+                                          (changes mortgage) :lags 3)))
 
 ; --- By year: the mortgage rate's spread over each ----------------------------------------------
 (define by-year (table-add-columns weekly (list (cons "year" (vector-map date-year (table-column weekly "date")))

@@ -6,17 +6,22 @@
     deviation
   a quantile       quantile-regression          spline-quantile
   logistic         logistic-regression          spline-logistic
+  a count          poisson-regression           spline-poisson
+  least squares,   ridge-regression,
+    held back        lasso-regression
 
-plus model-report / model-predict / model-evaluate and friends, and
-cross-validate, which measures how well a model predicts data it wasn't
-fit to. A logistic model's curve goes from 0 to 1, unless :floor and
-:ceiling say otherwise. Every fitting function takes :groups, for standard
+and nonlinear-regression, for a formula of your own; plus model-report /
+model-predict / model-evaluate and friends, and cross-validate, which
+measures how well a model predicts data it wasn't fit to. A logistic
+model's curve goes from 0 to 1, unless :floor and :ceiling say otherwise.
+Every fitting function with standard errors takes :groups, for standard
 errors that allow for rows in the same group being alike
-(clustered_covariance).
+(clustered_covariance), and :lags, for rows near each other in time being
+alike (newey_west_covariance).
 
-The fitting math (fit_linear, fit_lad, fit_logistic) uses numpy matrix
-operations, so fitting millions of rows isn't slowed down by a Python-level
-loop.
+The fitting math (fit_linear, fit_lad, fit_logistic, and the rest) uses
+numpy matrix operations, so fitting millions of rows isn't slowed down by a
+Python-level loop.
 The Lisp-callable builtins are listed in BUILTINS at the bottom of this
 file; lisp_builtins.make_global_env() adds them to every environment.
 """
@@ -28,8 +33,8 @@ import random
 import numpy as np
 
 from lisp_core import (
-    Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, Symbol,
-    apply_proc, is_true, keyword_options, list_to_pairs, numeric_value, pairs_to_list, to_display_string,
+    Keyword, LispDate, LispError, LispString, LispVector, NIL, Pair, Procedure, Symbol,
+    apply_proc, is_true, keyword_options, list_to_pairs, numeric_value, pairs_to_list, to_display_string, to_string,
 )
 from lisp_vector_math import to_vector
 
@@ -40,15 +45,18 @@ from lisp_vector_math import to_vector
 
 class LispModel:
     """A fitted linear model, y = intercept + sum(coefficients[i] * x[i]) --
-    fit by least squares ("linear") or least absolute deviation ("lad") -- or
-    logistic model, y = floor + (ceiling - floor) * sigmoid(intercept +
-    sum(coefficients[i] * x[i])), whose floor and ceiling are 0 and 1 unless
-    it was fit with others (fit_logistic_between). `coefficients` has one
-    entry per predictor; `stats` holds the fit statistics model-report shows."""
+    fit by least squares ("linear"), least absolute deviation ("lad"), to a
+    quantile ("quantile"), or by least squares with a penalty ("ridge",
+    "lasso") -- or a logistic model, y = floor + (ceiling - floor) *
+    sigmoid(intercept + sum(coefficients[i] * x[i])), whose floor and
+    ceiling are 0 and 1 unless it was fit with others (fit_logistic_between),
+    or a Poisson model of a count, y = exp(intercept + sum(coefficients[i] *
+    x[i])). `coefficients` has one entry per predictor; `stats` holds the fit
+    statistics model-report shows."""
 
     def __init__(self, kind, coefficients, intercept, stats, predictor_names=None, y_name=None,
                  floor=0.0, ceiling=1.0):
-        self.kind = kind                    # "linear", "lad", or "logistic"
+        self.kind = kind                    # "linear", "lad", "quantile", "ridge", "lasso", "logistic", or "poisson"
         self.coefficients = coefficients    # list of floats, one per predictor
         self.intercept = intercept
         self.k = len(coefficients)          # number of predictors
@@ -71,8 +79,17 @@ class LispModel:
     def predict(self, xs):
         """xs: a list of numbers, one per predictor, in the same order the
         model was fit with."""
-        z = self.intercept + sum(c * x for c, x in zip(self.coefficients, xs))
-        return self.floor + (self.ceiling - self.floor) * sigmoid(z) if self.kind == "logistic" else z
+        return float(self.from_linear_part(np.array([self.intercept + sum(c * x for c, x in zip(self.coefficients, xs))]))[0])
+
+    def from_linear_part(self, z):
+        """The predictions, from z -- intercept + sum(coefficients[i] * x[i]),
+        a numpy array of them: z itself; for a logistic model, the S-curve's
+        height at z; and for a Poisson model, exp(z)."""
+        if self.kind == "logistic":
+            return self.floor + (self.ceiling - self.floor) * _sigmoid_vec(z)
+        if self.kind == "poisson":
+            return np.exp(np.minimum(z, 700.0))
+        return z
 
     def __repr__(self):
         between = "" if self.kind != "logistic" or self.between_0_and_1() else \
@@ -153,7 +170,7 @@ def _unstandardize_coefficients(b0, betas, means, scales):
     return coefficients, intercept
 
 
-def fit_linear(columns, ys, weights=None, groups=None):
+def fit_linear(columns, ys, weights=None, alike=None):
     """Least-squares fit of y = intercept + sum(coef[i] * x[i]). `columns` is
     a list of predictor columns (lists of numbers); `ys` the observed
     values. Returns a LispModel.
@@ -164,9 +181,9 @@ def fit_linear(columns, ys, weights=None, groups=None):
     the weights' relative sizes matter. None weights every observation
     equally.
 
-    `groups` (optional): each observation's group, a number from 0, for
-    standard errors that allow for observations in the same group being
-    alike (clustered_covariance). It doesn't change the fit.
+    `alike` (optional): an AlikeRows, for standard errors that allow for
+    observations in the same group, or near each other in time, being
+    alike. It doesn't change the fit.
 
     The normal equations are built with numpy (X.T @ X, roughly), so
     millions of rows are fast; the small p-by-p solve is plain Python."""
@@ -197,17 +214,17 @@ def fit_linear(columns, ys, weights=None, groups=None):
     ss_residual = float((w * (y_arr - predictions) ** 2).sum())
 
     # Standard errors: the residual variance times (X'WX)^-1, with n - p
-    # degrees of freedom. With groups, the sandwich of clustered_covariance,
-    # each row's score being weight * residual * x, times (n - 1) / (n - p)
-    # (Stata's small-sample correction), with one degree of freedom fewer than
-    # the number of groups. Scaling every weight by the same amount changes
-    # neither.
+    # degrees of freedom. With groups or lags, the sandwich of AlikeRows,
+    # each row's score being weight * residual * x, times Stata's
+    # small-sample correction; with groups, with one degree of freedom fewer
+    # than the number of groups. Scaling every weight by the same amount
+    # changes neither.
     degrees_of_freedom = n - p
-    if degrees_of_freedom > 0 and groups is not None:
+    if degrees_of_freedom > 0 and alike is not None:
         residuals = y_arr - X @ np.array(solved)
-        covariance = clustered_covariance(np.linalg.inv(normal_matrix), X * (w * residuals)[:, None], groups)
-        covariance *= (n - 1) / (n - p)
-        degrees_of_freedom = int(groups.max())          # the number of groups, less 1
+        covariance = alike.covariance(np.linalg.inv(normal_matrix), X * (w * residuals)[:, None])
+        covariance *= alike.least_squares_correction(n, p)
+        degrees_of_freedom = alike.degrees_of_freedom(n, p)
         std_errors = np.sqrt(np.diag(_original_scale_covariance(covariance, means, scales)))
     elif degrees_of_freedom > 0:
         covariance = (ss_residual / degrees_of_freedom) * np.linalg.inv(normal_matrix)
@@ -224,12 +241,12 @@ def fit_linear(columns, ys, weights=None, groups=None):
         "test": "t",
         "degrees_of_freedom": degrees_of_freedom,
     }
-    if groups is not None:
-        model.stats["groups"] = int(groups.max()) + 1
+    if alike is not None:
+        model.stats.update(alike.stats())
     return model
 
 
-def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, groups=None, max_iterations=50, tolerance=1e-8):
+def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, alike=None, max_iterations=50, tolerance=1e-8):
     """Fit p = floor + (ceiling - floor) * sigmoid(intercept + sum(coef[i] *
     x[i])) by maximum likelihood: the curve from 0 to 1, unless the floor
     and ceiling, both between 0 and 1, say otherwise. Each y must be between
@@ -237,7 +254,7 @@ def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, groups=None,
     having probability p. `weights` works as in fit_linear: each
     observation's log-likelihood is multiplied by its weight. (That's
     unrelated to `irls_weight` below, which is part of the method itself.)
-    `groups`, as in fit_linear, is for the standard errors.
+    `alike`, as in fit_linear, is for the standard errors.
 
     The coefficients are found by Fisher scoring, a kind of Newton-Raphson:
     each step solves for the change that would reach the maximum if the
@@ -329,7 +346,7 @@ def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, groups=None,
     prob, factor, irls_weight = probability_and_irls_weight(beta)
     measures = measures_of_fit(prob, y_arr, w, "probability")
     shares = not is_all_0_or_1(y_arr)
-    std_errors = logistic_standard_errors(X, w, y_arr, prob, factor, irls_weight, shares, groups, means, scales)
+    std_errors = logistic_standard_errors(X, w, y_arr, prob, factor, irls_weight, shares, alike, means, scales)
     total_weight = float(w.sum())
 
     # How much y scatters about the fit, compared with 0s and 1s, in the
@@ -354,12 +371,12 @@ def fit_logistic(columns, ys, weights=None, floor=0.0, ceiling=1.0, groups=None,
         "test": "z",
         "auc": measure(measures, "AUC"),
     }
-    if groups is not None:
-        stats["groups"] = int(groups.max()) + 1
+    if alike is not None:
+        stats.update(alike.stats())
     return LispModel("logistic", coefficients, intercept, stats, floor=floor, ceiling=ceiling)
 
 
-def logistic_standard_errors(X, w, y, prob, factor, irls_weight, shares, groups, means, scales):
+def logistic_standard_errors(X, w, y, prob, factor, irls_weight, shares, alike, means, scales):
     """The standard errors of a logistic fit's coefficients, the intercept first, on the scale of the original predictors
     (whose means and scales these are). X has a column of 1s and then the standardized predictors; prob, factor and
     irls_weight are each row's, at the fitted coefficients (see fit_logistic's probability_and_irls_weight); shares says
@@ -376,7 +393,7 @@ def logistic_standard_errors(X, w, y, prob, factor, irls_weight, shares, groups,
     # average over many loans, and scatters far less, so for shares the
     # standard errors come from the scatter of y about the fit instead: the
     # sandwich of clustered_covariance, with each row its own group. With
-    # groups, it's that sandwich with the groups, for 0s and 1s too. Each
+    # groups or lags, it's AlikeRows' sandwich, for 0s and 1s too. Each
     # row's score is the slope of its log-likelihood: weight * (y - p) *
     # factor * x.
     relative_w = w * (n / float(w.sum()))
@@ -386,9 +403,11 @@ def logistic_standard_errors(X, w, y, prob, factor, irls_weight, shares, groups,
     try:
         with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
             covariance = np.linalg.inv(information)
-            if groups is not None or shares:
-                covariance = clustered_covariance(covariance, X * (relative_w * (y - prob) * factor)[:, None],
-                                                  groups if groups is not None else np.arange(n))
+            scores = X * (relative_w * (y - prob) * factor)[:, None]
+            if alike is not None:
+                covariance = alike.covariance(covariance, scores)
+            elif shares:
+                covariance = clustered_covariance(covariance, scores, np.arange(n))
             variances = np.diag(_original_scale_covariance(covariance, means, scales))
             std_errors = np.sqrt(np.where(variances >= 0, variances, np.nan))
     except np.linalg.LinAlgError:
@@ -403,7 +422,7 @@ BOUND_GAP = 0.01                # how far apart the floor and the ceiling must b
 CHI_SQUARED_95 = 3.84           # a log-likelihood this much less, times 2, is a clearly worse fit (95%)
 
 
-def fit_logistic_bounds(columns, ys, weights, floor, ceiling, who, groups=None):
+def fit_logistic_bounds(columns, ys, weights, floor, ceiling, who, alike=None):
     """A logistic model of a probability whose floor, or ceiling, or both,
     are fit to the data too (the other being given, or 0 or 1): the ones
     that make the data most likely. Every y must be between 0 and 1.
@@ -417,7 +436,7 @@ def fit_logistic_bounds(columns, ys, weights, floor, ceiling, who, groups=None):
     makes the range roughly a 95% confidence interval. That's in units of
     the average weight, and for shares, which scatter less than 0s and 1s,
     times how much less (the model's stats["dispersion"]): a quasi-
-    likelihood ratio. It doesn't allow for groups. The model's
+    likelihood ratio. It doesn't allow for groups or lags. The model's
     stats["fitted"] has those ranges."""
     for y in ys:
         if not 0 <= y <= 1:
@@ -458,7 +477,7 @@ def fit_logistic_bounds(columns, ys, weights, floor, ceiling, who, groups=None):
             raise LispError("%s: the floor must be at least %s below the ceiling" % (who, BOUND_GAP))
         best = max(pairs, key=lambda pair: log_likelihood_at(*pair))
     best_floor, best_ceiling = best
-    model = fit_logistic(columns, ys, weights, best_floor, best_ceiling, groups)
+    model = fit_logistic(columns, ys, weights, best_floor, best_ceiling, alike)
     best_log_likelihood = log_likelihood_at(best_floor, best_ceiling)
 
     def likelihood_range(at, value, lowest, highest):
@@ -484,7 +503,7 @@ def fit_logistic_bounds(columns, ys, weights, floor, ceiling, who, groups=None):
     return model
 
 
-def fit_logistic_between(columns, ys, weights, floor, ceiling, who, groups=None):
+def fit_logistic_between(columns, ys, weights, floor, ceiling, who, alike=None):
     """A logistic model of y between a floor and a ceiling:
 
         y = floor + (ceiling - floor) * sigmoid(intercept + sum(coef[i] * x[i]))
@@ -508,20 +527,20 @@ def fit_logistic_between(columns, ys, weights, floor, ceiling, who, groups=None)
       model's stats say how many were.
 
     A floor or ceiling of FIT is fit to the data (fit_logistic_bounds).
-    `who` is the function to name in an error message; `groups` is for the
+    `who` is the function to name in an error message; `alike` is for the
     standard errors, as in fit_linear."""
     if floor == FIT or ceiling == FIT:
-        return fit_logistic_bounds(columns, ys, weights, floor, ceiling, who, groups)
+        return fit_logistic_bounds(columns, ys, weights, floor, ceiling, who, alike)
     if floor is None or (0 <= floor and ceiling <= 1):
         for y in ys:
             if not 0 <= y <= 1:
                 raise LispError("%s: every y must be between 0 and 1, as a probability is (got %r) -- or give the "
                                 "curve a :floor or :ceiling outside 0 and 1, for a number that isn't one" % (who, y))
         if floor is None:
-            return fit_logistic(columns, ys, weights, groups=groups)
-        return fit_logistic(columns, ys, weights, floor, ceiling, groups)
+            return fit_logistic(columns, ys, weights, alike=alike)
+        return fit_logistic(columns, ys, weights, floor, ceiling, alike)
     rescaled = [(y - floor) / (ceiling - floor) for y in ys]
-    model = fit_logistic(columns, [min(max(r, 0.0), 1.0) for r in rescaled], weights, groups=groups)
+    model = fit_logistic(columns, [min(max(r, 0.0), 1.0) for r in rescaled], weights, alike=alike)
     model.floor, model.ceiling = floor, ceiling
     model.stats["below_floor"] = sum(1 for r in rescaled if r < 0)
     model.stats["above_ceiling"] = sum(1 for r in rescaled if r > 1)
@@ -598,7 +617,7 @@ def check_loss(residuals, quantile):
     return np.where(residuals >= 0, quantile * residuals, (quantile - 1) * residuals)
 
 
-def fit_quantile(columns, ys, quantile, weights=None, groups=None, max_iterations=1000, kind="quantile",
+def fit_quantile(columns, ys, quantile, weights=None, alike=None, max_iterations=1000, kind="quantile",
                  who="quantile-regression"):
     """Quantile regression: the fit of y = intercept + sum(coef[i] * x[i])
     with `quantile` of the points below it (0.9: 90% below, 10% above). It
@@ -609,7 +628,7 @@ def fit_quantile(columns, ys, quantile, weights=None, groups=None, max_iteration
     (fit_lad): a point far from the others pulls a least-squares fit toward
     it by the square of its distance, but this only in proportion to it --
     so a few outliers barely move it. With no predictors, it would be the
-    quantile of y. `columns`, `ys`, `weights`, and `groups` are as for
+    quantile of y. `columns`, `ys`, `weights`, and `alike` are as for
     fit_linear. Returns a LispModel of the given kind.
 
     The fit is found by quantile_fit_through_points, on standardized
@@ -645,7 +664,7 @@ def fit_quantile(columns, ys, quantile, weights=None, groups=None, max_iteration
     total_without = float((w * check_loss(y - weighted_quantile(y, w, quantile), quantile)).sum())
     pseudo_r_squared = (1 - total / total_without) if total_without > 0 else float("nan")
 
-    std_errors, degrees_of_freedom = quantile_standard_errors(X, w, residuals, quantile, groups, means, scales,
+    std_errors, degrees_of_freedom = quantile_standard_errors(X, w, residuals, quantile, alike, means, scales,
                                                               on_fit_tolerance)
 
     below, above = int((residuals < -on_fit_tolerance).sum()), int((residuals > on_fit_tolerance).sum())
@@ -663,8 +682,8 @@ def fit_quantile(columns, ys, quantile, weights=None, groups=None, max_iteration
         "test": "t",
         "degrees_of_freedom": degrees_of_freedom,
     }
-    if groups is not None:
-        stats["groups"] = int(groups.max()) + 1
+    if alike is not None:
+        stats.update(alike.stats())
     return LispModel(kind, coefficients, intercept, stats)
 
 
@@ -750,7 +769,7 @@ def quantile_fit_through_points(X, y, w, quantile, max_iterations):
     return beta, total, iterations, converged
 
 
-def quantile_standard_errors(X, w, residuals, quantile, groups, means, scales, on_fit_tolerance):
+def quantile_standard_errors(X, w, residuals, quantile, alike, means, scales, on_fit_tolerance):
     """The standard errors of a quantile fit's coefficients, the intercept first, on the scale of the original
     predictors (whose means and scales these are), and their degrees of freedom. X has a column of 1s and then the
     standardized predictors; residuals are y less the fit; a point closer to the fit than on_fit_tolerance is on it."""
@@ -778,11 +797,12 @@ def quantile_standard_errors(X, w, residuals, quantile, groups, means, scales, o
     # median, where only a point or two is beyond the fit.) Scaling every
     # weight alike doesn't change them.
     #
-    # With groups, quantile * (1 - quantile) * B is replaced by the "meat" of
-    # clustered_covariance, each row's score being weight * x * (quantile, if
-    # it's above the fit; quantile - 1, if below; 0, if on it), with one
-    # degree of freedom fewer than the number of groups. (With every row its
-    # own group, the meat averages out to quantile * (1 - quantile) * B.)
+    # With groups or lags, quantile * (1 - quantile) * B is replaced by the
+    # "meat" of AlikeRows' sandwich, each row's score being weight * x *
+    # (quantile, if it's above the fit; quantile - 1, if below; 0, if on it);
+    # with groups, with one degree of freedom fewer than the number of
+    # groups. (With every row its own group, the meat averages out to
+    # quantile * (1 - quantile) * B.)
     n, p = X.shape
     degrees_of_freedom = n - p
     off_fit = residuals[np.abs(residuals) > on_fit_tolerance]
@@ -795,13 +815,13 @@ def quantile_standard_errors(X, w, residuals, quantile, groups, means, scales, o
                           weighted_quantile(residuals, w, quantile - h)) / (2 * h) if h > 0 else 0.0
         sparsity = max(as_if_normal, from_residuals)
         A_inverse = np.linalg.inv((X.T * w) @ X)
-        if groups is None:
+        if alike is None:
             covariance = quantile * (1 - quantile) * sparsity ** 2 * (A_inverse @ ((X.T * w ** 2) @ X) @ A_inverse)
         else:
             pull = np.where(residuals > on_fit_tolerance, quantile,
                             np.where(residuals < -on_fit_tolerance, quantile - 1, 0.0))
-            covariance = sparsity ** 2 * clustered_covariance(A_inverse, X * (w * pull)[:, None], groups)
-            degrees_of_freedom = int(groups.max())          # the number of groups, less 1
+            covariance = sparsity ** 2 * alike.covariance(A_inverse, X * (w * pull)[:, None])
+            degrees_of_freedom = alike.degrees_of_freedom(n, p)
         std_errors = np.sqrt(np.diag(_original_scale_covariance(covariance, means, scales)))
     else:
         std_errors = np.full(p, np.nan)
@@ -834,12 +854,528 @@ def _normal_quantile(q):
     return (low + high) / 2
 
 
-def fit_lad(columns, ys, weights=None, groups=None):
+def fit_lad(columns, ys, weights=None, alike=None):
     """Least absolute deviation fit of y = intercept + sum(coef[i] * x[i]):
     the one that makes sum(weight[i] * |y[i] - prediction[i]|) smallest,
     rather than the sum of squares -- the quantile fit for the median
     (fit_quantile). Returns a LispModel of kind "lad"."""
-    return fit_quantile(columns, ys, 0.5, weights, groups, kind="lad", who="lad-regression")
+    return fit_quantile(columns, ys, 0.5, weights, alike, kind="lad", who="lad-regression")
+
+
+# ---------------------------------------------------------------------------
+# Poisson regression, for counts
+# ---------------------------------------------------------------------------
+
+def fit_poisson(columns, ys, weights=None, alike=None, max_iterations=100, tolerance=1e-8, who="poisson-regression"):
+    """Poisson regression, for counts: y = exp(intercept + sum(coef[i] *
+    x[i])), fit by maximum likelihood, as if each y were a count -- the
+    defaults in a month, say -- whose average is that. The average can't go
+    below 0, and a coefficient says how much the logarithm of the average
+    changes for each unit of its predictor: exp(coefficient) is the factor
+    the average is multiplied by. Every y must be 0 or more, but needn't be
+    a whole number: for counts out of different numbers -- defaults out of
+    each pool's loans -- give the rate, count / number, as y and the number
+    as the weight, and the fit is the one the counts would give. `weights`
+    and `alike` are as for fit_linear.
+
+    The coefficients are found by Newton-Raphson, with step halving, as
+    fit_logistic's are. The standard errors are the likelihood's, times the
+    square root of the dispersion -- how much more the counts vary about
+    the fit than counts of that average would by chance, Pearson's
+    chi-squared / (n - p) -- as R's quasipoisson does: real counts often
+    vary more, and then the likelihood's alone would be too small. (With
+    weights, the dispersion is in their units: with weights that are the
+    numbers the counts are out of, it's 1 for counts that vary only by
+    chance.) With groups or lags, they're AlikeRows' sandwich instead. The
+    test is a z test."""
+    k = len(columns)
+    n = len(ys)
+    if n == 0:
+        raise LispError("%s: no data to fit" % who)
+    for col in columns:
+        if len(col) != n:
+            raise LispError("%s: all vectors must be the same length" % who)
+    for y in ys:
+        if not y >= 0:
+            raise LispError("%s: every y must be 0 or more, a count or a rate (got %r)" % (who, y))
+    if weights is None:
+        weights = [1.0] * n
+
+    std_columns, means, scales = _standardize_columns(columns)
+    p = k + 1
+    X = np.column_stack([np.ones(n)] + [np.asarray(col, dtype=np.float64) for col in std_columns])
+    w = np.asarray(weights, dtype=np.float64)
+    y = np.asarray(ys, dtype=np.float64)
+    average_y = float((w * y).sum() / w.sum())
+    if average_y == 0:
+        raise LispError("%s: every y is 0, so there is nothing to fit" % who)
+
+    def averages(beta):
+        """Each row's average count, exp(intercept + sum(coef[i] * x[i]))."""
+        return np.exp(np.minimum(X @ beta, 700.0))
+
+    def log_likelihood_of(mu):
+        """The log-likelihood, leaving out the log(y!) that doesn't depend on the coefficients."""
+        return float((w * (y * np.log(np.maximum(mu, 1e-300)) - mu)).sum())
+
+    beta = np.zeros(p)
+    beta[0] = math.log(average_y)                   # start with every row's average the average of y
+    converged = False
+    iterations_used = 0
+    for iteration in range(1, max_iterations + 1):
+        iterations_used = iteration
+        mu = averages(beta)
+        gradient = X.T @ (w * (y - mu))
+        information = (X.T * (w * mu)) @ X
+        log_likelihood = log_likelihood_of(mu)
+        try:
+            delta = np.array(solve_linear_system(information.tolist(), gradient.tolist()))
+        except LispError:
+            # The information is gone: some rows' averages have gone to 0 --
+            # a coefficient heading for minus infinity, where every count in
+            # some range of a predictor is 0. Stop; it hasn't converged.
+            break
+        for _ in range(30):
+            if log_likelihood_of(averages(beta + delta)) >= log_likelihood - 1e-10 * abs(log_likelihood):
+                break
+            delta = delta / 2
+        beta = beta + delta
+        if max(abs(d) for d in delta) < tolerance:
+            converged = True
+            break
+
+    coefficients, intercept = _unstandardize_coefficients(float(beta[0]), beta[1:].tolist(), means, scales)
+    mu = averages(beta)
+    dispersion = float((w * (y - mu) ** 2 / np.maximum(mu, 1e-300)).sum()) / (n - p) if n > p else float("nan")
+    try:
+        with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+            bread = np.linalg.inv((X.T * (w * mu)) @ X)
+            if alike is not None:
+                covariance = alike.covariance(bread, X * (w * (y - mu))[:, None])
+            else:
+                covariance = dispersion * bread
+            variances = np.diag(_original_scale_covariance(covariance, means, scales))
+            std_errors = np.sqrt(np.where(variances >= 0, variances, np.nan))
+    except np.linalg.LinAlgError:
+        std_errors = np.full(p, np.nan)
+
+    measures = measures_of_fit(mu, y, w, "count")
+    stats = {
+        "pseudo_r_squared": measure(measures, "pseudo R-squared"),
+        "measures": measures,                   # see measures_of_fit
+        "dispersion": dispersion,
+        "iterations": iterations_used,
+        "converged": converged,
+        "n": n,
+        "std_errors": std_errors.tolist(),      # intercept first, then each coefficient
+        "test": "z",
+    }
+    if alike is not None:
+        stats.update(alike.stats())
+    return LispModel("poisson", coefficients, intercept, stats)
+
+
+def poisson_deviance(ys, averages, weights):
+    """How far counts are from the averages a model gives them, as the
+    Poisson likelihood measures it: 2 * sum(weight * (y log(y / average) -
+    (y - average))), which is 0 when every count is its average (y log y
+    being 0 for a y of 0)."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        y_log = np.where(ys > 0, ys * np.log(ys / np.maximum(averages, 1e-300)), 0.0)
+    return float(2 * (weights * (y_log - (ys - averages))).sum())
+
+
+# ---------------------------------------------------------------------------
+# Ridge and lasso: least squares with the coefficients held back
+# ---------------------------------------------------------------------------
+
+def fit_penalized(columns, ys, weights, penalty, kind, who):
+    """A ridge or a lasso fit (kind "ridge" or "lasso") of y = intercept +
+    sum(coef[i] * x[i]): least squares, but with a cost for each
+    coefficient's size, so that the coefficients come out smaller --
+    pulled toward 0 -- and steadier. With many predictors that go together,
+    least squares can give two nearly alike ones large coefficients of
+    opposite signs, which nearly cancel, and which a little noise swings
+    about; these don't.
+
+    The cost is on the coefficients of the standardized predictors, each
+    rescaled to mean 0 and standard deviation 1: there, a coefficient is how
+    much y changes for a change of one standard deviation in its predictor,
+    so each costs the same for the same effect, whatever its predictor's
+    units. The intercept costs nothing. With W the total weight, the fit
+    makes smallest
+
+      ridge   sum(weight * residual^2) / (2 W) + penalty / 2 * sum(coefficient^2)
+      lasso   sum(weight * residual^2) / (2 W) + penalty * sum(|coefficient|)
+
+    For predictors that don't go together at all (uncorrelated), each of
+    ridge's standardized coefficients is least squares' divided by 1 +
+    penalty, and each of lasso's is least squares' moved toward 0 by the
+    penalty -- and is 0 if it was nearer 0 than that. So lasso leaves
+    predictors out, which is what it's for. Ridge's penalty has no units;
+    lasso's is in y's. A penalty of 0 is least squares.
+
+    There are no standard errors: the coefficients are pulled toward 0 on
+    purpose, which the usual ones don't allow for."""
+    k = len(columns)
+    n = len(ys)
+    if n == 0:
+        raise LispError("%s: no data to fit" % who)
+    for col in columns:
+        if len(col) != n:
+            raise LispError("%s: all vectors must be the same length" % who)
+    if weights is None:
+        weights = [1.0] * n
+
+    std_columns, means, scales = _standardize_columns(columns)
+    Z = np.column_stack([np.asarray(col, dtype=np.float64) for col in std_columns])
+    y = np.asarray(ys, dtype=np.float64)
+    share = np.asarray(weights, dtype=np.float64) / float(np.sum(weights))      # each row's share of the weight
+    Z_mean, y_mean = share @ Z, float(share @ y)
+    Z_centered, y_centered = Z - Z_mean, y - y_mean          # so that the intercept, which costs nothing, drops out
+    spread = share @ (Z_centered ** 2)                         # each predictor's (weighted) variance
+    if np.any(spread == 0):
+        raise LispError("%s: predictor %d has no variation among the rows that have weight"
+                        % (who, int(np.flatnonzero(spread == 0)[0]) + 1))
+
+    if kind == "ridge":
+        standardized = np.linalg.solve((Z_centered.T * share) @ Z_centered + penalty * np.eye(k),
+                                       (Z_centered.T * share) @ y_centered)
+        sweeps, converged = None, True
+    else:
+        standardized, sweeps, converged = lasso_coordinate_descent(Z_centered, y_centered, share, spread, penalty)
+    coefficients, intercept = _unstandardize_coefficients(y_mean - float(Z_mean @ standardized),
+                                                          standardized.tolist(), means, scales)
+    predictions = intercept + np.column_stack([np.asarray(col, dtype=np.float64) for col in columns]) @ \
+        np.asarray(coefficients)
+    stats = {
+        "penalty": penalty,
+        "standardized": standardized.tolist(),     # each predictor's coefficient on the standardized scale
+        # (lasso) the smallest penalty that leaves every predictor out: there, no predictor pulls on y, less the
+        # average, more than the penalty
+        "penalty_leaving_all_out": float(np.max(np.abs((Z_centered.T * share) @ y_centered))),
+        "measures": measures_of_fit(predictions, y, share, "least squares"),
+        "n": n,
+        "converged": converged,
+    }
+    if sweeps is not None:
+        stats["iterations"] = sweeps
+    return LispModel(kind, coefficients, intercept, stats)
+
+
+def lasso_coordinate_descent(Z, y, share, spread, penalty, max_sweeps=10000, tolerance=1e-10):
+    """The lasso's standardized coefficients, by coordinate descent: over and
+    over, each coefficient in turn is set to its best value with the others
+    held where they are, until a sweep through them all changes none of them
+    by more than a tiny amount. Its best value is easy to find: with the
+    others held, the coefficient's `pull` -- how hard y, less the other
+    predictors' parts, pulls on it -- moved toward 0 by the penalty (0, if
+    the pull is weaker than the penalty), and divided by its predictor's
+    spread. Z's columns and y are centered (their weighted averages are 0);
+    share is each row's share of the weight, and spread each column's
+    weighted variance. Returns (coefficients, sweeps, converged)."""
+    k = Z.shape[1]
+    b = np.zeros(k)
+    residual = y.copy()                             # y less the predictors' parts, b @ Z's rows
+    small = tolerance * max(math.sqrt(float(share @ (y ** 2))), 1e-300)
+    for sweep in range(1, max_sweeps + 1):
+        largest_change = 0.0
+        for j in range(k):
+            pull = float(share @ (Z[:, j] * residual)) + spread[j] * b[j]
+            best = math.copysign(max(abs(pull) - penalty, 0.0), pull) / spread[j]
+            if best != b[j]:
+                residual -= Z[:, j] * (best - b[j])
+                largest_change = max(largest_change, abs(best - b[j]) * math.sqrt(spread[j]))
+                b[j] = best
+        if largest_change <= small:
+            return b, sweep, True
+    return b, max_sweeps, False
+
+
+def choose_penalty(columns, ys, weights, penalties, kind, folds, seed, who):
+    """Of the penalties, the one whose ridge or lasso fits predict best the
+    rows they weren't fit to, as cross-validate measures it: the rows are
+    dealt into folds, by the seed, and, for each penalty, a model is fit to
+    all the rows but each fold's in turn, and predicts that fold's. The
+    penalty whose predictions' root mean squared error, over every row (each
+    counting by its weight), is smallest wins. Returns it, and a list of
+    [penalty, that error] for each penalty."""
+    n = len(ys)
+    _, fits, _ = _folds_split({"folds": folds, "seed": seed}, n, who)
+    y = np.asarray(ys, dtype=np.float64)
+    w = np.ones(n) if weights is None else np.asarray(weights, dtype=np.float64)
+    columns = [np.asarray(col, dtype=np.float64) for col in columns]
+    tried = []
+    for penalty in penalties:
+        squared_errors = np.empty(n)
+        for _, kept, held_out in fits:
+            model = fit_penalized([col[kept].tolist() for col in columns], y[kept].tolist(), w[kept].tolist(),
+                                  penalty, kind, who)
+            squared_errors[held_out] = (y[held_out] - predict_all(model, [col[held_out] for col in columns])) ** 2
+        tried.append([penalty, math.sqrt(float((w * squared_errors).sum() / w.sum()))])
+    best = min(tried, key=lambda entry: entry[1])[0]
+    return best, tried
+
+
+def penalty_argument(penalty, who):
+    """ridge-regression's or lasso-regression's penalty: a number, 0 or more, or a list (or vector) of them, to choose
+    among by cross-validation -- as a float, or a list of floats."""
+    def check(value):
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not value >= 0 or math.isinf(value):
+            raise LispError("%s: the penalty must be a number, 0 or more, or a list of them to choose among, not %s"
+                            % (who, to_display_string(value)))
+        return float(value)
+    if isinstance(penalty, LispVector):
+        penalty = list_to_pairs(penalty.items.tolist())
+    if isinstance(penalty, Pair) or penalty is NIL:
+        penalties = [check(v) for v in pairs_to_list(penalty)]
+        if not penalties:
+            raise LispError("%s: the list of penalties to choose among is empty" % who)
+        return penalties
+    return check(penalty)
+
+
+def penalized_regression_fn(kind):
+    """ridge-regression or lasso-regression, as a builtin."""
+    who = kind + "-regression"
+
+    def fit(x_arg, y_arg, penalty, *arguments):
+        penalty = penalty_argument(penalty, who)
+        weight_vec, options = flat_arguments(arguments, ["folds", "seed"], who, alike_options=False)
+        if not isinstance(penalty, list) and ("folds" in options or "seed" in options):
+            raise LispError("%s: :folds and :seed are for choosing among several penalties, a list of them" % who)
+
+        def fit_with(columns, ys, weights, alike):
+            if not isinstance(penalty, list):
+                return fit_penalized(columns, ys, weights, penalty, kind, who)
+            best, tried = choose_penalty(columns, ys, weights, penalty, kind, options.get("folds", 5),
+                                         options.get("seed", 1), who)
+            model = fit_penalized(columns, ys, weights, best, kind, who)
+            model.stats["penalties_tried"] = tried
+            model.stats["folds"] = options.get("folds", 5)
+            return model
+
+        return fit_flat(x_arg, y_arg, weight_vec, {}, fit_with, who)
+
+    fit.__doc__ = ("(%s x y penalty [weights] [:folds 5 :seed 1]) -- a %s fit: see fit_penalized. A list of "
+                   "penalties is chosen among by cross-validation (choose_penalty)." % (who, kind))
+    return fit
+
+
+# ---------------------------------------------------------------------------
+# Nonlinear least squares: a formula of your own
+# ---------------------------------------------------------------------------
+
+class LispNonlinearModel:
+    """A fitted nonlinear model, y = formula(x1, ..., xk, parameter1, ...,
+    parameterm): `formula` is a Lisp procedure whose first k parameters are
+    the predictors and whose others are the parameters that were fit, whose
+    names are parameter_names and whose values are `parameters`. It's given
+    each predictor's whole column, a vector, and the parameters' values,
+    numbers, and gives a vector of predictions (formula_predictions)."""
+
+    kind = "nonlinear"
+
+    def __init__(self, formula, parameter_names, parameters, k, stats, predictor_names=None, y_name=None):
+        self.formula = formula
+        self.parameter_names = parameter_names      # list of str, one per parameter
+        self.parameters = parameters                # list of floats
+        self.k = k                                  # the number of predictors
+        self.stats = stats
+        self.predictor_names = predictor_names      # as in LispModel
+        self.y_name = y_name
+
+    def is_probability(self):
+        return False
+
+    def predict_columns(self, columns):
+        """The predictions for each row of the columns (one for each predictor), as a numpy array."""
+        return formula_predictions(self.formula, columns, self.parameters, "model-predict")
+
+    def predict(self, xs):
+        """The prediction for one row: xs is a value for each predictor."""
+        return float(self.predict_columns([[x] for x in xs])[0])
+
+    def __repr__(self):
+        return "#<nonlinear-model %s>" % " ".join("%s=%.6g" % (name, value)
+                                                  for name, value in zip(self.parameter_names, self.parameters))
+
+
+def formula_predictions(formula, columns, parameters, who):
+    """What a nonlinear model's formula gives for every row at once: it's
+    called with a vector for each predictor's column and a number for each
+    parameter, and must give a vector, with a value for each row (or one
+    number, for every row). A numpy array."""
+    n = len(columns[0])
+    value = apply_proc(formula, [LispVector(np.asarray(col, dtype=np.float64)) for col in columns] +
+                       [float(v) for v in parameters])
+    if isinstance(value, LispVector):
+        values = np.asarray(value.items, dtype=np.float64)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        values = np.full(n, float(value))
+    else:
+        raise LispError("%s: the formula must give a vector, a prediction for each row, not %s"
+                        % (who, to_display_string(value)))
+    if len(values) != n:
+        raise LispError("%s: the formula gave %d values, for %d rows" % (who, len(values), n))
+    return values
+
+
+def fit_nonlinear(formula, columns, ys, start, weights=None, alike=None, max_iterations=200,
+                  who="nonlinear-regression"):
+    """Nonlinear least squares: the parameters of a formula of your own,
+    y = formula(x1, ..., xk, parameter1, ..., parameterm), that make
+    sum(weight[i] * (y[i] - prediction[i])^2) smallest -- as least squares
+    does for a straight line, but for any curve: an S-curve of a shape you
+    choose, a decay, a yield curve's. `formula` is a Lisp procedure of the
+    predictors and then the parameters (formula_predictions); `start` has a
+    first guess at each parameter. `weights` and `alike` are as for
+    fit_linear. Returns a LispNonlinearModel.
+
+    There's no formula for the answer, as there is for a straight line, so
+    it's found by steps, from the start (Levenberg and Marquardt's method).
+    At each step, how each prediction changes with each parameter -- the
+    slopes, found by nudging each parameter a little either way -- makes
+    the formula a straight line in the parameters, near where they are, and
+    the step goes to where least squares says that line is best. A step
+    that goes too far, and makes the sum of squares bigger, is replaced by a
+    shorter one, more nearly downhill; once steps succeed again, they
+    lengthen again. It stops when a step is tiny, or no longer lowers the
+    sum of squares by more than a tiny part of it. A formula can have more than one
+    best fit, or none, so the start matters: a guess of the right sign and
+    size is enough, most often.
+
+    The standard errors are those of least squares for that straight line,
+    at the fit: the residual variance times (J'WJ)^-1, J being the slopes,
+    with n - m degrees of freedom; with groups or lags, AlikeRows' sandwich,
+    as for fit_linear."""
+    k, m, n = len(columns), len(start), len(ys)
+    if n <= m:
+        raise LispError("%s: %d observation(s) is too few to fit %d parameters" % (who, n, m))
+    for col in columns:
+        if len(col) != n:
+            raise LispError("%s: all vectors must be the same length" % who)
+    if weights is None:
+        weights = [1.0] * n
+    w = np.asarray(weights, dtype=np.float64)
+    y = np.asarray(ys, dtype=np.float64)
+    columns = [np.asarray(col, dtype=np.float64) for col in columns]
+
+    def predictions(parameters):
+        return formula_predictions(formula, columns, parameters, who)
+
+    def sum_of_squares(parameters):
+        """The weighted sum of squared residuals: infinity where the formula gives no number."""
+        try:
+            with np.errstate(invalid="ignore", over="ignore"):
+                total = float((w * (y - predictions(parameters)) ** 2).sum())
+        except LispError:
+            return math.inf
+        return total if math.isfinite(total) else math.inf
+
+    def slopes(parameters):
+        """How each row's prediction changes with each parameter: an n x m matrix, by central differences."""
+        J = np.empty((n, m))
+        for j in range(m):
+            nudge = 6e-6 * max(abs(parameters[j]), 1e-3)
+            up, down = parameters.copy(), parameters.copy()
+            up[j] += nudge
+            down[j] -= nudge
+            J[:, j] = (predictions(up) - predictions(down)) / (2 * nudge)
+        return J
+
+    parameters = np.asarray(start, dtype=np.float64)
+    current = float((w * (y - predictions(parameters)) ** 2).sum())     # (an error in the formula is the user's to see)
+    if not math.isfinite(current):
+        raise LispError("%s: the formula doesn't give a number for every row at the start values" % who)
+    damping = 1e-3          # how much shorter, and more nearly downhill, than least squares' step a step is
+    converged = False
+    iteration = 0
+    for iteration in range(1, max_iterations + 1):
+        J = slopes(parameters)
+        curvature = (J.T * w) @ J
+        downhill = (J.T * w) @ (y - predictions(parameters))
+        stepped = False
+        while damping <= 1e10:
+            try:
+                step = np.linalg.solve(curvature + damping * np.diag(np.diag(curvature) + 1e-12 * np.max(np.diag(curvature))),
+                                       downhill)
+            except np.linalg.LinAlgError:
+                damping *= 10
+                continue
+            trial = parameters + step
+            trial_sum = sum_of_squares(trial)
+            if trial_sum <= current:
+                stepped = True
+                break
+            damping *= 10
+        if not stepped:             # no step, however short, lowers it: the fit is at its best, to the arithmetic's precision
+            converged = True
+            break
+        lowered = current - trial_sum
+        parameters, current = trial, trial_sum
+        damping = max(damping / 10, 1e-12)
+        if lowered <= 1e-15 * current or np.all(np.abs(step) <= 1e-10 * (np.abs(parameters) + 1e-10)):
+            converged = True
+            break
+
+    residuals = y - predictions(parameters)
+    J = slopes(parameters)
+    degrees_of_freedom = n - m
+    try:
+        bread = np.linalg.inv((J.T * w) @ J)
+        if alike is not None:
+            covariance = alike.covariance(bread, J * (w * residuals)[:, None]) * alike.least_squares_correction(n, m)
+            degrees_of_freedom = alike.degrees_of_freedom(n, m)
+        else:
+            covariance = current / degrees_of_freedom * bread
+        with np.errstate(invalid="ignore"):
+            std_errors = np.sqrt(np.where(np.diag(covariance) >= 0, np.diag(covariance), np.nan))
+    except np.linalg.LinAlgError:       # a parameter that makes no difference to the predictions
+        std_errors = np.full(m, np.nan)
+
+    stats = {
+        "measures": measures_of_fit(y - residuals, y, w, "least squares"),
+        "sum_of_squares": current,
+        "iterations": iteration,
+        "converged": converged,
+        "n": n,
+        "std_errors": std_errors.tolist(),      # one for each parameter
+        "test": "t",
+        "degrees_of_freedom": degrees_of_freedom,
+    }
+    if alike is not None:
+        stats.update(alike.stats())
+    names = [str(name) for name in formula.params[k:]]
+    return LispNonlinearModel(formula, names, parameters.tolist(), k, stats)
+
+
+def nonlinear_regression_fn(x_arg, y_arg, formula, start, *arguments):
+    """(nonlinear-regression x y formula start [weights] [:groups g :lags l])
+    -- fit a formula's parameters by least squares: see fit_nonlinear. The
+    formula is a lambda of the predictors, then the parameters --
+    (lambda (x a b c) ...) for one predictor and three parameters -- and
+    start has a number for each parameter."""
+    who = "nonlinear-regression"
+    if not isinstance(formula, Procedure) or formula.optional_specs or formula.rest_param or formula.keyword_specs:
+        raise LispError("%s: the formula must be a lambda of the predictors and then the parameters, such as "
+                        "(lambda (x a b) (* a (exp (* b x)))), not %s" % (who, to_display_string(formula)))
+    if isinstance(start, LispVector):
+        start = list_to_pairs(start.items.tolist())
+    starts = pairs_to_list(start) if isinstance(start, Pair) or start is NIL else None
+    if starts is None or not starts or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in starts):
+        raise LispError("%s: start must be a list of numbers, a first guess at each parameter, not %s"
+                        % (who, to_display_string(start)))
+    weight_vec, options = flat_arguments(arguments, [], who)
+
+    def fit(columns, ys, weights, alike):
+        if len(formula.params) != len(columns) + len(starts):
+            raise LispError("%s: the formula takes %d argument(s), but there are %d predictor(s) and %d start value(s): "
+                            "it takes each predictor, then each parameter" % (who, len(formula.params), len(columns),
+                                                                              len(starts)))
+        return fit_nonlinear(formula, columns, ys, [float(v) for v in starts], weights, alike)
+
+    return fit_flat(x_arg, y_arg, weight_vec, options, fit, who)
 
 
 # ---------------------------------------------------------------------------
@@ -885,6 +1421,59 @@ def clustered_covariance(bread, scores, groups):
     np.add.at(group_sums, groups, scores)
     meat = group_sums.T @ group_sums
     return number_of_groups / (number_of_groups - 1) * (bread @ meat @ bread)
+
+
+def newey_west_covariance(bread, scores, lags):
+    """The covariance of a fit's coefficients when its rows are in time order
+    and rows near each other in time are alike -- the weeks of a rate that
+    moves slowly, whose misses run in streaks -- so that they aren't each
+    new information (Newey and West's standard errors, also called HAC).
+
+    As in clustered_covariance, the covariance is bread @ meat @ bread. Here
+    the meat adds up each row's score times itself and times the scores of
+    the rows up to `lags` before and after it, those further away counting
+    less: a row l apart counts 1 - l / (lags + 1) (Bartlett's weights, which
+    keep the meat from being negative). With lags 0 it would be every row
+    on its own."""
+    meat = scores.T @ scores
+    for lag in range(1, lags + 1):
+        together = scores[lag:].T @ scores[:-lag]       # each row's score times that of the row `lag` before it
+        meat += (1 - lag / (lags + 1)) * (together + together.T)
+    return bread @ meat @ bread
+
+
+class AlikeRows:
+    """What a fit's :groups or :lags option says about its rows, for its
+    standard errors: that they aren't each new information, because some
+    of them are alike. One of the two is given.
+
+      groups   each row's group, a number from 0: rows in the same group may
+               be alike -- the months of one loan, say (clustered_covariance)
+      lags     the rows are in time order, one for each period, and rows up to
+               `lags` apart may be alike (newey_west_covariance)"""
+
+    def __init__(self, groups=None, lags=None):
+        self.groups, self.lags = groups, lags
+
+    def covariance(self, bread, scores):
+        """The coefficients' covariance: the sandwich of bread and each row's scores."""
+        if self.groups is not None:
+            return clustered_covariance(bread, scores, self.groups)
+        return newey_west_covariance(bread, scores, self.lags)
+
+    def degrees_of_freedom(self, n, p):
+        """For a t test of a coefficient: one fewer than the number of groups; with lags, n - p."""
+        return int(self.groups.max()) if self.groups is not None else n - p
+
+    def least_squares_correction(self, n, p):
+        """The small-sample factor that a least-squares fit's covariance is
+        multiplied by, as Stata's does: (n - 1) / (n - p) with groups (and
+        clustered_covariance's G / (G - 1)), and n / (n - p) with lags."""
+        return (n - 1) / (n - p) if self.groups is not None else n / (n - p)
+
+    def stats(self):
+        """What a model's stats keep of it, for model-report: the number of groups, or the lags."""
+        return {"groups": int(self.groups.max()) + 1} if self.groups is not None else {"lags": self.lags}
 
 
 def _beta_continued_fraction(a, b, x):
@@ -992,6 +1581,8 @@ def measures_of_fit(predictions, ys, weights, kind, quantile=0.5):
       "least squares"  R-squared, RMSE, MAE
       "lad"            MAE, pseudo R-squared (1 - the MAE / the same model's)
       "quantile"       average loss, pseudo R-squared (the same, with losses)
+      "count"          mean deviance (poisson_deviance, per unit of weight),
+                       pseudo R-squared (1 - the deviance / the same model's)
       "probability"    log-likelihood, pseudo R-squared (McFadden's), AUC;
                        and, when y isn't all 0s and 1s -- shares -- first
                        R-squared, RMSE, and MAE, as for least squares
@@ -1033,6 +1624,11 @@ def measures_of_fit(predictions, ys, weights, kind, quantile=0.5):
         what = "the %.6g quantile of y" % quantile
         rows = [["average loss", loss, 0.0, loss_same, what],
                 ["pseudo R-squared", (1 - loss / loss_same) if loss_same > 0 else float("nan"), 1.0, 0.0, what]]
+    elif kind == "count":
+        deviance, deviance_same = poisson_deviance(ys, predictions, w), poisson_deviance(ys, np.full(len(ys), mean_y), w)
+        rows = [["mean deviance", deviance, 0.0, deviance_same, "the average of y"],
+                ["pseudo R-squared", (1 - deviance / deviance_same) if deviance_same > 0 else float("nan"), 1.0, 0.0,
+                 "the average of y"]]
     else:
         shares = not is_all_0_or_1(ys)
         if shares:
@@ -1161,55 +1757,73 @@ def _optional_groups(value, n, who):
     return numbers
 
 
-def fit_flat(x_arg, y_arg, weight_vec, groups_arg, fit, who):
+def _optional_alike(options, n, who):
+    """A fitting function's :groups or :lags option as an AlikeRows, or None
+    if it was given neither. :lags is a whole number from 1 to n - 1."""
+    if options.get("groups") is not None and options.get("lags") is not None:
+        raise LispError("%s: give :groups or :lags, not both" % who)
+    if options.get("groups") is not None:
+        return AlikeRows(groups=_optional_groups(options["groups"], n, who))
+    lags = options.get("lags")
+    if lags is None:
+        return None
+    if not isinstance(lags, int) or isinstance(lags, bool) or not 1 <= lags < n:
+        raise LispError("%s: :lags must be a whole number from 1 to one less than the number of rows (%d), not %s"
+                        % (who, n, to_display_string(lags)))
+    return AlikeRows(lags=lags)
+
+
+def fit_flat(x_arg, y_arg, weight_vec, options, fit, who):
     """A model of a straight line (or plane): x, y, and the weights as
-    linear-regression takes them, and :groups (_optional_groups), fit by
-    fit(columns, ys, weights, groups) -- fit_linear, fit_lad, or another.
-    `who` is the function to name in an error message."""
+    linear-regression takes them, and options' :groups or :lags
+    (_optional_alike), fit by fit(columns, ys, weights, alike) -- fit_linear,
+    fit_lad, or another. `who` is the function to name in an error message."""
     y_vec, y_name = _coerce_y(y_arg, who)
     columns, names = _predictor_columns(x_arg, len(y_vec.items))
     ys = [numeric_value(v) for v in y_vec.items.tolist()]
     weights = _optional_weights(weight_vec, len(ys), who)
-    model = fit(columns, ys, weights, _optional_groups(groups_arg, len(ys), who))
+    model = fit(columns, ys, weights, _optional_alike(options, len(ys), who))
     model.predictor_names = names
     model.y_name = y_name
     return model
 
 
-def flat_arguments(arguments, keywords, who):
+def flat_arguments(arguments, keywords, who, alike_options=True):
     """A flat model's optional arguments: the weights, then its keyword
-    options -- :groups, and the keywords -- as a dict."""
-    positional, options = positional_and_keywords(arguments, 1, ["groups"] + keywords, who)
+    options -- :groups and :lags (unless not alike_options: a fit with no
+    standard errors), and the keywords -- as a dict."""
+    positional, options = positional_and_keywords(arguments, 1, (["groups", "lags"] if alike_options else []) + keywords,
+                                                  who)
     return (positional[0] if positional else None), options
 
 
 def linear_regression_fn(x_arg, y_arg, *arguments):
-    """(linear-regression x y [weights] [:groups g]) -- a least-squares fit:
-    see fit_linear."""
+    """(linear-regression x y [weights] [:groups g :lags l]) -- a
+    least-squares fit: see fit_linear."""
     who = "linear-regression"
     weight_vec, options = flat_arguments(arguments, [], who)
-    return fit_flat(x_arg, y_arg, weight_vec, options.get("groups"), fit_linear, who)
+    return fit_flat(x_arg, y_arg, weight_vec, options, fit_linear, who)
 
 
 def lad_regression_fn(x_arg, y_arg, *arguments):
-    """(lad-regression x y [weights] [:groups g]) -- a least absolute
-    deviation fit: see fit_lad."""
+    """(lad-regression x y [weights] [:groups g :lags l]) -- a least
+    absolute deviation fit: see fit_lad."""
     who = "lad-regression"
     weight_vec, options = flat_arguments(arguments, [], who)
-    return fit_flat(x_arg, y_arg, weight_vec, options.get("groups"), fit_lad, who)
+    return fit_flat(x_arg, y_arg, weight_vec, options, fit_lad, who)
 
 
 def quantile_regression_fn(x_arg, y_arg, quantile, *arguments):
-    """(quantile-regression x y quantile [weights] [:groups g]) -- the fit
-    with `quantile` of the points below it: see fit_quantile."""
+    """(quantile-regression x y quantile [weights] [:groups g :lags l]) --
+    the fit with `quantile` of the points below it: see fit_quantile."""
     who = "quantile-regression"
     quantile = _quantile_argument(quantile, who)
     weight_vec, options = flat_arguments(arguments, [], who)
 
-    def fit(columns, ys, weights, groups):
-        return fit_quantile(columns, ys, quantile, weights, groups)
+    def fit(columns, ys, weights, alike):
+        return fit_quantile(columns, ys, quantile, weights, alike)
 
-    return fit_flat(x_arg, y_arg, weight_vec, options.get("groups"), fit, who)
+    return fit_flat(x_arg, y_arg, weight_vec, options, fit, who)
 
 
 def _quantile_argument(quantile, who):
@@ -1220,20 +1834,28 @@ def _quantile_argument(quantile, who):
 
 
 def logistic_regression_fn(x_arg, y_arg, *arguments):
-    """(logistic-regression x y [weights] [:floor f :ceiling c :groups g]) --
-    a logistic model: see fit_logistic_between."""
+    """(logistic-regression x y [weights] [:floor f :ceiling c :groups g :lags
+    l]) -- a logistic model: see fit_logistic_between."""
     who = "logistic-regression"
     weight_vec, options = flat_arguments(arguments, ["floor", "ceiling"], who)
     floor, ceiling = floor_and_ceiling(options, who)
 
-    def fit(columns, ys, weights, groups):
-        return fit_logistic_between(columns, ys, weights, floor, ceiling, who, groups)
+    def fit(columns, ys, weights, alike):
+        return fit_logistic_between(columns, ys, weights, floor, ceiling, who, alike)
 
-    return fit_flat(x_arg, y_arg, weight_vec, options.get("groups"), fit, who)
+    return fit_flat(x_arg, y_arg, weight_vec, options, fit, who)
+
+
+def poisson_regression_fn(x_arg, y_arg, *arguments):
+    """(poisson-regression x y [weights] [:groups g :lags l]) -- a Poisson
+    model of a count: see fit_poisson."""
+    who = "poisson-regression"
+    weight_vec, options = flat_arguments(arguments, [], who)
+    return fit_flat(x_arg, y_arg, weight_vec, options, fit_poisson, who)
 
 
 def _is_model(x):
-    return isinstance(x, (LispModel, LispSplineModel))
+    return isinstance(x, (LispModel, LispSplineModel, LispNonlinearModel))
 
 
 def _is_probabilistic(model):
@@ -1299,6 +1921,8 @@ def _prediction_columns(model, x_arg):
 def model_slope(model):
     if isinstance(model, LispSplineModel):
         raise LispError("model-slope: not available for a spline model; use model-report instead")
+    if isinstance(model, LispNonlinearModel):
+        raise LispError("model-slope: a nonlinear model has parameters, not a slope: see model-coefficients")
     if not isinstance(model, LispModel):
         raise LispError("model-slope: not a model: %r" % (model,))
     if len(model.coefficients) != 1:
@@ -1311,6 +1935,8 @@ def model_slope(model):
 def model_coefficients(model):
     if isinstance(model, LispSplineModel):
         raise LispError("model-coefficients: not available for a spline model; use model-report instead")
+    if isinstance(model, LispNonlinearModel):
+        return LispVector(list(model.parameters))
     if not isinstance(model, LispModel):
         raise LispError("model-coefficients: not a model: %r" % (model,))
     return LispVector(list(model.coefficients))
@@ -1324,12 +1950,15 @@ def _names(model):
 def coefficient_rows(model, terms):
     """For a LispModel, one (term, estimate, std_error, statistic, p_value)
     tuple for the intercept and each coefficient. `terms` names the
-    coefficients."""
-    std_errors = model.stats.get("std_errors") or [float("nan")] * (len(terms) + 1)
+    coefficients. For a LispNonlinearModel, one for each parameter."""
+    if isinstance(model, LispNonlinearModel):
+        names, estimates = model.parameter_names, model.parameters
+    else:
+        names, estimates = ["intercept"] + list(terms), [model.intercept] + list(model.coefficients)
+    std_errors = model.stats.get("std_errors") or [float("nan")] * len(names)
     test = model.stats.get("test", "t")
     rows = []
-    for term, estimate, std_error in zip(["intercept"] + list(terms),
-                                         [model.intercept] + list(model.coefficients), std_errors):
+    for term, estimate, std_error in zip(names, estimates, std_errors):
         statistic = estimate / std_error if std_error and std_error == std_error else float("nan")
         rows.append((term, estimate, std_error, statistic,
                      two_sided_p_value(statistic, test, model.stats.get("degrees_of_freedom"))))
@@ -1337,11 +1966,24 @@ def coefficient_rows(model, terms):
 
 
 def coefficient_table_lines(model, terms):
-    """model-report's coefficient table, one line per term."""
+    """model-report's coefficient table, one line per term (or, for a
+    nonlinear model, per parameter). A ridge or lasso model's has no
+    standard errors; beside each coefficient is its standardized one, which
+    the penalty is on -- a lasso's 0s being the predictors it left out."""
     rows = coefficient_rows(model, terms)
-    width = max(len("term"), max(len(r[0]) for r in rows))
+    heading = "parameter" if isinstance(model, LispNonlinearModel) else "term"
+    width = max(len(heading), max(len(r[0]) for r in rows))
+    if model.kind in ("ridge", "lasso"):
+        lines = ["  %-*s  %12s  %12s" % (width, heading, "coefficient", "standardized")]
+        for (term, estimate, _, _, _), standardized in zip(rows, [None] + model.stats["standardized"]):
+            lines.append("  %-*s  %12.6g  %12s%s" % (width, term, estimate,
+                                                     "" if standardized is None else "%.6g" % standardized,
+                                                     "  (left out)" if model.kind == "lasso" and standardized == 0
+                                                     else ""))
+        return lines
     statistic_name = model.stats.get("test", "t") + " value"
-    lines = ["  %-*s  %12s  %12s  %9s  %9s" % (width, "term", "coefficient", "std error", statistic_name, "p value")]
+    lines = ["  %-*s  %12s  %12s  %9s  %9s" % (width, heading, "estimate" if heading == "parameter" else "coefficient",
+                                                "std error", statistic_name, "p value")]
     for term, estimate, std_error, statistic, p_value in rows:
         lines.append("  %-*s  %12.6g  %12.6g  %9.4g  %9.3g" % (width, term, estimate, std_error, statistic, p_value))
     return lines
@@ -1353,6 +1995,13 @@ def model_report(model):
     p-values, and measures of fit."""
     if isinstance(model, LispSplineModel):
         return LispString("\n".join(_spline_report_lines(model)))
+    if isinstance(model, LispNonlinearModel):
+        body = " ".join(to_string(form) for form in model.formula.body)
+        lines = ["Nonlinear model:  %s = %s" % (model.y_name or "y", body)]
+        if model.predictor_names:
+            lines.append("  (where %s)" % ", ".join("%s is %s" % (str(parameter), name) for parameter, name
+                                                    in zip(model.formula.params, model.predictor_names)))
+        return LispString("\n".join(lines + coefficient_table_lines(model, None) + fit_statistics_lines(model)))
     if not isinstance(model, LispModel):
         raise LispError("model-report: not a model: %r" % (model,))
     names = _names(model)
@@ -1365,6 +2014,10 @@ def model_report(model):
     elif model.kind == "quantile":
         lines = ["Quantile regression model, for the %.6g quantile:  %s = %.6g + %s"
                  % (model.stats["quantile"], y_name, model.intercept, terms)]
+    elif model.kind in ("ridge", "lasso"):
+        lines = ["%s model:  %s = %.6g + %s" % (model.kind.capitalize(), y_name, model.intercept, terms)]
+    elif model.kind == "poisson":
+        lines = ["Poisson model:  %s = exp(%.6g + %s)" % (y_name, model.intercept, terms)]
     elif model.between_0_and_1():
         lines = ["Logistic model:  p(%s) = sigmoid(%.6g + %s)" % (y_name, model.intercept, terms)]
     else:
@@ -1392,9 +2045,28 @@ def fit_statistics_lines(model):
     if "groups" in stats:
         end.append("  groups           = %d  (the standard errors allow for rows in the same group being alike)"
                    % stats["groups"])
+    if "lags" in stats:
+        end.append("  lags             = %d  (the standard errors allow for rows up to %d apart, in time order, being "
+                   "alike: Newey-West's)" % (stats["lags"], stats["lags"]))
 
     if model.kind == "linear":
         return measures + end
+    if model.kind == "nonlinear":
+        if not stats["converged"]:
+            iterations = ("  iterations       = %d (did NOT converge: try other start values, nearer the fit)"
+                          % stats["iterations"])
+        return measures + [iterations] + end
+    if model.kind in ("ridge", "lasso"):
+        return penalty_lines(model) + measures + ([iterations] if model.kind == "lasso" else []) + end
+    if model.kind == "poisson":
+        if not stats["converged"]:
+            iterations = ("  iterations       = %d (did NOT converge: a coefficient is heading for minus infinity -- "
+                          "the counts are all 0 for some range of a predictor. Its predictions are near that limit, "
+                          "but its coefficients and standard errors mean little)" % stats["iterations"])
+        dispersion = ["  dispersion       = %.6g  (how many times as much the counts vary about the fit as chance "
+                      "alone would make them: 1, if only by chance; the standard errors allow for it)"
+                      % stats["dispersion"]]
+        return dispersion + measures + [iterations] + end
     if model.kind == "lad":
         return measures + [iterations] + end
     if model.kind == "quantile":
@@ -1424,25 +2096,53 @@ def fit_statistics_lines(model):
         iterations = ("  iterations       = %d (did NOT converge: a coefficient is growing without end -- the curve "
                       "comes ever closer to some of the points by getting steeper. Its predictions are near that "
                       "limit, but its coefficients and standard errors mean little)" % stats["iterations"])
-    if not stats.get("y_is_0_or_1", True) and "groups" not in stats:
+    if not stats.get("y_is_0_or_1", True) and "groups" not in stats and "lags" not in stats:
         end.append("  standard errors  = from the scatter of y about the fit, since y isn't all 0s and 1s")
     return between + measures + [iterations] + end
+
+
+def penalty_lines(model):
+    """model-report's lines about a ridge or lasso model's penalty: what it
+    is, and how many predictors a lasso kept; and, if the penalty was chosen
+    from several by cross-validation, each one's cross-validated RMSE."""
+    stats = model.stats
+    if model.kind == "ridge":
+        lines = ["  penalty          = %.6g  (on the standardized coefficients: for predictors that don't go together, "
+                 "each is least squares' divided by 1 + the penalty)" % stats["penalty"]]
+    else:
+        kept = sum(1 for b in stats["standardized"] if b != 0)
+        lines = ["  penalty          = %.6g  (in y's units, on the standardized coefficients: at %.6g or more, every "
+                 "predictor is left out)" % (stats["penalty"], stats["penalty_leaving_all_out"]),
+                 "  predictors kept  = %d of %d" % (kept, len(stats["standardized"]))]
+    if "penalties_tried" in stats:
+        lines.append("  penalties tried, by %d-fold cross-validation:" % stats["folds"])
+        for penalty, rmse in stats["penalties_tried"]:
+            lines.append("    %-12.6g  cross-validated RMSE %.6g%s"
+                         % (penalty, rmse, "  (the best: chosen)" if penalty == stats["penalty"] else ""))
+    return lines
 
 
 def model_coefficient_table(model):
     """(model-coefficient-table m) -- the model's coefficients as a table,
     with columns term, coefficient, std_error, t_value (z_value for a
-    logistic model), and p_value; the first row is the intercept. For a
-    spline model, the terms are its expanded features (see model-report)."""
+    logistic or Poisson model), and p_value; the first row is the
+    intercept. For a spline model, the terms are its expanded features (see
+    model-report); for a nonlinear model, they're its parameters, and there
+    is no intercept. A ridge or lasso model's table has term, coefficient,
+    and standardized (the coefficient on the standardized scale)."""
     if isinstance(model, LispSplineModel):
         inner, terms = model.inner_model, _spline_feature_labels(model.predictor_specs, _names(model))
-    elif isinstance(model, LispModel):
+    elif isinstance(model, (LispModel, LispNonlinearModel)):
         inner, terms = model, _names(model)
     else:
         raise LispError("model-coefficient-table: not a model: %r" % (model,))
     rows = coefficient_rows(inner, terms)
-    statistic_name = inner.stats.get("test", "t") + "_value"
     columns = [("term", LispVector([LispString(r[0]) for r in rows]))]
+    if inner.kind in ("ridge", "lasso"):
+        columns.append(("coefficient", LispVector(np.array([r[1] for r in rows], dtype=np.float64))))
+        columns.append(("standardized", LispVector(np.array([np.nan] + inner.stats["standardized"], dtype=np.float64))))
+        return list_to_pairs([Pair(LispString(n), v) for n, v in columns])
+    statistic_name = inner.stats.get("test", "t") + "_value"
     for j, column_name in enumerate(["coefficient", "std_error", statistic_name, "p_value"], start=1):
         columns.append((column_name, LispVector(np.array([r[j] for r in rows], dtype=np.float64))))
     return list_to_pairs([Pair(LispString(n), v) for n, v in columns])
@@ -1456,9 +2156,10 @@ def predict_all(model, columns):
     if isinstance(model, LispSplineModel):
         return predict_all(model.inner_model,
                            _spline_expand_columns(columns, model.predictor_specs, model.predictor_names))
+    if isinstance(model, LispNonlinearModel):
+        return model.predict_columns(columns)
     X = np.column_stack([np.asarray(col, dtype=np.float64) for col in columns])
-    z = model.intercept + X @ np.asarray(model.coefficients, dtype=np.float64)
-    return model.floor + (model.ceiling - model.floor) * _sigmoid_vec(z) if model.kind == "logistic" else z
+    return model.from_linear_part(model.intercept + X @ np.asarray(model.coefficients, dtype=np.float64))
 
 
 def evaluation_data(model, x_arg, y_arg, name):
@@ -1766,7 +2467,7 @@ class LispSplineModel:
     curve bend. See _resolve_predictor_spec and _spline_expand_columns."""
 
     KINDS = {"linear": "spline", "lad": "spline-lad", "quantile": "spline-quantile",
-             "logistic": "spline-logistic"}             # by the inner model's kind
+             "logistic": "spline-logistic", "poisson": "spline-poisson"}        # by the inner model's kind
 
     def __init__(self, inner_model, predictor_specs, k, predictor_names=None, y_name=None):
         self.inner_model = inner_model          # a LispModel fit on the expanded basis
@@ -1792,7 +2493,11 @@ class LispSplineModel:
 def model_data(model):
     """A fitted model as plain data -- a dict of strings, numbers, lists,
     and dicts -- for save-variables to write as JSON; model_from_data makes
-    the model again. A field that's None is left out."""
+    the model again. A field that's None is left out. A nonlinear model
+    can't be: its formula is a procedure."""
+    if isinstance(model, LispNonlinearModel):
+        raise LispError("a nonlinear model can't be saved: its formula is a procedure, which isn't data -- save its "
+                        "parameters, (model-coefficients m), and fit it again from them")
     if isinstance(model, LispSplineModel):
         specs = []
         for spec in model.predictor_specs:
@@ -1861,6 +2566,8 @@ def _spline_report_lines(model):
     elif model.kind == "spline-quantile":
         lines.append("%s spline model, fit to the %.6g quantile, predicting %s:"
                      % (shape, model.inner_model.stats["quantile"], y_name))
+    elif model.kind == "spline-poisson":
+        lines.append("%s spline model of a count, %s = exp(the spline), predicting %s:" % (shape, y_name, y_name))
     else:
         lines.append("%s spline model, predicting %s:" % (shape, y_name))
     lines.append("  predictors = %d" % model.k)
@@ -1889,27 +2596,27 @@ def fit_spline(x_arg, y_arg, max_knots, weight_vec, options, fit, who):
     _resolve_all_predictor_specs) -- into hinge functions at knots, or a
     smooth curve's terms (if options has :smooth), or 0/1 indicators for
     categories -- and the expanded columns fit by fit(columns, ys, weights,
-    groups): fit_linear, fit_lad, or another. x, y, the weights, and
-    options' :groups are as for linear-regression; `who` is the function to
-    name in an error message."""
+    alike): fit_linear, fit_lad, or another. x, y, the weights, and
+    options' :groups and :lags are as for linear-regression; `who` is the
+    function to name in an error message."""
     y_vec, y_name = _coerce_y(y_arg, who)
     columns, names = _predictor_columns(x_arg, len(y_vec.items))
     ys = [numeric_value(v) for v in y_vec.items.tolist()]
     if not ys:
         raise LispError("%s: no data to fit" % who)
     weights = _optional_weights(weight_vec, len(ys), who)
-    groups = _optional_groups(options.get("groups"), len(ys), who)
+    alike = _optional_alike(options, len(ys), who)
     predictor_specs = _resolve_all_predictor_specs(max_knots, columns, names, who,
                                                    is_true(options.get("smooth", False)))
     expanded_columns = _spline_expand_columns(columns, predictor_specs)
-    return LispSplineModel(fit(expanded_columns, ys, weights, groups), predictor_specs, len(columns), names, y_name)
+    return LispSplineModel(fit(expanded_columns, ys, weights, alike), predictor_specs, len(columns), names, y_name)
 
 
 def spline_arguments(arguments, keywords, who):
     """A spline function's optional arguments: max-knots (3 unless given)
     and weights, in that order, then its keyword options -- :smooth,
-    :groups, and the keywords -- as a dict."""
-    positional, options = positional_and_keywords(arguments, 2, ["smooth", "groups"] + keywords, who)
+    :groups, :lags, and the keywords -- as a dict."""
+    positional, options = positional_and_keywords(arguments, 2, ["smooth", "groups", "lags"] + keywords, who)
     if any(isinstance(a, bool) for a in positional):
         raise LispError("%s: it has no logistic? argument now: spline-logistic fits a spline with a logistic link"
                         % who)
@@ -1919,8 +2626,8 @@ def spline_arguments(arguments, keywords, who):
 
 
 def spline_regression_fn(x_arg, y_arg, *arguments):
-    """(spline-regression x y [max-knots weights] [:smooth #t :groups g]) --
-    fit a spline model by least squares. x and y are as for
+    """(spline-regression x y [max-knots weights] [:smooth #t :groups g :lags
+    l]) -- fit a spline model by least squares. x and y are as for
     linear-regression. max-knots says how to expand each predictor (see
     _resolve_all_predictor_specs); :smooth #t makes the curve smooth
     (restricted_cubic_terms), in place of straight pieces."""
@@ -1931,7 +2638,7 @@ def spline_regression_fn(x_arg, y_arg, *arguments):
 
 def spline_logistic_fn(x_arg, y_arg, *arguments):
     """(spline-logistic x y [max-knots weights] [:floor f :ceiling c :smooth #t
-    :groups g]) -- fit a spline model with a logistic link:
+    :groups g :lags l]) -- fit a spline model with a logistic link:
     spline-regression's expansion of the predictors, fit as
     logistic-regression fits (see fit_logistic_between), so the curve can
     bend, and stays between the floor and the ceiling (0 and 1, unless
@@ -1940,35 +2647,49 @@ def spline_logistic_fn(x_arg, y_arg, *arguments):
     max_knots, weight_vec, options = spline_arguments(arguments, ["floor", "ceiling"], who)
     floor, ceiling = floor_and_ceiling(options, who)
 
-    def fit(columns, ys, weights, groups):
-        return fit_logistic_between(columns, ys, weights, floor, ceiling, who, groups)
+    def fit(columns, ys, weights, alike):
+        return fit_logistic_between(columns, ys, weights, floor, ceiling, who, alike)
 
     return fit_spline(x_arg, y_arg, max_knots, weight_vec, options, fit, who)
 
 
 def spline_quantile_fn(x_arg, y_arg, quantile, *arguments):
     """(spline-quantile x y quantile [max-knots weights] [:smooth #t :groups
-    g]) -- fit a spline model to a quantile: spline-regression's expansion
-    of the predictors, fit as quantile-regression fits, so the curve can
-    bend, with `quantile` of the points below it."""
+    g :lags l]) -- fit a spline model to a quantile: spline-regression's
+    expansion of the predictors, fit as quantile-regression fits, so the
+    curve can bend, with `quantile` of the points below it."""
     who = "spline-quantile"
     quantile = _quantile_argument(quantile, who)
     max_knots, weight_vec, options = spline_arguments(arguments, [], who)
 
-    def fit(columns, ys, weights, groups):
-        return fit_quantile(columns, ys, quantile, weights, groups, who=who)
+    def fit(columns, ys, weights, alike):
+        return fit_quantile(columns, ys, quantile, weights, alike, who=who)
 
     return fit_spline(x_arg, y_arg, max_knots, weight_vec, options, fit, who)
 
 
 def spline_lad_fn(x_arg, y_arg, *arguments):
-    """(spline-lad x y [max-knots weights] [:smooth #t :groups g]) -- fit a
-    spline model by least absolute deviation: as spline-regression does, but
+    """(spline-lad x y [max-knots weights] [:smooth #t :groups g :lags l]) --
+    fit a spline model by least absolute deviation: as spline-regression does, but
     making the sum of the absolute residuals smallest (fit_lad) rather than
     the sum of their squares, so a few outliers barely move the curve."""
     who = "spline-lad"
     max_knots, weight_vec, options = spline_arguments(arguments, [], who)
     return fit_spline(x_arg, y_arg, max_knots, weight_vec, options, fit_lad, who)
+
+
+def spline_poisson_fn(x_arg, y_arg, *arguments):
+    """(spline-poisson x y [max-knots weights] [:smooth #t :groups g :lags l])
+    -- fit a spline model of a count: spline-regression's expansion of the
+    predictors, fit as poisson-regression fits (fit_poisson), so the curve
+    of the logarithm of the average count can bend."""
+    who = "spline-poisson"
+    max_knots, weight_vec, options = spline_arguments(arguments, [], who)
+
+    def fit(columns, ys, weights, alike):
+        return fit_poisson(columns, ys, weights, alike, who=who)
+
+    return fit_spline(x_arg, y_arg, max_knots, weight_vec, options, fit, who)
 
 
 def suggest_knots_fn(x_vec, y_vec, window, n):
@@ -2227,7 +2948,16 @@ def model_floor_or_ceiling(which):
 def model_intercept(m):
     if isinstance(m, LispSplineModel):
         raise LispError("model-intercept: not available for a spline model; use model-report instead")
+    if isinstance(m, LispNonlinearModel):
+        raise LispError("model-intercept: a nonlinear model has parameters, not an intercept: see model-coefficients")
     return m.intercept
+
+
+def sigmoid_fn(z):
+    """(sigmoid z) -- 1 / (1 + e^-z), the logistic S-curve, from 0 to 1: of a number, or of each number of a vector."""
+    if isinstance(z, LispVector):
+        return to_vector(_sigmoid_vec(np.asarray(z.items, dtype=np.float64)))
+    return sigmoid(z)
 
 
 # ---------------------------------------------------------------------------
@@ -2239,10 +2969,15 @@ BUILTINS = {
     "lad-regression": lad_regression_fn,
     "quantile-regression": quantile_regression_fn,
     "logistic-regression": logistic_regression_fn,
+    "poisson-regression": poisson_regression_fn,
+    "ridge-regression": penalized_regression_fn("ridge"),
+    "lasso-regression": penalized_regression_fn("lasso"),
+    "nonlinear-regression": nonlinear_regression_fn,
     "spline-regression": spline_regression_fn,
     "spline-lad": spline_lad_fn,
     "spline-quantile": spline_quantile_fn,
     "spline-logistic": spline_logistic_fn,
+    "spline-poisson": spline_poisson_fn,
     "suggest-knots": suggest_knots_fn,
     "model-report": model_report,
     "model-predict": model_predict,
@@ -2258,5 +2993,5 @@ BUILTINS = {
     "model-ceiling": model_floor_or_ceiling("ceiling"),
     "model-kind": lambda m: LispString(m.kind),
     "model?": lambda x: _is_model(x),
-    "sigmoid": lambda z: sigmoid(z),
+    "sigmoid": sigmoid_fn,
 }

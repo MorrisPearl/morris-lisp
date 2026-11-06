@@ -12,7 +12,7 @@ file. **Requires `numpy`**; everything else (ipykernel, matplotlib, pandas, the
 tastytrade package) is needed only for the features that use it. The code
 is meant to be read: "How the code is organized" says which file has what.
 
-There are eight documents. **This one is the language**: its syntax, special
+There are nine documents. **This one is the language**: its syntax, special
 forms and macros, and the general builtins -- numbers, lists, strings, hash
 tables, vectors and statistics, tables, dates, charts, input and output,
 and the debugger. **The library manual,
@@ -25,7 +25,8 @@ investments. Its first chapter, ["Where things are"](lisp_library_reference.md#w
 mortgages, and a script for each part of the library -- and explains the
 programming techniques they show. **Yield curves and simulated paths**, of interest rates
 and of investment prices, are in [lisp_paths_manual.md](lisp_paths_manual.md); structured
-deals in [lisp_cmo_manual.md](lisp_cmo_manual.md); forecasting questions in
+deals in [lisp_cmo_manual.md](lisp_cmo_manual.md); regression in
+[lisp_regression_manual.md](lisp_regression_manual.md); forecasting questions in
 [lisp_forecasting_manual.md](lisp_forecasting_manual.md); macroeconomic models, run with Dynare, in
 [lisp_macro_models_manual.md](lisp_macro_models_manual.md); and which agency publishes what data, and
 which function gets it, in [economic_data_guide.md](economic_data_guide.md).
@@ -1944,12 +1945,13 @@ are whole numbers, stored as integers unless some elements are missing
 ```
 
 #### `(sigmoid z)`
-`1 / (1 + e^-z)`, computed in a numerically stable way for very large
-`|z|`. The same logistic function `logistic-regression`/`model-predict`
-use internally, exposed directly for convenience.
+`1 / (1 + e^-z)`, the S-curve from 0 to 1, computed in a numerically stable way for very large
+`|z|`: of a number, or of each number of a vector. The same logistic function `logistic-regression`/`model-predict`
+use, so a formula for `nonlinear-regression` can use it too (see the [regression manual](lisp_regression_manual.md)).
 
 ```lisp
 (sigmoid 0)                    ; => 0.5
+(sigmoid #(0 0))               ; => #(0.5 0.5)
 ```
 
 ### Random numbers
@@ -2175,7 +2177,7 @@ list made into a circle with `set-cdr!`.
 ```
 
 #### `(model? x)`
-`#t` for any fitted regression model — see "Regression models", in the [library manual](lisp_library_reference.md#regression-models).
+`#t` for any fitted regression model — see "Using a model", in the [regression manual](lisp_regression_manual.md#using-a-model).
 
 #### `(struct? x)`
 `#t` for an instance of any `defstruct`-defined type — see "Structs",
@@ -6369,7 +6371,7 @@ The Python files:
 | `lisp_help.py` | `help`'s documentation, `documentation`, `apropos`, and the notebook's Tab and Shift-Tab: where the documentation of a name comes from |
 | `lisp_profile.py` | `profile`, `unprofile`, `profile-reset!`, `profile-results`, `show-profile`: the profiling functions (the machinery is in `lisp_core.py`) |
 | `lisp_debug.py` | `break`, `unbreak`, `set-debug-hook!`, `abort`, `locals`, `break-on-error`, ...: the debugging functions (the machinery is in `lisp_core.py`) |
-| `lisp_regression.py` | `linear-regression`, `lad-regression`, `quantile-regression`, `logistic-regression`, `spline-regression`, `spline-lad`, `spline-quantile`, `spline-logistic`, `model-report`, ... |
+| `lisp_regression.py` | `linear-regression`, `lad-regression`, `quantile-regression`, `logistic-regression`, `poisson-regression`, `ridge-regression`, `lasso-regression`, `nonlinear-regression`, `spline-regression`, `spline-lad`, `spline-quantile`, `spline-logistic`, `spline-poisson`, `model-report`, ... (the [regression manual](lisp_regression_manual.md)) |
 | `lisp_save.py` | `save-variables` (with its macro in `macros_init.lsp`) and `load-variables`: variables in a JSON file |
 | `lisp_simplex.py` | `lp-read-file`, `lp-solve`: linear programming (uses `simplex/`) |
 | `lisp_clock.py` | The clock: `current-time`, `today`, `time-add`, `sleep`, `sleep-until`, ... |
