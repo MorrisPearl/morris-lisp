@@ -352,12 +352,12 @@ class TestMonthlyReturns(PricesTestCase):
     def test_two_patterns_explain_all_of_four_stocks_that_follow_two_patterns(self):
         self.update()
         self.run_lisp("(define components (return-components db %s :count 3))" % self.options)
-        shares = self.run_lisp('(vector->list (table-column (cdr (assoc "variance" components)) "cumulative-share"))')
+        shares = self.run_lisp('(vector->list (table-column (cdr (assoc "components" components)) "cumulative-share"))')
         self.assertAlmostEqual(shares.cdr.car, 1.0)            # two components explain everything
         self.assertAlmostEqual(shares.cdr.cdr.car, 1.0)
         self.assertShows('(vector-round (table-column (cdr (assoc "stocks" components)) "explained") 6)', "#(1.0 1.0 1.0 1.0)")
         # with 12 months, a component of stocks that moved independently would explain 1/11 of the variation
-        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column (cdr (assoc "variance" components)) "share-if-unrelated") 0)'), 1 / 11)
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column (cdr (assoc "components" components)) "share-if-unrelated") 0)'), 1 / 11)
 
     def test_an_error_that_would_happen_for_every_stock_stops_the_run(self):
         self.run_lisp('(define (schwab-price-history creds ticker &key start-date end-date frequency) '
@@ -413,7 +413,32 @@ class TestWeeklyReturns(PricesTestCase):
     def test_two_patterns_explain_all_of_four_stocks_that_follow_two_patterns(self):
         self.update()
         self.run_lisp("(define components (return-components db :years 1 :count 3))")
-        shares = self.run_lisp('(vector->list (table-column (cdr (assoc "variance" components)) "cumulative-share"))')
+        shares = self.run_lisp('(vector->list (table-column (cdr (assoc "components" components)) "cumulative-share"))')
         self.assertAlmostEqual(shares.cdr.car, 1.0)
         self.assertShows('(table-row-count (cdr (assoc "periods" components)))', "53")
-        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column (cdr (assoc "variance" components)) "share-if-unrelated") 0)'), 1 / 52)
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column (cdr (assoc "components" components)) "share-if-unrelated") 0)'), 1 / 52)
+
+    def test_with_each_industry_following_one_pattern_the_industries_explain_the_components(self):
+        self.update()
+        self.run_lisp('(define components (return-components db :years 1 :count 2 :rotate "varimax"))')
+        described = '(cdr (assoc "components" components))'
+        self.assertShows('(table-column %s "component")' % described, '#("pc1" "pc2")')
+        self.assertShows('(vector-round (table-column %s "industry-share") 6)' % described, "#(1.0 1.0)")
+        self.assertShows('(vector-round (vector-abs (table-column %s "best-industry-correlation")) 6)' % described, "#(1.0 1.0)")
+        self.assertShows('(sort (vector->list (table-column %s "best-industry")))' % described, '("Banks" "Oil")')
+        # with four stocks and two industries, the share by chance is (2 - 1) / (4 - 1); no industry has the 10 stocks a label needs
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column %s "industry-share-by-chance") 0)' % described), 1 / 3)
+        self.assertShows('(table-column %s "label")' % described, '#("" "")')
+
+    def test_each_stocks_most_important_components_then_the_others_then_its_own(self):
+        self.update()
+        self.run_lisp('(define components (return-components db :years 1 :count 2 :rotate "varimax"))')
+        self.run_lisp('(define mine (stock-components components :top 1))')
+        self.assertShows('(table-row-count mine)', "12")                  # three rows for each of the four stocks
+        self.assertShows('(table-column (table-head mine 3) "component")', '#("%s" "the other components" "its own")'
+                         % self.run_lisp('(vector-ref (table-column mine "component") 0)'))
+        self.assertShows('(table-column (table-head mine 3) "rank")', "#(1 2 3)")
+        # AAA moves exactly with the bank pattern, which a rotated component nearly is (the made-up bank and oil patterns are a little correlated, so
+        # not exactly): it explains nearly all of AAA, and the two components together explain all of it, so none of AAA is its own
+        self.assertShows('(vector-round (table-column (table-head mine 3) "share") 2)', "#(1.0 0.0 0.0)")
+        self.assertShows('(round-to-nearest (vector-ref (table-column mine "correlation") 0) 0.01)', "1.0")

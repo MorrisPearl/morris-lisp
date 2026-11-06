@@ -181,7 +181,7 @@ industry's average); the squares of the two add up, weighted, to the square of t
          (between-squares (- total-squares within-squares)))
     (list (cons "stdev-of-all-returns" (sqrt (/ total-squares total-weight)))
           (cons "stdev-within-industries" (sqrt (/ within-squares total-weight)))
-          (cons "stdev-between-industries" (sqrt (/ between-squares total-weight)))
+          (cons "stdev-between-industries" (sqrt (/ (max between-squares 0.0) total-weight)))     ; (it can come out a hair below 0)
           (cons "share-explained-by-industry" (/ between-squares total-squares)))))
 
 (define (industry-returns--with-ranks stocks)
@@ -444,43 +444,129 @@ each stock that has a return in every one of the periods of the last :years (3 f
   (with-sqlite (conn db-path)
     (table-pivot (periodic-returns--long conn frequency (stock-prices--years frequency years)) "period" "ticker" '(sum "return"))))
 
-(define (return-components db-path &key (frequency "weekly") (years '()) (count 5) (standardize #t))
+(define return-components-label-size 10)   ; the fewest stocks an industry needs to be named in a component's label
+
+(define (return-components--point-biserial n mean spread in-industry industry-mean)
+  "The correlation between being in an industry (1 or 0) and a number, from the number's mean and standard deviation over all n stocks and its mean over
+the in-industry stocks in the industry."
+  (if (or (= in-industry n) (= spread 0))
+      0.0
+      (let ((others-mean (/ (- (* n mean) (* in-industry industry-mean)) (- n in-industry))))
+        (* (/ (- industry-mean others-mean) spread) (/ (sqrt (* in-industry (- n in-industry))) n)))))
+
+(define (return-components--industry-facts stocks pc-name)
+  "How much a component goes with the industries: a list of the share of the variation in the stocks' correlations with it that industries explain, the
+industry most strongly associated with it and that association (a correlation between being in it and moving with the component), and a label: the two
+industries of at least return-components-label-size stocks whose stocks move most with it, \"vs\" the two that move least (or most against it)."
+  (let* ((values (table-column stocks pc-name))
+         (n (vector-length values))
+         (mean (/ (vector-sum values) n))
+         (spread (sqrt (/ (vector-sum (vector-pow (vector-sub values mean) 2)) n)))
+         (by-industry (table-group-by stocks "industry" (list '("stocks" count "ticker") (list "mean" 'mean pc-name))))
+         (associations (map (lambda (count industry-mean) (return-components--point-biserial n mean spread count industry-mean))
+                            (vector->list (table-column by-industry "stocks")) (vector->list (table-column by-industry "mean"))))
+         (strongest (car (sort (map cons (vector->list (table-column by-industry "industry")) associations)
+                               (lambda (pair) (- (abs (cdr pair)))))))
+         (big (table-sort (table-filter by-industry (vector>= (table-column by-industry "stocks") return-components-label-size)) "mean" #t))
+         (names (vector->list (table-column big "industry")))
+         (label (if (< (length names) 4)
+                    ""
+                    (string-append (car names) ", " (cadr names) " vs "
+                                   (list-ref names (- (length names) 1)) ", " (list-ref names (- (length names) 2)))))
+         (share (cdr (assoc "share-explained-by-industry" (industry-variation--measures stocks pc-name "equal")))))
+    (list share (car strongest) (cdr strongest) label)))
+
+(define (return-components db-path &key (frequency "weekly") (years '()) (count 5) (standardize #t) (rotate #f))
   "The principal components of the stocks' weekly (or, with :frequency \"monthly\", monthly) returns over the last :years (3 for weekly, 2 for monthly): the
 :count (5) patterns of moving together that explain the most of how the stocks' returns went up and down. With :standardize #t (the default) each stock's
-returns are first put on the same scale, so that the components explain how the stocks move together, not just which stocks move the most. Returns a list of
-four tables, by name:
-  (\"variance\" . table)    component, variance-share (the share of all the stocks' variation it explains), cumulative-share, share-if-unrelated (what
-                           each component would explain if the stocks moved independently: 1 / (periods - 1)), and correlation-with-market (with the
-                           market-cap-weighted return of all the stocks)
+returns are first put on the same scale, so that the components explain how the stocks move together, not just which stocks move the most. With :rotate
+\"varimax\" the components are turned so that each stock goes with as few of them as it can (see principal-components). Returns a list of four tables, by
+name:
+  (\"components\" . table)  component (pc1, pc2, ...), variance-share (the share of all the stocks' variation it explains), cumulative-share,
+                           share-if-unrelated (what each component would explain if the stocks moved independently: 1 / (periods - 1)),
+                           correlation-with-market (with the market-cap-weighted return of all the stocks), industry-share (how much of the
+                           difference between the stocks in how they move with it the industries explain), industry-share-by-chance (what that
+                           would be with the stocks put in industries at random), best-industry and best-industry-correlation (the industry most
+                           strongly associated with it, and the correlation between being in that industry and moving with the component), and
+                           label (the two industries, of 10 stocks or more, that move most with it, vs the two that move least)
   (\"stocks\" . table)      ticker, industry, market_cap, pc1 ... (the correlation of the stock's returns with each component, from -1 to 1: how
                            closely it moves with it), and explained (the share of the stock's variation the components explain together: the
                            correlations' squares added up)
   (\"industries\" . table)  industry, stocks, and the average of its stocks' correlations and explained shares; largest first
   (\"periods\" . table)     period, pc1 ... (each component's value that week or month), and market-return
-Read one with (cdr (assoc \"stocks\" components))."
+Read one with (cdr (assoc \"stocks\" components)); stock-components lists each stock's most important components."
   (stock-prices--check frequency)
   (with-sqlite (conn db-path)
     (let* ((long (periodic-returns--long conn frequency (stock-prices--years frequency years)))
            (wide (table-pivot long "period" "ticker" '(sum "return")))
            (periods (table-row-count wide))
-           (pca (principal-components wide :count count :standardize standardize))
+           (pca (principal-components wide :count count :standardize standardize :rotate rotate))
            (pc-names (map (lambda (i) (string-append "pc" (number->string i))) (iota (min count (- periods 1)) 1)))
            (market (table-group-by long "period" '(("market-return" weighted-mean "return" "market_cap"))))
            (scores (table-join (cdr (assoc "scores" pca)) market "period"))
            (market-returns (table-column scores "market-return"))
-           (variance (table-add-columns (cdr (assoc "variance" pca))
-                       (list (cons "share-if-unrelated" (/ 1.0 (- periods 1)))
-                             (cons "correlation-with-market"
-                                   (list->vector (map (lambda (name) (vector-correlation (table-column scores name) market-returns)) pc-names))))))
            (facts (sqlite-query conn "SELECT i.ticker AS ticker, i.industry AS industry, COALESCE(r.market_cap, 0) AS market_cap
                                         FROM ticker_industry i LEFT JOIN stock_returns r ON r.ticker = i.ticker"))
            (explained (table-select (cdr (assoc "loadings" pca)) '("column" "explained")))
            (stocks (table-join (table-join (cdr (assoc "correlations" pca)) explained "column") (table-rename-column facts "ticker" "column") "column"))
            (stocks (table-rename-column stocks "column" "ticker"))
            (stocks (table-select stocks (append '("ticker" "industry" "market_cap") pc-names '("explained"))))
+           (industry-count (table-row-count (table-group-by stocks "industry" '(("n" count "ticker")))))
+           (with-equal-weights (table-add-columns stocks (list (cons "equal" 1.0))))
+           (industry-facts (map (lambda (name) (return-components--industry-facts with-equal-weights name)) pc-names))
+           (variance (cdr (assoc "variance" pca)))
+           (components (make-table "component" (list->vector pc-names)
+                                   "variance-share" (table-column variance "variance-share")
+                                   "cumulative-share" (table-column variance "cumulative-share")))
+           (components (table-add-columns components
+                         (list (cons "share-if-unrelated" (/ 1.0 (- periods 1)))
+                               (cons "correlation-with-market"
+                                     (list->vector (map (lambda (name) (vector-correlation (table-column scores name) market-returns)) pc-names)))
+                               (cons "industry-share" (list->vector (map car industry-facts)))
+                               (cons "industry-share-by-chance" (/ (- industry-count 1.0) (- (table-row-count stocks) 1.0)))
+                               (cons "best-industry" (list->vector (map cadr industry-facts)))
+                               (cons "best-industry-correlation" (list->vector (map caddr industry-facts)))
+                               (cons "label" (list->vector (map cadddr industry-facts))))))
            (industries (table-sort (table-group-by stocks "industry"
                                      (append '(("stocks" count "ticker"))
                                              (map (lambda (name) (list name 'mean name)) pc-names)
                                              '(("explained" mean "explained"))))
                                    "stocks" #t)))
-      (list (cons "variance" variance) (cons "stocks" stocks) (cons "industries" industries) (cons "periods" scores)))))
+      (list (cons "components" components) (cons "stocks" stocks) (cons "industries" industries) (cons "periods" scores)))))
+
+(define (stock-components components &key (top 3))
+  "Each stock's most important components, from what return-components returned: a table with :top (3) rows for each stock, its components in order of the
+share of its variation they explain, and two more: the share the other components explain, and the share none of them do (the stock's own). The columns:
+ticker, industry, rank (1, 2, ...), component, label (the component's, from the components table: the industries most with it vs least), correlation (of
+the stock's returns with the component: below 0, it moves against it), and share (of the stock's variation: the correlation squared)."
+  (let* ((stocks (cdr (assoc "stocks" components)))
+         (described (cdr (assoc "components" components)))
+         (pc-names (vector->list (table-column described "component")))
+         (labels (map cons pc-names (vector->list (table-column described "label"))))
+         (top (min top (length pc-names)))
+         (rows '()))
+    (for-each
+      (lambda (row)
+        (let* ((ticker (car row)) (industry (cadr row)) (correlations (map cons pc-names (caddr row))) (explained (cadddr row))
+               (ordered (sort correlations (lambda (pair) (- (* (cdr pair) (cdr pair))))))
+               (chosen (stock-returns--first top ordered))
+               (chosen-share (apply + (map (lambda (pair) (* (cdr pair) (cdr pair))) chosen))))
+          (for-each (lambda (pair rank)
+                      (set! rows (cons (list ticker industry rank (car pair) (cdr (assoc (car pair) labels)) (cdr pair) (* (cdr pair) (cdr pair)))
+                                       rows)))
+                    chosen (iota top 1))
+          (set! rows (cons (list ticker industry (+ top 1) "the other components" "" nan (- explained chosen-share)) rows))
+          (set! rows (cons (list ticker industry (+ top 2) "its own" "" nan (- 1.0 explained)) rows))))
+      (map list
+           (vector->list (table-column stocks "ticker"))
+           (vector->list (table-column stocks "industry"))
+           (apply map list (map (lambda (name) (vector->list (table-column stocks name))) pc-names))
+           (vector->list (table-column stocks "explained"))))
+    (let ((rows (reverse rows)))
+      (make-table "ticker" (list->vector (map car rows))
+                  "industry" (list->vector (map cadr rows))
+                  "rank" (list->vector (map caddr rows))
+                  "component" (list->vector (map cadddr rows))
+                  "label" (list->vector (map (lambda (r) (list-ref r 4)) rows))
+                  "correlation" (list->vector (map (lambda (r) (list-ref r 5)) rows))
+                  "share" (list->vector (map (lambda (r) (list-ref r 6)) rows))))))

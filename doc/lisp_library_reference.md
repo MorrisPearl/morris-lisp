@@ -2545,7 +2545,7 @@ none, by reason.
 A table with a `period` column and a column of returns for each stock that has a return in every one of the
 periods, named by its ticker.
 
-#### `(return-components "path/to/financial_data.db" [:frequency f :years n :count k :standardize b])`
+#### `(return-components "path/to/financial_data.db" [:frequency f :years n :count k :standardize b :rotate "varimax"])`
 The principal components (`principal-components`, under [Portfolios](#portfolios)) of the returns: the
 `:count` (5) patterns that explain the most. With `:standardize #t` (the default) the stocks' returns are
 first put on one scale, so that a small stock whose price jumps around does not decide the patterns. A list
@@ -2553,17 +2553,38 @@ of four tables, read with `(cdr (assoc "stocks" components))`:
 
 | Table | Columns |
 |---|---|
-| `"variance"` | `component`, `variance-share` (the share of all the stocks' variation it explains), `cumulative-share`, `share-if-unrelated` and `correlation-with-market` |
+| `"components"` | `component` (`pc1`, ...), `variance-share` (the share of all the stocks' variation it explains), `cumulative-share`, `share-if-unrelated`, `correlation-with-market`, `industry-share`, `industry-share-by-chance`, `best-industry`, `best-industry-correlation` and `label` (below) |
 | `"stocks"` | `ticker`, `industry`, `market_cap`, `pc1` ... (the correlation of the stock's returns with each component, from -1 to 1) and `explained` (the share of its variation the components explain: the correlations' squares added up) |
 | `"industries"` | `industry`, `stocks`, and the average of its stocks' `pc1` ... and `explained`; largest first |
 | `"periods"` | `period`, `pc1` ... (each component's value that week or month) and `market-return` (all the stocks' return, weighted by market cap) |
 
 `share-if-unrelated` is what each component would explain if the stocks moved independently of each other:
 1 over the periods less 1 (with 156 weeks, under 1%). A component well above it is a real pattern.
-`correlation-with-market` says whether a component is the whole market moving (the first usually is). The
-`industries` table shows which industries move with which components, which is how to say what a component
-is: a component that the banks are strongly correlated with, and the software companies weakly or negatively,
-is something that moves banks and software in opposite directions, such as interest rates.
+`correlation-with-market` says whether a component is the whole market moving (the first usually is).
+
+Whether a component is an industry: `industry-share` is how much of the difference between the stocks in how
+closely they move with it (their correlations with it) the industries explain, measured as `industry-variation`
+measures returns, and `industry-share-by-chance` what that would be if the stocks were put in industries at random.
+`best-industry` is the one industry most associated with the component, and `best-industry-correlation` the
+correlation between being in that industry (1 or 0) and the stock's correlation with the component: near 1, the
+component is that industry. `label` names the two industries (of 10 stocks or more) whose stocks move most with
+the component, "vs" the two that move least or against it, which is how to say what a component is: "Bank,
+R.E.I.T. vs Computer Software, Biotechnology" is something that moves banks and software in opposite directions,
+such as interest rates. Rotation (`:rotate "varimax"`) usually makes the labels clearer: the market is then spread
+over the components rather than being the first of them.
+
+#### `(stock-components components [:top n])`
+Each stock's most important components, from what `return-components` returned: a table with `:top` (3) rows for
+each stock, its components in order of the share of its variation they explain, and two more rows, the share the
+other components explain and the share none of them do (`"its own"`). The columns are `ticker`, `industry`, `rank`,
+`component`, `label` (the component's), `correlation` (of the stock's returns with the component: below 0, it moves
+against it) and `share` (of the stock's variation: the correlation squared). A stock's shares add up to 1.
+
+```lisp
+(define components (return-components db :count 8 :rotate "varimax"))
+(define mine (stock-components components))
+(display-table (table-where mine "ticker" "JPM"))
+```
 
 ### Alpha Vantage (dividends)
 
@@ -6517,7 +6538,7 @@ the daily returns' covariance times the days in a year (252, unless
 (display-table (correlation-matrix both))
 ```
 
-#### `(principal-components table [:count k] [:standardize b])`
+#### `(principal-components table [:count k] [:standardize b] [:rotate "varimax"])`
 The few combinations of a table's columns that explain most of how they vary
 together: principal component analysis. The table has a column of numbers
 for each thing (each stock's returns, say) and a row for each observation
@@ -6529,7 +6550,7 @@ is a list of four tables, read with `assoc`:
 | Table | Columns |
 |---|---|
 | `"variance"` | `component` (1, 2, ...), `variance-share` (the share of all the columns' variation it explains) and `cumulative-share` |
-| `"loadings"` | `column` (each column's name), `pc1` ... (how much of each component the column is: the weights, whose squares add up to 1 for each component) and `explained` (the share of that column's variation the components kept explain together) |
+| `"loadings"` | `column` (each column's name), `pc1` ... (the weights: a component's value in a row is the columns times these; without rotation, their squares add up to 1 for each component) and `explained` (the share of that column's variation the components kept explain together) |
 | `"correlations"` | `column`, then `pc1` ...: the correlation of each column with each component, from -1 to 1, the easiest way to say how closely a column moves with a component. Their squares add up to `explained` |
 | `"scores"` | the other columns, then `pc1` ...: each component's value in each row |
 
@@ -6551,6 +6572,29 @@ Every number must be there.
 
 x and y move together exactly, so they are one component, two thirds of the
 variation; z, unrelated to them, is the other third.
+
+**Rotation.** The first component is the combination that explains the most, the
+second the most of what is left, and so on, and that makes them hard to name: when
+there is a market that everything moves with, the first is "everything", and each
+after it is a contrast ("banks up, software down") that mixes several themes. With
+`:rotate "varimax"` the components kept are turned to explain the same things in a
+way that is easier to name. Picture each column as a point, placed by its
+correlations with the components (with two, a point in a plane). The components are
+the axes. Turning the axes together, at right angles to each other, moves no point,
+so the components still explain the same in all, each column is explained just as
+much, and the components are still unrelated to each other; only the share each one
+explains changes. Varimax turns them until each axis runs through a cluster of
+points, so that each column is near one axis and far from the others: each
+component then goes strongly with a few columns and hardly at all with the rest.
+In numbers, it makes the squared correlations of each component as spread out as
+they can be (the "variance" of them, hence the name). Kaiser's way of doing it,
+used here, takes the components two at a time and turns the pair by the angle a
+formula gives as best, then the next pair, round and round until nothing turns.
+
+```lisp
+(define turned (principal-components moves :count 2 :rotate "varimax"))
+(vector-round (table-column (cdr (assoc "variance" turned)) "cumulative-share") 4)   ; => #(0.6667 1.0)
+```
 
 #### `(minimum-variance-weights covariance [:long-only #t])`, `(mean-variance-weights expected-returns covariance risk-aversion [:long-only #t])`
 The weights, adding to 1, that make a portfolio's variance least, or its

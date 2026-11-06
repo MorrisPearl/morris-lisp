@@ -7,7 +7,7 @@
   (portfolio-value prices weights [:start-prices p] [:rebalance n] [:start-value v])
                                            a portfolio's value along a table of prices
   (covariance-matrix returns [:days-per-year n]), (correlation-matrix returns)
-  (principal-components table [:count k] [:standardize b])
+  (principal-components table [:count k] [:standardize b] [:rotate "varimax"])
                                            the few combinations that explain most of many columns' variation
   (portfolio-volatility weights covariance)
   (minimum-variance-weights covariance [:long-only #t])
@@ -335,8 +335,41 @@ def portfolio_volatility(weights, covariance):
 # Principal components
 # ---------------------------------------------------------------------------
 
+def varimax_rotation(covariances, tolerance=1e-10, most_sweeps=1000):
+    """The rotation that varimax (Kaiser, 1958) finds for the columns' covariances with the components (a row for
+    each column, a column for each component): the orthogonal matrix that, multiplying them, makes the squares
+    of each component's covariances as spread out as they can be -- some large, the rest near 0 -- so that each
+    column goes with as few of the components as it can.
+
+    Kaiser's way: take the components two at a time, and turn the two (in their plane) by the angle that makes
+    their spread greatest, which a formula gives; do that for every pair, and again, until no pair turns."""
+    rows, count = covariances.shape
+    turned = covariances.copy()
+    rotation = np.eye(count)
+    for _ in range(most_sweeps):
+        largest_turn = 0.0
+        for first in range(count - 1):
+            for second in range(first + 1, count):
+                x, y = turned[:, first], turned[:, second]
+                u, v = x * x - y * y, 2 * x * y
+                a, b = u.sum(), v.sum()
+                c, d = (u * u - v * v).sum(), 2 * (u * v).sum()
+                angle = np.arctan2(d - 2 * a * b / rows, c - (a * a - b * b) / rows) / 4
+                if abs(angle) > largest_turn:
+                    largest_turn = abs(angle)
+                cos, sin = np.cos(angle), np.sin(angle)
+                turn = np.eye(count)
+                turn[first, first] = turn[second, second] = cos
+                turn[first, second], turn[second, first] = -sin, sin
+                turned = turned @ turn
+                rotation = rotation @ turn
+        if largest_turn < tolerance:
+            break
+    return rotation
+
+
 def principal_components(table, *options):
-    """(principal-components table [:count k] [:standardize b]) -- the
+    """(principal-components table [:count k] [:standardize b] [:rotate "varimax"]) -- the
     principal components of the table's columns of numbers (one column for
     each thing, such as a stock's returns, and one row for each observation,
     such as a month). The other columns, such as a date, are carried along.
@@ -345,8 +378,9 @@ def principal_components(table, *options):
       ("variance" . table)  component (1, 2, ...), variance-share (the share of
                             all the columns' variation it explains), and
                             cumulative-share
-      ("loadings" . table)  column (each column's name), pc1 ... pck (how much
-                            of each component it is made of: the weights, whose
+      ("loadings" . table)  column (each column's name), pc1 ... pck (the
+                            weights: a component's value in a row is the
+                            columns times these; without rotation, their
                             squares add up to 1 for each component), and
                             explained (the share of that column's variation the
                             k components explain together)
@@ -361,11 +395,19 @@ def principal_components(table, *options):
     default) each column is first put on the same scale (its standard
     deviation made 1), so the components explain correlation, and a column
     that varies a lot doesn't decide them; #f leaves the scales as they are.
-    Each component's sign is chosen so that its loadings add up to more than
-    0. Every number must be there: a column with a missing value is an
-    error."""
+    With :rotate "varimax" the components kept are turned (see
+    varimax_rotation) so that each column goes with as few of them as it
+    can: they explain the same in all, and stay unrelated to each other,
+    but are easier to give names to. Then a component's loadings are no
+    longer of length 1. The components are in order of how much they
+    explain, and each one's sign is chosen so that the columns' correlations
+    with it add up to more than 0. Every number must be there: a column with
+    a missing value is an error."""
     who = "principal-components"
-    options = keyword_options(options, ["count", "standardize"], who)
+    options = keyword_options(options, ["count", "standardize", "rotate"], who)
+    rotate = options.get("rotate", False)
+    if rotate is not False and str(rotate) != "varimax":
+        raise LispError('%s: :rotate is "varimax", or #f for none, not %s' % (who, rotate))
     columns = table_columns(table, who)
     numeric = [(name, vector) for name, vector in columns
                if np.issubdtype(vector.items.dtype, np.number) and vector.items.dtype != np.bool_]
@@ -392,23 +434,37 @@ def principal_components(table, *options):
                             % (who, numeric[int(np.argmax(spread == 0))][0]))
         centered = centered / spread
 
-    # The singular value decomposition: centered = left @ diag(sizes) @ directions.
-    # Each row of directions is a component's loadings, and sizes squared / (rows - 1) its variance.
+    # The singular value decomposition: centered = left @ diag(sizes) @ directions. Each row of directions is a
+    # component (the weights of the columns that make it), and sizes squared / (rows - 1) is its variance.
     left, sizes, directions = np.linalg.svd(centered, full_matrices=False)
     variances = sizes ** 2 / (rows - 1)
-    shares = variances / variances.sum()
-    loadings = directions[:count].T                         # a row for each column, a column for each component
-    signs = np.where(loadings.sum(axis=0) < 0, -1.0, 1.0)
-    loadings = loadings * signs
+    total_variance = variances.sum()
+    # Each column's covariance with each component, the component scaled to a variance of 1 (a row for each column,
+    # a column for each component), and the weights that make those components of variance 1 from the columns.
+    covariances = directions[:count].T * np.sqrt(variances[:count])
+    unit_weights = directions[:count].T / np.sqrt(variances[:count])
+    if rotate:
+        rotation = varimax_rotation(covariances)
+        covariances = covariances @ rotation
+        unit_weights = unit_weights @ rotation
+    # Each component's variance is its covariances' squares added up. The largest first, and each one's sign chosen
+    # so that its covariances add up to more than 0.
+    component_variances = (covariances ** 2).sum(axis=0)
+    order = np.argsort(-component_variances, kind="stable")
+    covariances, unit_weights, component_variances = covariances[:, order], unit_weights[:, order], component_variances[order]
+    signs = np.where(covariances.sum(axis=0) < 0, -1.0, 1.0)
+    covariances = covariances * signs
+    loadings = unit_weights * signs * np.sqrt(component_variances)      # a component's value is the columns times these
     scores = centered @ loadings
     column_variances = centered.var(axis=0, ddof=1)
-    correlations = loadings * np.sqrt(variances[:count]) / np.sqrt(column_variances)[:, None]
+    correlations = covariances / np.sqrt(column_variances)[:, None]
     explained = (correlations ** 2).sum(axis=1)
+    shares = component_variances / total_variance
 
     names = ["pc%d" % (i + 1) for i in range(count)]
     variance_table = make_table_value([("component", to_vector(np.arange(1, count + 1))),
                                        ("variance-share", to_vector(shares[:count])),
-                                       ("cumulative-share", to_vector(np.cumsum(shares)[:count]))])
+                                       ("cumulative-share", to_vector(np.cumsum(shares)))])
     loadings_table = make_table_value([("column", LispVector([LispString(name) for name, _ in numeric]))] +
                                       [(names[i], to_vector(loadings[:, i])) for i in range(count)] +
                                       [("explained", to_vector(explained))])

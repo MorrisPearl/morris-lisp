@@ -2095,3 +2095,58 @@ class TestPrincipalComponents(LispTestCase):
         self.assertLispError('(principal-components (make-table "x" #(1.0 nan 3.0) "y" #(1.0 2.0 4.0)))', "x has one missing")
         self.assertLispError('(principal-components (make-table "x" #(1.0 2.0 3.0) "y" #(5.0 5.0 5.0)))', "y never changes")
         self.assertLispError('(principal-components (make-table "x" #(1.0 2.0 3.0)))', "at least two columns")
+
+
+class TestVarimax(LispTestCase):
+    """principal-components :rotate "varimax": the same components turned so that each column goes with as few as it can."""
+
+    def setUp(self):
+        super().setUp()
+        # x1 x2 x3 are the market and a, y1 y2 y3 the market and b, each with a little noise of its own
+        rng = np.random.default_rng(5)
+        rows = 200
+        market, a, b = rng.normal(size=rows), rng.normal(size=rows), rng.normal(size=rows)
+        columns = {}
+        for i in range(3):
+            columns["x%d" % (i + 1)] = market + a + 0.3 * rng.normal(size=rows)
+            columns["y%d" % (i + 1)] = market + b + 0.3 * rng.normal(size=rows)
+        source = " ".join('"%s" #(%s)' % (name, " ".join(repr(float(v)) for v in values)) for name, values in sorted(columns.items()))
+        self.run_lisp("(define groups (make-table %s))" % source)
+        self.plain = self.part_numbers('(principal-components groups :count 2)')
+        self.turned = self.part_numbers('(principal-components groups :count 2 :rotate "varimax")')
+
+    def part_numbers(self, expression):
+        """The correlations, explained shares, variance shares and scores, as numpy arrays."""
+        self.run_lisp("(define pca %s)" % expression)
+        def column(part, name):
+            return np.array(self.run_lisp('(table-column (cdr (assoc "%s" pca)) "%s")' % (part, name)).items, dtype=float)
+        return {"correlations": np.column_stack([column("correlations", "pc1"), column("correlations", "pc2")]),
+                "explained": column("loadings", "explained"),
+                "shares": column("variance", "variance-share"),
+                "scores": np.column_stack([column("scores", "pc1"), column("scores", "pc2")])}
+
+    def test_without_rotation_the_first_is_everything_and_the_second_x_against_y(self):
+        first, second = self.plain["correlations"][:, 0], self.plain["correlations"][:, 1]
+        self.assertTrue(np.all(first > 0.5))
+        self.assertTrue(np.all(np.sign(second[:3]) != np.sign(second[3:])))      # the columns are x1 x2 x3 y1 y2 y3
+
+    def test_after_rotation_each_group_has_a_component_of_its_own(self):
+        turned = np.abs(self.turned["correlations"])
+        groups = [set(np.argmax(turned[:3], axis=1)), set(np.argmax(turned[3:], axis=1))]
+        self.assertEqual([len(g) for g in groups], [1, 1])
+        self.assertNotEqual(groups[0], groups[1])
+        # and each column goes much more with its own group's component than with the other
+        self.assertTrue(np.all(turned.max(axis=1) > 2 * turned.min(axis=1)))
+
+    def test_rotation_explains_the_same_in_all_and_each_column_the_same(self):
+        self.assertAlmostEqual(self.plain["shares"].sum(), self.turned["shares"].sum())
+        np.testing.assert_allclose(self.plain["explained"], self.turned["explained"])
+
+    def test_the_rotated_components_are_still_unrelated_and_the_correlations_are_with_the_scores(self):
+        scores = self.turned["scores"]
+        self.assertAlmostEqual(np.corrcoef(scores.T)[0, 1], 0.0)
+        x1 = np.array(self.run_lisp('(table-column groups "x1")').items, dtype=float)
+        self.assertAlmostEqual(np.corrcoef(x1, scores[:, 0])[0, 1], self.turned["correlations"][0, 0])
+
+    def test_rotate_takes_only_varimax(self):
+        self.assertLispError('(principal-components groups :rotate "promax")', "varimax")
