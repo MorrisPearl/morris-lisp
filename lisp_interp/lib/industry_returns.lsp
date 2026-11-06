@@ -6,7 +6,7 @@
 ;   (industry-returns "financial_data.db")              each industry's return, weighted by market capitalization
 ;   (industry-variation "financial_data.db")            how much stocks differ within an industry, against how much industries differ from each other
 ;
-; and, further down, monthly returns over two years and their principal components (monthly-prices-update, monthly-returns, return-components).
+; and, further down, weekly (or monthly) returns over a few years and their principal components (stock-prices-update, periodic-returns, return-components).
 ;
 ; A stock's return over a year is what its price gained, plus the dividend, as a fraction of the price it started at:
 ;
@@ -221,64 +221,73 @@ A share well above share-by-chance means the industries are separating returns; 
                   "return-ranks" (list->vector (append (map cdr by-rank) (list chance stock-count industry-count)))))))
 
 ; ---------------------------------------------------------------------------------------------------------------------------------------------------------
-; Monthly returns, and the few patterns that explain much of them (principal components)
+; Weekly (or monthly) returns, and the few patterns that explain much of them (principal components)
 ; ---------------------------------------------------------------------------------------------------------------------------------------------------------
 ;
-;   (monthly-prices-update creds "financial_data.db")   each stock's closing price at the end of each month for the last two years, from Schwab
-;   (monthly-returns "financial_data.db")               a table with a row for each month and a column of each stock's returns
-;   (return-components "financial_data.db")             the principal components of those returns
+;   (stock-prices-update creds "financial_data.db")   each stock's closing price at the end of each week for the last three years, from Schwab
+;   (periodic-returns "financial_data.db")            a table with a row for each week and a column of each stock's returns
+;   (return-components "financial_data.db")           the principal components of those returns
 ;
-; A month's return is (this month's close - last month's close + the dividend paid that month) / last month's close. The dividend is the current one, taken to
-; be the same number of dollars each time: Schwab's dividendAmount (a year's dividends at the current rate) over dividendFreq (how many payments a year: 4 for
-; most, 12 for some, 2 for some foreign companies), in each month that has an ex-dividend date (the day the price falls by the dividend). The ex-dates are
-; Schwab's dividendDate (the latest, or the next) and the dates every 12 / dividendFreq months before it. A stock with a dividend but no ex-date, or with a
-; number of payments a year that doesn't divide a year into whole months, gets a twelfth of its dividend every month. Only whole months are used: the last
-; is the month before the one the update is run in. The Canadian stocks (tickers ending in .TO) are left out.
+; Each takes :frequency, "weekly" (the default) or "monthly", and :years, how far back (3 for weekly, 2 for monthly). A period is named by its first day: the
+; Monday of a week (as Schwab dates its weekly prices), or the first of a month. Only whole periods are used: the last is the one before the period the update
+; is run in. The Canadian stocks (tickers ending in .TO) are left out.
 ;
-; The tables: monthly_prices (ticker, month, close), with month the first day of the month the close is at the end of; monthly_prices_asked (ticker,
-; last_month, months, note), a row for each stock asked for, so that a run that is stopped picks up where it left off; and stock_dividends (ticker,
-; annual_dividend, payments_per_year, ex_date), the dividends as Schwab has them now, which monthly-prices-update gets afresh each time (a few requests).
+; A period's return is (its close - the last period's close + the dividends with an ex-date in it) / the last period's close. The dividend is the current one,
+; the same number of dollars each time: Schwab's dividendAmount (a year's dividends at the current rate) over dividendFreq (how many payments a year: 4 for
+; most, 12 for some, 2 for some foreign companies). The ex-dates (the day the price falls by the dividend) are Schwab's dividendDate (the latest, or the
+; next) and the same day of the month every 12 / dividendFreq months before and after it -- which only approximates the real ones, which move about by a
+; few days. A stock with a dividend but no ex-date, or with a number of payments a year that doesn't divide a year into whole months, gets its dividend
+; spread evenly over the periods (a 52nd a week, a 12th a month).
+;
+; The tables, for each frequency: weekly_prices (ticker, period, close) and weekly_prices_asked (ticker, last_period, periods, note), a row for each stock
+; asked for, so that a run that is stopped picks up where it left off (and monthly_prices and monthly_prices_asked); and stock_dividends (ticker,
+; annual_dividend, payments_per_year, ex_date), the dividends as Schwab has them now, which stock-prices-update gets afresh each time (a few requests).
 
-(define monthly-returns-years 2)          ; how many years of monthly returns
+(define stock-prices-default-years '(("weekly" . 3) ("monthly" . 2)))    ; how many years of returns, unless :years says
+(define stock-prices-periods-per-year '(("weekly" . 52) ("monthly" . 12)))
 
-(define (monthly-prices--create conn)
-  (sqlite-execute conn "CREATE TABLE IF NOT EXISTS monthly_prices (ticker TEXT, month TEXT, close REAL, PRIMARY KEY (ticker, month))")
-  (sqlite-execute conn "CREATE TABLE IF NOT EXISTS monthly_prices_asked (ticker TEXT PRIMARY KEY, last_month TEXT, months INTEGER, note TEXT)"))
+(define (stock-prices--check frequency)
+  (if (not (assoc frequency stock-prices-default-years))
+      (error "stock prices: :frequency is \"weekly\" or \"monthly\", not" frequency)))
 
-(define (monthly-prices--last-month day)
-  "The first day of the last whole month before the month of day."
-  (date-add-months (date (date-year day) (date-month day) 1) -1))
+(define (stock-prices--years frequency years)
+  "The years asked for, or the frequency's usual number."
+  (if (null? years) (cdr (assoc frequency stock-prices-default-years)) years))
 
-(define (monthly-prices--wanted conn last-month)
-  "The tickers of ticker_industry, but for the Canadian ones, not yet asked for with this last month, in order."
-  (vector->list
-    (table-column
-      (sqlite-query conn "SELECT ticker FROM ticker_industry
-                           WHERE ticker NOT LIKE '%.TO'
-                             AND ticker NOT IN (SELECT ticker FROM monthly_prices_asked WHERE last_month = ?)
-                           ORDER BY ticker"
-                    '() '() (list (date->string last-month)))
-      "ticker")))
+(define (stock-prices--table frequency) (string-append frequency "_prices"))              ; weekly_prices or monthly_prices
+(define (stock-prices--asked-table frequency) (string-append frequency "_prices_asked"))  ; weekly_prices_asked or monthly_prices_asked
 
-(define (monthly-prices--save conn creds ticker first-month last-month)
-  "Asks Schwab for the ticker's monthly closes from first-month to last-month, and replaces what monthly_prices has for it."
-  (let* ((prices (catch-error (stock-returns--ask-schwab
-                                (lambda () (schwab-price-history creds ticker :frequency "monthly"
-                                                                 :start-date first-month :end-date (date-end-of-month last-month))))
-                   (message) message))
-         (whole-months (if (string? prices) '() (table-filter prices (vector<= (table-column prices "date") last-month))))
-         (months (if (null? whole-months) 0 (table-row-count whole-months)))
-         (note (cond ((string? prices) (stock-returns--why-none prices))
-                     ((= months 0) "Schwab has no whole months for it")
-                     (else ""))))
-    (sqlite-execute conn "DELETE FROM monthly_prices WHERE ticker = ?" (list ticker))
-    (if (> months 0)
-        (sqlite-write-table conn "monthly_prices"
-          (table-add-columns (table-select (table-rename-column whole-months "date" "month") '("month" "close"))
-                             (list (cons "ticker" ticker)))
-          'append))
-    (sqlite-execute conn "DELETE FROM monthly_prices_asked WHERE ticker = ?" (list ticker))
-    (sqlite-execute conn "INSERT INTO monthly_prices_asked VALUES (?, ?, ?, ?)" (list ticker (date->string last-month) months note))))
+(define (stock-prices--create conn frequency)
+  (sqlite-execute conn (string-append "CREATE TABLE IF NOT EXISTS " (stock-prices--table frequency)
+                                      " (ticker TEXT, period TEXT, close REAL, PRIMARY KEY (ticker, period))"))
+  (sqlite-execute conn (string-append "CREATE TABLE IF NOT EXISTS " (stock-prices--asked-table frequency)
+                                      " (ticker TEXT PRIMARY KEY, last_period TEXT, periods INTEGER, note TEXT)")))
+
+(define (stock-prices--period-of frequency day)
+  "The first day of the period day is in: the Monday of its week, or the first of its month."
+  (if (equal? frequency "weekly")
+      (date-add-days day (- 1 (date-day-of-week day)))
+      (date (date-year day) (date-month day) 1)))
+
+(define (stock-prices--period-sql frequency day-sql)
+  "The same, as SQL, of the SQL day-sql: SQLite's 'weekday 1' goes forward to a Monday, so going back six days first finds the one the week starts on."
+  (if (equal? frequency "weekly")
+      (string-append "date(" day-sql ", '-6 days', 'weekday 1')")
+      (string-append "date(" day-sql ", 'start of month')")))
+
+(define (stock-prices--last-period frequency day)
+  "The first day of the last whole period before the period of day."
+  (let ((this-period (stock-prices--period-of frequency day)))
+    (if (equal? frequency "weekly") (date-add-days this-period -7) (date-add-months this-period -1))))
+
+(define (stock-prices--first-period frequency last-period years)
+  "The first day of the period whose close comes before the first return: years before the last period."
+  (stock-prices--period-of frequency (date-add-years last-period (- years))))
+
+(define (stock-prices--end-of-period frequency first-day)
+  (if (equal? frequency "weekly") (date-add-days first-day 6) (date-end-of-month first-day)))
+
+; --- dividends ---
 
 (define (stock-dividends--create conn)
   (sqlite-execute conn "CREATE TABLE IF NOT EXISTS stock_dividends (ticker TEXT PRIMARY KEY, annual_dividend REAL, payments_per_year INTEGER, ex_date TEXT)"))
@@ -315,103 +324,152 @@ Returns how many stocks it has, and how many of them pay a dividend."
               (loop (list-tail remaining count)))))
       (sqlite-query conn "SELECT COUNT(*) AS stocks, SUM(annual_dividend > 0) AS paying_dividends FROM stock_dividends"))))
 
-(define (monthly-prices-update creds db-path &key (years monthly-returns-years) (end-date '()))
-  "Gets each stock's month-end closes for the last :years (2) whole years, before the month of :end-date (today), from Schwab, and keeps them in the table
-monthly_prices of the database at db-path; first it brings the dividends up to date (stock-dividends-update). Skips the stocks it already has, so it can be stopped and called again. Returns a table of how many stocks it has
-a whole run of months for, how many it has some months for, and how many none, by reason."
+; --- prices ---
+
+(define (stock-prices--wanted conn frequency last-period)
+  "The tickers of ticker_industry, but for the Canadian ones, not yet asked for with this last period, in order."
+  (vector->list
+    (table-column
+      (sqlite-query conn (string-append "SELECT ticker FROM ticker_industry
+                                          WHERE ticker NOT LIKE '%.TO'
+                                            AND ticker NOT IN (SELECT ticker FROM " (stock-prices--asked-table frequency) " WHERE last_period = ?)
+                                          ORDER BY ticker")
+                    '() '() (list (date->string last-period)))
+      "ticker")))
+
+(define (stock-prices--save conn creds frequency ticker first-period last-period)
+  "Asks Schwab for the ticker's closes from first-period to the end of last-period, and replaces what the prices table has for it."
+  (let* ((prices (catch-error (stock-returns--ask-schwab
+                                (lambda () (schwab-price-history creds ticker :frequency frequency
+                                                                 :start-date first-period :end-date (stock-prices--end-of-period frequency last-period))))
+                   (message) message))
+         (whole-periods (if (string? prices) '() (table-filter prices (vector<= (table-column prices "date") last-period))))
+         (periods (if (null? whole-periods) 0 (table-row-count whole-periods)))
+         (note (cond ((string? prices) (stock-returns--why-none prices))
+                     ((= periods 0) "Schwab has no whole periods for it")
+                     (else ""))))
+    (sqlite-execute conn (string-append "DELETE FROM " (stock-prices--table frequency) " WHERE ticker = ?") (list ticker))
+    (if (> periods 0)
+        (sqlite-write-table conn (stock-prices--table frequency)
+          (table-add-columns (table-select (table-rename-column whole-periods "date" "period") '("period" "close"))
+                             (list (cons "ticker" ticker)))
+          'append))
+    (sqlite-execute conn (string-append "DELETE FROM " (stock-prices--asked-table frequency) " WHERE ticker = ?") (list ticker))
+    (sqlite-execute conn (string-append "INSERT INTO " (stock-prices--asked-table frequency) " VALUES (?, ?, ?, ?)")
+                    (list ticker (date->string last-period) periods note))))
+
+(define (stock-prices-update creds db-path &key (frequency "weekly") (years '()) (end-date '()))
+  "Gets each stock's closes at the end of each week (or, with :frequency \"monthly\", each month) for the last :years (3 for weekly, 2 for monthly) whole
+years, before the period of :end-date (today), from Schwab, and keeps them in the table weekly_prices (or monthly_prices) of the database at db-path; first it
+brings the dividends up to date (stock-dividends-update). Skips the stocks it already has, so it can be stopped and called again. Returns a table of how many
+stocks it has every period for, how many some periods, and how many none, by reason."
+  (stock-prices--check frequency)
   (display "dividends: ") (display (stock-dividends-update creds db-path)) (newline)
   (with-sqlite (conn db-path)
-    (monthly-prices--create conn)
+    (stock-prices--create conn frequency)
     (let* ((end (if (null? end-date) (today) (if (string? end-date) (string->date end-date) end-date)))
-           (last-month (monthly-prices--last-month end))
-           (first-month (date-add-months last-month (- (* 12 years))))   ; the close before the first month's return
-           (wanted (monthly-prices--wanted conn last-month)))
+           (last-period (stock-prices--last-period frequency end))
+           (first-period (stock-prices--first-period frequency last-period (stock-prices--years frequency years)))
+           (wanted (stock-prices--wanted conn frequency last-period)))
       (display (length wanted)) (display " stocks to get") (newline)
       (let loop ((remaining wanted) (done 0))
         (if (pair? remaining)
             (begin
-              (monthly-prices--save conn creds (car remaining) first-month last-month)
+              (stock-prices--save conn creds frequency (car remaining) first-period last-period)
               (sleep stock-returns-pause)
               (if (= (remainder (+ done 1) 400) 0) (begin (display (+ done 1)) (display " done") (newline)))
               (loop (cdr remaining) (+ done 1)))))
       (sqlite-query conn
-        "SELECT CASE WHEN note != '' THEN note WHEN months = ? THEN 'every month' ELSE 'some months' END AS what, COUNT(*) AS stocks
-           FROM monthly_prices_asked WHERE last_month = ? GROUP BY what ORDER BY stocks DESC, what"
-        '() '() (list (+ (* 12 years) 1) (date->string last-month))))))
+        (string-append "SELECT CASE WHEN note != '' THEN note WHEN periods = (SELECT MAX(periods) FROM " (stock-prices--asked-table frequency)
+                       " WHERE last_period = ?) THEN 'every period' ELSE 'some periods' END AS what, COUNT(*) AS stocks
+                         FROM " (stock-prices--asked-table frequency) " WHERE last_period = ? GROUP BY what ORDER BY stocks DESC, what")
+        '() '() (list (date->string last-period) (date->string last-period))))))
 
-(define (monthly-returns--long conn years)
-  "The monthly returns, a row for each stock and month: ticker, month, return and market_cap, for the stocks that have a return in every one of the last
-:years of months monthly_prices has."
+; --- returns ---
+
+(define (periodic-returns--long conn frequency years)
+  "The returns, a row for each stock and period: ticker, period, return and market_cap, for the stocks that have a return in every one of the periods of the
+last years the prices table has."
   (stock-returns--create conn)      ; (the market caps come from it; without it, there are none)
   (stock-dividends--create conn)    ; (and the dividends from this)
-  (let* ((last-month (vector-ref (table-column (sqlite-query conn "SELECT MAX(month) AS last FROM monthly_prices") "last") 0))
-         (first-month (date->string (date-add-months (string->date (date->string last-month)) (- (* 12 years))))))
+  (let* ((prices (stock-prices--table frequency))
+         (last-period (string->date (date->string (vector-ref (table-column (sqlite-query conn (string-append "SELECT MAX(period) AS last FROM " prices))
+                                                                            "last") 0))))
+         (first-period (date->string (stock-prices--first-period frequency last-period years)))
+         (spread-over (cdr (assoc frequency stock-prices-periods-per-year))))
     (sqlite-query conn
+      (string-append
       "WITH RECURSIVE
-       -- the month of each ex-dividend date: the month of Schwab's, and every 12 / payments_per_year months before it, back to the first month,
-       -- and after it, up to the last (step is -1 going back, +1 going forward; the months are counted from the first of the month, as SQLite
-       -- takes May 31 less 3 months to be March 3)
-       ex_months (ticker, month, payment, months_apart, step) AS (
-         SELECT ticker, date(ex_date, 'start of month'), annual_dividend / payments_per_year, 12 / payments_per_year, step
+       -- each stock's ex-dividend dates: Schwab's, and the same day of the month every 12 / payments_per_year months before it, back to the first period,
+       -- and after it, up to the last (step is -1 going back and +1 going forward). The months are counted from the first of the month, and the day put
+       -- back, but no later than the month's last day: SQLite takes May 31 less 3 months to be March 3.
+       ex_months (ticker, month, day_of_month, payment, months_apart, step) AS (
+         SELECT ticker, date(ex_date, 'start of month'), CAST(strftime('%d', ex_date) AS INTEGER),
+                annual_dividend / payments_per_year, 12 / payments_per_year, step
            FROM stock_dividends, (SELECT -1 AS step UNION ALL SELECT 1)
           WHERE annual_dividend > 0 AND ex_date != '' AND payments_per_year IN (1, 2, 3, 4, 6, 12)
          UNION ALL
-         SELECT ticker, date(month, printf('%+d months', step * months_apart)), payment, months_apart, step FROM ex_months
-          WHERE (step < 0 AND month >= ?) OR (step > 0 AND month <= ?)),
-       paid AS (SELECT ticker, month, SUM(payment) AS dividend
-                  FROM (SELECT DISTINCT ticker, month, payment FROM ex_months)     -- (Schwab's own month is there twice, once for each step)
-                 GROUP BY ticker, month),
-       -- a stock with a dividend but no ex-date, or an odd number of payments a year: a twelfth of it each month
-       spread AS (SELECT ticker, annual_dividend / 12.0 AS dividend FROM stock_dividends
+         SELECT ticker, date(month, printf('%+d months', step * months_apart)), day_of_month, payment, months_apart, step FROM ex_months
+          WHERE (step < 0 AND month >= date(?, 'start of month')) OR (step > 0 AND month <= ?)),
+       ex_days AS (
+         SELECT DISTINCT ticker, MIN(date(month, printf('+%d days', day_of_month - 1)), date(month, '+1 month', '-1 day')) AS day, payment
+           FROM ex_months),     -- (DISTINCT: Schwab's own date is there twice, once for each step)
+       paid AS (SELECT ticker, " (stock-prices--period-sql frequency "day") " AS period, SUM(payment) AS dividend FROM ex_days GROUP BY ticker, period),
+       -- a stock with a dividend but no ex-date, or an odd number of payments a year: spread evenly over the periods
+       spread AS (SELECT ticker, annual_dividend / " (number->string spread-over) ".0 AS dividend FROM stock_dividends
                    WHERE annual_dividend > 0 AND NOT (ex_date != '' AND payments_per_year IN (1, 2, 3, 4, 6, 12))),
        priced AS (
-         SELECT p.ticker, p.month, p.close,
-                LAG(p.close) OVER (PARTITION BY p.ticker ORDER BY p.month) AS previous_close,
+         SELECT p.ticker, p.period, p.close,
+                LAG(p.close) OVER (PARTITION BY p.ticker ORDER BY p.period) AS previous_close,
                 COALESCE(paid.dividend, spread.dividend, 0) AS dividend,
                 COALESCE(r.market_cap, 0) AS market_cap
-           FROM monthly_prices p
-                LEFT JOIN paid ON paid.ticker = p.ticker AND paid.month = p.month
+           FROM " prices " p
+                LEFT JOIN paid ON paid.ticker = p.ticker AND paid.period = p.period
                 LEFT JOIN spread ON spread.ticker = p.ticker
                 LEFT JOIN stock_returns r ON r.ticker = p.ticker
-          WHERE p.month >= ? AND p.month <= ?),
+          WHERE p.period >= ? AND p.period <= ?),
        returns AS (
-         SELECT ticker, month, (close - previous_close + dividend) / previous_close AS return, market_cap
-           FROM priced WHERE previous_close > 0)
-       SELECT ticker, month, return, market_cap FROM returns
-        WHERE ticker IN (SELECT ticker FROM returns GROUP BY ticker HAVING COUNT(*) = ?)
-        ORDER BY ticker, month"
-      '() '() (list first-month (date->string last-month) first-month (date->string last-month) (* 12 years)))))
+         SELECT ticker, period, (close - previous_close + dividend) / previous_close AS return, market_cap
+           FROM priced WHERE previous_close > 0),
+       counts AS (SELECT ticker, COUNT(*) AS periods FROM returns GROUP BY ticker)
+       SELECT ticker, period, return, market_cap FROM returns
+        WHERE ticker IN (SELECT ticker FROM counts WHERE periods = (SELECT MAX(periods) FROM counts))
+        ORDER BY ticker, period")
+      '() '() (list first-period (date->string last-period) first-period (date->string last-period)))))
 
-(define (monthly-returns db-path &key (years monthly-returns-years))
-  "A table of the stocks' monthly returns: a month column, and a column for each stock that has a return in every one of the last :years (2) of months,
-named by its ticker."
+(define (periodic-returns db-path &key (frequency "weekly") (years '()))
+  "A table of the stocks' weekly (or, with :frequency \"monthly\", monthly) returns: a period column (the first day of each week or month), and a column for
+each stock that has a return in every one of the periods of the last :years (3 for weekly, 2 for monthly), named by its ticker."
+  (stock-prices--check frequency)
   (with-sqlite (conn db-path)
-    (table-pivot (monthly-returns--long conn years) "month" "ticker" '(sum "return"))))
+    (table-pivot (periodic-returns--long conn frequency (stock-prices--years frequency years)) "period" "ticker" '(sum "return"))))
 
-(define (return-components db-path &key (count 5) (years monthly-returns-years) (standardize #t))
-  "The principal components of the stocks' monthly returns: the :count (5) patterns of moving together that explain the most of how the stocks' returns
-went up and down, from (monthly-returns db-path). With :standardize #t (the default) each stock's returns are first put on the same scale, so that the
-components explain how the stocks move together, not just which stocks move the most. Returns a list of four tables, by name:
+(define (return-components db-path &key (frequency "weekly") (years '()) (count 5) (standardize #t))
+  "The principal components of the stocks' weekly (or, with :frequency \"monthly\", monthly) returns over the last :years (3 for weekly, 2 for monthly): the
+:count (5) patterns of moving together that explain the most of how the stocks' returns went up and down. With :standardize #t (the default) each stock's
+returns are first put on the same scale, so that the components explain how the stocks move together, not just which stocks move the most. Returns a list of
+four tables, by name:
   (\"variance\" . table)    component, variance-share (the share of all the stocks' variation it explains), cumulative-share, share-if-unrelated (what
-                           each component would explain if the stocks moved independently: 1 / (months - 1)), and correlation-with-market (with the
+                           each component would explain if the stocks moved independently: 1 / (periods - 1)), and correlation-with-market (with the
                            market-cap-weighted return of all the stocks)
   (\"stocks\" . table)      ticker, industry, market_cap, pc1 ... (the correlation of the stock's returns with each component, from -1 to 1: how
                            closely it moves with it), and explained (the share of the stock's variation the components explain together: the
                            correlations' squares added up)
   (\"industries\" . table)  industry, stocks, and the average of its stocks' correlations and explained shares; largest first
-  (\"months\" . table)      month, pc1 ... (each component's value that month), and market-return
+  (\"periods\" . table)     period, pc1 ... (each component's value that week or month), and market-return
 Read one with (cdr (assoc \"stocks\" components))."
+  (stock-prices--check frequency)
   (with-sqlite (conn db-path)
-    (let* ((long (monthly-returns--long conn years))
-           (wide (table-pivot long "month" "ticker" '(sum "return")))
-           (months (table-row-count wide))
+    (let* ((long (periodic-returns--long conn frequency (stock-prices--years frequency years)))
+           (wide (table-pivot long "period" "ticker" '(sum "return")))
+           (periods (table-row-count wide))
            (pca (principal-components wide :count count :standardize standardize))
-           (pc-names (map (lambda (i) (string-append "pc" (number->string i))) (iota (min count (- months 1)) 1)))
-           (market (table-group-by long "month" '(("market-return" weighted-mean "return" "market_cap"))))
-           (scores (table-join (cdr (assoc "scores" pca)) market "month"))
+           (pc-names (map (lambda (i) (string-append "pc" (number->string i))) (iota (min count (- periods 1)) 1)))
+           (market (table-group-by long "period" '(("market-return" weighted-mean "return" "market_cap"))))
+           (scores (table-join (cdr (assoc "scores" pca)) market "period"))
            (market-returns (table-column scores "market-return"))
            (variance (table-add-columns (cdr (assoc "variance" pca))
-                       (list (cons "share-if-unrelated" (/ 1.0 (- months 1)))
+                       (list (cons "share-if-unrelated" (/ 1.0 (- periods 1)))
                              (cons "correlation-with-market"
                                    (list->vector (map (lambda (name) (vector-correlation (table-column scores name) market-returns)) pc-names))))))
            (facts (sqlite-query conn "SELECT i.ticker AS ticker, i.industry AS industry, COALESCE(r.market_cap, 0) AS market_cap
@@ -425,4 +483,4 @@ Read one with (cdr (assoc \"stocks\" components))."
                                              (map (lambda (name) (list name 'mean name)) pc-names)
                                              '(("explained" mean "explained"))))
                                    "stocks" #t)))
-      (list (cons "variance" variance) (cons "stocks" stocks) (cons "industries" industries) (cons "months" scores)))))
+      (list (cons "variance" variance) (cons "stocks" stocks) (cons "industries" industries) (cons "periods" scores)))))

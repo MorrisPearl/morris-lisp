@@ -217,11 +217,14 @@ class TestIndustryVariation(IndustryReturnsTestCase):
         self.assertShows("(procedure? industry-variation)", "#t")
 
 
-# Monthly closes for the principal components: AAA and BBB go up and down with one pattern (bank), CCC and DDD with another (oil), from October 2025
-# to November 2026 (November is a month not yet over, which is to be left out). QQQQ is missing a month. ZZZ has no prices, and the Canadian XYZ.TO is not
-# to be asked for at all.
+# Closes for the principal components: AAA and BBB go up and down with one pattern (bank), CCC and DDD with another (oil). Monthly, from October 2025 to
+# November 2026; weekly, from the week of Monday, October 20, 2025, to the week of November 2, 2026 (in each, the last is a period not yet over, which is to
+# be left out). QQQQ is missing a period. ZZZ has no prices, and the Canadian EEE.TO is not to be asked for at all.
 BANK = [0.02, -0.03, 0.05, 0.01, -0.02, 0.04, -0.01, 0.03, -0.04, 0.02, 0.01, -0.02, 0.03]
 OIL = [-0.01, 0.04, -0.03, 0.02, 0.05, -0.02, 0.01, -0.05, 0.03, 0.02, -0.03, 0.04, 0.01]
+WEEKS = 55          # October 20, 2025 to November 2, 2026
+WEEKLY_BANK = [0.01 * ((i * 7) % 5 - 2) for i in range(WEEKS - 1)]
+WEEKLY_OIL = [0.01 * ((i * 3) % 7 - 3) for i in range(WEEKS - 1)]
 
 
 def closes(start, returns):
@@ -233,11 +236,13 @@ def closes(start, returns):
 
 MONTHLY = {"AAA": closes(100.0, BANK), "BBB": closes(50.0, [2 * r for r in BANK]),
            "CCC": closes(20.0, OIL), "DDD": closes(10.0, [3 * r for r in OIL]), "QQQQ": closes(5.0, BANK)}
+WEEKLY = {"AAA": closes(100.0, WEEKLY_BANK), "BBB": closes(50.0, [2 * r for r in WEEKLY_BANK]),
+          "CCC": closes(20.0, WEEKLY_OIL), "DDD": closes(10.0, [3 * r for r in WEEKLY_OIL]), "QQQQ": closes(5.0, WEEKLY_BANK)}
 
-MONTHLY_SCHWAB = """
-(define monthly-asked '())
+PRICES_SCHWAB = """
+(define asked '())
 ; the stocks that pay dividends: (ticker annual-dividend payments-a-year ex-date), as Schwab's fundamentals have them
-(define monthly-dividends '())
+(define dividends '())
 (define (schwab-get creds path params)
   (let ((answer (make-hash-table)))
     (hash-table-set! answer "instruments"
@@ -250,105 +255,103 @@ MONTHLY_SCHWAB = """
                (hash-table-set! instrument "symbol" (car stock))
                (hash-table-set! instrument "fundamental" facts)
                instrument))
-           (filter (lambda (stock) (string-search (cdr (assoc "symbol" params)) (car stock))) monthly-dividends)))
+           (filter (lambda (stock) (string-search (cdr (assoc "symbol" params)) (car stock))) dividends)))
     answer))
 (define (schwab-price-history creds ticker &key start-date end-date frequency)
-  (set! monthly-asked (append monthly-asked (list ticker)))
-  (let ((closes (assoc ticker monthly-closes)))
+  (set! asked (append asked (list ticker)))
+  (let* ((weekly (equal? frequency "weekly"))
+         (closes (assoc ticker (if weekly weekly-closes monthly-closes))))
     (if (not closes)
         (error (string-append "schwab-price-history: Schwab has no prices for " ticker " in those dates"))
-        (let* ((months (map (lambda (i) (date-add-months (date 2025 10 1) i)) (iota (length (cdr closes)))))
-               (table (make-table "date" (list->vector months) "close" (list->vector (cdr closes)))))
+        (let* ((days (map (lambda (i) (if weekly (date-add-days (date 2025 10 20) (* 7 i)) (date-add-months (date 2025 10 1) i)))
+                          (iota (length (cdr closes)))))
+               (table (make-table "date" (list->vector days) "close" (list->vector (cdr closes)))))
           (if (equal? ticker "QQQQ")
-              (table-filter table (list->vector (map (lambda (day) (if (= (date-month day) 3) 0 1)) months)))     ; no March
+              (table-filter table (list->vector (map (lambda (day) (if (= (date-month day) 3) 0 1)) days)))     ; nothing in March
               table)))))
 """
 
 
-class TestMonthlyReturns(IndustryReturnsTestCase):
+class PricesTestCase(IndustryReturnsTestCase):
+    """The stocks AAA, BBB, CCC, DDD and QQQQ, with prices, and ZZZ and EEE.TO."""
 
     def setUp(self):
         super().setUp()
-        self.make_industries([("EEE.TO", "Oil")])
         connection = sqlite3.connect(self.database)
-        connection.executemany("INSERT INTO ticker_industry VALUES (?, ?)", [("QQQQ", "Banks")])
+        connection.executemany("INSERT INTO ticker_industry VALUES (?, ?)", [("EEE.TO", "Oil"), ("QQQQ", "Banks")])
         connection.commit()
         connection.close()
-        alist = " ".join('("%s" %s)' % (ticker, " ".join(repr(p) for p in prices)) for ticker, prices in MONTHLY.items())
-        self.run_lisp("(define monthly-closes '(%s))" % alist)
-        self.run_lisp(MONTHLY_SCHWAB)
+        for name, prices in (("monthly-closes", MONTHLY), ("weekly-closes", WEEKLY)):
+            alist = " ".join('("%s" %s)' % (ticker, " ".join(repr(p) for p in values)) for ticker, values in prices.items())
+            self.run_lisp("(define %s '(%s))" % (name, alist))
+        self.run_lisp(PRICES_SCHWAB)
 
-    def make_industries(self, rows):
-        if os.path.exists(self.database) and rows != INDUSTRIES:
-            connection = sqlite3.connect(self.database)
-            connection.executemany("INSERT INTO ticker_industry VALUES (?, ?)", rows)
-            connection.commit()
-            connection.close()
-        else:
-            super().make_industries(rows)
+    def return_of(self, ticker, index):
+        return self.run_lisp('(vector-ref (table-column (periodic-returns db %s) "%s") %d)' % (self.options, ticker, index))
 
     def update(self):
-        return self.run_lisp('(monthly-prices-update creds db :years 1 :end-date "2026-11-05")')
+        return self.run_lisp('(stock-prices-update creds db %s :end-date "2026-11-05")' % self.options)
+
+
+class TestMonthlyReturns(PricesTestCase):
+    options = ':frequency "monthly" :years 1'
 
     def test_the_whole_months_are_kept_and_the_canadian_stocks_are_not_asked_for(self):
         self.update()
-        self.assertEqual(self.stored("SELECT MIN(month), MAX(month), COUNT(*) FROM monthly_prices WHERE ticker = 'AAA'"),
+        self.assertEqual(self.stored("SELECT MIN(period), MAX(period), COUNT(*) FROM monthly_prices WHERE ticker = 'AAA'"),
                          [("2025-10-01", "2026-10-01", 13)])
-        self.assertShows("(member \"EEE.TO\" monthly-asked)", "#f")
+        self.assertShows("(member \"EEE.TO\" asked)", "#f")
 
-    def test_the_summary_says_which_stocks_have_every_month(self):
-        self.assertShows('(table-column (monthly-prices-update creds db :years 1 :end-date "2026-11-05") "what")',
-                         '#("every month" "Schwab has no prices for it" "some months")')
-        self.assertShows('(table-column (monthly-prices-update creds db :years 1 :end-date "2026-11-05") "stocks")', "#(4 1 1)")
+    def test_the_summary_says_which_stocks_have_every_period(self):
+        self.assertShows('(table-column %s "what")' % '(stock-prices-update creds db :frequency "monthly" :years 1 :end-date "2026-11-05")',
+                         '#("every period" "Schwab has no prices for it" "some periods")')
+        self.assertShows('(table-column %s "stocks")' % '(stock-prices-update creds db :frequency "monthly" :years 1 :end-date "2026-11-05")',
+                         "#(4 1 1)")
 
     def test_a_second_call_asks_for_nothing(self):
         self.update()
-        self.run_lisp("(set! monthly-asked '())")
+        self.run_lisp("(set! asked '())")
         self.update()
-        self.assertShows("monthly-asked", "()")
-
-    def return_of(self, ticker, month_index):
-        return self.run_lisp('(vector-ref (table-column (monthly-returns db :years 1) "%s") %d)' % (ticker, month_index))
+        self.assertShows("asked", "()")
 
     def test_a_quarterly_dividend_is_a_quarter_of_the_years_in_each_month_with_an_ex_date(self):
         # AAA pays 4.00 a year, quarterly, and its last ex-date was August 14, 2026: so also in May and February 2026 and November 2025
-        self.run_lisp("""(set! monthly-dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0")))""")
+        self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0")))""")
         self.update()
         # November 2025: the price goes from 100 to 102 (BANK[0] is 2%), and the dividend is 1: (102 - 100 + 1) / 100
         self.assertAlmostEqual(self.return_of("AAA", 0), 0.03)
         # December 2025 has no ex-date: the price change alone
         self.assertAlmostEqual(self.return_of("AAA", 1), BANK[1])
-        months_with_dividends = [i for i in range(12) if abs(self.return_of("AAA", i) - BANK[i]) > 1e-12]
-        self.assertEqual(months_with_dividends, [0, 3, 6, 9])          # November, February, May, August
+        self.assertEqual([i for i in range(12) if abs(self.return_of("AAA", i) - BANK[i]) > 1e-12], [0, 3, 6, 9])   # Nov, Feb, May, Aug
 
     def test_the_ex_dates_go_forward_from_schwabs_as_well_as_back(self):
-        # an ex-date of May 31, 2026, paid twice a year: November 2025 and May 2026 (and May 31 less 6 months is November, not December 1)
-        self.run_lisp("""(set! monthly-dividends '(("AAA" 2.0 2 "2026-05-31 00:00:00.0") ("CCC" 1.2 12 "2025-12-02 00:00:00.0")))""")
+        # an ex-date of May 31, 2026, paid twice a year: November 2025 and May 2026 (and May 31 less 6 months is November 30, not December 1)
+        self.run_lisp("""(set! dividends '(("AAA" 2.0 2 "2026-05-31 00:00:00.0") ("CCC" 1.2 12 "2025-12-02 00:00:00.0")))""")
         self.update()
         self.assertEqual([i for i in range(12) if abs(self.return_of("AAA", i) - BANK[i]) > 1e-12], [0, 6])
         # CCC pays monthly, and Schwab's ex-date is in December 2025: every month has a dividend of 0.10, before it and after it
         self.assertEqual([i for i in range(12) if abs(self.return_of("CCC", i) - OIL[i]) > 1e-12], list(range(12)))
 
     def test_a_dividend_without_an_ex_date_is_a_twelfth_every_month(self):
-        self.run_lisp("""(set! monthly-dividends '(("CCC" 12.0 0 "")))""")
+        self.run_lisp("""(set! dividends '(("CCC" 12.0 0 "")))""")
         self.update()
         # November 2025: CCC goes from 20 to 19.8 (OIL[0] is -1%), with a dividend of 1: (19.8 - 20 + 1) / 20
         self.assertAlmostEqual(self.return_of("CCC", 0), 0.04)
 
     def test_the_dividends_are_kept_and_counted(self):
-        self.run_lisp("""(set! monthly-dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0") ("BBB" 0.0 0 "")))""")
+        self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0") ("BBB" 0.0 0 "")))""")
         self.update()
         self.assertEqual(self.stored("SELECT * FROM stock_dividends ORDER BY ticker"), [("AAA", 4.0, 4, "2026-08-14"), ("BBB", 0.0, 0, "")])
         self.assertShows('(table-column (stock-dividends-update creds db) "paying_dividends")', "#(1)")
 
-    def test_only_the_stocks_with_every_month_are_in_the_returns(self):
+    def test_only_the_stocks_with_every_period_are_in_the_returns(self):
         self.update()
-        self.assertShows("(table-column-names (monthly-returns db :years 1))", '("month" "AAA" "BBB" "CCC" "DDD")')
-        self.assertShows("(table-row-count (monthly-returns db :years 1))", "12")
+        self.assertShows('(table-column-names (periodic-returns db %s))' % self.options, '("period" "AAA" "BBB" "CCC" "DDD")')
+        self.assertShows('(table-row-count (periodic-returns db %s))' % self.options, "12")
 
     def test_two_patterns_explain_all_of_four_stocks_that_follow_two_patterns(self):
         self.update()
-        self.run_lisp("(define components (return-components db :years 1 :count 3))")
+        self.run_lisp("(define components (return-components db %s :count 3))" % self.options)
         shares = self.run_lisp('(vector->list (table-column (cdr (assoc "variance" components)) "cumulative-share"))')
         self.assertAlmostEqual(shares.cdr.car, 1.0)            # two components explain everything
         self.assertAlmostEqual(shares.cdr.cdr.car, 1.0)
@@ -359,12 +362,58 @@ class TestMonthlyReturns(IndustryReturnsTestCase):
     def test_an_error_that_would_happen_for_every_stock_stops_the_run(self):
         self.run_lisp('(define (schwab-price-history creds ticker &key start-date end-date frequency) '
                       '(error "schwab-price-history: the Schwab sign-in has run out -- sign in again with (schwab-login creds)"))')
-        self.assertLispError('(monthly-prices-update creds db :years 1 :end-date "2026-11-05")', "sign in again")
+        self.assertLispError('(stock-prices-update creds db %s :end-date "2026-11-05")' % self.options, "sign in again")
         self.assertEqual(self.stored("SELECT COUNT(*) FROM monthly_prices_asked"), [(0,)])
 
     def test_the_stocks_table_has_each_stocks_industry_and_the_industries_table_averages_them(self):
         self.update()
-        components = "(return-components db :years 1 :count 2)"
+        components = "(return-components db %s :count 2)" % self.options
         self.assertShows('(table-column (cdr (assoc "stocks" %s)) "industry")' % components, '#("Banks" "Banks" "Oil" "Oil")')
         self.assertShows('(table-column-names (cdr (assoc "industries" %s)))' % components, '("industry" "stocks" "pc1" "pc2" "explained")')
-        self.assertShows('(table-column-names (cdr (assoc "months" %s)))' % components, '("month" "pc1" "pc2" "market-return")')
+        self.assertShows('(table-column-names (cdr (assoc "periods" %s)))' % components, '("period" "pc1" "pc2" "market-return")')
+
+
+class TestWeeklyReturns(PricesTestCase):
+    options = ":years 1"         # weekly is the default
+
+    def test_the_weeks_start_on_mondays_and_the_week_not_yet_over_is_left_out(self):
+        self.update()
+        # November 5, 2026 is a Thursday: the last whole week is the one of Monday, October 26; a year before it is in the week of October 20, 2025
+        self.assertEqual(self.stored("SELECT MIN(period), MAX(period), COUNT(*) FROM weekly_prices WHERE ticker = 'AAA'"),
+                         [("2025-10-20", "2026-10-26", 54)])
+        self.assertEqual(self.stored("SELECT DISTINCT last_period FROM weekly_prices_asked"), [("2026-10-26",)])
+
+    def test_three_years_is_the_usual_and_monthly_and_weekly_are_kept_apart(self):
+        self.run_lisp('(stock-prices-update creds db :end-date "2026-11-05")')
+        self.assertEqual(self.stored("SELECT COUNT(*) FROM weekly_prices_asked"), [(6,)])
+        self.assertEqual(self.stored("SELECT name FROM sqlite_master WHERE name = 'monthly_prices'"), [])
+        self.assertLispError('(stock-prices-update creds db :frequency "daily")', "weekly")
+
+    def test_a_dividend_is_in_the_week_of_each_ex_date(self):
+        # AAA pays 4.00 a year, quarterly; Schwab's ex-date is Friday, August 14, 2026, so the others are May 14 (a Thursday), February 14 (a Saturday:
+        # the week of Monday the 9th) and November 14, 2025 (a Friday)
+        self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0")))""")
+        self.update()
+        periods = self.run_lisp('(vector->list (table-column (periodic-returns db :years 1) "period"))')
+        weeks = []
+        while periods is not lisp_core.NIL:
+            weeks.append(str(periods.car))
+            periods = periods.cdr
+        with_dividend = [weeks[i] for i in range(len(weeks)) if abs(self.return_of("AAA", i) - WEEKLY_BANK[i]) > 1e-12]
+        self.assertEqual(with_dividend, ["2025-11-10", "2026-02-09", "2026-05-11", "2026-08-10"])
+        # the week of November 10, 2025 is the third return (the first is the week of October 27): AAA's price change that week, and a dividend of 1
+        before, after = WEEKLY["AAA"][2], WEEKLY["AAA"][3]
+        self.assertAlmostEqual(self.return_of("AAA", 2), (after - before + 1.0) / before)
+
+    def test_a_dividend_without_an_ex_date_is_a_52nd_every_week(self):
+        self.run_lisp("""(set! dividends '(("CCC" 52.0 0 "")))""")
+        self.update()
+        self.assertAlmostEqual(self.return_of("CCC", 0), (WEEKLY["CCC"][1] - 20.0 + 1.0) / 20.0)
+
+    def test_two_patterns_explain_all_of_four_stocks_that_follow_two_patterns(self):
+        self.update()
+        self.run_lisp("(define components (return-components db :years 1 :count 3))")
+        shares = self.run_lisp('(vector->list (table-column (cdr (assoc "variance" components)) "cumulative-share"))')
+        self.assertAlmostEqual(shares.cdr.car, 1.0)
+        self.assertShows('(table-row-count (cdr (assoc "periods" components)))', "53")
+        self.assertAlmostEqual(self.run_lisp('(vector-ref (table-column (cdr (assoc "variance" components)) "share-if-unrelated") 0)'), 1 / 52)

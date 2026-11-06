@@ -2494,68 +2494,76 @@ plus its own distance from its industry, and the squares add up:
 `stdev-within² + stdev-between² = stdev-of-all²`. If `share-explained-by-industry` is not much above
 `share-by-chance`, the industries are not separating returns.
 
-#### Monthly returns, and the patterns that explain them
+#### Weekly returns, and the patterns that explain them
 
-The same file has a second look at the stocks: two years of monthly returns, and their
-principal components, the few patterns of moving together that explain much of how all the
-stocks' returns went up and down.
+The same file has a second look at the stocks: three years of weekly returns (or, with
+`:frequency "monthly"`, two years of monthly ones), and their principal components, the few patterns of
+moving together that explain much of how all the stocks' returns went up and down.
 
 ```lisp
-(monthly-prices-update creds db)              ; slow, once: about an hour and a half
+(stock-prices-update creds db)                ; slow, once: about an hour and a half
 (define components (return-components db))
 (display-table (cdr (assoc "variance" components)))
 (display-table (cdr (assoc "industries" components)))
 ```
 
-A month's return is `(this month's close - last month's close + the dividend paid that month) / last
-month's close`. The dividend is the current one, the same number of dollars each time: Schwab's
-`dividendAmount` (a year's dividends at the current rate) over `dividendFreq` (payments a year: 4 for
-most, 12 for some, 2 for some foreign companies), in each month with an ex-dividend date, the day the price
-falls by the dividend. The ex-dates are Schwab's `dividendDate` (the latest or the next) and every
-12 / `dividendFreq` months before and after it. A stock with a dividend but no ex-date, or a number of payments
-that doesn't divide the year into whole months, gets a twelfth of it every month. The Canadian stocks (tickers
-ending `.TO`) are left out.
+Each function takes `:frequency`, `"weekly"` (the default) or `"monthly"`, and `:years`, how far back (3
+for weekly, 2 for monthly). A period is named by its first day: the Monday of a week, as Schwab dates its
+weekly prices, or the first of a month. Only whole periods are used, and the Canadian stocks (tickers ending
+`.TO`) are left out.
+
+A period's return is `(its close - the last period's close + the dividends with an ex-date in it) / the last
+period's close`. The dividend is the current one, the same number of dollars each time: Schwab's
+`dividendAmount` (a year's dividends at the current rate) over `dividendFreq` (payments a year: 4 for most,
+12 for some, 2 for some foreign companies). The ex-dates, the days the price falls by the dividend, are
+Schwab's `dividendDate` (the latest or the next) and the same day of the month every 12 / `dividendFreq`
+months before and after it, which only approximates the real ones: they move about by a few days, and a
+company that changed its dividend paid other amounts. A stock with a dividend but no ex-date, or a number of
+payments that doesn't divide the year into whole months, gets its dividend spread evenly (a 52nd a week).
+
+**Why weekly.** Twenty-four monthly returns are few: a correlation measured from 24 numbers is uncertain by
+about 0.2, and there can be no more than 23 components. Three years of weeks give 156 returns. Daily returns
+would give more still, but a small stock that trades rarely has a closing price that is often stale, which
+makes it seem to move with nothing; a week is long enough for that to wash out.
 
 #### `(stock-dividends-update creds "path/to/financial_data.db")`
 Schwab's dividend facts for every stock but the Canadian ones, kept in the table `stock_dividends`
 (`ticker`, `annual_dividend`, `payments_per_year`, `ex_date`) in place of what it had: a few requests,
-400 stocks at a time. `monthly-prices-update` calls it first. Returns how many stocks it has, and how many
+400 stocks at a time. `stock-prices-update` calls it first. Returns how many stocks it has, and how many
 pay a dividend.
 
-#### `(monthly-prices-update creds "path/to/financial_data.db" [:years n :end-date d])`
-Each stock's month-end close for the last `:years` (2) whole years, from Schwab, kept in the table
-`monthly_prices` (`ticker`, `month`, `close`, with `month` the first day of the month), after bringing the
-dividends up to date with `stock-dividends-update`. The last month is
-the one before the month of `:end-date` (today), so only whole months are used. Like
-`stock-returns-update`, it keeps going from where it stopped when it is called again, and it notes the
-stocks Schwab has no prices for (in `monthly_prices_asked`). An error that would happen for every stock,
-a sign-in that has run out or Schwab not answering, stops it instead. It returns how many stocks have
-every month, how many some, and how many none, by reason.
+#### `(stock-prices-update creds "path/to/financial_data.db" [:frequency f :years n :end-date d])`
+Each stock's closes at the end of each week (or month) for the last `:years`, from Schwab, kept in the
+table `weekly_prices` (or `monthly_prices`): `ticker`, `period`, `close`. It brings the dividends up to date
+first. The last period is the one before the period of `:end-date` (today). Like `stock-returns-update`, it
+keeps going from where it stopped when it is called again, and it notes the stocks Schwab has no prices for
+(in `weekly_prices_asked`). An error that would happen for every stock, a sign-in that has run out or Schwab
+not answering, stops it instead. It returns how many stocks have every period, how many some, and how many
+none, by reason.
 
-#### `(monthly-returns "path/to/financial_data.db" [:years n])`
-A table with a `month` column and a column of returns for each stock that has a return in every one of the
-months, named by its ticker.
+#### `(periodic-returns "path/to/financial_data.db" [:frequency f :years n])`
+A table with a `period` column and a column of returns for each stock that has a return in every one of the
+periods, named by its ticker.
 
-#### `(return-components "path/to/financial_data.db" [:count k :years n :standardize b])`
-The principal components (`principal-components`, under [Portfolios](#portfolios)) of the monthly returns: the `:count` (5)
-patterns that explain the most. With `:standardize #t` (the default) the stocks' returns are first put on
-one scale, so that a small stock whose price jumps around does not decide the patterns. A list of four
-tables, read with `(cdr (assoc "stocks" components))`:
+#### `(return-components "path/to/financial_data.db" [:frequency f :years n :count k :standardize b])`
+The principal components (`principal-components`, under [Portfolios](#portfolios)) of the returns: the
+`:count` (5) patterns that explain the most. With `:standardize #t` (the default) the stocks' returns are
+first put on one scale, so that a small stock whose price jumps around does not decide the patterns. A list
+of four tables, read with `(cdr (assoc "stocks" components))`:
 
 | Table | Columns |
 |---|---|
 | `"variance"` | `component`, `variance-share` (the share of all the stocks' variation it explains), `cumulative-share`, `share-if-unrelated` and `correlation-with-market` |
 | `"stocks"` | `ticker`, `industry`, `market_cap`, `pc1` ... (the correlation of the stock's returns with each component, from -1 to 1) and `explained` (the share of its variation the components explain: the correlations' squares added up) |
 | `"industries"` | `industry`, `stocks`, and the average of its stocks' `pc1` ... and `explained`; largest first |
-| `"months"` | `month`, `pc1` ... (each component's value that month) and `market-return` (all the stocks' return, weighted by market cap) |
+| `"periods"` | `period`, `pc1` ... (each component's value that week or month) and `market-return` (all the stocks' return, weighted by market cap) |
 
 `share-if-unrelated` is what each component would explain if the stocks moved independently of each other:
-1 over the months less 1 (with 24 months, about 4%). A component well above it is a real pattern. With two
-years of months there can be no more than 23 components, and the later ones are partly noise.
+1 over the periods less 1 (with 156 weeks, under 1%). A component well above it is a real pattern.
 `correlation-with-market` says whether a component is the whole market moving (the first usually is). The
 `industries` table shows which industries move with which components, which is how to say what a component
-is: a component that the banks are strongly correlated with, and the software companies weakly or negatively, is
-something that moves banks and software in opposite directions, such as interest rates.
+is: a component that the banks are strongly correlated with, and the software companies weakly or negatively,
+is something that moves banks and software in opposite directions, such as interest rates.
 
 ### Alpha Vantage (dividends)
 
