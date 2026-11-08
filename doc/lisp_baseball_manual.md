@@ -34,7 +34,9 @@ section name in quotes is a section of this manual, unless it says otherwise.
 - [States and outcomes](#states-and-outcomes)
 - [The league's matrix](#the-leagues-matrix)
 - [Players](#players)
+- [Ballparks](#ballparks)
 - [A batter against a pitcher](#a-batter-against-a-pitcher)
+- [When a starter comes out](#when-a-starter-comes-out)
 - [Playing games](#playing-games)
 - [How good is it?](#how-good-is-it)
 - [Reference](#reference)
@@ -48,14 +50,16 @@ The league's matrix comes from counting what happened, in every plate appearance
 the player: a batter who hits more home runs than most has a matrix with more of the endings that home runs make. A batter facing a pitcher is a
 combination of the two. Then a game is a walk through the states, drawing each ending from the right player's row.
 
-Four decisions shape it, and each is explained where it is made:
+Five decisions shape it, and each is explained where it is made:
 
 1. A **turn** is a plate appearance and whatever happens during it (a steal, a wild pitch), so that each turn begins where the last one ended.
    "States and outcomes".
 2. Rare situations borrow from common ones: the **smoothing** in "The league's matrix".
 3. A player's matrix is made from his **results** (strikeouts, walks, singles ...) over all the states, not state by state, because there are too
    few turns in each state to say anything: "Players". This is the Dirichlet prior with a "starting record" that new players start from.
-4. A batter and a pitcher are combined by **odds ratio**: "A batter against a pitcher".
+4. A batter and a pitcher are combined by **odds ratio**, and a **ballpark** is one more factor: "A batter against a pitcher".
+5. A starting pitcher is taken out **by chance**, more often as his workload grows, as his team falls behind, and between innings: "When a starter
+   comes out".
 
 ## Getting the data
 
@@ -71,8 +75,8 @@ tables
 
 | Table | A row is | Columns |
 |---|---|---|
-| `turns` | a turn at bat | `gid` (the game), `season`, `date`, `gametype`, `inning`, `home_batting`, `batting_team`, `pitching_team`, `batter`, `pitcher`, `starter` (1 if the pitcher started the game), the state it began in (`outs`, `bases`, `score_difference`), where it ended (`new_outs`, `new_bases`, `runs`), `plate_appearance` (1 unless the inning ended on a steal) and `result` |
-| `games` | a game | `gid`, `season`, `date`, `gametype`, `visiting_team`, `home_team`, `visiting_runs`, `home_runs`, `innings` |
+| `turns` | a turn at bat | `gid` (the game), `season`, `date`, `gametype`, `park`, `inning`, `home_batting`, `batting_team`, `pitching_team`, `batter`, `pitcher`, `starter` (1 if the pitcher started the game), the state it began in (`outs`, `bases`, `score_difference`), where it ended (`new_outs`, `new_bases`, `runs`), `plate_appearance` (1 unless the inning ended on a steal), `result`, `batters_faced` (by the pitcher before the turn) and `removed_after` (1 if the pitcher is replaced right after it) |
+| `games` | a game | `gid`, `season`, `date`, `gametype`, `visiting_team`, `home_team`, `visiting_runs`, `home_runs`, `innings`, `park` |
 | `players` | a player | `id` (Retrosheet's: five letters of the name and a number, `judga001`), `last`, `first`, `bats`, `throws`, `first_season`, `last_season` |
 
 The library reads it by its path, `retrosheet-database`, which is the one above; to keep it elsewhere pass `:database` to `fit-baseball-model`. A
@@ -247,9 +251,40 @@ Functions: `baseball-batter-matrix`, `baseball-pitcher-matrix`, `baseball-bullpe
 A pitcher's matrix is made the same way. `baseball-bullpen-matrix` is that of all the relievers (pitchers who did not start the game), of a team's if you
 give `:team "NYA"` (the abbreviations are Retrosheet's).
 
+**What a pitcher's matrix is.** It is a measure of the pitcher *together with* everything that goes with him. The outcomes are runs and outs: the model does
+not know whether an out was made by a good fielder or a batter's strikeout, or whether a hit on a ball in play was a good pitch badly hit or a good swing
+against a bad one, and it does not separate errors from other plays. So a pitcher whose team has a fine defense looks better than he is, one with a poor
+defense looks worse, and a pitcher who pitches in a ballpark that gives up home runs shows the ballpark in his record. A pitcher who pitched for several
+teams in the seasons of the model has their defenses averaged; one who stayed with a team has his team's. The same is true of a batter, who carries his
+home park. The ballpark is separated out below ("Ballparks"), but not the defense; and since a player's record has his own ballpark in it, the park
+factor, which is applied to both teams' batters, counts it twice for the home team's players. It is a small effect (the next section says how small).
+
+## Ballparks
+
+A ballpark changes what happens in it: Coors Field gives up home runs and hits, Oracle Park and T-Mobile Park take them away. The model treats it as one more
+tilt, of the same kind as a player's. Its profile is the results of the turns in the park. Its prior is not the league's mix of results: a park with a lot
+of home runs may be a park of sluggers (the home team's players are in all of its home games). It is the mix of results in the **road games of the team
+that played there most**, whose players are the same ones, in other parks. The park's share of each result, with the prior, is
+
+    share = (its turns with the result + strength x the road games' share) / (its turns + strength)
+
+and its matrix is the league's counts multiplied by the park's share over the road games' share: the same arithmetic as a player's, with another prior
+(`tilt-transitions` with `:prior`). The strength is found the same way, `prior-strength` with `:priors`, a table with each park's own prior; it is about 2,600
+turns, which is a great deal less than a park has (about 6,000 a season, 60,000 in the eleven seasons), so the park's own results nearly all count. The park is named by Retrosheet's
+id, `"DEN02"` for Coors Field, or by a team: `(baseball-park-matrix model "COL")`.
+
+| Chance, from no outs, no one on | League | Coors Field | T-Mobile Park |
+|---|---|---|---|
+| out | 0.690 | 0.655 | 0.707 |
+| runner on first | 0.227 | 0.244 | 0.218 |
+| home run | 0.033 | 0.037 | 0.031 |
+
+**Does it help?** Slightly. On the turns of 2025 the average log probability of the real outcome improves from -1.1587 (batter against pitcher) to -1.1584
+when the park is in. Almost all of that is Coors Field (+0.0033 a turn there); 19 parks gained a little and 11 lost a little.
+
 ## A batter against a pitcher
 
-The league, the batter, and the pitcher each have a matrix. If the batter is twice as likely as the league to strike out, and the pitcher is twice as
+The league, the batter, the pitcher, and perhaps the ballpark each have a matrix. If the batter is twice as likely as the league to strike out, and the pitcher is twice as
 likely, how likely is the matchup? The **odds ratio** method, called "log5" when there are two outcomes, says: each outcome's chance is the batter's
 times the pitcher's over the league's, and the row is then scaled to add up to 1. So an outcome that both make more likely is made more likely still, but
 not twice as much:
@@ -266,7 +301,32 @@ not twice as much:
 | runner on first | 0.276 | 0.235 |
 | home run | 0.077 | 0.074 |
 
-The matchup is in between: Skubal takes away some of what Judge does, and not all.
+The matchup is in between: Skubal takes away some of what Judge does, and not all. A ballpark is one more factor: its chances over the league's, so
+that an outcome the park makes more likely is made more likely still. `(baseball-matchup model judge skubal :park "COL")` is `(combine-transitions judge
+skubal league park-matrix)`.
+
+## When a starter comes out
+
+A game is not pitched by one man. The starter faces batters until he is taken out, then relievers pitch (all of a team's together, as one matrix). When
+he is taken out is up to the manager, and the model draws it. After each turn of his, he is taken out with a chance that depends on three things,
+estimated from every start since 2015 (`removal-chances`, from the turns' columns `batters_faced` and `removed_after`):
+
+- **His workload**: the batters he has faced, over the batters he usually faces in a start (22.5 for Skubal), in tenths. A starter well past his usual
+  workload is very likely to be out; one who has done half of it is rarely taken out.
+- **The score**: how many runs his team is ahead (or behind: from -5 or fewer to 5 or more). A starter who is behind by 4 or more is taken out more often
+  than one in a close game: managers do not leave a man in who is losing.
+- **Whether the turn ended the inning**: between innings is the easy time to change pitchers, and a starter near his usual workload is taken out in about 30% of those
+  turns, against 7% in the middle of one.
+
+| After his 20th batter, when he usually faces 22 | Chance he comes out |
+|---|---|
+| in a tie, in the middle of an inning | 0.07 |
+| behind by 5 or more, in the middle of an inning | 0.17 |
+| in a tie, with the third out | 0.31 |
+| behind by 5 or more, with the third out | 0.45 |
+
+(`removal-chance` gives any of these.) A team whose `starter-batters` is a number has its starter face that many batters and then come out; one whose is
+`'()`, the default, has him taken out by chance. The chances are for every starter alike; what is each starter's own is the number of batters he usually faces.
 
 ## Playing games
 
@@ -277,26 +337,27 @@ The matchup is in between: Skubal takes away some of what Judge does, and not al
 | `lineup` | the nine batters' ids, in the order they bat |
 | `starter` | the starting pitcher's id |
 | `bullpen` | the team whose relievers pitch after the starter ("NYA"), or `'()` for relievers in general |
-| `starter-batters` | how many batters the starter faces before a reliever comes in, or `'()` for as many as he faced per start in the seasons of the model (`baseball-starter-batters`: 22.5 for Skubal) |
+| `starter-batters` | how many batters the starter faces before a reliever comes in, or `'()` (the usual) for the starter to be taken out by chance ("When a starter comes out"), from the number of batters he faced per start in the seasons of the model (`baseball-starter-batters`: 22.5 for Skubal) |
+| `park` | the ballpark of the game, when the team is the home team: Retrosheet's id for it ("NYC21"), a team's abbreviation for its home park, or `'()` for none in particular |
 
 ```lisp
 (define home (make-baseball-team :lineup (list "grist001" "riceb001" "judga001" "bellc002" "stanm004" "wella002" "volpa001" "mcmar001" "cabaj001")
-                                 :starter "gil-l001" :bullpen "NYA" :starter-batters '()))
+                                 :starter "gil-l001" :bullpen "NYA" :starter-batters '() :park "NYA"))
 (define visitors (baseball-team-in-last-game model "BOS" 2025))     ; the Red Sox's lineup and starter in their last game of 2025
 (define played (simulate-baseball-games model home visitors :games 10000 :seed 1))
 (home-win-probability played)
 ```
 
-`baseball-team-in-game` takes the batting order and starting pitcher of any game in the database (given its id), which is the way to try a model on a
+`baseball-team-in-game` takes the batting order, starting pitcher and ballpark of any game in the database (given its id), which is the way to try a model on a
 real game: the example program plays Game 7 of the 2025 World Series, Toronto against the Dodgers, whose starter was Shohei Ohtani. The model gives
-Toronto 45% (the Dodgers won, in 11 innings).
+Toronto 44% (the Dodgers won, in 11 innings).
 
 The result is a table with a row for each game (`home_runs`, `visiting_runs`, `innings`). From it, anything: the chance of winning, the distribution of
 total runs, the chance of an extra-inning game.
 
 The rules played: nine innings, and more while the score is tied; the home team does not bat in the bottom of the last inning if it is ahead, and the
 game ends the moment it takes the lead in it; in extra innings a runner starts on second base (the rule since 2020, unless `:ghost-runner #f`); the
-starter faces his number of batters, and relievers the rest of the game (a game still tied after the 30th inning is stopped, and `home-win-probability` leaves it out). The same `:seed` gives the same games; without one, the numbers come from the shared generator that `random-seed` sets.
+starter pitches until he is taken out, and relievers the rest of the game (a game still tied after the 30th inning is stopped, and `home-win-probability` leaves it out). The same `:seed` gives the same games; without one, the numbers come from the shared generator that `random-seed` sets.
 
 **How it is done.** The games are played together, not one after the other: each step draws the next turn of every game still being played, with the
 row of the right matchup for each, so 10,000 games take about a second.
@@ -312,23 +373,39 @@ had, 1,000 times (`:games-per-game`), and records how often the home team won:
 (baseball-scores tried)
 ```
 
-| Forecast | Log loss | Brier score |
-|---|---|---|
-| the player model | 0.6816 | 0.2444 |
-| the home team's usual rate, always | 0.6895 | 0.2482 |
+| Forecast | Log loss | Brier score | Picked the winner |
+|---|---|---|---|
+| the model (ballparks, starters taken out by chance) | 0.6825 | 0.2447 | 55.9% |
+| the home team's usual rate, always | 0.6895 | 0.2482 | 54.3% (the home team, every time) |
 
-For the 2,430 games of 2025 (lower is better; 0.693 is saying 50% every time). The model's chances are 53.2% for the home team, on average, and it won
-54.3% of the time in 2025 (it was between 52.1% and 55.7% in the seasons 2015 to 2024); it expects 8.98 runs a game, and 8.89 were scored. Those are the calibration
-checks. The 0.008 improvement in log loss is not large, which is what you should expect of baseball: a baseball game is mostly unpredictable. The chances it gives
-have a standard deviation of 0.08.
+For the 2,430 games of 2025 (log loss and Brier score: lower is better; 0.693 is saying 50% every time). The model's chances are 53.1% for the home team, on
+average, and it won 54.3% of the time in 2025 (it was between 52.1% and 55.7% in the seasons 2015 to 2024); it expects 9.05 runs a game, and 8.89 were scored.
+Those are the calibration checks. The 0.007 improvement in log loss is not large, which is what you should expect of baseball: a baseball game is mostly
+unpredictable. The chances it gives have a standard deviation of 0.08, and the team it likes better wins 55.9% of the games, against 54.3% for the home
+team every time.
+
+**Are the parks and the pitching changes worth it?** The `:parks` and `:removal` options of `baseball-backtest` turn each off, so that each can be
+tried on the same games and the same random numbers:
+
+| Ballparks | Starters taken out by chance | Log loss | Picked the winner |
+|---|---|---|---|
+| no | no (they face their usual number of batters) | 0.6820 | 55.8% |
+| yes | no | 0.6823 | 55.2% |
+| no | yes | 0.6833 | 54.5% |
+| yes | yes | 0.6825 | 55.9% |
+
+No: to the accuracy these can be measured, neither changes how well the model forecasts a game. The differences are within the noise of the simulation (two runs of the
+same model differ by about 0.0004 in log loss, since each game is played 1,000 times and the chance of a win has an error of 0.015). They are in the model because they are what happens,
+not because they forecast better: the ballpark helps a little in predicting a single turn ("Ballparks"), and the starter's removal makes the innings
+the relievers pitch more like those of real games, which matters for the distribution of the score and for questions that are not who wins.
 
 **What it leaves out.** It is a model of the average of what a lineup and a pitcher do, in the way the league plays:
 
-- *Parks.* Coors Field is not Oracle Park. The home team has its park's run environment either way, but the model does not know it.
+- *Defense and the catcher.* A pitcher's matrix is the pitcher with his defense: "Players".
 - *Handedness.* Whether a left-handed batter faces a left-handed pitcher.
 - *Changes during a season.* Injuries, a pitcher who is tired, a lineup that rests a star. The team's lineup is what it was in the games that are played.
-- *The bullpen is a team's relievers all together*, and the manager's choices of who comes in, and when, are not modeled: only that the starter faces
-  the number of batters he usually does.
+- *The bullpen is a team's relievers all together*: who comes in, and when, is not modeled (the starter is taken out by chance, "When a starter comes
+  out", and then the team's relievers pitch the rest of the game as one pitcher).
 - *Aging.* A player's record is all of his turns in the seasons of the model, the older ones as much as the recent ones. (`:first-season` of
   `fit-baseball-model` is the way to say recent.)
 - *The score and the inning.* Only the score difference is known to a state, not the inning, so a pitching change or a bunt in the ninth looks like
@@ -343,17 +420,24 @@ the lineup you expect and a pitcher you pick from the rotation, is the way to bu
 #### `(fit-baseball-model [:database path] [:first-season 2015] [:last-season 2025])`
 
 Reads the turns of the regular seasons from the database and returns a `baseball-model`: the league's counts (`baseball-model-league-counts`),
-its probabilities (`baseball-model-league`), the strength of the priors for batters and for pitchers (`baseball-model-batter-strength`,
-`baseball-model-pitcher-strength`), and the matrices made so far. A few seconds.
+its probabilities (`baseball-model-league`), the strength of the priors for batters, for pitchers and for ballparks (`baseball-model-batter-strength`,
+`baseball-model-pitcher-strength`, `baseball-model-park-strength`), the matrix of each ballpark, the chances that a starter is taken out
+(`baseball-model-removal`), and the matrices made so far. A few seconds.
 
 #### `(baseball-batter-matrix model id)`, `(baseball-pitcher-matrix model id)`, `(baseball-bullpen-matrix model [:team abbreviation])`
 
 A player's, or a team's relievers', probabilities: `tilt-transitions` of the league's with the profile of the player's turns in the seasons of the model.
 A player who has no turns gets the league's. They are made once and kept.
 
-#### `(baseball-matchup model batter-matrix pitcher-matrix)`
+#### `(baseball-park-matrix model park)`
 
-The probabilities of a batter against a pitcher: `combine-transitions` with the model's league.
+A ballpark's probabilities: the league's tilted toward the results in the park, from a prior of the road games of the team that played there most. `park` is
+Retrosheet's id for it (`"DEN02"`) or a team's abbreviation for the park it played most of its home games in in the last season of the model. The league's
+own for a park that is not in the seasons of the model.
+
+#### `(baseball-matchup model batter-matrix pitcher-matrix [:park park])`
+
+The probabilities of a batter against a pitcher, in a ballpark if there is one: `combine-transitions` with the model's league (and the park's matrix).
 
 #### `(baseball-players model last-name)`
 
@@ -363,17 +447,20 @@ A table of the players with the last name (or beginning with it, if it ends with
 
 How many batters a starting pitcher faced per game he started, in the model's seasons (22 if he started none).
 
-#### `(make-baseball-team :lineup ids :starter id :bullpen team :starter-batters n)`, `(baseball-team-in-game model gid home)`, `(baseball-team-in-last-game model team season)`
+#### `(make-baseball-team :lineup ids :starter id :bullpen team :starter-batters n :park park)`, `(baseball-team-in-game model gid home)`, `(baseball-team-in-last-game model team season)`
 
-A team to play a game with. `baseball-team-in-game` is the team that played in a game of the database: `home` is 1 for the home team, 0 for the visitors.
+A team to play a game with. `starter-batters` is a number of batters, or `'()` for the starter to be taken out by chance; `park` matters for the home team. `baseball-team-in-game`
+is the team that played in a game of the database, with its park: `home` is 1 for the home team, 0 for the visitors.
 
 #### `(simulate-baseball-games model home visitors [:games n] [:seed n] [:ghost-runner #t])`
 
 A table of games played (`home_runs`, `visiting_runs`, `innings`). `(home-win-probability results)` is how often the home team won.
 
-#### `(baseball-backtest model season [:games-per-game 500] [:max-games n])`, `(baseball-scores tried)`
+#### `(baseball-backtest model season [:games-per-game 500] [:max-games n] [:seed 1] [:parks #t] [:removal #t])`, `(baseball-scores tried)`
 
-The model's chance that the home team won, for each game of a season, with the real lineups; and how good those chances were, beside the home team's usual rate.
+The model's chance that the home team won, for each game of a season, with the real lineups, starters and ballparks; and how good those chances were, beside the home
+team's usual rate (`log_loss`, `brier`, and `picked`, the share of games won by the team with the better chance). Game n is played with the seed `seed` + n, so that
+two backtests see the same random numbers; `:parks #f` and `:removal #f` leave the ballparks out and have each starter face his usual number of batters.
 
 #### `(retrosheet-notice)`
 
@@ -388,19 +475,26 @@ A matrix of counts from a table of turns, with a row for each turn or kind of tu
 
 The probabilities of a matrix of counts: see "The league's matrix". Needs the 24 combinations of outs and runners each to have occurred.
 
-#### `(tilt-transitions league profile strength)`
+#### `(tilt-transitions league profile strength [:prior profile])`
 
-A player's probabilities. `profile` is a table of the player's turns, with a row for each `result` and its `count`; `strength` is how many turns the league's mix
-is worth. `league` is the probabilities of counts that have a column `result`.
+A player's (or a ballpark's) probabilities. `profile` is a table of the turns, with a row for each `result` and its `count`; `strength` is how many turns the prior is worth;
+the prior is the league's mix of results, or another table of turns (`:prior`), such as the road games of a ballpark's team. `league` is the probabilities of counts that
+have a column `result`.
 
-#### `(combine-transitions batter pitcher league)`
+#### `(combine-transitions batter pitcher league [park])`
 
-The probabilities of a batter against a pitcher, by the odds ratio.
+The probabilities of a batter against a pitcher, by the odds ratio; with a ballpark's matrix, its ratio to the league's is another factor.
 
-#### `(prior-strength table group league)`, `(prior-strength-loglik table group league strength)`
+#### `(prior-strength table group league [:priors table])`, `(prior-strength-loglik table group league strength [:priors table])`
 
-How strongly the league's mix of results pulls on a player's: the strength at which the players of a table (rows of `group`, `result`, and `count`) are most likely, and the
-log likelihood of any strength.
+How strongly the prior pulls on a player's mix of results: the strength at which the players of a table (rows of `group`, `result`, and `count`) are most likely, and the
+log likelihood of any strength. The prior of every player is the league's mix, or, with `:priors` (a table of the same form), the player's own.
+
+#### `(removal-chances table)`, `(removal-chance chances batters-faced usual lead inning-ended)`
+
+How likely a starting pitcher is to be taken out after a turn: `removal-chances` of a table of the turns of starters, with the columns `batters_faced`, `usual`, `lead`,
+`inning_ended` and `removed_after`; and the chance, from the batters a starter has faced so far, the number he usually faces, his team's lead after the turn, and whether the turn
+ended the inning (1 or 0).
 
 #### `(run-expectancy matrix [:weights counts])`
 
@@ -413,4 +507,5 @@ A matrix as a table: with a row for each state and outcome (`value` is the count
 
 #### `(simulate-games home visitors [:games n] [:seed n] [:ghost-runner #t])`
 
-What `simulate-baseball-games` calls: a team is a list of nine matrices against the other team's starter, nine against its relievers, and the batters its starter faces.
+What `simulate-baseball-games` calls: a team is a list of nine matrices against the other team's starter, nine against its relievers, and either the batters its starter
+faces, or a list of the chances `removal-chances` makes and the batters he usually faces.

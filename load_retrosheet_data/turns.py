@@ -13,7 +13,7 @@ Bases are a number from 0 to 7: 1 for a runner on first, 2 for second, 4 for thi
 
 PITCHER_COLUMNS = ["batters_faced", "removed_after"]      # the last two columns: see add_pitcher_usage
 
-TURN_COLUMNS = ["gid", "season", "date", "gametype", "inning", "home_batting", "batting_team", "pitching_team", "batter", "pitcher", "starter",
+TURN_COLUMNS = ["gid", "season", "date", "gametype", "park", "inning", "home_batting", "batting_team", "pitching_team", "batter", "pitcher", "starter",
                 "outs", "bases", "score_difference", "new_outs", "new_bases", "runs", "plate_appearance", "result", "batters_faced", "removed_after"]
 
 
@@ -45,7 +45,7 @@ def turn_of(first, last, runs, starters):
     """The turn that begins with the row `first` and ends with the row `last`, in which `runs` scored (a tuple in the order of TURN_COLUMNS).
     starters says who started the game for each team: {pitching team: pitcher}."""
     outs_after = int(last["outs_post"])
-    return (first["gid"], int(first["date"][:4]), first["date"], first["gametype"], int(first["inning"]), int(first["vis_home"]),
+    return (first["gid"], int(first["date"][:4]), first["date"], first["gametype"], first["site"], int(first["inning"]), int(first["vis_home"]),
             first["batteam"], first["pitteam"], last["batter"], last["pitcher"], 1 if starters[last["pitteam"]] == last["pitcher"] else 0,
             int(first["outs_pre"]), bases_of(first, "pre"), score_difference(first),
             outs_after, 0 if outs_after == 3 else bases_of(last, "post"), runs, int(last["pa"]), result_of(last))
@@ -99,10 +99,10 @@ def turns_of_game(rows):
 
 
 def game_of(rows):
-    """The result of a game: (gid, season, date, gametype, visiting team, home team, visiting runs, home runs, innings)."""
+    """The result of a game: (gid, season, date, gametype, visiting team, home team, visiting runs, home runs, innings, park)."""
     first, last = rows[0], rows[-1]
     visiting_team = first["batteam"] if first["vis_home"] == "0" else first["pitteam"]
     home_team = first["pitteam"] if first["vis_home"] == "0" else first["batteam"]
     visiting_runs = int(last["score_v"]) + (int(last["runs"]) if last["vis_home"] == "0" else 0)
     home_runs = int(last["score_h"]) + (int(last["runs"]) if last["vis_home"] == "1" else 0)
-    return (first["gid"], int(first["date"][:4]), first["date"], first["gametype"], visiting_team, home_team, visiting_runs, home_runs, int(last["inning"]))
+    return (first["gid"], int(first["date"][:4]), first["date"], first["gametype"], visiting_team, home_team, visiting_runs, home_runs, int(last["inning"]), first["site"])

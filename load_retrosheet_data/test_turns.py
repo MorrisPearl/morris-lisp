@@ -11,7 +11,7 @@ from turns import TURN_COLUMNS, game_of, turns_of_game
 def row(event="K", inning=1, top_bot=0, batter="batter1", pitcher="pitcherA", batteam="VIS", pitteam="HOM", pa=1, outs_pre=0, outs_post=1,
         pre=(0, 0, 0), post=(0, 0, 0), runs=0, score_v=0, score_h=0, **flags):
     """A row of the file: a play. pre and post are whether there is a runner on first, second and third, before and after."""
-    result = {"gid": "HOM202604010", "date": "20260401", "gametype": "regular", "event": event, "inning": str(inning), "top_bot": str(top_bot),
+    result = {"gid": "HOM202604010", "date": "20260401", "site": "HOM01", "gametype": "regular", "event": event, "inning": str(inning), "top_bot": str(top_bot),
               "vis_home": str(top_bot), "batter": batter, "pitcher": pitcher, "batteam": batteam, "pitteam": pitteam, "pa": str(pa),
               "outs_pre": str(outs_pre), "outs_post": str(outs_post), "runs": str(runs), "score_v": str(score_v), "score_h": str(score_h)}
     for base, (before, after) in enumerate(zip(pre, post), start=1):
@@ -100,7 +100,7 @@ class TestTurns(unittest.TestCase):
         rows = [row(top_bot=0, runs=1, hr=True, score_v=2, score_h=3, inning=9, outs_pre=0, outs_post=0),
                 row(top_bot=1, batteam="HOM", pitteam="VIS", runs=2, hr=True, score_v=3, score_h=3, inning=9, outs_pre=1, outs_post=1, pre=(1, 0, 0))]
         game = game_of(rows)
-        self.assertEqual(game, ("HOM202604010", 2026, "20260401", "regular", "VIS", "HOM", 3, 5, 9))
+        self.assertEqual(game, ("HOM202604010", 2026, "20260401", "regular", "VIS", "HOM", 3, 5, 9, "HOM01"))
 
 
 if __name__ == "__main__":

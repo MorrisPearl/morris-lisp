@@ -24,7 +24,7 @@ import zipfile
 from turns import TURN_COLUMNS, turns_of_game
 
 URL = "https://www.retrosheet.org/downloads/"
-GAME_COLUMNS = ["gid", "season", "date", "gametype", "visiting_team", "home_team", "visiting_runs", "home_runs", "innings"]
+GAME_COLUMNS = ["gid", "season", "date", "gametype", "visiting_team", "home_team", "visiting_runs", "home_runs", "innings", "park"]
 PLAYER_COLUMNS = ["id", "last", "first", "bats", "throws", "first_season", "last_season"]
 
 
@@ -100,6 +100,8 @@ def make_indexes(conn):
     conn.execute("CREATE INDEX turns_batter ON turns (batter, season)")
     conn.execute("CREATE INDEX turns_pitcher ON turns (pitcher, season)")
     conn.execute("CREATE INDEX turns_pitching_team ON turns (pitching_team, season)")
+    conn.execute("CREATE INDEX turns_batting_team ON turns (batting_team, season)")
+    conn.execute("CREATE INDEX turns_park ON turns (park, season)")
     conn.execute("CREATE INDEX turns_season ON turns (season)")
     conn.execute("CREATE INDEX games_season ON games (season)")
 

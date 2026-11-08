@@ -2,12 +2,13 @@
 
   (transition-counts table)              count the turns at bat of a table: a matrix of counts
   (smooth-transitions counts [:weight w]) the counts as probabilities, a rare state borrowing from the states like it
-  (tilt-transitions league profile strength)
-                                         a player's probabilities: the league's, tilted toward what the player does
-  (combine-transitions batter pitcher league)
-                                         the probabilities of a batter against a pitcher
-  (prior-strength table group league)    how strongly the players' profiles are pulled toward the league's
-  (prior-strength-loglik table group league strength)
+  (tilt-transitions league profile strength [:prior profile])
+                                         a player's (or a ballpark's) probabilities: the league's, tilted toward what the player does
+  (combine-transitions batter pitcher league [park])
+                                         the probabilities of a batter against a pitcher (in a ballpark)
+  (prior-strength table group league [:priors table])
+                                         how strongly the players' profiles are pulled toward the league's
+  (prior-strength-loglik table group league strength [:priors table])
                                          how well that strength explains the players
   (run-expectancy matrix [:weights counts])
                                          the runs that are expected in the rest of an inning, from each of the 24 outs-and-runners
@@ -15,6 +16,10 @@
   (transition-row matrix home-batting outs bases score-difference)
                                          one state's row of the matrix
   (state-transition-table matrix)        the matrix as a state to state table
+  (removal-chances table)                how likely a starting pitcher is to be taken out after a turn, from how many batters he has faced, the score, and the
+                                         inning's end
+  (removal-chance chances batters-faced usual lead inning-ended)
+                                         one of those chances
   (simulate-games home away [:games n] [:seed n] [:ghost-runner #t])
                                          play many games, between two teams of nine batters and their pitchers
 
@@ -266,32 +271,43 @@ def profile_counts(profile, results, who):
     return counts
 
 
-def player_shares(profile_counts, league_shares, strength):
-    """A player's share of each result: his counts plus the prior's (the league's shares times the strength), over his turns plus the strength."""
-    return (profile_counts + strength * league_shares) / (profile_counts.sum() + strength)
+def profile_shares(counts, base_shares):
+    """The shares of the results in a profile, with one imaginary turn added, spread as the base shares are, so that no result has a share of 0."""
+    return (counts + base_shares) / (counts.sum() + 1)
 
 
-def tilt_transitions(league, profile, strength):
-    """(tilt-transitions league profile strength) -- a player's probabilities: the league's, with each result's counts multiplied by the player's share of the
-    result over the league's (see "WHAT MAKES A PLAYER DIFFERENT" at the top of this file), and each state's row scaled to add up to 1. profile is a table of
-    the player's turns, with a row for each result and its number of turns in the column count; strength is how many turns the prior is worth."""
+def tilt_transitions(league, profile, strength, *options):
+    """(tilt-transitions league profile strength [:prior profile]) -- a player's probabilities: the league's, with each result's counts multiplied by the
+    player's share of the result over its share in the prior (see "WHAT MAKES A PLAYER DIFFERENT" at the top of this file), and each state's row scaled to add
+    up to 1. profile is a table of the player's turns, with a row for each result and its number of turns in the column count; strength is how many turns the
+    prior is worth. The prior is the league's mix of results, unless :prior is another table of turns, such as the road games of a team to tilt toward its
+    home games (a ballpark)."""
     who = "tilt-transitions"
+    prior = keyword_options(options, ["prior"], who).get("prior")
     league = require_league(league, who)
     if not is_number(strength) or strength <= 0:
         raise LispError("%s: the strength must be a number above 0, not %s" % (who, strength))
-    shares = player_shares(profile_counts(profile, list(league.results), who), league.shares, strength)
-    tilted = league.joint * (shares / league.shares)[None, None, :]
+    results = list(league.results)
+    prior_shares = league.shares if prior is None else profile_shares(profile_counts(prior, results, who), league.shares)
+    counts = profile_counts(profile, results, who)
+    shares = (counts + strength * prior_shares) / (counts.sum() + strength)
+    tilted = league.joint * (shares / prior_shares)[None, None, :]
     values = tilted.sum(axis=2)
     return Transitions("probabilities", values / row_totals(values))
 
 
-def combine_transitions(batter, pitcher, league):
-    """(combine-transitions batter pitcher league) -- the probabilities of a batter against a pitcher, from the probabilities of each: see the top of this file."""
+def combine_transitions(batter, pitcher, league, *park):
+    """(combine-transitions batter pitcher league [park]) -- the probabilities of a batter against a pitcher, from the probabilities of each: see the top of
+    this file. With a park, a matrix tilted toward a ballpark's results, its ratio to the league's is another factor."""
     who = "combine-transitions"
+    if len(park) > 1:
+        raise LispError("%s: expected a batter, a pitcher, the league's matrix, and perhaps a park's matrix" % who)
     batter = require_matrix(batter, "probabilities", who).values
     pitcher = require_matrix(pitcher, "probabilities", who).values
     league = require_matrix(league, "probabilities", who).values
-    combined = np.divide(batter * pitcher, league, out=np.zeros_like(league), where=league > 0)
+    others = batter * pitcher * (require_matrix(park[0], "probabilities", who).values if park else 1.0)
+    league_factors = league ** (2 if park else 1)             # each factor beyond the first is divided by the league's once more
+    combined = np.divide(others, league_factors, out=np.zeros_like(league), where=league > 0)
     totals = row_totals(combined)
     return Transitions("probabilities", np.where(totals > 0, combined / np.where(totals > 0, totals, 1), league))
 
@@ -300,48 +316,67 @@ def combine_transitions(batter, pitcher, league):
 # How strongly players are pulled toward the league
 # ---------------------------------------------------------------------------
 
-def players_profiles(table, group_column, league, who):
-    """A table of the results of players' turns (columns group, result and count) as a matrix with a row for each player and a column for each of the league's results."""
+def players_profiles(table, group_column, league, who, priors=None):
+    """The results of players' turns (a table with the columns group, result and count) as a matrix with a row for each player and a column for each of the
+    league's results; and the shares of the prior of each player: the league's, or the shares of the player's rows in the table priors (the same columns)."""
     columns = table_columns(table, who)
     players = [str(name) for name in find_column(columns, group_column, who).items.tolist()]
-    player_numbers = np.unique(players, return_inverse=True)[1]
+    names, player_numbers = np.unique(players, return_inverse=True)
     results = list(league.results)
-    result_numbers = []
-    for result in result_names(columns, who):
-        if result not in results:
-            raise LispError("%s: %s is not a result the league has (it has %s)" % (who, result, ", ".join(results)))
-        result_numbers.append(results.index(result))
-    profiles = np.zeros((player_numbers.max(initial=-1) + 1, len(results)))
-    np.add.at(profiles, (player_numbers, np.array(result_numbers, dtype=np.int64)), count_column(columns, who))
-    return profiles
+
+    def counts_of(table_columns_, rows_of):
+        profiles = np.zeros((len(names), len(results)))
+        for row, result, count in zip(rows_of, result_names(table_columns_, who), count_column(table_columns_, who)):
+            if result not in results:
+                raise LispError("%s: %s is not a result the league has (it has %s)" % (who, result, ", ".join(results)))
+            profiles[row, results.index(result)] += count
+        return profiles
+
+    profiles = counts_of(columns, player_numbers)
+    shares = np.tile(league.shares, (len(names), 1))
+    if priors is not None:
+        prior_columns = table_columns(priors, who)
+        rows = []
+        for name in find_column(prior_columns, group_column, who).items.tolist():
+            if str(name) not in names:
+                raise LispError("%s: the prior has a player (%s) who is not in the table" % (who, name))
+            rows.append(int(np.searchsorted(names, str(name))))
+        prior_counts = counts_of(prior_columns, rows)
+        shares = np.array([profile_shares(counts, league.shares) if counts.sum() > 0 else league.shares for counts in prior_counts])
+    return profiles, shares
 
 
 def strength_loglik(profiles, shares, strength):
-    """The log of the probability of the players' results if each player's shares were drawn from a Dirichlet distribution whose mean is the league's and
-    whose strength is given, and his turns from those shares (a Dirichlet-multinomial distribution; the sum of the log-gamma terms of its probability)."""
+    """The log of the probability of the players' results if each player's shares were drawn from a Dirichlet distribution whose mean is the prior's (shares,
+    a vector, or a row for each player) and whose strength is given, and his turns from those shares (a Dirichlet-multinomial distribution; the sum of the
+    log-gamma terms of its probability)."""
     prior_counts = strength * shares
     return float((gammaln(strength) - gammaln(profiles.sum(axis=1) + strength)).sum() + (gammaln(profiles + prior_counts) - gammaln(prior_counts)).sum())
 
 
-def prior_strength_loglik(table, group_column, league, strength):
-    """(prior-strength-loglik table group league strength) -- how well a strength explains how the players differ: the log of the probability of their
-    results if each player's shares of the results were drawn from a Dirichlet distribution with the league's as its mean and this strength. The higher the
-    better. table has a row for each player and result, with the columns group (whose it is), result and count."""
+def prior_strength_loglik(table, group_column, league, strength, *options):
+    """(prior-strength-loglik table group league strength [:priors table]) -- how well a strength explains how the players differ: the log of the probability
+    of their results if each player's shares of the results were drawn from a Dirichlet distribution with the league's as its mean and this strength. The
+    higher the better. table has a row for each player and result, with the columns group (whose it is), result and count. With :priors, a table of the same
+    form, each player's mean is his own prior's shares instead of the league's."""
     who = "prior-strength-loglik"
+    priors = keyword_options(options, ["priors"], who).get("priors")
     league = require_league(league, who)
     if not is_number(strength) or strength <= 0:
         raise LispError("%s: the strength must be a number above 0, not %s" % (who, strength))
-    return strength_loglik(players_profiles(table, str(group_column), league, who), league.shares, strength)
+    profiles, shares = players_profiles(table, str(group_column), league, who, priors)
+    return strength_loglik(profiles, shares, strength)
 
 
-def prior_strength(table, group_column, league):
-    """(prior-strength table group league) -- the strength that explains best how the players differ (the one prior-strength-loglik is highest at): the number
-    of turns the league's mix of results is worth when it is the prior for a player's. table has a row for each player and result, with the columns group
-    (whose it is), result and count. The bigger it is, the more alike the players are."""
+def prior_strength(table, group_column, league, *options):
+    """(prior-strength table group league [:priors table]) -- the strength that explains best how the players differ (the one prior-strength-loglik is highest
+    at): the number of turns the league's mix of results is worth when it is the prior for a player's. table has a row for each player and result, with the
+    columns group (whose it is), result and count. The bigger it is, the more alike the players are. :priors is as for prior-strength-loglik."""
     who = "prior-strength"
+    priors = keyword_options(options, ["priors"], who).get("priors")
     league = require_league(league, who)
-    profiles = players_profiles(table, str(group_column), league, who)
-    best = minimize_scalar(lambda log_strength: -strength_loglik(profiles, league.shares, np.exp(log_strength)), bounds=(np.log(1.0), np.log(1.0e6)), method="bounded")
+    profiles, shares = players_profiles(table, str(group_column), league, who, priors)
+    best = minimize_scalar(lambda log_strength: -strength_loglik(profiles, shares, np.exp(log_strength)), bounds=(np.log(1.0), np.log(1.0e7)), method="bounded")
     return float(np.exp(best.x))
 
 
@@ -435,35 +470,107 @@ def run_expectancy(matrix, *options):
 
 
 # ---------------------------------------------------------------------------
+# When a starter comes out
+# ---------------------------------------------------------------------------
+
+STEPS_PER_WORKLOAD = 10                 # a starter's workload so far is the batters he has faced over the batters he usually faces: tenths of it, from 0
+WORKLOAD_STEPS = 18                     #   to 17 (1.7 times his usual or more)
+LARGEST_LEAD = 5                        # the pitching team's lead after the turn, from -5 (5 or more behind) to 5 (5 or more ahead)
+LEADS = 2 * LARGEST_LEAD + 1
+REMOVAL_SMOOTHING = 20                  # imaginary turns, with the removal rate of the same workload and inning end, in each cell of the chances
+
+
+class RemovalChances:
+    """How likely a starting pitcher is to be taken out after a turn, from his workload so far, the lead his team has after the turn, and whether the turn ended
+    the inning: an array of probabilities, workload steps x leads x 2."""
+
+    def __init__(self, probabilities, turns):
+        self.probabilities = probabilities
+        self.turns = turns
+
+    def __repr__(self):
+        return "#<removal-chances from %d turns>" % self.turns
+
+    def chance(self, batters_faced, usual, lead, inning_ended):
+        """The chance (an array) that a starter who has now faced batters_faced batters, and usually faces `usual`, is taken out, when his team leads by
+        lead after the turn (negative if it trails) and inning_ended says whether the turn was the inning's third out."""
+        steps = np.clip((STEPS_PER_WORKLOAD * np.asarray(batters_faced) / usual).astype(np.int64), 0, WORKLOAD_STEPS - 1)
+        leads = np.clip(lead, -LARGEST_LEAD, LARGEST_LEAD) + LARGEST_LEAD
+        return self.probabilities[steps, leads, np.asarray(inning_ended).astype(np.int64)]
+
+
+def removal_chances(table):
+    """(removal-chances table) -- how likely a starting pitcher is to be taken out after a turn: a table of the turns of starters, a row for each turn, with the
+    columns batters_faced (how many he had faced before the turn, as the database has it), usual (how many he usually faces in a start), lead (his team's lead
+    after the turn, negative if it trails), inning_ended (1 if the turn was the third out) and removed_after (1 if he was taken out right after it). The
+    chance in each workload (the batters he has faced, in tenths of his usual number), lead, and inning end is the share of such turns after which he was taken
+    out, with a few imaginary turns (20) at the rate of the same workload and inning end for any lead."""
+    who = "removal-chances"
+    columns = table_columns(table, who)
+    faced = floats_of(find_column(columns, "batters_faced", who), who) + 1                      # after the turn
+    usual = floats_of(find_column(columns, "usual", who), who)
+    lead = floats_of(find_column(columns, "lead", who), who).astype(np.int64)
+    ended = whole_numbers(find_column(columns, "inning_ended", who), 0, 1, "the column inning_ended", who)
+    removed = whole_numbers(find_column(columns, "removed_after", who), 0, 1, "the column removed_after", who)
+    if np.any(usual <= 0):
+        raise LispError("%s: the column usual must be above 0" % who)
+    steps = np.clip((STEPS_PER_WORKLOAD * faced / usual).astype(np.int64), 0, WORKLOAD_STEPS - 1)
+    leads = np.clip(lead, -LARGEST_LEAD, LARGEST_LEAD) + LARGEST_LEAD
+    shape = (WORKLOAD_STEPS, LEADS, 2)
+    turns, taken_out = np.zeros(shape), np.zeros(shape)
+    np.add.at(turns, (steps, leads, ended), 1)
+    np.add.at(taken_out, (steps, leads, ended), removed)
+    overall = taken_out.sum() / max(turns.sum(), 1)
+    cell_turns, cell_taken = turns.sum(axis=1, keepdims=True), taken_out.sum(axis=1, keepdims=True)         # for any lead
+    prior = np.where(cell_turns > 0, cell_taken / np.maximum(cell_turns, 1), overall)
+    return RemovalChances((taken_out + REMOVAL_SMOOTHING * prior) / (turns + REMOVAL_SMOOTHING), int(turns.sum()))
+
+
+def removal_chance(chances, batters_faced, usual, lead, inning_ended):
+    """(removal-chance chances batters-faced usual lead inning-ended) -- the chance that a starter who has faced that many batters, and usually faces `usual`,
+    is taken out after a turn, when his team's lead is lead after it and inning-ended is 1 if the turn ended the inning (0 if not)."""
+    who = "removal-chance"
+    if not isinstance(chances, RemovalChances):
+        raise LispError("%s: expected the chances removal-chances makes, not %s" % (who, chances))
+    return float(chances.chance(batters_faced, usual, int(lead), inning_ended))
+
+
+# ---------------------------------------------------------------------------
 # Playing games
 # ---------------------------------------------------------------------------
 
 def team_of(team, who):
     """A team for simulate-games: a list of a list of nine matrices (its batters against the other team's starting pitcher), a list of nine (against the
-    other team's relievers), and the number of batters that its own starting pitcher faces before a reliever comes in. Cumulative probabilities
-    (shape 2 x 9 x states x outcomes) and the batters."""
+    other team's relievers), and what takes its own starting pitcher out: a number, the batters he faces before a reliever comes in, or a list of the chances
+    removal-chances makes and how many batters he usually faces. The cumulative probabilities (2 x 9 x states x outcomes), then the number of batters (or
+    infinity), then the chances and the usual number (or None and 1)."""
     if not isinstance(team, Pair) or len(pairs_to_list(team)) != 3:
-        raise LispError("%s: a team is a list of three things: nine matrices against the starter, nine against the relievers, and the batters the starter "
-                        "faces" % who)
-    against_starter, against_relievers, starter_batters = pairs_to_list(team)
+        raise LispError("%s: a team is a list of three things: nine matrices against the starter, nine against the relievers, and what takes its starter out" % who)
+    against_starter, against_relievers, taken_out_by = pairs_to_list(team)
     lineups = []
     for lineup in (against_starter, against_relievers):
         matrices = pairs_to_list(lineup) if isinstance(lineup, Pair) else []
         if len(matrices) != 9:
             raise LispError("%s: a team's batters are nine, not %d" % (who, len(matrices)))
         lineups.append(np.array([require_matrix(matrix, "probabilities", who).values for matrix in matrices]))
-    if not is_number(starter_batters) or starter_batters < 1:
-        raise LispError("%s: the batters a starter faces must be a number, 1 or more, not %s" % (who, starter_batters))
     cumulative = np.cumsum(np.array(lineups), axis=3)
     cumulative /= cumulative[..., -1:]
-    return cumulative, float(starter_batters)
+    if isinstance(taken_out_by, Pair):
+        chances, usual = pairs_to_list(taken_out_by)
+        if not isinstance(chances, RemovalChances) or not is_number(usual) or usual <= 0:
+            raise LispError("%s: a starter who is taken out by chance is a list of the chances removal-chances makes and the batters he usually faces" % who)
+        return cumulative, np.inf, chances, float(usual)
+    if not is_number(taken_out_by) or taken_out_by < 1:
+        raise LispError("%s: the batters a starter faces must be a number, 1 or more, not %s" % (who, taken_out_by))
+    return cumulative, float(taken_out_by), None, 1.0
 
 
 def simulate_games(home, away, *options):
     """(simulate-games home away [:games n] [:seed n] [:ghost-runner #t]) -- play games between two teams, and give the results as a table with a row for each
     game: home_runs, visiting_runs and innings. A team is a list of three things: a list of nine matrices of probabilities, those of its batters in the order
-    they bat against the other team's starting pitcher (combine-transitions makes each); a list of nine, against the other team's relievers; and the number of
-    batters that its own starter faces before a reliever comes in."""
+    they bat against the other team's starting pitcher (combine-transitions makes each); a list of nine, against the other team's relievers; and what takes its
+    own starter out: the number of batters he faces before a reliever comes in, or a list of the chances removal-chances makes and the batters he usually faces,
+    which takes him out by chance after each turn, more likely as he has faced more batters than he usually does, as his team is far behind, and between innings."""
     who = "simulate-games"
     options = keyword_options(options, ["games", "seed", "ghost-runner"], who)
     games = options.get("games", 10000)
@@ -474,10 +581,11 @@ def simulate_games(home, away, *options):
     seed = options.get("seed", NIL)
     generator = np.random.default_rng(int(seed) if seed is not NIL else random.getrandbits(63))
     # Index 0 of each array is the visiting team, 1 the home team.
-    visiting_cumulative, visiting_starter_batters = team_of(away, who)
-    home_cumulative, home_starter_batters = team_of(home, who)
-    cumulative = np.array([visiting_cumulative, home_cumulative])           # team x (starter or relievers) x slot x state x outcome
-    starter_batters = np.array([visiting_starter_batters, home_starter_batters])
+    teams = [team_of(away, who), team_of(home, who)]
+    cumulative = np.array([team[0] for team in teams])                      # team x (starter or relievers) x slot x state x outcome
+    fixed_batters = [team[1] for team in teams]                             # the batters a starter faces, if it is a number
+    chances = [team[2] for team in teams]                                   # or the chances that he is taken out, and
+    usual_batters = [team[3] for team in teams]                             # the batters he usually faces
 
     inning = np.ones(games, dtype=np.int64)
     batting = np.zeros(games, dtype=np.int64)                               # 0: the visitors, 1: the home team
@@ -486,13 +594,14 @@ def simulate_games(home, away, *options):
     score = np.zeros((games, 2), dtype=np.int64)
     slot = np.zeros((games, 2), dtype=np.int64)                             # who is up next in each team's order
     faced = np.zeros((games, 2), dtype=np.int64)                            # how many batters each team's starter has faced
+    removed = np.zeros((games, 2), dtype=bool)                              # whether each team's starter is out of the game
     innings_played = np.zeros(games, dtype=np.int64)
     playing = np.arange(games)                                              # the games not over
     while len(playing):
         team = batting[playing]
         other = 1 - team
         game_slot = slot[playing, team]
-        reliever = (faced[playing, other] >= starter_batters[other]).astype(np.int64)
+        reliever = removed[playing, other].astype(np.int64)
         difference = score[playing, team] - score[playing, other]
         rows = cumulative[team, reliever, game_slot, state_number(team, outs[playing], bases[playing], difference)]
         draws = generator.random(len(playing))
@@ -503,6 +612,15 @@ def simulate_games(home, away, *options):
         slot[playing, team] = (game_slot + 1) % 9
         faced[playing, other] += 1
         outs[playing], bases[playing] = new_outs, new_bases
+        for pitching_team in (0, 1):                                        # is the starter taken out now?
+            still_in = (other == pitching_team) & ~removed[playing, pitching_team]
+            picked = playing[still_in]
+            if chances[pitching_team] is None:
+                removed[picked, pitching_team] = faced[picked, pitching_team] >= fixed_batters[pitching_team]
+            else:
+                lead = score[picked, pitching_team] - score[picked, 1 - pitching_team]
+                chance = chances[pitching_team].chance(faced[picked, pitching_team], usual_batters[pitching_team], lead, new_outs[still_in] == 3)
+                removed[picked, pitching_team] = generator.random(len(picked)) < chance
 
         home_ahead = score[playing, 1] > score[playing, 0]
         walk_off = (team == 1) & (inning[playing] >= LAST_REGULAR_INNING) & home_ahead
@@ -538,5 +656,7 @@ BUILTINS = {
     "transition-table": transition_table,
     "transition-row": transition_row,
     "state-transition-table": state_transition_table,
+    "removal-chances": removal_chances,
+    "removal-chance": removal_chance,
     "simulate-games": simulate_games,
 }

@@ -339,5 +339,5 @@
 
 ; Baseball as a chain of states, from Retrosheet's plays (see lisp_baseball_manual.md)
 (lazy-load "baseball.lsp"
-  retrosheet-notice fit-baseball-model baseball-batter-matrix baseball-pitcher-matrix baseball-bullpen-matrix baseball-matchup baseball-players
+  retrosheet-notice fit-baseball-model baseball-batter-matrix baseball-pitcher-matrix baseball-bullpen-matrix baseball-park-matrix baseball-matchup baseball-players
   baseball-starter-batters baseball-team-in-game baseball-team-in-last-game simulate-baseball-games home-win-probability baseball-backtest baseball-scores)

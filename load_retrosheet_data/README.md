@@ -39,6 +39,9 @@ How odd rows are handled:
 - Runs are the runs of Retrosheet's `runs` column, the offense's credit and the defense's blame, earned or not, with or without an error.
 - A game that ends with a walk-off ends with runners still on base; the turn is kept as it was.
 - A pitcher "started" if he was the first pitcher his team used in the game (`starter`).
+- `park` is Retrosheet's id for the ballpark (`NYC21`); `games` has it too.
+- `batters_faced` is how many batters the turn's pitcher had faced in the game before it, and `removed_after` is 1 if the next turn of his team's pitching in the game is another pitcher's:
+  how a starter's removal is counted (the usual number of batters a starter faces, and how the score and the end of an inning change it).
 - `result` is what the batter did in the plate appearance that ended the turn: `strikeout`, `walk` (also a hit by pitch and interference), `single`, `double`, `triple`,
   `home run`, `other` (every other plate appearance), or `none` (the inning ended on a steal before the plate appearance was over).
 
