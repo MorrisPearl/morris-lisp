@@ -53,6 +53,7 @@ that use all this are described in
 - [Reporting](#reporting)
   - [Google Sheets](#google-sheets)
   - [Three-statement models](#three-statement-models)
+  - [Comparing companies](#comparing-companies)
   - [Reports with control breaks](#reports-with-control-breaks)
 - [Dates and cash flows](#dates-and-cash-flows)
   - [Monthly time series](#monthly-time-series)
@@ -3102,6 +3103,52 @@ exactly if there are such (a set that is only close in the latest year may be an
 use a member that is a total of the others ("Operating Segments"). For Berkshire that is *Insurance And Other* (87% of
 revenue) and *Railroad, Utilities And Energy*; its business segments (the insurance group, BNSF, Berkshire Hathaway Energy,
 manufacturing, McLane, Pilot, service and retailing) overlap and change from year to year, and so cannot be used.
+
+### Comparing companies
+
+(In `lisp_financial_compare.py`, with the models of `lisp_financial_model.py`.) The most recent period of several companies,
+side by side in a Google Sheet -- a column for each company, **the same rows for all**: the income statement, the balance
+sheet, the cash flow statement, and some ratios -- so that what one does differently from the others shows.
+
+```lisp
+(compare-companies creds '("ACN" "EFX" "CTSH"))                       ; the amounts, in millions
+(compare-companies creds '("ACN" "EFX" "CTSH") :basis "revenue")      ; each as a percentage of the company's revenue
+(compare-companies creds '("JPM" "BAC" "C" "USB") :basis "assets")    ; a bank's rows, as a percentage of assets
+```
+
+#### `(compare-companies creds tickers [:basis b :period p :kind k :title t])`
+Makes the spreadsheet and returns its address, as a string. It needs what `three-statement-model` needs: the credentials file's
+`sec_user_agent` entry and a Google sign-in.
+
+- `tickers` is a list of two or more companies, such as `'("ACN" "EFX")`.
+- `:basis` makes the numbers comparable. `"none"` (the default) shows the amounts in millions, which is only a comparison if the
+  companies are the same size and report in the same currency (it is an error if they don't). `"revenue"` shows every amount
+  as a **percentage of the company's top line** -- its revenue; a bank's *net revenue*, net interest income plus noninterest income;
+  an insurer's total revenues -- and `"assets"` as a percentage of its **balance sheet total**. Shares and earnings per share are
+  left as they are.
+- `:period` is `"annual"` (the default) or `"quarterly"`: each company's latest fiscal year, or quarter. Fiscal years end at
+  different times, so the date each ends is at the top.
+- `:kind` is `"general"`, `"bank"`, or `"insurer"`, as for `three-statement-model`, and decides the rows. `"auto"` (the
+  default) chooses for each company by the SEC's industry code, and **the companies must be all one kind**, because a bank's rows
+  are not an industrial's: it is an error if they are not, and `:kind "general"` compares them all as ordinary companies
+  (a bank's loans are then "other assets"). A company the SEC's numbers do not describe in its kind's lines is named in the error.
+
+**The sheet.** With `:basis "none"` the `Comparison` tab has the numbers themselves, in blue. With a basis it has **formulas**
+-- each amount over the basis, such as `='As reported'!B12/'As reported'!B$7` -- and a second tab, `As reported`, has the
+numbers in millions (in blue) and the ratios; change a number there and the comparison follows. Either way the last column is the
+**median** of the companies: what is typical, in every row of percentages and ratios. The `Notes` tab lists the companies, their
+industries and periods.
+
+**The rows.** The ordinary company's: revenue, cost of revenue, gross profit, research, selling, general and administrative,
+other operating expenses, operating income, interest, taxes, net income, shares and earnings per share; the balance sheet down to
+equity; the cash flow statement; and gross, operating, and net margin, the tax rate, free cash flow over revenue, return on equity
+and assets, debt to equity, net debt to operating income, the current ratio, receivable days, and capital spending over revenue.
+The lines a company reports that have no row of their own are in the *other* rows, as in `three-statement-model`, so every
+subtotal is the company's. A bank's rows are its net interest income, provision, noninterest income and expense, loans, deposits,
+and credit-loss lines, with the efficiency ratio, net interest margin, rates on loans and deposits, return on equity and assets,
+loans to deposits, equity to assets, the allowance, and the charge-off rate. An insurer's are premiums, investment income, losses,
+expenses, reserves, unearned premiums, and investments, with the loss, expense, and combined ratios, the investment yield, and
+the leverage ratios. The ratios use the period's end balances and a year's flows (a quarter's times 365 over its days).
 
 ### Reports with control breaks
 

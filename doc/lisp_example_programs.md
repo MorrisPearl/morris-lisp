@@ -1377,6 +1377,9 @@ forecast whose every number is a formula that follows a short list of assumption
 bank (JPMorgan), a property and casualty insurer (Travelers), or an asset manager (T. Rowe Price, with the assets under management you give it); its section in the
 [library manual](lisp_library_reference.md#three-statement-models) says how the forecast works.
 
+`compare_companies_example.lsp` puts several companies' latest statements side by side in a spreadsheet, as amounts or as percentages
+of revenue or of assets, with the median of the group (see "Comparing companies" in the [library manual](lisp_library_reference.md#comparing-companies)).
+
 `sofr_and_mortgage_rates.lsp` puts SOFR's whole history, from the New York Fed (`nyfed-rates`),
 beside Freddie Mac's weekly mortgage rate and the 10-year Treasury yield, from FRED, and fits
 the mortgage rate to each. In levels SOFR looks good (R² 0.86), because both rates were near zero

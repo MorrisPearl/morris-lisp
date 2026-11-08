@@ -2,7 +2,7 @@
 
 It reads the tabs as lisp_google.google_workbook is given them (a list of dicts with "name" and
 "cells") and works out every formula. It knows what the model's formulas use: numbers, text in
-quotes, cell references (A1, or 'Tab name'!A1), ranges of them in SUM, AVERAGE, MAX, MIN, ROUND, IFERROR,
+quotes, cell references (A1, or 'Tab name'!A1), ranges of them in SUM, AVERAGE, MEDIAN, MAX, MIN, ROUND, IFERROR,
 the operators + - * /, and parentheses. Anything else is an error, so a formula that uses
 something new says so here.
 """
@@ -151,8 +151,10 @@ class Formula:
             tab = name.strip("'")
         if ":" in text:
             (row1, column1), (row2, column2) = [split_address(part) for part in text.split(":")]
-            return [self.sheets.value(tab, row, column) for row in range(row1, row2 + 1)
-                    for column in range(column1, column2 + 1)]
+            # (a range has its numbers: Sheets leaves out the empty cells, and the text, as SUM, AVERAGE and MEDIAN do)
+            cells = [(row, column) for row in range(row1, row2 + 1) for column in range(column1, column2 + 1)]
+            values = [self.sheets.value(tab, row, column) for row, column in cells if self.sheets.cells[tab].get((row, column)) is not None]
+            return [v for v in values if isinstance(v, (int, float))]
         return self.sheets.at(tab, text)
 
     def function(self, name):
@@ -178,6 +180,10 @@ class Formula:
             numbers += [number(x) for x in argument] if isinstance(argument, list) else [number(argument)]
         if name == "SUM":
             return sum(numbers)
+        if name == "MEDIAN":
+            numbers.sort()
+            middle = len(numbers) // 2
+            return numbers[middle] if len(numbers) % 2 else (numbers[middle - 1] + numbers[middle]) / 2
         if name == "AVERAGE":
             return sum(numbers) / len(numbers)
         if name == "MAX":
