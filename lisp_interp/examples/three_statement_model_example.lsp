@@ -3,7 +3,7 @@
 ; A company's income statement, balance sheet, and cash flow statement from the SEC, for the last
 ; five years and the next five, as a Google Sheet that you change the assumptions of -- see
 ; "Three-statement models" in the library manual. Ordinary companies, banks, and property and
-; casualty insurers each get the lines and assumptions that fit them.
+; casualty insurers, and asset managers each get the lines and assumptions that fit them.
 ;
 ; It needs the credentials file's "sec_user_agent" entry (see sec_example.lsp), and a Google sign-in:
 ; run (google-login creds) once first (see "Google Sheets" in the library manual). Each call makes
@@ -30,6 +30,11 @@
 ; --- 5. A property and casualty insurer: premiums, loss and expense ratios, and the float ---
 (display (three-statement-model creds "TRV" :period "quarterly"))
 
-; --- 6. The kind can be chosen. Berkshire Hathaway, with its insurance, railroad, utilities, and ---
+; --- 6. An asset manager: revenue is a fee on assets under management ---------------
+; The SEC's data has no AUM, so give it: billions at the end of each year, oldest first, the last
+; being the latest annual report's. (These are placeholders -- type the figures from the 10-K.)
+(display (three-statement-model creds "TROW" :aum (list 1688 1275 1480 1610 1750)))
+
+; --- 7. The kind can be chosen. Berkshire Hathaway, with its insurance, railroad, utilities, and ---
 ; manufacturing in one set of statements, is modeled as an ordinary company (the Notes tab says why).
 (display (three-statement-model creds "BRK-B"))

@@ -50,7 +50,8 @@ https://www.wallstreetprep.com/knowledge/build-integrated-3-statement-financial-
 KINDS OF COMPANY. What is written above is the model of an ordinary company ("general"). A bank has no
 cost of revenue and an insurer no inventory, and their balance sheets are what they earn on, so each has a
 model of its own with its own lines and assumptions, in lisp_financial_bank.py and
-lisp_financial_insurer.py. They are Templates (below): the lines taken from the SEC, a History that arranges
+lisp_financial_insurer.py, and an asset manager's revenue is a fee on assets under management
+(lisp_financial_asset_manager.py; the AUM is given with :aum, since the SEC's data lacks it). They are Templates (below): the lines taken from the SEC, a History that arranges
 them, and a Model (a subclass of the one here) that lays out the sheets. :kind "auto" chooses by the SEC's
 industry code (SIC), and falls back to "general", with a note, if the SEC's facts lack what the other kind needs.
 
@@ -94,7 +95,12 @@ INTEREST_RATE_LIMITS = (0.0, 0.15)
 YIELD_LIMITS = (0.0, 0.05)
 TAX_RATE_LIMITS = (0.0, 0.40)
 PAYOUT_LIMITS = (0.0, 1.5)
+AMORTIZATION_LIMITS = (0.0, 1.0)
 NO_LIMITS = (-1e9, 1e9)
+# A payout is lumpy (a company buys back no stock for years, and then a great deal in one), so its guess,
+# for years, is the average of the last few years' rather than the last year's:
+SMOOTHED_ASSUMPTIONS = ("dividend-payout", "buyback-payout")
+SMOOTHED_YEARS = 3
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +151,20 @@ def safe_ratio(numerator, denominator):
 # The reported numbers, in millions
 # ---------------------------------------------------------------------------
 
+# An ordinary company's lines are those of lisp_sec.LINE_ITEMS, with a few more. Service companies (Accenture,
+# Equifax) report selling and marketing, and general and administrative, apart, and many report depreciation
+# apart from the amortization of intangibles, which the model takes off the intangibles, not the plant.
+GENERAL_ITEMS = [
+    (item[0], item[1], item[2], [name for name in item[3] if name != "Depreciation"], item[4])
+    if item[0] == "depreciation-amortization" else item for item in lisp_sec.LINE_ITEMS
+] + [
+    ("selling-and-marketing", "Selling and marketing", "income", ["SellingAndMarketingExpense"], None),
+    ("general-and-administrative", "General and administrative", "income", ["GeneralAndAdministrativeExpense"], None),
+    ("depreciation-only", "Depreciation", "cash-flow", ["Depreciation"], None),
+    ("amortization-of-intangibles", "Amortization of intangible assets", "cash-flow",
+     ["AmortizationOfIntangibleAssets"], None),
+]
+
 class Reported:
     """What the company reported, for the periods of the model's history
     (oldest first): `values[key]` is a list with a number (in millions) or
@@ -154,7 +174,7 @@ class Reported:
 
     def __init__(self, facts, periods, items=None):
         self.periods = periods
-        self.items = lisp_sec.LINE_ITEMS if items is None else items
+        self.items = GENERAL_ITEMS if items is None else items
         self.values, self.sources = {}, {}
         currency = None
         for item, values, unit, sources in lisp_sec.line_item_values(facts, periods, items=self.items):
@@ -209,7 +229,11 @@ class History:
             self.cost_of_revenue = [rev - gp for rev, gp in zip(self.revenue, z("gross-profit"))]
         self.gross_profit = [rev - cost for rev, cost in zip(self.revenue, self.cost_of_revenue)]
         self.research = z("research-and-development")
-        self.selling_and_administrative = z("selling-general-and-administrative")
+        # (a company that reports selling and marketing, and general and administrative, apart has the two)
+        self.selling_and_administrative = [
+            sga if sga is not None else (sm or 0.0) + (ga or 0.0) for sga, sm, ga in
+            zip(r.values["selling-general-and-administrative"], r.values["selling-and-marketing"],
+                r.values["general-and-administrative"])]
         self.operating_income = []
         for i in range(count):
             if r.values["operating-income"][i] is not None:
@@ -273,7 +297,12 @@ class History:
                                              zip(self.total_assets, self.equity, self.current_liabilities,
                                                  self.long_term_debt)]
         # --- cash flow statement
-        self.depreciation = z("depreciation-amortization")
+        # depreciation and amortization as reported, or depreciation and the amortization of intangibles added;
+        # the amortization (if reported apart) is taken off the intangibles in the forecast, the rest off the plant
+        total_da = [da if da is not None else dep + amort for da, dep, amort in
+                    zip(r.values["depreciation-amortization"], z("depreciation-only"), z("amortization-of-intangibles"))]
+        self.amortization = [min(amort, da) if da >= 0 else 0.0 for amort, da in zip(z("amortization-of-intangibles"), total_da)]
+        self.depreciation = [da - amort for da, amort in zip(total_da, self.amortization)]
         self.stock_compensation = z("stock-compensation")
         self.change_in_receivables = [None] + [-(self.receivables[i] - self.receivables[i - 1]) for i in range(1, count)]
         self.change_in_inventory = [None] + [-(self.inventory[i] - self.inventory[i - 1]) for i in range(1, count)]
@@ -282,7 +311,8 @@ class History:
         working_capital = [sum(x or 0.0 for x in group) for group in
                            zip(self.change_in_receivables, self.change_in_inventory, self.change_in_payables)]
         self.other_operating = [cfo - (ni + da + sbc + wc) for cfo, ni, da, sbc, wc in
-                                zip(z("operating-cash-flow"), self.net_income, self.depreciation,
+                                zip(z("operating-cash-flow"), self.net_income,
+                                    [d + a for d, a in zip(self.depreciation, self.amortization)],
                                     self.stock_compensation, working_capital)]
         self.capital_expenditures = [-x for x in z("capital-expenditures")]
         self.other_investing = [cfi - capex for cfi, capex in zip(z("investing-cash-flow"), self.capital_expenditures)]
@@ -432,22 +462,27 @@ class Model:
         rows.append(("stock-compensation-percent", "Stock compensation, % of revenue", "percent",
                      [safe_ratio(h.stock_compensation[i], h.revenue[i]) for i in range(n)], NO_LIMITS,
                      lambda i: sec(cf("stock-compensation", i), inc("revenue", i))))
-        rows.append(("depreciation-percent", "Depreciation and amortization, % of revenue", "percent",
-                     [safe_ratio(h.depreciation[i], h.revenue[i]) for i in range(n)], NO_LIMITS,
+        rows.append(("depreciation-percent", "Depreciation (with the amortization, if not reported apart), % of revenue",
+                     "percent", [safe_ratio(h.depreciation[i], h.revenue[i]) for i in range(n)], NO_LIMITS,
                      lambda i: sec(cf("depreciation", i), inc("revenue", i))))
+        rows.append(("amortization-rate", "Amortization of intangibles, % of last period's intangibles (a year's)", "percent",
+                     [None if i < 1 or not h.intangible_assets[i - 1] else
+                      h.amortization[i] / (h.intangible_assets[i - 1] * year_fraction) for i in range(n)], AMORTIZATION_LIMITS,
+                     lambda i: sec(cf("amortization", i), "(%s*%s/365)" % (bal("intangible-assets", i - 1), a("days", i)))
+                     if over_previous(i) else None))
         rows.append(("capital-expenditures-percent", "Capital expenditures, % of revenue", "percent",
                      [safe_ratio(-h.capital_expenditures[i], h.revenue[i]) for i in range(n)], NO_LIMITS,
                      lambda i: sec("-" + cf("capital-expenditures", i), inc("revenue", i))))
         rows.append(("receivable-days", "Receivables, days of revenue", "decimal",
                      [None if not h.revenue[i] else h.receivables[i] / h.revenue[i] * days for i in range(n)], NO_LIMITS,
                      lambda i: sec("%s*%s" % (bal("receivables", i), a("days", i)), inc("revenue", i))))
-        rows.append(("inventory-days", "Inventory, days of cost of revenue", "decimal",
-                     [None if not h.cost_of_revenue[i] else h.inventory[i] / h.cost_of_revenue[i] * days for i in range(n)],
-                     NO_LIMITS, lambda i: sec("%s*%s" % (bal("inventory", i), a("days", i)), inc("cost-of-revenue", i))))
-        rows.append(("payable-days", "Payables, days of cost of revenue", "decimal",
-                     [None if not h.cost_of_revenue[i] else h.accounts_payable[i] / h.cost_of_revenue[i] * days
-                      for i in range(n)], NO_LIMITS,
-                     lambda i: sec("%s*%s" % (bal("accounts-payable", i), a("days", i)), inc("cost-of-revenue", i))))
+        cost_key, cost_values, cost_name = self.cost_base()
+        rows.append(("inventory-days", "Inventory, days of %s" % cost_name, "decimal",
+                     [None if not cost_values[i] else h.inventory[i] / cost_values[i] * days for i in range(n)],
+                     NO_LIMITS, lambda i: sec("%s*%s" % (bal("inventory", i), a("days", i)), inc(cost_key, i))))
+        rows.append(("payable-days", "Payables, days of %s" % cost_name, "decimal",
+                     [None if not cost_values[i] else h.accounts_payable[i] / cost_values[i] * days for i in range(n)],
+                     NO_LIMITS, lambda i: sec("%s*%s" % (bal("accounts-payable", i), a("days", i)), inc(cost_key, i))))
         rows += self.common_assumption_rows()
         return rows
 
@@ -479,15 +514,25 @@ class Model:
                      lambda i: sec("-" + cf("repurchases", i), inc("net-income", i))))
         return rows
 
-    def default_guess(self, series, limits):
+    def default_guess(self, series, limits, smoothed=False):
         """The forecast's starting value for an assumption: the last period's, or the average of the last
-        year's quarters; within the limits; 0 if the history has none."""
+        year's quarters (of the last few years, if `smoothed`); within the limits; 0 if the history has none."""
         known = [v for v in series if v is not None]
         if not known:
             return 0.0
-        recent = known[-1:] if self.period == "annual" else known[-QUARTER_AVERAGE:]
+        if self.period == "quarterly":
+            recent = known[-QUARTER_AVERAGE:]
+        else:
+            recent = known[-SMOOTHED_YEARS:] if smoothed else known[-1:]
         guess = sum(recent) / len(recent)
         return min(max(guess, limits[0]), limits[1])
+
+    def cost_base(self):
+        """What inventory and payables are days of: (the income statement line, its history, its name) -- the cost
+        of revenue, or, for a company that reports none (many service companies), revenue."""
+        if any(self.h.cost_of_revenue):
+            return "cost-of-revenue", self.h.cost_of_revenue, "cost of revenue"
+        return "revenue", self.h.revenue, "revenue"
 
     def assumptions_layout(self):
         lines = [Line("days", "Days in the period", "decimal", (), lambda i: self.days_in_period)]
@@ -508,15 +553,15 @@ class Model:
         lines.append(Line("net-borrowing", "Debt borrowed (repaid), millions", "money", (), self.net_borrowing_cell))
         lines.append(None)
         lines.append(Line("cash-header", "Cash flow and the balance sheet", "money", ("section",), None))
-        for key in ("stock-compensation-percent", "depreciation-percent", "capital-expenditures-percent",
-                    "receivable-days", "inventory-days", "payable-days"):
+        for key in ("stock-compensation-percent", "depreciation-percent", "amortization-rate",
+                    "capital-expenditures-percent", "receivable-days", "inventory-days", "payable-days"):
             lines.append(self.main_line_from_series(key))
         return SheetLayout(ASSUMPTIONS, "Assumptions", lines)
 
     def main_line_from_series(self, key):
         """The line for an assumption: formulas from the statements for the history, a guess for the forecast."""
         _, label, number_format, series, limits, formula = self.assumptions[key]
-        guess = self.default_guess(series, limits)
+        guess = self.default_guess(series, limits, key in SMOOTHED_ASSUMPTIONS)
         return Line(key, label, number_format, (), lambda i: guess if self.is_forecast(i) else formula(i))
 
     def total_growth_line(self):
@@ -632,6 +677,7 @@ class Model:
         def same_as_before(key):
             return lambda i: "=%s" % bal(key, i - 1)
 
+        cost_key = self.cost_base()[0]
         lines = [
             line("cash", "Cash and equivalents", h.cash, lambda i: "=%s" % cf("cash-end", i)),
             line("short-term-investments", "Short-term investments", h.short_term_investments,
@@ -639,7 +685,7 @@ class Model:
             line("receivables", "Receivables", h.receivables,
                  lambda i: "=%s*%s/%s" % (inc("revenue", i), a("receivable-days", i), a("days", i))),
             line("inventory", "Inventory", h.inventory,
-                 lambda i: "=%s*%s/%s" % (inc("cost-of-revenue", i), a("inventory-days", i), a("days", i))),
+                 lambda i: "=%s*%s/%s" % (inc(cost_key, i), a("inventory-days", i), a("days", i))),
             line("other-current-assets", "Other current assets", h.other_current_assets,
                  same_as_before("other-current-assets")),
             Line("current-assets", "Total current assets", "money", ("total",),
@@ -648,7 +694,8 @@ class Model:
                  lambda i: "=%s-%s-%s" % (bal("property-plant-equipment", i - 1), cf("capital-expenditures", i),
                                           cf("depreciation", i))),
             line("goodwill", "Goodwill", h.goodwill, same_as_before("goodwill")),
-            line("intangible-assets", "Intangible assets", h.intangible_assets, same_as_before("intangible-assets")),
+            line("intangible-assets", "Intangible assets", h.intangible_assets,
+                 lambda i: "=%s-%s" % (bal("intangible-assets", i - 1), cf("amortization", i))),
             line("other-noncurrent-assets", "Other non-current assets", h.other_noncurrent_assets,
                  same_as_before("other-noncurrent-assets")),
             Line("total-assets", "Total assets", "money", ("total",),
@@ -656,7 +703,7 @@ class Model:
                                                 bal("other-noncurrent-assets", i))),
             None,
             line("accounts-payable", "Accounts payable", h.accounts_payable,
-                 lambda i: "=%s*%s/%s" % (inc("cost-of-revenue", i), a("payable-days", i), a("days", i))),
+                 lambda i: "=%s*%s/%s" % (inc(cost_key, i), a("payable-days", i), a("days", i))),
             line("current-debt", "Current debt", h.current_debt, same_as_before("current-debt")),
             line("other-current-liabilities", "Other current liabilities", h.other_current_liabilities,
                  same_as_before("other-current-liabilities")),
@@ -705,8 +752,13 @@ class Model:
 
         lines = [
             Line("net-income", "Net income", "money", (), lambda i: "=%s" % inc("net-income", i)),
-            line("depreciation", "Depreciation and amortization", h.depreciation,
-                 lambda i: "=%s*%s" % (inc("revenue", i), a("depreciation-percent", i))),
+            # (never more than there is to depreciate: a company whose depreciation includes amortization it doesn't
+            # report apart would otherwise take its plant below zero)
+            line("depreciation", "Depreciation (and amortization, if not reported apart)", h.depreciation,
+                 lambda i: "=MIN(%s*%s,%s-%s)" % (inc("revenue", i), a("depreciation-percent", i),
+                                                  bal("property-plant-equipment", i - 1), cf("capital-expenditures", i))),
+            line("amortization", "Amortization of intangible assets", h.amortization,
+                 lambda i: "=%s*%s*%s/365" % (a("amortization-rate", i), bal("intangible-assets", i - 1), a("days", i))),
             line("stock-compensation", "Stock-based compensation", h.stock_compensation,
                  lambda i: "=%s*%s" % (inc("revenue", i), a("stock-compensation-percent", i))),
             Line("change-in-receivables", "Change in receivables", "money", (), sign_change("receivables", True)),
@@ -872,10 +924,12 @@ class Template:
     sheets), `required` -- the lines the model cannot do without, each a tuple of keys of which one must be
     reported for every period -- and the SEC's industry codes (SIC) of the companies it is for."""
 
-    def __init__(self, name, description, items, history_class, model_class, required=(), sic_codes=()):
+    def __init__(self, name, description, items, history_class, model_class, required=(), sic_codes=(),
+                 needs_aum=False):
         self.name, self.description, self.items = name, description, items
         self.history_class, self.model_class = history_class, model_class
         self.required, self.sic_codes = required, set(sic_codes)
+        self.needs_aum = needs_aum              # (the assets under management of each period must be given)
 
     def lacking(self, reported, i):
         """The labels of the required lines that are not reported in period i."""
@@ -899,15 +953,17 @@ class Template:
         return missing
 
 
-GENERAL = Template("general", "an ordinary company", lisp_sec.LINE_ITEMS, History, Model)
+GENERAL = Template("general", "an ordinary company", GENERAL_ITEMS, History, Model)
 
 
 def templates():
     """The kinds of company, by name. (The bank and insurer templates are loaded here and not at the top
     of the file because they are built on this module.)"""
+    import lisp_financial_asset_manager
     import lisp_financial_bank
     import lisp_financial_insurer
-    return {"general": GENERAL, "bank": lisp_financial_bank.TEMPLATE, "insurer": lisp_financial_insurer.TEMPLATE}
+    return {"general": GENERAL, "bank": lisp_financial_bank.TEMPLATE, "insurer": lisp_financial_insurer.TEMPLATE,
+            "asset-manager": lisp_financial_asset_manager.TEMPLATE}
 
 
 def count_option(options, name, default, who):
@@ -918,12 +974,13 @@ def count_option(options, name, default, who):
 
 
 def build_model(facts, ticker, period, history_count, forecast_count, who="three-statement-model",
-                find_segments=None, kind="general"):
+                find_segments=None, kind="general", aum=None):
     """The Model of a company from its SEC facts, of the kind (a name in templates()) given. `find_segments`,
     if given (for an ordinary company), is a function of the periods (oldest first) and the company's total
     revenue in each, in millions, that gives the revenue by segment: (segments, a note), segments being
-    [(name, a revenue for each period)] or None. Raises MissingLines if the kind needs lines that the
-    company's facts don't have."""
+    [(name, a revenue for each period)] or None. `aum`, for an asset manager, is its assets under management
+    in billions at the end of each period, oldest first, ending with the latest (the SEC's facts have them for
+    few companies). Raises MissingLines if the kind needs lines that the company's facts don't have."""
     template = templates()[kind]
     periods = lisp_sec.chosen_periods(facts, {"period": period, "count": history_count}, who)
     periods = list(reversed(periods))
@@ -931,24 +988,45 @@ def build_model(facts, ticker, period, history_count, forecast_count, who="three
     if len(periods) < needed:
         raise LispError("%s: the SEC has only %d %s periods for this company, and growth needs at least %d"
                         % (who, len(periods), period, needed))
+    notes = []
+    if template.needs_aum:
+        import lisp_financial_asset_manager
+        aum = list(aum) if aum is not None else lisp_financial_asset_manager.aum_from_facts(facts, periods)
+        if aum is None:
+            raise MissingLines("%s: a model of %s needs the assets under management at the end of each period, which "
+                               "the SEC's facts for this company do not have: give them with :aum, a list of numbers "
+                               "in billions, oldest first, ending with the latest period reported"
+                               % (who, template.description))
+        if len(aum) < len(periods):             # (periods without an AUM are left out)
+            periods = periods[len(periods) - len(aum):]
+            notes.append("The history starts at %s because the assets under management were given from then."
+                         % periods[0].end.isoformat())
+        aum = aum[len(aum) - len(periods):]
+    if len(periods) < needed:
+        raise LispError("%s: %d %s periods of assets under management were given, and growth needs at least %d"
+                        % (who, len(periods), period, needed))
     reported = Reported(facts, periods, template.items)
-    history_note = ""
     start = template.first_complete_period(reported)
     if len(periods) - start < needed:
         raise MissingLines("%s: a model of %s needs %s, which the SEC's facts for this company do not have for "
                            "every one of these periods" % (who, template.description,
                                                            ", ".join(template.missing_lines(reported))))
     if start > 0:                               # (the older periods that lack lines are left out)
-        history_note = ("The history starts at %s, not earlier, because the SEC's facts for this company lack %s "
-                        "before then." % (periods[start].end.isoformat(), ", ".join(template.missing_lines(reported))))
+        notes.append("The history starts at %s, not earlier, because the SEC's facts for this company lack %s "
+                     "before then." % (periods[start].end.isoformat(), ", ".join(template.missing_lines(reported))))
         periods = periods[start:]
+        if aum is not None:
+            aum = aum[start:]
         reported = Reported(facts, periods, template.items)
     segments, note = None, ""
     if find_segments and kind == "general":
         segments, note = find_segments(periods, template.history_class(reported).revenue)
-    result = template.model_class(facts.get("entityName") or ticker, ticker, period, reported,
-                                  template.history_class(reported, segments), forecast_count, note)
-    result.kind_note = history_note
+    history = template.history_class(reported, segments)
+    if template.needs_aum:
+        history.set_aum(aum)
+    result = template.model_class(facts.get("entityName") or ticker, ticker, period, reported, history,
+                                  forecast_count, note)
+    result.kind_note = " ".join(notes)
     return result
 
 
@@ -995,14 +1073,16 @@ def three_statement_model(credentials_path, company, *options):
     for the next `:forecast`, by formulas that follow assumptions on an Assumptions tab. Returns the
     spreadsheet's address. :period is "annual" or "quarterly" (5 years each way, or 8 quarters, unless
     :history and :forecast say). :kind is "general" (an ordinary company: revenue, costs, working capital,
-    plant), "bank" (loans, deposits, interest rates, credit losses), or "insurer" (a property and casualty
-    insurer: premiums, loss and expense ratios, investments, reserves); "auto", the default, chooses by the
-    SEC's industry code for the company, and models it as an ordinary company if the SEC's facts lack what
-    the other kind needs. :segments, for an ordinary company: "auto" (the default) models revenue by business
+    plant), "bank" (loans, deposits, interest rates, credit losses), "insurer" (a property and casualty
+    insurer: premiums, loss and expense ratios, investments, reserves), or "asset-manager" (revenue is a fee
+    on assets under management, which you give with :aum, a list of numbers in billions, one for the end of
+    each period, oldest first, ending with the latest period reported); "auto", the default, chooses by the
+    SEC's industry code for the company (an asset manager if you give :aum), and models it as an ordinary
+    company if the SEC's facts lack what the other kind needs. :segments, for an ordinary company: "auto" (the default) models revenue by business
     segment if the company reports them, or else by product; "business", "product", or "geography" asks
     for that one; #f for total revenue only. You need to be signed in to Google: (google-login creds)."""
     who = "three-statement-model"
-    options = keyword_options(options, ["period", "history", "forecast", "kind", "segments", "title"], who)
+    options = keyword_options(options, ["period", "history", "forecast", "kind", "aum", "segments", "title"], who)
     period = str(options.get("period", "annual"))
     if period not in DEFAULT_COUNTS:
         raise LispError('%s: :period is "annual" or "quarterly", not %s' % (who, period))
@@ -1011,6 +1091,12 @@ def three_statement_model(credentials_path, company, *options):
     kind = str(options.get("kind", "auto"))
     if kind != "auto" and kind not in templates():
         raise LispError('%s: :kind is "auto", %s, not %s' % (who, ", ".join('"%s"' % name for name in templates()), kind))
+    aum = None
+    if "aum" in options:
+        import lisp_financial_asset_manager
+        aum = lisp_financial_asset_manager.number_list(options["aum"], who)
+        if kind not in ("auto", "asset-manager"):
+            raise LispError('%s: :aum, the assets under management, is for :kind "asset-manager", not %s' % (who, kind))
     segments = options.get("segments", "auto")
     facts = lisp_sec.company_facts(credentials_path, company, who)
     ticker = str(company).upper()
@@ -1019,8 +1105,10 @@ def three_statement_model(credentials_path, company, *options):
     if kind == "auto":
         sic, description = company_industry(credentials_path, company, who)
         kind = kind_for_industry(sic)
+        if aum is not None and kind == "general":              # (AUM given: an asset manager, if nothing else)
+            kind = "asset-manager"
         try:
-            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind)
+            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum)
         except MissingLines as problem:
             if kind == "general":
                 raise
@@ -1028,7 +1116,7 @@ def three_statement_model(credentials_path, company, *options):
                          % (description or "another kind of company", str(problem).split(": ", 1)[1]))
             model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, "general")
     else:
-        model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind)
+        model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum)
     model.kind_note = (model.kind_note + " " + kind_note).strip()
     title = options.get("title") or "%s %s model" % (model.company_name, period)
     return LispString(lisp_google.google_workbook(credentials_path, str(title), model.sheets()))

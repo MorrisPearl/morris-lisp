@@ -81,7 +81,8 @@ LINE_ITEMS = [
       "ifrs-full:RevenueFromContractsWithCustomers", "ifrs-full:RevenueFromSaleOfGoods"], None),
     ("cost-of-revenue", "Cost of revenue", "income",
      ["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold", "CostOfServices",
-      "ifrs-full:CostOfSales"], None),
+      "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+      "CostOfGoodsAndServicesSoldExcludingDepreciationDepletionAndAmortization", "ifrs-full:CostOfSales"], None),
     ("gross-profit", "Gross profit", "income",
      ["GrossProfit", "ifrs-full:GrossProfit"], ("revenue", "cost-of-revenue")),
     ("research-and-development", "Research and development", "income",
@@ -170,7 +171,8 @@ LINE_ITEMS = [
      ["NetCashProvidedByUsedInFinancingActivities", "NetCashProvidedByUsedInFinancingActivitiesContinuingOperations",
       "ifrs-full:CashFlowsFromUsedInFinancingActivities"], None),
     ("dividends-paid", "Dividends paid", "cash-flow",
-     ["PaymentsOfDividends", "PaymentsOfDividendsCommonStock", "ifrs-full:DividendsPaidClassifiedAsFinancingActivities"], None),
+     ["PaymentsOfDividends", "PaymentsOfDividendsCommonStock", "PaymentsOfOrdinaryDividends",
+      "ifrs-full:DividendsPaidClassifiedAsFinancingActivities"], None),
     ("share-repurchases", "Shares repurchased", "cash-flow", ["PaymentsForRepurchaseOfCommonStock"], None),
 ]
 

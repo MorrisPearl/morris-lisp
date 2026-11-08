@@ -6400,6 +6400,7 @@ The Python files:
 | `lisp_financial_model.py` | `three-statement-model`: a company's three statements from the SEC, forecast by formulas, in a new Google spreadsheet |
 | `lisp_financial_bank.py` | The bank model of `three-statement-model`: loans, deposits, interest rates, credit losses |
 | `lisp_financial_insurer.py` | The property and casualty insurer model of `three-statement-model`: premiums, loss and expense ratios, float |
+| `lisp_financial_asset_manager.py` | The asset manager model of `three-statement-model`: revenue from assets under management and a fee rate |
 | `lisp_sec_segments.py` | A company's revenue by segment, read from the tagged numbers of its 10-Ks and 10-Qs (for `three-statement-model`) |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-option-chain`, `schwab-orders`, `schwab-spread-order`, `schwab-multi-leg-order`, ...: your Schwab accounts |
 | `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `bootstrap-days`, `volatility-model`, `volatility-history`, `volatility-forecast`, `option-value`, `option-payoffs`: simulated prices of an investment, with its volatility starting at today's if asked, and what options on it are worth |

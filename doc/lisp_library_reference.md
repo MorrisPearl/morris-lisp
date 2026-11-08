@@ -2904,7 +2904,7 @@ It needs what `sec-income-statement` and `google-sheet` need: the credentials fi
 Google sign-in (`(google-login creds)`, once; "Google Sheets" says how to set it up). The sheet is made in your own
 Drive, and shared with no one.
 
-#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :segments s :title t])`
+#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :aum a :segments s :title t])`
 Makes the spreadsheet and returns its address, as a string.
 
 - `:period` is `"annual"` (the default) or `"quarterly"`.
@@ -2913,11 +2913,16 @@ Makes the spreadsheet and returns its address, as a string.
   at least two years -- or five quarters, since a quarter's growth is measured against the same quarter a year before --
   of history.
 - `:kind` is what kind of company it is, which decides the lines of the statements and what drives the forecast:
-  `"general"` (an ordinary company, described first below), `"bank"`, or `"insurer"` (a property and casualty insurer),
-  both described under "Banks and insurers" below. `"auto"`, the default, chooses by the SEC's industry code for the company
-  (national and state commercial banks and savings institutions are banks; fire, marine, and casualty insurers and surety
-  insurers are insurers; everything else is general), and models it as an ordinary company if the SEC's facts lack what
-  the other kind needs, saying why on the Notes tab. Asking for a kind is an error if its lines are missing.
+  `"general"` (an ordinary company, described first below), `"bank"`, `"insurer"` (a property and casualty insurer),
+  or `"asset-manager"`, the last three described under "Banks, insurers, and asset managers" below. `"auto"`, the default,
+  chooses by the SEC's industry code for the company (national and state commercial banks and savings institutions are
+  banks; fire, marine, and casualty insurers and surety insurers are insurers; investment advisers are asset managers;
+  everything else is general; and a company is an asset manager if you give `:aum`), and models it as an ordinary company
+  if the SEC's facts lack what the other kind needs, saying why on the Notes tab. Asking for a kind is an error if its
+  lines are missing.
+- `:aum`, for an asset manager, is its assets under management in billions at the end of each period, oldest first, ending
+  with the latest period reported, such as `(list 8590 10010 11550)`. They are not in the SEC's data, so you type them from the
+  annual reports. If you give fewer than there are periods, the history is cut to the periods you have.
 - `:segments`, for an ordinary company, is how revenue is forecast. `"auto"` (the default) is by **business segment**, if the company reports
   them, or else by **product or service**, and if it has neither (or they can't be found for every period) by its total
   revenue alone, and the Notes tab says why. `"business"`, `"product"`, or `"geography"` asks for that breakdown, and it is
@@ -2968,8 +2973,9 @@ the test that the formulas fit together. If you add a line of your own, the chec
 **The assumptions' starting values** are guesses from the reported periods, so that the sheet works as it comes: the last
 period's value (for quarters, the average of the last four), kept within limits so that one extraordinary year is not
 assumed to go on for ever -- growth between -20% and +20% a period, the tax rate between 0 and 40%, and so on (they are named at
-the top of `lisp_financial_model.py`). They are guesses, not forecasts: **replace them**. In particular, borrowing
-starts at 0 whatever the company has been doing, and the payout percentages are the history's, so a company
+the top of `lisp_financial_model.py`). A payout is lumpy -- a company buys back no stock for years and then a great deal in
+one -- so the dividend and buyback percentages, for years, are the average of the last three. They are guesses, not
+forecasts: **replace them**. In particular, borrowing starts at 0 whatever the company has been doing, so a company
 that has been borrowing to fund its buybacks will show its cash piling up (or, if it spends more than it earns, going negative:
 nothing in the model borrows for you).
 
@@ -2995,14 +3001,32 @@ The names come from the company's tags (`Rest Of Asia Pacific`), not its labels;
 
 **Limits.** The model is a way of working with a company's numbers, not a prediction. It has one line for debt and no minimum
 cash, so it does not borrow when cash runs out; it does not know about leases, taxes paid later than they are owed, acquisitions,
-or minority interests (the equity line includes them, and net income is the company's); and depreciation on the cash flow statement
-includes the amortization of intangibles but here all reduces plant and equipment, so plant can shrink faster than it should if
-the company amortizes a lot. A company outside the US that files only annual reports can have only annual models. A conglomerate that
+or minority interests (the equity line includes them, and net income is the company's); accrued liabilities, deferred revenue,
+and the other current assets and liabilities stay as they were, though a service company's grow with its revenue (so its cash
+flow is a little understated); and a company that acquires others (Accenture, Equifax) has goodwill that stays as it was and
+intangibles that wear away, because the cash spent on acquisitions is an amount you type, 0 to begin with. A company outside the US that files only annual reports can have only annual models. A conglomerate that
 is part insurer, part something else (Berkshire Hathaway: insurance, a railroad, utilities, manufacturing, retail)
 is modeled as an ordinary company, by whatever segments its filings give (see below); a model that is half insurer
 and half railroad would need its insurance and the rest apart, which the SEC's summary of its numbers does not have.
 
-#### Banks and insurers
+#### Service companies
+
+A company with little inventory and little plant -- Accenture, Equifax, Paychex, Cognizant -- is an ordinary company to the model, and
+the lines that matter to it work as they do for anyone: revenue (by segment if reported), receivables as days of revenue,
+a margin, taxes, payouts. What such companies report differently has its own handling:
+
+- **Costs.** Many report no cost of revenue (or one that leaves out depreciation: `CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization`),
+  and *selling and marketing* and *general and administrative* apart; the model finds the first and adds the other two
+  to make selling, general and administrative. A company with no cost of revenue has its payables (and inventory)
+  as days of **revenue**, as the Assumptions tab says; otherwise payables would be days of nothing and fall to zero.
+- **Depreciation and amortization.** Where the company reports the amortization of intangibles apart
+  (`AmortizationOfIntangibleAssets`) it is taken off the **intangibles**, as a percentage of last period's, and only the
+  depreciation comes off the plant; so a company that buys other companies does not see its plant shrink for the
+  amortization of the intangibles it bought. Depreciation is also never more than the plant there is (plant stays at 0 or more).
+- **Payouts.** Dividends are found under the tags companies use (`PaymentsOfDividends`, `...CommonStock`, `PaymentsOfOrdinaryDividends`),
+  and the payout assumptions are the average of three years, not the last, so a year of heavy buybacks does not become the plan.
+
+#### Banks, insurers, and asset managers
 
 A bank does not sell a product. It borrows, mostly from depositors, lends for more, and keeps the difference less its
 losses; an insurer collects premiums now, pays claims later, and invests the "float" in between. For them, revenue
@@ -3043,6 +3067,24 @@ unearned premiums, total assets, and equity. Travelers, Chubb, Progressive, Hart
 (whose losses are not tagged for every year) and Berkshire Hathaway (whose insurance is in one set of statements with its
 railroad, utilities, and manufacturing, without these lines) do not, and are modeled as ordinary companies. Life and health
 insurers have other lines (policy benefits, annuities), and are not covered.
+
+**An asset manager** (`:kind "asset-manager"`, or `"auto"` for an investment adviser, or whenever you give `:aum`;
+`lisp_financial_asset_manager.py`) earns a small fee on a very large amount of other people's money, so its model is driven
+by **assets under management (AUM)**, not by revenue:
+
+| | |
+|---|---|
+| AUM | At the end of each period, in billions. The reported periods' are the ones you gave (`:aum`), in blue; each forecast period's is last period's times one plus the **growth of AUM** you assume, which is the market's appreciation plus the net money the clients put in (flows) -- the one number that matters most, and the one nobody knows. To see the two apart, type a formula in the cell, such as `=0.06+0.02`. |
+| Revenue | The **fee rate**, in basis points of average AUM (a year's), times the average of the AUM at the start and the end of the period. The Assumptions tab works the fee rate out for the periods reported (T. Rowe Price: about 45 basis points) so you can see it drift down as money moves to index funds; the forecast starts from the last one. The growth of revenue is then a result. |
+| The rest | Operating expenses (compensation, distribution, general and administrative) are percentages of revenue, so the operating margin is what you assume; the rest is the ordinary company's: receivables and payables as days of revenue, plant, intangibles, interest, taxes, payouts. |
+
+The SEC's summary of a company's numbers has no AUM (T. Rowe Price tagged it until 2022; BlackRock and the others never did),
+and in the filings it is in the text of the annual report, not tagged; so the program asks you for it. Two cautions. Interest
+and other income is a yield on last period's cash, as for any company, though an asset manager's is mostly the return on
+the investments it holds (seed capital, consolidated funds), which it does not model; look at that line. And a company
+whose SEC filings changed hands -- BlackRock became a new registrant in 2024, so the SEC has only two years under its
+ticker -- has only the history there is. Alternative managers (Blackstone, KKR), whose income is performance fees and
+carried interest, are not what this model is for.
 
 **Berkshire Hathaway and segments that overlap.** Berkshire reports its revenue several ways, and the members overlap: its
 "Insurance and Other" contains the insurance group, and the manufacturing, McLane, and service and retailing businesses,

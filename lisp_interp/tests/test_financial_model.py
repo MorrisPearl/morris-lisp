@@ -700,3 +700,118 @@ class TestThreeStatementModelBuiltin(LispTestCase):
         self.assertLispError('(three-statement-model creds "ABC" :history 0)', ":history is a whole number of periods")
         self.assertLispError('(three-statement-model creds "ABC" :forecast 2.5)', ":forecast is a whole number of periods")
         self.assertLispError('(three-statement-model creds "ABC" :years 5)', ":years isn't an option")
+
+
+# ---------------------------------------------------------------------------
+# Service companies: little inventory, costs and dividends tagged their own ways, acquired intangibles
+# ---------------------------------------------------------------------------
+
+def changed_facts(remove=(), rename=None, add=None):
+    """ABC Inc.'s facts with some concepts taken out, renamed (old -> new), or added (new -> the amount of a year,
+    in millions, as a function of its growth since 2021, for the three years)."""
+    facts = made_up_facts()
+    taxonomy = facts["facts"]["us-gaap"]
+    for concept in remove:
+        del taxonomy[concept]
+    for old, new in (rename or {}).items():
+        taxonomy[new] = taxonomy.pop(old)
+    for concept, (kind, amount) in (add or {}).items():
+        items = []
+        for year in (2021, 2022, 2023):
+            fact = {"val": amount(1.1 ** (year - 2021)) * MILLION, "form": "10-K", "filed": "%d-02-15" % (year + 1),
+                    "fy": year, "fp": "FY", "accn": "k%d" % year}
+            if kind == "flow":
+                fact.update(start="%d-01-01" % year, end="%d-12-31" % year)
+            else:
+                fact["end"] = "%d-12-31" % year
+            items.append(fact)
+        taxonomy[concept] = {"label": "", "units": {"USD": items}}
+    return facts
+
+
+def build_from(facts, period="annual", history=3, forecast=3):
+    return fm.build_model(facts, "ABC", period, history, forecast, "test", None)
+
+
+class TestServiceCompanies(LispTestCase):
+
+    def test_a_company_with_no_cost_of_revenue_has_payables_that_follow_revenue_not_zero(self):
+        model = build_from(changed_facts(remove=["CostOfRevenue"]))
+        sheets = evaluated(model)
+        self.assertEqual(model.assumptions["payable-days"][1], "Payables, days of revenue")
+        days = value(sheets, model, "Assumptions", "payable-days", 3)
+        self.assertAlmostEqual(days, 70 * 1.21 / (1000 * 1.21) * 365)
+        self.assertAlmostEqual(value(sheets, model, "Balance Sheet", "accounts-payable", 3),
+                               70 * 1.1 ** 3 * 1.0, places=6)
+        for i in range(6):
+            self.assertAlmostEqual(value(sheets, model, "Balance Sheet", "check", i), 0, places=6)
+
+    def test_a_company_with_a_cost_of_revenue_has_days_of_it(self):
+        model = build()
+        self.assertEqual(model.assumptions["payable-days"][1], "Payables, days of cost of revenue")
+
+    def test_the_cost_of_services_excluding_depreciation_is_the_cost_of_revenue(self):
+        model = build_from(changed_facts(rename={"CostOfRevenue": "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization"}))
+        self.assertAlmostEqual(model.h.cost_of_revenue[1], 660)
+        self.assertEqual(model.reported.sources["cost-of-revenue"],
+                         ["CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization"])
+
+    def test_selling_and_marketing_with_general_and_administrative_are_selling_general_and_administrative(self):
+        model = build_from(changed_facts(remove=["SellingGeneralAndAdministrativeExpense"],
+                                         add={"SellingAndMarketingExpense": ("flow", lambda g: 70 * g),
+                                              "GeneralAndAdministrativeExpense": ("flow", lambda g: 50 * g)}))
+        sheets = evaluated(model)
+        for i, grow in enumerate((1.0, 1.1, 1.21)):
+            self.assertAlmostEqual(value(sheets, model, "Income Statement", "selling", i), 120 * grow)
+            self.assertAlmostEqual(value(sheets, model, "Income Statement", "operating-income", i), 200 * grow)
+
+    def test_dividends_tagged_as_ordinary_dividends_are_found(self):
+        model = build_from(changed_facts(rename={"PaymentsOfDividends": "PaymentsOfOrdinaryDividends"}))
+        self.assertEqual(model.h.dividends, [-25.0] * 3)
+
+    def test_depreciation_and_the_amortization_of_intangibles_reported_apart_are_added_for_the_total(self):
+        facts = changed_facts(remove=["DepreciationDepletionAndAmortization"],
+                              add={"Depreciation": ("flow", lambda g: 30 * g), "AmortizationOfIntangibleAssets": ("flow", lambda g: 10 * g),
+                                   "IntangibleAssetsNetExcludingGoodwill": ("balance", lambda g: 100.0)})
+        model = build_from(facts)
+        sheets = evaluated(model)
+        for i, grow in enumerate((1.0, 1.1, 1.21)):
+            self.assertAlmostEqual(value(sheets, model, "Cash Flow", "depreciation", i), 30 * grow)
+            self.assertAlmostEqual(value(sheets, model, "Cash Flow", "amortization", i), 10 * grow)
+            # operating cash flow is as reported: net income + depreciation and amortization + stock compensation - 25
+            self.assertAlmostEqual(value(sheets, model, "Cash Flow", "operating-cash-flow", i),
+                                   value(sheets, model, "Income Statement", "net-income", i) + 40 * grow + 15 * grow - 25)
+
+    def test_amortization_comes_off_the_intangibles_and_depreciation_off_the_plant(self):
+        facts = changed_facts(remove=["DepreciationDepletionAndAmortization"],
+                              add={"Depreciation": ("flow", lambda g: 30 * g), "AmortizationOfIntangibleAssets": ("flow", lambda g: 10 * g),
+                                   "IntangibleAssetsNetExcludingGoodwill": ("balance", lambda g: 100.0)})
+        model = build_from(facts)
+        sheets = evaluated(model)
+        rate = value(sheets, model, "Assumptions", "amortization-rate", 3)
+        self.assertAlmostEqual(rate, 12.1 / 100)                          # 2023's amortization on 2022's intangibles
+        self.assertAlmostEqual(value(sheets, model, "Cash Flow", "amortization", 3), rate * 100)
+        self.assertAlmostEqual(value(sheets, model, "Balance Sheet", "intangible-assets", 3), 100 - rate * 100)
+        i = 3
+        self.assertAlmostEqual(value(sheets, model, "Balance Sheet", "property-plant-equipment", i),
+                               value(sheets, model, "Balance Sheet", "property-plant-equipment", i - 1)
+                               - value(sheets, model, "Cash Flow", "capital-expenditures", i)
+                               - value(sheets, model, "Cash Flow", "depreciation", i))
+        for i in range(6):
+            self.assertAlmostEqual(value(sheets, model, "Balance Sheet", "check", i), 0, places=6)
+
+    def test_a_company_that_reports_no_amortization_apart_has_none_and_keeps_its_intangibles(self):
+        model = build()
+        sheets = evaluated(model)
+        self.assertAlmostEqual(value(sheets, model, "Cash Flow", "amortization", 3), 0)
+        self.assertAlmostEqual(value(sheets, model, "Balance Sheet", "intangible-assets", 3),
+                               value(sheets, model, "Balance Sheet", "intangible-assets", 2))
+
+    def test_a_payouts_guess_for_years_is_the_average_of_the_last_three_not_the_last_one(self):
+        model = build()
+        sheets = evaluated(model)
+        history = [value(sheets, model, "Assumptions", "buyback-payout", i) for i in range(3)]
+        self.assertGreater(abs(history[2] - sum(history) / 3), 1e-4)
+        self.assertAlmostEqual(value(sheets, model, "Assumptions", "buyback-payout", 3), sum(history) / 3)
+        # (other assumptions are the last period's)
+        self.assertAlmostEqual(value(sheets, model, "Assumptions", "tax-rate", 3), value(sheets, model, "Assumptions", "tax-rate", 2))

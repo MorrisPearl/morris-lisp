@@ -504,7 +504,8 @@ class TestWhatTheSECHas(LispTestCase):
         self.assertIn("Losses and loss adjustment expense", str(caught.exception))
 
     def test_every_kind_is_known_and_an_ordinary_company_is_the_default(self):
-        self.assertEqual(sorted(fm.templates()), ["bank", "general", "insurer"])
+        self.assertEqual(sorted(fm.templates()), ["asset-manager", "bank", "general", "insurer"])
+        self.assertEqual(fm.kind_for_industry(6282), "asset-manager")
         self.assertEqual(fm.kind_for_industry(6021), "bank")
         self.assertEqual(fm.kind_for_industry(6331), "insurer")
         self.assertEqual(fm.kind_for_industry(3571), "general")
