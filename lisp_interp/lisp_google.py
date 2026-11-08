@@ -517,6 +517,7 @@ CELL_STYLES = {
     "total": {"textFormat": {"bold": True}, "borders": {"top": BLACK_LINE}},
     "data": {"textFormat": {"foregroundColor": BLUE}},                      # a number typed in
     "input": {"textFormat": {"foregroundColor": BLUE}, "backgroundColor": PALE_YELLOW},     # one to change
+    "input-formula": {"backgroundColor": PALE_YELLOW},                      # one to change that is a formula: black
     "link": {"textFormat": {"foregroundColor": GREEN}},                     # a cell that is another tab's
     "forecast": {"backgroundColor": PALE_GREY},
     "wrap": {"wrapStrategy": "WRAP", "verticalAlignment": "TOP"},

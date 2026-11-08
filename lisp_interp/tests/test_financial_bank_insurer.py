@@ -307,8 +307,8 @@ class TestBankModel(ModelTestCase):
     def test_the_colors_say_what_kind_of_number_each_is(self):
         tab = self.model.sheets()[0]["cells"]
         row = self.model.layouts["Assumptions"].row_of["loan-growth"]
-        self.assertIn("input", tab[row - 1][4][1])                  # a forecast assumption: typed over
-        self.assertNotIn("input", tab[row - 1][2][1])               # a reported period's: a formula
+        self.assertIn("input-formula", tab[row - 1][4][1])          # a forecast assumption: a formula to type over
+        self.assertNotIn("input-formula", tab[row - 1][2][1])       # a reported period's: a formula, from the statements
 
     def test_the_notes_describe_a_banks_forecast_and_where_the_numbers_came_from(self):
         notes = "\n".join(self.model.sources_for_notes())

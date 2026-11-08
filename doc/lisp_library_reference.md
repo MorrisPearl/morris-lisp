@@ -2936,14 +2936,23 @@ forecast), when it ends, and whether it is reported or forecast.
 
 | Tab | What it has |
 |---|---|
-| Assumptions | One row for each assumption. In the reported periods it is worked out from the statements, so you can see what happened; in the forecast it is a number for you to type over, in blue on yellow. |
+| Assumptions | One row for each assumption. In the reported periods it is worked out from the statements, so you can see what happened; in the forecast it is a **formula** on a yellow background, for you to type over (see below). |
 | Income Statement | Revenue (by segment, if any), cost of revenue, gross profit, research and development, selling, general and administrative, other operating expenses, operating income, interest, other income, taxes, net income, shares, and earnings per share. |
 | Balance Sheet | Cash, receivables, inventory, plant and equipment, goodwill, intangibles, payables, debt, equity, with their totals; and, at the bottom, a **check** -- assets less liabilities and equity -- that is 0 in every period. |
 | Cash Flow | Net income, depreciation, stock compensation, the changes in receivables, inventory, and payables, cash from operations; capital expenditures, cash from investing; borrowing, dividends, buybacks, cash from financing; the net change in cash, and the cash at the end. |
 | Notes | How to read the sheet, how the forecast works, which of the company's XBRL tags each reported line came from, and which lines it didn't report. |
 
-**Colors,** as in most models: **blue** is a number typed in -- reported by the company, or an assumption, which is also
-on **yellow**; **black** is a formula; **green** is a link to another tab.
+**Colors,** as in most models: **blue** is a number typed in -- reported by the company, or an assumption; **black** is a
+formula; **green** is a link to another tab. A cell on **yellow** is an assumption for you to change: black if it is a formula
+(most are), blue if it is a number.
+
+**The forecast assumptions are formulas.** In the first forecast period an assumption's cell is a formula of the reported
+periods that starts the forecast -- the last period's value, within the limits (`=MIN(MAX(F12,-0.2),0.2)`), or the average
+of the last year's quarters, or of the last three years for a payout (`=MIN(MAX(AVERAGE(D30,E30,F30),0),1.5)`) -- so you can
+see where it came from. In every later forecast period it is the **period before's** (`=G12`), so changing one period
+changes all the periods after it, until one of them has a number or a formula of its own. Type over any cell: a number, or
+a formula that depends on the period before (`=G12*0.9` for a growth rate that fades a tenth each year; `=G12-0.01` for a
+margin that slips a point).
 
 **How the forecast works,** in the order the formulas depend on each other. Nothing refers to itself: interest uses
 the debt and cash at the *end of the period before* (so cash is "invested at the end of the period"), and so

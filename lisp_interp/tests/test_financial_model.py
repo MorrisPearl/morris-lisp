@@ -272,11 +272,53 @@ class TestModelFromReportedNumbers(LispTestCase):
         self.assertNotIn("data", revenue_row[4][1])                 # forecast: a formula
         assumptions = self.model.layouts["Assumptions"].row_of
         growth_row = tabs["Assumptions"][assumptions["growth"] - 1]
-        self.assertNotIn("input", growth_row[3][1])                 # reported: a formula, from the statements
-        self.assertIn("input", growth_row[4][1])                    # forecast: for you to change
+        self.assertNotIn("input-formula", growth_row[3][1])         # reported: a formula, from the statements
+        self.assertIn("input-formula", growth_row[4][1])            # forecast: a formula, black on yellow, for you to change
+        self.assertNotIn("input", growth_row[4][1])
+        days_row = tabs["Assumptions"][assumptions["days"] - 1]
+        self.assertIn("input", days_row[4][1])                      # (a plain number for you to change: blue on yellow)
         link = tabs["Cash Flow"][self.model.layouts["Cash Flow"].row_of["net-income"] - 1][1]
         self.assertIn("link", link[1])                              # a link to the income statement
         self.assertTrue(link[0].startswith("='Income Statement'!"))
+
+    def test_forecast_assumptions_are_formulas_the_first_from_the_history_and_the_rest_from_the_period_before(self):
+        cells = self.model.sheets()[0]["cells"]
+        row = self.model.layouts["Assumptions"].row_of
+
+        def formulas(key):
+            return [cell[0] if cell else None for cell in cells[row[key] - 1][1:]]
+        # growth: the last period's, within the limits; then the period before's
+        self.assertEqual(formulas("growth")[3:], ["=MIN(MAX(D%d,-0.2),0.2)" % row["growth"], "=E%d" % row["growth"],
+                                                  "=F%d" % row["growth"]])
+        # a payout: the average of the last three years, within the limits
+        self.assertEqual(formulas("buyback-payout")[3], "=MIN(MAX(AVERAGE(B{0},C{0},D{0}),0),1.5)".format(row["buyback-payout"]))
+        # no limits: the last period's
+        self.assertEqual(formulas("receivable-days")[3], "=D%d" % row["receivable-days"])
+        self.assertEqual(formulas("net-borrowing")[3:], [0.0, "=E%d" % row["net-borrowing"], "=F%d" % row["net-borrowing"]])
+
+    def test_changing_a_forecast_assumption_changes_the_later_periods_too_unless_they_are_changed(self):
+        sheets = evaluated(self.model)
+        set_input(sheets, self.model, "Assumptions", "growth", 3, 0.30)
+        for i in (3, 4, 5):
+            self.assertAlmostEqual(value(sheets, self.model, "Assumptions", "growth", i), 0.30)
+        set_input(sheets, self.model, "Assumptions", "growth", 4, 0.0)           # (a number over the formula)
+        self.assertAlmostEqual(value(sheets, self.model, "Assumptions", "growth", 5), 0.0)
+        self.assertAlmostEqual(value(sheets, self.model, "Income Statement", "revenue", 5), value(sheets, self.model, "Income Statement", "revenue", 4))
+        for i in range(6):
+            self.assertAlmostEqual(value(sheets, self.model, "Balance Sheet", "check", i), 0, places=6)
+
+    def test_an_assumption_a_period_can_depend_on_the_period_before_in_a_formula_of_its_own(self):
+        sheets = evaluated(self.model)
+        row = self.model.layouts["Assumptions"].row_of["growth"]
+        sheets.cells["Assumptions"][(row - 1, 5)] = "=E%d*0.5" % row           # growth halves each year
+        sheets.worked_out.clear()
+        self.assertAlmostEqual(value(sheets, self.model, "Assumptions", "growth", 4), 0.05)
+
+    def test_quarterly_assumptions_start_from_the_average_of_the_last_four_quarters(self):
+        model = build(period="quarterly", history=6, forecast=2)
+        row = model.layouts["Assumptions"].row_of["tax-rate"]
+        first = model.sheets()[0]["cells"][row - 1][7][0]
+        self.assertEqual(first, "=MIN(MAX(AVERAGE(D{0},E{0},F{0},G{0}),0),0.4)".format(row))
 
     def test_a_forecast_period_without_enough_history_is_an_error(self):
         facts = made_up_facts(years=(2023,))

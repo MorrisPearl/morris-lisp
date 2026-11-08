@@ -12,9 +12,11 @@ tabs:
                      assumption is worked out from the statements (revenue
                      growth, the gross margin, the days of sales in
                      receivables, ...) so that you can see what happened; for
-                     the periods to come it is a number for you to type over,
-                     in blue on yellow, which starts out as a guess from the
-                     history so that the sheet works as it comes.
+                     the periods to come it is a formula, on yellow, for you
+                     to type over: in the first period a formula of the
+                     history (the last period's value, say), in each later
+                     period the period before's, so that the sheet works as
+                     it comes and changing one period changes the rest.
   Income Statement
   Balance Sheet
   Cash Flow
@@ -337,6 +339,7 @@ class Line:
         self.key, self.label, self.number_format = key, label, number_format
         self.label_style = tuple(label_style)
         self.cell = cell                      # a function of the period's index: its number or formula, or None
+        self.editable = False                 # an assumption: its forecast cells are yellow, for you to change
 
 
 class SheetLayout:
@@ -514,18 +517,53 @@ class Model:
                      lambda i: sec("-" + cf("repurchases", i), inc("net-income", i))))
         return rows
 
+    def guess_positions(self, series, smoothed=False):
+        """Which periods the forecast's starting value for an assumption comes from: the last one with a value, or
+        the last year's quarters (the last few years, if `smoothed`)."""
+        known = [i for i, v in enumerate(series) if v is not None]
+        if self.period == "quarterly":
+            return known[-QUARTER_AVERAGE:]
+        return known[-SMOOTHED_YEARS:] if smoothed else known[-1:]
+
     def default_guess(self, series, limits, smoothed=False):
         """The forecast's starting value for an assumption: the last period's, or the average of the last
         year's quarters (of the last few years, if `smoothed`); within the limits; 0 if the history has none."""
-        known = [v for v in series if v is not None]
-        if not known:
+        recent = [series[i] for i in self.guess_positions(series, smoothed)]
+        if not recent:
             return 0.0
-        if self.period == "quarterly":
-            recent = known[-QUARTER_AVERAGE:]
-        else:
-            recent = known[-SMOOTHED_YEARS:] if smoothed else known[-1:]
         guess = sum(recent) / len(recent)
         return min(max(guess, limits[0]), limits[1])
+
+    def assumption_cells(self, key, series, limits, smoothed, history_cell):
+        """The cells of an assumption's row, as a function of the period's index. A reported period's is worked out
+        from the statements (`history_cell`). The first forecast period's is a formula of the reported periods that
+        starts the forecast -- the last period's value, or the average of the last year's quarters (or of the last
+        years), within the limits -- and each later period's is the period before's. All can be typed over."""
+        positions = self.guess_positions(series, smoothed)
+
+        def cell(i):
+            if not self.is_forecast(i):
+                return history_cell(i)
+            if i > self.history_count:
+                return "=" + self.ref(ASSUMPTIONS, key, i - 1, ASSUMPTIONS)
+            if not positions:
+                return 0.0
+            refs = [self.ref(ASSUMPTIONS, key, j, ASSUMPTIONS) for j in positions]
+            guess = refs[0] if len(refs) == 1 else "AVERAGE(%s)" % ",".join(refs)
+            if limits != NO_LIMITS:
+                guess = "MIN(MAX(%s,%s),%s)" % (guess, "%.10g" % limits[0], "%.10g" % limits[1])
+            return "=" + guess
+        return cell
+
+    def held_cells(self, key, first, history_cell):
+        """The cells of an assumption that starts at `first` (a number), then stays what the period before had."""
+        def cell(i):
+            if not self.is_forecast(i):
+                return history_cell(i)
+            if i > self.history_count:
+                return "=" + self.ref(ASSUMPTIONS, key, i - 1, ASSUMPTIONS)
+            return first
+        return cell
 
     def cost_base(self):
         """What inventory and payables are days of: (the income statement line, its history, its name) -- the cost
@@ -535,6 +573,8 @@ class Model:
         return "revenue", self.h.revenue, "revenue"
 
     def assumptions_layout(self):
+        lines = [Line("days", "Days in the period", "decimal", (), lambda i: self.days_in_period)]
+        lines.append(None)
         lines.append(Line("revenue-header", "Revenue", "money", ("section",), None))
         if self.segments:
             for number, (name, values) in enumerate(self.segments):
@@ -548,51 +588,56 @@ class Model:
         lines.append(Line("financing-header", "Interest, shares, and payouts", "money", ("section",), None))
         for key in ("interest-rate", "interest-yield", "share-growth", "dividend-payout", "buyback-payout"):
             lines.append(self.main_line_from_series(key))
-        lines.append(Line("net-borrowing", "Debt borrowed (repaid), millions", "money", (), self.net_borrowing_cell))
+        lines.append(self.net_borrowing_line())
         lines.append(None)
         lines.append(Line("cash-header", "Cash flow and the balance sheet", "money", ("section",), None))
         for key in ("stock-compensation-percent", "depreciation-percent", "amortization-rate",
                     "capital-expenditures-percent", "receivable-days", "inventory-days", "payable-days"):
             lines.append(self.main_line_from_series(key))
-
-        lines = [Line("days", "Days in the period", "decimal", (), lambda i: self.days_in_period)]
-        lines.append(None)
-
         return SheetLayout(ASSUMPTIONS, "Assumptions", lines)
 
     def main_line_from_series(self, key):
-        """The line for an assumption: formulas from the statements for the history, a guess for the forecast."""
+        """The line for an assumption: formulas from the statements for the history, and for the forecast a formula
+        that starts from the history and then follows the period before."""
         _, label, number_format, series, limits, formula = self.assumptions[key]
-        guess = self.default_guess(series, limits, key in SMOOTHED_ASSUMPTIONS)
-        return Line(key, label, number_format, (), lambda i: guess if self.is_forecast(i) else formula(i))
+        line = Line(key, label, number_format, (),
+                    self.assumption_cells(key, series, limits, key in SMOOTHED_ASSUMPTIONS, formula))
+        line.editable = True
+        return line
 
     def total_growth_line(self):
         """With revenue by segment, the growth of the total is a result, worked out in every period."""
         _, label, number_format, _, _, formula = self.assumptions["growth"]
         return Line("growth", label + ", as the segments add up", number_format, (), formula)
 
-    def net_borrowing_cell(self, i):
-        if self.is_forecast(i):
-            return 0.0
-        if i == 0:
-            return None
+    def net_borrowing_line(self):
+        """Debt borrowed (repaid), an amount: what it was in the periods reported; 0 to begin with, then what it was before."""
         bal = self.refs(BALANCE, ASSUMPTIONS)
-        return "=(%s+%s)-(%s+%s)" % (bal("current-debt", i), bal("long-term-debt", i),
-                                     bal("current-debt", i - 1), bal("long-term-debt", i - 1))
+
+        def history(i):
+            if i == 0:
+                return None
+            return "=(%s+%s)-(%s+%s)" % (bal("current-debt", i), bal("long-term-debt", i),
+                                        bal("current-debt", i - 1), bal("long-term-debt", i - 1))
+        line = Line("net-borrowing", "Debt borrowed (repaid), millions", "money", (),
+                    self.held_cells("net-borrowing", 0.0, history))
+        line.editable = True
+        return line
 
     def segment_growth_line(self, number, name, values):
         inc = self.refs(INCOME, ASSUMPTIONS)
         series = [safe_ratio(values[i], values[i - self.lag]) if i >= self.lag else None for i in range(len(values))]
         series = [None if s is None else s - 1 for s in series]
-        guess = self.default_guess(series, GROWTH_LIMITS)
+        key = "segment-growth-%d" % number
 
-        def cell(i):
-            if self.is_forecast(i):
-                return guess
+        def history(i):
             if i < self.lag:
                 return None
             return "=IFERROR(%s/%s-1,0)" % (inc("segment-%d" % number, i), inc("segment-%d" % number, i - self.lag))
-        return Line("segment-growth-%d" % number, "%s, growth" % name, "percent", (), cell)
+        line = Line(key, "%s, growth" % name, "percent", (),
+                    self.assumption_cells(key, series, GROWTH_LIMITS, False, history))
+        line.editable = True
+        return line
 
     # --- Income statement
 
@@ -825,6 +870,8 @@ class Model:
         if is_formula(value):
             if is_plain_link(value):
                 styles.append("link")
+            elif line.editable and self.is_forecast(i):
+                styles.append("input-formula")          # an assumption that is a formula: black on yellow
         elif value is not None:
             styles.append("input" if self.is_forecast(i) else "data")
         styles += [style for style in line.label_style if style in ("total", "bold", "italic")]
@@ -864,9 +911,9 @@ class Model:
         """The Notes tab: how to read the sheet, then the concept each reported number came from."""
         notes = [
             "How to read this sheet",
-            "Blue numbers are typed in: reported by the company (from its filings with the SEC) or, on a yellow background, assumptions for you to change.",
+            "Blue numbers are typed in: reported by the company (from its filings with the SEC) or assumptions for you to change.",
             "Black numbers are formulas. Green ones are links to another tab. Grey columns are forecast periods.",
-            "Change the yellow cells on the Assumptions tab; everything to the right of the reported periods follows. The Balance Sheet's check line should read 0 in every period.",
+            "Yellow cells on the Assumptions tab are the assumptions. In the first forecast period each is a formula of the reported periods (the last period's value, or an average, within limits); in each later period it is the period before's. Type a number, or a formula that depends on the period before (=G12*0.9), over any of them; everything to the right follows. The Balance Sheet's check line should read 0 in every period.",
             "Amounts are in millions of %s, except per-share amounts." % self.reported.currency,
             "",
             "How the forecast works",

@@ -70,8 +70,8 @@ class TestAssetManagerModel(ModelTestCase):
         set_input(self.sheets, self.model, "Assumptions", "aum-growth", 3, 0.30)
         set_input(self.sheets, self.model, "Assumptions", "fee-rate", 4, 10.0)
         self.assertAlmostEqual(self.v("Assumptions", "aum", 3), 6050 * 1.3)
-        self.assertAlmostEqual(self.v("Assumptions", "aum", 4), 6050 * 1.3 * 1.1)
-        self.assertAlmostEqual(self.v("Income Statement", "revenue", 4), 10.0 * (6050 * 1.3 + 6050 * 1.3 * 1.1) / 2 / 10)
+        self.assertAlmostEqual(self.v("Assumptions", "aum", 4), 6050 * 1.3 * 1.3)       # (the growth goes on, being the period before's)
+        self.assertAlmostEqual(self.v("Income Statement", "revenue", 4), 10.0 * (6050 * 1.3 + 6050 * 1.3 * 1.3) / 2 / 10)
         for i in range(6):
             self.assertAlmostEqual(self.v("Balance Sheet", "check", i), 0, places=6)
 

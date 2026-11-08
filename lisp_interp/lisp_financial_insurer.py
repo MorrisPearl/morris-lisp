@@ -235,8 +235,10 @@ class InsurerModel(model.Model):
         lines.append(Line("investment-header", "Investments", "money", ("section",), None))
         for assumption in ("investment-yield", "realized-gains"):
             lines.append(self.main_line_from_series(assumption))
-        lines.append(Line("invest-share", "Share of cash flow after payouts that is invested", "percent", (),
-                          lambda i: 1.0 if self.is_forecast(i) else None))
+        invest_share = Line("invest-share", "Share of cash flow after payouts that is invested", "percent", (),
+                            self.held_cells("invest-share", 1.0, lambda i: None))
+        invest_share.editable = True
+        lines.append(invest_share)
         lines.append(None)
         section("balance-header", "The balance sheet",
                 ["loss-reserve-years", "unearned-percent", "receivable-days", "reinsurance-percent",
@@ -244,16 +246,16 @@ class InsurerModel(model.Model):
         lines.append(Line("financing-header", "Debt, shares, and payouts", "money", ("section",), None))
         for assumption in ("interest-rate", "share-growth", "dividend-payout", "buyback-payout"):
             lines.append(self.main_line_from_series(assumption))
-        lines.append(Line("net-borrowing", "Debt borrowed (repaid), millions", "money", (), self.net_borrowing_cell))
+        lines.append(self.net_borrowing_line())
         return SheetLayout(ASSUMPTIONS, "Assumptions", lines)
 
-    def net_borrowing_cell(self, i):
-        if self.is_forecast(i):
-            return 0.0
-        if i == 0:
-            return None
+    def net_borrowing_line(self):
         bal = self.refs(BALANCE, ASSUMPTIONS)
-        return "=%s-%s" % (bal("debt", i), bal("debt", i - 1))
+        line = Line("net-borrowing", "Debt borrowed (repaid), millions", "money", (),
+                    self.held_cells("net-borrowing", 0.0,
+                                    lambda i: None if i == 0 else "=%s-%s" % (bal("debt", i), bal("debt", i - 1))))
+        line.editable = True
+        return line
 
     # --- Income statement
 
