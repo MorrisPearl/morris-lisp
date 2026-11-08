@@ -1374,7 +1374,7 @@ shared key and charted, as `map_example.lsp` does.
 
 `three_statement_model_example.lsp` makes a spreadsheet of a company's three financial statements, with a
 forecast whose every number is a formula that follows a short list of assumptions -- for an ordinary company, a
-bank (JPMorgan), a property and casualty insurer (Travelers), or an asset manager (T. Rowe Price, with the assets under management you give it); its section in the
+bank (JPMorgan), a property and casualty insurer (Travelers), or an asset manager (T. Rowe Price, with the assets under management you give it); an ordinary company's sheet also has a DCF tab, a discounted-cash-flow valuation; its section in the
 [library manual](lisp_library_reference.md#three-statement-models) says how the forecast works.
 
 `compare_companies_example.lsp` puts several companies' latest statements side by side in a spreadsheet, as amounts or as percentages

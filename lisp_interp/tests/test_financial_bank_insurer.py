@@ -533,7 +533,7 @@ class TestChoosingTheKind(LispTestCase):
         return [cells[0][0] for cells in self.written[-1][1][1]["cells"] if cells and cells[0]]
 
     def notes(self):
-        return "\n".join(cells[0][0] for cells in self.written[-1][1][4]["cells"] if cells and cells[0])
+        return "\n".join(cells[0][0] for cells in next(tab for tab in self.written[-1][1] if tab["name"] == "Notes")["cells"] if cells and cells[0])
 
     def test_a_bank_by_its_industry_code(self):
         self.run_lisp('(three-statement-model creds "ABC")')

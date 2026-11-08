@@ -167,10 +167,10 @@ class TestModelFromReportedNumbers(LispTestCase):
     def v(self, tab, key, i):
         return value(self.sheets, self.model, tab, key, i)
 
-    def test_there_are_five_tabs_with_the_periods_in_the_same_columns(self):
+    def test_there_are_six_tabs_with_the_periods_in_the_same_columns(self):
         tabs = self.model.sheets()
         self.assertEqual([t["name"] for t in tabs],
-                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "Notes"])
+                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF", "Notes"])
         self.assertEqual(self.model.labels, ["FY2021", "FY2022", "FY2023", "FY2024E", "FY2025E", "FY2026E"])
         for tab in tabs[:4]:
             self.assertEqual([cell[0] for cell in tab["cells"][2][1:]], self.model.labels)
@@ -732,7 +732,7 @@ class TestThreeStatementModelBuiltin(LispTestCase):
             self.run_lisp('(three-statement-model creds "ABC")')
             self.assertEqual(calls, ["auto"])
             self.assertIn("Revenue is modeled in total, not by segment: not found", "\n".join(
-                fm_text for fm_text in [cell[0][0] for cell in self.written[0][1][4]["cells"] if cell and cell[0]]))
+                fm_text for fm_text in [cell[0][0] for cell in next(tab for tab in self.written[0][1] if tab["name"] == "Notes")["cells"] if cell and cell[0]]))
             self.assertLispError('(three-statement-model creds "ABC" :segments "product")', "no product segments: not found")
             self.run_lisp('(three-statement-model creds "ABC" :segments #f)')
             self.assertEqual(calls, ["auto", "product"])

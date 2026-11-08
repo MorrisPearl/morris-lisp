@@ -1,11 +1,11 @@
 """A three-statement financial model of a public company, in a Google Sheet.
 
-  (three-statement-model creds ticker [:period "annual" :history 5 :forecast 5 :kind "auto" :title t])
+  (three-statement-model creds ticker [:period "annual" :history 5 :forecast 5 :kind "auto" :price p :title t])
 
 downloads the company's reported numbers from the SEC (lisp_sec.py), lays out
 its income statement, balance sheet, and cash flow statement for the last
 few years -- or quarters -- and extends all three into the future with
-formulas, driven by assumptions that you change in the sheet. It makes five
+formulas, driven by assumptions that you change in the sheet. It makes six
 tabs:
 
   Assumptions        what drives the forecast. For the periods reported, each
@@ -20,6 +20,8 @@ tabs:
   Income Statement
   Balance Sheet
   Cash Flow
+  DCF                what the company is worth, by discounting the free cash flow
+                     of the forecast (lisp_financial_dcf.py); not for banks or insurers.
   Notes              how to read the sheet, and where each number came from.
 
 The statements have the same periods in the same columns, so the cell that
@@ -74,9 +76,9 @@ import lisp_sec
 import lisp_sec_filings
 import lisp_sec_segments
 
-INCOME, BALANCE, CASH_FLOW, ASSUMPTIONS, NOTES = \
-    "Income Statement", "Balance Sheet", "Cash Flow", "Assumptions", "Notes"
-TAB_ORDER = [ASSUMPTIONS, INCOME, BALANCE, CASH_FLOW, NOTES]
+INCOME, BALANCE, CASH_FLOW, ASSUMPTIONS, DCF, NOTES = \
+    "Income Statement", "Balance Sheet", "Cash Flow", "Assumptions", "DCF", "Notes"
+TAB_ORDER = [ASSUMPTIONS, INCOME, BALANCE, CASH_FLOW, DCF, NOTES]
 
 HEADER_ROWS = 5                 # title, units, period names, period ends, actual or forecast
 FIRST_LINE_ROW = 7              # (row 6 is empty)
@@ -358,9 +360,12 @@ class SheetLayout:
 class Model:
     """The whole model: the tabs, and the periods their columns are."""
 
+    has_valuation = True            # whether it has a DCF tab (not a bank's or an insurer's: see lisp_financial_dcf.py)
+
     def __init__(self, company_name, ticker, period, reported, history, forecast_count, segment_note=""):
         self.segment_note = segment_note
         self.kind_note = ""                            # (why the model is of this kind of company, if that needs saying)
+        self.share_price = None                        # (today's, if given: for the DCF tab)
         self.company_name, self.ticker, self.period = company_name, ticker, period
         self.reported, self.h = reported, history
         self.history_count, self.forecast_count = history.count, forecast_count
@@ -907,6 +912,15 @@ class Model:
             "Depreciation and amortization all reduces plant and equipment here, though some of it is amortization of intangibles: if plant shrinks too fast, lower depreciation or raise capital expenditures.",
         ]
 
+    def valuation_notes(self):
+        """The Notes tab's section on the DCF tab, or why there is none."""
+        if self.has_valuation_tab():
+            import lisp_financial_dcf
+            return ["The DCF tab"] + lisp_financial_dcf.valuation_notes(self)
+        if not self.has_valuation:
+            return ["No DCF tab", "A bank's or an insurer's debt is its raw material, not its financing, so a discounted free cash flow means nothing for it: its value is better found from its dividends and its equity. (A share price given with :price was not used.)"]
+        return ["No DCF tab", "The forecast is shorter than a year, which is too short to value a company by."]
+
     def sources_for_notes(self):
         """The Notes tab: how to read the sheet, then the concept each reported number came from."""
         notes = [
@@ -918,9 +932,10 @@ class Model:
             "",
             "How the forecast works",
             *self.forecast_notes(),
-            "",
             "The starting assumptions are guesses from the reported periods (the last period's, or the average of the last year's quarters), kept within limits: replace them with your own.",
             "The lines called other are what is left between the lines shown and the company's own subtotals, so that the subtotals are as reported.",
+            "",
+            *self.valuation_notes(),
         ]
         concept_lines = {item[0] for item in self.reported.items if item[3]}       # the lines that come from concepts
         missing = [item[1] for item in self.reported.items if self.reported.never_reported(item[0])
@@ -940,10 +955,14 @@ class Model:
     def notes_tab(self):
         rows = []
         for text in self.sources_for_notes():
-            heading = text in ("How to read this sheet", "How the forecast works") or text.startswith("Where the reported")
+            heading = text in ("How to read this sheet", "How the forecast works", "The DCF tab", "No DCF tab") or text.startswith("Where the reported")
             rows.append([(text, ("section",) if heading else ("wrap",))] if text else [None])
         return {"name": NOTES, "cells": [[(self.company_name + " model", ("title",))], [None]] + rows,
                 "widths": [(0, 0, 900)]}
+
+    def has_valuation_tab(self):
+        """Whether the DCF tab is made: this kind of company has one, and the forecast is a year or more."""
+        return self.has_valuation and self.forecast_count >= self.lag
 
     def sheets(self):
         """The model as the tabs for lisp_google.google_workbook."""
@@ -951,6 +970,11 @@ class Model:
         for name in TAB_ORDER:
             if name == NOTES:
                 result.append(self.notes_tab())
+                continue
+            if name == DCF:
+                if self.has_valuation_tab():
+                    import lisp_financial_dcf
+                    result.append(lisp_financial_dcf.valuation_sheet(self))
                 continue
             layout = self.layouts[name]
             result.append({"name": name, "cells": self.sheet_cells(layout),
@@ -1023,13 +1047,14 @@ def count_option(options, name, default, who):
 
 
 def build_model(facts, ticker, period, history_count, forecast_count, who="three-statement-model",
-                find_segments=None, kind="general", aum=None):
+                find_segments=None, kind="general", aum=None, price=None):
     """The Model of a company from its SEC facts, of the kind (a name in templates()) given. `find_segments`,
     if given (for an ordinary company), is a function of the periods (oldest first) and the company's total
     revenue in each, in millions, that gives the revenue by segment: (segments, a note), segments being
     [(name, a revenue for each period)] or None. `aum`, for an asset manager, is its assets under management
     in billions at the end of each period, oldest first, ending with the latest (the SEC's facts have them for
-    few companies). Raises MissingLines if the kind needs lines that the company's facts don't have."""
+    few companies). `price`, if given, is today's share price, for the DCF tab. Raises MissingLines if the kind needs
+    lines that the company's facts don't have."""
     template = templates()[kind]
     periods = lisp_sec.chosen_periods(facts, {"period": period, "count": history_count}, who)
     periods = list(reversed(periods))
@@ -1076,6 +1101,7 @@ def build_model(facts, ticker, period, history_count, forecast_count, who="three
     result = template.model_class(facts.get("entityName") or ticker, ticker, period, reported, history,
                                   forecast_count, note)
     result.kind_note = " ".join(notes)
+    result.share_price = price
     return result
 
 
@@ -1117,7 +1143,7 @@ def kind_for_industry(sic):
 
 def three_statement_model(credentials_path, company, *options):
     """(three-statement-model creds ticker [:period "annual" :history n :forecast n :kind "auto"
-    :segments "auto" :title t]) -- a new Google spreadsheet with the company's income statement, balance sheet,
+    :segments "auto" :price p :title t]) -- a new Google spreadsheet with the company's income statement, balance sheet,
     and cash flow statement as reported to the SEC, for the last `:history` years (or quarters), and forecast
     for the next `:forecast`, by formulas that follow assumptions on an Assumptions tab. Returns the
     spreadsheet's address. :period is "annual" or "quarterly" (5 years each way, or 8 quarters, unless
@@ -1127,11 +1153,13 @@ def three_statement_model(credentials_path, company, *options):
     on assets under management, which you give with :aum, a list of numbers in billions, one for the end of
     each period, oldest first, ending with the latest period reported); "auto", the default, chooses by the
     SEC's industry code for the company (an asset manager if you give :aum), and models it as an ordinary
-    company if the SEC's facts lack what the other kind needs. :segments, for an ordinary company: "auto" (the default) models revenue by business
+    company if the SEC's facts lack what the other kind needs. An ordinary company or asset manager also has a DCF tab, a
+    discounted-cash-flow valuation; :price, today's share price, makes the weight of debt in its discount rate the
+    market's and shows how the value compares with the price. :segments, for an ordinary company: "auto" (the default) models revenue by business
     segment if the company reports them, or else by product; "business", "product", or "geography" asks
     for that one; #f for total revenue only. You need to be signed in to Google: (google-login creds)."""
     who = "three-statement-model"
-    options = keyword_options(options, ["period", "history", "forecast", "kind", "aum", "segments", "title"], who)
+    options = keyword_options(options, ["period", "history", "forecast", "kind", "aum", "price", "segments", "title"], who)
     period = str(options.get("period", "annual"))
     if period not in DEFAULT_COUNTS:
         raise LispError('%s: :period is "annual" or "quarterly", not %s' % (who, period))
@@ -1146,6 +1174,9 @@ def three_statement_model(credentials_path, company, *options):
         aum = lisp_financial_asset_manager.number_list(options["aum"], who)
         if kind not in ("auto", "asset-manager"):
             raise LispError('%s: :aum, the assets under management, is for :kind "asset-manager", not %s' % (who, kind))
+    price = options.get("price")
+    if price is not None and (isinstance(price, bool) or not isinstance(price, (int, float)) or price <= 0):
+        raise LispError("%s: :price is today's share price, a positive number" % who)
     segments = options.get("segments", "auto")
     facts = lisp_sec.company_facts(credentials_path, company, who)
     ticker = str(company).upper()
@@ -1157,15 +1188,15 @@ def three_statement_model(credentials_path, company, *options):
         if aum is not None and kind == "general":              # (AUM given: an asset manager, if nothing else)
             kind = "asset-manager"
         try:
-            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum)
+            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum, price)
         except MissingLines as problem:
             if kind == "general":
                 raise
             kind_note = ("The SEC classifies this company as %s, but it is modeled as an ordinary company because %s"
                          % (description or "another kind of company", str(problem).split(": ", 1)[1]))
-            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, "general")
+            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, "general", None, price)
     else:
-        model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum)
+        model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum, price)
     model.kind_note = (model.kind_note + " " + kind_note).strip()
     title = options.get("title") or "%s %s model" % (model.company_name, period)
     return LispString(lisp_google.google_workbook(credentials_path, str(title), model.sheets()))

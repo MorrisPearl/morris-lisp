@@ -3,7 +3,7 @@
 It reads the tabs as lisp_google.google_workbook is given them (a list of dicts with "name" and
 "cells") and works out every formula. It knows what the model's formulas use: numbers, text in
 quotes, cell references (A1, or 'Tab name'!A1), ranges of them in SUM, AVERAGE, MEDIAN, MAX, MIN, ROUND, IFERROR,
-the operators + - * /, and parentheses. Anything else is an error, so a formula that uses
+the operators + - * / ^, and parentheses. Anything else is an error, so a formula that uses
 something new says so here.
 """
 
@@ -14,7 +14,7 @@ TOKEN = re.compile(r"""\s*(?:
   | (?P<text>"[^"]*")
   | (?P<reference>(?:'[^']+'!)?\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?)
   | (?P<function>[A-Z]+)\(
-  | (?P<symbol>[-+*/(),])
+  | (?P<symbol>[-+*/^(),])
 )""", re.VERBOSE)
 
 
@@ -125,7 +125,14 @@ class Formula:
         if self.peek() == ("symbol", "-"):
             self.take()
             return -number(self.unary())
-        return self.primary()
+        return self.power()
+
+    def power(self):
+        value = self.primary()
+        while self.peek() == ("symbol", "^"):
+            self.take()
+            value = number(value) ** number(self.primary())
+        return value
 
     def primary(self):
         kind, text = self.take()

@@ -525,6 +525,7 @@ CELL_STYLES = {
     "percent": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}},
     "decimal": {"numberFormat": {"type": "NUMBER", "pattern": "0.0"}},
     "per-share": {"numberFormat": {"type": "NUMBER", "pattern": "0.00"}},
+    "factor": {"numberFormat": {"type": "NUMBER", "pattern": "0.000"}},
     "date": {"numberFormat": {"type": "DATE", "pattern": DATE_PATTERN}},
 }
 ROWS_PER_REQUEST = 200          # how many rows of a tab are sent at a time

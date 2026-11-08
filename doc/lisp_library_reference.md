@@ -2905,7 +2905,7 @@ It needs what `sec-income-statement` and `google-sheet` need: the credentials fi
 Google sign-in (`(google-login creds)`, once; "Google Sheets" says how to set it up). The sheet is made in your own
 Drive, and shared with no one.
 
-#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :aum a :segments s :title t])`
+#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :aum a :price p :segments s :title t])`
 Makes the spreadsheet and returns its address, as a string.
 
 - `:period` is `"annual"` (the default) or `"quarterly"`.
@@ -2924,6 +2924,8 @@ Makes the spreadsheet and returns its address, as a string.
 - `:aum`, for an asset manager, is its assets under management in billions at the end of each period, oldest first, ending
   with the latest period reported, such as `(list 8590 10010 11550)`. They are not in the SEC's data, so you type them from the
   annual reports. If you give fewer than there are periods, the history is cut to the periods you have.
+- `:price` is today's share price, for the DCF tab (below): with it the weight of debt in the discount rate is worked out
+  from the market value of the shares, and the tab shows how the value compares with the price.
 - `:segments`, for an ordinary company, is how revenue is forecast. `"auto"` (the default) is by **business segment**, if the company reports
   them, or else by **product or service**, and if it has neither (or they can't be found for every period) by its total
   revenue alone, and the Notes tab says why. `"business"`, `"product"`, or `"geography"` asks for that breakdown, and it is
@@ -2941,6 +2943,7 @@ forecast), when it ends, and whether it is reported or forecast.
 | Income Statement | Revenue (by segment, if any), cost of revenue, gross profit, research and development, selling, general and administrative, other operating expenses, operating income, interest, other income, taxes, net income, shares, and earnings per share. |
 | Balance Sheet | Cash, receivables, inventory, plant and equipment, goodwill, intangibles, payables, debt, equity, with their totals; and, at the bottom, a **check** -- assets less liabilities and equity -- that is 0 in every period. |
 | Cash Flow | Net income, depreciation, stock compensation, the changes in receivables, inventory, and payables, cash from operations; capital expenditures, cash from investing; borrowing, dividends, buybacks, cash from financing; the net change in cash, and the cash at the end. |
+| DCF | What the company is worth by discounting its forecast free cash flow (see "Valuation" below). Ordinary companies and asset managers; not banks and insurers. |
 | Notes | How to read the sheet, how the forecast works, which of the company's XBRL tags each reported line came from, and which lines it didn't report. |
 
 **Colors,** as in most models: **blue** is a number typed in -- reported by the company, or an assumption; **black** is a
@@ -3103,6 +3106,45 @@ exactly if there are such (a set that is only close in the latest year may be an
 use a member that is a total of the others ("Operating Segments"). For Berkshire that is *Insurance And Other* (87% of
 revenue) and *Railroad, Utilities And Energy*; its business segments (the insurance group, BNSF, Berkshire Hathaway Energy,
 manufacturing, McLane, Pilot, service and retailing) overlap and change from year to year, and so cannot be used.
+
+#### Valuation: the DCF tab
+
+An ordinary company's sheet (and an asset manager's) has a sixth tab, **DCF**, that values the company by discounting the free
+cash flow the forecast says it will make. It is the last step of the course the model comes from: the three statements
+tell you what the company will earn, and the DCF tells you what that is worth today.
+
+1. *Free cash flow* of each period is operating income less the taxes on it (the tax-rate assumption), plus depreciation and
+   amortization, less capital expenditures, less the growth of working capital (receivables, inventory, payables): what the
+   business throws off before it pays its lenders or its owners. Stock compensation is not added back, because it costs the
+   shareholders. The reported periods' free cash flow is there too, for comparison.
+2. *The discount rate* is the weighted average cost of capital (WACC): the **cost of equity** -- a risk-free rate plus the stock's
+   beta times the market's risk premium -- and the after-tax **cost of debt**, weighted by the share of the company's value that
+   each is. The cost of debt and the tax rate start from the model's assumptions for the first forecast period. The risk-free
+   rate (4.5%), the beta (1), the risk premium (5%), and the terminal growth rate (2.5%) are **placeholders**: the SEC's data
+   has none of them, and the answer depends on them a great deal. If you gave `:price`, the debt weight is the debt over the debt and
+   the market value of the shares; otherwise it is a guess of 20%. All are yellow cells, and the WACC itself can be typed over.
+3. *Each period's free cash flow* is divided by (1 + WACC) raised to the number of years until it arrives, counted from the end
+   of the last reported period. Set the "middle of the period" cell to 1 and each flow is half a period nearer.
+4. *The terminal value* is the free cash flow of the year after the forecast, divided by the WACC less the terminal growth rate, and
+   discounted with the last period's factor. By default that free cash flow is the **last forecast year's, grown**; for quarters
+   the last four quarters stand for the year. If the last forecast year is still one of fast growth -- the capital
+   expenditures and working capital it needs are those of a company growing 20%, not 2.5% -- that understates what is to come:
+   set the method cell to 1 and the free cash flow is the year's operating income after taxes, grown, less the terminal growth
+   rate times the **invested capital** (plant, goodwill, intangibles, receivables and inventory, less payables), which is what it
+   takes to grow that much. (For Microsoft, whose growth is held at the 20% limit to the last year, the second method gives more than twice the first's value
+   per share: the choice matters most where the forecast ends with growth still fast.)
+5. *The value*: the present values of the free cash flows and of the terminal value are the **enterprise value**; less the
+   debt, plus the cash and short-term investments, at the end of the last reported period, it is the **equity value**; over the diluted
+   shares, the **value per share**. Rows under it say how much of the enterprise value is terminal value (usually three-quarters or
+   more) and what multiple of the last year's operating income plus depreciation and amortization the terminal value is, as a check on
+   the growth and the WACC. A table at the bottom works out the value per share for discount rates one and two points either side
+   of the WACC and growth rates a half and one point either side of the assumed growth, each cell a formula.
+
+The valuation is only as good as the forecast, which is the model's guess from the reported periods: five years at the
+last year's growth, up to 20%, then 2.5% for ever. Look at the Assumptions tab first. Minority interests, leases, pensions, and
+options are not taken off the equity, and the debt is the book value. A bank or an insurer has **no DCF tab** (the Notes tab says so):
+its debt is its raw material, not its financing, so free cash flow to the firm means nothing for it. A forecast of less than a year
+(three quarters) is too short to value a company by, and has none.
 
 ### Comparing companies
 

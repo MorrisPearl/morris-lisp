@@ -164,6 +164,8 @@ class InsurerHistory:
 class InsurerModel(model.Model):
     """The model of a property and casualty insurer: the same tabs as an ordinary company's, with an insurer's lines."""
 
+    has_valuation = False                  # (no DCF tab: see lisp_financial_dcf.py)
+
     # --- Assumptions
 
     def assumption_series(self):

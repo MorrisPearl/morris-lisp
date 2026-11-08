@@ -210,6 +210,8 @@ class BankHistory:
 class BankModel(model.Model):
     """The model of a bank: the same tabs as an ordinary company's, with a bank's lines."""
 
+    has_valuation = False                  # (no DCF tab: see lisp_financial_dcf.py)
+
     def growth_limits(self):
         """Limits for the growth of a balance in one period (a year's, scaled to the period)."""
         return tuple(limit * self.days_in_period / 365 for limit in BALANCE_GROWTH_LIMITS)

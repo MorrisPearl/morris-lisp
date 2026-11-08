@@ -6401,6 +6401,7 @@ The Python files:
 | `lisp_financial_bank.py` | The bank model of `three-statement-model`: loans, deposits, interest rates, credit losses |
 | `lisp_financial_insurer.py` | The property and casualty insurer model of `three-statement-model`: premiums, loss and expense ratios, float |
 | `lisp_financial_asset_manager.py` | The asset manager model of `three-statement-model`: revenue from assets under management and a fee rate |
+| `lisp_financial_dcf.py` | The DCF tab of `three-statement-model`: free cash flow, WACC, terminal value, value per share, and a sensitivity table |
 | `lisp_financial_compare.py` | `compare-companies`: companies' latest statements side by side in a Google sheet, as amounts or percentages of revenue or assets |
 | `lisp_sec_segments.py` | A company's revenue by segment, read from the tagged numbers of its 10-Ks and 10-Qs (for `three-statement-model`) |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-option-chain`, `schwab-orders`, `schwab-spread-order`, `schwab-multi-leg-order`, ...: your Schwab accounts |

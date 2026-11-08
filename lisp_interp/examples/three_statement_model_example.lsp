@@ -38,3 +38,11 @@
 ; --- 7. The kind can be chosen. Berkshire Hathaway, with its insurance, railroad, utilities, and ---
 ; manufacturing in one set of statements, is modeled as an ordinary company (the Notes tab says why).
 (print (three-statement-model creds "BRK-B"))
+
+; --- 8. What is the company worth? The DCF tab ---------------------------------------
+; Every ordinary company's and asset manager's sheet has a DCF tab: the forecast free cash flow discounted
+; at a rate built from the risk-free rate, beta, and risk premium (placeholders -- type your own), a terminal
+; value, and a value per share, with a table of other discount and growth rates. :price (today's share price)
+; weights the debt and equity by their market values and shows the value against the price. A bank or an
+; insurer has no DCF tab. In the sheet, set the "method" cell to 1 for a company still growing fast at the end of the forecast.
+(print (three-statement-model creds "KO" :segments #f :price 70 :title "Coca-Cola, with a DCF"))
