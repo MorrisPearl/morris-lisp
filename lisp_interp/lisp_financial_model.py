@@ -535,8 +535,6 @@ class Model:
         return "revenue", self.h.revenue, "revenue"
 
     def assumptions_layout(self):
-        lines = [Line("days", "Days in the period", "decimal", (), lambda i: self.days_in_period)]
-        lines.append(None)
         lines.append(Line("revenue-header", "Revenue", "money", ("section",), None))
         if self.segments:
             for number, (name, values) in enumerate(self.segments):
@@ -556,6 +554,10 @@ class Model:
         for key in ("stock-compensation-percent", "depreciation-percent", "amortization-rate",
                     "capital-expenditures-percent", "receivable-days", "inventory-days", "payable-days"):
             lines.append(self.main_line_from_series(key))
+
+        lines = [Line("days", "Days in the period", "decimal", (), lambda i: self.days_in_period)]
+        lines.append(None)
+
         return SheetLayout(ASSUMPTIONS, "Assumptions", lines)
 
     def main_line_from_series(self, key):
