@@ -52,6 +52,7 @@ that use all this are described in
   - [A parser framework](#a-parser-framework)
 - [Reporting](#reporting)
   - [Google Sheets](#google-sheets)
+  - [Three-statement models](#three-statement-models)
   - [Reports with control breaks](#reports-with-control-breaks)
 - [Dates and cash flows](#dates-and-cash-flows)
   - [Monthly time series](#monthly-time-series)
@@ -87,7 +88,8 @@ The functions for investment analysis, in the order an analysis uses them.
    (under "Input / output", in the language manual), and, for text in a
    small language of its own, "A parser framework". Each gives a
    **table**, so they all work the same way after that. And the other way:
-   "Google Sheets" sends tables out, to a spreadsheet, and "Reports with
+   "Google Sheets" sends tables out, to a spreadsheet, "Three-statement models" makes a
+   company's statements and a forecast of them, as formulas, in one, and "Reports with
    control breaks" writes a table as a text report, with totals for each group.
 2. **Tables and numbers.** In the language manual: "Tables", "Vectors",
    "Vector math and statistics" (`vector-drawdowns` is there), "Displaying
@@ -2876,6 +2878,118 @@ fails part way, the error says where the spreadsheet is, and that it isn't
 finished. A spreadsheet holds at most 10,000,000 cells in all; a long table
 is sent in pieces. Google limits how fast a program can make spreadsheets
 -- about 60 changes a minute -- which a few tables don't come near.
+
+### Three-statement models
+
+(In `lisp_financial_model.py`, with `lisp_sec_segments.py`.) A company's income statement, balance sheet, and cash
+flow statement, as it reported them to the SEC for the last few years -- or quarters -- and **forecast** for the
+next few, in a Google Sheet. The forecast is made of formulas, which follow a short list of assumptions that
+you type over: revenue growth (for each segment, if the company reports them), margins, days of sales in
+receivables, capital spending, and so on. Change one and every statement follows, and the balance sheet still
+balances. It is the "integrated three-statement model" of a finance course (for example
+[this one](https://www.wallstreetprep.com/knowledge/build-integrated-3-statement-financial-model/)), built from
+the company's own numbers, so that the work left to you is the thinking: what *will* revenue do?
+
+```lisp
+(three-statement-model creds "AAPL")
+; makes a spreadsheet in your Google Drive, and gives its address
+(three-statement-model creds "AAPL" :period "quarterly" :history 8 :forecast 8)
+(three-statement-model creds "KO" :segments #f :title "Coca-Cola, total revenue only")
+```
+
+It needs what `sec-income-statement` and `google-sheet` need: the credentials file's `sec_user_agent` entry, and a
+Google sign-in (`(google-login creds)`, once; "Google Sheets" says how to set it up). The sheet is made in your own
+Drive, and shared with no one.
+
+#### `(three-statement-model creds ticker [:period p :history n :forecast n :segments s :title t])`
+Makes the spreadsheet and returns its address, as a string.
+
+- `:period` is `"annual"` (the default) or `"quarterly"`.
+- `:history` is how many periods to show as reported, and `:forecast` how many to forecast: 5 and 5 for years, 8 and 8
+  for quarters, unless you say. A company with fewer periods on file than `:history` gets the ones it has. A model needs
+  at least two years -- or five quarters, since a quarter's growth is measured against the same quarter a year before --
+  of history.
+- `:segments` is how revenue is forecast. `"auto"` (the default) is by **business segment**, if the company reports
+  them, or else by **product or service**, and if it has neither (or they can't be found for every period) by its total
+  revenue alone, and the Notes tab says why. `"business"`, `"product"`, or `"geography"` asks for that breakdown, and it is
+  an error if it can't be found; `#f` is total revenue only.
+- `:title` is the spreadsheet's name; the default is the company's, and "annual" or "quarterly".
+
+**The tabs.** Every tab has the same periods in the same columns, so a period's revenue, in column E of the income
+statement, is in column E of the others, and of the assumptions. The reported periods come first and then the
+forecast, in grey. The first five rows say what each column is: its name (`FY2025`, `Q3 FY2026`, with an `E` for a
+forecast), when it ends, and whether it is reported or forecast.
+
+| Tab | What it has |
+|---|---|
+| Assumptions | One row for each assumption. In the reported periods it is worked out from the statements, so you can see what happened; in the forecast it is a number for you to type over, in blue on yellow. |
+| Income Statement | Revenue (by segment, if any), cost of revenue, gross profit, research and development, selling, general and administrative, other operating expenses, operating income, interest, other income, taxes, net income, shares, and earnings per share. |
+| Balance Sheet | Cash, receivables, inventory, plant and equipment, goodwill, intangibles, payables, debt, equity, with their totals; and, at the bottom, a **check** -- assets less liabilities and equity -- that is 0 in every period. |
+| Cash Flow | Net income, depreciation, stock compensation, the changes in receivables, inventory, and payables, cash from operations; capital expenditures, cash from investing; borrowing, dividends, buybacks, cash from financing; the net change in cash, and the cash at the end. |
+| Notes | How to read the sheet, how the forecast works, which of the company's XBRL tags each reported line came from, and which lines it didn't report. |
+
+**Colors,** as in most models: **blue** is a number typed in -- reported by the company, or an assumption, which is also
+on **yellow**; **black** is a formula; **green** is a link to another tab.
+
+**How the forecast works,** in the order the formulas depend on each other. Nothing refers to itself: interest uses
+the debt and cash at the *end of the period before* (so cash is "invested at the end of the period"), and so
+there are no circular formulas to iterate.
+
+1. *Revenue* is the revenue of the period a year before (for years, the year before; for quarters, the same quarter, so
+   the seasons stay) times one plus the assumed growth. With segments, each segment grows at its own rate and revenue is
+   their sum; the growth of the total is then a result, shown on the Assumptions tab.
+2. *Costs* are a percentage of revenue: cost of revenue as one less the gross margin, then research and development,
+   selling, general and administrative, and other operating expenses.
+3. *Interest expense* is the assumed rate times last period's debt (for a quarter, a quarter of the year's rate);
+   *interest and other income* is a yield on last period's cash and short-term investments. *Taxes* are the tax rate
+   times income before taxes. Net income follows; the diluted share count changes at the assumed rate, and earnings per share
+   is net income over shares.
+4. *The cash flow statement* starts with net income, adds depreciation and stock compensation (percentages of revenue),
+   and takes the changes in receivables, inventory, and payables from the balance sheet: receivables are assumed to be
+   so many days of revenue, and inventory and payables so many days of the cost of revenue. Capital expenditures are a
+   percentage of revenue; borrowing is an amount you type; dividends and buybacks are percentages of net income.
+5. *The balance sheet*: plant and equipment is last period's plus capital expenditures less depreciation; debt is
+   last period's plus what is borrowed; equity is last period's plus net income and stock compensation, less
+   dividends and buybacks; and **cash is last period's plus the net change in cash on the cash flow statement**. Short-term
+   investments, goodwill, intangibles, and the other assets and liabilities stay as they were.
+
+That every number on the balance sheet follows from a statement or an assumption, and the check is still 0, is
+the test that the formulas fit together. If you add a line of your own, the check will tell you whether you did it right.
+
+**The assumptions' starting values** are guesses from the reported periods, so that the sheet works as it comes: the last
+period's value (for quarters, the average of the last four), kept within limits so that one extraordinary year is not
+assumed to go on for ever -- growth between -20% and +20% a period, the tax rate between 0 and 40%, and so on (they are named at
+the top of `lisp_financial_model.py`). They are guesses, not forecasts: **replace them**. In particular, borrowing
+starts at 0 whatever the company has been doing, and the payout percentages are the history's, so a company
+that has been borrowing to fund its buybacks will show its cash piling up (or, if it spends more than it earns, going negative:
+nothing in the model borrows for you).
+
+**Where the numbers come from.** The reported lines are those of `sec-financials`: each found under whichever of the
+company's XBRL tags it uses, a fiscal year from its annual report and a quarter from its 10-Q or, for the fourth, the year less
+the nine months before. The model has fewer lines than a company's statements, so each statement has lines called *other* --
+other operating expenses, other current assets, other non-current liabilities, "other operating activities" -- which are
+what is left between the lines shown and the subtotals the company reported, so that every subtotal is the company's
+own, and the balance sheet balances as reported. (A line a company doesn't report is zero.) In the forecast the other balance
+sheet lines stay as they were, and the other cash flows are zero; they are plain numbers in blue, for you to change.
+
+**Segments.** The SEC's summary of a company's numbers has only its totals, so the segments are read from the
+filings themselves: since about 2019 each 10-K and 10-Q has its numbers tagged in the page ("inline XBRL"), and a number for a
+part of the company -- a business segment, a product, a region -- is tagged with the part it is for. `three-statement-model`
+reads the tagged revenue of the annual reports (and, for quarters, the quarterly ones) that cover the periods shown, and takes
+the largest set of segments that add up to the company's revenue: Apple's regions (Americas, Europe, ...), or, if you ask for
+`"product"`, iPhone, Mac, iPad, Wearables, and Services, but not Product and Service together, which overlap. A
+line called "Other revenue" is what the segments don't add up to, if it is more than rounding. Two cautions. A company that
+changes how it defines its segments restates only the few years it shows beside the new ones, so a jump between two years
+may be the definition and not the business: look at the numbers. And a segment that has no number for every period
+shown, such as a new one, can't be used, so the model falls back to total revenue and says why.
+The names come from the company's tags (`Rest Of Asia Pacific`), not its labels; rename them in the sheet if you like.
+
+**Limits.** The model is a way of working with a company's numbers, not a prediction. It has one line for debt and no minimum
+cash, so it does not borrow when cash runs out; it does not know about leases, taxes paid later than they are owed, acquisitions,
+or minority interests (the equity line includes them, and net income is the company's); and depreciation on the cash flow statement
+includes the amortization of intangibles but here all reduces plant and equipment, so plant can shrink faster than it should if
+the company amortizes a lot. A company outside the US that files only annual reports can have only annual models. Banks and insurers,
+which have no cost of revenue and a different balance sheet, are laid out but not meaningfully modeled.
 
 ### Reports with control breaks
 

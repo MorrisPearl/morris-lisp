@@ -57,6 +57,7 @@ HOW THE CODE IS ORGANIZED
     lisp_tastytrade.py    tastytrade-*                     (downloads from tastytrade)
     lisp_futures.py       futures-curve-fit, futures-leg-carry (a futures curve's rich, cheap, and carry)
     lisp_google.py        google-*  (send tables to a new Google spreadsheet)
+    lisp_financial_model.py   three-statement-model (a company's statements, forecast by formulas, in a Google Sheet)
     lisp_schwab.py        schwab-*  (your Schwab accounts: positions, quotes, prices, orders, transactions)
     lisp_alpha_vantage.py alpha-vantage-dividends  (a stock's dividends, from Alpha Vantage)
     lisp_finra.py         finra-tba-prices, finra-mbs-prices, ...  (agency MBS prices reported to FINRA's TRACE)

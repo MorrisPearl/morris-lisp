@@ -204,6 +204,7 @@ out, as [section 6](#6-putting-sources-together) shows.
 |---|---|---|
 | A company's income statement, balance sheet, or cash flows | `(sec-income-statement creds "AAPL")`, `(sec-balance-sheet creds "AAPL")`, `(sec-cash-flow-statement creds "AAPL")` | SEC |
 | All three statements, laid out for working out margins and returns | `(sec-financials creds "KO")` | SEC |
+| A forecast of all three statements, in a Google Sheet with assumptions to change | `(three-statement-model creds "KO")` | SEC, Google |
 | Any other number a company reports | `(sec-concepts creds "AAPL")` to find it, then `sec-facts` | SEC |
 | Any numbers a company reports, a row per quarter or year | `(sec-values creds "NVDA" '("Revenues" "EquitySecuritiesFvNi") :period "quarterly")` | SEC |
 | A company's stakes in other companies (often its customers), the gains on them and its guarantees, beside its revenue | `(vendor-financing creds "NVDA")` | SEC |

@@ -157,6 +157,7 @@ files in `examples/` and `lib/` from anywhere:
 | File | What it shows | Needs |
 |---|---|---|
 | `fred_example.lsp`, `sec_example.lsp`, `fdic_example.lsp`, `census_bls_example.lsp`, `bea_example.lsp` | one data source each | the source's key |
+| `three_statement_model_example.lsp` | a company's income statement, balance sheet, and cash flow statement from the SEC, five years reported and five forecast, in a Google Sheet whose assumptions you change: by year or quarter, by segment or in total | an SEC user agent, and a Google sign-in |
 | `filing_tone_example.lsp` | how negative, positive, and uncertain a company's 10-K risk factors are, year by year, charted | an SEC user agent, and the Loughran-McDonald word lists |
 | `sofr_and_mortgage_rates.lsp` | whether the 30-year mortgage rate can be told from SOFR (it can't; the 10-year yield tells it) | a FRED key |
 | `yield_curve_example.lsp` | today's Treasury yield curve from the Treasury and from the Fed: zero rates and forward rates, charted | nothing: free downloads |
@@ -1370,6 +1371,10 @@ section for each is in the [library manual](lisp_library_reference.md#getting-da
 `census_bls_example.lsp` and `bea_example.lsp` show how the sources fit together: the
 data functions return **tables**, so a Census table and a BEA table can be matched on a
 shared key and charted, as `map_example.lsp` does.
+
+`three_statement_model_example.lsp` makes a spreadsheet of a company's three financial statements, with a
+forecast whose every number is a formula that follows a short list of assumptions; its section in the
+[library manual](lisp_library_reference.md#three-statement-models) says how the forecast works.
 
 `sofr_and_mortgage_rates.lsp` puts SOFR's whole history, from the New York Fed (`nyfed-rates`),
 beside Freddie Mac's weekly mortgage rate and the 10-year Treasury yield, from FRED, and fits
