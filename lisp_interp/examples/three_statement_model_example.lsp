@@ -12,29 +12,29 @@
 
 ; --- 1. Five years reported, five forecast ---------------------------------------
 ; Revenue by business segment if the company reports them (Apple: its regions), else in total.
-(display (three-statement-model creds "AAPL"))
+(print (three-statement-model creds "AAPL"))
 
 ; --- 2. Apple's products instead, a quarter at a time ----------------------------
 ; 8 quarters reported and 8 forecast; each quarter's revenue grows from the same quarter a year before.
-(display (three-statement-model creds "AAPL" :period "quarterly" :segments "product"
+(print (three-statement-model creds "AAPL" :period "quarterly" :segments "product"
                                 :title "Apple by quarter and product"))
 
 ; --- 3. Total revenue only, ten years forward ---------------------------------------
-(display (three-statement-model creds "KO" :forecast 10 :segments #f))
+(print (three-statement-model creds "KO" :forecast 10 :segments #f))
 
 ; --- 4. A bank: its balance sheet and the interest rates on it drive the forecast ----
 ; The SEC's industry code tells the program that JPMorgan is a bank, so the sheet has loans,
 ; deposits, interest rates, credit losses, and the efficiency ratio instead of revenue growth.
-(display (three-statement-model creds "JPM"))
+(print (three-statement-model creds "JPM"))
 
 ; --- 5. A property and casualty insurer: premiums, loss and expense ratios, and the float ---
-(display (three-statement-model creds "TRV" :period "quarterly"))
+(print (three-statement-model creds "TRV" :period "quarterly"))
 
 ; --- 6. An asset manager: revenue is a fee on assets under management ---------------
 ; The SEC's data has no AUM, so give it: billions at the end of each year, oldest first, the last
 ; being the latest annual report's. (These are placeholders -- type the figures from the 10-K.)
-(display (three-statement-model creds "TROW" :aum (list 1688 1275 1480 1610 1750)))
+(print (three-statement-model creds "TROW" :aum (list 1688 1275 1480 1610 1750)))
 
 ; --- 7. The kind can be chosen. Berkshire Hathaway, with its insurance, railroad, utilities, and ---
 ; manufacturing in one set of statements, is modeled as an ordinary company (the Notes tab says why).
-(display (three-statement-model creds "BRK-B"))
+(print (three-statement-model creds "BRK-B"))
