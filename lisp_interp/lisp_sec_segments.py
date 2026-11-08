@@ -34,7 +34,12 @@ REVENUE_NAMES = {name.split(":")[-1] for item in lisp_sec.LINE_ITEMS if item[0] 
 MILLION = 1e6
 MOST_MEMBERS = 20               # of an axis's members, the largest this many are tried in combination
 TOTAL_TOLERANCE = 0.01          # members "add up" to the total if they are within this fraction of it
+EARLIER_TOLERANCE = 0.03        # ... and, in the periods before the latest, this fraction (segments get restated)
 ROUNDING = 0.5                  # a difference between the members and the total smaller than this (millions) is rounding
+
+# Members that are totals of the others, not segments:
+TOTAL_MEMBERS = {"OperatingSegmentsMember", "AllOperatingSegmentsMember", "ReportableSegmentsMember",
+                 "SegmentsMember", "AllSegmentsMember", "ConsolidatedMember"}
 
 AXES = {                        # the :segments choices -> the axis, and what else a fact may have
     "business": "StatementBusinessSegmentsAxis",
@@ -169,21 +174,40 @@ def members_to_company_facts(members):
     return {"facts": {"segments": {name: {"units": {"USD": facts}} for name, facts in members.items()}}}
 
 
-def best_combination(values, total):
+def best_combination(values, total, earlier_values=None, earlier_totals=None):
     """Which of the members' values (a list of numbers) add up to `total` (within TOTAL_TOLERANCE of it)
     using the most members; a list of the members' indexes, or None. (The parts of a member -- iPhone,
-    which is part of Product -- are also members, so not all of them can be used together.)"""
+    which is part of Product -- are also members, so not all of them can be used together.)
+
+    The same members must add up in the earlier periods too, or sets that happen to add up in the latest
+    period would do (Berkshire Hathaway's 'Insurance and other' contains its insurance group, so the two
+    together count the insurance twice, and leave out McLane, which makes up for it in one year only).
+    `earlier_values` has, for each member, its values in the earlier periods (None where it has none; such
+    a member cannot be used), and `earlier_totals` the total of each of those periods; the members must add up
+    to within EARLIER_TOLERANCE of each of them."""
     order = sorted(range(len(values)), key=lambda i: -abs(values[i]))[:MOST_MEMBERS]
-    sums, counts = np.zeros(1), np.zeros(1, dtype=int)
+    earlier_values = earlier_values or [[] for _ in values]
+    earlier_totals = list(earlier_totals or [])
+    totals = np.array([total] + earlier_totals, dtype=float)
+    tolerances = np.array([TOTAL_TOLERANCE] + [EARLIER_TOLERANCE] * len(earlier_totals))
+    sums, counts = np.zeros((1, len(totals))), np.zeros(1, dtype=int)
     for index in order:
-        sums, counts = np.concatenate([sums, sums + values[index]]), np.concatenate([counts, counts + 1])
-    close = np.abs(sums - total) <= TOTAL_TOLERANCE * abs(total)
+        member = np.array([values[index]] + [np.nan if v is None else v for v in earlier_values[index]], dtype=float)
+        sums, counts = np.concatenate([sums, sums + member]), np.concatenate([counts, counts + 1])
+    misses = np.abs(sums - totals)                      # (a missing value is nan: never close)
+    close = (misses <= tolerances * np.abs(totals)).all(axis=1)
     close[0] = False                                    # (using none of them isn't an answer)
     if not close.any():
         return None
+    # Sets that add up exactly (apart from rounding) are preferred to sets that are only close, which may add
+    # up by accident, as a member and its own parts do (Berkshire's Insurance and Other, with some of its parts,
+    # came to its revenue less a few hundred million, and the railroad and utilities was left out).
+    exact = close & (misses <= ROUNDING * np.maximum(counts, 1)[:, None]).all(axis=1)
+    if exact.any():
+        close = exact
     best_count = counts[close].max()
     candidates = np.where(close & (counts == best_count))[0]
-    chosen = candidates[np.argmin(np.abs(sums[candidates] - total))]
+    chosen = candidates[np.argmin(np.abs(sums[candidates, 0] - total))]
     return sorted(order[bit] for bit in range(len(order)) if chosen >> bit & 1)
 
 
@@ -194,21 +218,24 @@ def segments_on_axis(numbers_by_filing, axis, periods, totals):
     if not members:
         return None, "the filings tag no revenue by %s" % axis
     company_facts = members_to_company_facts(members)
-    names = sorted(members)
+    names = sorted(name for name in members if name not in TOTAL_MEMBERS)
     values = {name: [lisp_sec.flow_value(lisp_sec.ConceptFacts(company_facts, "segments:" + name), p) for p in periods]
               for name in names}
     latest = [name for name in names if values[name][-1] is not None and abs(values[name][-1]) >= ROUNDING]
     if len(latest) < 2:
         return None, "the filings have fewer than two %s for the latest period" % axis
-    chosen = best_combination([values[name][-1] for name in latest], totals[-1])
+    latest_values = [values[name][-1] for name in latest]
+    chosen = best_combination(latest_values, totals[-1], [values[name][:-1] for name in latest], totals[:-1])
     if chosen is None:
-        return None, "no %s add up to the company's revenue" % axis
-    segments = []
-    for index in chosen:
-        name = latest[index]
-        if any(v is None for v in values[name]):
-            return None, "%s %s has no number for every period" % (axis, member_name(name))
-        segments.append((member_name(name), values[name]))
+        alone = best_combination(latest_values, totals[-1])
+        if alone is None:
+            return None, "no %s add up to the company's revenue" % axis
+        for index in alone:
+            if any(v is None for v in values[latest[index]]):
+                return None, "%s %s has no number for every period" % (axis, member_name(latest[index]))
+        return None, ("no %s add up to the company's revenue in every period (the segments are not the same "
+                      "from year to year)" % axis)
+    segments = [(member_name(latest[index]), values[latest[index]]) for index in chosen]
     other = [total - sum(values_[i] for _, values_ in segments) for i, total in enumerate(totals)]
     if any(abs(x) >= ROUNDING for x in other):
         segments.append(("Other revenue", other))

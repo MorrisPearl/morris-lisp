@@ -1373,7 +1373,8 @@ data functions return **tables**, so a Census table and a BEA table can be match
 shared key and charted, as `map_example.lsp` does.
 
 `three_statement_model_example.lsp` makes a spreadsheet of a company's three financial statements, with a
-forecast whose every number is a formula that follows a short list of assumptions; its section in the
+forecast whose every number is a formula that follows a short list of assumptions -- for an ordinary company, a
+bank (JPMorgan), or a property and casualty insurer (Travelers); its section in the
 [library manual](lisp_library_reference.md#three-statement-models) says how the forecast works.
 
 `sofr_and_mortgage_rates.lsp` puts SOFR's whole history, from the New York Fed (`nyfed-rates`),

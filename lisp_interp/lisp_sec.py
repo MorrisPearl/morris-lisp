@@ -392,10 +392,12 @@ def flow_value(concept, period):
     return to_date_now - to_date_before
 
 
-def line_item_values(facts, periods, statement=None):
+def line_item_values(facts, periods, statement=None, items=None):
     """For each line item (of one statement, or of all three), its value in
     each period: a list of (item, values, unit, sources), sources being
-    the concepts the values came from."""
+    the concepts the values came from. `items` is a list like LINE_ITEMS
+    (the default) for the lines of some other kind of company, a bank's."""
+    items = LINE_ITEMS if items is None else items
     concepts_seen = {}
 
     def concept(name):
@@ -404,7 +406,7 @@ def line_item_values(facts, periods, statement=None):
         return concepts_seen[name]
 
     found = {}                                   # key -> [values, unit, sources]
-    for key, label, item_statement, names, _ in LINE_ITEMS:
+    for key, label, item_statement, names, _ in items:
         values, unit, sources = [], None, []
         for period in periods:
             value = None
@@ -420,7 +422,7 @@ def line_item_values(facts, periods, statement=None):
         found[key] = [values, unit, sources]
 
     # Then the lines worked out from two others, where they weren't reported.
-    for key, label, item_statement, names, difference_of in LINE_ITEMS:
+    for key, label, item_statement, names, difference_of in items:
         if difference_of is None:
             continue
         a, b = difference_of
@@ -433,7 +435,7 @@ def line_item_values(facts, periods, statement=None):
                     sources.append("%s - %s" % (a, b))
 
     return [(item, found[item[0]][0], found[item[0]][1], found[item[0]][2])
-            for item in LINE_ITEMS if statement is None or item[2] == statement]
+            for item in items if statement is None or item[2] == statement]
 
 
 # ---------------------------------------------------------------------------

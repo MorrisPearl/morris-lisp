@@ -2,7 +2,7 @@
 
 It reads the tabs as lisp_google.google_workbook is given them (a list of dicts with "name" and
 "cells") and works out every formula. It knows what the model's formulas use: numbers, text in
-quotes, cell references (A1, or 'Tab name'!A1), ranges of them in SUM, MAX, MIN, ROUND, IFERROR,
+quotes, cell references (A1, or 'Tab name'!A1), ranges of them in SUM, AVERAGE, MAX, MIN, ROUND, IFERROR,
 the operators + - * /, and parentheses. Anything else is an error, so a formula that uses
 something new says so here.
 """
@@ -178,6 +178,8 @@ class Formula:
             numbers += [number(x) for x in argument] if isinstance(argument, list) else [number(argument)]
         if name == "SUM":
             return sum(numbers)
+        if name == "AVERAGE":
+            return sum(numbers) / len(numbers)
         if name == "MAX":
             return max(numbers)
         if name == "MIN":

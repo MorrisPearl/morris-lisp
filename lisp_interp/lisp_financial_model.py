@@ -1,6 +1,6 @@
 """A three-statement financial model of a public company, in a Google Sheet.
 
-  (three-statement-model creds ticker [:period "annual" :history 5 :forecast 5 :title t])
+  (three-statement-model creds ticker [:period "annual" :history 5 :forecast 5 :kind "auto" :title t])
 
 downloads the company's reported numbers from the SEC (lisp_sec.py), lays out
 its income statement, balance sheet, and cash flow statement for the last
@@ -47,6 +47,13 @@ https://www.wallstreetprep.com/knowledge/build-integrated-3-statement-financial-
   (assets less liabilities and equity, at the bottom of the balance sheet,
   and zero in every period) is a test of all the formulas together.
 
+KINDS OF COMPANY. What is written above is the model of an ordinary company ("general"). A bank has no
+cost of revenue and an insurer no inventory, and their balance sheets are what they earn on, so each has a
+model of its own with its own lines and assumptions, in lisp_financial_bank.py and
+lisp_financial_insurer.py. They are Templates (below): the lines taken from the SEC, a History that arranges
+them, and a Model (a subclass of the one here) that lays out the sheets. :kind "auto" chooses by the SEC's
+industry code (SIC), and falls back to "general", with a note, if the SEC's facts lack what the other kind needs.
+
 THE REPORTED NUMBERS come from lisp_sec.line_item_values, which finds each
 line under whichever of the company's tags it uses. The model's lines are a
 little fewer than the company's, so each statement has a few lines that are
@@ -61,6 +68,7 @@ import datetime
 from lisp_core import LispError, LispString, keyword_options
 import lisp_google
 import lisp_sec
+import lisp_sec_filings
 import lisp_sec_segments
 
 INCOME, BALANCE, CASH_FLOW, ASSUMPTIONS, NOTES = \
@@ -140,25 +148,29 @@ def safe_ratio(numerator, denominator):
 class Reported:
     """What the company reported, for the periods of the model's history
     (oldest first): `values[key]` is a list with a number (in millions) or
-    None for each period, for the keys of lisp_sec.LINE_ITEMS; `sources[key]`
+    None for each period, for the keys of `items` (lisp_sec.LINE_ITEMS, or
+    a list like it for a kind of company that has other lines); `sources[key]`
     says which concepts they came from."""
 
-    def __init__(self, facts, periods):
+    def __init__(self, facts, periods, items=None):
         self.periods = periods
+        self.items = lisp_sec.LINE_ITEMS if items is None else items
         self.values, self.sources = {}, {}
-        self.currency = "USD"
-        for item, values, unit, sources in lisp_sec.line_item_values(facts, periods):
+        currency = None
+        for item, values, unit, sources in lisp_sec.line_item_values(facts, periods, items=self.items):
             key = item[0]
             per_share = bool(unit) and "/" in unit
             self.values[key] = [None if v is None else v if per_share else v / MILLION for v in values]
             self.sources[key] = sources
-            if key == "revenue" and unit:
-                self.currency = unit
+            if currency is None and unit and not per_share and unit != "shares":
+                currency = unit
+        self.currency = currency or "USD"
         # Q4 has no average share count of its own (the year's is not four quarters' sum): use the quarter before's
-        for key in ("shares-diluted", "shares-basic"):
-            self.values[key] = fill_gaps(self.values[key])
-        if not any(self.values["shares-diluted"]):
-            self.values["shares-diluted"] = self.values["shares-basic"]
+        if "shares-diluted" in self.values:
+            for key in ("shares-diluted", "shares-basic"):
+                self.values[key] = fill_gaps(self.values[key])
+            if not any(self.values["shares-diluted"]):
+                self.values["shares-diluted"] = self.values["shares-basic"]
 
     def zero_filled(self, key):
         """The key's numbers, with 0 where the company reported none."""
@@ -315,6 +327,7 @@ class Model:
 
     def __init__(self, company_name, ticker, period, reported, history, forecast_count, segment_note=""):
         self.segment_note = segment_note
+        self.kind_note = ""                            # (why the model is of this kind of company, if that needs saying)
         self.company_name, self.ticker, self.period = company_name, ticker, period
         self.reported, self.h = reported, history
         self.history_count, self.forecast_count = history.count, forecast_count
@@ -416,13 +429,6 @@ class Model:
                       if i >= 1 else None for i in range(n)], YIELD_LIMITS,
                      lambda i: sec(inc("other-income", i), "((%s+%s)*%s/365)" % (
                          bal("cash", i - 1), bal("short-term-investments", i - 1), a("days", i))) if over_previous(i) else None))
-        rows.append(("tax-rate", "Tax rate (on income before taxes)", "percent",
-                     [safe_ratio(h.income_tax[i], h.pretax_income[i]) for i in range(n)], TAX_RATE_LIMITS,
-                     lambda i: sec(inc("income-tax", i), inc("pretax-income", i))))
-        rows.append(("share-growth", "Growth of the diluted share count", "percent",
-                     [None if i < 1 or not h.shares[i - 1] else h.shares[i] / h.shares[i - 1] - 1 for i in range(n)],
-                     SHARE_GROWTH_LIMITS,
-                     lambda i: "=IFERROR(%s/%s-1,0)" % (inc("shares", i), inc("shares", i - 1)) if over_previous(i) else None))
         rows.append(("stock-compensation-percent", "Stock compensation, % of revenue", "percent",
                      [safe_ratio(h.stock_compensation[i], h.revenue[i]) for i in range(n)], NO_LIMITS,
                      lambda i: sec(cf("stock-compensation", i), inc("revenue", i))))
@@ -442,6 +448,29 @@ class Model:
                      [None if not h.cost_of_revenue[i] else h.accounts_payable[i] / h.cost_of_revenue[i] * days
                       for i in range(n)], NO_LIMITS,
                      lambda i: sec("%s*%s" % (bal("accounts-payable", i), a("days", i)), inc("cost-of-revenue", i))))
+        rows += self.common_assumption_rows()
+        return rows
+
+    def common_assumption_rows(self):
+        """The assumptions of every kind of company (each uses the same lines to work them out): the tax rate,
+        the growth of the share count, and the payouts."""
+        h, n = self.h, self.history_count
+        inc, cf = self.refs(INCOME, ASSUMPTIONS), self.refs(CASH_FLOW, ASSUMPTIONS)
+
+        def sec(numerator, denominator):
+            return "=IFERROR(%s/%s,0)" % (numerator, denominator)
+
+        def over_previous(i):
+            return i >= 1
+
+        rows = []
+        rows.append(("tax-rate", "Tax rate (on income before taxes)", "percent",
+                     [safe_ratio(h.income_tax[i], h.pretax_income[i]) for i in range(n)], TAX_RATE_LIMITS,
+                     lambda i: sec(inc("income-tax", i), inc("pretax-income", i))))
+        rows.append(("share-growth", "Growth of the diluted share count", "percent",
+                     [None if i < 1 or not h.shares[i - 1] else h.shares[i] / h.shares[i - 1] - 1 for i in range(n)],
+                     SHARE_GROWTH_LIMITS,
+                     lambda i: "=IFERROR(%s/%s-1,0)" % (inc("shares", i), inc("shares", i - 1)) if over_previous(i) else None))
         rows.append(("dividend-payout", "Dividends, % of net income", "percent",
                      [safe_ratio(-h.dividends[i], h.net_income[i]) for i in range(n)], PAYOUT_LIMITS,
                      lambda i: sec("-" + cf("dividends", i), inc("net-income", i))))
@@ -765,6 +794,18 @@ class Model:
             rows.append(row)
         return rows
 
+    def forecast_notes(self):
+        """The Notes tab's lines on how the forecast works, for this kind of company."""
+        return [
+            "Revenue is the revenue of the year before (for quarters, the same quarter a year before) times one plus the growth assumption.",
+            "Costs are a percentage of revenue (cost of revenue as one less the gross margin). Interest uses last period's debt and cash, so no formula refers to itself.",
+            "Receivables, inventory, and payables follow from days of revenue or cost of revenue. Plant and equipment is last period's plus capital expenditures less depreciation.",
+            "Debt is last period's plus what is borrowed (repaid), an assumption. Equity is last period's plus net income and stock compensation, less dividends and repurchases.",
+            "Cash is last period's plus the net change in cash on the Cash Flow tab. Goodwill, intangibles, short-term investments, and the other assets and liabilities stay as they were.",
+            "Nothing keeps cash from going negative if the payouts are more than the company earns: change the assumptions, or the borrowing.",
+            "Depreciation and amortization all reduces plant and equipment here, though some of it is amortization of intangibles: if plant shrinks too fast, lower depreciation or raise capital expenditures.",
+        ]
+
     def sources_for_notes(self):
         """The Notes tab: how to read the sheet, then the concept each reported number came from."""
         notes = [
@@ -775,27 +816,24 @@ class Model:
             "Amounts are in millions of %s, except per-share amounts." % self.reported.currency,
             "",
             "How the forecast works",
-            "Revenue is the revenue of the year before (for quarters, the same quarter a year before) times one plus the growth assumption.",
-            "Costs are a percentage of revenue (cost of revenue as one less the gross margin). Interest uses last period's debt and cash, so no formula refers to itself.",
-            "Receivables, inventory, and payables follow from days of revenue or cost of revenue. Plant and equipment is last period's plus capital expenditures less depreciation.",
-            "Debt is last period's plus what is borrowed (repaid), an assumption. Equity is last period's plus net income and stock compensation, less dividends and repurchases.",
-            "Cash is last period's plus the net change in cash on the Cash Flow tab. Goodwill, intangibles, short-term investments, and the other assets and liabilities stay as they were.",
-            "Nothing keeps cash from going negative if the payouts are more than the company earns: change the assumptions, or the borrowing.",
-            "Depreciation and amortization all reduces plant and equipment here, though some of it is amortization of intangibles: if plant shrinks too fast, lower depreciation or raise capital expenditures.",
+            *self.forecast_notes(),
             "",
             "The starting assumptions are guesses from the reported periods (the last period's, or the average of the last year's quarters), kept within limits: replace them with your own.",
             "The lines called other are what is left between the lines shown and the company's own subtotals, so that the subtotals are as reported.",
         ]
-        missing = [item[1] for item in lisp_sec.LINE_ITEMS if self.reported.never_reported(item[0])
-                   and item[0] in SOURCE_LINES]
+        concept_lines = {item[0] for item in self.reported.items if item[3]}       # the lines that come from concepts
+        missing = [item[1] for item in self.reported.items if self.reported.never_reported(item[0])
+                   and item[0] in concept_lines]
         if missing:
             notes += ["", "Lines the company has not reported in these periods, taken as zero: " + ", ".join(missing)]
         notes += ["", "Where the reported numbers came from (the company's XBRL tags)"]
-        for item in lisp_sec.LINE_ITEMS:
-            if item[0] in SOURCE_LINES and self.reported.sources[item[0]]:
+        for item in self.reported.items:
+            if item[0] in concept_lines and self.reported.sources[item[0]]:
                 notes.append("%s: %s" % (item[1], ", ".join(self.reported.sources[item[0]])))
         if self.segment_note:
             notes += ["", self.segment_note]
+        if self.kind_note:
+            notes += ["", self.kind_note]
         return notes
 
     def notes_tab(self):
@@ -820,12 +858,57 @@ class Model:
         return result
 
 
-SOURCE_LINES = {item[0] for item in lisp_sec.LINE_ITEMS if item[3]}      # the lines that come from concepts
-
-
 # ---------------------------------------------------------------------------
 # The builtin
 # ---------------------------------------------------------------------------
+
+class MissingLines(LispError):
+    """The SEC's facts for a company lack numbers that a kind of model needs."""
+
+
+class Template:
+    """A kind of company the model can lay out: the lines it takes from the SEC's facts (`items`, as in
+    lisp_sec.LINE_ITEMS), the classes that arrange them (a History of the reported numbers and a Model of the
+    sheets), `required` -- the lines the model cannot do without, each a tuple of keys of which one must be
+    reported for every period -- and the SEC's industry codes (SIC) of the companies it is for."""
+
+    def __init__(self, name, description, items, history_class, model_class, required=(), sic_codes=()):
+        self.name, self.description, self.items = name, description, items
+        self.history_class, self.model_class = history_class, model_class
+        self.required, self.sic_codes = required, set(sic_codes)
+
+    def lacking(self, reported, i):
+        """The labels of the required lines that are not reported in period i."""
+        labels = {item[0]: item[1] for item in self.items}
+        return [" or ".join(labels[key] for key in alternatives) for alternatives in self.required
+                if all(reported.values[key][i] is None for key in alternatives)]
+
+    def first_complete_period(self, reported):
+        """The index of the earliest period from which every period to the latest has all the required lines
+        (the number of periods, if the latest hasn't)."""
+        start = len(reported.periods)
+        while start > 0 and not self.lacking(reported, start - 1):
+            start -= 1
+        return start
+
+    def missing_lines(self, reported):
+        """The labels of the required lines that are not reported in some period."""
+        missing = []
+        for i in range(len(reported.periods)):
+            missing += [label for label in self.lacking(reported, i) if label not in missing]
+        return missing
+
+
+GENERAL = Template("general", "an ordinary company", lisp_sec.LINE_ITEMS, History, Model)
+
+
+def templates():
+    """The kinds of company, by name. (The bank and insurer templates are loaded here and not at the top
+    of the file because they are built on this module.)"""
+    import lisp_financial_bank
+    import lisp_financial_insurer
+    return {"general": GENERAL, "bank": lisp_financial_bank.TEMPLATE, "insurer": lisp_financial_insurer.TEMPLATE}
+
 
 def count_option(options, name, default, who):
     value = options.get(name, default)
@@ -835,22 +918,38 @@ def count_option(options, name, default, who):
 
 
 def build_model(facts, ticker, period, history_count, forecast_count, who="three-statement-model",
-                find_segments=None):
-    """The Model of a company from its SEC facts. `find_segments`, if given, is a function of the periods
-    (oldest first) and the company's total revenue in each, in millions, that gives the revenue by
-    segment: (segments, a note), segments being [(name, a revenue for each period)] or None."""
+                find_segments=None, kind="general"):
+    """The Model of a company from its SEC facts, of the kind (a name in templates()) given. `find_segments`,
+    if given (for an ordinary company), is a function of the periods (oldest first) and the company's total
+    revenue in each, in millions, that gives the revenue by segment: (segments, a note), segments being
+    [(name, a revenue for each period)] or None. Raises MissingLines if the kind needs lines that the
+    company's facts don't have."""
+    template = templates()[kind]
     periods = lisp_sec.chosen_periods(facts, {"period": period, "count": history_count}, who)
     periods = list(reversed(periods))
     needed = PERIODS_PER_YEAR[period] + 1
     if len(periods) < needed:
         raise LispError("%s: the SEC has only %d %s periods for this company, and growth needs at least %d"
                         % (who, len(periods), period, needed))
-    reported = Reported(facts, periods)
+    reported = Reported(facts, periods, template.items)
+    history_note = ""
+    start = template.first_complete_period(reported)
+    if len(periods) - start < needed:
+        raise MissingLines("%s: a model of %s needs %s, which the SEC's facts for this company do not have for "
+                           "every one of these periods" % (who, template.description,
+                                                           ", ".join(template.missing_lines(reported))))
+    if start > 0:                               # (the older periods that lack lines are left out)
+        history_note = ("The history starts at %s, not earlier, because the SEC's facts for this company lack %s "
+                        "before then." % (periods[start].end.isoformat(), ", ".join(template.missing_lines(reported))))
+        periods = periods[start:]
+        reported = Reported(facts, periods, template.items)
     segments, note = None, ""
-    if find_segments:
-        segments, note = find_segments(periods, History(reported).revenue)
-    return Model(facts.get("entityName") or ticker, ticker, period, reported, History(reported, segments),
-                 forecast_count, note)
+    if find_segments and kind == "general":
+        segments, note = find_segments(periods, template.history_class(reported).revenue)
+    result = template.model_class(facts.get("entityName") or ticker, ticker, period, reported,
+                                  template.history_class(reported, segments), forecast_count, note)
+    result.kind_note = history_note
+    return result
 
 
 def segment_finder(credentials_path, company, kind, who):
@@ -862,35 +961,75 @@ def segment_finder(credentials_path, company, kind, who):
                                                                      kind, who)
         if segments:
             return segments, ("Revenue by segment, from the company's filings: %s. A company that changes its segments "
-                              "restates only the years it shows beside the new ones, so a jump between years may be "
-                              "the definition, not the business." % description)
+                              "restates only the years it shows beside the new ones, so a jump between years may "
+                              "be the definition, not the business." % description)
         if kind != "auto":
             raise LispError("%s: no %s segments: %s" % (who, kind, description))
         return None, "Revenue is modeled in total, not by segment: " + description
     return find
 
 
+def company_industry(credentials_path, company, who):
+    """The SEC's industry code (SIC) and its description for a company, such as (6021, "National Commercial
+    Banks"), or (None, "") if they can't be found."""
+    try:
+        cik = lisp_sec.company_cik(credentials_path, company, who)
+        answer = lisp_sec_filings.sec_json(lisp_sec_filings.SUBMISSIONS_URL % cik, credentials_path, who)
+        return int(answer.get("sic") or 0) or None, str(answer.get("sicDescription") or "")
+    except (LispError, ValueError):
+        return None, ""
+
+
+def kind_for_industry(sic):
+    """The name of the kind of model for a company in this industry (SIC code): "general" unless a template is for it."""
+    for name, template in templates().items():
+        if sic in template.sic_codes:
+            return name
+    return "general"
+
+
 def three_statement_model(credentials_path, company, *options):
-    """(three-statement-model creds ticker [:period "annual" :history n :forecast n :segments "auto"
-    :title t]) -- a new Google spreadsheet with the company's income statement, balance sheet, and cash
-    flow statement as reported to the SEC, for the last `:history` years (or quarters), and forecast
+    """(three-statement-model creds ticker [:period "annual" :history n :forecast n :kind "auto"
+    :segments "auto" :title t]) -- a new Google spreadsheet with the company's income statement, balance sheet,
+    and cash flow statement as reported to the SEC, for the last `:history` years (or quarters), and forecast
     for the next `:forecast`, by formulas that follow assumptions on an Assumptions tab. Returns the
     spreadsheet's address. :period is "annual" or "quarterly" (5 years each way, or 8 quarters, unless
-    :history and :forecast say). :segments: "auto" (the default) models revenue by business segment
-    if the company reports them, or else by product; "business", "product", or "geography" asks for
-    that one; #f for total revenue only. You need to be signed in to Google: (google-login creds)."""
+    :history and :forecast say). :kind is "general" (an ordinary company: revenue, costs, working capital,
+    plant), "bank" (loans, deposits, interest rates, credit losses), or "insurer" (a property and casualty
+    insurer: premiums, loss and expense ratios, investments, reserves); "auto", the default, chooses by the
+    SEC's industry code for the company, and models it as an ordinary company if the SEC's facts lack what
+    the other kind needs. :segments, for an ordinary company: "auto" (the default) models revenue by business
+    segment if the company reports them, or else by product; "business", "product", or "geography" asks
+    for that one; #f for total revenue only. You need to be signed in to Google: (google-login creds)."""
     who = "three-statement-model"
-    options = keyword_options(options, ["period", "history", "forecast", "segments", "title"], who)
+    options = keyword_options(options, ["period", "history", "forecast", "kind", "segments", "title"], who)
     period = str(options.get("period", "annual"))
     if period not in DEFAULT_COUNTS:
         raise LispError('%s: :period is "annual" or "quarterly", not %s' % (who, period))
     history_count = count_option(options, "history", DEFAULT_COUNTS[period], who)
     forecast_count = count_option(options, "forecast", DEFAULT_COUNTS[period], who)
-    kind = options.get("segments", "auto")
+    kind = str(options.get("kind", "auto"))
+    if kind != "auto" and kind not in templates():
+        raise LispError('%s: :kind is "auto", %s, not %s' % (who, ", ".join('"%s"' % name for name in templates()), kind))
+    segments = options.get("segments", "auto")
     facts = lisp_sec.company_facts(credentials_path, company, who)
     ticker = str(company).upper()
-    finder = None if kind is False else segment_finder(credentials_path, company, str(kind), who)
-    model = build_model(facts, ticker, period, history_count, forecast_count, who, finder)
+    finder = None if segments is False else segment_finder(credentials_path, company, str(segments), who)
+    kind_note = ""
+    if kind == "auto":
+        sic, description = company_industry(credentials_path, company, who)
+        kind = kind_for_industry(sic)
+        try:
+            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind)
+        except MissingLines as problem:
+            if kind == "general":
+                raise
+            kind_note = ("The SEC classifies this company as %s, but it is modeled as an ordinary company because %s"
+                         % (description or "another kind of company", str(problem).split(": ", 1)[1]))
+            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, "general")
+    else:
+        model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind)
+    model.kind_note = (model.kind_note + " " + kind_note).strip()
     title = options.get("title") or "%s %s model" % (model.company_name, period)
     return LispString(lisp_google.google_workbook(credentials_path, str(title), model.sheets()))
 

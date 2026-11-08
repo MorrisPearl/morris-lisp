@@ -2881,7 +2881,8 @@ is sent in pieces. Google limits how fast a program can make spreadsheets
 
 ### Three-statement models
 
-(In `lisp_financial_model.py`, with `lisp_sec_segments.py`.) A company's income statement, balance sheet, and cash
+(In `lisp_financial_model.py`, with `lisp_sec_segments.py`, `lisp_financial_bank.py`, and `lisp_financial_insurer.py`.)
+A company's income statement, balance sheet, and cash
 flow statement, as it reported them to the SEC for the last few years -- or quarters -- and **forecast** for the
 next few, in a Google Sheet. The forecast is made of formulas, which follow a short list of assumptions that
 you type over: revenue growth (for each segment, if the company reports them), margins, days of sales in
@@ -2895,13 +2896,15 @@ the company's own numbers, so that the work left to you is the thinking: what *w
 ; makes a spreadsheet in your Google Drive, and gives its address
 (three-statement-model creds "AAPL" :period "quarterly" :history 8 :forecast 8)
 (three-statement-model creds "KO" :segments #f :title "Coca-Cola, total revenue only")
+(three-statement-model creds "JPM")       ; a bank: loans, deposits, interest rates, credit losses
+(three-statement-model creds "TRV")       ; a property and casualty insurer: premiums, loss and expense ratios, float
 ```
 
 It needs what `sec-income-statement` and `google-sheet` need: the credentials file's `sec_user_agent` entry, and a
 Google sign-in (`(google-login creds)`, once; "Google Sheets" says how to set it up). The sheet is made in your own
 Drive, and shared with no one.
 
-#### `(three-statement-model creds ticker [:period p :history n :forecast n :segments s :title t])`
+#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :segments s :title t])`
 Makes the spreadsheet and returns its address, as a string.
 
 - `:period` is `"annual"` (the default) or `"quarterly"`.
@@ -2909,7 +2912,13 @@ Makes the spreadsheet and returns its address, as a string.
   for quarters, unless you say. A company with fewer periods on file than `:history` gets the ones it has. A model needs
   at least two years -- or five quarters, since a quarter's growth is measured against the same quarter a year before --
   of history.
-- `:segments` is how revenue is forecast. `"auto"` (the default) is by **business segment**, if the company reports
+- `:kind` is what kind of company it is, which decides the lines of the statements and what drives the forecast:
+  `"general"` (an ordinary company, described first below), `"bank"`, or `"insurer"` (a property and casualty insurer),
+  both described under "Banks and insurers" below. `"auto"`, the default, chooses by the SEC's industry code for the company
+  (national and state commercial banks and savings institutions are banks; fire, marine, and casualty insurers and surety
+  insurers are insurers; everything else is general), and models it as an ordinary company if the SEC's facts lack what
+  the other kind needs, saying why on the Notes tab. Asking for a kind is an error if its lines are missing.
+- `:segments`, for an ordinary company, is how revenue is forecast. `"auto"` (the default) is by **business segment**, if the company reports
   them, or else by **product or service**, and if it has neither (or they can't be found for every period) by its total
   revenue alone, and the Notes tab says why. `"business"`, `"product"`, or `"geography"` asks for that breakdown, and it is
   an error if it can't be found; `#f` is total revenue only.
@@ -2988,8 +2997,60 @@ The names come from the company's tags (`Rest Of Asia Pacific`), not its labels;
 cash, so it does not borrow when cash runs out; it does not know about leases, taxes paid later than they are owed, acquisitions,
 or minority interests (the equity line includes them, and net income is the company's); and depreciation on the cash flow statement
 includes the amortization of intangibles but here all reduces plant and equipment, so plant can shrink faster than it should if
-the company amortizes a lot. A company outside the US that files only annual reports can have only annual models. Banks and insurers,
-which have no cost of revenue and a different balance sheet, are laid out but not meaningfully modeled.
+the company amortizes a lot. A company outside the US that files only annual reports can have only annual models. A conglomerate that
+is part insurer, part something else (Berkshire Hathaway: insurance, a railroad, utilities, manufacturing, retail)
+is modeled as an ordinary company, by whatever segments its filings give (see below); a model that is half insurer
+and half railroad would need its insurance and the rest apart, which the SEC's summary of its numbers does not have.
+
+#### Banks and insurers
+
+A bank does not sell a product. It borrows, mostly from depositors, lends for more, and keeps the difference less its
+losses; an insurer collects premiums now, pays claims later, and invests the "float" in between. For them, revenue
+growth and gross margin say little, so their models have other lines and other assumptions. The tabs, the colors, the
+periods in the same columns, the "other" lines that make the subtotals the company's, the balance **check**, and the
+rule that nothing refers to itself are the same.
+
+**A bank** (`:kind "bank"`, or `"auto"` for a bank by industry code; `lisp_financial_bank.py`):
+
+| | |
+|---|---|
+| Balance sheet | Loans and deposits grow at the rates you assume; cash and securities are percentages of deposits; the allowance for credit losses is a percentage of loans. **Borrowings are what funds the rest** (total assets less deposits, other liabilities, and equity), so if loans grow faster than deposits, borrowings grow. Trading assets, premises, goodwill and the like stay as they were. |
+| Interest | A rate times the balance at the end of the period before: on loans, on securities and cash, on deposits, on borrowings. Net interest income is the difference. |
+| Credit losses | Net charge-offs are a percentage of last period's loans. The **provision** is the charge-offs plus the growth of the allowance. |
+| Other lines | Noninterest income grows at an assumed rate (from the same quarter a year before, for quarters); noninterest expense is the **efficiency ratio** times net revenue (net interest income plus noninterest income). Equity is last period's plus net income, less dividends and repurchases. |
+| Cash flow | The balance sheet seen as flows: net income, less the growth of loans and securities, plus the growth of deposits and borrowings, less the payouts. It ends with the cash the balance sheet has: a second check line on the Balance Sheet, 0 in every forecast period, says so. |
+| Ratios | Net interest margin, efficiency ratio, return on equity and on assets (below the income statement); loans to deposits, borrowings to assets, equity to assets, allowance to loans (below the balance sheet). They are results, not assumptions: they say whether the forecast is one a bank could live with. |
+
+Regulatory capital ratios (CET1) need risk-weighted assets, which are not in the SEC's summary of a company's numbers.
+Banks tag their statements in more different ways than other companies, and the model needs interest income and
+expense and their parts on loans and deposits, noninterest income and expense, loans, deposits, total assets, and equity.
+If the SEC's facts lack one in some of the older periods, the history starts later (the Notes tab says where and why); if
+they lack one in the latest, the company is modeled as an ordinary one. Of the large banks, JPMorgan, Bank of America,
+Citigroup, U.S. Bancorp, PNC, and most regional banks work; Wells Fargo (which stopped tagging its total loans in 2022) and
+M&T (which doesn't tag its deposit interest as a total) do not.
+
+**A property and casualty insurer** (`:kind "insurer"`; `lisp_financial_insurer.py`):
+
+| | |
+|---|---|
+| Income statement | Premiums earned grow at the rate you assume. Losses and loss adjustment expense are the **loss ratio** times premiums, and the other underwriting, acquisition, and operating costs the **expense ratio** times premiums; together they are the **combined ratio**, under 100% when the insurer makes money underwriting. Net investment income is a yield on last period's investments and cash. Realized gains are an amount you type, 0 to begin with. |
+| Balance sheet | Loss reserves are an assumed number of years of losses; unearned premiums a percentage of a year's premiums; premiums receivable some days of premiums; reinsurance recoverables a percentage of the reserves; deferred acquisition costs a percentage of unearned premiums. Equity is last period's plus net income, less dividends and repurchases (unrealized gains and losses on bonds, which move equity when interest rates do, are not forecast). |
+| Cash flow | Net income, plus the growth of the reserves and the unearned premiums (the **float**: money held before it is paid out), less the growth of receivables, recoverables, and acquisition costs. What is left after dividends, repurchases, and borrowing is **invested**, in the share you assume (all of it, to begin with), so investments grow by it; the rest stays as cash. |
+| Ratios | Underwriting income, loss ratio, expense ratio, and combined ratio (below the income statement); a year's premiums, reserves, and investments to equity (below the balance sheet). |
+
+The insurer's model needs premiums earned, losses incurred, net investment income, revenues, investments, loss reserves,
+unearned premiums, total assets, and equity. Travelers, Chubb, Progressive, Hartford, and W. R. Berkley have them; Allstate
+(whose losses are not tagged for every year) and Berkshire Hathaway (whose insurance is in one set of statements with its
+railroad, utilities, and manufacturing, without these lines) do not, and are modeled as ordinary companies. Life and health
+insurers have other lines (policy benefits, annuities), and are not covered.
+
+**Berkshire Hathaway and segments that overlap.** Berkshire reports its revenue several ways, and the members overlap: its
+"Insurance and Other" contains the insurance group, and the manufacturing, McLane, and service and retailing businesses,
+all of which are also members. `three-statement-model` takes the segments that add up to the revenue **in every period**,
+exactly if there are such (a set that is only close in the latest year may be an accident of double counting), and does not
+use a member that is a total of the others ("Operating Segments"). For Berkshire that is *Insurance And Other* (87% of
+revenue) and *Railroad, Utilities And Energy*; its business segments (the insurance group, BNSF, Berkshire Hathaway Energy,
+manufacturing, McLane, Pilot, service and retailing) overlap and change from year to year, and so cannot be used.
 
 ### Reports with control breaks
 
