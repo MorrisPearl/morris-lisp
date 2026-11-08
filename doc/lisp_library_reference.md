@@ -8,7 +8,8 @@ programming, and stratification), dates and cash flows, and investments
 (option prices, the volatility smile, option checks, and portfolios), and
 maps. Yield curves, and simulated paths of interest rates and of investment
 prices, are in their own manual, [lisp_paths_manual.md](lisp_paths_manual.md), regression in
-[lisp_regression_manual.md](lisp_regression_manual.md), and macroeconomic models (Dynare)
+[lisp_regression_manual.md](lisp_regression_manual.md), baseball (`lib/baseball.lsp`)
+in [lisp_baseball_manual.md](lisp_baseball_manual.md), and macroeconomic models (Dynare)
 in [lisp_macro_models_manual.md](lisp_macro_models_manual.md). Most are builtins,
 written in Python; the rest are libraries in `lib/`, written in Lisp.
 
@@ -125,7 +126,8 @@ The functions for investment analysis, in the order an analysis uses them.
    (`lib/deal.lsp`).
 7. **Models.** Regression, in its own manual, [lisp_regression_manual.md](lisp_regression_manual.md) (least squares,
    least absolute deviation, quantiles, logistic, Poisson, ridge and lasso, nonlinear, and splines of them),
-   "Linear programming", and `lib/solver.lsp`.
+   "Linear programming", and `lib/solver.lsp`. Baseball, as a chain of states played from Retrosheet's plays, is in its own manual,
+   [lisp_baseball_manual.md](lisp_baseball_manual.md) (`lib/baseball.lsp`).
 
 **Built in, or loaded.** Everything above is built in, and there whenever
 the interpreter is, except the libraries in `lib/`, which are loaded with

@@ -58,6 +58,7 @@ import lisp_nyfed
 import lisp_futures
 import lisp_google
 import lisp_http
+import lisp_baseball
 import lisp_investment_paths
 import lisp_maps
 import lisp_notebook_files
@@ -2125,7 +2126,7 @@ SHARED_BUILTIN_TABLES = (
     lisp_maps.BUILTINS, lisp_google.BUILTINS, lisp_schwab.BUILTINS, lisp_alpha_vantage.BUILTINS, lisp_finra.BUILTINS,
     lisp_http.BUILTINS,
     lisp_tastytrade.BUILTINS, lisp_futures.BUILTINS, lisp_rates.BUILTINS, lisp_simplex.BUILTINS,
-    lisp_investment_paths.BUILTINS, lisp_portfolio.BUILTINS, lisp_finance.BUILTINS, lisp_options.BUILTINS,
+    lisp_baseball.BUILTINS, lisp_investment_paths.BUILTINS, lisp_portfolio.BUILTINS, lisp_finance.BUILTINS, lisp_options.BUILTINS,
     lisp_clock.BUILTINS, lisp_calendar.BUILTINS, lisp_widgets.BUILTINS,
 )
 

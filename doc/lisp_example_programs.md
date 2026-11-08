@@ -10,11 +10,11 @@ once. Several of the programs are after chapters of Peter Norvig's classic
 this interpreter, and the notes say where its rules (`#f` is the only false,
 vectors hold only numbers, strings, and dates) change what the book does.
 
-There are nine documents. The **language manual**,
+There are ten documents. The **language manual**,
 [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the
 syntax, the special forms and macros, and the general builtins. The **library
 manual**, [lisp_library_reference.md](lisp_library_reference.md), covers
-getting data, models, and investments, the **regression manual**, [lisp_regression_manual.md](lisp_regression_manual.md), covers fitting models to data, and the **CMO manual**, [lisp_cmo_manual.md](lisp_cmo_manual.md), covers the structured-deal model, the **forecasting manual**, [lisp_forecasting_manual.md](lisp_forecasting_manual.md), covers forecasting questions, and the **paths manual**, [lisp_paths_manual.md](lisp_paths_manual.md), covers yield curves and simulated paths of rates and prices, and the **macro models manual**, [lisp_macro_models_manual.md](lisp_macro_models_manual.md), covers models of the whole economy, run with Dynare, and the **data guide**, [economic_data_guide.md](economic_data_guide.md), says which agency publishes what data.
+getting data, models, and investments, the **regression manual**, [lisp_regression_manual.md](lisp_regression_manual.md), covers fitting models to data, the **baseball manual**, [lisp_baseball_manual.md](lisp_baseball_manual.md), covers baseball as a chain of states, and the **CMO manual**, [lisp_cmo_manual.md](lisp_cmo_manual.md), covers the structured-deal model, the **forecasting manual**, [lisp_forecasting_manual.md](lisp_forecasting_manual.md), covers forecasting questions, and the **paths manual**, [lisp_paths_manual.md](lisp_paths_manual.md), covers yield curves and simulated paths of rates and prices, and the **macro models manual**, [lisp_macro_models_manual.md](lisp_macro_models_manual.md), covers models of the whole economy, run with Dynare, and the **data guide**, [economic_data_guide.md](economic_data_guide.md), says which agency publishes what data.
 **This one is about the programs**: the
 language and library documents say what each function does; this says how
 whole programs are put together out of them. A section name in quotes is a
@@ -133,6 +133,7 @@ files in `examples/` and `lib/` from anywhere:
 | `note_option_example.lsp` | fitting the rate model to options on the 10-year note future: the model's prices next to the market's, and the volatility smile | tastytrade, the Treasury's curve |
 | `prepayment_demo.lsp` | loading pool data, a spline-logistic model, a held-out test, a chart | nothing |
 | `regression_kinds_example.lsp` | six kinds of regression on the same data, and cross-validation | nothing |
+| `baseball_example.lsp` | what an inning is worth, and a real game (Game 7 of the 2025 World Series) played 20,000 times, from Retrosheet's plays | the database `load_retrosheet_data/` makes |
 | `stratify_example.lsp` | stratification tables of 5,000 made-up loans | nothing |
 | `linear_programming_example.lsp` | investing $100 million in four pools, from a problem file | nothing |
 
@@ -1203,6 +1204,11 @@ a short script to copy from.
   data is generated, with `random-seed`, and the vector arithmetic of
   `(+ (vector-map s-curve incentive) noise)` is a good example of building test data
   without a loop.
+- **`baseball_example.lsp`.** A thin script over `lib/baseball.lsp` (the baseball manual, [lisp_baseball_manual.md](lisp_baseball_manual.md)): it fits the model to the 2015-2025 seasons
+  (`fit-baseball-model`), shows the runs an inning is expected to bring from each number of outs and runners (`run-expectancy`), and plays one real game, with the batting orders
+  and starting pitchers it had (`baseball-team-in-game`), 20,000 times (`simulate-baseball-games`). The game is Game 7 of the 2025 World Series, or another game if its Retrosheet id
+  is given on the command line, read with `command-line-arguments`. The work is in the library, so the example is the shape to copy for another question: build the model once, ask it
+  about teams. It needs the database that `load_retrosheet_data/build_retrosheet_db.py` makes.
 - **`stratify_example.lsp`.** A table of 5,000 made-up loans, built column by column with
   `make-table`, and the stratification report (`stratify-all`): eight small tables, each
   with a row per bucket of one column and, in every row, the loans' count, balance, share of

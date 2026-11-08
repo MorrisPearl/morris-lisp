@@ -5,7 +5,7 @@ floater and an inverse floater that together are worth what they were cut from. 
 what a deal is made of, how to build one, how each kind of bond is paid, and how losses and shortfalls are handled. The functions are loaded
 when you call one of them (see `lazy-load`), so there is nothing to load; `(load "deal.lsp")` loads them all at once.
 
-There are nine documents. The **language manual**, [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the syntax and the
+There are ten documents. The **language manual**, [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the syntax and the
 general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is made of are there). The **library manual**,
 [lisp_library_reference.md](lisp_library_reference.md), covers getting data, models, and investments. The **regression manual**,
 [lisp_regression_manual.md](lisp_regression_manual.md), covers fitting models to data. The **example programs**,
@@ -13,7 +13,7 @@ general builtins (`defstruct`, `defmethod` and the vectors and tables a deal is 
 [lisp_forecasting_manual.md](lisp_forecasting_manual.md), covers questions such as Good Judgment Open's. The **paths manual**,
 [lisp_paths_manual.md](lisp_paths_manual.md), covers the yield curves and the paths of interest rates that a deal is priced on. The
 **macro models manual**, [lisp_macro_models_manual.md](lisp_macro_models_manual.md), covers models of the whole economy, run with Dynare.
-The **data guide**, [economic_data_guide.md](economic_data_guide.md), says which agency publishes what data, and which function gets it.
+The **baseball manual**, [lisp_baseball_manual.md](lisp_baseball_manual.md), covers baseball as a chain of states. The **data guide**, [economic_data_guide.md](economic_data_guide.md), says which agency publishes what data, and which function gets it.
 **This one is about the deal model.** A section name in quotes is a section of the language manual, unless it says otherwise.
 
 <!-- This list is made from the headings below: after adding or renaming a section, run

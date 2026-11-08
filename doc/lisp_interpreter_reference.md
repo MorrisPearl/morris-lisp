@@ -12,7 +12,7 @@ file. **Requires `numpy`**; everything else (ipykernel, matplotlib, pandas, the
 tastytrade package) is needed only for the features that use it. The code
 is meant to be read: "How the code is organized" says which file has what.
 
-There are nine documents. **This one is the language**: its syntax, special
+There are ten documents. **This one is the language**: its syntax, special
 forms and macros, and the general builtins -- numbers, lists, strings, hash
 tables, vectors and statistics, tables, dates, charts, input and output,
 and the debugger. **The library manual,
@@ -26,7 +26,8 @@ mortgages, and a script for each part of the library -- and explains the
 programming techniques they show. **Yield curves and simulated paths**, of interest rates
 and of investment prices, are in [lisp_paths_manual.md](lisp_paths_manual.md); structured
 deals in [lisp_cmo_manual.md](lisp_cmo_manual.md); regression in
-[lisp_regression_manual.md](lisp_regression_manual.md); forecasting questions in
+[lisp_regression_manual.md](lisp_regression_manual.md); baseball, in
+[lisp_baseball_manual.md](lisp_baseball_manual.md); forecasting questions in
 [lisp_forecasting_manual.md](lisp_forecasting_manual.md); macroeconomic models, run with Dynare, in
 [lisp_macro_models_manual.md](lisp_macro_models_manual.md); and which agency publishes what data, and
 which function gets it, in [economic_data_guide.md](economic_data_guide.md).

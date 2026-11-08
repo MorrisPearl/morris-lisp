@@ -30,7 +30,7 @@ and this manual takes them one at a time:
 What every fitting function takes, the data and its weights, comes
 first: "Giving a fit its data".
 
-There are nine documents. The **language manual**,
+There are ten documents. The **language manual**,
 [lisp_interpreter_reference.md](lisp_interpreter_reference.md), covers the
 syntax, the special forms and macros, and the general builtins, including
 the vectors and tables a regression is fit to, and `plot-chart`. The
@@ -45,7 +45,9 @@ manual** ([lisp_paths_manual.md](lisp_paths_manual.md)), the **macro
 models manual** ([lisp_macro_models_manual.md](lisp_macro_models_manual.md)),
 and the **data guide** ([economic_data_guide.md](economic_data_guide.md))
 cover structured deals, forecasting questions, yield curves and paths,
-models of the whole economy, and which agency publishes what data. **This
+models of the whole economy, and which agency publishes what data; the
+**baseball manual** ([lisp_baseball_manual.md](lisp_baseball_manual.md))
+plays baseball games from counted plays. **This
 one is regression.** A section name in quotes is a section of this
 manual, unless it says otherwise.
 
