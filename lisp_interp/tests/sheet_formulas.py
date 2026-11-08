@@ -3,7 +3,8 @@
 It reads the tabs as lisp_google.google_workbook is given them (a list of dicts with "name" and
 "cells") and works out every formula. It knows what the model's formulas use: numbers, text in
 quotes, cell references (A1, or 'Tab name'!A1), ranges of them in SUM, AVERAGE, MEDIAN, MAX, MIN, ROUND, IFERROR,
-the operators + - * / ^, and parentheses. Anything else is an error, so a formula that uses
+the operators + - * / ^, parentheses, named cells (a tab's "names", such as tax_rate) and OFFSET(a name or cell, rows,
+columns), which moves from it. Anything else is an error, so a formula that uses
 something new says so here.
 """
 
@@ -14,6 +15,7 @@ TOKEN = re.compile(r"""\s*(?:
   | (?P<text>"[^"]*")
   | (?P<reference>(?:'[^']+'!)?\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?)
   | (?P<function>[A-Z]+)\(
+  | (?P<name>[a-z_][a-z0-9_]*)
   | (?P<symbol>[-+*/^(),])
 )""", re.VERBOSE)
 
@@ -35,7 +37,10 @@ class Sheets:
 
     def __init__(self, tabs):
         self.cells = {}
+        self.names = {}                  # name -> (tab, address)
         for tab in tabs:
+            for name, address in tab.get("names", []):
+                self.names[name] = (tab["name"], address)
             grid = {}
             for row_number, row in enumerate(tab["cells"]):
                 for column_number_, cell in enumerate(row):
@@ -142,6 +147,9 @@ class Formula:
             return text[1:-1]
         if kind == "reference":
             return self.reference(text)
+        if kind == "name":
+            tab, address = self.sheets.names[text]
+            return self.sheets.at(tab, address)
         if kind == "function":
             return self.function(text)
         if (kind, text) == ("symbol", "("):
@@ -164,7 +172,28 @@ class Formula:
             return [v for v in values if isinstance(v, (int, float))]
         return self.sheets.at(tab, text)
 
+    def offset(self):
+        """OFFSET(name or cell, rows, columns): the value of the cell that far from the first."""
+        kind, text = self.take()
+        if kind == "name":
+            tab, address = self.sheets.names[text]
+        elif kind == "reference" and ":" not in text:
+            tab, address = (text.split("!")[0].strip("'") if "!" in text else self.tab), text.split("!")[-1]
+        else:
+            raise ValueError("OFFSET starts from a name or a cell, in =%s" % self.text)
+        self.take()                                       # the comma
+        rows = int(number(self.expression()))
+        self.take()
+        columns = int(number(self.expression()))
+        self.take()                                       # the closing parenthesis
+        row, column = split_address(address)
+        if row + rows < 0 or column + columns < 0:
+            raise ValueError("OFFSET goes off the sheet in =%s" % self.text)
+        return self.sheets.value(tab, row + rows, column + columns)
+
     def function(self, name):
+        if name == "OFFSET":
+            return self.offset()
         if name == "IFERROR":
             start = self.position
             try:

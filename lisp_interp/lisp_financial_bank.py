@@ -288,7 +288,7 @@ class BankModel(model.Model):
         return rows
 
     def assumptions_layout(self):
-        lines = [Line("days", "Days in the period", "decimal", (), lambda i: self.days_in_period), None]
+        lines = []
 
         def section(key, label, keys):
             lines.append(Line(key, label, "money", ("section",), None))
@@ -303,6 +303,7 @@ class BankModel(model.Model):
         section("costs-header", "Fees, costs, and taxes", ["noninterest-growth", "efficiency", "tax-rate"])
         section("payout-header", "Shares and payouts", ["share-growth", "dividend-payout", "buyback-payout"])
         lines.pop()
+        lines += [None, self.days_line()]
         return SheetLayout(ASSUMPTIONS, "Assumptions", lines)
 
     # --- Income statement

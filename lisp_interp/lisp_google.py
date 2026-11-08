@@ -462,6 +462,12 @@ def google_sheet(credentials_path, title, formats, *arguments):
     def call(url, body):
         return google_request("POST", url, who, headers, json.dumps(body).encode())
 
+    for sheet in sheets:
+        for name, address in sheet.get("names", []):
+            if not VALID_RANGE_NAME.match(name) or CELL_LIKE_NAME.match(name) or name.lower() in taken:
+                raise LispError('%s: "%s" can\'t be the name of a range (letters, numbers and underscores, not like A1, '
+                                'a different one each)' % (who, name))
+            taken.add(name.lower())
     made = call(SHEETS_URL, {
         "properties": {"title": title.strip()},
         "sheets": [{"properties": {"title": name, "gridProperties": {"rowCount": max(len(columns[0]) + 1, 2),
@@ -566,6 +572,19 @@ def api_cell(value, style_names):
     return cell
 
 
+VALID_RANGE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,249}$")
+CELL_LIKE_NAME = re.compile(r"([A-Za-z]{1,3}[0-9]+|[Rr][0-9]*[Cc][0-9]*)$")      # (A1 and R1C1 addresses can't be names)
+
+
+def cell_indexes(address):
+    """(row, column), counted from 0, of an address such as G12."""
+    match = re.match(r"([A-Z]+)([0-9]+)$", address)
+    column = 0
+    for letter in match.group(1):
+        column = column * 26 + ord(letter) - ord("A") + 1
+    return int(match.group(2)) - 1, column - 1
+
+
 def google_workbook(credentials_path, title, sheets):
     """A new spreadsheet in your Google Drive, laid out by the program: its
     address. `sheets` is a list of dicts, one for each tab:
@@ -575,7 +594,9 @@ def google_workbook(credentials_path, title, sheets):
                         text, a date, or a formula (text that begins with =)
       "frozen_rows", "frozen_columns"     how many stay in place (optional)
       "widths"          a list of (first column, last column, pixels), columns
-                        counted from 0 (optional)"""
+                        counted from 0 (optional)
+      "names"           a list of (name, address): a name for a cell of the tab,
+                        such as ("tax_rate", "G12"), for formulas to use (optional)"""
     who = "google-workbook"
     token = access_token(credentials_path, who)
     headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
@@ -589,6 +610,12 @@ def google_workbook(credentials_path, title, sheets):
             raise LispError('%s: each tab needs a different name of 1 to %d characters, not "%s"'
                             % (who, TAB_NAME_LENGTH, sheet["name"]))
         taken.add(sheet["name"].lower())
+    for sheet in sheets:
+        for name, address in sheet.get("names", []):
+            if not VALID_RANGE_NAME.match(name) or CELL_LIKE_NAME.match(name) or name.lower() in taken:
+                raise LispError('%s: "%s" can\'t be the name of a range (letters, numbers and underscores, not like A1, '
+                                'a different one each)' % (who, name))
+            taken.add(name.lower())
     made = call(SHEETS_URL, {
         "properties": {"title": title.strip()},
         "sheets": [{"properties": {"title": sheet["name"], "gridProperties": {
@@ -598,6 +625,12 @@ def google_workbook(credentials_path, title, sheets):
     url = made["spreadsheetUrl"]
     try:
         requests = []
+        for sheet, made_sheet in zip(sheets, made["sheets"]):         # (the names first: the formulas that use them follow)
+            for name, address in sheet.get("names", []):
+                row, column = cell_indexes(address)
+                requests.append({"addNamedRange": {"namedRange": {"name": name, "range": {
+                    "sheetId": made_sheet["properties"]["sheetId"], "startRowIndex": row, "endRowIndex": row + 1,
+                    "startColumnIndex": column, "endColumnIndex": column + 1}}}})
         for sheet, made_sheet in zip(sheets, made["sheets"]):
             sheet_id = made_sheet["properties"]["sheetId"]
             rows = sheet["cells"]

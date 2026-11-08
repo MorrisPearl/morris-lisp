@@ -641,3 +641,36 @@ class TestSegmentsThatOverlap(LispTestCase):
                                                               periods, [1000.0, 1000.0])
         self.assertIsNone(segments)
         self.assertIn("add up to the company's revenue in every period", reason)
+
+
+class TestNamedAssumptionsInEveryKind(LispTestCase):
+    """Every kind of model reaches its assumptions by name, with the period number above (-1, -2, ... in the
+    reported periods, where a ratio such as the return on equity uses a period's days), and ends the
+    Assumptions tab with the days in the period."""
+
+    def check(self, model):
+        tabs = model.sheets()
+        sheets = Sheets(tabs)
+        formulas = 0
+        for tab in tabs:
+            for row_number, row in enumerate(tab["cells"]):
+                for column, cell in enumerate(row):
+                    if cell and isinstance(cell[0], str) and cell[0].startswith("="):
+                        sheets.value(tab["name"], row_number, column)            # (an error would raise)
+                        formulas += 1
+                        if tab["name"] not in ("Assumptions", "Notes"):
+                            self.assertNotIn("Assumptions!", cell[0])
+        self.assertGreater(formulas, 100)
+        assumptions = next(tab for tab in tabs if tab["name"] == "Assumptions")
+        self.assertEqual(len({name for name, _ in assumptions["names"]}), len(assumptions["names"]))
+        self.assertEqual([line for line in model.layouts["Assumptions"].lines if line is not None][-1].key, "days")
+
+    def test_a_bank(self):
+        self.check(build(bank_facts(), "bank"))
+
+    def test_an_insurer(self):
+        self.check(build(insurer_facts(), "insurer"))
+
+    def test_an_asset_manager(self):
+        import test_financial_asset_manager
+        self.check(test_financial_asset_manager.build())

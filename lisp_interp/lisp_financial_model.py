@@ -69,6 +69,7 @@ report is zero, and the Notes tab says so.)
 
 import calendar
 import datetime
+import re
 
 from lisp_core import LispError, LispString, keyword_options
 import lisp_google
@@ -80,11 +81,16 @@ INCOME, BALANCE, CASH_FLOW, ASSUMPTIONS, DCF, NOTES = \
     "Income Statement", "Balance Sheet", "Cash Flow", "Assumptions", "DCF", "Notes"
 TAB_ORDER = [ASSUMPTIONS, INCOME, BALANCE, CASH_FLOW, DCF, NOTES]
 
-HEADER_ROWS = 5                 # title, units, period names, period ends, actual or forecast
+HEADER_ROWS = 5                 # title, units, period names, period ends, period numbers
+PERIOD_NUMBER_ROW = 5           # (the last of them: 0 in the first forecast period, 1 in the next, -1 in the last reported)
 FIRST_LINE_ROW = 7              # (row 6 is empty)
 LABEL_WIDTH = 330               # pixels
 PERIOD_WIDTH = 90
 MILLION = 1e6
+
+# the names of assumptions in formulas, where the line's key won't do (growth and days are functions of Google Sheets);
+# the others are the keys with underscores, and a segment's growth is called after the segment (greater_china_growth)
+ASSUMPTION_NAMES = {"growth": "revenue_growth", "days": "days_in_period"}
 
 DEFAULT_COUNTS = {"annual": 5, "quarterly": 8}     # periods reported, and periods forecast
 PERIODS_PER_YEAR = {"annual": 1, "quarterly": 4}
@@ -139,9 +145,20 @@ def is_formula(value):
     return isinstance(value, str) and value.startswith("=")
 
 
+ASSUMPTION_LINK = re.compile(r"=(OFFSET\([a-z0-9_]+,0,[A-Z]+\$\d+\)|[a-z][a-z0-9_]*)$")
+
+
 def is_plain_link(value):
-    """A formula that is just another tab's cell: ='Income Statement'!E8."""
+    """A formula that is just another tab's cell: ='Income Statement'!E8, or an assumption's: =OFFSET(tax_rate,0,G$5)."""
+    if is_formula(value) and ASSUMPTION_LINK.match(value):
+        return True
     return is_formula(value) and "!" in value and all(c not in value[1:] for c in "+-*/(,")
+
+
+def range_name(words):
+    """A name Google Sheets accepts for a range, from words: lower case letters and numbers joined by underscores."""
+    name = re.sub(r"[^a-z0-9]+", "_", words.lower()).strip("_")
+    return "_" + name if not name or name[0].isdigit() else name
 
 
 def safe_ratio(numerator, denominator):
@@ -342,6 +359,7 @@ class Line:
         self.label_style = tuple(label_style)
         self.cell = cell                      # a function of the period's index: its number or formula, or None
         self.editable = False                 # an assumption: its forecast cells are yellow, for you to change
+        self.name = None                      # an assumption: the name its row has in formulas (see Model.make_range_names)
 
 
 class SheetLayout:
@@ -377,6 +395,7 @@ class Model:
         self.layouts = {}
         self.assumptions = {row[0]: row for row in self.assumption_series()}
         self.layouts[ASSUMPTIONS] = self.assumptions_layout()
+        self.make_range_names()
         self.layouts[INCOME] = self.income_layout()
         self.layouts[BALANCE] = self.balance_layout()
         self.layouts[CASH_FLOW] = self.cash_flow_layout()
@@ -412,11 +431,40 @@ class Model:
 
     # --- references to cells
 
+    def make_range_names(self):
+        """Name each assumption's row, so that a formula on another tab reads =F9*(1+OFFSET(revenue_growth,0,G$5))
+        and not =F9*(1+Assumptions!G12). The name is of the row's cell in the first forecast period; OFFSET moves
+        along the row by the period number in row 5 of the formula's own column (0 in the first forecast period, 1
+        in the next; the reported periods have -1, -2, ...)."""
+        self.range_names = {}
+        taken = set()
+        for line in self.layouts[ASSUMPTIONS].lines:
+            if line is None or line.cell is None:
+                continue
+            name = line.name or ASSUMPTION_NAMES.get(line.key) or range_name(line.key)
+            while name in taken:
+                name += "_"
+            taken.add(name)
+            self.range_names[line.key] = name
+
+    def range_name_cells(self):
+        """(name, address) of each named range on the Assumptions tab: the row's first forecast cell."""
+        layout = self.layouts[ASSUMPTIONS]
+        return [(name, "%s%d" % (column_letter(self.history_count + 1), layout.row_of[key]))
+                for key, name in self.range_names.items()]
+
+    def assumption_ref(self, key, i):
+        """An assumption in period i, for a formula on another tab, as OFFSET(its name, 0, the period number in
+        the column of period i) -- so in a formula in the same column, the period number is the one just above it."""
+        return "OFFSET(%s,0,%s$%d)" % (self.range_names[key], column_letter(i + 1), PERIOD_NUMBER_ROW)
+
     def ref(self, tab, key, i, from_tab):
         """The address of a line's cell in period i, as written on the tab `from_tab`."""
         layout = self.layouts[tab]
         if key not in layout.row_of:
             raise LispError("three-statement-model: no line %s on the %s tab" % (key, tab))
+        if tab == ASSUMPTIONS and from_tab != ASSUMPTIONS:
+            return self.assumption_ref(key, i)
         address = "%s%d" % (column_letter(i + 1), layout.row_of[key])
         return address if tab == from_tab else "%s!%s" % (quoted_tab(tab), address)
 
@@ -577,10 +625,12 @@ class Model:
             return "cost-of-revenue", self.h.cost_of_revenue, "cost of revenue"
         return "revenue", self.h.revenue, "revenue"
 
+    def days_line(self):
+        """The days in each period, at the bottom of the Assumptions tab where it is out of the way."""
+        return Line("days", "Days in the period", "decimal", (), lambda i: self.days_in_period)
+
     def assumptions_layout(self):
-        lines = [Line("days", "Days in the period", "decimal", (), lambda i: self.days_in_period)]
-        lines.append(None)
-        lines.append(Line("revenue-header", "Revenue", "money", ("section",), None))
+        lines = [Line("revenue-header", "Revenue", "money", ("section",), None)]
         if self.segments:
             for number, (name, values) in enumerate(self.segments):
                 lines.append(self.segment_growth_line(number, name, values))
@@ -599,6 +649,7 @@ class Model:
         for key in ("stock-compensation-percent", "depreciation-percent", "amortization-rate",
                     "capital-expenditures-percent", "receivable-days", "inventory-days", "payable-days"):
             lines.append(self.main_line_from_series(key))
+        lines += [None, self.days_line()]
         return SheetLayout(ASSUMPTIONS, "Assumptions", lines)
 
     def main_line_from_series(self, key):
@@ -642,6 +693,7 @@ class Model:
         line = Line(key, "%s, growth" % name, "percent", (),
                     self.assumption_cells(key, series, GROWTH_LIMITS, False, history))
         line.editable = True
+        line.name = range_name(name) + "_growth"
         return line
 
     # --- Income statement
@@ -854,19 +906,19 @@ class Model:
         return "%s millions, except per-share amounts and days" % self.reported.currency
 
     def header_rows(self, layout):
-        """The first five rows of a tab: title, units, the periods' labels, their ends, and whether they were
-        reported or are forecast."""
+        """The first five rows of a tab: title, units, the periods' labels, their ends, and their numbers (0 in the
+        first forecast period, 1 in the next, and -1 in the last period reported, -2 in the one before)."""
         rows = [[None] * (self.count + 1) for _ in range(HEADER_ROWS)]
         rows[0][0] = ("%s (%s): %s" % (self.company_name, self.ticker, layout.title), ("title",))
         rows[1][0] = (self.unit_description(), ("italic",))
         rows[2][0] = ("Period", ("bold",))
         rows[3][0] = ("Period ends", ())
-        rows[4][0] = ("Reported or forecast", ())
+        rows[4][0] = ("Period number (0 is the first forecast period)", ("italic",))
         for i in range(self.count):
             forecast = ("forecast",) if self.is_forecast(i) else ()
             rows[2][i + 1] = (self.labels[i], ("header",) + forecast)
             rows[3][i + 1] = (self.ends[i], ("date",) + forecast)
-            rows[4][i + 1] = ("Forecast" if self.is_forecast(i) else "Reported", ("italic",) + forecast)
+            rows[4][i + 1] = (i - self.history_count, ("italic",) + forecast)
         return rows
 
     def cell_styles(self, line, value, i):
@@ -929,6 +981,7 @@ class Model:
             "Black numbers are formulas. Green ones are links to another tab. Grey columns are forecast periods.",
             "Yellow cells on the Assumptions tab are the assumptions. In the first forecast period each is a formula of the reported periods (the last period's value, or an average, within limits); in each later period it is the period before's. Type a number, or a formula that depends on the period before (=G12*0.9), over any of them; everything to the right follows. The Balance Sheet's check line should read 0 in every period.",
             "Amounts are in millions of %s, except per-share amounts." % self.reported.currency,
+            "A formula on another tab reaches an assumption by its name: =D7*(1+OFFSET(revenue_growth,0,E$5)) is the revenue of the period before times one plus the revenue growth assumed for this period. The name is of the assumption's cell in the first forecast period, and OFFSET moves along its row by the period number in row 5 of the formula's own column (0 in the first forecast period, 1 in the next, -1 in the last reported). Data > Named ranges lists the names.",
             "",
             "How the forecast works",
             *self.forecast_notes(),
@@ -980,6 +1033,8 @@ class Model:
             result.append({"name": name, "cells": self.sheet_cells(layout),
                            "frozen_rows": HEADER_ROWS, "frozen_columns": 1,
                            "widths": [(0, 0, LABEL_WIDTH), (1, self.count, PERIOD_WIDTH)]})
+            if name == ASSUMPTIONS:
+                result[-1]["names"] = self.range_name_cells()
         return result
 
 

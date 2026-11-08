@@ -175,7 +175,7 @@ class TestModelFromReportedNumbers(LispTestCase):
         for tab in tabs[:4]:
             self.assertEqual([cell[0] for cell in tab["cells"][2][1:]], self.model.labels)
         self.assertEqual([cell[1][0] for cell in tabs[1]["cells"][4][1:]], ["italic"] * 6)
-        self.assertEqual([cell[0] for cell in tabs[1]["cells"][4][1:]], ["Reported"] * 3 + ["Forecast"] * 3)
+        self.assertEqual([cell[0] for cell in tabs[1]["cells"][4][1:]], [-3, -2, -1, 0, 1, 2])       # (the period numbers)
         self.assertEqual(self.model.ends[3:], [datetime.date(2024, 12, 31), datetime.date(2025, 12, 31),
                                                datetime.date(2026, 12, 31)])
 
@@ -409,6 +409,85 @@ class TestModelByInSegment(LispTestCase):
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
+
+class TestNamedAssumptions(LispTestCase):
+    """A formula on another tab reaches an assumption by its name: =D7*(1+OFFSET(revenue_growth,0,E$5)), with the
+    period number in row 5 of its own column, not =D7*(1+Assumptions!E8)."""
+
+    def setUp(self):
+        super().setUp()
+        self.model = build()
+        self.tabs = {tab["name"]: tab for tab in self.model.sheets()}
+        self.sheets = Sheets(list(self.tabs.values()))
+
+    def formula(self, tab, key, i):
+        return self.tabs[tab]["cells"][self.model.layouts[tab].row_of[key] - 1][i + 1][0]
+
+    def test_formulas_read_with_the_name_of_the_assumption_and_the_period_number(self):
+        self.assertEqual(self.formula("Income Statement", "revenue", 3), "=D7*(1+OFFSET(revenue_growth,0,E$5))")
+        self.assertEqual(self.formula("Income Statement", "cost-of-revenue", 3), "=E7*(1-OFFSET(gross_margin,0,E$5))")
+        self.assertEqual(self.formula("Income Statement", "revenue", 4), "=E7*(1+OFFSET(revenue_growth,0,F$5))")
+
+    def test_no_formula_on_another_tab_refers_to_the_assumptions_tab_by_address(self):
+        for name, tab in self.tabs.items():
+            if name in ("Assumptions", "Notes"):
+                continue
+            for row in tab["cells"]:
+                for cell in row:
+                    if cell and isinstance(cell[0], str):
+                        self.assertNotIn("Assumptions!", cell[0], "%s: %s" % (name, cell[0]))
+
+    def test_each_tab_numbers_its_periods_from_the_first_forecast_period(self):
+        for name in ("Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF"):
+            if name in self.tabs:
+                self.assertEqual([cell[0] for cell in self.tabs[name]["cells"][4][1:7]], [-3, -2, -1, 0, 1, 2], name)
+                self.assertIn("Period number", self.tabs[name]["cells"][4][0][0])
+
+    def test_a_name_is_of_the_first_forecast_cell_of_its_row(self):
+        names = dict(self.tabs["Assumptions"]["names"])
+        row = self.model.layouts["Assumptions"].row_of["tax-rate"]
+        self.assertEqual(names["tax_rate"], "E%d" % row)
+        self.assertEqual(names["days_in_period"], "E%d" % self.model.layouts["Assumptions"].row_of["days"])
+        self.assertEqual(self.sheets.at("Assumptions", names["tax_rate"]), value(self.sheets, self.model, "Assumptions", "tax-rate", 3))
+
+    def test_the_names_are_ones_google_accepts_and_all_different(self):
+        names = [name for name, _ in self.tabs["Assumptions"]["names"]]
+        self.assertEqual(len(names), len(set(names)))
+        for name in names:
+            self.assertTrue(lisp_google.VALID_RANGE_NAME.match(name), name)
+            self.assertFalse(lisp_google.CELL_LIKE_NAME.match(name), name)
+
+    def test_a_period_can_use_an_assumption_of_the_period_before(self):
+        # (the interest on last period's debt is the rate of this period: the period number is the one just above)
+        self.assertEqual(self.formula("Income Statement", "interest-expense", 4).count("OFFSET(interest_rate,0,F$5)"), 1)
+
+    def test_changing_the_assumption_a_name_points_to_changes_the_cells_that_use_it(self):
+        before = value(self.sheets, self.model, "Income Statement", "revenue", 4)
+        set_input(self.sheets, self.model, "Assumptions", "growth", 4, 0.50)
+        self.assertAlmostEqual(value(self.sheets, self.model, "Income Statement", "revenue", 4),
+                               value(self.sheets, self.model, "Income Statement", "revenue", 3) * 1.5)
+        self.assertNotAlmostEqual(before, value(self.sheets, self.model, "Income Statement", "revenue", 4))
+
+    def test_a_segment_is_named_after_itself(self):
+        model = build(segments=TestModelByInSegment.segments)
+        names = dict(next(tab for tab in model.sheets() if tab["name"] == "Assumptions")["names"])
+        self.assertIn("widgets_growth", names)
+        self.assertIn("services_growth", names)
+        self.assertIn("revenue_growth", names)
+        income = next(tab for tab in model.sheets() if tab["name"] == "Income Statement")
+        self.assertEqual(income["cells"][model.layouts["Income Statement"].row_of["segment-0"] - 1][4][0],
+                         "=D7*(1+OFFSET(widgets_growth,0,E$5))")
+
+    def test_the_days_in_the_period_are_the_last_line_of_the_assumptions(self):
+        lines = [line for line in self.model.layouts["Assumptions"].lines if line is not None]
+        self.assertEqual(lines[-1].key, "days")
+        self.assertEqual(self.formula("Income Statement", "interest-expense", 3).count("OFFSET(days_in_period,0,E$5)"), 1)
+
+    def test_a_link_to_an_assumption_is_green(self):
+        self.assertTrue(fm.is_plain_link("=tax_rate"))
+        self.assertTrue(fm.is_plain_link("=OFFSET(tax_rate,0,E$5)"))
+        self.assertFalse(fm.is_plain_link("=OFFSET(tax_rate,0,E$5)*2"))
+
 
 class TestHelpers(LispTestCase):
 
@@ -655,6 +734,26 @@ class TestGoogleWorkbook(LispTestCase):
         self.assertEqual(rows[4]["values"][1]["userEnteredValue"], {"boolValue": True})
         self.assertEqual(edits[1]["updateDimensionProperties"]["range"],
                          {"sheetId": 7, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1})
+
+    def test_names_are_made_before_the_cells_that_use_them(self):
+        lisp_google.google_workbook("creds", "Names", [self.sheet(names=[("growth_rate", "B2")])])
+        edits = self.requests[1][1]["requests"]
+        self.assertEqual(edits[0], {"addNamedRange": {"namedRange": {"name": "growth_rate", "range": {
+            "sheetId": 7, "startRowIndex": 1, "endRowIndex": 2, "startColumnIndex": 1, "endColumnIndex": 2}}}})
+        self.assertIn("updateCells", edits[1])
+
+    def test_a_name_that_google_would_refuse_is_an_error_before_anything_is_made(self):
+        for name in ("tax rate", "A1", "R1C1", "1rate", "x" * 251):
+            with self.assertRaises(lisp_core.LispError, msg=name):
+                lisp_google.google_workbook("creds", "T", [self.sheet(names=[(name, "B2")])])
+        with self.assertRaises(lisp_core.LispError):
+            lisp_google.google_workbook("creds", "T", [self.sheet(names=[("rate", "B2"), ("RATE", "B3")])])
+        self.assertEqual(self.requests, [])
+
+    def test_cell_indexes_count_from_zero(self):
+        self.assertEqual(lisp_google.cell_indexes("A1"), (0, 0))
+        self.assertEqual(lisp_google.cell_indexes("G12"), (11, 6))
+        self.assertEqual(lisp_google.cell_indexes("AB3"), (2, 27))
 
     def test_a_long_tab_is_sent_in_pieces(self):
         cells = [[(i, ())] for i in range(450)]

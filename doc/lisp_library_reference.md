@@ -2935,7 +2935,8 @@ Makes the spreadsheet and returns its address, as a string.
 **The tabs.** Every tab has the same periods in the same columns, so a period's revenue, in column E of the income
 statement, is in column E of the others, and of the assumptions. The reported periods come first and then the
 forecast, in grey. The first five rows say what each column is: its name (`FY2025`, `Q3 FY2026`, with an `E` for a
-forecast), when it ends, and whether it is reported or forecast.
+forecast), when it ends, and its **period number**: 0 in the first forecast period, 1 in the next, and -1 in the last period
+reported, -2 in the one before (row 5; the formulas below use it).
 
 | Tab | What it has |
 |---|---|
@@ -2949,6 +2950,22 @@ forecast), when it ends, and whether it is reported or forecast.
 **Colors,** as in most models: **blue** is a number typed in -- reported by the company, or an assumption; **black** is a
 formula; **green** is a link to another tab. A cell on **yellow** is an assumption for you to change: black if it is a formula
 (most are), blue if it is a number.
+
+**Formulas reach an assumption by its name.** Each row of the Assumptions tab has a name, and a formula on another tab
+uses it with `OFFSET` and the period number in row 5 of its own column, so that a cell reads
+
+```
+=F9*(1+OFFSET(greater_china_growth,0,G$5))
+```
+
+-- last year's revenue (the cell to the left, as in any formula copied across) times one plus the growth assumed for this
+period -- and not `=F9*(1+Assumptions!G12)`. The name is of the row's cell in the first forecast period, `OFFSET(name,0,0)`;
+`OFFSET(name,0,G$5)` moves along the row by this column's period number (and `F$5`, the period number of the column to the
+left, reaches the assumption of the period before). The names are the lines' own: `revenue_growth`, `gross_margin`,
+`tax_rate`, `interest_rate`, `receivable_days`, `days_in_period`, and for a segment its own name and `_growth`
+(`greater_china_growth`). Google Sheets lists them under *Data > Named ranges*. Typing over an assumption changes
+the formulas that use it, as before; and you can write your own formula in the same style, on any tab:
+`=OFFSET(tax_rate,0,G$5)*G20`. (`OFFSET` is recalculated whenever anything changes, which a sheet this size does not notice.)
 
 **The forecast assumptions are formulas.** In the first forecast period an assumption's cell is a formula of the reported
 periods that starts the forecast -- the last period's value, within the limits (`=MIN(MAX(F12,-0.2),0.2)`), or the average

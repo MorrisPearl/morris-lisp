@@ -132,7 +132,7 @@ class Valuation:
     def add_inputs(self):
         m = self.model
         first = self.first_forecast
-        a = lambda key: self.other(ASSUMPTIONS, key, first)
+        a = lambda key: self.model.range_names[key]               # (the name is of the first forecast period's cell)
         bal = lambda key: self.other(BALANCE, key, first - 1)
         self.section("inputs-header", "Discount rate and terminal growth (yellow cells are yours; the risk-free rate, beta, risk premium, and growth are placeholders)")
         self.add("risk-free", "Risk-free rate (the 10-year Treasury yield)", self.one(RISK_FREE_RATE, "percent", "input"))

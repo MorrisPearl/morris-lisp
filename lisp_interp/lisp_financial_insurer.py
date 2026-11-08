@@ -224,7 +224,7 @@ class InsurerModel(model.Model):
         return rows
 
     def assumptions_layout(self):
-        lines = [Line("days", "Days in the period", "decimal", (), lambda i: self.days_in_period), None]
+        lines = []
 
         def section(key, label, keys):
             lines.append(Line(key, label, "money", ("section",), None))
@@ -249,6 +249,7 @@ class InsurerModel(model.Model):
         for assumption in ("interest-rate", "share-growth", "dividend-payout", "buyback-payout"):
             lines.append(self.main_line_from_series(assumption))
         lines.append(self.net_borrowing_line())
+        lines += [None, self.days_line()]
         return SheetLayout(ASSUMPTIONS, "Assumptions", lines)
 
     def net_borrowing_line(self):
