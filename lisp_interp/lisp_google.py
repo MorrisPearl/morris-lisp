@@ -585,6 +585,27 @@ def cell_indexes(address):
     return int(match.group(2)) - 1, column - 1
 
 
+def range_indexes(address):
+    """(first row, last row + 1, first column, last column + 1), counted from 0, of a range such as B12:B23."""
+    first, _, last = address.partition(":")
+    first_row, first_column = cell_indexes(first)
+    last_row, last_column = cell_indexes(last or first)
+    return first_row, last_row + 1, first_column, last_column + 1
+
+
+def validation_request(sheet_id, validation):
+    """The request that limits the cells of a validation (see google_workbook) to a list of choices."""
+    first_row, end_row, first_column, end_column = range_indexes(validation["range"])
+    if "choices" in validation:
+        condition = {"type": "ONE_OF_LIST", "values": [{"userEnteredValue": choice} for choice in validation["choices"]]}
+    else:
+        condition = {"type": "ONE_OF_RANGE", "values": [{"userEnteredValue": "=" + validation["from"]}]}
+    return {"setDataValidation": {
+        "range": {"sheetId": sheet_id, "startRowIndex": first_row, "endRowIndex": end_row,
+                  "startColumnIndex": first_column, "endColumnIndex": end_column},
+        "rule": {"condition": condition, "showCustomUi": True, "strict": False}}}
+
+
 def google_workbook(credentials_path, title, sheets):
     """A new spreadsheet in your Google Drive, laid out by the program: its
     address. `sheets` is a list of dicts, one for each tab:
@@ -596,7 +617,10 @@ def google_workbook(credentials_path, title, sheets):
       "widths"          a list of (first column, last column, pixels), columns
                         counted from 0 (optional)
       "names"           a list of (name, address): a name for a cell of the tab,
-                        such as ("tax_rate", "G12"), for formulas to use (optional)"""
+                        such as ("tax_rate", "G12"), for formulas to use (optional)
+      "validations"     a list of dicts that limit what can be typed into cells: {"range": "B12:B23", "choices": [...]}
+                        (a drop-down list of these), or {"range": "A27:B34", "from": "$A$12:$A$23"} (a drop-down of
+                        the values in those cells) (optional)"""
     who = "google-workbook"
     token = access_token(credentials_path, who)
     headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
@@ -640,6 +664,8 @@ def google_workbook(credentials_path, title, sheets):
                     "rows": [{"values": [api_cell(*cell) if cell else {} for cell in row]}
                              for row in rows[first:first + ROWS_PER_REQUEST]],
                     "fields": "userEnteredValue,userEnteredFormat"}})
+            for validation in sheet.get("validations", []):
+                requests.append(validation_request(sheet_id, validation))
             for first_column, last_column, pixels in sheet.get("widths", []):
                 requests.append({"updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS",

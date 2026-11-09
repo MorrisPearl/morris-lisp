@@ -2905,7 +2905,7 @@ It needs what `sec-income-statement` and `google-sheet` need: the credentials fi
 Google sign-in (`(google-login creds)`, once; "Google Sheets" says how to set it up). The sheet is made in your own
 Drive, and shared with no one.
 
-#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :aum a :price p :segments s :title t])`
+#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :aum a :price p :segments s :sensitivity b :title t])`
 Makes the spreadsheet and returns its address, as a string.
 
 - `:period` is `"annual"` (the default) or `"quarterly"`.
@@ -2930,13 +2930,17 @@ Makes the spreadsheet and returns its address, as a string.
   them, or else by **product or service**, and if it has neither (or they can't be found for every period) by its total
   revenue alone, and the Notes tab says why. `"business"`, `"product"`, or `"geography"` asks for that breakdown, and it is
   an error if it can't be found; `#f` is total revenue only.
+- `:sensitivity`, `#f` to leave out the two Monte Carlo tabs that an ordinary company or asset manager has after its DCF tab ("Sensitivity
+  analysis" below).
 - `:title` is the spreadsheet's name; the default is the company's, and "annual" or "quarterly".
 
 **The tabs.** Every tab has the same periods in the same columns, so a period's revenue, in column E of the income
 statement, is in column E of the others, and of the assumptions. The reported periods come first and then the
 forecast, in grey. The first five rows say what each column is: its name (`FY2025`, `Q3 FY2026`, with an `E` for a
 forecast), when it ends, and its **period number**: 0 in the first forecast period, 1 in the next, and -1 in the last period
-reported, -2 in the one before (row 5; the formulas below use it).
+reported, -2 in the one before (row 5; the formulas below use it). (The DCF tab has its title and units at the top and then its
+single values, such as the discount rate; its three period rows are just above the free cash flow, the first row that has a value
+in each period, and its formulas use the period number there.)
 
 | Tab | What it has |
 |---|---|
@@ -2945,6 +2949,7 @@ reported, -2 in the one before (row 5; the formulas below use it).
 | Balance Sheet | Cash, receivables, inventory, plant and equipment, goodwill, intangibles, payables, debt, equity, with their totals; and, at the bottom, a **check** -- assets less liabilities and equity -- that is 0 in every period. |
 | Cash Flow | Net income, depreciation, stock compensation, the changes in receivables, inventory, and payables, cash from operations; capital expenditures, cash from investing; borrowing, dividends, buybacks, cash from financing; the net change in cash, and the cash at the end. |
 | DCF | What the company is worth by discounting its forecast free cash flow (see "Valuation" below). Ordinary companies and asset managers; not banks and insurers. |
+| Sensitivity, Sensitivity Macro | Monte Carlo analysis of the DCF: the cells to vary and how, the results of many runs, and the macro that makes them (see "Sensitivity analysis" below). With the DCF tab. |
 | Notes | How to read the sheet, how the forecast works, which of the company's XBRL tags each reported line came from, and which lines it didn't report. |
 
 **Colors,** as in most models: **blue** is a number typed in -- reported by the company, or an assumption; **black** is a
@@ -3172,6 +3177,75 @@ last year's growth, up to 20%, then 2.5% for ever. Look at the Assumptions tab f
 options are not taken off the equity, and the debt is the book value. A bank or an insurer has **no DCF tab** (the Notes tab says so):
 its debt is its raw material, not its financing, so free cash flow to the firm means nothing for it. A forecast of less than a year
 (three quarters) is too short to value a company by, and has none.
+
+#### Sensitivity analysis: the Sensitivity tab and its macro
+
+(In `lisp_financial_sensitivity.py` and `apps_script/sensitivity.gs`.) The DCF's answer depends on guesses -- growth, margins,
+beta, the terminal growth rate -- and a table at the bottom of the DCF tab shows only two of them at a time. The **Sensitivity**
+tab asks the other question: *if each of these is uncertain, what range of values should I expect?* It runs the whole
+spreadsheet many times, each time with a random value for each input you chose, and records the inputs and the results of each run.
+
+The tab has, from the top:
+
+| Part | What you fill in |
+|---|---|
+| Number of runs, Random seed | How many runs (1000 to begin with). A seed makes a run repeatable: the same seed gives the same runs; leave it empty for new ones each time. |
+| Inputs | A row for each cell to vary: **Input** (a named range -- see *Data > Named ranges* -- or an address such as `DCF!B9`), **Distribution**, **Low**, **Average**, **High**, and a note of what it is. |
+| Correlations | A row for each pair of inputs that move together: the two inputs (drop-down lists of the inputs above) and their **correlation**, from -1 to 1. |
+| Outputs | A row for each cell to record: a named range or an address. |
+| Results | Everything below this title is the macro's: a summary of each column (mean, standard deviation, lowest, the 5th, 25th, median, 75th, and 95th percentiles, highest) and then a row for each run: its number, the value of each input, and each output. |
+
+The distributions are meant to be easy to understand, not to be right in any deeper sense:
+
+- **uniform**: any value from Low to High is equally likely (Average is not used).
+- **triangular**: values from Low to High, the likeliest at Average; the chance rises in a straight line from Low to Average and falls in a
+  straight line to High.
+- **normal**: the bell curve centered on Average, with Low and High two standard deviations out on either side (the standard deviation is
+  (High - Low) / 4, so about 95% of values are between them), and with no value outside Low and High.
+
+A **correlation** makes two inputs move together (above 0) or against each other (below 0). The bell curves behind the draws are
+correlated, and each is turned into its input's own distribution, so the distributions are as you chose and the correlation of the
+values (as ranks) is close to what you gave. Inputs not in the table are independent. Correlations that cannot all be true at once -- A and B at
+0.9, B and C at 0.9, A and C at -0.9 -- are refused with a message.
+
+A model's tab starts with five inputs, each centered on the model's own number: the revenue growth (or each of the first three segments'), the
+gross margin (an asset manager's assets-under-management growth and fee rate instead), the DCF's beta, the equity risk premium, and the terminal
+growth rate; and the DCF's results as outputs. Average is a formula (`=beta`), and Low and High are formulas of it (`=D14-0.25`), so
+the table follows the model; type numbers over them to choose your own. (An assumption cell is the first forecast period's, and the later periods follow
+it, so varying it varies the whole forecast.) Any other cell can be added -- a Google sheet's named ranges, or addresses -- in an empty row.
+
+**The macro.** A spreadsheet cannot run itself many times, so a macro (a Google Apps Script) does it: for each run it draws the inputs,
+types them into their cells, lets the spreadsheet work out everything that depends on them, reads the outputs, and adds a row. When
+it finishes (or stops) it puts each input cell back as it was -- a number as a number, a formula as a formula. The Sensitivity Macro tab has the script in a
+single cell and the steps to install it once, in *Extensions > Apps Script* (Google asks to allow it the first time, and you do: it is your own).
+After a reload there is a **Sensitivity** menu: *Run Monte Carlo*, *Continue a run that stopped*, and *Put the inputs back as they were* (if a
+run was cut off). You can also draw a button (*Insert > Drawing*) and assign the script `runMonteCarlo`. Google stops a script after six minutes, so
+the macro stops itself at four, says so in the Status cell, and sets a timer to go on a minute later; a run's draws depend only on the seed and its
+number, so the result is the same however many pieces it comes in. Each run takes however long the spreadsheet takes to recalculate and the
+macro to type and read cells -- a second or so for a model this size -- so a thousand runs take some minutes, and the macro leaves the spreadsheet
+to itself meanwhile.
+
+The macro does not know about the three-statement model. It does Monte Carlo analysis of any spreadsheet that has a tab called Sensitivity laid out
+like this one (the name is at the top of the script). To use it on your own: `(sensitivity-workbook creds "My analysis")` makes a spreadsheet with an
+empty Sensitivity tab and the macro tab; copy your model's tabs into it (right-click a tab, *Copy to*), name the cells you vary and record, and fill
+in the tables. Or copy the Sensitivity tab and install the script in the spreadsheet you have.
+
+```lisp
+(sensitivity-workbook creds "Loan model" :runs 500)    ; an empty Sensitivity tab and the macro tab, in a new spreadsheet
+(display (sensitivity-macro))                          ; the macro's text, to save in a file or paste into Extensions > Apps Script
+```
+
+#### `(sensitivity-workbook creds title [:runs n])`
+Makes a spreadsheet with an empty Sensitivity tab (`:runs` is its number of runs; 1000 if you don't say) and the Sensitivity Macro tab, and
+returns its address, as a string. You need to be signed in to Google: `(google-login creds)`.
+
+#### `(sensitivity-macro)`
+The macro's text, as a string: the same as the file `apps_script/sensitivity.gs`.
+
+**What has not been tried.** The macro runs here against a stand-in for Google's `SpreadsheetApp`, with the distributions checked against sampled means and spreads,
+the correlations against sampled ones, and a whole run (including stopping and continuing, mistakes in the tab, and putting the inputs back); the tab has
+been made in a real spreadsheet and its formulas checked there. Running the macro inside Google -- how fast a recalculation is, and the permissions it asks for -- has not
+been.
 
 ### Comparing companies
 

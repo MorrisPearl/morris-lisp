@@ -403,6 +403,8 @@ class Model:
         self.layouts[CASH_FLOW] = self.cash_flow_layout()
         self.range_names = {}                          # (tab, key) -> the name of the line in formulas
         self.make_range_names()
+        self.sensitivity = True                         # whether a model with a DCF tab has the Sensitivity tabs
+        self.period_number_row = {}                     # tab -> the row of its period numbers, where not row 5 (the DCF tab)
         self.here = None                               # the period of the cell being written (for ref)
         self.here_key = None                           # and the key of its line
 
@@ -465,10 +467,11 @@ class Model:
         return [(name, "%s%d" % (column_letter(self.history_count + 1), layout.row_of[key]))
                 for (named_tab, key), name in self.range_names.items() if named_tab == tab and key in layout.row_of]
 
-    def named_ref(self, tab, key, i):
-        """A line in period i, as OFFSET(its name, 0, the period number) -- the number in row 5 of the column of the
-        formula being written (self.here), less how many periods before that period i is."""
-        number = "%s$%d" % (column_letter(self.here + 1), PERIOD_NUMBER_ROW)
+    def named_ref(self, tab, key, i, number_row=PERIOD_NUMBER_ROW):
+        """A line in period i, as OFFSET(its name, 0, the period number) -- the number in the period number row (row 5,
+        unless the tab keeps it elsewhere) of the column of the formula being written (self.here), less how many
+        periods before that period i is."""
+        number = "%s$%d" % (column_letter(self.here + 1), number_row)
         if i != self.here:
             number += "%+d" % (i - self.here)
         return "OFFSET(%s,0,%s)" % (self.range_names[(tab, key)], number)
@@ -483,7 +486,7 @@ class Model:
             raise LispError("three-statement-model: no line %s on the %s tab" % (key, tab))
         own_earlier_period = tab == from_tab and key == self.here_key and i != self.here
         if not plain and self.here is not None and not own_earlier_period:
-            return self.named_ref(tab, key, i)
+            return self.named_ref(tab, key, i, self.period_number_row.get(from_tab, PERIOD_NUMBER_ROW))
         address = "%s%d" % (column_letter(i + 1), layout.row_of[key])
         return address if tab == from_tab else "%s!%s" % (quoted_tab(tab), address)
 
@@ -927,17 +930,26 @@ class Model:
     def header_rows(self, layout):
         """The first five rows of a tab: title, units, the periods' labels, their ends, and their numbers (0 in the
         first forecast period, 1 in the next, and -1 in the last period reported, -2 in the one before)."""
-        rows = [[None] * (self.count + 1) for _ in range(HEADER_ROWS)]
+        return self.title_rows(layout) + self.period_rows()
+
+    def title_rows(self, layout):
+        """The tab's title, and the units."""
+        rows = [[None] * (self.count + 1) for _ in range(2)]
         rows[0][0] = ("%s (%s): %s" % (self.company_name, self.ticker, layout.title), ("title",))
         rows[1][0] = (self.unit_description(), ("italic",))
-        rows[2][0] = ("Period", ("bold",))
-        rows[3][0] = ("Period ends", ())
-        rows[4][0] = ("Period number (0 is the first forecast period)", ("italic",))
+        return rows
+
+    def period_rows(self):
+        """The periods' labels, their ends, and their numbers."""
+        rows = [[None] * (self.count + 1) for _ in range(3)]
+        rows[0][0] = ("Period", ("bold",))
+        rows[1][0] = ("Period ends", ())
+        rows[2][0] = ("Period number (0 is the first forecast period)", ("italic",))
         for i in range(self.count):
             forecast = ("forecast",) if self.is_forecast(i) else ()
-            rows[2][i + 1] = (self.labels[i], ("header",) + forecast)
-            rows[3][i + 1] = (self.ends[i], ("date",) + forecast)
-            rows[4][i + 1] = (i - self.history_count, ("italic",) + forecast)
+            rows[0][i + 1] = (self.labels[i], ("header",) + forecast)
+            rows[1][i + 1] = (self.ends[i], ("date",) + forecast)
+            rows[2][i + 1] = (i - self.history_count, ("italic",) + forecast)
         return rows
 
     def cell_styles(self, line, value, i):
@@ -1048,7 +1060,10 @@ class Model:
             if name == DCF:
                 if self.has_valuation_tab():
                     import lisp_financial_dcf
+                    import lisp_financial_sensitivity
                     result.append(lisp_financial_dcf.valuation_sheet(self))
+                    if self.sensitivity:                  # (after the DCF tab, whose names it uses)
+                        result += lisp_financial_sensitivity.model_tabs(self)
                 continue
             layout = self.layouts[name]
             result.append({"name": name, "cells": self.sheet_cells(layout),
@@ -1218,7 +1233,7 @@ def kind_for_industry(sic):
 
 def three_statement_model(credentials_path, company, *options):
     """(three-statement-model creds ticker [:period "annual" :history n :forecast n :kind "auto"
-    :segments "auto" :price p :title t]) -- a new Google spreadsheet with the company's income statement, balance sheet,
+    :segments "auto" :price p :sensitivity #t :title t]) -- a new Google spreadsheet with the company's income statement, balance sheet,
     and cash flow statement as reported to the SEC, for the last `:history` years (or quarters), and forecast
     for the next `:forecast`, by formulas that follow assumptions on an Assumptions tab. Returns the
     spreadsheet's address. :period is "annual" or "quarterly" (5 years each way, or 8 quarters, unless
@@ -1230,11 +1245,12 @@ def three_statement_model(credentials_path, company, *options):
     SEC's industry code for the company (an asset manager if you give :aum), and models it as an ordinary
     company if the SEC's facts lack what the other kind needs. An ordinary company or asset manager also has a DCF tab, a
     discounted-cash-flow valuation; :price, today's share price, makes the weight of debt in its discount rate the
-    market's and shows how the value compares with the price. :segments, for an ordinary company: "auto" (the default) models revenue by business
+    market's and shows how the value compares with the price. It also has a Sensitivity tab and a tab with a macro for it,
+    which runs the DCF many times with random values for the inputs you choose (#f for :sensitivity leaves them out). :segments, for an ordinary company: "auto" (the default) models revenue by business
     segment if the company reports them, or else by product; "business", "product", or "geography" asks
     for that one; #f for total revenue only. You need to be signed in to Google: (google-login creds)."""
     who = "three-statement-model"
-    options = keyword_options(options, ["period", "history", "forecast", "kind", "aum", "price", "segments", "title"], who)
+    options = keyword_options(options, ["period", "history", "forecast", "kind", "aum", "price", "segments", "sensitivity", "title"], who)
     period = str(options.get("period", "annual"))
     if period not in DEFAULT_COUNTS:
         raise LispError('%s: :period is "annual" or "quarterly", not %s' % (who, period))
@@ -1273,6 +1289,7 @@ def three_statement_model(credentials_path, company, *options):
     else:
         model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum, price)
     model.kind_note = (model.kind_note + " " + kind_note).strip()
+    model.sensitivity = options.get("sensitivity", True) is not False
     title = options.get("title") or "%s %s model" % (model.company_name, period)
     return LispString(lisp_google.google_workbook(credentials_path, str(title), model.sheets()))
 
