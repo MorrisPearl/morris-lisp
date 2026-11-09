@@ -1,6 +1,7 @@
 ;
-; The libraries' functions, callable without loading them first (see lib/autoloads.lsp)
-(load "autoloads.lsp")
+; Your own definitions, which every new environment loads (after the standard
+; macros, and lib/autoloads.lsp, which makes the libraries' functions callable
+; without loading them first).
 ;
 ( define api-key "/Users/morris/credentials.json" )
 ( define creds   "/Users/morris/credentials.json" )

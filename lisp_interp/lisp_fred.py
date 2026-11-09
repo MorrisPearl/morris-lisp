@@ -1,7 +1,7 @@
 """FRED data access for the Lisp interpreter: economic data series from
 the Federal Reserve Bank of St. Louis (https://fred.stlouisfed.org).
 
-  (fred-table creds ids [:start-date d :end-date d :cache-hours h])
+  (fred-table creds ids [:start-date d :end-date d :frequency f :cache-hours h])
                      one series or several, as a table with a row per date
 
 Needs a free FRED API key, as the "fred_api_key" entry of the credentials
@@ -40,12 +40,18 @@ def _parse_fred_observations(observations):
     return Pair(LispVector(dates), LispVector(values))
 
 
-def download_series(series_id, credentials_path, start_date, end_date, cache_hours, who):
+# The frequencies FRED can turn a series into, by the name fred-table's :frequency takes, and FRED's own code for each.
+FREQUENCIES = {"weekly": "w", "monthly": "m", "quarterly": "q", "annual": "a"}
+
+
+def download_series(series_id, credentials_path, start_date, end_date, cache_hours, who, frequency=None):
     """One FRED series, as (dates-vector . values-vector), with FRED's
     missing observations left out. The key is the credentials file's
     "fred_api_key". start_date and end_date, if not None, are dates or
-    "YYYY-MM-DD" text limiting the observations. The download is kept for
-    cache_hours, as http-get-json keeps one."""
+    "YYYY-MM-DD" text limiting the observations. frequency, if not None,
+    is a key of FREQUENCIES: FRED averages the series over each period
+    (a quarter's value is the average of its months). The download is
+    kept for cache_hours, as http-get-json keeps one."""
     api_key = credential(credentials_path, "fred_api_key", who,
                          "FRED needs one, from https://fred.stlouisfed.org/docs/api/api_key.html")
 
@@ -58,6 +64,11 @@ def download_series(series_id, credentials_path, start_date, end_date, cache_hou
         params["observation_start"] = date_argument(start_date, who, ":start-date").isoformat()
     if end_date is not None:
         params["observation_end"] = date_argument(end_date, who, ":end-date").isoformat()
+    if frequency is not None:
+        if str(frequency) not in FREQUENCIES:
+            raise LispError("%s: :frequency is one of %s, not %s" % (who, ", ".join(FREQUENCIES), frequency))
+        params["frequency"] = FREQUENCIES[str(frequency)]
+        params["aggregation_method"] = "avg"
 
     url = FRED_URL + "?" + urllib.parse.urlencode(params)
     shown_url = url.replace(str(api_key), "...")        # so the API key never shows in an error
@@ -74,20 +85,22 @@ def download_series(series_id, credentials_path, start_date, end_date, cache_hou
 
 
 def fred_table(credentials_path, ids, *options):
-    """(fred-table creds ids [:start-date d :end-date d :cache-hours h]) -- one FRED series,
+    """(fred-table creds ids [:start-date d :end-date d :frequency f :cache-hours h]) -- one FRED series,
     or a list or vector of them, by ID ("UNRATE", "DGS10"), as a table: a
     date column, oldest first, and a column for each series, headed by its
     ID, with NaN where a series has no value for a date -- so daily,
     weekly, and monthly series line up by date. All of each series, unless
-    :start-date or :end-date (a date, or "YYYY-MM-DD") says otherwise. Each
+    :start-date or :end-date (a date, or "YYYY-MM-DD") says otherwise.
+    :frequency "quarterly" (or "weekly", "monthly", "annual") has FRED
+    average each series over each period, dated its first day. Each
     download is kept for 12 hours, as the other data functions' are, unless
     :cache-hours says otherwise (0: download it every time)."""
     who = "fred-table"
-    options = keyword_options(options, ["start-date", "end-date", "cache-hours"], who)
+    options = keyword_options(options, ["start-date", "end-date", "frequency", "cache-hours"], who)
     columns = []
     for series_id in text_list(ids, who, "the series IDs"):
         series = download_series(series_id, credentials_path, options.get("start-date"), options.get("end-date"),
-                                 options.get("cache-hours", CACHE_HOURS), who)
+                                 options.get("cache-hours", CACHE_HOURS), who, options.get("frequency"))
         values = {date.date: value for date, value in zip(series.car.items, series.cdr.items.tolist())}
         columns.append((series_id, values))
     return dated_table(columns)

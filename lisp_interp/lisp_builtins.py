@@ -14,20 +14,15 @@ lisp_interpreter_reference.md."""
 
 import datetime
 import itertools
-import json
 import math
 import numbers
 import operator
 import os
 import random
-import re
-import shutil
 import string
 import sys
-import urllib.parse
 import xml.dom.minidom
 import xml.parsers.expat
-from html import escape as html_escape
 
 import numpy as np
 
@@ -53,6 +48,7 @@ import lisp_csv
 import lisp_debug
 import lisp_help
 import lisp_profile
+import lisp_dynare
 import lisp_coverage
 import lisp_explore
 import lisp_fdic
@@ -64,6 +60,7 @@ import lisp_google
 import lisp_http
 import lisp_investment_paths
 import lisp_maps
+import lisp_notebook_files
 import lisp_options
 import lisp_portfolio
 import lisp_regex
@@ -304,26 +301,67 @@ def signum(x):
     return float(sign) if isinstance(x, float) else sign
 
 
+def check_not_a_list(args, who):
+    """An error if one of the arguments of min or max is a list: (max '(1 5 2)) would otherwise be the list itself."""
+    for a in args:
+        if isinstance(a, Pair):
+            raise LispError("%s: %s is a list -- (apply %s list) is the %s of its elements" % (
+                who, _brief(a), who, "largest" if who == "max" else "smallest"))
+
+
 def lisp_min(*args):
     """(min x ...) -- the smallest. With vectors, the smallest at each
-    position: (min v 100) limits every element to at most 100. (For the
-    smallest element of one vector, use vector-min.)"""
+    position: (min v 100) limits every element to at most 100, and (apply min
+    vectors) is the smallest at each position of any number of vectors -- so
+    (min v), of one vector, is v. For the smallest element of a vector, use
+    vector-min."""
     if not args:
         raise LispError("min: expected at least 1 argument, got 0")
     if any_vector(args):
         return lisp_vector_math.elementwise("min", args, np.minimum)
+    check_not_a_list(args, "min")
     return min(args)
 
 
 def lisp_max(*args):
     """(max x ...) -- the largest. With vectors, the largest at each
-    position: (max v 0) replaces every negative element with 0. (For the
-    largest element of one vector, use vector-max.)"""
+    position: (max v 0) replaces every negative element with 0, and (apply max
+    vectors) is the largest at each position of any number of vectors -- so
+    (max v), of one vector, is v. For the largest element of a vector, use
+    vector-max."""
     if not args:
         raise LispError("max: expected at least 1 argument, got 0")
     if any_vector(args):
         return lisp_vector_math.elementwise("max", args, np.maximum)
+    check_not_a_list(args, "max")
     return max(args)
+
+
+# The trigonometric functions. Angles are in radians: pi radians is 180 degrees.
+
+def trigonometric(name, scalar_function, array_function, description):
+    """The builtin for one trigonometric function, such as sin: of a number, or of each element of a vector."""
+    def function(x):
+        if isinstance(x, LispVector):
+            return lisp_vector_math.unary(name, x, array_function)
+        check_numbers((x,), name)
+        return scalar_function(x)
+    function.__doc__ = "(%s x) -- %s; for a vector, of each element." % (name, description)
+    return function
+
+
+def lisp_atan(y, x=None):
+    """(atan y [x]) -- the angle, in radians, whose tangent is y; with x, the angle of the point (x, y) from the
+    x axis, between -pi and pi (Python's atan2), which knows which quarter the point is in. For vectors, of each element."""
+    if x is None:
+        if isinstance(y, LispVector):
+            return lisp_vector_math.unary("atan", y, np.arctan)
+        check_numbers((y,), "atan")
+        return math.atan(y)
+    if any_vector((y, x)):
+        return lisp_vector_math.elementwise("atan", (y, x), np.arctan2)
+    check_numbers((y, x), "atan")
+    return math.atan2(y, x)
 
 
 def chain_compare(op, args):
@@ -369,6 +407,24 @@ def random_int_fn(lo, hi):
         raise LispError("random-int: %s" % e)
 
 
+def random_normal_fn(mean=0.0, sd=1.0):
+    """(random-normal [mean sd]) -- a pseudo-random number from the normal distribution (the bell curve) with this
+    mean and standard deviation (0 and 1 unless given)."""
+    check_numbers((mean, sd), "random-normal")
+    return random.gauss(mean, sd)
+
+
+def random_normal_vector_fn(n, mean=0.0, sd=1.0):
+    """(random-normal-vector n [mean sd]) -- a vector of n pseudo-random numbers from the normal distribution with this
+    mean and standard deviation (0 and 1 unless given): much faster than n calls of random-normal. random-seed
+    decides them too, as it does random-normal's."""
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise LispError("random-normal-vector: n must be a whole number, 0 or more, not %s" % (_brief(n),))
+    check_numbers((mean, sd), "random-normal-vector")
+    numbers = np.random.default_rng(random.getrandbits(64)).normal(mean, sd, n)     # seeded from the shared generator
+    return lisp_vector_math.to_vector(numbers)
+
+
 NUMBER_BUILTINS = {
     "+": add,
     "-": sub,
@@ -398,6 +454,13 @@ NUMBER_BUILTINS = {
     "ceiling": lisp_ceiling,
     "truncate": lisp_truncate,
     "round": lisp_round,
+    "pi": math.pi,
+    "sin": trigonometric("sin", math.sin, np.sin, "the sine of the angle x, in radians"),
+    "cos": trigonometric("cos", math.cos, np.cos, "the cosine of the angle x, in radians"),
+    "tan": trigonometric("tan", math.tan, np.tan, "the tangent of the angle x, in radians"),
+    "asin": trigonometric("asin", math.asin, np.arcsin, "the angle, in radians, whose sine is x"),
+    "acos": trigonometric("acos", math.acos, np.arccos, "the angle, in radians, whose cosine is x"),
+    "atan": lisp_atan,
     "=": comparison("=", operator.eq),
     "<": comparison("<", operator.lt),
     ">": comparison(">", operator.gt),
@@ -406,6 +469,8 @@ NUMBER_BUILTINS = {
     "random-seed": random_seed_fn,
     "random-float": random_float_fn,
     "random-int": random_int_fn,
+    "random-normal": random_normal_fn,
+    "random-normal-vector": random_normal_vector_fn,
 }
 
 
@@ -647,12 +712,36 @@ def lisp_reduce(f, seq, *init):
     return acc
 
 
-def list_ref(lst, n):
-    items = list_items(lst, "list-ref")
+def list_ref(lst, n, who="list-ref"):
+    items = list_items(lst, who)
+    if isinstance(n, bool) or not isinstance(n, (int, float)) or n != int(n):
+        raise LispError("%s: the index must be a whole number, not %s" % (who, _brief(n)))
     n = int(n)
     if n < 0 or n >= len(items):
-        raise LispError("list-ref: index %d out of range (0..%d)" % (n, len(items) - 1))
+        raise LispError("%s: index %d out of range (0..%d)" % (who, n, len(items) - 1))
     return items[n]
+
+
+def lisp_nth(n, lst):
+    """(nth n list) -- element n of the list, counting from 0: Common Lisp's name for (list-ref list n), with the
+    arguments the other way around. (For a vector, use vector-ref.)"""
+    return list_ref(lst, n, "nth")
+
+
+def is_proper_list(x):
+    """(list? x) -- whether x is a list: '(), or pairs whose last cdr is '(). A dotted pair such as (1 . 2) is not
+    one, and nor is a list made circular with set-cdr!."""
+    slow = fast = x
+    while True:
+        for _ in range(2):              # fast goes two pairs for each of slow's one; if they meet, the list is circular
+            if fast is NIL:
+                return True
+            if not isinstance(fast, Pair):
+                return False
+            fast = fast.cdr
+        slow = slow.cdr
+        if fast is slow:
+            return False
 
 
 def lisp_last(lst, n=1):
@@ -890,6 +979,7 @@ LIST_BUILTINS = {
     "reverse": lisp_reverse,
     "length": lisp_length,
     "list-ref": list_ref,
+    "nth": lisp_nth,
     "list-tail": list_tail,
     "last": lisp_last,
     "butlast": lisp_butlast,
@@ -897,7 +987,7 @@ LIST_BUILTINS = {
     "member": lisp_member,
     "null?": lambda p: p is NIL,
     "pair?": lambda p: isinstance(p, Pair),
-    "list?": lambda p: p is NIL or isinstance(p, Pair),
+    "list?": is_proper_list,
     "map": lisp_map,
     "filter": lisp_filter,
     "sort": lisp_sort,
@@ -1587,7 +1677,7 @@ DATE_BUILTINS = {
 
 class OutputChannel:
     """Where one environment's display/newline/print text goes: normally the
-    callback make_global_env() was given (the console, the GUI log, or a
+    callback make_global_env() was given (the console, or a
     notebook cell), or a file while (redirect-output "file") is in effect."""
 
     def __init__(self, write_to_default):
@@ -1643,229 +1733,6 @@ def svg_picture(text):
     return svg.toxml()
 
 
-def top_level_form_texts(text):
-    """The source text of each top-level form of a Lisp file, as a list of strings, in order: each form exactly as the file has it
-    (its comments and layout included, so nothing is pretty-printed away). A comment above a form goes with it, and one at the end
-    of a form's line goes with that form; a comment on a line of its own after the last form is left out. The text is read first, so a syntax error is raised before any form is split off."""
-    list(parse(text))
-    texts = []
-    n = len(text)
-    i = 0
-    start = None                                  # where the next form's text begins: its first character, or comment
-    while i < n:
-        c = text[i]
-        if c.isspace():
-            i += 1
-        elif c == ";":                            # a comment outside a form: it goes with the form after it
-            if start is None:
-                start = i
-            while i < n and text[i] != "\n":
-                i += 1
-        else:
-            if start is None:
-                start = i
-            i = _end_of_top_level_form(text, i)
-            j = i                                 # a comment at the end of the form's line is the form's own
-            while j < n and text[j] in " \t":
-                j += 1
-            if j < n and text[j] == ";":
-                i = text.find("\n", j) if text.find("\n", j) != -1 else n
-            texts.append(text[start:i].strip())
-            start = None
-    return texts
-
-
-def _end_of_top_level_form(text, i):
-    """The index just after the form that begins at text[i]: a list (with the quote, quasiquote, unquote or vector marks in front
-    of it), a string, or an atom. Strings and comments inside it are skipped, so their parentheses do not count."""
-    n = len(text)
-    while i < n and text[i] in "'`,@#":          # the marks in front of a form: 'x, `(...), ,y, ,@z, #(...)
-        i += 1
-    if i < n and text[i] == "(":
-        depth = 0
-        while i < n:
-            c = text[i]
-            if c in STRING_DELIMITERS:
-                i = _end_of_string(text, i)
-                continue
-            if c == ";":
-                while i < n and text[i] != "\n":
-                    i += 1
-                continue
-            if c == "(":
-                depth += 1
-            elif c == ")":
-                depth -= 1
-                if depth == 0:
-                    return i + 1
-            i += 1
-        return n
-    if i < n and text[i] in STRING_DELIMITERS:
-        return _end_of_string(text, i)
-    while i < n and not text[i].isspace() and text[i] not in "()\";":
-        i += 1
-    return i
-
-
-STRING_DELIMITERS = '"|'            # a string is written "like this" or |like this|, for one with many quotation marks in it
-
-
-def _end_of_string(text, i):
-    """The index just after the string that begins with the delimiter at text[i] (" or |), where \\ escapes the next character."""
-    delimiter = text[i]
-    i += 1
-    while i < len(text) and text[i] != delimiter:
-        i += 2 if text[i] == "\\" else 1
-    return i + 1
-
-
-# What a page can show on its own, without a running notebook.
-STATIC_OUTPUT_TYPES = ("text/html", "text/markdown", "text/latex", "image/png", "image/jpeg", "image/svg+xml", "image/gif")
-# What only a running notebook can show: a widget (its saved form is a line of text that describes it) and a script.
-LIVE_OUTPUT_TYPES = ("application/vnd.jupyter.widget-view+json", "application/javascript")
-
-
-def only_a_live_notebook_can_show(output):
-    """Whether an output of a notebook's cell (a dictionary) is a widget or a script with nothing besides its description in words that a
-    page could show: on a slide it would be a line such as <IPython.core.display.Javascript object>."""
-    data = output.get("data", {})
-    return (output.get("output_type") in ("display_data", "execute_result")
-            and any(kind in data for kind in LIVE_OUTPUT_TYPES) and not any(kind in data for kind in STATIC_OUTPUT_TYPES))
-
-
-def without_live_outputs(notebook):
-    """Takes the outputs that only a live notebook can show out of the cells of the notebook (a notebook node), and says how many."""
-    left_out = 0
-    for cell in notebook.cells:
-        if cell.cell_type == "code":
-            kept = [output for output in cell.outputs if not only_a_live_notebook_can_show(output)]
-            left_out += len(cell.outputs) - len(kept)
-            cell.outputs = kept
-    return left_out
-
-
-def write_notebook(path, document):
-    """Writes the notebook (a dictionary) in the form Jupyter writes it in, through a file beside it that then takes its place, so that
-    a notebook is never left half written."""
-    temporary = path + ".writing"
-    with open(temporary, "w", encoding="utf-8") as f:
-        json.dump(document, f, sort_keys=True, indent=1, ensure_ascii=False)
-        f.write("\n")
-    os.replace(temporary, path)
-
-
-def link_path(name):
-    """Where a link in a notebook's output finds the file called name: its path from the folder that the notebook runs in (which is the
-    notebook's own folder in JupyterLab), with / between the folders. A path from the top of the computer, /Users/..., would be a place
-    on the web server, which has no such file: JupyterLab opens a notebook by its path from the folder it was started in."""
-    return os.path.relpath(os.path.abspath(name), os.getcwd()).replace(os.sep, "/")
-
-
-def notebook_json(texts):
-    """A Jupyter notebook (format 4.4) with a code cell for each text, none run, for the morris_lisp kernel (install_lisp_kernel.py)."""
-    def cell(text):
-        lines = text.splitlines(keepends=True)
-        return {"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [], "source": lines}
-    return {
-        "cells": [cell(text) for text in texts],
-        "metadata": {"kernelspec": {"name": "morris-lisp", "display_name": "morris_lisp", "language": "scheme"},
-                     "language_info": {"name": "scheme", "file_extension": ".lsp", "mimetype": "text/x-scheme"}},
-        "nbformat": 4,
-        "nbformat_minor": 4,
-    }
-
-
-SLIDE_STYLES = ("each-cell", "by-heading")
-
-# Where tools/get_slide_files.py puts the files that a slideshow needs to work with no internet connection: reveal.js, require.js and jQuery.
-SLIDES_SUPPORT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "slides_support")
-SLIDE_SUPPORT_FILES = ("require.min.js", "jquery.min.js")
-
-
-# Where find_font_file looks for the file of a font that is installed on this computer.
-FONT_DIRECTORIES = ["~/Library/Fonts", "/Library/Fonts", "/System/Library/Fonts", "~/.fonts", "~/.local/share/fonts", "/usr/share/fonts"]
-
-
-def find_font_file(name):
-    """The path of the file of the installed font called name ("Architects Daughter", in ArchitectsDaughter-Regular.ttf), or None. Looks
-    for the name with no spaces, then -Regular, as fonts are usually named, in the folders of FONT_DIRECTORIES."""
-    stem = name.replace(" ", "").lower()
-    wanted = {stem + "-regular.ttf", stem + "-regular.otf", stem + ".ttf", stem + ".otf"}
-    for directory in FONT_DIRECTORIES:
-        for folder, _, files in os.walk(os.path.expanduser(directory)):
-            for file in files:
-                if file.lower() in wanted:
-                    return os.path.join(folder, file)
-    return None
-
-
-def font_style(name, folder, font_file):
-    """The <style> that makes a slideshow use the font called name: its @font-face, if there is a font_file to copy into the folder of
-    the page's files, and the rules that set the font of the slides' text, headings and the notebook's text cells (not of the code, which stays as it is)."""
-    face = ""
-    if font_file is not None:
-        face = '@font-face { font-family: "%s"; src: url("%s/%s"); }\n' % (name, urllib.parse.quote(os.path.basename(folder)),
-                                                                        urllib.parse.quote(os.path.basename(font_file)))
-    text = ", ".join([".reveal"] + [".reveal h%d" % level for level in range(1, 7)] + [".reveal .jp-RenderedHTMLCommon"])
-    return '<style>\n%s%s { font-family: "%s", sans-serif; }\n</style>\n' % (face, text, name)
-
-
-def themes_without_web_fonts():
-    """The names of the reveal.js themes (in the downloaded files) that do not fetch their fonts from Google, so that they show with no
-    internet: white, black and serif, in reveal.js 4.0.2. Sorted, with white first."""
-    folder = os.path.join(SLIDES_SUPPORT, "reveal.js", "dist", "theme")
-    found = []
-    for file in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
-        if file.endswith(".css"):
-            with open(os.path.join(folder, file), encoding="utf-8") as f:
-                if "fonts.googleapis.com" not in f.read():
-                    found.append(file[:-len(".css")])
-    return sorted(found, key=lambda theme: (theme != "white", theme))
-
-# nbconvert's slide template imports mermaid (for diagrams) from a web address; with none, its line is an import of nothing.
-EMPTY_MERMAID_IMPORT = re.compile(r"<script type=\"module\">\s*import mermaid from '';.*?</script>", re.DOTALL)
-
-
-def slide_types_for(cells, style):
-    """The slide type of each cell of a notebook (the cells are the notebook's, as dictionaries), as a list of strings that Jupyter's
-    slideshow tools know: "slide" (a new slide), "subslide" (a new slide below this one), or "-" (continues the slide before it).
-      each-cell    every cell is a slide of its own.
-      by-heading   a markdown cell whose first line is a heading begins a slide, if it is "# ...", or a subslide, if it is "## ..."
-                   or deeper; every other cell continues the slide before it. The first cell always begins a slide."""
-    if style == "each-cell":
-        return ["slide"] * len(cells)
-    types = []
-    for cell in cells:
-        text = "".join(cell.get("source", [])).lstrip()
-        if cell.get("cell_type") == "markdown" and text.startswith("#"):
-            types.append("slide" if not text.startswith("##") else "subslide")
-        else:
-            types.append("-")
-    if types and types[0] == "-":
-        types[0] = "slide"
-    return types
-
-
-def choose_lisp_file():
-    """Asks for a Lisp file with a file dialog, and returns its path, or None if the dialog is cancelled. An error if the dialog
-    cannot be shown (tkinter is not installed, or there is no display)."""
-    try:
-        import tkinter
-        from tkinter import filedialog
-    except ImportError:
-        raise LispError("file-to-notebook: there is no file dialog here (tkinter is not installed): give the file's path, (file-to-notebook \"file.lsp\")")
-    root = tkinter.Tk()
-    try:
-        root.withdraw()
-        root.attributes("-topmost", True)
-        path = filedialog.askopenfilename(title="Choose a Lisp file", filetypes=[("Lisp files", "*.lsp"), ("All files", "*")])
-    except tkinter.TclError as e:
-        raise LispError("file-to-notebook: there is no file dialog here (%s): give the file's path, (file-to-notebook \"file.lsp\")" % e)
-    finally:
-        root.destroy()
-    return path or None
-
-
 def make_output_builtins(out, markdown, html, svg):
     """display, newline, print, redirect-output, reset-output,
     display-markdown, display-html and display-svg. `markdown`, `html` and
@@ -1892,13 +1759,13 @@ def make_output_builtins(out, markdown, html, svg):
 
     def reset_output():
         """(reset-output) -- close the redirect-output file and go back to the
-        console/GUI/notebook."""
+        console or the notebook."""
         out.close_file()
         return NIL
 
     def display_markdown(text):
         """(display-markdown string) -- rendered as Markdown in a Jupyter
-        notebook; elsewhere (console, GUI, redirected output) the Markdown text
+        notebook; elsewhere (console, redirected output) the Markdown text
         is written as it is, which is still readable."""
         if not isinstance(text, LispString):
             raise LispError("display-markdown: expected a string, got %r" % (text,))
@@ -1910,7 +1777,7 @@ def make_output_builtins(out, markdown, html, svg):
 
     def display_html(html_text, text=None):
         """(display-html html [text]) -- html rendered in a Jupyter notebook;
-        elsewhere (console, GUI, redirected output), text is written instead:
+        elsewhere (console, redirected output), text is written instead:
         the same thing without HTML. Without text, the HTML itself is written."""
         for name, value in (("html", html_text), ("text", text)):
             if value is not None and not isinstance(value, LispString):
@@ -1923,7 +1790,7 @@ def make_output_builtins(out, markdown, html, svg):
 
     def display_svg(svg_text, text=None):
         """(display-svg svg [text]) -- the picture that svg, a string "<svg ...>...</svg>",
-        draws, by itself in a Jupyter notebook; elsewhere (console, GUI,
+        draws, by itself in a Jupyter notebook; elsewhere (console,
         redirected output), text is written instead, or, without it, a line
         that says there is a picture. An error if svg is not an <svg> element
         of well-formed XML."""
@@ -1937,139 +1804,8 @@ def make_output_builtins(out, markdown, html, svg):
             out.write((str(text) if text is not None else "[an SVG picture, which a notebook shows]") + "\n")
         return NIL
 
-    def show_link(name, what):
-        """Says that the notebook called name was written, with what: in a notebook, as a link that opens it in a new tab; elsewhere, as
-        a line of text."""
-        if html is not None and not out.is_redirected():
-            html('<a href="%s" target="_blank">Open %s</a>' % (urllib.parse.quote(link_path(name)), html_escape(name)))
-        else:
-            out.write("Wrote %s, %s (open it in Jupyter)\n" % (name, what))
-
-    def file_to_notebook(path=None, notebook=None):
-        """(file-to-notebook [path [notebook]]) -- writes a Jupyter notebook with each top-level form of a Lisp file in its own code
-        cell, without running any of them. The path is a string (relative to the current directory, or the load path); without one,
-        a file dialog asks for the file. The notebook is notebook (a string), or else the file's name with .ipynb, in the current
-        directory; it is not written over a file that is there. In a notebook, a link to the new notebook is shown: a click opens it
-        in a new tab. Returns the notebook's path."""
-        if path is None:
-            path = choose_lisp_file()
-            if path is None:
-                return NIL
-        elif not isinstance(path, LispString):
-            raise LispError("file-to-notebook: expected the file's path as a string, or no path for a file dialog, not %s" % _brief(path))
-        found = find_lisp_file(str(path))
-        with open(found, encoding="utf-8") as f:
-            texts = top_level_form_texts(f.read())
-        name = str(notebook) if notebook is not None else os.path.splitext(os.path.basename(found))[0] + ".ipynb"
-        if os.path.exists(name):
-            raise LispError("file-to-notebook: %s is there already: give the notebook another name, (file-to-notebook \"%s\" \"other.ipynb\")"
-                            % (name, path))
-        with open(name, "w", encoding="utf-8") as f:
-            json.dump(notebook_json(texts), f, indent=1)
-            f.write("\n")
-        show_link(name, "with %d cells" % len(texts))
-        return LispString(name)
-
-    def set_slide_types(notebook, style=None, output=None):
-        """(set-slide-types notebook [style [output]]) -- sets the slide type of every cell of a Jupyter notebook, for a slideshow of it (with
-        jupyterlab-deck in JupyterLab, or jupyter nbconvert --to slides). notebook is the path of the notebook, a string, and it is the
-        notebook that is changed: the cells, their outputs and everything else in it are kept. style is each-cell (the default: every cell
-        is a slide) or by-heading (a markdown cell that begins with "# " starts a slide, "## " or deeper a sub-slide, and the cells after it
-        stay on it). Given output, a string, the notebook is left as it is, and a copy with the slide types is written there instead; it is
-        not written over a file that is there, and in a notebook a link to it is shown. Returns the path of the notebook that was written."""
-        if not isinstance(notebook, LispString):
-            raise LispError("set-slide-types: expected the notebook's path as a string, not %s" % _brief(notebook))
-        style = "each-cell" if style is None else str(style)
-        if style not in SLIDE_STYLES:
-            raise LispError("set-slide-types: the style is each-cell or by-heading, not %s" % style)
-        source = find_lisp_file(str(notebook))
-        with open(source, encoding="utf-8") as f:
-            try:
-                document = json.load(f)
-            except ValueError as e:
-                raise LispError("set-slide-types: %s is not a notebook (%s)" % (notebook, e))
-        if not isinstance(document, dict) or not isinstance(document.get("cells"), list):
-            raise LispError("set-slide-types: %s is not a notebook: it has no cells" % notebook)
-        name = str(output) if output is not None else source
-        if output is not None and os.path.exists(name):
-            raise LispError("set-slide-types: %s is there already: give the copy another name, (set-slide-types \"%s\" '%s \"other.ipynb\")"
-                            % (name, notebook, style))
-        for cell, slide_type in zip(document["cells"], slide_types_for(document["cells"], style)):
-            cell.setdefault("metadata", {}).setdefault("slideshow", {})["slide_type"] = slide_type
-        write_notebook(name, document)
-        if output is not None:
-            show_link(name, "with the slide types set on %d cells" % len(document["cells"]))
-        else:
-            out.write("Set the slide types of the %d cells of %s. If it is open in JupyterLab, reload it from the disk (File, Reload Notebook "
-                      "from Disk): save it first if it has changes of its own, since reloading takes them out\n" % (len(document["cells"]), name))
-        return LispString(name)
-
-    def notebook_to_slides(notebook, output=None, theme=None, font=None):
-        """(notebook-to-slides notebook [output [theme [font]]]) -- makes a slideshow of a Jupyter notebook (a reveal.js page), that works with no
-        internet connection. notebook is the path of the notebook, a string, whose cells have slide types (see set-slide-types). The page is
-        output, or else the notebook's name with .slides.html; the files it needs go in a folder beside it, with _files added to its name:
-        copy both to show it somewhere else. Neither is written over what is there. theme is white (the default), black or serif: the
-        themes whose fonts come with reveal.js, and so need no internet. font is the name of a font installed here, "Architects Daughter" for an
-        informal look, which the slides use for their text and headings: its file is copied into the folder beside the page, so that the
-        slideshow shows it on another computer too. Open the page in a browser. The notebook is not run: the outputs it
-        has are what the slides show, but not a widget or a script, which only a live notebook can show: the call says how many it left out. Needs the files that tools/get_slide_files.py downloads once. Returns the page's path."""
-        if not isinstance(notebook, LispString):
-            raise LispError("notebook-to-slides: expected the notebook's path as a string, not %s" % _brief(notebook))
-        try:
-            from nbconvert import SlidesExporter
-        except ImportError:
-            raise LispError("notebook-to-slides: the nbconvert package is needed (pip install nbconvert)")
-        if not os.path.isdir(os.path.join(SLIDES_SUPPORT, "reveal.js")):
-            raise LispError("notebook-to-slides: the files that a slideshow needs to work with no internet are not here yet: download them "
-                            "once, with  python3 tools/get_slide_files.py  (run it where lisp_interpreter.py is: %s)"
-                            % os.path.dirname(SLIDES_SUPPORT))
-        themes = themes_without_web_fonts()
-        theme = "white" if theme is None else str(theme)
-        if theme not in themes:
-            raise LispError("notebook-to-slides: the theme is %s, not %s (the other themes of reveal.js load their fonts from the internet)"
-                            % (" or ".join(themes), theme))
-        if font is not None and not (isinstance(font, LispString) and re.fullmatch(r"[A-Za-z0-9 _-]+", font)):
-            raise LispError("notebook-to-slides: the font is the name of an installed font, a string such as \"Architects Daughter\", not %s"
-                            % _brief(font))
-        source = find_lisp_file(str(notebook))
-        name = str(output) if output is not None else os.path.splitext(str(notebook))[0] + ".slides.html"
-        folder = os.path.splitext(name)[0] + "_files"
-        for taken in (name, folder):
-            if os.path.exists(taken):
-                raise LispError("notebook-to-slides: %s is there already: give the slideshow another name, (notebook-to-slides \"%s\" \"other.html\")"
-                                % (taken, notebook))
-        place = urllib.parse.quote(os.path.basename(folder))              # (the page and its folder are side by side)
-        exporter = SlidesExporter(reveal_theme=theme, reveal_url_prefix=place + "/reveal.js", require_js_url=place + "/require.min.js",
-                                  jquery_url=place + "/jquery.min.js", mathjax_url="", mermaid_js_url="", mermaid_layout_elk_js_url="")
-        import nbformat
-        notebook_node = nbformat.read(source, as_version=4)
-        left_out = without_live_outputs(notebook_node)
-        page, _ = exporter.from_notebook_node(notebook_node)
-        font_file = find_font_file(str(font)) if font is not None else None
-        page = EMPTY_MERMAID_IMPORT.sub("", page)
-        if font is not None:
-            page = page.replace("</head>", font_style(str(font), folder, font_file) + "</head>", 1)
-        with open(name, "w", encoding="utf-8") as f:
-            f.write(page)
-        shutil.copytree(os.path.join(SLIDES_SUPPORT, "reveal.js"), os.path.join(folder, "reveal.js"))
-        for support_file in SLIDE_SUPPORT_FILES:
-            shutil.copy(os.path.join(SLIDES_SUPPORT, support_file), folder)
-        if font_file is not None:
-            shutil.copy(font_file, folder)
-        out.write("Wrote %s, and %s/ beside it, which it needs: open the page in a browser; it works with no internet\n"
-                  % (name, os.path.basename(folder)))
-        if left_out:
-            out.write("Left out %d output%s that only a live notebook can show (widgets and scripts): present live, with the deck, to see %s\n"
-                      % (left_out, "" if left_out == 1 else "s", "it" if left_out == 1 else "them"))
-        if font is not None and font_file is None:
-            out.write("The font %s is not installed here, so it is not in that folder: the slides show it only on a computer that has it\n" % font)
-        return LispString(name)
-
     return {
         "display": lisp_display,
-        "notebook-to-slides": notebook_to_slides,
-        "set-slide-types": set_slide_types,
-        "file-to-notebook": file_to_notebook,
         "newline": lisp_newline,
         "print": lisp_print,
         "redirect-output": redirect_output,
@@ -2085,7 +1821,7 @@ DISPLAY_TABLE_MAX_ROWS = 20    # display-table's :max-rows, unless it's given
 
 def make_display_table_builtin(out, show_table):
     """display-table, which formats a table's values as text and hands them
-    to show_table (the GUI's Table tab, a notebook, or the console). What it
+    to show_table (a notebook, or the console). What it
     hands over is a list of (column name, the cells' text, alignment)
     tuples; the alignment is "right" for a column of numbers, else "left"."""
 
@@ -2351,8 +2087,8 @@ def make_introspection_builtins(env, out):
 
 # The words after a script's name on the command line: for
 #   python3 lisp_interpreter.py option_methods_example.lsp KO 6
-# they are ["KO", "6"]. lisp_interpreter.py's main sets them; in the GUI and
-# Jupyter there are none.
+# they are ["KO", "6"]. lisp_interpreter.py's main sets them; at the console and
+# in Jupyter there are none.
 command_line_words = []
 
 
@@ -2363,8 +2099,8 @@ def set_command_line_arguments(words):
 def command_line_arguments():
     """(command-line-arguments) -- the words after the script's name on the
     command line, as a list of strings: ("KO" "6") for
-    `python3 lisp_interpreter.py file.lsp KO 6`. '() if there are none, and in
-    the GUI and Jupyter. A number is a string too: string->number makes it
+    `python3 lisp_interpreter.py file.lsp KO 6`. '() if there are none, and at
+    the console and in Jupyter. A number is a string too: string->number makes it
     one."""
     return list_to_pairs([LispString(word) for word in command_line_words])
 
@@ -2398,7 +2134,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     """Build a fresh global environment holding every built-in procedure.
 
     The seven optional arguments say where this environment's output goes,
-    so the same interpreter can run in the console, the GUI, or Jupyter:
+    so the same interpreter can run at the console or in Jupyter:
       output    receives the text written by display/newline/print
       plot      receives each chart spec from the plot- functions (see lisp_charts)
       table     receives each table from display-table, as a list of
@@ -2433,6 +2169,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
 
     # Builtins that belong to this environment.
     env.update(make_output_builtins(out, markdown, html, svg))
+    env.update(lisp_notebook_files.make_notebook_file_builtins(out, html, find_lisp_file))
     env.update(make_display_table_builtin(out, table))
     env.update(lisp_widgets.make_widget_builtins(widget))
     env.update(lisp_charts.make_chart_builtins(plot))
@@ -2442,6 +2179,7 @@ def make_global_env(output=None, plot=None, table=None, markdown=None, html=None
     env.update(lisp_help.make_help_builtins(env, out))
     env.update(lisp_debug.make_debug_builtins(env, out))
     env.update(lisp_profile.make_profile_builtins(env, out))
+    env.update(lisp_dynare.make_dynare_builtins(out))
     env.update(lisp_coverage.make_coverage_builtins(env, out))
 
     # Remember each builtin's Lisp name, for error messages (see
@@ -2467,6 +2205,9 @@ MACROS_INIT_FILE = os.path.join(HERE, "macros_init.lsp")
 LOOP_FILE = os.path.join(HERE, "loop.lsp")
 STANDARD_MACRO_FILES = (MACROS_INIT_FILE, LOOP_FILE)
 
+# The libraries' functions, as lazy-loads (see lazy-load in macros_init.lsp), which load_init_file loads first.
+AUTOLOADS_FILE = os.path.join(HERE, "lib", "autoloads.lsp")
+
 # Your own definitions, which every new environment loads next. Set the
 # LISP_INIT_FILE environment variable to use a different file.
 DEFAULT_INIT_FILE = os.path.join(HERE, "init.lsp")
@@ -2489,11 +2230,15 @@ def load_standard_macros(env):
 
 
 def load_init_file(env, path=None):
-    """Load the init file (path, or LISP_INIT_FILE, or init.lsp) into env.
-    Called once for each new environment, before anything else runs. A
-    missing file is silently skipped. An error in it (or an (abort)) is
-    reported to stderr but doesn't stop the interpreter starting, so you can
-    still fix it."""
+    """Make env ready for a person to use: load lib/autoloads.lsp, so that every
+    library's functions can be called without loading the library first, and
+    then the init file (path, or LISP_INIT_FILE, or init.lsp), for their own
+    definitions. Called once for each new environment, before anything else
+    runs, by the console, batch mode, and Jupyter (the tests' environments
+    skip it). A missing init file is silently skipped. An error in it (or an
+    (abort)) is reported to stderr but doesn't stop the interpreter starting,
+    so you can still fix it."""
+    run_file(AUTOLOADS_FILE, env)
     init_path = path or os.environ.get("LISP_INIT_FILE", DEFAULT_INIT_FILE)
     if not init_path or not os.path.exists(init_path):
         return

@@ -47,11 +47,11 @@
 (define (freddie-default-months conn where)
   "The loan-data of the months of loans that have not defaulted yet in the table loan_months that are where (an SQL condition, such as \"sample_bucket < 80\"): a row
 for each, its outcome 1 if the loan defaulted that month, its weight its balance at the start of the month."
-  (loan-data-from conn "loan_months" "defaulted" "start_upb" (format "({}) AND ({})" default-loan-months where) default-predictors predictor-sql))
+  (freddie-loans--loan-data-from conn "loan_months" "defaulted" "start_upb" (format "({}) AND ({})" default-loan-months where) default-predictors predictor-sql))
 
 (define (fit-default-model data)
   "A model of the monthly default rate, fitted to the loan-data of freddie-default-months: see fit-rate-model."
-  (fit-rate-model data default-predictors))
+  (freddie-loans--fit-rate-model data default-predictors))
 
 (define typical-default-loan
   '(("credit_score" 720) ("current_ltv" 80) ("loan_age" 36) ("dti" 36) ("sato" 0) ("incentive_bp" 0) ("loan_size_k" 250)
@@ -99,18 +99,18 @@ the credit scores."
 (define (freddie-liquidations conn where)
   "The loan-data of the sales of defaulted loans in the table loan_months that are where (an SQL condition): a row for each, its outcome the severity, its weight the
 balance, and its period the first day of the year of the sale."
-  (loan-data-from conn "loan_months" "severity" "removal_upb" (format "({}) AND ({})" liquidations where) severity-predictors predictor-sql
+  (freddie-loans--loan-data-from conn "loan_months" "severity" "removal_upb" (format "({}) AND ({})" liquidations where) severity-predictors predictor-sql
                   :period-sql "substr(period, 1, 4) || '-01-01'"))
 
 (define (fit-severity-model data)
   "A model of the severity of a loss, fitted to the loan-data of freddie-liquidations: a spline-regression of the severity on the predictors, each sale weighted by its
 balance."
-  (spline-regression (loan-data-predictors data) (loan-data-outcomes data) (data-knots data severity-predictors) (loan-data-weights data)))
+  (spline-regression (loan-data-predictors data) (loan-data-outcomes data) (freddie-loans--data-knots data severity-predictors) (loan-data-weights data)))
 
 (define (severity-by-year model data)
   "A table, a row for each year: the severity of all the sales of the loan-data of the year together (their losses over their balances), and what the model says it is,
 in percent."
-  (let ((years (outcomes-by-period model data)))
+  (let ((years (freddie-loans--outcomes-by-period model data)))
     (make-table "year" (table-column years "period")
                 "actual severity" (* 100.0 (table-column years "actual"))
                 "predicted severity" (* 100.0 (table-column years "predicted")))))
@@ -162,14 +162,14 @@ The years near the end are not over: a default that is still going has no loss y
 (define freddie-severity-fit-model '())
 (define freddie-severity-fit-read '())
 
-(define (freddie-default-fit)
+(define (freddie-default--fit)
   "The default model fitted to Freddie Mac's loans that comes with the library (freddie-default-fit-file), read from its file the first time it is wanted."
   (when (null? freddie-default-fit-read)
     (load-variables freddie-default-fit-file)
     (set! freddie-default-fit-read freddie-default-fit-model))
   freddie-default-fit-read)
 
-(define (freddie-severity-fit)
+(define (freddie-default--severity-fit)
   "The severity model fitted to Freddie Mac's loans that comes with the library (freddie-severity-fit-file), read from its file the first time it is wanted."
   (when (null? freddie-severity-fit-read)
     (load-variables freddie-severity-fit-file)
@@ -177,8 +177,8 @@ The years near the end are not over: a default that is still going has no loss y
   freddie-severity-fit-read)
 
 (define (save-freddie-default-fits default-model severity-model directory)
-  "Saves the default model (made by fit-default-model) and the severity model (made by fit-severity-model) in the directory, in the files that freddie-default-fit
-and freddie-severity-fit read: lib/ is where the deals look for them."
+  "Saves the default model (made by fit-default-model) and the severity model (made by fit-severity-model) in the directory, in the files that freddie-default--fit
+and freddie-default--severity-fit read: lib/ is where the deals look for them."
   (set! freddie-default-fit-model default-model)
   (set! freddie-severity-fit-model severity-model)
   (save-variables (string-append directory "/" freddie-default-fit-file) freddie-default-fit-model)
@@ -191,7 +191,7 @@ path (see piece-on-path: the loan-to-value falls as home prices grow); the rest 
 like, the model takes them to be the loan of unknown-piece."
   (let* ((months (collateral-piece-wam piece))
          (along (piece-on-path piece path home-price-growth mortgage-spread))
-         (constant (lambda (slot accessor) (make-vector months (+ 0.0 (piece-value piece slot accessor))))))
+         (constant (lambda (slot accessor) (make-vector months (+ 0.0 (freddie-loans--piece-value piece slot accessor))))))
     (list (cons "credit_score" (constant 'credit-score collateral-piece-credit-score))
           (assoc "current_ltv" along)
           (assoc "loan_age" along)
@@ -214,23 +214,23 @@ the mortgage insurance and the investor share are the piece's."
          (constant (lambda (value) (make-vector months (+ 0.0 value)))))
     (list (cons "ltv_at_default" (cdr (assoc "current_ltv" along)))
           (assoc "loan_size_k" along)
-          (cons "mi_percent" (constant (piece-value piece 'mi-percent collateral-piece-mi-percent)))
+          (cons "mi_percent" (constant (freddie-loans--piece-value piece 'mi-percent collateral-piece-mi-percent)))
           (cons "months_since_default" (constant lag))
-          (cons "investor" (constant (piece-value piece 'investor-share collateral-piece-investor-share))))))
+          (cons "investor" (constant (freddie-loans--piece-value piece 'investor-share collateral-piece-investor-share))))))
 
 (define (freddie-default-model &key (home-price-growth 3.0) (mortgage-spread 1.75) (fit '()))
-  "A default model for a deal, (model piece path): the model fitted to Freddie Mac's loans (fit, or, if it is '(), the one that comes with the library: freddie-default-fit),
+  "A default model for a deal, (model piece path): the model fitted to Freddie Mac's loans (fit, or, if it is '(), the one that comes with the library: freddie-default--fit),
 which gives the CDR, in percent, of each month of the piece of collateral on the path of rates, from what it looks at (default-model-columns)."
   (lambda (piece path)
-    (annual-rate (model-predictions (if (null? fit) (freddie-default-fit) fit)
-                                    (default-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread)))))
+    (annual-rate (model-predict (if (null? fit) (freddie-default--fit) fit)
+                                (default-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread)))))
 
 (define (freddie-severity-model &key (home-price-growth 3.0) (mortgage-spread 1.75) (lag 18) (fit '()))
   "A severity model for a deal, (model piece path): the model fitted to Freddie Mac's sales of defaulted loans (fit, or, if it is '(), the one that comes with the library:
-freddie-severity-fit), which gives the severity, a decimal from 0 to 1, of the loans of the piece that default in each month, sold lag months later
+freddie-default--severity-fit), which gives the severity, a decimal from 0 to 1, of the loans of the piece that default in each month, sold lag months later
 (severity-model-columns)."
   (lambda (piece path)
-    (vector-clip (model-predictions (if (null? fit) (freddie-severity-fit) fit)
-                                    (severity-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread :lag lag))
+    (vector-clip (model-predict (if (null? fit) (freddie-default--severity-fit) fit)
+                                (severity-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread :lag lag))
                  0.0 1.0)))
 

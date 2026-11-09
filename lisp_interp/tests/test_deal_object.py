@@ -78,16 +78,16 @@ class TestMakingADeal(DealObjectCase):
         self.run_lisp('''(define table (make-table "balance" (vector 100000000.0 50000000.0) "wac" (vector 6.5 7.5) "coupon" (vector 6.0 6.5) "wam" (vector 360 240)))
                          (define deal (new-deal "Demo" :collateral table))''')                       # (no age: 0)
         self.assertShows("(deal-size deal)", "150000000.0")
-        self.assertShows("(map (lambda (piece) (list (collateral-piece-balance piece) (collateral-piece-wac piece) (collateral-piece-coupon piece) (collateral-piece-wam piece) (collateral-piece-age piece))) (collateral-table-pieces (deal-collateral deal)))", "((100000000.0 6.5 6.0 360 0) (50000000.0 7.5 6.5 240 0))")
+        self.assertShows("(map (lambda (piece) (list (collateral-piece-balance piece) (collateral-piece-wac piece) (collateral-piece-coupon piece) (collateral-piece-wam piece) (collateral-piece-age piece))) (deal--collateral-table-pieces (deal-collateral deal)))", "((100000000.0 6.5 6.0 360 0) (50000000.0 7.5 6.5 240 0))")
         self.assertShows("(table-column (collateral-table '((1000.0 6.0 5.5 12 3))) \"age\")", "#(3)")
 
     def test_a_row_with_no_balance_is_left_out(self):
         self.run_lisp('''(define deal (new-deal "Demo" :collateral '((100000000.0 6.5 6.0 360) (0.0 0.0 0.0 0 0) (50000000.0 7.5 6.5 240 12))))''')
-        self.assertShows("(length (collateral-table-pieces (deal-collateral deal)))", "2")
+        self.assertShows("(length (deal--collateral-table-pieces (deal-collateral deal)))", "2")
 
     def test_a_table_that_is_not_collateral_is_said_not_to_be(self):
-        self.assertLispError("(collateral-table-pieces 5)", "the collateral is a table")
-        self.assertLispError('(collateral-table-pieces (make-table "balance" (vector 1.0) "wac" (vector 6.0)))', "has no column coupon")
+        self.assertLispError("(deal--collateral-table-pieces 5)", "the collateral is a table")
+        self.assertLispError('(deal--collateral-table-pieces (make-table "balance" (vector 1.0) "wac" (vector 6.0)))', "has no column coupon")
         self.assertLispError("(collateral-table '((1 2 3)))", "a piece of collateral is (balance wac coupon wam [age])")
         self.assertLispError('(new-deal "Demo" :collateral (make-table "x" (vector 1.0)))', "has no column balance")
 
@@ -390,7 +390,7 @@ class TestSomethingThatShowsTheDeal(DealObjectCase):
         self.assertEqual(self.heard(), '("tranches" "both")')                      # (and the views after it were told too)
 
     def test_a_trial_copy_has_no_views_so_trying_a_change_tells_nobody(self):
-        self.run_lisp("(define trial (deal-trial-copy deal))")
+        self.run_lisp("(define trial (deal--trial-copy deal))")
         self.assertShows("(deal-views trial)", "()")
         self.run_lisp('(deal-trial-of-plan deal "POOL" (sequential-plan \'(("A" 90000000.0) ("B" 60000000.0))))')
         self.assertEqual(self.heard(), "()")
@@ -406,7 +406,7 @@ class TestSomethingThatShowsTheDeal(DealObjectCase):
         self.assertShows("(deal-ran deal)", "#f")
 
     def test_the_trial_copy_has_the_collateral_the_speed_and_the_dates(self):
-        self.run_lisp("(define trial (deal-trial-copy deal))")
+        self.run_lisp("(define trial (deal--trial-copy deal))")
         self.assertShows("(equal? (deal-collateral trial) (deal-collateral deal))", "#t")
         self.assertShows("(equal? (deal-pricing-speed trial) (deal-pricing-speed deal))", "#t")
         self.assertShows("(deal-first-payment trial)", "2026-11-25")

@@ -22,7 +22,12 @@ Differences from a Python kernel:
     lisp_interpreter_reference.md.
   - Widgets (ipywidgets, and ipydatagrid's grid for editing a table) are drawn by
     (display-widget w), or by a cell whose value is a widget (see lisp_widgets.py).
-  - (abort) ends the cell with an "Aborted" error.
+  - (abort) ends the cell with an "Aborted" error, and Kernel > Interrupt with an
+    "Interrupted" one, which shows the Lisp calls that were running.
+  - The whole cell is read before any of it runs, so a cell with a missing
+    parenthesis does nothing, as a Python cell with a syntax error does.
+  - A cell whose value is a table shows it as display-table does (its first
+    20 rows). A list or vector shows only its first 100 elements.
   - The history variables _, __, ___, and _N (the result of cell N) are
     set in the Lisp environment by hand (see _record_history), since
     IPython only sets them for Python code.
@@ -43,11 +48,13 @@ import sys
 os.environ.setdefault("MPLBACKEND", "module://matplotlib_inline.backend_inline")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lisp_core import LispAbort, LispError, NIL, Symbol, format_lisp_traceback, parse, seval, to_string
+from lisp_core import (LispAbort, LispError, NIL, Symbol, TOP_LEVEL_MAX_ITEMS, format_call_stack, format_lisp_traceback,
+                       parse, seval, to_string)
 import lisp_core
 import lisp_help
 import lisp_jupyter
 import lisp_jupyter_debug
+import lisp_tables
 import lisp_widgets
 
 from ipykernel.ipkernel import IPythonKernel
@@ -106,10 +113,14 @@ class LispKernel(IPythonKernel):
         # the notebook for a line, as it does in a Python notebook.
         self._forward_input(allow_stdin)
         try:
-            for expr in parse(code):
+            forms = list(parse(code))           # the whole cell is read first, so a syntax error leaves it all undone
+            for expr in forms:
                 result = seval(expr, env)
         except LispAbort:
             return self._error_reply("Aborted", "the computation was abandoned by (abort)")
+        except KeyboardInterrupt as e:
+            calls = format_call_stack(getattr(e, "lisp_trace", None) or [], "Interrupted while running (most recent call last):")
+            return self._error_reply("Interrupted", "the cell was stopped (Kernel > Interrupt)", calls)
         except LispError as e:
             return self._error_reply("LispError", str(e), format_lisp_traceback(e))
         except Exception as e:
@@ -121,10 +132,12 @@ class LispKernel(IPythonKernel):
             self._record_history(env, result)
             if lisp_widgets.is_widget(result):          # a cell whose value is a widget shows it, as in a Python notebook
                 lisp_jupyter._notebook_widget(result)
+            elif lisp_tables.is_table(result):          # and a table, as display-table shows it
+                env[Symbol("display-table")](result)
             else:
                 self.send_response(self.iopub_socket, "execute_result", {
                     "execution_count": self.execution_count,
-                    "data": {"text/plain": to_string(result)},
+                    "data": {"text/plain": to_string(result, TOP_LEVEL_MAX_ITEMS)},
                     "metadata": {},
                 })
 

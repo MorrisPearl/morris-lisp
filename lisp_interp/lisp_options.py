@@ -3,6 +3,7 @@ formula, implied volatility, the Greeks, and American options, by a
 binomial tree.
 
   (normal-cdf x)                                      N(x), the standard normal distribution
+  (normal-quantile p)                                 the x at which N(x) is p: normal-cdf's inverse
   (bsm-price type spot strike time rate vol [:dividend-yield q])
   (implied-vol price type spot strike time rate [:dividend-yield q])
   (bsm-delta ...), (bsm-gamma ...), (bsm-vega ...), (bsm-theta ...), (bsm-rho ...)
@@ -64,6 +65,7 @@ option exercised early gets the whole price, that part and the rest.
 """
 
 import math
+import statistics
 
 import numpy as np
 
@@ -145,6 +147,18 @@ def normal_cdf(x):
     """(normal-cdf x) -- the chance that a standard normal number is below x:
     0.5 (1 + erf(x / sqrt 2)). x can be a vector."""
     return answer(normal_cdf_array(numbers_argument(x, "x", "normal-cdf")), [x])
+
+
+def normal_quantile(p):
+    """(normal-quantile p) -- the number that a standard normal number is below with chance p, the opposite of
+    normal-cdf: (normal-quantile 0.975) is 1.96. p is between 0 and 1, and can be a vector (with NaN for a missing one)."""
+    probabilities = numbers_argument(p, "p", "normal-quantile")
+    missing = np.isnan(probabilities)                   # a missing chance (NaN) gives a missing number
+    if not np.all(missing | ((probabilities > 0) & (probabilities < 1))):
+        raise LispError("normal-quantile: p must be a chance between 0 and 1 (not 0 or 1 itself), not %s" % (p,))
+    standard_normal = statistics.NormalDist()
+    return answer(np.array([math.nan if math.isnan(chance) else standard_normal.inv_cdf(chance)
+                            for chance in probabilities]), [p])
 
 
 def black_formula(call, forward, strike, T, discount, vol):
@@ -493,6 +507,7 @@ def binomial_tree(kind, spot, strike, time, rate, vol, *options):
 
 BUILTINS = {
     "normal-cdf": normal_cdf,
+    "normal-quantile": normal_quantile,
     "black-price": black_price,
     "black-implied-vol": black_implied_vol,
     "bsm-price": bsm_price,

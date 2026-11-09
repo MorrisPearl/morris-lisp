@@ -36,7 +36,7 @@
 ; --- 2. works on any kind of struct -- the same form, different types ---
 
 (defstruct loan balance rate months)
-(defstruct tranche name (coupon 0.05) (factor 1.0))
+(defstruct bond name (coupon 0.05) (factor 1.0))
 
 ; standard level-payment mortgage formula, all three slots used as plain
 ; variables
@@ -49,8 +49,8 @@
 (display "30yr 6% $300k payment: ") (display (round (* 100 (monthly-payment ln))))
 (display " cents/month") (newline)
 
-(define t1 (make-tranche :name "A1" :coupon 0.045))
-(display "tranche summary:     ")
+(define t1 (make-bond :name "A1" :coupon 0.045))
+(display "bond summary:        ")
 (display (with-struct t1 (list name coupon factor)))
 (newline)
 
@@ -97,7 +97,7 @@
 
 (display "nested (inner wins): ")
 (display (with-struct (make-loan :balance 1 :rate 2 :months 3)
-           (with-struct (make-tranche :name "B" :coupon 9)
+           (with-struct (make-bond :name "B" :coupon 9)
              (list balance rate months name coupon))))
 (newline)
 

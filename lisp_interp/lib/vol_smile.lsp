@@ -57,7 +57,7 @@
 ; T, F, K, and Y for each option
 ; ---------------------------------------------------------------------------
 
-(define (dividends-present-value expirations rate dividends as-of)
+(define (vol-smile--dividends-present-value expirations rate dividends as-of)
   "For each expiration date, the present value on the date as-of of the
 dividends after as-of and on or before the expiration. dividends is a table
 of ex-date and amount columns, as alpha-vantage-dividends and
@@ -71,7 +71,7 @@ dividend-schedule make, or '() for none."
             (incf total (* (>= expirations ex-date) (row-ref dividend "amount") (exp (* (- rate) years))))))))
     total))
 
-(define (with-smile-columns chain rate dividends as-of)
+(define (vol-smile--with-smile-columns chain rate dividends as-of)
   "The chain with each option's T, discount factor, forward, K, implied
 volatilities at the bid, mid, and ask, and Y added as columns. The
 chain's prices are from the date as-of, and its days-to-expiration counted
@@ -79,7 +79,7 @@ from then."
   (with-columns (days-to-expiration underlying-price expiration-date strike type mid bid ask) chain
     (let* ((T (/ days-to-expiration 365))
            (discount (exp (* (- rate) T)))
-           (forward (/ (- underlying-price (dividends-present-value expiration-date rate dividends as-of))
+           (forward (/ (- underlying-price (vol-smile--dividends-present-value expiration-date rate dividends as-of))
                        discount))
            (call? (= type "Call"))
            (iv (lambda (price) (black-implied-vol call? price forward strike T discount)))
@@ -95,7 +95,7 @@ from then."
               (cons "iv-ask" (iv ask))
               (cons "Y" (* T iv-mid iv-mid)))))))
 
-(define (liquid-options options max-vol-spread out-of-the-money-only)
+(define (vol-smile--liquid-options options max-vol-spread out-of-the-money-only)
   "The options worth fitting to: traded today, with open interest, a bid,
 and a spread no wider than max-vol-spread in volatility; and, if
 out-of-the-money-only, only calls with K >= 0 and puts with K <= 0."
@@ -116,7 +116,7 @@ out-of-the-money-only, only calls with K >= 0 and puts with K <= 0."
 ; The fit
 ; ---------------------------------------------------------------------------
 
-(define (smile-term options name)
+(define (vol-smile--smile-term options name)
   "The values of one of the model's terms, for each option."
   (with-columns (T K) options
     (cond ((string=? name "T") T)
@@ -126,14 +126,14 @@ out-of-the-money-only, only calls with K >= 0 and puts with K <= 0."
           ((string=? name "K^2") (* K K))
           (else (error "fit-vol-smiles: there's no term" name "-- the terms are" smile-terms)))))
 
-(define (smile-predictors options terms)
-  (map (lambda (name) (cons name (smile-term options name))) terms))
+(define (vol-smile--smile-predictors options terms)
+  (map (lambda (name) (cons name (vol-smile--smile-term options name))) terms))
 
-(define (fit-smile options terms)
+(define (vol-smile--fit-smile options terms)
   "The least-absolute-deviation fit of Y to the terms, for these options."
-  (lad-regression (smile-predictors options terms) (cons "Y" (table-column options "Y"))))
+  (lad-regression (vol-smile--smile-predictors options terms) (cons "Y" (table-column options "Y"))))
 
-(define (with-fit options model terms)
+(define (vol-smile--with-fit options model terms)
   "The options with what the model says about each added as columns:
   fitted-iv     the model's implied volatility for the option
   iv-residual   iv-mid less fitted-iv: positive if the option is priced
@@ -143,8 +143,8 @@ out-of-the-money-only, only calls with K >= 0 and puts with K <= 0."
                 ask is below it, \"\" otherwise
   edge          how far: the bid less model-price, or model-price less the
                 ask (0 for neither)"
-  (with-columns (Y T type forward strike discount bid ask iv-mid) options
-    (let* ((fitted-Y (- Y (model-residuals model (smile-predictors options terms) Y)))
+  (with-columns (T type forward strike discount bid ask iv-mid) options
+    (let* ((fitted-Y (model-predict model (vol-smile--smile-predictors options terms)))
            (fitted-iv (sqrt (/ (max fitted-Y 0) T)))
            (model-price (black-price (= type "Call") forward strike T discount fitted-iv))
            (rich (> bid model-price))
@@ -182,7 +182,7 @@ around. NaN if there's no such strike."
                                   (row-ref row "discount")))))))
     (or best nan)))
 
-(define (expiration-summary all-options fitted model terms)
+(define (vol-smile--expiration-summary all-options fitted model terms)
   "One row of the summary, for one expiration: its date, days to
 expiration, forward, the forward put-call parity implies (from all its
 options, liquid or not), how many options were fit, the fit's volatility
@@ -225,13 +225,13 @@ options as the fit has coefficients isn't fit."
   (let* ((terms (cond ((not (null? terms)) terms)
                       (by-expiration '("K" "K^2"))
                       (else smile-terms)))
-         (all-options (with-smile-columns chain rate dividends (today)))
-         (options (liquid-options all-options max-vol-spread out-of-the-money-only))
+         (all-options (vol-smile--with-smile-columns chain rate dividends (today)))
+         (options (vol-smile--liquid-options all-options max-vol-spread out-of-the-money-only))
          (enough (* 2 (+ 1 (length terms))))
          (expirations (sort (vector->list (vector-unique (table-column all-options "expiration-date")))))
          (shared-model (if (or by-expiration (< (table-row-count options) enough))
                            #f
-                           (fit-smile options terms)))
+                           (vol-smile--fit-smile options terms)))
          (fitted '())
          (summary '())
          (models '()))
@@ -240,12 +240,12 @@ options as the fit has coefficients isn't fit."
              (model (cond ((= (table-row-count group) 0) #f)
                           ((not by-expiration) shared-model)
                           ((< (table-row-count group) enough) #f)
-                          (else (fit-smile group terms)))))
+                          (else (vol-smile--fit-smile group terms)))))
         (when model
-          (set! group (with-fit group model terms))
+          (set! group (vol-smile--with-fit group model terms))
           (push group fitted)
           (push (cons expiration model) models))
-        (push (expiration-summary (table-where all-options "expiration-date" expiration) group model terms)
+        (push (vol-smile--expiration-summary (table-where all-options "expiration-date" expiration) group model terms)
               summary)))
     (make-vol-smile-fit
       :options (if (null? fitted) (table-head options 0) (apply table-append (reverse fitted)))

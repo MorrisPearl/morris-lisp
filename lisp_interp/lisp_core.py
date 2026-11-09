@@ -1,7 +1,7 @@
 """The core of the Lisp interpreter: the data types, the reader (text ->
 Lisp data), the environment, the evaluator, and the printer (Lisp data ->
 text). Everything else -- the built-in procedures, regression, charts,
-SQLite, FRED, tastytrade, the GUI -- is built on top of this module, and
+SQLite, FRED, tastytrade, the Jupyter kernel -- is built on top of this module, and
 this module imports none of them.
 
 Sections, in order:
@@ -43,6 +43,7 @@ bounded by Python's recursion limit. In practice this rarely matters.
 """
 
 import datetime
+import difflib
 import inspect
 import os
 import time
@@ -493,6 +494,10 @@ class LispError(Exception):
 # (see lisp_http.py, and Google, Schwab and tastytrade).
 NETWORK = "network"
 
+# The kind of error of text that stops in the middle of a form: a ( or a string that isn't closed yet. The console reads
+# another line when it gets one.
+UNFINISHED = "unfinished"
+
 
 def lisp_error_of_kind(message, kind):
     """A LispError with this message, of this kind (a string such as NETWORK, or None)."""
@@ -514,10 +519,10 @@ class LispThrow(BaseException):
 
 class LispAbort(BaseException):
     """Raised by (abort): abandon the whole computation and go back to the top
-    level -- the REPL prompt, the GUI's input box, the Jupyter cell -- or, in a
+    level -- the REPL prompt, the Jupyter cell -- or, in a
     script, end the run. Like LispThrow it's a BaseException, not an Exception,
     so catch-error doesn't stop it; unwind-protect cleanups still run on the
-    way out. Each top level catches it (lisp_interpreter.py, lisp_gui.py,
+    way out. Each top level catches it (lisp_interpreter.py,
     lisp_kernel.py)."""
 
 
@@ -536,6 +541,8 @@ def catch_tags_match(a, b):
 def throw_to(tag, value):
     """(throw tag [value]) -- see "catch" in eval_special_form."""
     if not any(catch_tags_match(tag, active) for active in _active_catch_tags):
+        if tag == Symbol("loop-nil"):       # what the return macro throws to (loop.lsp)
+            raise LispError("return: not inside a loop -- return leaves a dolist, dotimes, do, while, or loop")
         raise LispError("throw: nothing catches %s -- a throw must happen inside (catch %s ...)"
                         % (to_string(tag), to_string(tag)))
     raise LispThrow(tag, value)
@@ -545,67 +552,72 @@ def throw_to(tag, value):
 # Tokenizer
 # ---------------------------------------------------------------------------
 
+# The escapes in a string: a backslash before one of these letters is that character. A backslash before the string's own
+# quote mark (" or |) is the quote mark. A backslash before any other character is kept, as Python does, so that a
+# regular expression such as "\d+" can be written as is.
+STRING_ESCAPES = {'n': '\n', 't': '\t', 'r': '\r', 'f': '\f', '\\': '\\'}
+
+
+def read_string(text, start, quote_mark):
+    """The string whose opening quote mark (" or |) is at text[start]: its characters, with its escapes replaced, and
+    where the text after its closing quote mark begins -- or None for that, if it is never closed."""
+    characters = []
+    i = start + 1
+    while i < len(text) and text[i] != quote_mark:
+        if text[i] == '\\' and i + 1 < len(text):
+            following = text[i + 1]
+            characters.append(quote_mark if following == quote_mark else STRING_ESCAPES.get(following, '\\' + following))
+            i += 2
+        else:
+            characters.append(text[i])
+            i += 1
+    if i >= len(text):
+        return "".join(characters), None
+    return "".join(characters), i + 1
+
+
 def tokenize(text):
-    """Turn source text into a flat list of token strings."""
+    """Turn source text into a list of tokens, each a (token, line, start, end) tuple: the token's text; the number of the
+    line it starts on (1 for the first), for error messages; and where in the text it starts and ends. A string's token is
+    its characters between double quote marks, which is how atom() tells it from a symbol."""
     tokens = []
-    i, n = 0, len(text)
+    i, n, line = 0, len(text), 1
     while i < n:
         c = text[i]
-        if c in " \t\r\n":
+        if c == '\n':
+            line += 1
+            i += 1
+        elif c in " \t\r":
             i += 1
         elif c == ';':                      # comment runs to end of line
             while i < n and text[i] != '\n':
                 i += 1
         elif c == '#' and i + 1 < n and text[i + 1] == '(':
-            tokens.append("#(")             # start of a vector literal
+            tokens.append(("#(", line, i, i + 2))     # start of a vector literal
             i += 2
         elif c in "()'`":
-            tokens.append(c)
+            tokens.append((c, line, i, i + 1))
             i += 1
         elif c == ',':
             if i + 1 < n and text[i + 1] == '@':
-                tokens.append(',@')
+                tokens.append((',@', line, i, i + 2))
                 i += 2
             else:
-                tokens.append(',')
+                tokens.append((',', line, i, i + 1))
                 i += 1
-        elif c == '"':
-            j = i + 1
-            buf = []
-            while j < n and text[j] != '"':
-                if text[j] == '\\' and j + 1 < n:
-                    # \n, \t, \r, \f, \", and \\ are escapes. A backslash before any
-                    # other character is kept, as Python does, so that a
-                    # regular expression such as "\d+" can be written as is.
-                    escapes = {'n': '\n', 't': '\t', 'r': '\r', 'f': '\f', '"': '"', '\\': '\\'}
-                    buf.append(escapes.get(text[j + 1], '\\' + text[j + 1]))
-                    j += 2
-                else:
-                    buf.append(text[j])
-                    j += 1
-            tokens.append('"' + "".join(buf) + '"')
-            i = j + 1
-        elif c == '|':
-            j = i + 1
-            buf = []
-            while j < n and text[j] != '|':
-                if text[j] == '\\' and j + 1 < n:
-                    # \n, \t, \r, \f, \|, and \\ are escapes. A backslash before any
-                    # other character is kept, as Python does, so that a
-                    # regular expression such as "\d+" can be written as is.
-                    escapes = {'n': '\n', 't': '\t', 'r': '\r', 'f': '\f', '|': '|', '\\': '\\'}
-                    buf.append(escapes.get(text[j + 1], '\\' + text[j + 1]))
-                    j += 2
-                else:
-                    buf.append(text[j])
-                    j += 1
-            tokens.append('"' + "".join(buf) + '"')
-            i = j + 1
+        elif c in '"|':                     # a string, "..." or |...|
+            characters, after = read_string(text, i, c)
+            if after is None:
+                raise lisp_error_of_kind("the string that starts on line %d is never closed -- a %s is missing" % (line, c),
+                                         UNFINISHED)
+            tokens.append(('"' + characters + '"', line, i, after))
+            line += text.count('\n', i, after)
+            i = after
         else:
             j = i
             while j < n and text[j] not in " \t\r\n()'\"`," and text[j] != ';':
                 j += 1
-            tokens.append(text[i:j])
+            tokens.append((text[i:j], line, i, j))
             i = j
     return tokens
 
@@ -614,52 +626,82 @@ def tokenize(text):
 # Reader / Parser
 # ---------------------------------------------------------------------------
 
+class Tokens:
+    """The tokens of some source text (see tokenize), and how far reading has got through them."""
+
+    def __init__(self, text):
+        self.items = tokenize(text)
+        self.position = 0
+
+    def more(self):
+        return self.position < len(self.items)
+
+    def peek(self):
+        """The next token's text, without moving past it."""
+        return self.items[self.position][0]
+
+    def take(self):
+        """The next token, as a (token, line) pair, moving past it."""
+        token, line, _, _ = self.items[self.position]
+        self.position += 1
+        return token, line
+
+    def start_of(self, index):
+        """Where in the text the token at index begins."""
+        return self.items[index][2]
+
+    def end_of(self, index):
+        """Where in the text the token at index ends."""
+        return self.items[index][3]
+
+
 def parse(text):
     """Parse source text into top-level Lisp expressions, one at a time. (A
-    generator, so a file's forms before a syntax error still get run.)"""
-    tokens = tokenize(text)
-    while tokens:
+    generator, so a file's forms before a missing or extra parenthesis still
+    get run. A string that is never closed is found before any form is read.)"""
+    tokens = Tokens(text)
+    while tokens.more():
         yield read_from(tokens)
-    return
+
 
 def read_from(tokens):
-    if not tokens:
-        raise LispError("unexpected end of input")
-    token = tokens.pop(0)
+    """Read one expression from tokens (a Tokens), and move past it."""
+    token, line = tokens.take()
     if token == "(":
         items = []
         tail = NIL
-        while tokens and tokens[0] != ")":
-            if tokens[0] == ".":
-                tokens.pop(0)  # consume '.'
+        while tokens.more() and tokens.peek() != ")":
+            if tokens.peek() == ".":
+                tokens.take()  # consume '.'
+                if not tokens.more() or tokens.peek() == ")":
+                    raise LispError("the list that starts on line %d has nothing after its dot" % line)
                 tail = read_from(tokens)   # the dotted tail -- e.g. (a b . c)
+                if tokens.more() and tokens.peek() != ")":
+                    raise LispError("the list that starts on line %d has more than one thing after its dot" % line)
                 break
             items.append(read_from(tokens))
-        if not tokens:
-            raise LispError("missing ')'")
-        tokens.pop(0)  # discard ")"
+        if not tokens.more():
+            raise lisp_error_of_kind("missing ')': the ( on line %d is never closed" % line, UNFINISHED)
+        tokens.take()  # discard ")"
         result = tail
         for item in reversed(items):
             result = Pair(item, result)
         return result
     elif token == "#(":
         items = []
-        while tokens and tokens[0] != ")":
+        while tokens.more() and tokens.peek() != ")":
             items.append(read_from(tokens))
-        if not tokens:
-            raise LispError("missing ')' for vector literal")
-        tokens.pop(0)  # discard ")"
+        if not tokens.more():
+            raise lisp_error_of_kind("missing ')': the #( on line %d is never closed" % line, UNFINISHED)
+        tokens.take()  # discard ")"
         return LispVector(items)
     elif token == ")":
-        raise LispError("unexpected ')'")
-    elif token == "'":
-        return list_to_pairs([Symbol("quote"), read_from(tokens)])
-    elif token == "`":
-        return list_to_pairs([Symbol("quasiquote"), read_from(tokens)])
-    elif token == ",":
-        return list_to_pairs([Symbol("unquote"), read_from(tokens)])
-    elif token == ",@":
-        return list_to_pairs([Symbol("unquote-splicing"), read_from(tokens)])
+        raise LispError("unexpected ')' on line %d -- there are more )s than (s before it" % line)
+    elif token in ("'", "`", ",", ",@"):
+        if not tokens.more():
+            raise lisp_error_of_kind("nothing follows the %s on line %d" % (token, line), UNFINISHED)
+        name = {"'": "quote", "`": "quasiquote", ",": "unquote", ",@": "unquote-splicing"}[token]
+        return list_to_pairs([Symbol(name), read_from(tokens)])
     else:
         return atom(token)
 
@@ -864,13 +906,28 @@ class Env(dict):
             raise LispError("expected %s, got %d" % (how_many, len(args)))
 
     def find(self, name):
-        """The innermost Env in which `name` is bound; an error if there's none."""
+        """The innermost Env in which `name` is bound; an error if there's none, which suggests the names it may be a
+        mistyping of."""
         e = self
         while e is not None:
             if name in e:
                 return e
             e = e.outer
-        raise LispError("unbound symbol: %s" % name)
+        raise LispError("unbound symbol: %s%s" % (name, self.suggestion_for(name)))
+
+    def suggestion_for(self, name):
+        """" -- did you mean table-head?", naming up to three bound names that are spelled nearly as name is, or ""
+        if none is. Names that begin with % or have -- in them, a library's own, are left out unless name does too."""
+        hidden = name.startswith("%") or "--" in name
+        names = set()
+        e = self
+        while e is not None:
+            names.update(str(key) for key in e if isinstance(key, str))
+            e = e.outer
+        if not hidden:
+            names = {other for other in names if not other.startswith("%") and "--" not in other}
+        close = difflib.get_close_matches(str(name), names, n=3, cutoff=0.8)
+        return " -- did you mean %s?" % " or ".join(close) if close else ""
 
     def lookup_or_none(self, name):
         """The value of `name`, or None if it isn't bound anywhere. Used to
@@ -910,7 +967,7 @@ def raw_default(expr, env):
 #     Output goes wherever display output goes.
 #
 #   STACK TRACES -- when an error escapes, seval() copies the CALL frames
-#     into the exception (exc.lisp_trace), so the REPL, batch mode, GUI,
+#     into the exception (exc.lisp_trace), so the REPL, batch mode,
 #     and Jupyter can show the chain of calls that led to the error.
 #     (backtrace) shows the current chain without an error.
 #
@@ -1145,7 +1202,7 @@ def format_lisp_traceback(exc):
 
 
 def format_error_report(exc):
-    """The report shown for an error by the REPL, batch mode, and the GUI:
+    """The report shown for an error by the REPL and batch mode:
     the chain of calls (if any), then `Error: message`."""
     return format_lisp_traceback(exc) + "Error: %s\n" % (exc,)
 
@@ -1851,6 +1908,10 @@ def seval(expr, env, call=None):
         if debug_state.break_on_error:
             stop_on_error(exc, env)
         raise
+    except KeyboardInterrupt as exc:
+        _record_lisp_trace(exc, control_stack)     # so the notebook or console can say where the program was stopped
+        _call_depth = entry_depth
+        raise
     except (LispThrow, LispAbort):
         _call_depth = entry_depth      # neither is an error, so neither gets a stack trace
         raise
@@ -2109,14 +2170,25 @@ def to_display_string(x):
         return "()"
     if isinstance(x, LispString):
         return x
-    if isinstance(x, (Pair, LispVector, LispDate, LispStruct)):
+    if isinstance(x, (Pair, LispVector, LispDate, LispStruct)) or inspect.isroutine(x):
         return to_string(x)
     return str(x)
 
 
-def to_string(x):
+TOP_LEVEL_MAX_ITEMS = 100      # the most elements of a list or vector shown as the value of a notebook cell or a console line
+
+
+def more_items_note(count):
+    """What stands for the elements of a list or vector that aren't shown."""
+    return "... (%s more)" % format(count, ",")
+
+
+def to_string(x, max_items=None):
     """A value as the REPL prints it (strings in quotes). Loops rather than
-    recursing along a list, so a very long list prints fine."""
+    recursing along a list, so a very long list prints fine. With max_items, a
+    list or vector (at any depth) shows only its first max_items elements, and
+    how many more it has: a notebook cell's value is shown that way, so that a
+    vector of a million numbers doesn't fill the page."""
     if x is True:
         return "#t"
     if x is False:
@@ -2133,20 +2205,29 @@ def to_string(x):
     if isinstance(x, LispVector):
         # Not .tolist(): str() of a float32 prints the short value it actually
         # holds (0.964), while a Python float would print 0.9639999866485596.
-        return "#(" + " ".join(to_string(item) for item in x.items) + ")"
+        shown = x.items if max_items is None else x.items[:max_items]
+        parts = [to_string(item, max_items) for item in shown]
+        if len(shown) < len(x.items):
+            parts.append(more_items_note(len(x.items) - len(shown)))
+        return "#(" + " ".join(parts) + ")"
     if isinstance(x, LispStruct):
-        parts = ["%s %s" % (Keyword(":" + slot_name), to_string(x.values.get(slot_name)))
+        parts = ["%s %s" % (Keyword(":" + slot_name), to_string(x.values.get(slot_name), max_items))
                  for slot_name, _ in x.struct_type.slots]
         return "#S(%s %s)" % (x.struct_type.name, " ".join(parts)) if parts else "#S(%s)" % (x.struct_type.name,)
     if isinstance(x, Pair):
         parts = []
         p = x
         while isinstance(p, Pair):
-            parts.append(to_string(p.car))
+            if max_items is not None and len(parts) == max_items:
+                return "(" + " ".join(parts + [more_items_note(len(pairs_to_list(p)))]) + ")"
+            parts.append(to_string(p.car, max_items))
             p = p.cdr
         if p is NIL:
             return "(" + " ".join(parts) + ")"
         return "(" + " ".join(parts) + " . " + to_string(p) + ")"
+    if inspect.isroutine(x):            # a builtin: a function written in Python
+        name = builtin_names.get(x)
+        return "#<builtin %s>" % name if name else "#<builtin>"
     return str(x)
 
 
@@ -2625,9 +2706,8 @@ def debug_repl(env, label="debug", resume="resumes"):
       (locals)     the variables you can see, with their values
       (backtrace)  the chain of calls that led here
 
-    It reads from the console with input(), even when the GUI is running;
-    there's no GUI debugger. (In the GUI or Jupyter, use a debug hook that
-    prints, and doesn't call (debug-repl).)"""
+    It reads from the console with input(). (A Jupyter kernel replaces it with
+    one made of widgets: see set_debug_repl and lisp_jupyter_debug.py.)"""
     print("--- %s: debug REPL -- (continue) %s, (abort) abandons the computation, "
           "(locals) shows the variables ---" % (label, resume))
     buffer = ""
@@ -2685,12 +2765,15 @@ def set_debug_repl(function):
 # ---------------------------------------------------------------------------
 
 def run_file(path, env):
+    """Evaluates the forms of the Lisp file at path, in env, and returns the value of the last one ('() if it has none)."""
     with open(path) as f:
         text = f.read()
     coverage_state.files.append(path)           # (for coverage: what file a function is defined in)
+    value = NIL
     try:
         for expr in parse(text):
-            seval(expr, env)
+            value = seval(expr, env)
     finally:
         coverage_state.files.pop()
+    return value
 

@@ -129,7 +129,7 @@ class TestTheModels(PathsCase):
         self.assertShows("(deal-prepayment-model deal)", "()")
         self.assertShows("(deal-index-function deal)", "()")
         self.assertShows("(deal-rate-model deal)", "()")
-        self.assertShows("(list (rate-model-a (deal-rate-model-in-use deal)) (rate-model-sigma1 (deal-rate-model-in-use deal)) (rate-model-sigma2 (deal-rate-model-in-use deal)))",
+        self.assertShows("(list (rate-model-a (deal-paths--rate-model-in-use deal)) (rate-model-sigma1 (deal-paths--rate-model-in-use deal)) (rate-model-sigma2 (deal-paths--rate-model-in-use deal)))",
                          "(2.75 0.019 0.012)")
 
     def test_the_paths_start_on_the_forward_curve_of_the_treasury_curve_of_the_deal(self):
@@ -141,7 +141,7 @@ class TestTheModels(PathsCase):
         np.testing.assert_allclose(self.path_rates()[0][:24], forwards[:24], rtol=1e-9)
 
     def test_it_needs_a_treasury_curve(self):
-        self.run_lisp("(deal-clear-treasury-curve! deal)")
+        self.run_lisp("(deal-pricing--clear-treasury-curve! deal)")
         self.assertLispError("(deal-forward-curve deal)", "has no Treasury curve")
         self.assertLispError("(deal-run-paths! deal :paths 2)", "has no Treasury curve")
 

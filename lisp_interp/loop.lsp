@@ -67,8 +67,9 @@
 ;   - Not supported: for ... and for ... (stepping in parallel), the variable
 ;     it, by for in and on, being the elements of, type declarations,
 ;     loop-finish, and multiple values.
-;   - return, and the return-from macro below, are for loop. Unlike in Common
-;     Lisp they aren't available in dolist, do, and while.
+;   - return leaves a loop, and also (as in Common Lisp) a dolist, dotimes,
+;     do, or while (see block--around in macros_init.lsp); return-from leaves
+;     a loop with that name.
 ;   - Clauses happen in the order written. As in Common Lisp, write the
 ;     stepping clauses (for, repeat) before the clauses that do things.
 ;
@@ -79,7 +80,7 @@
 ;
 ;   (let* ((keep-going #t) (rest prices) (x '())    ; the variables
 ;          (result '()) (tail '()) (temp '()))
-;     (while keep-going
+;     (while--without-catch keep-going             ; while, without its catch for return
 ;       (if (pair? rest)                            ; a test: are there more?
 ;           (begin (set! x (car rest))              ; the next element
 ;                  (set! rest (cdr rest))
@@ -568,7 +569,7 @@ up in the variables just below, and at the end assemble puts it together."
     (define code
       `(let* ,(reverse bindings)
          ,@initially-forms
-         (while ,keep-going ,@(loop--nest (reverse actions) keep-going))
+         (while--without-catch ,keep-going ,@(loop--nest (reverse actions) keep-going))
          ,@finally-forms
          ,value))
     (if uses-block?
@@ -591,7 +592,7 @@ up in the variables just below, and at the end assemble puts it together."
 ; forms until one of them does (return value).
 (defmacro loop clauses
   (if (or (null? clauses) (pair? (car clauses)))
-      `(catch 'loop-nil (while #t ,@clauses))
+      `(while #t ,@clauses)                    ; (while catches return, if the forms use it)
       (loop--expand clauses)))
 
 ; (return value) leaves the nearest loop that has no name, and makes it

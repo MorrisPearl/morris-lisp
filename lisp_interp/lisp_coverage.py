@@ -17,7 +17,7 @@ import numpy as np
 import lisp_tables
 from lisp_vector_math import to_vector
 from lisp_core import (
-    Keyword, LispString, LispVector, NIL, coverage_state, is_true, keyword_options, set_profiling,
+    LispString, LispVector, NIL, coverage_state, is_true, keyword_options, set_profiling,
 )
 
 TYPED_IN = "(typed in)"

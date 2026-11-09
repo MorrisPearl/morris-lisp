@@ -1,4 +1,4 @@
-"""file-to-notebook (lisp_builtins.py): a Lisp file's top-level forms, each in its own code cell of a new Jupyter notebook, none run;
+"""file-to-notebook (lisp_notebook_files.py): a Lisp file's top-level forms, each in its own code cell of a new Jupyter notebook, none run;
 the link to the notebook shown in a notebook. The splitter is checked directly; the notebook's shape, the builtin in the console and in
 a notebook; and, through a real kernel, the link a notebook shows."""
 
@@ -7,7 +7,9 @@ import json
 import tempfile
 import urllib.parse
 
-from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
+from support import *
+
+import lisp_notebook_files  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
 
 SAMPLE = r''';; the header comment
 (define (f x) ; a comment with ) paren
@@ -39,30 +41,30 @@ SAMPLE_TEXTS = [
 class TestTheSplitter(unittest.TestCase):
 
     def test_each_top_level_form_is_its_own_text_with_its_comments_and_layout(self):
-        self.assertEqual(lisp_builtins.top_level_form_texts(SAMPLE), SAMPLE_TEXTS)
+        self.assertEqual(lisp_notebook_files.top_level_form_texts(SAMPLE), SAMPLE_TEXTS)
 
     def test_the_texts_read_back_as_the_same_forms(self):
-        for text in lisp_builtins.top_level_form_texts(SAMPLE):
+        for text in lisp_notebook_files.top_level_form_texts(SAMPLE):
             self.assertEqual(len(list(lisp_core.parse(text))), 1, text)
 
     def test_a_string_in_vertical_bars_may_hold_parentheses_semicolons_and_quotation_marks(self):
         source = '(define s |has ) a paren and ; a semicolon and "quotes"|)\n(define t 2)\n|just a bar string|\n'
-        self.assertEqual(lisp_builtins.top_level_form_texts(source),
+        self.assertEqual(lisp_notebook_files.top_level_form_texts(source),
                          ['(define s |has ) a paren and ; a semicolon and "quotes"|)', "(define t 2)", "|just a bar string|"])
-        self.assertEqual(lisp_builtins.top_level_form_texts(r"(f |a \| bar|) (g)"), [r"(f |a \| bar|)", "(g)"])
+        self.assertEqual(lisp_notebook_files.top_level_form_texts(r"(f |a \| bar|) (g)"), [r"(f |a \| bar|)", "(g)"])
 
     def test_a_file_with_no_forms_has_no_texts(self):
-        self.assertEqual(lisp_builtins.top_level_form_texts("; only a comment\n\n"), [])
+        self.assertEqual(lisp_notebook_files.top_level_form_texts("; only a comment\n\n"), [])
 
     def test_a_syntax_error_is_raised_before_anything_is_split_off(self):
         with self.assertRaises(lisp_core.LispError):
-            lisp_builtins.top_level_form_texts("(define ok 1) (define broken 2")
+            lisp_notebook_files.top_level_form_texts("(define ok 1) (define broken 2")
 
 
 class TestTheNotebook(unittest.TestCase):
 
     def test_it_is_a_notebook_with_one_code_cell_for_each_text_for_the_morris_lisp_kernel(self):
-        notebook = lisp_builtins.notebook_json(["(define a 1)", "; two\n(define b 2)"])
+        notebook = lisp_notebook_files.notebook_json(["(define a 1)", "; two\n(define b 2)"])
         self.assertEqual((notebook["nbformat"], notebook["nbformat_minor"]), (4, 4))
         self.assertEqual(notebook["metadata"]["kernelspec"]["name"], "morris-lisp")
         self.assertEqual([c["cell_type"] for c in notebook["cells"]], ["code", "code"])
@@ -121,10 +123,10 @@ class TestFileToNotebook(LispTestCase):
         cwd = os.getcwd()
         os.chdir(self.folder)
         self.addCleanup(os.chdir, cwd)
-        with mock.patch.object(lisp_builtins, "choose_lisp_file", return_value=self.path):
+        with mock.patch.object(lisp_notebook_files, "choose_lisp_file", return_value=self.path):
             self.run_lisp("(file-to-notebook)")
         self.assertEqual(len(self.written(os.path.join(self.folder, "sample.ipynb"))["cells"]), 8)
-        with mock.patch.object(lisp_builtins, "choose_lisp_file", return_value=None):
+        with mock.patch.object(lisp_notebook_files, "choose_lisp_file", return_value=None):
             self.assertShows("(file-to-notebook)", "()")
 
     def test_a_dialog_that_cannot_be_shown_says_to_give_the_path(self):
@@ -146,18 +148,18 @@ class TestSlideTypes(unittest.TestCase):
              cell("markdown", "just words"), cell("markdown", "  # Part two")]
 
     def test_every_cell_is_a_slide_of_its_own_by_default(self):
-        self.assertEqual(lisp_builtins.slide_types_for(self.CELLS, "each-cell"), ["slide"] * 6)
+        self.assertEqual(lisp_notebook_files.slide_types_for(self.CELLS, "each-cell"), ["slide"] * 6)
 
     def test_a_heading_starts_a_slide_or_a_sub_slide_and_the_other_cells_stay_on_it(self):
-        self.assertEqual(lisp_builtins.slide_types_for(self.CELLS, "by-heading"),
+        self.assertEqual(lisp_notebook_files.slide_types_for(self.CELLS, "by-heading"),
                          ["slide", "slide", "-", "subslide", "-", "slide"])      # (the first cell always starts a slide)
 
     def test_a_code_cell_that_looks_like_a_heading_is_not_one(self):
         cells = [cell("markdown", "# Title"), cell("code", "# a comment, not a heading\n(f)")]
-        self.assertEqual(lisp_builtins.slide_types_for(cells, "by-heading"), ["slide", "-"])
+        self.assertEqual(lisp_notebook_files.slide_types_for(cells, "by-heading"), ["slide", "-"])
 
     def test_no_cells_have_no_types(self):
-        self.assertEqual(lisp_builtins.slide_types_for([], "by-heading"), [])
+        self.assertEqual(lisp_notebook_files.slide_types_for([], "by-heading"), [])
 
 
 class TestSetSlideTypes(LispTestCase):
@@ -250,7 +252,7 @@ class TestNotebookToSlides(LispTestCase):
             os.makedirs(os.path.dirname(os.path.join(self.support, path)), exist_ok=True)
             with open(os.path.join(self.support, path), "w") as f:
                 f.write(text)
-        patcher = mock.patch.object(lisp_builtins, "SLIDES_SUPPORT", self.support)
+        patcher = mock.patch.object(lisp_notebook_files, "SLIDES_SUPPORT", self.support)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.notebook = os.path.join(self.folder, "talk.ipynb")
@@ -324,7 +326,7 @@ class TestNotebookToSlides(LispTestCase):
         self.assertTrue(os.path.isdir(os.path.join(self.folder, "dark_files")))
 
     def test_a_theme_that_loads_its_fonts_from_the_internet_is_not_offered(self):
-        self.assertEqual(lisp_builtins.themes_without_web_fonts(), ["white", "black"])
+        self.assertEqual(lisp_notebook_files.themes_without_web_fonts(), ["white", "black"])
         self.assertLispError('(notebook-to-slides "%s" "%s" (quote simple))' % (self.notebook, os.path.join(self.folder, "x.html")),
                              "the theme is white or black, not simple")
         self.assertFalse(os.path.exists(os.path.join(self.folder, "x.html")))
@@ -334,7 +336,7 @@ class TestNotebookToSlides(LispTestCase):
         os.makedirs(folder)
         with open(os.path.join(folder, name), "wb") as f:
             f.write(b"font bytes")
-        patcher = mock.patch.object(lisp_builtins, "FONT_DIRECTORIES", [os.path.join(self.folder, "fonts")])
+        patcher = mock.patch.object(lisp_notebook_files, "FONT_DIRECTORIES", [os.path.join(self.folder, "fonts")])
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -375,7 +377,7 @@ class TestNotebookToSlides(LispTestCase):
     def test_what_is_wrong_is_said(self):
         self.assertLispError("(notebook-to-slides 5)", "expected the notebook's path as a string")
         self.assertLispError('(notebook-to-slides "no-such.ipynb")', "no-such.ipynb")
-        with mock.patch.object(lisp_builtins, "SLIDES_SUPPORT", os.path.join(self.folder, "nothing-here")):
+        with mock.patch.object(lisp_notebook_files, "SLIDES_SUPPORT", os.path.join(self.folder, "nothing-here")):
             self.assertLispError('(notebook-to-slides "%s")' % self.notebook, "python3 tools/get_slide_files.py")
 
 
@@ -387,10 +389,10 @@ class TestTheLinkToANotebook(unittest.TestCase):
             cwd = os.getcwd()
             os.chdir(folder)
             self.addCleanup(os.chdir, cwd)
-            self.assertEqual(lisp_builtins.link_path(os.path.join(folder, "slides.ipynb")), "slides.ipynb")      # (given in full: the 404 of a link with /Users/...)
-            self.assertEqual(lisp_builtins.link_path("slides.ipynb"), "slides.ipynb")
-            self.assertEqual(lisp_builtins.link_path(os.path.join(folder, "sub", "a b.ipynb")), "sub/a b.ipynb")
-            self.assertEqual(lisp_builtins.link_path(os.path.join(os.path.dirname(folder), "other.ipynb")), "../other.ipynb")
+            self.assertEqual(lisp_notebook_files.link_path(os.path.join(folder, "slides.ipynb")), "slides.ipynb")      # (given in full: the 404 of a link with /Users/...)
+            self.assertEqual(lisp_notebook_files.link_path("slides.ipynb"), "slides.ipynb")
+            self.assertEqual(lisp_notebook_files.link_path(os.path.join(folder, "sub", "a b.ipynb")), "sub/a b.ipynb")
+            self.assertEqual(lisp_notebook_files.link_path(os.path.join(os.path.dirname(folder), "other.ipynb")), "../other.ipynb")
 
 
 class TestFileToNotebookInARealKernel(unittest.TestCase):

@@ -7,7 +7,9 @@ Vantage; any web API, and SQLite), statistical models (regression, linear
 programming, and stratification), dates and cash flows, and investments
 (option prices, the volatility smile, option checks, and portfolios), and
 maps. Yield curves, and simulated paths of interest rates and of investment
-prices, are in their own manual, [lisp_paths_manual.md](lisp_paths_manual.md). Most are builtins,
+prices, are in their own manual, [lisp_paths_manual.md](lisp_paths_manual.md), regression in
+[lisp_regression_manual.md](lisp_regression_manual.md), and macroeconomic models (Dynare)
+in [lisp_macro_models_manual.md](lisp_macro_models_manual.md). Most are builtins,
 written in Python; the rest are libraries in `lib/`, written in Lisp.
 
 The language itself, and the general builtins these all work with --
@@ -43,7 +45,10 @@ that use all this are described in
   - [tastytrade (real broker data)](#tastytrade-real-broker-data)
   - [Schwab (your accounts)](#schwab-your-accounts)
   - [FINRA (agency MBS and TBA prices)](#finra-agency-mbs-and-tba-prices)
+  - [A database of market history](#a-database-of-market-history)
+  - [Do industries separate returns?](#do-industries-separate-returns)
   - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
+  - [A parser framework](#a-parser-framework)
 - [Reporting](#reporting)
   - [Google Sheets](#google-sheets)
   - [Reports with control breaks](#reports-with-control-breaks)
@@ -54,7 +59,6 @@ that use all this are described in
 - [Statistical models](#statistical-models)
   - [Yield curves and paths of rates](#yield-curves-and-paths-of-rates)
   - [Regression models](#regression-models)
-  - [How good is a model? The measures, explained](#how-good-is-a-model-the-measures-explained)
   - [Models fitted to Freddie Mac's loans](#models-fitted-to-freddie-macs-loans)
   - [Linear programming](#linear-programming)
   - [Stratification tables](#stratification-tables)
@@ -78,8 +82,9 @@ The functions for investment analysis, in the order an analysis uses them.
    and SOFR rates. "FRED (Federal Reserve Bank of St. Louis) data", "SEC
    financial statements", "FDIC bank data", "BLS data", "BEA data",
    "Census data", and "Alpha Vantage (dividends)". Anything else on the
-   web: "Downloading data from the web". Files: "SQLite", and `load-csv`
-   (under "Input / output", in the language manual). Each gives a
+   web: "Downloading data from the web". Files: "SQLite", `load-csv`
+   (under "Input / output", in the language manual), and, for text in a
+   small language of its own, "A parser framework". Each gives a
    **table**, so they all work the same way after that. And the other way:
    "Google Sheets" sends tables out, to a spreadsheet, and "Reports with
    control breaks" writes a table as a text report, with totals for each group.
@@ -118,15 +123,16 @@ The functions for investment analysis, in the order an analysis uses them.
    formulas, and `lib/freddie_prepayment.lsp` and `lib/freddie_default.lsp`, a prepayment model and a default model fitted to Freddie Mac's loans. A structured deal, a tree of tranches with interest, principal, losses
    and shortfalls, is in its own manual, [lisp_cmo_manual.md](lisp_cmo_manual.md)
    (`lib/deal.lsp`).
-7. **Models.** "Regression models" (linear, logistic, spline, and least
-   absolute deviation, which a spline can be fit by too), "Linear programming", and `lib/solver.lsp`.
+7. **Models.** Regression, in its own manual, [lisp_regression_manual.md](lisp_regression_manual.md) (least squares,
+   least absolute deviation, quantiles, logistic, Poisson, ridge and lasso, nonlinear, and splines of them),
+   "Linear programming", and `lib/solver.lsp`.
 
 **Built in, or loaded.** Everything above is built in, and there whenever
 the interpreter is, except the libraries in `lib/`, which are loaded with
 `(load "name.lsp")`: `vol_smile.lsp`, `option_check.lsp`, `option_methods.lsp`,
 `solver.lsp`, `column_engine.lsp`, `template.lsp`, and `model_utils.lsp`, among others. (Their functions can be
-called without loading them, too, once `lib/autoloads.lsp` is loaded, as
-`init.lsp` does: see `lazy-load`.) The rule: what has to be fast, or talks
+called without loading them, too: every notebook, console, and script loads
+`lib/autoloads.lsp`, which makes a stand-in for each: see `lazy-load`.) The rule: what has to be fast, or talks
 to the world outside, is a builtin, written in Python; a model made of
 those is a library, written in Lisp, to be read and changed.
 
@@ -253,7 +259,7 @@ directory (see "Maps").
 
 ### FRED (Federal Reserve Bank of St. Louis) data
 
-#### `(fred-table creds ids [:start-date d :end-date d :cache-hours h])`
+#### `(fred-table creds ids [:start-date d :end-date d :frequency f :cache-hours h])`
 One FRED series, or a list or vector of them, by ID (`"UNRATE"`,
 `"DGS10"`), as a table, like the other data functions give:
 
@@ -265,6 +271,9 @@ One FRED series, or a list or vector of them, by ID (`"UNRATE"`,
 `creds` is the credentials file's path; its `"fred_api_key"` entry goes
 with each request. The table covers all of each series, unless
 `:start-date` or `:end-date` (a date, or `"YYYY-MM-DD"`) says otherwise.
+`:frequency "quarterly"` (or `"weekly"`, `"monthly"`, `"annual"`) has FRED
+average each series over each period, dated its first day: a monthly
+series becomes the average of each quarter's three months.
 Each download is kept for 12 hours, unless `:cache-hours` says otherwise
 (0 downloads it every time). FRED's site (https://fred.stlouisfed.org)
 finds a series' ID.
@@ -424,6 +433,17 @@ moment), `end`, `value`, `unit`, `fiscal-year` and `fiscal-period` (of the
 filing), `form` (`10-K`, `10-Q`, ...), `filed`, `frame` (the calendar
 period the SEC assigns it, as `CY2024Q3`), and `accession` (the filing's
 number). For anything the statements don't include.
+
+#### `(sec-values creds company concepts [:period "annual" :count 5])`
+Any concepts, laid out as `sec-financials` lays out the statements: a row per period (oldest first: `period-end`, `fiscal-year`,
+`fiscal-period`) and a column for each concept, named as the concept is. A balance (a value at a moment, such as `"Assets"`) is its value at
+the end of the period; a flow (such as `"Revenues"`) is its value for the period, worked out for a fourth quarter from the year less the
+nine months, as for the statements. A period or a concept the company has no value for is missing. `concepts` is a list of names as
+`sec-concepts` gives them, or one name. `vendor-financing`, in the macroeconomic models manual, is built on it.
+
+```lisp
+(sec-values creds "NVDA" '("Revenues" "EquitySecuritiesFvNi") :period "quarterly" :count 4)
+```
 
 #### `(sec-concepts creds company)`
 Every concept the company has reported: a table with its `taxonomy`,
@@ -812,8 +832,8 @@ Every dataset, as a table of `title`, `dataset` (the name to give
 - a symbol on each place, sized by a value (a *proportional symbol* map);
 - or both.
 
-A map goes where every chart goes: inline in a notebook, the GUI's chart
-tab, or a one-line summary at the console. `save-chart` saves it.
+A map goes where every chart goes: inline in a notebook, or a one-line
+summary at the console. `save-chart` saves it.
 
 **The outlines** come from the Census Bureau's cartographic boundary
 files (https://www.census.gov/geographies/mapping-files.html). These are
@@ -1889,7 +1909,7 @@ about a few times.
   Without it, Schwab's page opens in your own browser instead. After you
   sign in, that browser ends on an error page at `https://127.0.0.1/...`;
   paste that address when asked.
-- It works from the console, a notebook, or the GUI.
+- It works from a notebook or the console.
 
 Nothing is cached: every call asks Schwab.
 
@@ -2284,8 +2304,325 @@ read include, all in the group `"fixedIncomeMarket"`:
 ```
 
 These functions were written from FINRA's documentation of its API and
-tested against a stand-in for FINRA; they haven't yet been run against
-FINRA itself.
+tested against a stand-in for FINRA, and `finra-tba-prices` has since been
+run against FINRA itself (October 2026). FINRA's TBA prices go back to
+October 2016.
+
+#### A database of TBA prices
+
+`finra-tba-prices` gives the last week, or the days you ask for. To keep
+all the history (ten years of it) in one place to ask questions of, the
+library `finra_database.lsp` keeps the TBA prices in a SQLite database
+file and brings it up to date:
+
+#### `(finra-tba-update creds "path/to/financial_data.db" [:start-date d :end-date d])`
+Makes the database if there isn't one, and fills it from FINRA, a month at
+a time. The first time, it asks for ten years of days (the history is
+about 125,000 rows in a 28 MB file, and takes about twenty minutes to fetch); after that, only for
+what the database lacks, from a week before its last day to today, which
+takes seconds, because FINRA corrects a day's prices now and then, and
+the week replaces what was there. Run it as often as you like: a day's
+prices come the next morning, and there are none for weekends and
+holidays. It prints each month as it asks for it and returns a table of
+what the database has (as `finra-tba-summary` does). `:start-date` and
+`:end-date` ask for those days instead.
+
+#### `(finra-tba-summary "path/to/financial_data.db")`
+A table of what the database has: for each agency and product, its
+`rows`, `first_day` and `last_day`.
+
+The database has one table, `tba_prices`, with a row for each day,
+product, agency, settlement month and coupon that had trades (FINRA sends
+a row for every coupon every day, with zeros where nothing traded; those
+are not kept):
+
+| Column | What |
+|---|---|
+| `date`, `product`, `agency` | As `finra-tba-prices` has them (`SINGLE FAMILY 30Y` or `15Y`; `FNMA` and `FHLMC` until 2019, `FNMA/UMBS` during the 2019 changeover, `UMBS` since, and `GNMA`, which has only 30-year) |
+| `settlement` | FINRA's name for the settlement month: `November Settlement` |
+| `settlement_month` | The first day of that month, as a date |
+| `coupon` | FINRA's bucket, as text: `4`, `4.5`, ... and, at the ends, `<= 3.5` and `> 6`. FINRA moves the ends with the market (`<= 2`, `<= 3.0`, `> 4`, `> 5.5` in other years) |
+| `coupon_rate` | The number in it (the end buckets give their limit, so use `coupon` to tell `> 6` from `6`) |
+| `average_price`, `weighted_average_price` | The mean of the day's prices, and the mean weighted by size, per 100 of face |
+| `bottom_5_average_price`, `top_5_average_price` | The means of the 5 lowest and 5 highest |
+| `quartile_2_price`, `quartile_3_price`, `quartile_4_price` | The quartiles |
+| `standard_deviation` | Of the day's prices |
+| `volume_thousands`, `trades` | Dollar volume in thousands, and the number of trades |
+
+The key is `(date, product, agency, settlement, coupon)`. It is an
+ordinary SQLite file, so ask it with `sqlite-query`, or from `sqlite3` or
+anything else that reads SQLite. A price history of a coupon for
+next-month settlement, say:
+
+```lisp
+(define db "financial_data.db")
+(finra-tba-update creds db)          ; the first time takes a while; after that, seconds
+(with-sqlite (conn db)
+  (define history
+    (sqlite-query conn "SELECT date, weighted_average_price AS price, trades FROM tba_prices
+                        WHERE agency = 'UMBS' AND product = 'SINGLE FAMILY 30Y' AND coupon = '5.5'
+                          AND settlement_month = date(date, 'start of month', '+1 month')
+                        ORDER BY date"))
+  (display-table (table-tail history 5)))
+```
+
+### A database of market history
+
+(In `lib/financial_data.lsp`; the TBA part is `lib/finra_database.lsp`.) One SQLite
+file that keeps ten years of market history, to ask questions of and to compare one
+series with another over time (how the mortgage rate follows the 10-year Treasury, say):
+
+```lisp
+(financial-data-update creds "/Users/morris/morris_lisp/data/financial_data.db")
+```
+
+The first call makes the file and fills it (about twenty minutes, most of it FINRA's
+TBA prices). After that, each call asks each source only for what it lacks, from two
+weeks before the last day the database has to today, which takes seconds. Run it
+whenever you like. It prints each source as it asks, and returns what the database
+has, as `financial-data-summary` does.
+
+#### `(financial-data-update creds "path/to/financial_data.db" [:start-date d :end-date d])`
+Brings the whole database up to date: the TBA prices (`finra-tba-update`, described
+under FINRA above), then each time series, and the current coupons from the TBA prices.
+`:start-date` asks every source from that day instead, replacing what the database has
+from then on; it is how a series is worked out again after its definition changes.
+`:end-date` is today unless given.
+
+#### `(financial-data-summary "path/to/financial_data.db")`
+A table of the time series: for each instrument and term, its `rows`, `first_day` and
+`last_day`.
+
+The `time_series` table has a row for each day, instrument and term, with these columns:
+
+| Column | What |
+|---|---|
+| `date` | The day |
+| `instrument` | What it is (below) |
+| `term` | Which one of the instrument, for those that come in terms (`10Y`); `""` for those that don't |
+| `value` | A rate is in percent, as its source publishes it (4.25 means 4.25%); the SOFR index is dollars |
+
+| Instrument | Terms | What, and from where |
+|---|---|---|
+| `treasury-par` | `1M` `1.5M` `2M` `3M` `4M` `6M` `1Y` `2Y` `3Y` `5Y` `7Y` `10Y` `20Y` `30Y` | The Treasury's par yield curve, every business day (`treasury-par-curve`). A maturity the Treasury did not publish that day has no row: the 1.5M began in 2025 and the 4M in 2022 |
+| `freddie-mac-mortgage-rate` | `30Y` `15Y` | Freddie Mac's weekly survey (Thursdays), from FRED (`MORTGAGE30US`, `MORTGAGE15US`) |
+| `sofr` | `ON` | The Secured Overnight Financing Rate, from the New York Fed (`nyfed-rates`), since April 2018 |
+| `sofr-average` | `30D` `90D` `180D` | The averages of SOFR, since March 2020 |
+| `sofr-index` | `""` | What $1 put in SOFR on April 2, 2018 has grown to, since March 2020 |
+| `current-coupon-FNMA`, `-FHLMC`, `-FNMA-UMBS`, `-UMBS`, `-GNMA` | `30Y` `15Y` | The coupon at which a TBA is worth 100, worked out from the TBA prices (below). The agencies are those of FINRA's data: FNMA and FHLMC until 2019, FNMA-UMBS in 2019, UMBS since; GNMA has only the 30-year |
+
+The key is `(date, instrument, term)`.
+
+**The current coupon.** TBAs trade in coupons half a point apart, so the coupon at which a TBA is worth
+100 is on the line between the coupon priced just under 100 and the one just over it. The prices are
+the day's weighted average, of the settlement month with the most trades (the month being traded). FINRA
+gives the coupons at the two ends of the range as buckets (`<= 3.0`, `> 5.5`), not one by one, so when par is
+beyond the last coupon given alone (5.5 is under 100 and the `> 5.5` bucket over it), the line through the last two
+coupons is carried on to 100, if that is within half a point. A day where it is further, or where there are
+no two coupons half a point apart that trade, has no current coupon, so the series has gaps (the
+UMBS 30-year has a value on about 1,360 of the roughly 1,800 days since the UMBS began). The SQL is `current-coupon-sql`,
+in the library.
+
+#### `(time-series conn instrument [term])`
+One series, as a table of `date` and `value`, oldest first. `conn` is a connection (`with-sqlite`).
+
+#### `(time-series-table conn series)`
+Several series side by side, as a table with a row for each day any of them has a value and a column for each,
+headed by the instrument and term (`"treasury-par 10Y"`), with `nan` where a series has no value that day.
+`series` is a list of `(instrument term)`. Weekly and daily series line up by date.
+
+```lisp
+(define db "/Users/morris/morris_lisp/data/financial_data.db")
+(with-sqlite (conn db)
+  (define rates (time-series-table conn '(("treasury-par" "10Y") ("current-coupon-UMBS" "30Y")
+                                          ("freddie-mac-mortgage-rate" "30Y") ("sofr" "ON"))))
+  (display-table (table-tail rates 5)))
+```
+
+### Do industries separate returns?
+
+(In `lib/industry_returns.lsp`.) Stocks are put in industries on the idea that those in
+one industry move together. Is that so? These functions take the table `ticker_industry`
+(columns `ticker` and `industry`) in the database `financial_data.db`, get each stock's
+return over the last year from Schwab, and compare how far apart stocks are *within* an
+industry with how far apart the industries are *from each other*.
+
+```lisp
+(define db "/Users/morris/morris_lisp/data/financial_data.db")
+(stock-returns-update creds db)          ; slow, once: 4,800 stocks take about two hours
+(display-table (industry-returns db))    ; each industry's return
+(display-table (industry-variation db))  ; within against between
+```
+
+A stock's return is what its price gained over the year, plus its dividend, as a fraction
+of the price it started at: `(end price - start price + dividend) / start price`. The prices
+are the closes of the first and last days Schwab has in the year. The dividend is Schwab's
+`dividendAmount`, which is what the stock pays in a year *at its current rate*; Schwab's
+price history has no dividends in it, so a company that raised, cut, began or stopped its
+dividend in the year is only approximated. The weights are Schwab's `marketCap`, which is
+today's.
+
+#### `(stock-returns-update creds "path/to/financial_data.db" [:end-date d])`
+Asks Schwab for the market cap and dividend of the stocks (400 to a request), and for each
+stock's prices for the year ending `:end-date` (today), and keeps them in the table
+`stock_returns`: `ticker`, `year_end`, `start_date`, `end_date`, `start_price`, `end_price`,
+`dividend`, `market_cap`, `return` and `note`. A stock Schwab has no prices for (a delisted
+one, or a ticker it spells differently) has no return and a `note` that says why. Each stock
+is saved as it is done, and a second call, for the same `:end-date`, skips those it has, so a
+run that is stopped (or that finds the Schwab sign-in has run out: `(schwab-login creds)`)
+carries on where it left off. It returns a table of how many stocks have a return, and how many
+do not, by reason. It only reads from Schwab.
+
+#### `(industry-returns "path/to/financial_data.db")`
+A table with a row for each industry, largest first by market cap: `stocks` in it,
+`market-cap`, `weighted-return` (the industry's return, each stock weighted by its market cap),
+`average-return` (the plain average of the stocks' returns) and `stdev-of-returns` (how far apart
+the stocks in it are). Stocks without a return or a market cap are left out.
+
+#### `(industry-variation "path/to/financial_data.db")`
+How well the industries separate returns. A table with a row for each measure, and a column
+for weighting every stock equally and one for weighting by market cap:
+
+| Measure | What |
+|---|---|
+| `stdev-of-all-returns` | How far a stock's return is from the average of all stocks', typically |
+| `stdev-within-industries` | How far it is from the average of its own industry, typically |
+| `stdev-between-industries` | How far its industry's average is from the average of all, typically |
+| `share-explained-by-industry` | The between-industries variation as a share of the total (R-squared): 0 if knowing the industry tells you nothing, 1 if every stock in an industry had the same return |
+| `share-by-chance` | What that share would be if the stocks were put into the industries at random: the industries less 1, over the stocks less 1. It is above 0 because the average of a few stocks moves with them. Equal weights only |
+| `stocks`, `industries` | How many of each |
+
+A stock's distance from the average of all splits into its industry's distance from the average
+plus its own distance from its industry, and the squares add up:
+`stdev-within² + stdev-between² = stdev-of-all²`. If `share-explained-by-industry` is not much above
+`share-by-chance`, the industries are not separating returns.
+
+#### Weekly returns, and the patterns that explain them
+
+The same file has a second look at the stocks: three years of weekly returns (or, with
+`:frequency "monthly"`, two years of monthly ones), and their principal components, the few patterns of
+moving together that explain much of how all the stocks' returns went up and down.
+
+```lisp
+(stock-prices-update creds db)                ; slow, once: about an hour and a half
+(define components (return-components db))
+(display-table (cdr (assoc "variance" components)))
+(display-table (cdr (assoc "industries" components)))
+```
+
+Each function takes `:frequency`, `"weekly"` (the default) or `"monthly"`, and `:years`, how far back (3
+for weekly, 2 for monthly). A period is named by its first day: the Monday of a week, as Schwab dates its
+weekly prices, or the first of a month. Only whole periods are used, and the Canadian stocks (tickers ending
+`.TO`) are left out.
+
+A period's return is `(its close - the last period's close + the dividends with an ex-date in it) / the last
+period's close`. The dividend is the current one, the same number of dollars each time: Schwab's
+`dividendAmount` (a year's dividends at the current rate) over `dividendFreq` (payments a year: 4 for most,
+12 for some, 2 for some foreign companies). The ex-dates, the days the price falls by the dividend, are
+Schwab's `dividendDate` (the latest or the next) and the same day of the month every 12 / `dividendFreq`
+months before and after it, which only approximates the real ones: they move about by a few days, and a
+company that changed its dividend paid other amounts. A stock with a dividend but no ex-date, or a number of
+payments that doesn't divide the year into whole months, gets its dividend spread evenly (a 52nd a week).
+
+**Why weekly.** Twenty-four monthly returns are few: a correlation measured from 24 numbers is uncertain by
+about 0.2, and there can be no more than 23 components. Three years of weeks give 156 returns. Daily returns
+would give more still, but a small stock that trades rarely has a closing price that is often stale, which
+makes it seem to move with nothing; a week is long enough for that to wash out.
+
+#### `(stock-dividends-update creds "path/to/financial_data.db")`
+Schwab's dividend facts for every stock but the Canadian ones, kept in the table `stock_dividends`
+(`ticker`, `annual_dividend`, `payments_per_year`, `ex_date`) in place of what it had: a few requests,
+400 stocks at a time. `stock-prices-update` calls it first. Returns how many stocks it has, and how many
+pay a dividend.
+
+#### `(stock-prices-update creds "path/to/financial_data.db" [:frequency f :years n :end-date d])`
+Each stock's closes at the end of each week (or month) for the last `:years`, from Schwab, kept in the
+table `weekly_prices` (or `monthly_prices`): `ticker`, `period`, `close`. It brings the dividends up to date
+first. The last period is the one before the period of `:end-date` (today). Like `stock-returns-update`, it
+keeps going from where it stopped when it is called again, and it notes the stocks Schwab has no prices for
+(in `weekly_prices_asked`). An error that would happen for every stock, a sign-in that has run out or Schwab
+not answering, stops it instead. It returns how many stocks have every period, how many some, and how many
+none, by reason.
+
+#### `(periodic-returns "path/to/financial_data.db" [:frequency f :years n])`
+A table with a `period` column and a column of returns for each stock that has a return in every one of the
+periods, named by its ticker.
+
+#### `(return-components "path/to/financial_data.db" [:frequency f :years n :count k :standardize b :rotate "varimax" :weights w])`
+The principal components (`principal-components`, under [Portfolios](#portfolios)) of the returns: the
+`:count` (5) patterns that explain the most. With `:standardize #t` (the default) the stocks' returns are
+first put on one scale, so that a small stock whose price jumps around does not decide the patterns. With `:weights
+"market-cap"` each stock counts in proportion to its market cap (from `stock_returns`), as in an index fund,
+so the components are the big companies'; with `"equal"` (the default) every stock counts the same, and the
+thousands of small companies shape them. A list
+of four tables, read with `(cdr (assoc "stocks" components))`:
+
+| Table | Columns |
+|---|---|
+| `"components"` | `component` (`pc1`, ...), `variance-share` (the share of all the stocks' variation it explains), `cumulative-share`, `share-if-unrelated`, `correlation-with-market`, `industry-share`, `industry-share-by-chance`, `best-industry`, `best-industry-correlation` and `label` (below) |
+| `"stocks"` | `ticker`, `industry`, `market_cap`, `pc1` ... (the correlation of the stock's returns with each component, from -1 to 1) and `explained` (the share of its variation the components explain: the correlations' squares added up) |
+| `"industries"` | `industry`, `stocks`, and the average of its stocks' `pc1` ... and `explained`; largest first |
+| `"periods"` | `period`, `pc1` ... (each component's value that week or month) and `market-return` (all the stocks' return, weighted by market cap) |
+
+`share-if-unrelated` is what each component would explain if the stocks moved independently of each other:
+1 over the periods less 1 (with 156 weeks, under 1%). A component well above it is a real pattern.
+`correlation-with-market` says whether a component is the whole market moving (the first usually is).
+
+Whether a component is an industry: `industry-share` is how much of the difference between the stocks in how
+closely they move with it (their correlations with it) the industries explain, measured as `industry-variation`
+measures returns, and `industry-share-by-chance` what that would be if the stocks were put in industries at random.
+`best-industry` is the one industry most associated with the component, and `best-industry-correlation` the
+correlation between being in that industry (1 or 0) and the stock's correlation with the component: near 1, the
+component is that industry. `label` names the two industries (of 10 stocks or more) whose stocks move most with
+the component, "vs" the two that move least or against it, which is how to say what a component is: "Bank,
+R.E.I.T. vs Computer Software, Biotechnology" is something that moves banks and software in opposite directions,
+such as interest rates. Rotation (`:rotate "varimax"`) usually makes the labels clearer: the market is then spread
+over the components rather than being the first of them.
+
+#### `(stock-components components [:top n])`
+Each stock's most important components, from what `return-components` returned: a table with `:top` (3) rows for
+each stock, its components in order of the share of its variation they explain, and two more rows, the share the
+other components explain and the share none of them do (`"its own"`). The columns are `ticker`, `industry`, `rank`,
+`component`, `label` (the component's), `correlation` (of the stock's returns with the component: below 0, it moves
+against it) and `share` (of the stock's variation: the correlation squared). A stock's shares add up to 1.
+
+```lisp
+(define components (return-components db :count 8 :rotate "varimax"))
+(define mine (stock-components components))
+(display-table (table-where mine "ticker" "JPM"))
+```
+
+#### How other things go with the components
+
+Bonds, oil, currencies, gold and crops are not in the stocks' components, but they can be compared with them: a
+component that moves with Treasury notes is probably interest rates, one that moves with oil is probably energy.
+
+```lisp
+(define others (table-join (other-returns creds '("IEF" "USO" "FXE" "GLD" "SOYB"))
+                           (rate-changes db "treasury-par" "10Y") "period"))
+(display-table (components-and-others components others))
+```
+
+#### `(other-returns creds symbols [:frequency f :years n :end-date d])`
+A table of `period` and a column for each symbol: its price return in each whole week (or month) of the last
+`:years`, from Schwab, the same periods as the stocks'. Exchange-traded funds stand in for things that aren't
+stocks: IEF holds 7- to 10-year Treasury notes, USO crude oil futures, FXE euros, GLD gold, SOYB soybean futures.
+They are price changes alone (a fund's distributions are left out); a fund of futures also loses a little, slowly,
+each time it replaces the futures that are about to run out, which hardly matters week to week.
+
+#### `(rate-changes "path/to/financial_data.db" instrument term [:frequency f])`
+A table of `period` and the change in a rate of the `time_series` table (see [A database of market
+history](#a-database-of-market-history)), such as `"treasury-par" "10Y"`, from the last day it has in one week (or
+month) to the last day in the next, in percentage points. The column is named for the rate, with `" change"`
+after: `"treasury-par 10Y change"`. When the yield goes up, a note's price goes down, so it goes with the
+components the other way from IEF.
+
+#### `(components-and-others components others)`
+How each column of `others` (a table with a `period` column, as `other-returns` and `rate-changes` make, joined as
+you like) goes with the components `return-components` found: a row for each column, with its correlation with each
+component (`pc1`, ...), `explained` (the share of its variation the components explain together: as they are
+unrelated to each other, the correlations' squares added up) and `periods` (how many of the components' periods it
+has; it is compared over those).
 
 ### Alpha Vantage (dividends)
 
@@ -2319,6 +2656,100 @@ table with no rows.
 ```
 
 `daily-returns` takes this table as its `:dividends`: see Part 4 of [lisp_paths_manual.md](lisp_paths_manual.md).
+
+### A parser framework
+
+`lib/parser.lsp` reads text in a small language -- a query language, a
+calculator, a configuration file, a data format -- by a **table of rules**,
+instead of a function for each part of the grammar. The text is cut into
+tokens with regular expressions, and the rules say what the tokens make.
+It is no more powerful than recursive descent: a rule that has to guess
+which way to go tries one way, and if that fails tries the next. The SQL
+interpreter in `examples/sql.lsp` is read by it, and the library is meant to be
+read, too; [the example programs](lisp_example_programs.md#a-language-from-a-table-the-parser-framework)
+explain how it works and what to learn from it.
+
+```lisp
+(load "parser.lsp")
+
+(define-grammar calculator
+  (token skip   "\\s+")                              ; spaces: read, and thrown away
+  (token number "\\d+(?:\\.\\d+)?"  string->number)  ; the text is made a number
+  (token symbol "[-+*/()]")
+
+  (rule expression ((chain term ("+" . +) ("-" . -))))
+  (rule term       ((chain factor ("*" . *) ("/" . /))))
+  (rule factor     (number))
+  (rule factor     ("(" expression ")")))
+
+(grammar-parse calculator "2 + 3 * (4 - 1)")         ; the tree (+ 2 (* 3 (- 4 1)))
+(eval (grammar-parse calculator "2 + 3 * (4 - 1)"))  ; 11
+```
+
+`define-grammar` is a macro, so load the library by hand (it isn't one of the
+autoloaded ones); `make-grammar` makes the same grammar from a list of rows, for
+a grammar a program builds. `(grammar-parse grammar text [:start rule])` returns
+the value of the text, or signals an error that says what was expected where.
+`(grammar-tokens grammar text)` shows how the text was cut up, as a list of
+`(kind text)`, to see what the token rows make of it.
+
+**Token rows**, `(token kind regular-expression [function])`. At each place in the
+text the regular expressions are tried in the order of the rows, and the first
+that matches takes its piece (not the longest, so `<=` goes before `<`, and
+keywords before names). The token's value is the text, or what the function makes
+of it. A token of kind `skip` is read and thrown away. A character no row matches is a
+token of kind `unknown`, which no rule accepts, so it's an error where it is. The
+expressions can't capture groups (use `(?:...)`) or begin with a flag such as `(?i)`
+(write `(?i:...)` around what it applies to); the grammar says so when it's made.
+
+**Rule rows**, `(rule name (item ...) [action])`. Several rows with the same name are
+alternatives, tried in the order written; the first whose items all match is the
+rule's value. An item is:
+
+| Item | Matches | Its value |
+|---|---|---|
+| `"text"` | a token with that text | none |
+| `kind` | a token of that kind (a name from a token row) | the token's value |
+| `name` | the rule of that name | what the rule makes |
+| `end` | only the end of the text | none |
+| `(opt item ...)` | the items, or nothing | their value, or `'()` |
+| `(flag item ...)` | the items, or nothing | `#t` or `#f` |
+| `(star item ...)`, `(plus item ...)` | the items again and again (`plus`: at least once) | the list of their values |
+| `(sep-by sep item ...)` | the items one or more times with `sep` between | the list of their values |
+| `(or item ...)` | the first of the items that matches | its value |
+| `(one-of "a" "b")` | one of these texts | the text as written in the rule |
+| `(seq item ...)` | the items in a row | their value |
+| `(drop item ...)` | the items | none |
+| `(not item ...)` | succeeds, reading nothing, if the items do not match | none |
+| `(chain operand ("+" . add) ...)` | an operand, and more of them each after an operator, grouped from the left | `(add left right)`, or the procedure's value |
+
+The value of several items together (the items of a rule, or inside an `opt`,
+`star`, and so on) is the value of the one that has a value, or the list of the
+values of several, or `#t` if none has one. A rule's **action** is a procedure called
+with the value of each item of the row that has one; what it returns is the rule's
+value. With no action the value is that of the items together. `(node-builder 'x)`
+makes the action that returns `(x value ...)`, for a tree. A `chain` operator's node is
+a symbol, which makes the tree `(node left right)` (so `("+" . +)` makes Lisp that
+`eval` can run), or, in a grammar made by `make-grammar`, a procedure.
+
+Other rows: `(option ignore-case #t)` (the texts in rules match in any case, and a
+message shows them in capitals), `(option start name)`, `(option error-prefix "sql:")`,
+`(option end-name "the end of the statement")`, and `(describe name "a number")`, which
+says what a rule or kind of token is called in a message.
+
+**When the text doesn't fit** the error says what could have come next at the furthest
+place the text was read to, and what was there:
+`sql: expected ; or the end of the statement but found t3 (at character 19)`. Parts that
+are optional aren't listed while something else was required, and a rule with a
+`describe` is named by it instead of by each thing it tried.
+
+How it works: the rules are tried in order at each place in the tokens, and what each rule
+found at each place is remembered. A rule that is tried again at a place -- as it is when
+an alternative that went some way fails and the next one starts the same way -- costs
+nothing, so the time is in proportion to the length of the text, however many alternatives
+begin alike. (This is the "packrat" method, and the grammars it reads, "parsing expression
+grammars".) A rule that begins with itself, as `sum = sum "+" product`, would never stop,
+and the error says so: write it as a `chain`, `star`, or `sep-by`.
 
 ## Reporting
 ### Google Sheets
@@ -2378,7 +2809,7 @@ code for the tokens, and the browser shows a page saying you can close it.
 Your password never reaches the program. The tokens are kept in
 `google_tokens.json`, next to the credentials file, readable only by you;
 the access token lasts an hour and is renewed as needed. It works from
-the console, a notebook, or the GUI. If you aren't signed in,
+a notebook or the console. If you aren't signed in,
 `google-sheet` says so. (Schwab's sign-in shows its page in a small
 window of its own; Google doesn't allow that, which is why this one uses
 your browser.)
@@ -3026,1086 +3457,16 @@ functions: `treasury-par-curve`, `latest-treasury-points`, `par-curve-zeros`, `t
 
 ### Regression models
 
-Eight kinds, one function each:
-
-| | A straight line (or plane) | A line that bends at knots |
-|---|---|---|
-| Least squares | `linear-regression` | `spline-regression` |
-| Least absolute deviation | `lad-regression` | `spline-lad` |
-| A quantile (the 90th percentile, say) | `quantile-regression` | `spline-quantile` |
-| Logistic | `logistic-regression` | `spline-logistic` |
-
-`linear-regression`/`lad-regression`/`logistic-regression` fit a flat model
-of the form `y = intercept + sum(coefficients[i] * x[i])` (linear, by least
-squares or by least absolute deviation) or `p = sigmoid(intercept +
-sum(coefficients[i] * x[i]))` (logistic), where
-`coefficients` always has one entry per predictor, even when there's only
-one. `spline-regression` fits a *spline* model: internally it expands each
-predictor into an extra set of features (piecewise-linear "hinge"
-functions, or category-indicator columns — see below), then fits an
-ordinary regression on that expanded basis (`spline-lad` fits it by least
-absolute deviation instead, and `spline-logistic` by logistic regression)
-— so a spline model's
-coefficients apply to the expanded basis, not the original predictors, and
-`model-coefficients`/`model-intercept`/`model-slope` refuse to operate on
-one (use `model-report`/`model-predict` instead, which work on every model
-kind). `model-kind` reports which flavor you have: `"linear"`, `"lad"`,
-`"quantile"`, `"logistic"`, `"spline"`, `"spline-lad"`, `"spline-quantile"`,
-or `"spline-logistic"`.
-
-All of the eight,
-`model-predict`, and `model-evaluate` accept **either a single vector of X
-values (one predictor) or a Lisp list of several vectors** — `(list x1 x2
-...)` — for multiple predictors. Every predictor vector and the Y vector
-must be the same length. Predictors are standardized internally before
-fitting (for numerical stability) and converted back to the original scale
-afterward, so this is transparent to you; date values anywhere a number is
-expected are silently converted to their ordinal day count.
-
-**Weighted fitting.** All eight take an optional `weights` vector, after
-`x` and `y` (and after the quantile and `max-knots`, for the ones that take
-them): one
-non-negative number per observation, the same length as `y`. Omit it (or
-pass `'()`) to weight every observation equally, exactly the original
-behavior. Fitting still minimizes a sum of squared errors (or maximizes a
-log-likelihood, for the logistic case) — weighting just means each
-observation's contribution to that sum is multiplied by its own weight, so
-a weight of `2` counts an observation as if it appeared twice, and a weight
-of `0` excludes it entirely; only the weights' *relative* sizes matter, not
-their absolute scale. This is the standard tool for fitting to **grouped**
-data — e.g. one row per rate-incentive bucket rather than one row per loan
-— where you want a bucket representing $500M of balance to influence the
-fit far more than one representing $2M, and where a bucket's own average is
-a more reliable (lower-variance) estimate the more balance stands behind
-it:
-
-```lisp
-(define bucket-rate (vector 0.02 0.04 0.06 0.08))    ; one row per rate bucket
-(define bucket-cpr   (vector 0.05 0.08 0.15 0.30))
-(define bucket-balance (vector 450000000 12000000 8000000 300000000))
-(define m (linear-regression bucket-rate bucket-cpr bucket-balance))
-```
-
-**Rows that come in groups.** Often the rows aren't each new information.
-Twenty-four months of one loan are 24 rows, but one borrower, one house,
-one set of habits: if the loan pays faster than the model says one month,
-it probably does the next month too. The fit is still fine, but the
-standard errors, which take every row to be new information, come out too
-small -- the model looks surer than it is. All eight take `:groups`, after
-the other arguments: a vector or list with a value for each row -- a
-number, a string, or a date, such as the loan's ID -- and rows with the
-same value are a group. The fit is the same, but the standard errors
-allow for a group's rows being alike ("clustered" standard errors), by
-taking each *group* to be new information, not each row. `model-report`
-says how many groups there were.
-
-```lisp
-(random-seed 4)
-(define loan (vector-map (lambda (i) (floor (/ i 24))) (vector-range 960)))    ; 40 loans, 24 months of each
-(define (for-each-loan make)                                                  ; one value for each loan, on each of its rows
-  (let ((value (list->vector (map (lambda (i) (make)) (iota 40)))))
-    (vector-map (lambda (l) (vector-ref value l)) loan)))
-(define coupon (for-each-loan (lambda () (+ 3 (* 4 (random-float))))))           ; 3% to 7%
-(define habit (for-each-loan (lambda () (* 6 (- (random-float) 0.5)))))          ; how much faster or slower it pays
-(define speed (+ (* 2 coupon) habit (vector-map (lambda (l) (* 4 (- (random-float) 0.5))) loan)))
-(define (slope-error m) (format "{:.3f}" (vector-ref (table-column (model-coefficient-table m) "std_error") 1)))
-(slope-error (linear-regression coupon speed))                  ; => "0.056"
-(slope-error (linear-regression coupon speed :groups loan))     ; => "0.221"
-```
-
-The slope's standard error is four times as large: there are 40 loans'
-worth of information about coupons, not 960 rows' worth. They're found by
-the "sandwich" formula (`clustered_covariance` in `lisp_regression.py`
-explains it), with the small-sample corrections Stata uses: `G / (G - 1)`,
-`G` being the number of groups, and for least squares also `(n - 1) / (n -
-p)`. The t values of the least-squares, LAD, and quantile kinds then have `G
-- 1` degrees of freedom. The standard errors need a good many groups.
-In simulations with 20 to 50 groups of 12 rows each, their 95% intervals
-held the true coefficient 90% to 95% of the time, where the plain ones
-held it only 60% to 76% of the time. With fewer groups they're less to be
-trusted. With every row its own group -- `:groups (vector-range n)` --
-they're the "robust" standard errors, which allow for the errors being
-larger for some rows than others. `cross-validate` takes `:groups` too, to
-keep each group's rows together.
-
-#### `(linear-regression x y [weights] [:groups g])`
-Ordinary (or weighted) least-squares fit of `y = intercept +
-sum(coefficients[i] * x[i])`. `x` is a vector, a list of vectors for
-multiple predictors, **or a list of `(name . vector)` pairs** — exactly
-`sqlite-query`'s own column-wise result shape, so a query's results can be
-fed straight in with no manual name-stripping; `y` is a vector, or
-likewise a `(name . vector)` pair, the same length as each predictor
-vector; `weights` is the optional per-observation weight vector described
-above; `:groups`, for standard errors that allow for rows in the same group
-being alike, is described above too. When `x`/`y` carry names this way, `model-report` (below) uses them
-in place of the generic `x1`/`x2`/`y` placeholders. Returns a model of
-kind `"linear"`. Raises an error if `x`/`y`/`weights` lengths mismatch, a
-predictor has zero variance, the predictors are collinear, or a weight is
-negative.
-
-```lisp
-; sqlite-query's result feeds straight in -- no (map cdr ...) needed:
-(define rows (sqlite-query conn "select zero_flag, balance, loan_age from t"))
-(define m (linear-regression (cdr rows) (car rows)))
-(display (model-report m))   ; "Linear model:  zero_flag = ... + c*balance + c*loan_age"
-```
-
-**How the coefficients are found.** Fitting minimizes the (weighted) sum of
-squared residuals —
-
-```
-sum over every observation i of:  weight[i] * (y[i] - prediction[i])^2
-```
-
-— the ordinary least-squares objective (with every `weight[i] = 1` unless
-you pass your own, per "Weighted fitting" above). That objective is
-*quadratic* in the coefficients, so its minimum has a closed-form solution:
-setting its gradient to zero gives one linear equation per coefficient (the
-"normal equations"), and the interpreter solves that linear system exactly,
-in a single step, via Gauss-Jordan elimination with partial pivoting
-(`solve_linear_system` in `lisp_regression.py`) — no searching, iterating,
-or approximating, unlike `logistic-regression` below. (Predictors are
-rescaled to mean 0 / unit variance first, purely to keep that linear system
-numerically well-behaved regardless of a predictor's raw scale — a huge
-ordinal date next to a small percentage, say — and the fitted coefficients
-are converted back to the original scale afterward; this doesn't change
-what's being minimized or the answer you get, only how reliably the solver
-gets there.) Building the normal equations themselves is an O(n · p²)
-reduction over every observation (`n` rows, `p` coefficients including the
-intercept) — done with numpy matrix operations rather than a Python-level
-loop, so a large `n` (e.g. a multi-million-row dataset pulled in via
-`sqlite-query`) doesn't dominate fitting time; the actual `p`-by-`p` solve
-afterward stays plain Python, since `p` (a handful of predictors) is never
-the bottleneck.
-
-```lisp
-(define m (linear-regression prices demand))
-(display (model-report m))
-```
-
-#### `(lad-regression x y [weights] [:groups g])`
-A **least absolute deviation** fit of `y = intercept +
-sum(coefficients[i] * x[i])`: the one that makes the sum of the absolute
-residuals, `sum(weight[i] * |y[i] - prediction[i]|)`, smallest, rather than
-the sum of their squares. It's a robust regression: a few outliers barely
-move it. A point far from the others pulls a least-squares fit toward it
-in proportion to the *square* of its distance, but a LAD fit only in
-proportion to the distance itself. (With no predictors, LAD would give the
-median of `y`, as least squares gives the mean.) It suits small data sets
-where one or two points are wild -- a bad print, a data error, a month
-with a one-off event -- and you'd rather they not decide the answer.
-`x`, `y`, and `weights` are as for `linear-regression`; the model's kind is
-`"lad"`, and `model-predict`, `model-report`, `model-evaluate`, and the rest
-work on it as on any other.
-
-```lisp
-(define x #(1 2 3 4 5 6 7 8 9 10))
-(define y #(3 5 7 9 11 13 15 17 19 100))       ; y = 2x + 1, but for the last one
-(model-slope (linear-regression x y))           ; => 6.30909090909091
-(model-slope (lad-regression x y))              ; => 2.0
-(model-intercept (lad-regression x y))          ; => 1.0
-(model-residuals (lad-regression x y) x y)      ; => #(0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 79.0)
-```
-
-`model-residuals` (below) shows which points the fit set aside: those with
-the largest residuals.
-
-**How it's found.** There's no formula for a LAD fit, as there is for
-least squares, but one fact makes it easy to find: some best fit goes
-exactly through `p` of the points, `p` being the number of coefficients
-counting the intercept -- for a line, through two of them. So the fit
-starts through the `p` points closest to the least-squares fit, and then,
-over and over, holds the fit at `p - 1` of the points it goes through and
-swings it -- for a line, rotates it about one point. How far to swing it
-is a weighted median, which lands the fit on another of the points. When
-no swing lowers the sum of absolute residuals, no fit does. This is
-Wesolowsky's method (1981): each step is exact, the answer is the exact
-LAD fit, and it usually takes only a few steps -- a hundred thousand
-points take well under a second. (Another common method, iteratively
-reweighted least squares, only approaches the answer, often over hundreds
-of steps.)
-
-**Standard errors** in `model-report` come from the usual large-sample
-formula for LAD, which depends on how closely the errors crowd around 0.
-That's estimated two ways -- as for normal errors, from the median
-absolute residual, and from the residuals themselves, from how far apart
-their quantiles just above and below the middle are -- and the larger is
-used. Neither depends on the most extreme residuals, so moving an outlier
-further out doesn't change the standard errors at all. In simulations with
-as few as 8 points, and with normal, heavy-tailed, or contaminated errors,
-the 95% intervals they give held the true coefficient 92% to 97% of the
-time. With `p` points or fewer, the fit is exact and the standard errors
-are `nan`.
-
-For measures of fit, `model-report` gives the MAE, the average size of a
-miss; a pseudo-R-squared, 1 − the MAE / the MAE of predicting the median of
-`y` for every row (Koenker and Machado's R1, which, like R-squared, is 0
-for a fit no better than that and 1 for a perfect one); the number of
-steps; and `n`. Each measure is beside what a perfect model would get and
-what predicting the median for every row would (see "How good is a
-model?", below).
-
-```lisp
-(define month #(1 2 3 4 5 6 7 8 9 10 11 12))
-(define cpr #(4.5 5 6.5 6 7.5 8.5 8 9.5 30 10.5 11 12.5))   ; month 9 had a one-off payoff
-(display (model-report (lad-regression month cpr)))
-```
-prints:
-```
-Least absolute deviation model:  y = 3.78571 + 0.714286*x1
-  term        coefficient     std error    t value    p value
-  intercept       3.78571      0.612654      6.179   0.000104
-  x1             0.714286     0.0832433      8.581   6.34e-06
-  MAE              = 1.98214    (perfect: 0; predicting the median of y for every row: 3.70833)
-  pseudo R-squared = 0.46549    (perfect: 1; predicting the median of y for every row: 0)
-  iterations       = 2 (converged)
-  n                = 12
-```
-Least squares, pulled up by month 9, gives a slope of 1.03 with a standard
-error of 0.50.
-
-#### `(quantile-regression x y quantile [weights] [:groups g])`
-The fit with `quantile` of the points below it: `0.9` for the line that 90%
-of the points are under, the 90th percentile of `y` at each `x`. Least
-squares fits the average; quantile regression fits a percentile, so two
-of them -- the 10th and the 90th, say -- make a band around the data, which
-can widen or narrow as `x` changes. For risk, that's often the question:
-not what prepayment speeds are on average at a 2-point incentive, but how
-fast they are in the fastest tenth of pools. `quantile` is a number between
-0 and 1; `0.5` gives the median, `lad-regression`'s fit. `x`, `y`, and
-`weights` are as for `linear-regression`; the model's kind is `"quantile"`.
-
-It makes the sum of the residuals' *losses* smallest, where a point above
-the fit costs `quantile` times its distance and one below it `1 -
-quantile` times its distance: for `0.9`, being above the fit costs nine
-times as much as being below, so the fit settles where 90% of the points
-are below it. It's found by `lad-regression`'s method, with a weighted
-quantile in place of the weighted median at each swing; for the median it
-is exactly that. Like LAD, it is barely moved by a point far out. Its
-standard errors are found as LAD's are, for the quantile; far from the
-median they need more points to be right -- with 30 points and
-heavy-tailed errors, the 90th percentile's 95% intervals held the true
-coefficient only about 80% of the time, but with 200, 94% of the time.
-
-`model-report` gives the quantile, how many points are below the fit, on
-it, and above it (with `n` points, at most `quantile * n` below it, and at
-least that many below or on it), the average loss, and a
-pseudo-R-squared, as for LAD -- each beside a perfect model's, and that of
-predicting the quantile of `y` for every row.
-
-```lisp
-(define x (vector-range 400))
-(random-seed 3)
-(define y (+ (/ x 2) (list->vector (map (lambda (i) (* 20 (- (random-float) 0.5))) (iota 400)))))  ; noise from -10 to 10
-(define upper (quantile-regression x y 0.9))
-(define lower (quantile-regression x y 0.1))
-(list (format "{:.1f}" (model-intercept upper)) (format "{:.1f}" (model-intercept lower)))   ; => ("8.3" "-8.7")
-```
-(The noise is spread evenly from -10 to 10, so the 90th percentile is 8
-above the line `y = x / 2`, and the 10th, 8 below it: these 400 points
-give about that.)
-
-#### `(logistic-regression x y [weights] [:floor f :ceiling c :groups g])`
-Maximum-likelihood fit of `p = sigmoid(intercept + sum(coefficients[i] *
-x[i]))`, via Newton-Raphson (up to 50 iterations, or until convergence).
-`x`/`y`/`weights` as `linear-regression`'s above (including `x`/`y`
-accepting `(name . vector)` pairs); every value in `y` must be in `[0, 1]`
-(a 0/1 label, or a probability) — values outside that range raise an
-error. Returns a model of kind `"logistic"`. When the most likely curve
-has a coefficient of infinity -- see below -- the fit stops, and
-`model-report` says it did NOT converge.
-
-**A floor and a ceiling.** A logistic curve is an S that flattens out at 0
-on one side and at 1 on the other. For a curve that flattens out at other
-levels -- a chance of prepaying that rises from about 3% to about 48%,
-say -- give them as `:floor` and `:ceiling`, and the model is
-
-```
-y = floor + (ceiling - floor) * sigmoid(intercept + sum(coefficients[i] * x[i]))
-```
-
-One of the two can be left out: it is 0 or 1, as usual. The floor and
-ceiling are yours to choose, from what you know of the data -- not its
-smallest and largest values, which are often the points out of line. How
-the model is fit depends on whether they are between 0 and 1:
-
-- **Between 0 and 1, it is a probability** -- one that can't go below the
-  floor or above the ceiling -- and every `y` must be between 0 and 1: 0s
-  and 1s (did each loan prepay?) or shares (what share of a pool did?).
-  It is fit by maximum likelihood, as it is, with `p` the curve above; the
-  method (Fisher scoring) is the Newton-Raphson below, with a floor of 0
-  and a ceiling of 1. A `y` beyond the floor or ceiling is just one that
-  happened to be. `model-evaluate` treats the prediction as a probability
-  (log-likelihood, AUC).
-- **Outside 0 and 1, it is a number, not a probability**: a price, a
-  percentage, a count, that rises in an S from the floor to the ceiling.
-  `y` is rescaled to `(y - floor) / (ceiling - floor)`, which goes from 0
-  to 1, and that is fit as a probability would be. Data scatters about the
-  levels a curve flattens out at, so some of it is beyond them: a `y` below
-  the floor is taken to be at the floor, and one above the ceiling at the
-  ceiling (`model-report` says how many were). `model-evaluate` treats the
-  prediction as any other number (R-squared, RMSE, MAE).
-
-A probability that can't go below the floor, or above the ceiling, also
-limits what a point far from the curve can cost the fit: with them, a
-plain logistic curve is pulled much less by points out of line.
-
-**Fitting the floor and ceiling.** Give `'fit` for either, or both --
-`:ceiling 'fit` -- and it is the one that makes the data most likely,
-with the curve fit for it. For a probability only: every `y` must be
-between 0 and 1. It's found by trying every 0.05 from 0 to 1, fitting the
-curve for each, then every 0.01 near the best, and every 0.002 near the
-best of those. `model-report` gives each fitted one, and its 95% range:
-how far it could move, either way, before the data is clearly less likely
--- its log-likelihood lower by 1.92, which for 0s and 1s makes the range
-roughly a 95% confidence interval. (That's in the units of the average
-weight; and for shares, which scatter less than 0s and 1s, it's 1.92
-times how much less, which narrows the range accordingly -- a "quasi-
-likelihood" ratio. It doesn't allow for `:groups`, and it's found to the
-nearest 0.002.) A ceiling is only
-well fitted where there is data on the curve's flat top: with none, the
-range runs up to 1. A spline can level off by itself, at its knots, so a
-`spline-logistic`'s fitted ceiling is only loosely set. `model-floor` and
-`model-ceiling` give a model's floor and ceiling.
-
-```lisp
-(define x (- (/ (vector-range 41) 8.0) 2))
-(define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))   ; 3% to 48%
-(define m (logistic-regression x y :floor 'fit :ceiling 'fit))
-(list (model-floor m) (model-ceiling m))                        ; => (0.03 0.48)
-```
-
-```lisp
-(define x (- (/ (vector-range 41) 8.0) 2))
-(define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))   ; 3% to 48%
-(define m (logistic-regression x y :floor 0.03 :ceiling 0.48))
-(vector-round (vector (model-intercept m) (model-slope m)) 6)   ; => #(-3.0 3.0)
-(format "{:.3f}" (model-predict m 10))                          ; => "0.480"
-(define percent (logistic-regression x (* 100 y) :floor 3 :ceiling 48))   ; the same, in percent
-(format "{:.1f}" (model-predict percent 10))                     ; => "48.0"
-```
-
-**How the coefficients are found.** Fitting maximizes the (weighted)
-log-likelihood of the data —
-
-```
-sum over every observation i of:
-  weight[i] * ( y[i]*log(p[i]) + (1-y[i])*log(1-p[i]) )
-```
-
-— where `p[i]` is this model's own `sigmoid(...)` prediction for row `i`;
-this is the standard maximum-likelihood objective for logistic regression
-(equivalently, the negative of the weighted cross-entropy loss), with
-every `weight[i] = 1` unless you pass your own. Unlike `linear-regression`'s
-objective, this one is *not* quadratic in the coefficients, so there's no
-closed-form solution — the interpreter instead finds the maximizing
-coefficients iteratively, by Newton-Raphson (the same algorithm is also
-called Iteratively Reweighted Least Squares, "IRLS", elsewhere). Starting
-from all-zero coefficients, each iteration computes this objective's
-gradient and Hessian at the current coefficients, solves for the step that
-would exactly reach the maximum if the objective were quadratic right there
-(via the very same linear-system solver `linear-regression` uses for its
-one-shot solve), and takes that step -- or half of it, or a quarter, if
-the whole step would make the data less likely (far from the top, the
-objective isn't a parabola); this repeats until a step is smaller than
-`1e-8`, or 50 iterations pass without converging. Sometimes the TRUE
-maximum has a coefficient of infinity: when a predictor separates the 0s
-from the 1s perfectly, or when every point of a spline's piece is at or
-beyond the floor or ceiling, which the curve can come ever closer to by
-getting steeper there. Then the Hessian becomes singular, the fit stops
-where it is, and `model-report` says it did NOT converge: its predictions
-are near the limit the curve was heading for, but its coefficients and
-standard errors mean little. Each iteration's gradient/
-Hessian (the same O(n · p²) shape as `linear-regression`'s normal
-equations, above) is likewise built with numpy matrix operations, not a
-Python-level loop — and since this whole computation repeats up to 50
-times, it's where nearly all of `logistic-regression`'s fitting time goes
-for a large dataset.
-
-```lisp
-(define m (logistic-regression prices demand))
-(display (model-report m))
-```
-
-**Shares.** When `y` is all 0s and 1s -- did each loan prepay? -- the
-standard errors are the usual ones for logistic regression, which take
-each `y` to scatter about its chance `p` by `p (1 - p)`, as a 0 or a 1
-does. A share -- the part of a pool that prepaid in a month -- is an
-average over many loans, and scatters far less, so those would be much too
-large. So when any `y` is between 0 and 1, the standard errors come from
-how much `y` actually scatters about the fit (the "sandwich" of "Rows that
-come in groups", above, with each row its own group), and `model-report`
-says so. For a `spline-logistic` model of the pools' CPRs in
-`examples/synthetic_mbs_pools.csv`, the usual ones would be 10 to 25 times
-too large. Pools' months are alike, too: with each pool's months a group
-(`:groups pool-id`), the standard errors are 2 to 4 times larger again.
-
-The measures of fit are also different for shares: `model-report` gives
-R-squared, RMSE, and MAE, as for least squares, and a perfect model's
-log-likelihood, pseudo-R-squared, and AUC are short of 0, 1, and 1 (see
-"How good is a model?", below).
-
-#### `(spline-regression x y [max-knots weights] [:smooth #t :groups g])`
-A simple, dependency-free way to let a model bend instead of insisting on a
-straight line. For each predictor `x`, a handful of "knot" locations are
-chosen (automatically, at quantiles of `x`'s own values, or exactly where
-you specify), and the model gets one extra *hinge* feature `max(0, x -
-knot)` per knot alongside the plain linear term — or, for a predictor
-marked `'categorical`, one 0/1 indicator column per non-baseline distinct
-value instead of hinges. Fitting then just reuses `linear-regression`'s own
-fitting code on this expanded feature set (`spline-lad` and
-`spline-logistic`, below, reuse `lad-regression`'s and
-`logistic-regression`'s). Returns a model of kind `"spline"`. `x`/`y` accept
-the same shapes `linear-regression`/`logistic-regression` do — including a
-list of `(name . vector)` pairs for `x` and a `(name . vector)` pair for
-`y` — and `model-report` (below) uses those names the same way.
-
-**How the coefficients are found.** There's no separate spline-fitting
-algorithm — `spline-regression` isn't a different way of minimizing
-anything, it's a different set of *columns* to feed into one of the
-algorithms already described above. Every knot's hinge column and every
-category's 0/1 indicator column (see the table below) is computed first;
-those expanded columns are then handed to `fit_linear` exactly as if you
-had built those columns yourself and called `linear-regression` directly
-on them — same objective, same closed-form solve, same optional `weights`,
-just applied to `x`'s expansion instead of `x` itself. (`spline-lad` and
-`spline-logistic` hand the same columns to `fit_lad` and to the logistic
-fit.)
-
-`max-knots` (default `3`) controls how *every* predictor is expanded:
-
-| Form | Meaning |
-|---|---|
-| an integer, e.g. `3` | that many knots, auto-placed at quantiles of that predictor's values — applied to every predictor if there's more than one |
-| `'categorical` (a symbol) | expand into 0/1 indicator columns, one per non-baseline distinct value (the smallest value becomes the implicit baseline) — applied to every predictor if there's more than one |
-| a flat list of numbers/dates, e.g. `(list 25 35)` | **exact** knot locations — only valid shorthand when there is exactly **one** predictor |
-| a list with one entry per predictor, e.g. `(list 3 0)` or `(list (list 25 35) 'categorical)` | full per-predictor control: each entry is itself an integer, an explicit knot list, or `'categorical`. An entry of `0` leaves that predictor purely linear |
-
-A non-zero knot count on a predictor with 3 or fewer distinct values is
-rejected up front (naming the predictor, since hinges are meaningless
-there and can make the fit singular) — the error suggests `0` (stay
-linear) or `'categorical` instead. At `model-predict` time, a categorical
-value that wasn't seen while fitting raises a clear error naming the
-predictor and the categories that were seen.
-
-For a predictor with EXACTLY two distinct values (e.g. a 0/1 flag),
-`'categorical` and a knot count of `0` (plain linear) produce the
-identical fitted model — a two-category `'categorical` expansion is just
-one 0/1 indicator column for the non-baseline value, which for an
-already-0/1 predictor is the same number, unchanged. The only real
-difference is validation: `'categorical` requires at least 2 distinct
-values up front and rejects an unseen category at `model-predict` time,
-where plain linear accepts (and silently extrapolates/interpolates)
-anything numeric.
-
-`weights` (optional, default: every observation weighted equally) — the
-same per-observation weight vector `linear-regression` takes (see
-"Weighted fitting", above); passed straight through to the fit on the
-expanded basis.
-
-**Smooth splines.** The hinges make a curve of straight pieces, with a
-corner at each knot, and its last piece goes on as far as you predict.
-`:smooth #t` makes a *restricted cubic spline* (a "natural" spline)
-instead: cubic pieces that join smoothly at the knots, with no corners, and
-a straight line below the first knot and above the last. That's often
-truer to the data -- a prepayment curve bends; it doesn't turn corners --
-and safer beyond it, since a straight line goes on as it was going, where
-a cubic might turn anywhere. It works the same way: in place of a hinge at
-each knot, a predictor gets one curved term for each knot but the last two
-(see `restricted_cubic_terms` in `lisp_regression.py` for the formula),
-and the same fit runs on them. So it takes at least 3 knots, and with `k`
-knots it has `k - 1` coefficients for the predictor, where the hinges have
-`k + 1`: with the same knots, it bends less freely. All four spline
-functions take `:smooth`, and a categorical predictor stays categorical.
-
-```lisp
-(define x (- (/ (vector-range 41) 8.0) 2))
-(define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))   ; an S
-(define smooth (spline-regression x y (list -1 0 1 2) :smooth #t))
-(table-column (model-coefficient-table smooth) "term")   ; => #("intercept" "x1" "x1 (curve at knot -1)" "x1 (curve at knot 0)")
-```
-
-```lisp
-(define home-type (vector 0 1 0 1 1))          ; 0=own, 1=rent
-(define m (spline-regression (list income home-type) happiness
-                              (list 2 'categorical)))
-(display (model-report m))
-(model-predict m (list 50000 0))                ; predict for "own", income=50000
-```
-
-#### `(spline-logistic x y [max-knots weights] [:floor f :ceiling c :smooth #t :groups g])`
-A spline model with a logistic link: `spline-regression`'s expansion of
-each predictor, from the same `max-knots`, fit as `logistic-regression`
-fits, with the same `:floor` and `:ceiling` (and the same rules for `y`).
-The prediction stays between 0 and 1 (or the floor and the ceiling), but
-thanks to the hinges it doesn't have
-to rise (or fall) all the way across, as a plain `logistic-regression`'s
-does. Returns a model of kind `"spline-logistic"`. (This was
-`spline-regression` with `logistic?` `#t`.)
-
-```lisp
-(define x (- (/ (vector-range 41) 8.0) 2))
-(define y (vector-map (lambda (v) (+ 0.03 (/ 0.45 (+ 1 (exp (* -3 (- v 1))))))) x))   ; 3% to 48%
-(define s (spline-logistic x y 2 :floor 0.03 :ceiling 0.48))
-(format "{:.3f}" (model-predict s 1))                          ; => "0.255"
-```
-
-#### `(spline-quantile x y quantile [max-knots weights] [:smooth #t :groups g])`
-A spline model fit to a quantile: `spline-regression`'s expansion of each
-predictor, from the same `max-knots`, fit as `quantile-regression` fits, so
-the curve can bend, with `quantile` of the points below it. The model's
-kind is `"spline-quantile"`. Two of them, at the 10th and 90th
-percentiles, make a band that can bend with the data.
-
-#### `(spline-lad x y [max-knots weights] [:smooth #t :groups g])`
-A spline model fit by **least absolute deviation**: `spline-regression`'s
-expansion of each predictor -- the same hinges at knots, or 0/1 columns for
-categories, from the same `max-knots` -- fit as `lad-regression` fits,
-making the sum of the absolute residuals smallest rather than the sum of
-their squares. So the curve can bend, and a few outliers barely move it.
-`x`, `y`, `max-knots`, and `weights` are as for `spline-regression`; the
-model's kind is `"spline-lad"`, and `model-report` shows LAD's measures of
-fit.
-
-```lisp
-(define xs (vector-range 21))
-(define ys (vector-map (lambda (x) (abs (- x 10))) xs))     ; a V, bending at 10
-(vector-set! ys 18 40)                                      ; and one outlier
-(format "{:.2f}" (model-predict (spline-regression xs ys (list 10)) 20))   ; => "17.02"
-(format "{:.2f}" (model-predict (spline-lad xs ys (list 10)) 20))          ; => "10.00"
-```
-(The least-squares spline's right arm is pulled up toward the outlier;
-the LAD spline goes through the V's other points exactly.)
-
-The four spline fits -- `spline-regression`, `spline-lad`,
-`spline-quantile`, and `spline-logistic` -- expand the predictors the same
-way: the knots depend only on `x` and `max-knots`, never on `y` or on how
-the fit is made. `examples/regression_kinds_example.lsp` fits the kinds of
-regression to the same made-up data and charts them, one above another --
-with a floor and ceiling, a quantile band, and a smooth spline too -- and
-cross-validates each.
-
-#### `(model-report m)`
-Returns a multi-line string describing a fitted model: its equation, a
-table of coefficients, and measures of fit. It uses the real predictor and
-`y` names if the model was fit on `(name . vector)` pairs (see above),
-otherwise `x1`, `x2`, ... and `y`.
-
-The coefficient table has one row for the intercept and one per
-predictor:
-
-| Column | Meaning |
-|---|---|
-| `coefficient` | the fitted value |
-| `std error` | its standard error: how much it would vary from sample to sample |
-| `t value` / `z value` | the coefficient divided by its standard error |
-| `p value` | the chance of a coefficient at least this far from 0 if the true value were 0 — a small p value (say under 0.05) means the predictor genuinely matters |
-
-A linear model uses the t distribution with n − p degrees of freedom (p
-counting the intercept), or, with `:groups`, one fewer than the number of
-groups; a logistic model uses the normal distribution (z). **With weights**, a linear model's standard errors don't depend on
-the weights' scale, only their relative sizes. For a logistic model, the
-weights are rescaled to average 1 for the standard errors, so weighting
-by balance in dollars doesn't make the model look vastly more certain
-than its row count justifies — the weights say how much each row counts
-relative to the others, not how many copies of it there are.
-
-Then the measures of fit, each beside two others: what a **perfect**
-model would get -- one that predicted every `y` exactly -- and what a model
-would get that **predicts the same for every row**: the average of `y`,
-say, as a model with no predictors would. Where the model's value is,
-between those two, says how good it is. "How good is a model?", below,
-explains each measure. For a linear model: R-squared, RMSE, and MAE. For a
-LAD or quantile model, see `lad-regression` and `quantile-regression`. For
-a logistic model: the log-likelihood, McFadden's pseudo-R-squared, and the
-AUC -- with R-squared, RMSE, and MAE first, if `y` is shares (see
-`logistic-regression`) -- and the number of Newton-Raphson iterations and
-whether it converged. Then `n`, and for a model fit with `:groups`, the
-number of groups.
-
-For a spline model: its predictors, each with its knot locations (or
-categories and baseline value) — flagging a purely linear predictor with 3
-or fewer distinct values as a candidate for `'categorical` — then the same
-coefficient table for the expanded features (each labeled with its
-predictor's name, e.g. `income (knot 40000)` or `home_type = 1`), and the
-same measures of fit.
-
-```lisp
-(define m (linear-regression (vector 1 2 3 4 5) (vector 10 20 29 41 51)))
-(display (model-report m))
-```
-prints:
-```
-Linear model:  y = -0.7 + 10.3*x1
-  term        coefficient     std error    t value    p value
-  intercept          -0.7      0.834666    -0.8387      0.463
-  x1                 10.3      0.251661      40.93   3.21e-05
-  R-squared        = 0.998212   (perfect: 1; predicting the average of y for every row: 0)
-  RMSE             = 0.616441   (perfect: 0; predicting the average of y for every row: 14.5794)
-  MAE              = 0.48       (perfect: 0; predicting the median of y for every row: 12.4)
-  n                = 5
-```
-
-#### `(model-coefficient-table m)`
-The coefficient table from `model-report`, as a table (see "Tables", in the [language manual](lisp_interpreter_reference.md#tables)) with
-the columns `term`, `coefficient`, `std_error`, `t_value` (`z_value` for a
-logistic model), and `p_value`. The first row is the intercept. Its
-numbers are kept at full precision, so it's the way to use them in further
-calculations — or `display-table` it to see them.
-
-```lisp
-(define m (linear-regression (vector 1 2 3 4 5) (vector 10 20 29 41 51)))
-(table-column (model-coefficient-table m) "term")   ; => #("intercept" "x1")
-```
-
-#### `(model-lift-table m x y [bins weights])`
-How well a model **ranks** rows — whether its highest predictions really
-go with the highest outcomes, which is what matters when a model is used
-to pick out or project the riskiest loans. The rows are sorted by
-prediction, highest first, and split into `bins` groups of (nearly) equal
-row count — 10 by default, i.e. deciles. The result is a table with one
-row per group:
-
-| Column | Meaning |
-|---|---|
-| `bin` | 1 holds the highest predictions |
-| `rows` | the number of rows in the group |
-| `weight` | their total weight (the row count, if no weights are given) |
-| `mean_predicted` | the group's average prediction |
-| `mean_actual` | the group's average actual `y` |
-| `lift` | `mean_actual` divided by the overall average `y` |
-| `cumulative_share` | the fraction of all `y` (e.g. of all payoffs) in groups 1 through this one |
-
-With `weights` (e.g. balances), the averages are weighted. `x` and `y` are
-as for `model-evaluate`; use held-out data to judge a model fairly. Good
-ranking shows as `lift` well above 1 in the first bins and falling steadily.
-
-```lisp
-(define age #(1 2 3 4 5 6 7 8 9 10))
-(define paid #(0 0 1 0 0 1 0 1 1 1))
-(define m (logistic-regression age paid))
-(table-column (model-lift-table m age paid 5) "lift")   ; => #(2.0 1.0 1.0 1.0 0.0)
-```
-
-#### `(model-evaluate m x y)`
-Evaluates a fitted model's prediction quality against data — typically
-held-out data it wasn't fit on — and returns a string report. `x`/`y`
-follow the same shape rules as the fitting functions; the number of
-predictor vectors in `x` must match the model's own predictor count. For a
-non-probabilistic model (`"linear"`/`"lad"`/`"quantile"`/`"spline"`/`"spline-lad"`/`"spline-quantile"`, and a
-logistic one with a `:floor` or `:ceiling` outside 0 and 1): reports
-R-squared, RMSE, and MAE against this new data. For a probabilistic model
-(`"logistic"`/`"spline-logistic"`, with its floor and ceiling, if any,
-between 0 and 1): reports log-likelihood, McFadden's pseudo-R-squared, and
-AUC -- after R-squared, RMSE, and MAE, if `y` is shares -- and, if `y` is
-all 0s and 1s, accuracy: how often a prediction of 0.5 or more went with a
-1, and one under 0.5 with a 0. As in `model-report`, each is beside a
-perfect model's and that of predicting the same for every row -- here, the
-average (or median) of *this* data's `y`; for accuracy, the commoner of 0
-and 1. For a rare outcome, such as a monthly payoff, accuracy says little:
-predicting "no payoff" for every row is usually 99% accurate, and the
-report shows that beside it. "How good is a model?", below, explains each
-measure. Works uniformly across every model kind, including spline
-models.
-
-```lisp
-(define age #(1 2 3 4 5 6 7 8 9 10))
-(define paid #(0 0 1 0 0 1 0 1 1 1))
-(display (model-evaluate (logistic-regression age paid) age paid))
-```
-prints:
-```
-Evaluation on 10 held-out observation(s):
-  log-likelihood   = -4.94158   (perfect: 0; predicting the average of y for every row: -6.93147)
-  pseudo R-squared = 0.287081   (perfect: 1; predicting the average of y for every row: 0)
-  AUC              = 0.84       (perfect: 1; predicting the same for every row: 0.5)
-  accuracy         = 0.8        (perfect: 1; predicting the commoner outcome for every row: 0.5; a prediction of 0.5 or more counts as a 1)
-```
-(Here it's evaluated on the data it was fit to, to keep the example short;
-held-out data is the fair test.)
-
-```lisp
-(define n-train (floor (* (vector-length x) 0.7)))
-(define m (linear-regression (vector-take x n-train) (vector-take y n-train)))
-(display (model-evaluate m (vector-drop x n-train) (vector-drop y n-train)))
-```
-
-#### `(cross-validate fit x y [:folds 5 :seed 1 :groups g])`, `(cross-validate fit x y :times t [:last 1])`
-How well the models `fit` makes predict data they *weren't* fit to. `fit`
-is a procedure of `x` and `y` that returns a model -- `(lambda (x y)
-(spline-lad x y 3))`, say. The rows are shuffled (by `:seed`, so it comes
-out the same every time) and dealt into `:folds` groups; for each group, a
-model is fit to all the other rows and predicts this group's `y`. The
-result is a table with a row for each fold and a last row, `"all"`, for
-every row, each predicted by the model fit without it. With `:groups`, each
-group's rows stay together, in one fold; with `:times`, the model is fit to
-the earlier rows and predicts the latest ones (both below).
-
-| Column | What it holds |
-|---|---|
-| `fold` | `"1"`, `"2"`, ..., and `"all"` -- or, with `:times`, `time`: each of the latest times, and `"all"` |
-| `rows` | how many rows were predicted |
-| `groups` | with `:groups`, how many groups they're in |
-| `rmse` | the root mean squared error |
-| `mae` | the mean absolute error |
-| `log-loss` | for a model of a probability: the mean of −(y log p + (1 − y) log(1 − p)), how unlikely it found what happened |
-| `quantile-loss` | for a quantile model: the mean of the loss it makes smallest, at its quantile |
-
-The lower, the better it predicts. That's the fair way to choose among
-models, or numbers of knots: a model always fits the data it was fit to
-better the more freely it can bend -- more knots, more predictors -- but
-past some point it bends to the noise, and predicts new data worse.
-Measured on its own data, that never shows; measured this way, it does.
-`x` and `y` can be in any shape the fitting functions take, names and all.
-
-```lisp
-(random-seed 2)
-(define x (vector-range 60))
-(define y (+ (/ x 2) (list->vector (map (lambda (i) (* 20 (- (random-float) 0.5))) (iota 60)))))   ; a line, and noise
-(define (overall measure table) (vector-ref (table-column table measure) (- (table-row-count table) 1)))
-(define line (cross-validate (lambda (x y) (linear-regression x y)) x y))
-(define wiggly (cross-validate (lambda (x y) (spline-regression x y 12)) x y))
-(list (format "{:.2f}" (overall "rmse" line)) (format "{:.2f}" (overall "rmse" wiggly)))   ; => ("5.84" "6.41")
-```
-(The 12-knot spline fits these 60 points more closely than the line does,
-but predicts the ones it hasn't seen less well: the data is a line, and
-noise.)
-
-**Rows in groups.** When the rows come in groups whose rows are alike --
-the months of a loan -- dealing them out one by one isn't a fair test.
-Each loan's other months are among the rows the model is fit to, so it is
-predicting more months of loans it has seen, which is easier than
-predicting new loans. A model that can bend to fit each loan -- many knots
--- looks better than it is. With `:groups` -- a value for each row, a
-loan's ID, say, as the fitting functions take it (see "Rows that come in
-groups", above) -- the groups are shuffled and dealt out instead of the
-rows: each, in turn, to the fold with the fewest rows so far. A group's
-rows are all in one fold, so the folds come out about the same size, but
-not exactly. (Without `:groups`, every row is its own group, which deals
-the rows out one by one.) Don't give `:groups` to the fitting procedure:
-it gets only some of the rows, and the groups change the standard errors,
-not the predictions.
-
-```lisp
-(random-seed 4)
-(define loan (vector-map (lambda (i) (floor (/ i 24))) (vector-range 960)))    ; 40 loans, 24 months of each
-(define (for-each-loan make)                                                  ; one value for each loan, on each of its rows
-  (let ((value (list->vector (map (lambda (i) (make)) (iota 40)))))
-    (vector-map (lambda (l) (vector-ref value l)) loan)))
-(define coupon (for-each-loan (lambda () (+ 3 (* 4 (random-float))))))           ; 3% to 7%
-(define habit (for-each-loan (lambda () (* 6 (- (random-float) 0.5)))))          ; how much faster or slower it pays
-(define speed (+ (* 2 coupon) habit (vector-map (lambda (l) (* 4 (- (random-float) 0.5))) loan)))
-(define (overall table) (format "{:.2f}" (vector-ref (table-column table "rmse") (- (table-row-count table) 1))))
-(define (line x y) (linear-regression x y))
-(define (wiggly x y) (spline-regression x y 20))
-(list (overall (cross-validate line coupon speed)) (overall (cross-validate wiggly coupon speed)))   ; => ("2.08" "1.73")
-(list (overall (cross-validate line coupon speed :groups loan))
-      (overall (cross-validate wiggly coupon speed :groups loan)))                                  ; => ("2.13" "3.59")
-(table-column (cross-validate line coupon speed :groups loan :folds 3) "rows")                     ; => #(336 312 312 960)
-```
-
-A loan's speed here is twice its coupon, plus the loan's own habit, plus
-noise; there are 40 coupons, one for each loan. Dealt out row by row, a
-spline with 20 knots predicts better than the line: with knots between
-the coupons, it learns each loan's habit from the loan's other months.
-With each loan's months kept together, it predicts new loans far worse.
-
-**The latest times.** `:times` gives each row's time -- a month, as a
-number such as `202506` or `18`, a string such as `"2025-06"`, or a date
--- and the model is fit once, to every row before the latest `:last` times
-(1, unless given), and predicts the rows of those times: the test of a
-model that will be used on the months to come. The table has a row for
-each of the latest times, in a `time` column in place of `fold`, and
-`"all"`. Folds mix all the months, so they can't show a model that
-predicts the months it was fit among well but the next ones badly,
-because rates, the economy, or lenders' rules have changed; this can.
-`:folds`, `:seed`, and `:groups` don't go with `:times`.
-
-```lisp
-(random-seed 4)
-(define loan (vector-map (lambda (i) (floor (/ i 24))) (vector-range 960)))    ; as above
-(define (for-each-loan make)
-  (let ((value (list->vector (map (lambda (i) (make)) (iota 40)))))
-    (vector-map (lambda (l) (vector-ref value l)) loan)))
-(define coupon (for-each-loan (lambda () (+ 3 (* 4 (random-float))))))
-(define habit (for-each-loan (lambda () (* 6 (- (random-float) 0.5)))))
-(define speed (+ (* 2 coupon) habit (vector-map (lambda (l) (* 4 (- (random-float) 0.5))) loan)))
-(define (overall table) (format "{:.2f}" (vector-ref (table-column table "rmse") (- (table-row-count table) 1))))
-(define (line x y) (linear-regression x y))
-(define month (vector-map (lambda (i) (+ 1 (mod i 24))) (vector-range 960)))      ; months 1 to 24, for each loan
-(define faster (+ speed (vector-map (lambda (m) (if (> m 21) 3 0)) month)))     ; in the last 3, every loan pays faster
-(overall (cross-validate line coupon faster :groups loan))                      ; => "2.36"
-(define latest (cross-validate line coupon faster :times month :last 3))
-(table-column latest "time")                                                   ; => #("22" "23" "24" "all")
-(overall latest)                                                               ; => "3.62"
-```
-
-#### `(model-residuals m x y)`
-The residuals, `y` minus the model's prediction, for each row of `x` and
-`y`, as a vector. `x` and `y` are as for `model-evaluate`. Works on any
-model. After a `lad-regression`, the rows with the largest residuals are
-the outliers the fit set aside.
-
-```lisp
-(define m (linear-regression #(1 2 3) #(1 3 2)))
-(model-residuals m #(1 2 3) #(1 3 2))          ; => #(-0.5 1.0 -0.5)
-```
-
-#### `(model-coefficients m)`
-Returns a vector of the model's fitted coefficients, one per predictor, in
-the order the predictors were given when fitting. Only valid for
-`"linear"`/`"lad"`/`"logistic"` models — raises an error on a spline model (use
-`model-report` instead).
-
-```lisp
-(model-coefficients m)         ; => #(10.3)
-```
-
-#### `(model-floor m)`, `(model-ceiling m)`
-A logistic or spline-logistic model's floor and ceiling: 0 and 1, unless
-they were given, or fit with `'fit`.
-
-#### `(model-intercept m)`
-The model's fitted intercept (a plain number). Like `model-coefficients`,
-not for a spline model.
-
-```lisp
-(model-intercept m)            ; => -0.7
-```
-
-#### `(model-kind m)`
-Returns `"linear"`, `"lad"`, `"quantile"`, `"logistic"`, `"spline"`,
-`"spline-lad"`, `"spline-quantile"`, or `"spline-logistic"`. Works on any
-model.
-
-```lisp
-(model-kind m)                 ; => "linear"
-```
-
-#### `(model-predict m x)`
-Predicts the fitted value at a new point. `x` may be a bare number or date
-when `m` has exactly one predictor, or `(list x1 x2 ...)` (in the same
-order the model was fit with) for a multi-predictor model — a
-single-predictor model accepts either form. Raises an error if the number
-of values given doesn't match the model's predictor count. Returns a plain
-number: the fitted value for `"linear"`/`"spline"` models, or a `[0, 1]`
-probability for `"logistic"`/`"spline-logistic"` models.
-
-```lisp
-(define m (linear-regression (list income age) rent))
-(model-predict m (list 50000 30))      ; two predictors -> a list
-(define m2 (linear-regression income rent))
-(model-predict m2 50000)               ; one predictor -> bare number is fine too
-```
-
-[`model_utils.lsp`](../lisp_interp/lib/model_utils.lsp)'s `(model->function m)` wraps this into
-an ordinary Lisp function, one argument per predictor, instead of a list:
-
-```lisp
-(load "model_utils.lsp")
-(define f (model->function m))
-(f 50000 30)                           ; same as (model-predict m (list 50000 30))
-```
-
-#### `(model-slope m)`
-Shorthand for "the (only) coefficient" — `(vector-ref (model-coefficients
-m) 0)` — but raises a clear error if the model has more than one predictor
-(use `model-coefficients` instead). Like `model-coefficients`, not for a
-spline model.
-
-```lisp
-(model-slope m)                ; => 10.3
-```
-
-#### `(model? x)`
-`#t` for any fitted model (linear, logistic, spline, or spline-logistic).
-
-```lisp
-(model? m)                     ; => #t
-(model? 5)                     ; => #f
-```
-
-#### `(suggest-knots x y window n)`
-Proposes up to `n` knot locations for `spline-regression`, based on where
-`y` actually bends as a function of `x`, rather than generic quantiles:
-
-1. Aggregates `y` (by mean) onto each *distinct* `x` value seen — matters
-   for panel/pool-style data where many rows share an `x`; `window` counts
-   steps along this distinct-`x` curve, not raw rows.
-2. Estimates that curve's second derivative at every interior point (a
-   3-point finite-difference formula that works for unevenly spaced `x`,
-   including date `x` values).
-3. Smooths that sequence with a centered moving average of `window`
-   points.
-4. Greedily picks the points with the largest smoothed `|second
-   derivative|`, skipping any candidate within `window` of one already
-   picked, so chosen knots represent genuinely distinct bends.
-
-`window` must be a positive integer; `n` must be non-negative (`n = 0`
-returns `'()` immediately). Requires at least 3 distinct `x` values.
-Returns a Lisp list of up to `n` x-values (fewer if there aren't that many
-usable candidates), sorted ascending, ready to hand straight to
-`spline-regression` as an explicit knot list.
-
-```lisp
-(define knots (suggest-knots x y 5 3))
-(define m (spline-regression x y knots))
-```
-
-A larger `window` smooths away small wiggles and flags only broader bends
-(forcing suggested knots further apart); a smaller `window` is more
-sensitive to sharp, narrow features but can suggest closely-spaced knots.
-`x`/`y` don't need to be pre-sorted. Because `window` is measured in
-distinct-`x` steps, size it relative to how many distinct `x` values the
-data actually has, not the row count.
-
-### How good is a model? The measures, explained
-
-Every measure of a model compares its predictions with what actually
-happened. A number by itself says little: is an RMSE of 0.046 good? So
-`model-report` and `model-evaluate` put two others beside each:
-
-- **perfect**: what a model would get that predicted every row exactly.
-- **predicting the same for every row**: what a model would get that
-  knows nothing about the predictors and predicts one number for every
-  row -- the average of `y`, say (or whichever one number does best on
-  that measure).
-
-A model is worth something to the extent that it's closer to perfect than
-to predicting the same for every row. Here is the report of a
-`spline-logistic` model of the monthly CPRs of 600 pools
-(`examples/synthetic_mbs_pools.csv`; the predictors are the rate
-incentive, the loan age, and whether the loans were refinancings):
-
-```
-  R-squared        = 0.811845   (perfect: 1; predicting the average of y for every row: 0)
-  RMSE             = 0.0461904  (perfect: 0; predicting the average of y for every row: 0.106486)
-  MAE              = 0.0287087  (perfect: 0; predicting the median of y for every row: 0.078044)
-  log-likelihood   = -13302.8   (perfect: -13116; predicting the average of y for every row: -14355.8)
-  pseudo R-squared = 0.0733469  (perfect: 0.0863629; predicting the average of y for every row: 0)
-  AUC              = 0.693018   (perfect: 0.706028; predicting the same for every row: 0.5)
-```
-
-The pseudo R-squared of 0.073 looks dreadful next to the R-squared of 0.81.
-But a perfect model would get only 0.086, so this one gets 85% of the
-way there. Without the "perfect" beside it, it would be easy to throw out
-a good model.
-
-In what follows, a **residual** (or error, or miss) is one row's actual
-`y` minus the model's prediction for it: positive when the model
-predicted too little.
-
-**Measures of a number** -- a price, a CPR, a spread:
-
-- **RMSE**, the root mean squared error: the typical size of a miss, in
-  `y`'s own units. Square each residual, average them, and take the
-  square root. An RMSE of 0.046 for CPRs means the predictions are
-  typically about 4.6 percentage points off. Squaring makes big misses
-  count far more than small ones: one miss of 10 counts as much as a
-  hundred misses of 1. Predicting the average for every row gives the
-  standard deviation of `y`.
-- **MAE**, the mean absolute error: the average size of a miss, ignoring
-  whether it was too high or too low. Big misses count only by their
-  size. If the RMSE is much larger than the MAE, a few rows are missed
-  by a lot. Predicting the median of `y` for every row does best on MAE,
-  so that's the comparison.
-- **R-squared**: the share of the variation in `y` the model accounts
-  for. It's 1 − (the RMSE / the RMSE of predicting the average)²: 0.81
-  means the model's squared misses are 19% of what they'd be predicting
-  the average for every row. 1 is perfect; 0 is no better than the
-  average. On data the model wasn't fit to, it can be below 0: worse
-  than the average.
-- **pseudo R-squared, for LAD and quantile models**: the same idea, with
-  what that model makes smallest -- the MAE for LAD, the average loss for
-  a quantile model -- in place of squared misses.
-- **average loss, for a quantile model**: a quantile fit is meant to
-  have some of the points above it -- 10% for the 0.9 quantile -- so a
-  miss above isn't simply bad. A point above the fit costs `quantile`
-  times its distance, and one below it `1 − quantile` times its distance;
-  this is the average cost. Predicting the quantile of `y` for every row
-  is the comparison.
-
-**Measures of a probability** -- the chance a loan prepays, or the share
-of a pool that does:
-
-- **log-likelihood**: how likely the model found what actually happened.
-  For each row it takes the log of the chance the model gave the
-  outcome: for a loan that prepaid, log(p); for one that didn't, log(1 −
-  p). Then it adds them up. A model that said 2% for a loan that then
-  prepaid loses log(0.02) = −3.9 on that row; one that said 50% loses
-  only −0.7. It's always 0 or less, and closer to 0 is better. The sum
-  grows with the number of rows, so it means little by itself; compare
-  it with the two beside it. For shares, a row with share `y` counts as
-  `y` of a prepayment and `1 − y` of none.
-- **log-loss** (in `cross-validate`): minus the log-likelihood divided by
-  the number of rows -- the same, per row, so it can be compared across
-  data of different sizes. Lower is better.
-- **pseudo R-squared** (McFadden's): how far the log-likelihood has come
-  from predicting the average chance for every row toward perfect, as R-
-  squared does for squared misses. For 0s and 1s, perfect is 1. Even
-  good models of rare events score low on it -- 0.2 to 0.4 is considered
-  very good -- because no model can say which loans will prepay this
-  month, only which are likelier to.
-- **AUC** (the area under the ROC curve): how well the model *ranks*
-  rows. Pick, at random, one loan that prepaid and one that didn't: the
-  AUC is the chance the model gave the one that prepaid the higher
-  chance. 0.5 is a coin toss, and is what predicting the same for every
-  row gets; 1 is perfect ranking. It says nothing about whether the
-  chances are the right *size*: doubling every prediction leaves it the
-  same. For shares, each row is that share of a prepayment and the rest
-  of none, so even perfect is short of 1.
-- **accuracy** (in `model-evaluate`, for 0s and 1s): how often a
-  prediction of 0.5 or more went with a 1, and one under 0.5 with a 0.
-  For something rare, it's nearly useless: if 1% of loans prepay, a
-  model that says "no" for every loan is 99% accurate, and knows
-  nothing. The report puts that beside it ("predicting the commoner
-  outcome for every row").
-
-**Why perfect is short of 1 for shares.** A 0 or a 1 is an outcome a model
-can be sure of: say 100% for a loan that prepays, and the row loses
-nothing. A share of 0.1 isn't: even predicting exactly 0.1, the model
-gives a 90% chance to "not prepaid" for that part of the pool, and the
-log-likelihood can't reach 0. So with shares, judge the log-likelihood,
-pseudo R-squared, and AUC against the perfect ones beside them, and look
-at R-squared, RMSE, and MAE, which mean the same for shares as for any
-number.
-
-**The lift table** (`model-lift-table`) shows two things at once. It sorts
-the rows by their prediction, highest first, and splits them into tenths.
-For each tenth, compare `mean_predicted` with `mean_actual`: if they're
-close all the way down, the predictions are the right size (the model is
-"calibrated"). And `lift` -- each tenth's actual average divided by the
-overall average -- should fall steadily from the top: the model puts the
-rows that really prepay faster at the top. For the pool model above:
-
-| bin | mean_predicted | mean_actual | lift |
-|---|---|---|---|
-| 1 | 0.343 | 0.340 | 2.10 |
-| 2 | 0.287 | 0.300 | 1.86 |
-| 5 | 0.137 | 0.123 | 0.76 |
-| 10 | 0.046 | 0.057 | 0.35 |
-
-The highest tenth prepaid at 2.1 times the average, the lowest at a third
-of it, and each tenth's prediction is within a couple of percentage points
-of what happened.
-
-**Standard errors, and t, z, and p values** (the coefficient table) are
-about the coefficients, not the predictions. A coefficient's standard
-error is how much it would vary if the model were fit to another sample
-of the same kind of data. Its t value (or z value) is the coefficient
-divided by its standard error: how many standard errors it is from 0. Its
-p value is the chance of a t value at least that far from 0 if the
-predictor in fact had no effect. Under 0.05 is the usual sign that the
-predictor matters. They assume each row is new information: when rows
-come in groups that are alike, they're too small, and `:groups` fixes
-that (see "Rows that come in groups", above).
-
-**Fit to its own data, or new data?** Every measure in `model-report` is
-of the data the model was fit to, which flatters it: a model that bends
-to every point looks perfect there, and predicts new data badly. The
-honest numbers are from data the model hasn't seen: `model-evaluate` on
-rows held out, or `cross-validate`, which does that for every row. When
-choosing between models, compare those.
+Regression has its own manual, [lisp_regression_manual.md](lisp_regression_manual.md): the kinds of fit
+(least squares, least absolute deviation, a quantile, logistic, Poisson, ridge and lasso, and a formula of
+your own), splines that bend at knots, standard errors for rows that come in groups or in time order, the
+functions that report, predict with, and evaluate a model, the measures of fit, and cross-validation. The
+functions: `linear-regression`, `lad-regression`, `quantile-regression`, `logistic-regression`,
+`poisson-regression`, `ridge-regression`, `lasso-regression`, `nonlinear-regression`; `spline-regression`,
+`spline-lad`, `spline-quantile`, `spline-logistic`, `spline-poisson`, `suggest-knots`; `model-report`,
+`model-coefficient-table`, `model-predict`, `model-evaluate`, `model-residuals`, `model-lift-table`,
+`model-coefficients`, `model-intercept`, `model-slope`, `model-floor`, `model-ceiling`, `model-kind`,
+`model?`; `cross-validate`.
 
 ### Models fitted to Freddie Mac's loans
 
@@ -4819,9 +4180,16 @@ grown at the interest rate. `black-implied-vol` finds the volatility as
 (format "{:.4f}" (black-price "call" 105.13 100 1 0.9512 0.2))   ; => "10.4520"
 ```
 
-#### `(normal-cdf x)`
-The chance that a standard normal number is below `x`: `0.5 (1 + erf(x /
-sqrt 2))`.
+#### `(normal-cdf x)`, `(normal-quantile p)`
+`normal-cdf` is the chance that a standard normal number is below `x`:
+`0.5 (1 + erf(x / sqrt 2))`. `normal-quantile` goes the other way: the number
+that a standard normal number is below with chance `p` (between 0 and 1).
+Either can be given a vector.
+
+```lisp
+(normal-cdf 0)                 ; => 0.5
+(normal-quantile 0.975)        ; => 1.9599639845400534
+```
 
 #### `(american-price type spot strike time rate vol [:dividend-yield q] [:dividends table] [:steps n] [:early-exercise #f])`
 The price of an option that can be exercised before it expires, by a
@@ -5296,9 +4664,10 @@ one with the lower strike, and sell the one with the higher** -- a *bull
 call spread* -- if you expect the stock to be at a certain price on that
 day? Every pair is ranked by the profit at the price you expect, as a share
 of the most you could lose. (This is the first and simplest of seventeen kinds
-of position that [Option spreads](#option-spreads) ranks the same way; the work
-is done there, and these functions are its `bull-call` kind under their
-original names, which stay as they were.)
+of position that [Option spreads](#option-spreads) ranks the same way. These
+functions are its `bull-call` kind under names of their own: what they find,
+show, chart and order is what `option-spreads`, `show-option-spreads`,
+`plot-option-profit` and `option-spread-order` do for `'bull-call`.)
 
 **What a spread is.** A call lets you buy the stock at its strike on the
 expiration day, so at expiration it is worth the stock's price less the
@@ -5341,6 +4710,8 @@ first is the best.
                           "bid" (vector 6.0 3.0 1.2) "ask" (vector 6.2 3.2 1.4) "mid" (vector 6.1 3.1 1.3)
                           "volume" (vector 5 5 5) "open-interest" (vector 10 10 10)))
 (define search (call-spreads-for-chain chain day 108))
+(table-column (spread-search-spreads search) "strike-1")   ; => #(100.0 100.0 105.0)
+(table-column (spread-search-spreads search) "strike-2")   ; => #(110.0 105.0 110.0)
 (table-column (spread-search-spreads search) "ratio")      ; => #(0.6 0.5625001 0.5)
 (table-column (spread-search-spreads search) "cost")       ; => #(5.0 3.1999998 2.0)
 ```
@@ -5349,29 +4720,22 @@ first is the best.
 Gets the stock's calls that expire on `expiration` (a date, or
 `"YYYY-MM-DD"`) from Schwab (`schwab-option-chain`) -- live bids and asks
 while the market is open; it says so, and the quotes are the last close's, if
-it is closed -- and ranks every pair: see `call-spreads-for-chain`. Returns a
-`spread-search`.
+it is closed -- and ranks every pair: `(option-spreads creds symbol 'bull-call
+...)`, with `:min-cost` its `:min-risk`. Returns a `spread-search`.
 
 #### `(call-spreads-for-chain chain expiration expected-price [:prices p :min-open-interest n :min-volume n :min-cost c :underlying u :contract-size n :unit w])`
-The same for a chain you already have: a table as `schwab-option-chain` or
-`tastytrade-option-chain` makes (`:underlying`, `:contract-size`, and `:unit`
-are for a future's options, as in `option-spreads-for-chain`). Returns a
-`spread-search`, whose accessors
-are `spread-search-stock`, `-stock-price`, `-expiration`, `-expected-price`,
-`-prices`, `-contract-size`, `-unit`, and `-spreads`: the table of spreads, a
-row for each pair, the best first, with the columns
-
-| Column | What it holds (prices are for a share) |
-|---|---|
-| `long-symbol`, `short-symbol` | the options bought and sold |
-| `long-strike`, `short-strike` | their strikes |
-| `long-price`, `short-price` | what is paid for the first, and got for the second |
-| `cost` | the net: the most that can be lost |
-| `worth` | what the spread is worth at `expected-price` on the day |
-| `profit` | `worth` less `cost` |
-| `ratio` | `profit` as a share of `cost`: 1.5 is 150% |
-| `breakeven` | the stock's price at which the spread is worth its cost |
-| `max-profit` | the most that can be made: the strikes' difference less `cost` |
+The same for a chain you already have: `(option-spreads-for-chain chain
+'bull-call ...)`. Its table of spreads (`spread-search-spreads`) has a row
+for each pair, the best first, with the columns of every option spread (see
+"Option spreads"): `symbol-1` and `strike-1` are the call bought, `symbol-2`
+and `strike-2` the call sold, `price-1` and `price-2` what is paid for the
+first and got for the second, `cost` the net (for this spread, also
+`max-loss`, the most that can be lost), `worth` and `profit` at
+`expected-price` on the day, `ratio` the profit as a share of the most that
+can be lost, `max-profit` the strikes' difference less the cost, and
+`breakeven-1` the stock's price at which the spread is worth its cost (none,
+for a spread that costs more than the strikes are apart, which can never make
+a profit). Prices are for a share.
 
 The options:
 
@@ -5394,6 +4758,8 @@ The options:
 - A pair that would pay you to buy it, or costs a tenth of a cent or less --
   from quotes that don't agree -- has no most you can lose to divide by, and
   is left out; so is one that costs less than `:min-cost` (0).
+- `:underlying`, `:contract-size`, and `:unit` are for a future's options, as
+  in `option-spreads-for-chain`.
 
 **The ratio favors cheap spreads.** A spread that costs a few cents has a
 huge ratio if the stock gets to the higher strike, but there is almost no
@@ -5404,29 +4770,22 @@ ex-dividend date, if it is in the money). `:min-cost` leaves out the very
 cheap; looking at the next few spreads, not only the first, shows how the
 ratio falls off.
 
-#### `(show-call-spreads search [:count n])`
-Shows the best spread in words -- what to buy and sell, what it costs for a
-share and for a contract of 100, what it makes at the expected price, where it
-breaks even, and the most it can make -- and a table of it and the next
-`:count` (10) best.
-
-#### `(plot-call-spreads search [:rows rows :low l :high h :points n])`
-Charts the profit of one of the spreads -- the best, unless `:rows` (a list of row
-numbers) says -- on the expiration day, against the price the stock might have then. It is
-flat at a loss of the spread's cost with the stock at the lower strike or less, rises
-dollar for dollar between the strikes, and is flat at a gain of the strikes' difference
-less the cost at the higher strike or more; it crosses 0 at the breakeven. It is
-`plot-option-profit`'s chart (see "Option spreads"), whose options these are, of the
-bull call spread. `save-chart` saves it.
-
-#### `(call-spread-order search [:row r :contracts c :price p])`
-An order for one of the spreads, as a hash table in Schwab's form, made by
-`schwab-spread-order`: buy the call with the lower strike, sell the one with
-the higher, `:contracts` (1) of each, with a limit on the net debit of `:price`
--- the spread's `cost`, unless it is given. `:row` picks the spread: 0, the
-best, is the default; 1 the next; and so on. **It sends nothing.** With bids
-and asks, the order at the cost is likely to fill at once: it pays what is
-asked for the call bought, and takes what is bid for the call sold. A lower
+#### `(show-call-spreads search [:count n])`, `(plot-call-spreads search [:rows rows :low l :high h :points n])`, `(call-spread-order search [:row r :contracts c :price p])`
+`show-option-spreads`, `plot-option-profit`, and `option-spread-order` (see
+"Option spreads"), under these names. `show-call-spreads` shows the best
+spread in words -- what to buy and sell, what it costs for a share and for a
+contract of 100, what it makes at the expected price, where it breaks even,
+and the most it can make -- and a table of it and the next `:count` (10)
+best. `plot-call-spreads` charts the profit of a spread on the expiration
+day against the price the stock might have then: flat at a loss of the cost
+with the stock at the lower strike or less, rising dollar for dollar between
+the strikes, and flat at a gain of the strikes' difference less the cost at
+the higher strike or more. `call-spread-order` makes an order for one of the
+spreads, as a hash table in Schwab's form: buy the call with the lower
+strike, sell the one with the higher, `:contracts` (1) of each, with a limit
+on the net debit of `:price` -- the spread's `cost`, unless it is given; `:row`
+picks the spread (0, the best, is the default). **It sends nothing.** With
+bids and asks, the order at the cost is likely to fill at once. A lower
 `:price` may fill at a better price, or not at all.
 
 #### `(show-spread-order order)`
@@ -5917,8 +5276,8 @@ numbers: `(list 0)`, the best, is the default; 1 is the next) says -- as above. 
 several rows, the positions are lines on one chart, with each one's legs in the
 legend, to compare them: the best three bull call spreads, say, whose lines cross
 at the prices where one starts to beat another. The options are those of
-`option-profit-curve`. Returns nothing; the chart goes where any other does: the
-GUI's chart tab, a Jupyter cell, or a summary at the console, which is why a script
+`option-profit-curve`. Returns nothing; the chart goes where any other does: a
+Jupyter cell, or a summary at the console, which is why a script
 follows it with `save-chart`.
 
 ```lisp
@@ -6237,6 +5596,70 @@ the daily returns' covariance times the days in a year (252, unless
 (vector-round (table-column (covariance-matrix both) "A") 4)    ; => #(0.1596 0.0231)
 (vector-round (table-column (correlation-matrix both) "B") 4)   ; => #(0.35 1.0)
 (display-table (correlation-matrix both))
+```
+
+#### `(principal-components table [:count k] [:standardize b] [:rotate "varimax"] [:weights w])`
+The few combinations of a table's columns that explain most of how they vary
+together: principal component analysis. The table has a column of numbers
+for each thing (each stock's returns, say) and a row for each observation
+(each month); its other columns, such as the month, are carried along. The
+first component is the combination of the columns that varies the most, the
+second the one that varies the most of what is left, and so on. The answer
+is a list of four tables, read with `assoc`:
+
+| Table | Columns |
+|---|---|
+| `"variance"` | `component` (1, 2, ...), `variance-share` (the share of all the columns' variation it explains) and `cumulative-share` |
+| `"loadings"` | `column` (each column's name), `pc1` ... (the weights: a component's value in a row is the columns times these; without rotation, their squares add up to 1 for each component) and `explained` (the share of that column's variation the components kept explain together) |
+| `"correlations"` | `column`, then `pc1` ...: the correlation of each column with each component, from -1 to 1, the easiest way to say how closely a column moves with a component. Their squares add up to `explained` |
+| `"scores"` | the other columns, then `pc1` ...: each component's value in each row |
+
+`:count` is how many components to keep (5), and there are never more than
+the rows less 1. With `:standardize #t` (the default) each column is first
+put on the same scale, its standard deviation made 1, so that the components
+explain how the columns move together rather than which columns move most;
+`#f` leaves them as they are. A component's sign is chosen so that its
+loadings add up to more than 0 (the first is then "everything going up").
+Every number must be there. `:weights`, a list of `(name . weight)` with one
+for each column, makes each column count in proportion to its weight (a
+stock's market cap, say): its numbers are multiplied by the square root of
+its weight, so that its variance, which is what the components explain, is in
+proportion. The components are then those that explain the most of the
+weighted variation; the `correlations` and `explained` are still each
+column's own, so a column of weight 0 has them too.
+
+```lisp
+(define moves (make-table "month" #("a" "b" "c" "d")
+                          "x" #(1.0 2.0 3.0 6.0) "y" #(2.0 4.0 6.0 12.0) "z" #(0.0 3.0 -4.0 1.0)))
+(define pca (principal-components moves))
+(vector-round (table-column (cdr (assoc "variance" pca)) "variance-share") 4)   ; => #(0.6667 0.3333 0.0)
+(vector-round (table-column (cdr (assoc "loadings" pca)) "pc1") 4)              ; => #(0.7071 0.7071 0.0)
+```
+
+x and y move together exactly, so they are one component, two thirds of the
+variation; z, unrelated to them, is the other third.
+
+**Rotation.** The first component is the combination that explains the most, the
+second the most of what is left, and so on, and that makes them hard to name: when
+there is a market that everything moves with, the first is "everything", and each
+after it is a contrast ("banks up, software down") that mixes several themes. With
+`:rotate "varimax"` the components kept are turned to explain the same things in a
+way that is easier to name. Picture each column as a point, placed by its
+correlations with the components (with two, a point in a plane). The components are
+the axes. Turning the axes together, at right angles to each other, moves no point,
+so the components still explain the same in all, each column is explained just as
+much, and the components are still unrelated to each other; only the share each one
+explains changes. Varimax turns them until each axis runs through a cluster of
+points, so that each column is near one axis and far from the others: each
+component then goes strongly with a few columns and hardly at all with the rest.
+In numbers, it makes the squared correlations of each component as spread out as
+they can be (the "variance" of them, hence the name). Kaiser's way of doing it,
+used here, takes the components two at a time and turns the pair by the angle a
+formula gives as best, then the next pair, round and round until nothing turns.
+
+```lisp
+(define turned (principal-components moves :count 2 :rotate "varimax"))
+(vector-round (table-column (cdr (assoc "variance" turned)) "cumulative-share") 4)   ; => #(0.6667 1.0)
 ```
 
 #### `(minimum-variance-weights covariance [:long-only #t])`, `(mean-variance-weights expected-returns covariance risk-aversion [:long-only #t])`

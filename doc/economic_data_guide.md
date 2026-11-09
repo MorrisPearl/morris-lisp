@@ -205,11 +205,16 @@ out, as [section 6](#6-putting-sources-together) shows.
 | A company's income statement, balance sheet, or cash flows | `(sec-income-statement creds "AAPL")`, `(sec-balance-sheet creds "AAPL")`, `(sec-cash-flow-statement creds "AAPL")` | SEC |
 | All three statements, laid out for working out margins and returns | `(sec-financials creds "KO")` | SEC |
 | Any other number a company reports | `(sec-concepts creds "AAPL")` to find it, then `sec-facts` | SEC |
+| Any numbers a company reports, a row per quarter or year | `(sec-values creds "NVDA" '("Revenues" "EquitySecuritiesFvNi") :period "quarterly")` | SEC |
+| A company's stakes in other companies (often its customers), the gains on them and its guarantees, beside its revenue | `(vendor-financing creds "NVDA")` | SEC |
+| Business investment in computers (the AI boom), and as a percent of GDP | `(ai-investment-data creds)` | FRED (BEA) |
 | What a company writes in its filings, and how negative or uncertain it sounds | `(sec-filings creds "AAPL")`, `sec-filing-text`, `(filing-tone creds "AAPL" :section "risk-factors")` | SEC; word lists from Loughran and McDonald |
 | Stock, ETF, option, futures, and crypto prices now | `(tastytrade-quotes creds '("SPY" "QQQ"))` | tastytrade |
 | A stock's or ETF's daily prices, for years | `(schwab-price-history creds "AAPL")` | Schwab |
 | What's in your own accounts | `(schwab-positions creds)` | Schwab |
 | What agency MBS and TBAs traded at each day | `(finra-tba-prices creds)`, `(finra-mbs-prices creds)` | FINRA |
+| Ten years of TBA prices, Treasury, SOFR and mortgage rates in one database, kept up to date | `(financial-data-update creds "financial_data.db")` | FINRA, Treasury, FRED, New York Fed |
+| Whether industries separate stocks' returns: a year's return of every stock (price and dividend, weighted by market cap) | `(stock-returns-update creds db)`, `(industry-variation db)` | Schwab |
 | An option chain | `(tastytrade-option-chain creds "SPY")`; `fit-vol-smiles` then finds options priced out of line | tastytrade |
 | A futures curve: oil, gold, the S&P 500, ... | `(tastytrade-futures-curve creds "CL")` | tastytrade |
 | The stock market as a whole | `(fred-table creds "SP500")` (the last 10 years), `(fred-table creds "VIXCLS")` (its volatility) | S&P and Cboe, via FRED |
@@ -309,7 +314,9 @@ each week. Functions: `schwab-positions`, `schwab-accounts`,
 **FINRA**, which oversees brokers and collects every trade in bonds
 through TRACE. It gives what agency mortgage-backed securities traded at
 each day, from the next morning. It needs a free account. Functions:
-`finra-tba-prices`, `finra-mbs-prices`, `finra-arm-prices`, `finra-get`.
+`finra-tba-prices`, `finra-mbs-prices`, `finra-arm-prices`, `finra-get`;
+and `finra-tba-update`, which keeps a SQLite database of the TBA prices
+since 2016 up to date.
 
 **tastytrade**, a brokerage, not a government agency. It gives what
 markets are trading at now: stocks, ETFs, options, futures, and crypto.
@@ -539,7 +546,7 @@ borders drawn over it:
 | `census-shapes`, `plot-map` | Outlines of places, and maps of them | Census | [Maps](lisp_library_reference.md#maps) |
 | `fred-table` | Any FRED series, by date | FRED | [FRED](lisp_library_reference.md#fred-federal-reserve-bank-of-st-louis-data) |
 | `http-get-json`, `http-get-csv`, `http-get-text` | Anything at a web address | any website | [Downloading data from the web](lisp_library_reference.md#downloading-data-from-the-web) |
-| `sec-income-statement`, `sec-balance-sheet`, `sec-cash-flow-statement`, `sec-financials`, `sec-facts`, `sec-concepts`, `sec-company` | Companies' financial statements | SEC | [SEC financial statements](lisp_library_reference.md#sec-financial-statements) |
+| `sec-income-statement`, `sec-balance-sheet`, `sec-cash-flow-statement`, `sec-financials`, `sec-values`, `sec-facts`, `sec-concepts`, `sec-company` | Companies' financial statements | SEC | [SEC financial statements](lisp_library_reference.md#sec-financial-statements) |
 | `sec-filings`, `sec-filing-text`, `text-tone`, `filing-tone` | What companies write in their filings, and its tone | SEC | [SEC filings](lisp_library_reference.md#sec-filings-what-companies-write) |
 | `fdic-find-bank`, `fdic-balance-sheet`, `fdic-income-statement`, `fdic-ratios`, `fdic-financials`, `fdic-get`, `fdic-fields` | Banks' financial reports | FDIC | [FDIC bank data](lisp_library_reference.md#fdic-bank-data) |
 | `tastytrade-quotes`, `tastytrade-option-chain`, `tastytrade-futures-curve`, `tastytrade-get`, `sofr-calibration-data` | Market prices, option chains, futures curves | tastytrade | [tastytrade](lisp_library_reference.md#tastytrade-real-broker-data) |

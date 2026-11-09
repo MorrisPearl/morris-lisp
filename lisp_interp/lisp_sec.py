@@ -16,6 +16,7 @@ that file and put the facts into tables:
   (sec-balance-sheet creds ticker [...])
   (sec-cash-flow-statement creds ticker [...])
   (sec-financials creds ticker [:period :count])   all three, a row per period
+  (sec-values creds ticker concepts [:period :count])   any concepts, a row per period
 
 NORMALIZED: companies don't all tag a number the same way. Revenue is
 Revenues for some, RevenueFromContractWithCustomerExcludingAssessedTax for
@@ -48,7 +49,7 @@ import json
 import time
 
 from lisp_core import LispDate, LispError, LispHashTable, LispString, Pair, keyword_options, list_to_pairs
-from lisp_data_common import credential
+from lisp_data_common import credential, text_list
 from lisp_tables import column_vector, make_table_value
 import lisp_http
 
@@ -520,6 +521,33 @@ def sec_financials(credentials_path, company, *options):
     return make_table_value(columns)
 
 
+def sec_values(credentials_path, company, concepts, *options):
+    """(sec-values creds ticker concepts [:period "annual" :count 5]) --
+    any concepts, laid out as sec-financials lays out the statements: a row
+    per period (oldest first) and a column for each concept, named as the
+    concept is. A concept with a value at a moment (a balance, such as
+    "Assets") has its value at the end of the period; one with a value over
+    a time (a flow, such as "Revenues") has its value for the period, worked
+    out for a fourth quarter from the year and the nine months before, as
+    for the statements. A period, or a concept, the company has no value for
+    is missing (NaN). concepts is a list of names, as sec-concepts gives
+    them."""
+    who = "sec-values"
+    options = keyword_options(options, ["period", "count"], who)
+    names = text_list(concepts, who, "concepts")
+    facts = company_facts(credentials_path, company, who)
+    periods = list(reversed(chosen_periods(facts, options, who)))
+    columns = [("period-end", column_vector([LispDate(p.end.year, p.end.month, p.end.day) for p in periods])),
+               ("fiscal-year", column_vector([p.fiscal_year for p in periods])),
+               ("fiscal-period", column_vector([LispString(p.fiscal_period or "") for p in periods]))]
+    for name in names:
+        concept = ConceptFacts(facts, name)
+        is_balance = any(start is None for found in concept.by_end.values() for start, _ in found)
+        values = [concept.balance_at(p.end) if is_balance else flow_value(concept, p) for p in periods]
+        columns.append((name, column_vector([float("nan") if v is None else v for v in values])))
+    return make_table_value(columns)
+
+
 def sec_facts(credentials_path, company, concept):
     """(sec-facts creds ticker concept) -- every value the company has
     reported for one concept, such as "NetIncomeLoss" (us-gaap) or
@@ -584,4 +612,5 @@ BUILTINS = {
     "sec-balance-sheet": sec_balance_sheet,
     "sec-cash-flow-statement": sec_cash_flow_statement,
     "sec-financials": sec_financials,
+    "sec-values": sec_values,
 }

@@ -48,7 +48,7 @@
 (define model (linear-regression x y))
 (define x-ends #(1 8))
 (plot-chart (list (list "data" x y :symbol #t)
-                  (list "fitted line" x-ends (vector-map (lambda (v) (model-predict model v)) x-ends)))
+                  (list "fitted line" x-ends (model-predict model x-ends)))
             :x-label "x" :y-label "y" :title "Points and a fitted line")
 
 ; --- 5. Two scales -----------------------------------------------------------------

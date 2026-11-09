@@ -2,7 +2,9 @@
 lisp_interpreter_reference.md (the language), lisp_library_reference.md
 (the library), lisp_example_programs.md (the example programs),
 lisp_cmo_manual.md (the CMO model), lisp_forecasting_manual.md
-(forecasting questions), and lisp_paths_manual.md (yield curves and paths) -- from its
+(forecasting questions), lisp_paths_manual.md (yield curves and paths), and
+lisp_macro_models_manual.md (macroeconomic models), and
+lisp_regression_manual.md (regression) -- from its
 headings: every ## and ### heading, plus each form's short #### heading in
 "Special forms and standard macros". The links are to GitHub's anchors for
 the headings. Run it after adding or renaming a section:
@@ -17,7 +19,9 @@ HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../doc")
 
 MANUALS = [os.path.join(HERE, "lisp_interpreter_reference.md"), os.path.join(HERE, "lisp_library_reference.md"),
            os.path.join(HERE, "lisp_example_programs.md"), os.path.join(HERE, "lisp_cmo_manual.md"),
-           os.path.join(HERE, "lisp_forecasting_manual.md"), os.path.join(HERE, "lisp_paths_manual.md")]
+           os.path.join(HERE, "lisp_forecasting_manual.md"), os.path.join(HERE, "lisp_paths_manual.md"),
+           os.path.join(HERE, "lisp_macro_models_manual.md"),
+           os.path.join(HERE, "lisp_regression_manual.md")]
 
 
 def anchor_of(title):

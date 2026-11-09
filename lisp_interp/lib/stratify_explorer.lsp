@@ -526,7 +526,7 @@ a cell shows it. stratify-explorer-plan reads what is chosen."
                  (widget-row (button "Make the tables"
                                      (lambda () (stratify-explorer--make-tables state (stratify-explorer--state-columns state)))
                                      "primary")
-                             (button "Show the code" (lambda () (display (stratify-explorer-code-of state))) ""))
+                             (button "Show the code" (lambda () (display (stratify-explorer--code-of state))) ""))
                  (widget-row (stratify-explorer--state-export-name state)
                              (button "Write CSV files" (lambda () (stratify-explorer--write-csv-files state)) "")
                              (button "Write a Google Sheet" (lambda () (stratify-explorer--write-google-sheet state)) "")
@@ -714,7 +714,7 @@ is ticked), and its chart (if charts is ticked)."
       (newline))
     tables))
 
-(define (stratify-explorer-code-of state)
+(define (stratify-explorer--code-of state)
   "The code that makes the tables the form says, as text: the rows to use, the stratify-all call, and display-table for
 each table (and its chart, if charts is ticked)."
   (destructuring-bind (bys summaries formats) (stratify-explorer--plan-of state (stratify-explorer--state-columns state))
@@ -741,7 +741,7 @@ each table (and its chart, if charts is ticked)."
 (define (stratify-explorer-code explorer)
   "The code that makes the tables the form says, as text: the rows to use, a stratify-all call, and display-table for
 each table."
-  (stratify-explorer-code-of (stratify-explorer--state-of explorer "stratify-explorer-code")))
+  (stratify-explorer--code-of (stratify-explorer--state-of explorer "stratify-explorer-code")))
 
 ; ---------------------------------------------------------------------------
 ; 7. Writing the tables out

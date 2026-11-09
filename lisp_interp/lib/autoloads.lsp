@@ -3,9 +3,9 @@
 ; The functions of the libraries that come with the interpreter (lib/), so
 ; that they can be called without loading the library first: each is a
 ; lazy-load (see macros_init.lsp), and the first call of any of a
-; library's functions loads it. init.lsp loads this file:
-;
-;   (load "autoloads.lsp")
+; library's functions loads it. Every environment that a person uses (a
+; notebook's, the console's, a script's) loads this file before the init
+; file: see load_init_file in lisp_builtins.py.
 ;
 ; Only functions can be lazy-loaded -- not a library's macros or variables
 ; -- so a library is still loaded by hand for those: column_engine.lsp (its
@@ -15,6 +15,11 @@
 ; library gets a new function that should be called from outside it, add
 ; it here; the tests check that each library defines the names listed for
 ; it.
+;
+; A name with -- in it, such as deal--add-node!, is a library's own helper:
+; not one to call yourself (Tab and apropos leave such names out). Some are
+; listed here because another library calls them, and that library may be
+; loaded first.
 
 ; Implied volatility smiles (see "Implied volatility smiles" in lisp_library_reference.md)
 (lazy-load "vol_smile.lsp"
@@ -31,7 +36,7 @@
   option-values-options option-values-symbol option-values-price option-values-volatility
   option-values-rate option-values-paths)
 
-; Parsers for small languages (see "A parser framework" in lisp_interpreter_reference.md)
+; Parsers for small languages (see "A parser framework" in lisp_library_reference.md)
 (lazy-load "parser.lsp"
   make-grammar grammar-parse grammar-tokens node-builder)
 
@@ -96,19 +101,19 @@
 
 ; Prepayment speeds that change with time, and the cash flows of pieces of collateral (see "The collateral" in lisp_cmo_manual.md)
 (lazy-load "prepayment_speed.lsp"
-  collateral-piece-check collateral-pieces-in-use copy-speed-curve make-speed-curve pool-coupons prepayment-speed
+  prepayment-speed--collateral-piece-check prepayment-speed--collateral-pieces-in-use copy-speed-curve make-speed-curve pool-coupons prepayment-speed
   project-pieces project-pool speed-curve-pieces speed-curve-pieces-set! speed-curve-type speed-curve-type-set!
-  speed-curve? speed-in-month speed-piece-of speed-smms speed-values describe-speed collateral-piece-age
+  speed-curve? prepayment-speed--speed-in-month prepayment-speed--speed-piece-of prepayment-speed--speed-smms speed-values describe-speed collateral-piece-age
   collateral-piece-age-set! collateral-piece-balance collateral-piece-balance-set! collateral-piece-coupon
   collateral-piece-coupon-set! collateral-piece-of collateral-piece-wac collateral-piece-wac-set! collateral-piece-wam
   collateral-piece-wam-set! collateral-piece? copy-collateral-piece make-collateral-piece project-pieces-with
-  smms-from-cprs collateral-characteristics-check collateral-piece-burnout collateral-piece-burnout-set!
+  smms-from-cprs prepayment-speed--collateral-characteristics-check collateral-piece-burnout collateral-piece-burnout-set!
   collateral-piece-cash-out-share collateral-piece-cash-out-share-set! collateral-piece-credit-score
   collateral-piece-credit-score-set! collateral-piece-investor-share collateral-piece-investor-share-set!
   collateral-piece-loan-size collateral-piece-loan-size-set! collateral-piece-ltv collateral-piece-ltv-set!
   collateral-piece-refinance-share collateral-piece-refinance-share-set! collateral-piece-sato
   collateral-piece-sato-set! collateral-piece-second-home-share collateral-piece-second-home-share-set!
-  missing-number? model-speed? collateral-piece-dti collateral-piece-dti-set! collateral-piece-mi-percent
+  prepayment-speed--missing-number? prepayment-speed--model-speed? collateral-piece-dti collateral-piece-dti-set! collateral-piece-mi-percent
   collateral-piece-mi-percent-set! collateral-piece-one-borrower-share collateral-piece-one-borrower-share-set!
   annual-rate monthly-rate psa-cpr)
 
@@ -119,52 +124,52 @@
 
 ; What the models of Freddie Mac's loans share: reading the database that load_freddie_data/ makes, fitting, and trying a model month by month
 (lazy-load "freddie_loans.lsp"
-  copy-loan-data copy-predictor data-knots fit-rate-model knots-within loan-data-from loan-data-outcomes
+  copy-loan-data copy-predictor freddie-loans--data-knots freddie-loans--fit-rate-model knots-within freddie-loans--loan-data-from loan-data-outcomes
   loan-data-outcomes-set! loan-data-periods loan-data-periods-set! loan-data-predictors loan-data-predictors-set!
-  loan-data-weights loan-data-weights-set! loan-data? make-loan-data make-predictor model-curve outcomes-by-period
-  plot-rate-by-month predicted-outcomes predictor-group-sql predictor-group-sql-set! predictor-knots
+  loan-data-weights loan-data-weights-set! loan-data? make-loan-data make-predictor model-curve freddie-loans--outcomes-by-period
+  plot-rate-by-month freddie-loans--predicted-outcomes predictor-group-sql predictor-group-sql-set! predictor-knots
   predictor-knots-set! predictor-name predictor-name-set! predictor-sql predictor-sql-set! predictor? rate-by-month
-  rate-misses model-predictions calendar-months piece-on-path piece-value scheduled-balance-left)
+  rate-misses freddie-loans--calendar-months piece-on-path freddie-loans--piece-value freddie-loans--scheduled-balance-left)
 
 ; A default model and a severity model fitted to Freddie Mac's loans, from the same database
 (lazy-load "freddie_default.lsp"
   default-ltv-curves default-outcomes fit-default-model fit-severity-model freddie-default-months freddie-liquidations
-  plot-default-ltv-curves severity-by-year severity-ltv-curve default-model-columns freddie-default-fit
-  freddie-default-model freddie-severity-fit freddie-severity-model save-freddie-default-fits severity-model-columns)
+  plot-default-ltv-curves severity-by-year severity-ltv-curve default-model-columns freddie-default--fit
+  freddie-default-model freddie-default--severity-fit freddie-severity-model save-freddie-default-fits severity-model-columns)
 
 ; Structured deals as a tree: a pool, divided by splits into tranches (see lisp_cmo_manual.md)
 (lazy-load "deal.lsp"
   constant-coupon deal-sequential! deal-pro-rata! deal-pac! deal-floater-inverse! deal-premium-discount! deal-io-po!
-  deal-add-tranche! deal-add-split! deal-add-node! deal-forget-node! get-node deal-run! deal-check
+  deal-add-tranche! deal-add-split! deal--add-node! deal--forget-node! get-node deal-run! deal-check
   deal-principal-table deal-interest-table deal-accrual-table deal-loss-table deal-shortfall-table deal-coupon-table
-  deal-balance-table deal-leaves deal-parent-of deal-po? deal-tree-names deal-index-at node-owed node-remaining
-  pay-child! write-down-child! settle-interest! node-interest-owed node-coupon-rate node-interest-due check-all-paid!
-  check-all-written-down! walk-principal! walk-interest! walk-losses! deal-principal-at deal-size deal-children-names
-  check-loss-rule check-parent-not-z child-tranche collateral-accrual collateral-accrual-set! collateral-balance
+  deal-balance-table deal-leaves deal--parent-of deal--po? deal--tree-names deal--index-at node-owed deal--node-remaining
+  pay-child! write-down-child! settle-interest! node-interest-owed deal--node-coupon-rate deal--node-interest-due deal--check-all-paid!
+  deal--check-all-written-down! deal--walk-principal! deal--walk-interest! deal--walk-losses! deal-principal-at deal-size deal--children-names
+  deal--check-loss-rule deal--check-parent-not-z deal--child-tranche collateral-accrual collateral-accrual-set! collateral-balance
   collateral-balance-set! collateral-coupon collateral-coupon-set! collateral-follows collateral-follows-set!
   collateral-interest collateral-interest-set! collateral-loss collateral-loss-set! collateral-name
   collateral-name-set! collateral-notional-flag collateral-notional-flag-set! collateral-principal
   collateral-principal-set! collateral-share collateral-share-set! collateral-shortfall collateral-shortfall-set!
   collateral-split collateral-split-set! collateral-z-flag collateral-z-flag-set! collateral? copy-collateral
   copy-deal copy-floater-inverse-split copy-io-po-split copy-node copy-pac-split copy-premium-discount-split
-  copy-pro-rata-split copy-sequential-split copy-split copy-tranche deal-check-new-children deal-check-total
+  copy-pro-rata-split copy-sequential-split copy-split copy-tranche deal--check-new-children deal--check-total
   deal-index deal-index-set! deal-name deal-name-set! deal-names deal-names-set! deal-nodes deal-nodes-set!
-  deal-periods deal-periods-set! deal-run-months! deal-set-index! deal-shortfalls deal-shortfalls-set! deal-table-of
-  deal? floater-inverse-sizes floater-inverse-split-cap floater-inverse-split-cap-set! floater-inverse-split-children
+  deal-periods deal-periods-set! deal--run-months! deal--set-index! deal-shortfalls deal-shortfalls-set! deal--table-of
+  deal? deal--floater-inverse-sizes floater-inverse-split-cap floater-inverse-split-cap-set! floater-inverse-split-children
   floater-inverse-split-children-set! floater-inverse-split-constant floater-inverse-split-constant-set!
   floater-inverse-split-index-name floater-inverse-split-index-name-set! floater-inverse-split-leverage
   floater-inverse-split-leverage-set! floater-inverse-split-loss-rule floater-inverse-split-loss-rule-set!
-  floater-inverse-split-margin floater-inverse-split-margin-set! floater-inverse-split? index-rate interest-carried
+  floater-inverse-split-margin floater-inverse-split-margin-set! floater-inverse-split? deal--index-rate deal--interest-carried
   io-po-split-children io-po-split-children-set! io-po-split-io-coupon io-po-split-io-coupon-set!
   io-po-split-loss-rule io-po-split-loss-rule-set! io-po-split? make-collateral make-deal make-floater-inverse-split
   make-io-po-split make-node make-pac-split make-premium-discount-split make-pro-rata-split make-sequential-split
   make-split make-tranche node-accrual node-accrual-set! node-balance node-balance-set! node-coupon node-coupon-set!
   node-follows node-follows-set! node-interest node-interest-set! node-loss node-loss-set! node-name node-name-set!
   node-notional-flag node-notional-flag-set! node-principal node-principal-set! node-share node-share-set!
-  node-shortfall node-shortfall-set! node-split node-split-set! node-z-flag node-z-flag-set! node? pac-check-arguments
+  node-shortfall node-shortfall-set! node-split node-split-set! node-z-flag node-z-flag-set! node? deal--pac-check-arguments
   pac-split-children pac-split-children-set! pac-split-high-psa pac-split-high-psa-set! pac-split-loss-rule
   pac-split-loss-rule-set! pac-split-low-psa pac-split-low-psa-set! pac-split-schedule pac-split-schedule-set!
-  pac-split? parent-coupon-rate premium-discount-sizes premium-discount-split-children
+  pac-split? deal--parent-coupon-rate deal--premium-discount-sizes premium-discount-split-children
   premium-discount-split-children-set! premium-discount-split-discount-coupon
   premium-discount-split-discount-coupon-set! premium-discount-split-loss-rule premium-discount-split-loss-rule-set!
   premium-discount-split-premium-coupon premium-discount-split-premium-coupon-set! premium-discount-split?
@@ -176,27 +181,27 @@
   tranche-interest tranche-interest-set! tranche-loss tranche-loss-set! tranche-name tranche-name-set!
   tranche-notional-flag tranche-notional-flag-set! tranche-principal tranche-principal-set! tranche-share
   tranche-share-set! tranche-shortfall tranche-shortfall-set! tranche-split tranche-split-set! tranche-z-flag
-  tranche-z-flag-set! tranche? copy-split-plan deal-add-plan! deal-outline deal-outline-below deal-outline-entries
+  tranche-z-flag-set! tranche? copy-split-plan deal-add-plan! deal-outline deal--outline-below deal-outline-entries
   floater-inverse-plan io-po-plan make-split-plan pac-plan premium-discount-plan pro-rata-plan sequential-plan
   split-plan-sizes split-plan-split split-plan-split-set! split-plan-tranches split-plan-tranches-set! split-plan?
-  deal-ancestors deal-delete-split! deal-install-plan! deal-replace-split! deal-resize-below! deal-size-split!
-  deal-trial-copy deal-trial-of-plan deal-update-tranche! average-life average-life-plan average-life-sizes
+  deal--ancestors deal-delete-split! deal--install-plan! deal-replace-split! deal--resize-below! deal--size-split!
+  deal--trial-copy deal-trial-of-plan deal--update-tranche! average-life deal--average-life-plan deal--average-life-sizes
   average-life-split-accretion-to average-life-split-accretion-to-set! average-life-split-children
   average-life-split-children-set! average-life-split-lives average-life-split-lives-set! average-life-split-loss-rule
-  average-life-split-loss-rule-set! average-life-split? copy-average-life-split coupon-at coupon-less
+  average-life-split-loss-rule-set! average-life-split? copy-average-life-split coupon-at deal--coupon-less
   deal-average-life deal-average-life! deal-first-payment deal-first-payment-set! deal-payment-date deal-payment-dates
-  deal-principal-now deal-run-copy make-average-life-split range-life solve-for-size collateral-table
-  collateral-table-pieces deal-add-view! deal-assign-all-coupons! deal-assign-coupons-below! deal-change!
+  deal-principal-now deal--run-copy make-average-life-split deal--range-life deal--solve-for-size collateral-table
+  deal--collateral-table-pieces deal-add-view! deal--assign-all-coupons! deal--assign-coupons-below! deal--change!
   deal-changed! deal-closing-date deal-closing-date-set! deal-collateral deal-collateral-set! deal-flows-table
-  deal-generate-collateral! deal-install-collateral! deal-pad-flows deal-pricing-flows deal-pricing-speed
-  deal-pricing-speed-set! deal-put-collateral-flows! deal-ran deal-ran-set! deal-set-closing-date!
-  deal-set-collateral! deal-set-first-payment! deal-set-periods! deal-set-pricing-speed! deal-summary-months
-  deal-views deal-views-set! new-deal padded pieces-coupon deal-check-collateral deal-in-tree? deal-pieces deal-root
+  deal--generate-collateral! deal--install-collateral! deal--pad-flows deal--pricing-flows deal-pricing-speed
+  deal-pricing-speed-set! deal--put-collateral-flows! deal-ran deal-ran-set! deal-set-closing-date!
+  deal-set-collateral! deal-set-first-payment! deal--set-periods! deal-set-pricing-speed! deal-summary-months
+  deal-views deal-views-set! new-deal padded deal--pieces-coupon deal--check-collateral deal-in-tree? deal-pieces deal-root
   deal-root-set! collateral-average-life collateral-average-life-set! collateral-delay collateral-delay-set!
   collateral-duration collateral-duration-set! collateral-dv01 collateral-dv01-set! collateral-money
   collateral-money-set! collateral-price collateral-price-set! collateral-priced-by collateral-priced-by-set!
   collateral-spread collateral-spread-set! collateral-yield collateral-yield-set! deal-priced-run deal-priced-run-set!
-  deal-refresh-views! deal-treasury-curve deal-treasury-curve-set! node-average-life node-average-life-set! node-delay
+  deal--refresh-views! deal-treasury-curve deal-treasury-curve-set! node-average-life node-average-life-set! node-delay
   node-delay-set! node-duration node-duration-set! node-dv01 node-dv01-set! node-money node-money-set! node-price
   node-price-set! node-priced-by node-priced-by-set! node-spread node-spread-set! node-yield node-yield-set!
   tranche-average-life tranche-average-life-set! tranche-delay tranche-delay-set! tranche-duration
@@ -206,36 +211,36 @@
   collateral-effective-duration-set! collateral-oas collateral-oas-set! deal-index-function deal-index-function-set!
   deal-path-sets deal-path-sets-set! deal-prepayment-model deal-prepayment-model-set! deal-rate-model
   deal-rate-model-set! node-effective-duration node-effective-duration-set! node-oas node-oas-set!
-  tranche-effective-duration tranche-effective-duration-set! tranche-oas tranche-oas-set! deal-change-pricing!
+  tranche-effective-duration tranche-effective-duration-set! tranche-oas tranche-oas-set! deal--change-pricing!
   deal-home-price-growth deal-home-price-growth-set! deal-mortgage-spread deal-mortgage-spread-set!
-  deal-project-pieces deal-set-home-price-growth! deal-set-mortgage-spread! deal-defaults deal-defaults-set!
-  deal-liquidation-lag deal-liquidation-lag-set! deal-looks-at-rates? deal-set-defaults! deal-set-liquidation-lag!
+  deal--project-pieces deal-set-home-price-growth! deal-set-mortgage-spread! deal-defaults deal-defaults-set!
+  deal-liquidation-lag deal-liquidation-lag-set! deal--looks-at-rates? deal-set-defaults! deal-set-liquidation-lag!
   collateral-effective-convexity collateral-effective-convexity-set! node-effective-convexity
   node-effective-convexity-set! tranche-effective-convexity tranche-effective-convexity-set!)
 
 ; The OAS and the effective duration of the tranches of a deal, on paths of rates (see "Option-adjusted spread" in lisp_cmo_manual.md)
 (lazy-load "deal_paths.lsp"
-  copy-path-run copy-path-sets copy-rate-model copy-rate-path deal-forward-curve deal-index-of-short-rates
-  deal-prepayment-model-in-use deal-rate-model-in-use make-path-run make-path-sets make-rate-model make-rate-path
-  path-collateral-flows path-run-flows path-run-flows-set! path-run-money path-run-rates path-run-rates-set! path-run?
-  path-sets-base path-sets-base-set! path-sets-cache path-sets-cache-set! path-sets-cached path-sets-down
-  path-sets-down-set! path-sets-effective-duration path-sets-oas path-sets-paths path-sets-paths-set! path-sets-seed
+  copy-path-run copy-path-sets copy-rate-model copy-rate-path deal-forward-curve deal-paths--index-of-short-rates
+  deal-paths--prepayment-model-in-use deal-paths--rate-model-in-use make-path-run make-path-sets make-rate-model make-rate-path
+  deal-paths--path-collateral-flows path-run-flows path-run-flows-set! deal-paths--path-run-money path-run-rates path-run-rates-set! path-run?
+  path-sets-base path-sets-base-set! path-sets-cache path-sets-cache-set! deal-paths--path-sets-cached path-sets-down
+  path-sets-down-set! deal-paths--path-sets-effective-duration deal-paths--path-sets-oas path-sets-paths path-sets-paths-set! path-sets-seed
   path-sets-seed-set! path-sets-shift path-sets-shift-set! path-sets-up path-sets-up-set! path-sets?
-  path-tranche-flows rate-model-a rate-model-a-set! rate-model-b rate-model-b-set! rate-model-sigma1
+  deal-paths--path-tranche-flows rate-model-a rate-model-a-set! rate-model-b rate-model-b-set! rate-model-sigma1
   rate-model-sigma1-set! rate-model-sigma2 rate-model-sigma2-set! rate-model? rate-path-long-yields
-  rate-path-long-yields-set! rate-path-short-rates rate-path-short-rates-set! rate-path? run-path-set
-  static-prepayment-model deal-base-prepayment-model deal-forward-path model-at-speed model-speed-smms
-  rate-path-first-payment rate-path-first-payment-set! deal-defaults-of deal-piece-defaults
-  path-sets-effective-convexity deal-zero-curve effective-convexity effective-duration path-sets-moneys)
+  rate-path-long-yields-set! rate-path-short-rates rate-path-short-rates-set! rate-path? deal-paths--run-path-set
+  static-prepayment-model deal-paths--base-prepayment-model deal-forward-path deal-paths--model-at-speed model-speed-smms
+  rate-path-first-payment rate-path-first-payment-set! deal-paths--defaults-of deal-piece-defaults
+  deal-paths--path-sets-effective-convexity deal-paths--zero-curve effective-convexity effective-duration deal-paths--path-sets-moneys)
 
 ; What a price says about a tranche of a deal: yield, spread, duration, dv01, money (see lisp_cmo_manual.md)
 (lazy-load "deal_pricing.lsp"
-  accrual-end accrued-interest analytics-assign! analyze-tranche check-priceable days-360 deal-clear-price!
-  deal-floating-without-index deal-price-tranche! deal-pricing-run deal-pricing-table deal-set-delay! deal-set-price!
-  deal-set-spread! deal-set-treasury-curve! deal-set-yield! deal-settlement deal-update-analytics!
-  money-left-for money-of-children monthly-factor months-from-settlement node-floats? price-for-money priced-by-value
-  priced-money tranche-cash-flows treasury-points treasury-yield yield-of-money deal-clear-treasury-curve!
-  deal-track-prices! deal-forget-paths! deal-run-paths! deal-set-index-function! deal-set-oas!
+  deal-pricing--accrual-end accrued-interest deal-pricing--analytics-assign! deal-pricing--analyze-tranche deal-pricing--check-priceable days-360 deal-clear-price!
+  deal-pricing--floating-without-index deal-pricing--price-tranche! deal-pricing--run deal-pricing-table deal-set-delay! deal-set-price!
+  deal-set-spread! deal-set-treasury-curve! deal-set-yield! deal-pricing--settlement deal-update-analytics!
+  deal-pricing--money-left-for deal-pricing--money-of-children deal-pricing--monthly-factor deal-pricing--months-from-settlement deal-pricing--node-floats? deal-pricing--price-for-money deal-pricing--priced-by-value
+  deal-pricing--priced-money deal-pricing--tranche-cash-flows deal-pricing--treasury-points treasury-yield deal-pricing--yield-of-money deal-pricing--clear-treasury-curve!
+  deal-pricing--track-prices! deal-forget-paths! deal-run-paths! deal-set-index-function! deal-set-oas!
   deal-set-prepayment-model! deal-set-rate-model! copy-tranche-analytics make-tranche-analytics
   tranche-analytics-average-life tranche-analytics-average-life-set! tranche-analytics-duration
   tranche-analytics-duration-set! tranche-analytics-dv01 tranche-analytics-dv01-set!
@@ -247,48 +252,48 @@
 
 ; Hedging a tranche: the Treasuries' effective durations and convexities, and the pair of them and the collateral that hedges it (see lisp_cmo_manual.md)
 (lazy-load "deal_hedge.lsp"
-  deal-hedge deal-hedge-pairs deal-shift hedge-instruments hedge-of-pair treasury-cash-flows treasury-measures
-  treasury-value copy-hedge-instrument deal-treasuries hedge-instrument-convexity hedge-instrument-convexity-set!
+  deal-hedge deal-hedge-pairs deal-hedge--shift deal-hedge--hedge-instruments deal-hedge--hedge-of-pair deal-hedge--treasury-cash-flows treasury-measures
+  deal-hedge--treasury-value copy-hedge-instrument deal-hedge--treasuries hedge-instrument-convexity hedge-instrument-convexity-set!
   hedge-instrument-duration hedge-instrument-duration-set! hedge-instrument-name hedge-instrument-name-set!
-  hedge-instrument-price hedge-instrument-price-set! hedge-instrument? make-hedge-instrument node-instrument pairs-of
-  priced-on-paths? tranche-to-hedge)
+  hedge-instrument-price hedge-instrument-price-set! hedge-instrument? make-hedge-instrument deal-hedge--node-instrument deal-hedge--pairs-of
+  deal-hedge--priced-on-paths? deal-hedge--tranche-to-hedge)
 
 ; Building a deal by clicking in a notebook (see "Building a deal by clicking" in lisp_cmo_manual.md)
 (lazy-load "deal_builder.lsp"
-  copy-deal-gui copy-split-form deal-builder deal-gui-choose! deal-gui-chosen deal-gui-chosen-set! deal-gui-deal
+  copy-deal-gui copy-split-form deal-builder deal-gui--choose! deal-gui-chosen deal-gui-chosen-set! deal-gui-deal
   deal-gui-deal-set! deal-gui-forms deal-gui-forms-set! deal-gui-grid deal-gui-grid-set! deal-gui-messages
-  deal-gui-messages-set! deal-gui-names deal-gui-names-set! deal-gui-panel deal-gui-panel-set! deal-gui-parent
-  deal-gui-plan deal-gui-refresh! deal-gui-say deal-gui-show-sizes! deal-gui? form-answer form-children
-  form-coupon-percent form-line form-losses form-name form-number form-optional-name form-percent-to-decimal
+  deal-gui-messages-set! deal-gui-names deal-gui-names-set! deal-gui-panel deal-gui-panel-set! deal-gui--parent
+  deal-gui--plan deal-gui--refresh! deal-gui--say deal-gui--show-sizes! deal-gui? deal-builder--form-answer deal-builder--form-children
+  deal-builder--form-coupon-percent deal-builder--form-line deal-builder--form-losses deal-builder--form-name deal-builder--form-number deal-builder--form-optional-name deal-builder--form-percent-to-decimal
   make-deal-gui make-split-form split-form-defaults split-form-defaults-set! split-form-fields split-form-fields-set!
   split-form-help split-form-help-set! split-form-plan split-form-plan-set! split-form-title split-form-title-set!
-  split-form? standard-split-forms deal-gui-apply! deal-gui-ask-whether-to-delete! deal-gui-button
+  split-form? standard-split-forms deal-gui--apply! deal-gui--ask-whether-to-delete! deal-gui--button
   deal-gui-cancel-button deal-gui-cancel-button-set! deal-gui-confirm-button deal-gui-confirm-button-set!
-  deal-gui-delete! deal-gui-delete-button deal-gui-delete-button-set! deal-gui-delete-row deal-gui-delete-row-set!
-  deal-gui-form-for deal-gui-keep! deal-gui-offer-to-change! deal-gui-offer-to-divide! deal-gui-put-away!
-  deal-gui-show-delete! form-children-text form-decimal-to-percent show-plan-effect split-form-describe
-  split-form-describe-set! split-form-label split-form-label-set! without-traceback average-lives-of form-lives
-  form-lives-text bonds deal-gui-flows deal-gui-flows-set! deal-gui-show-flows! deal-gui-table show-node-flows
-  deal-gui-type-number deal-gui-typed! deal-gui-update-prices! priced-column-texts balance-charts)
+  deal-gui--delete! deal-gui-delete-button deal-gui-delete-button-set! deal-gui-delete-row deal-gui-delete-row-set!
+  deal-gui--form-for deal-gui--keep! deal-gui--offer-to-change! deal-gui--offer-to-divide! deal-gui--put-away!
+  deal-gui--show-delete! deal-builder--form-children-text deal-builder--form-decimal-to-percent deal-builder--show-plan-effect split-form-describe
+  split-form-describe-set! split-form-label split-form-label-set! deal-builder--without-traceback deal-builder--average-lives-of deal-builder--form-lives
+  deal-builder--form-lives-text bonds deal-gui-flows deal-gui-flows-set! deal-gui--show-flows! deal-gui--table deal-builder--show-node-flows
+  deal-gui--type-number deal-gui--typed! deal-gui--update-prices! deal-builder--priced-column-texts deal-builder--balance-charts)
 
 ; Views of a deal in a notebook: its collateral, and its dates and pricing speed (see lisp_cmo_manual.md)
 (lazy-load "deal_views.lsp"
   collateral collateral-gui-deal collateral-gui-deal-set! collateral-gui-grid collateral-gui-grid-set!
   collateral-gui-messages collateral-gui-messages-set! collateral-gui-page collateral-gui-page-set!
-  collateral-gui-pieces collateral-gui-rows collateral-gui-rows-set! collateral-gui-show collateral-gui-table
-  collateral-gui-update collateral-gui? copy-collateral-gui copy-info-gui date-from-text date-to-text
-  grid-column-widths info info-gui-closing info-gui-closing-set! info-gui-deal info-gui-deal-set!
+  collateral-gui--pieces collateral-gui-rows collateral-gui-rows-set! collateral-gui--show collateral-gui--table
+  collateral-gui--update collateral-gui? copy-collateral-gui copy-info-gui deal-views--date-from-text deal-views--date-to-text
+  deal-views--grid-column-widths info info-gui-closing info-gui-closing-set! info-gui-deal info-gui-deal-set!
   info-gui-first-payment info-gui-first-payment-set! info-gui-messages info-gui-messages-set! info-gui-name
-  info-gui-name-set! info-gui-show info-gui-speed-grid info-gui-speed-grid-set! info-gui-speed-type
-  info-gui-speed-type-set! info-gui-update info-gui? info-speed-from-grid info-speed-table make-collateral-gui
-  make-info-gui show-collateral-flows info-curve-from-grid info-curve-table info-gui-curve-grid
+  info-gui-name-set! info-gui--show info-gui-speed-grid info-gui-speed-grid-set! info-gui-speed-type
+  info-gui-speed-type-set! info-gui--update info-gui? deal-views--info-speed-from-grid deal-views--info-speed-table make-collateral-gui
+  make-info-gui deal-views--show-collateral-flows deal-views--info-curve-from-grid deal-views--info-curve-table info-gui-curve-grid
   info-gui-curve-grid-set! info-gui-home-prices info-gui-home-prices-set! info-gui-mortgage-spread
   info-gui-mortgage-spread-set! info-gui-defaults info-gui-defaults-set! info-gui-liquidation-lag
-  info-gui-liquidation-lag-set! info-gui-latest-curve)
+  info-gui-liquidation-lag-set! info-gui--latest-curve)
 
 ; Templates of text and SQL
 (lazy-load "template.lsp"
-  template-parse template-render template-render-sql sqlite-query-template sqlite-execute-template)
+  template--parse template-render template-render-sql sqlite-query-template sqlite-execute-template)
 
 ; A fitted model as a function
 (lazy-load "model_utils.lsp" model->function)
@@ -310,3 +315,24 @@
 
 ; The tone of a company's filings with the SEC (see "SEC filings: what companies write" in lisp_library_reference.md)
 (lazy-load "filing_tone.lsp" filing-tone show-filing-tone plot-filing-tone)
+
+; A SQLite database of FINRA's TBA prices, and the function that brings it up to date (see "FINRA" in lisp_library_reference.md)
+(lazy-load "finra_database.lsp" finra-tba-update finra-tba-summary)
+
+; The database of market history (TBA prices, Treasury, SOFR and mortgage rates, current coupons), and reading it (see "A database of market history" in lisp_library_reference.md)
+(lazy-load "financial_data.lsp" financial-data-update financial-data-summary time-series time-series-table)
+
+; Macroeconomic models run with Dynare: the oil model and the stock-crash model (financial accelerator), their scenarios and their estimates from US data (see lisp_macro_models_manual.md)
+(lazy-load "macro_models.lsp"
+  oil-model oil-model-estimate oil-model-data oil-model-estimated-parameters oil-model-responses oil-shock-responses
+  plot-oil-shock show-oil-estimates
+  crash-model crash-model-estimate crash-model-data crash-model-responses stock-crash-responses plot-stock-crash show-crash-estimates
+  wealth-by-type types-model types-model-responses types-crash-responses types-crash-losses plot-types-crash
+  wealth-tax-responses plot-wealth-tax compare-wealth-taxes
+  ai-bust-scenarios ai-bust-models ai-bust-parts ai-bust-responses compare-ai-busts plot-ai-busts plot-ai-bust ai-investment-data)
+(lazy-load "industry_returns.lsp" stock-returns-update industry-returns industry-variation
+  stock-dividends-update stock-prices-update periodic-returns return-components stock-components
+  other-returns rate-changes components-and-others)
+
+; A company's stakes in other companies (often its customers), the gains on them and its guarantees, beside its revenue, from the SEC
+(lazy-load "vendor_financing.lsp" vendor-financing)

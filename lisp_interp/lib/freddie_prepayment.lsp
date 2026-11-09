@@ -48,15 +48,15 @@
 (define (freddie-loan-months conn where)
   "The loan-data of the months of loans in the table loan_months that are where (an SQL condition, such as \"sample_bucket < 80\"): a row for each, its outcome its smm,
 its weight its scheduled balance."
-  (loan-data-from conn "loan_months" "smm" "scheduled_upb" (format "({}) AND ({})" prepayment-loan-months where) prepayment-predictors predictor-sql))
+  (freddie-loans--loan-data-from conn "loan_months" "smm" "scheduled_upb" (format "({}) AND ({})" prepayment-loan-months where) prepayment-predictors predictor-sql))
 
 (define (freddie-groups conn where)
   "The loan-data of the groups in the table groups that are where (an SQL condition, such as \"part = 'fit'\"): a row for each group, its predictors the averages of its loans."
-  (loan-data-from conn "groups" "smm" "balance" (format "({}) AND ({})" prepayment-groups where) prepayment-predictors predictor-group-sql))
+  (freddie-loans--loan-data-from conn "groups" "smm" "balance" (format "({}) AND ({})" prepayment-groups where) prepayment-predictors predictor-group-sql))
 
 (define (fit-prepayment-model data)
   "A model of the smm, fitted to the loan-data (of loans, or of groups): see fit-rate-model."
-  (fit-rate-model data prepayment-predictors))
+  (freddie-loans--fit-rate-model data prepayment-predictors))
 
 (define typical-prepayment-loan
   '(("loan_age" 36) ("loan_size_k" 250) ("credit_score" 750) ("current_ltv" 70) ("sato" 0) ("burnout" 0)
@@ -100,11 +100,11 @@ Where the piece does not say what its loans are like, the model takes them to be
          (along (piece-on-path piece path home-price-growth mortgage-spread))
          (incentive (cdr (assoc "incentive_bp" along)))
          (age (cdr (assoc "loan_age" along)))
-         (constant (lambda (slot accessor) (make-vector months (+ 0.0 (piece-value piece slot accessor)))))
+         (constant (lambda (slot accessor) (make-vector months (+ 0.0 (freddie-loans--piece-value piece slot accessor)))))
          (in-the-money (* (> incentive 75.0) (> age 12)))
-         (burnout (+ (piece-value piece 'burnout collateral-piece-burnout) (- (vector-cumsum in-the-money) in-the-money)))
+         (burnout (+ (freddie-loans--piece-value piece 'burnout collateral-piece-burnout) (- (vector-cumsum in-the-money) in-the-money)))
          (first-payment (rate-path-first-payment path))
-         (calendar (if (null? first-payment) '() (calendar-months first-payment months))))
+         (calendar (if (null? first-payment) '() (freddie-loans--calendar-months first-payment months))))
     (list (cons "incentive_bp" incentive)
           (cons "loan_age" age)
           (assoc "loan_size_k" along)
@@ -125,8 +125,8 @@ library: freddie-prepayment-fit), which gives the CPR, in percent, of each month
 (prepayment-model-columns). home-price-growth is how much home prices grow, percent a year, and mortgage-spread how far the rate of a new mortgage is above the
 10-year Treasury yield, percent."
   (lambda (piece path)
-    (annual-rate (model-predictions (if (null? fit) (freddie-prepayment-fit) fit)
-                                    (prepayment-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread)))))
+    (annual-rate (model-predict (if (null? fit) (freddie-prepayment-fit) fit)
+                                (prepayment-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread)))))
 
 (define (prepayment-s-curve model &key (loan typical-prepayment-loan))
   "A table of the CPR that the model says the loan (a list of (predictor value)) prepays at, for each incentive from -200 to 400 basis points, in steps of 25."

@@ -1520,10 +1520,10 @@ class TestFuturesOptions(OptionSpreadsTestCase):
         self.run_lisp("(show-call-spreads search)")
         shown = self.printed()
         for line in ["CLZ6 is at 96.50. Bull call spreads expiring 2026-11-20, if it is at 108.00 then;",
-                     "The best: buy the 100.00 call, at 6.20, and sell the 110.00 call, at 1.20.",
-                     "It costs 5.00 a barrel (5,000.00 for a contract of 1,000). That is the most you can lose, if CLZ6 ends at 100.00 or less.",
-                     "the spread is worth 8.00 a barrel, a profit of 3.00 (3,000.00 a contract): 60% of the most you can lose.",
-                     "the most it can make is 5.00 a barrel, with CLZ6 at 110.00 or more.",
+                     "The best: buy 1 100.00 call at 6.20, sell 1 110.00 call at 1.20.",
+                     "It costs 5.00 a barrel: 5,000.00 for one contract of each option. The most you can lose is 5.00 a barrel (5,000.00).",
+                     "it is worth 8.00 a barrel, a profit of 3.00 (3,000.00): 60% of the most you can lose.",
+                     "The most it can make is 5.00 a barrel (5,000.00). It breaks even with CLZ6 at 105.00.",
                      "(prices are for a barrel):",
                      "Orders are made for a stock's options, and these are not: they are for analysis."]:
             self.assertIn(line, shown)
@@ -1558,7 +1558,7 @@ class TestFuturesOptions(OptionSpreadsTestCase):
                                                "the expiration as YYMMDD, C or P, and the strike in 8 digits; orders are for a "
                                                "stock's options, not a future's")
         self.run_lisp("(define search (call-spreads-for-chain chain (date 2026 11 20) 108))")
-        self.assertLispError("(call-spread-order search)", "call-spread-order: ./CLZ6 LOZ6")
+        self.assertLispError("(call-spread-order search)", "option-spread-order: ./CLZ6 LOZ6")
 
     def test_orders_are_for_contracts_of_a_stocks_size(self):
         self.make_chain(by_hand_rows())                                # (OCC's symbols: the contract is what is wrong)
@@ -1569,7 +1569,7 @@ class TestFuturesOptions(OptionSpreadsTestCase):
                 self.assertLispError("(option-spread-order search)", "option-spread-order: " + said)
                 self.assertLispError("(option-position-orders search)", "option-position-orders: " + said)
         self.run_lisp('(define search (call-spreads-for-chain chain (date 2026 11 20) 108 :contract-size 1000 :unit "barrel"))')
-        self.assertLispError("(call-spread-order search)", "call-spread-order: " + said)
+        self.assertLispError("(call-spread-order search)", "option-spread-order: " + said)
         # (a stock's, with the defaults, is orderable, as ever)
         self.run_lisp("(define search (option-spreads-for-chain chain 'bull-call (date 2026 11 20) 108))")
         self.assertShows('(hash-table-ref (option-spread-order search) "orderType")', '"NET_DEBIT"')
@@ -1961,18 +1961,16 @@ class TestProfitCharts(OptionSpreadsTestCase):
 
 
 class TestCallSpreadsAreTheBullCallKind(OptionSpreadsTestCase):
-    """call_spreads.lsp is option_spreads.lsp's bull-call kind, under its own names: the same spreads, the same numbers."""
+    """call_spreads.lsp is option_spreads.lsp's bull-call kind, under its own names: the same search, table and numbers."""
 
     def test_the_same_spreads_and_numbers(self):
         self.run_lisp('(load "call_spreads.lsp")')
         rows = TestAgainstAPlainCalculation.random_rows(self, 5)
         self.make_chain(rows)
-        classic = self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 104)")
-        general = self.spreads("(option-spreads-for-chain chain 'bull-call (date 2026 11 20) 104)")
-        self.assertGreater(len(classic["ratio"]), 20)
-        for old, new in [("long-symbol", "symbol-1"), ("short-symbol", "symbol-2"), ("long-strike", "strike-1"),
-                         ("short-strike", "strike-2"), ("long-price", "price-1"), ("short-price", "price-2"),
-                         ("cost", "cost"), ("worth", "worth"), ("profit", "profit"), ("ratio", "ratio"), ("max-profit", "max-profit")]:
-            self.assertEqual([str(x) for x in classic[old]], [str(x) for x in general[new]], old)
-        np.testing.assert_allclose(classic["cost"], general["max-loss"], rtol=1e-6)
+        calls = self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 104 :min-cost 0.5)")
+        general = self.spreads("(option-spreads-for-chain chain 'bull-call (date 2026 11 20) 104 :min-risk 0.5)")
+        self.assertGreater(len(calls["ratio"]), 20)
+        self.assertEqual(list(calls), list(general))
+        for column in calls:
+            self.assertEqual([str(x) for x in calls[column]], [str(x) for x in general[column]], column)
         self.assertShows("(spread-search-kind (call-spreads-for-chain chain (date 2026 11 20) 104))", "bull-call")

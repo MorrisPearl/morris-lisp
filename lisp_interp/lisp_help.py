@@ -29,7 +29,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # The manuals that help looks in, in this order, in the doc directory beside this one.
 DOC_DIRECTORY = os.path.join(HERE, "..", "doc")
-MANUALS = ["lisp_interpreter_reference.md", "lisp_library_reference.md", "lisp_paths_manual.md", "lisp_cmo_manual.md"]
+MANUALS = ["lisp_interpreter_reference.md", "lisp_library_reference.md", "lisp_paths_manual.md", "lisp_cmo_manual.md",
+           "lisp_macro_models_manual.md", "lisp_regression_manual.md"]
 
 # The most lines of a manual's section that help shows.
 MOST_MANUAL_LINES = 40

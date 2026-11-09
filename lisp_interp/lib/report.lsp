@@ -69,7 +69,7 @@
   (loop for item in items for at from 0 collect (if (= at place) value item)))
 
 (define (report--template-names nodes)
-  "The names a parsed template (see template-parse) takes from its bindings: not those a {{#each}} makes itself."
+  "The names a parsed template (see template--parse) takes from its bindings: not those a {{#each}} makes itself."
   (append-map
     (lambda (node)
       (let ((kind (car node)))
@@ -88,7 +88,7 @@
   "The parsed template, or #f if there is none. A template names only what is allowed where it is used."
   (cond ((not (report--given? template)) #f)
         ((string? template)
-         (let* ((nodes (template-parse template))
+         (let* ((nodes (template--parse template))
                 (unknown (filter (lambda (name) (not (member name allowed))) (report--template-names nodes))))
            (unless (null? unknown)
              (error (format "write-report: the {} uses {{{{{}}}}}, which is not a name there: its names are {}"

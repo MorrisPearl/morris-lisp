@@ -1,5 +1,5 @@
 """A pricing speed of the prepayment model: (prepayment-speed 'model 105) is 105% of what the deal's prepayment model says, and the model looks at rates
-(deal-project-pieces in lib/deal.lsp, model-speed-smms and deal-prepayment-model-in-use in lib/deal_paths.lsp, freddie-prepayment-model in
+(deal--project-pieces in lib/deal.lsp, model-speed-smms and deal-paths--prepayment-model-in-use in lib/deal_paths.lsp, freddie-prepayment-model in
 lib/freddie_prepayment.lsp). The model fitted to Freddie Mac's loans is stood in for by one fitted here to made-up loans whose monthly prepayment is exactly
 a logistic curve of the incentive and the loan-to-value, so that what the deal does with it can be worked out here, month by month."""
 
@@ -133,9 +133,9 @@ class TestAPricingSpeedOfTheModel(ModelSpeedCase):
 
     def test_it_is_a_share_of_the_model_and_has_no_rates_of_its_own(self):
         self.assertShows("(describe-speed (prepayment-speed 'model 105))", '"MODEL 105"')
-        self.assertShows("(model-speed? (prepayment-speed 'model 105))", "#t")
-        self.assertShows("(model-speed? (prepayment-speed 'psa 105))", "#f")
-        self.assertLispError("(speed-smms (prepayment-speed 'model 100) 0 12)", "MODEL 100 is a share of a prepayment model")
+        self.assertShows("(prepayment-speed--model-speed? (prepayment-speed 'model 105))", "#t")
+        self.assertShows("(prepayment-speed--model-speed? (prepayment-speed 'psa 105))", "#f")
+        self.assertLispError("(prepayment-speed--speed-smms (prepayment-speed 'model 100) 0 12)", "MODEL 100 is a share of a prepayment model")
 
     def test_the_collateral_prepays_as_the_model_says_on_the_forward_curve(self):
         self.make_deal()
@@ -160,7 +160,7 @@ class TestAPricingSpeedOfTheModel(ModelSpeedCase):
         self.assertLispError("(deal-set-pricing-speed! deal (prepayment-speed 'model 100))", "needs a Treasury curve")
         self.assertShows("(speed-curve-type (deal-pricing-speed deal))", "psa")
         self.run_lisp("(deal-set-treasury-curve! deal %s) (deal-set-pricing-speed! deal (prepayment-speed 'model 100))" % CURVE)
-        self.assertLispError("(deal-clear-treasury-curve! deal)", "choose another speed before taking the curve away")
+        self.assertLispError("(deal-pricing--clear-treasury-curve! deal)", "choose another speed before taking the curve away")
 
     def test_what_the_model_is_told_changes_the_cash_flows_at_a_speed_of_the_model(self):
         self.make_deal()
@@ -219,7 +219,7 @@ class TestTheOas(ModelSpeedCase):
         self.run_lisp("(deal-set-rate-model! deal (make-rate-model :sigma1 0.0 :sigma2 0.0)) (deal-run-paths! deal :paths 2)")
         pool = [np.array(v.items, dtype=float) for v in lisp_core.pairs_to_list(
             self.run_lisp('(hash-table-ref (path-run-flows (path-sets-base (deal-path-sets deal))) "POOL")'))]
-        flows = self.run_lisp("(deal-pricing-flows deal)")
+        flows = self.run_lisp("(deal--pricing-flows deal)")
         expected = np.array(flows.car.items) + np.array(flows.cdr.car.items)                  # (principal and interest, at the pricing speed)
         for flow in pool:
             np.testing.assert_allclose(flow, expected, rtol=1e-9)

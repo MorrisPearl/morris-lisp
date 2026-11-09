@@ -4,10 +4,12 @@ vectors, dates, regression, charts, SQLite, and access to FRED and
 tastytrade market data.
 
 HOW TO RUN IT
-    python3 lisp_interpreter.py              open the GUI (needs PyQt6 + matplotlib)
+    In a Jupyter notebook: run  python3 install_lisp_kernel.py  once, then choose
+    the "morris_lisp" kernel (see lisp_kernel.py). That is how it is usually used.
+    python3 lisp_interpreter.py              the console REPL (also: python3 lisp_interpreter.py -)
     python3 lisp_interpreter.py file.lsp     run a file
     python3 lisp_interpreter.py file.lsp KO  run a file, giving it words: (command-line-arguments) is ("KO")
-    python3 lisp_interpreter.py -            the console REPL
+    From another Python program: import lisp_runner, and call lisp_runner.run_file("file.lsp") (see lisp_runner.py).
 Put -v, -vv, -vvv, or --verbose=N before the file name to trace procedure
 calls as they happen (see (verbose n) in lisp_interpreter_reference.md).
 Every fresh environment first loads macros_init.lsp and loop.lsp (the
@@ -17,7 +19,9 @@ exists (see make_global_env and load_init_file in lisp_builtins.py).
 LISP_PATH, then lib/ and examples/.
 
 HOW THE CODE IS ORGANIZED
-    lisp_interpreter.py   this file: the command line, console REPL, and batch mode
+    lisp_interpreter.py   this file: the command line
+    lisp_runner.py        running Lisp from Python: a new environment, a file, some text, or the console --
+                          what the command line uses, and what another Python program can import
     lisp_core.py          data types, reader, evaluator, printer -- the language itself
                           (and the machinery of the debugger)
     lisp_builtins.py      the general built-in procedures, and make_global_env(),
@@ -29,7 +33,7 @@ HOW THE CODE IS ORGANIZED
     lisp_stratify.py      stratify, stratify-all, stratify-plan: stratification tables
     lisp_explore.py       table-profile, table-missing, table-outliers, table-correlations: a first look at a table
     lisp_time_series.py   month numbers and monthly time series
-    lisp_regression.py    linear-, lad-, quantile-, logistic-regression, and their spline- forms, model-report, ...
+    lisp_regression.py    linear-, lad-, quantile-, logistic-, poisson-, ridge-, lasso-, nonlinear-regression, spline- forms, model-report, ...
     lisp_simplex.py       lp-read-file, lp-solve: linear programming (uses simplex/)
     lisp_finance.py       day counts, npv, irr, yield, duration, convexity, payment
     lisp_options.py       bsm-price, implied-vol, the Greeks, black-price, american-price (option prices)
@@ -42,6 +46,7 @@ HOW THE CODE IS ORGANIZED
     lisp_http.py          http-get-json, http-get-csv, ... (downloads from any web API)
     lisp_fred.py          fred-table                       (downloads from FRED)
     lisp_nyfed.py         nyfed-rates, nyfed-rate-details  (the New York Fed's SOFR, EFFR, ...)
+    lisp_dynare.py        dynare-run                       (macroeconomic models, run by Dynare under Octave)
     lisp_data_common.py   what the data modules share: the credentials file, years, tables
     lisp_sec.py           sec-income-statement, sec-financials, ... (financial statements from the SEC)
     lisp_sec_filings.py   sec-filings, sec-filing-text, text-tone (what companies write in their filings, and its tone)
@@ -61,8 +66,8 @@ HOW THE CODE IS ORGANIZED
     lisp_portfolio.py     combine-returns, bootstrap-paths, portfolio-value, covariance-matrix, mean-variance-weights, ...
     lisp_rates.py         interest-rate paths and their fit to option prices (simulate-rate-paths, calibrate-rate-model, ...), and
                           SOFR curves (sofr-*; sofr-calibration-data downloads from tastytrade)
-    lisp_gui.py           the PyQt6 window
     lisp_kernel.py        the Jupyter kernel (with lisp_jupyter.py)
+    lisp_notebook_files.py  file-to-notebook, set-slide-types, notebook-to-slides: notebooks as files
     lisp_jupyter_debug.py the debug REPL in Jupyter, made with ipywidgets
 Each module that adds builtins lists them in a BUILTINS table at its end;
 lisp_builtins.make_global_env() adds those tables to every environment.
@@ -70,7 +75,7 @@ lisp_core.py imports none of the other files, so it can be read on its own.
     macros_init.lsp, loop.lsp  the standard macros, written in Lisp
     lib/                  Lisp libraries to load: solver.lsp, template.lsp, ...
     examples/             example programs, and the data they read
-    notebooks/            Jupyter notebooks that use it; scratch/ has experiments, not part of it
+    notebooks/            Jupyter notebooks that use it
     tools/                build_pool_dataset.py (Freddie Mac data -> CSV)
 
 WHAT THE LANGUAGE SUPPORTS (full details in lisp_interpreter_reference.md; the
@@ -85,8 +90,9 @@ structured-deal (CMO) model of lib/deal.lsp is in lisp_cmo_manual.md)
     cond, and, or, defmacro, defstruct, with-struct, catch-error,
     unwind-protect, catch (with the throw function), breakpoint, backtrace
   - standard macros written in Lisp (macros_init.lsp): let, let*, dolist,
-    while, do, when, unless, case, assert, with-sqlite, with-columns,
-    save-variables
+    dotimes, while, do, when, unless, case, setf (with push, pop, incf, and
+    decf, on a variable or any place setf knows), time, assert, with-sqlite,
+    with-columns, save-variables; return leaves any of the loops
   - loop, the Common Lisp loop macro (loop.lsp): for x in / on / across,
     counting, collect / sum / count / maximize, when / unless, return, ...
   - macro expansion is remembered, so each macro call is expanded only once
@@ -102,7 +108,8 @@ structured-deal (CMO) model of lib/deal.lsp is in lisp_cmo_manual.md)
   - arithmetic and comparisons on whole vectors: (* balance rate), (> v 0)
   - length, map, filter, reduce, ... on lists, vectors, and strings
   - error messages that name the procedure that went wrong
-  - hash tables, strings, regular expressions, sorting, pseudo-random numbers
+  - hash tables, strings, regular expressions, sorting, trigonometry,
+    pseudo-random numbers (uniform and normal)
   - format, for numbers with commas and decimals in fixed-width fields
   - fast math and statistics on whole vectors, with NaN for missing values
   - tables: filter, sort, group-by, join, and summarize columns of data,
@@ -131,48 +138,20 @@ structured-deal (CMO) model of lib/deal.lsp is in lisp_cmo_manual.md)
 import os
 import sys
 
-from lisp_core import (
-    LispAbort, LispError, Pair, Symbol, VERBOSE_CALLS, format_error_report,
-    format_lisp_traceback, parse, run_file, seval, set_verbose_level, to_string,
-)
-from lisp_builtins import load_init_file, make_global_env, set_command_line_arguments
+from lisp_core import LispAbort, LispError, VERBOSE_CALLS, format_error_report, format_lisp_traceback, set_verbose_level
+from lisp_builtins import set_command_line_arguments
+import lisp_runner
 
 
-def repl(env):
-    """The console read-eval-print loop. A form is evaluated once its
-    parentheses balance, so a definition can span several lines."""
-    print("Simple Lisp interpreter. Type (exit) to quit, (help name) for help with a name, and (apropos \"text\") to look for one.")
-    buffer = ""
-    while True:
-        try:
-            line = input("  ... " if buffer else "lisp> ")
-        except EOFError:
-            print()
-            break
-        buffer += line + "\n"
-        if buffer.count("(") <= buffer.count(")"):
-            try:
-                for expr in parse(buffer):
-                    if isinstance(expr, Pair) and expr.car == Symbol("exit"):
-                        return
-                    result = seval(expr, env)
-                    print(to_string(result))
-            except LispAbort:
-                print("Aborted -- back at the top level.")
-            except Exception as e:
-                print(format_error_report(e), end="")
-            buffer = ""
-
-
-def run_script(path, env):
-    """Run a script file in batch mode. A Lisp error is reported as the REPL
-    reports it -- the chain of calls, then the message -- on stderr, with exit
-    status 1. (Set LISP_PYTHON_TRACEBACK=1 to see Python's traceback of the
-    interpreter too.) Any other exception is a bug in the interpreter: the
-    Lisp call chain is printed, then Python's traceback. An (abort) ends the
-    run, with exit status 1."""
+def run_script(path, arguments):
+    """Run a script file, giving it the words after its name. A Lisp error is
+    reported as the console reports it -- the chain of calls, then the message
+    -- on stderr, with exit status 1. (Set LISP_PYTHON_TRACEBACK=1 to see
+    Python's traceback of the interpreter too.) Any other exception is a bug
+    in the interpreter: the Lisp call chain is printed, then Python's
+    traceback. An (abort) ends the run, with exit status 1."""
     try:
-        run_file(path, env)
+        lisp_runner.run_file(path, arguments=arguments)
     except LispAbort:
         sys.stdout.flush()
         sys.stderr.write("Aborted.\n")
@@ -204,20 +183,6 @@ def verbose_flag_level(arg):
     return None
 
 
-def launch_gui_or_repl():
-    """Open the GUI if PyQt6 and matplotlib are installed; otherwise say
-    so and run the console REPL instead."""
-    import lisp_gui    # imported here so the rest of the interpreter never needs PyQt6
-    if lisp_gui.PYQT_AVAILABLE:
-        lisp_gui.launch_gui()
-        return
-    print("PyQt6 and matplotlib are required for the GUI:\n\n    pip install PyQt6 matplotlib\n")
-    print("Falling back to the console REPL.\n")
-    env = make_global_env()
-    load_init_file(env)
-    repl(env)
-
-
 def main():
     args = sys.argv[1:]
     while args and verbose_flag_level(args[0]) is not None:
@@ -227,17 +192,11 @@ def main():
             sys.exit(2)
         set_verbose_level(level)
 
-    if not args:
-        launch_gui_or_repl()
-        return
-
-    set_command_line_arguments(args[1:])        # the words after the script's name (or "-")
-    env = make_global_env()
-    load_init_file(env)
-    if args[0] == "-":
-        repl(env)
+    if not args or args[0] == "-":
+        set_command_line_arguments(args[1:])        # the words after "-"
+        lisp_runner.repl()
     else:
-        run_script(args[0], env)
+        run_script(args[0], args[1:])
 
 
 if __name__ == "__main__":

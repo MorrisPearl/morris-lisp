@@ -121,6 +121,32 @@ class FakeTastytrade:
         os.unlink(self.credentials.name)
 
 
+class TestVendorFinancing(LispTestCase):
+    """lib/vendor_financing.lsp, on a made-up company's quarters: sec-values is replaced by a table."""
+
+    def test_new_money_is_the_growth_of_the_stakes_less_the_gains_on_them(self):
+        self.run_lisp('(load "vendor_financing.lsp")'
+                      '(define (sec-values creds ticker concepts &rest options)'
+                      '  (make-table "period-end" (vector (date 2025 3 31) (date 2025 6 30) (date 2025 9 30) (date 2025 12 31) (date 2026 3 31))'
+                      '              "fiscal-year" (vector 2025 2025 2025 2025 2026) "fiscal-period" (vector "Q1" "Q2" "Q3" "Q4" "Q1")'
+                      '              (list-ref concepts 0) (vector 10e9 10e9 10e9 10e9 20e9)'
+                      '              (list-ref concepts 1) (vector 4e9 4e9 4e9 4e9 8e9)'
+                      '              (list-ref concepts 2) (vector 1e9 1e9 1e9 2e9 5e9)'
+                      '              (list-ref concepts 3) (vector nan nan nan 1e9 3e9)'
+                      '              (list-ref concepts 4) (vector 0 0 0 0.5e9 2e9)'
+                      '              (list-ref concepts 5) (vector nan nan nan nan 7e9)))'
+                      '(define v (vendor-financing "creds.json" "XYZ" :count 2))')
+        self.assertShows('(map car v)', '("quarter end" "revenue" "year\'s revenue" "private stakes" "public stakes" "new money in stakes" '
+                         '"per dollar of sales" "gains on stakes" "gains share" "guarantees")')
+        column = lambda name: self.run_lisp('(table-column v "%s")' % name).items.tolist()
+        self.assertEqual(column("year's revenue"), [40.0, 50.0])
+        self.assertTrue(math.isnan(column("new money in stakes")[0]))      # no public stakes the quarter before
+        self.assertEqual(column("new money in stakes")[1], 3.0)            # stakes 3 to 8, less 2 of gains
+        self.assertEqual(column("per dollar of sales")[1], 0.15)
+        self.assertEqual(column("gains share")[1], 0.25)                   # 2 of 8 before taxes
+        self.assertEqual(column("guarantees")[1], 7.0)
+
+
 class TestSecFinancials(LispTestCase):
     """lisp_sec, on a made-up company's facts -- no network. XYZ Corp's fiscal
     year is the calendar year. It reported revenue as Revenues for 2022 and
@@ -243,6 +269,17 @@ class TestSecFinancials(LispTestCase):
         self.assertShows('(table-column f "fiscal-year")', "#(2022 2023)")
         # period-end, fiscal-year, fiscal-period, and a column for each line item
         self.assertShows('(length (table-column-names f))', str(3 + len(self.lisp_sec.LINE_ITEMS)))
+
+    def test_sec_values_gives_balances_at_the_end_and_flows_for_the_period(self):
+        self.run_lisp('(define v (sec-values creds "XYZ" (list "Assets" "RevenueFromContractWithCustomerExcludingAssessedTax" "Goodwill")'
+                      ' :period "quarterly" :count 4))')
+        self.assertShows('(map car v)', '("period-end" "fiscal-year" "fiscal-period" "Assets" '
+                         '"RevenueFromContractWithCustomerExcludingAssessedTax" "Goodwill")')
+        self.assertEqual(self.column("v", "Assets"), [510e6, 520e6, 540e6, 560e6])
+        self.assertEqual(self.column("v", "RevenueFromContractWithCustomerExcludingAssessedTax"), [25e6, 30e6, 32e6, 33e6])   # Q4: 120 less 87
+        self.assertTrue(all(math.isnan(v) for v in self.column("v", "Goodwill")))      # never reported: missing, not an error
+        self.run_lisp('(define y (sec-values creds "XYZ" "NetIncomeLoss"))')            # one concept, by the year
+        self.assertEqual(self.column("y", "NetIncomeLoss"), [11e6, 15e6])               # the restated 2022
 
     def test_facts_concepts_and_company(self):
         self.run_lisp('(define facts (sec-facts creds "XYZ" "NetIncomeLoss"))')

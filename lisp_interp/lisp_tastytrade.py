@@ -29,7 +29,7 @@ version 12 or later), a tastytrade account, and a credentials JSON file --
 see tasty_api/README.md for the one-time OAuth setup. Each builtin is a
 plain synchronous function that runs the package's async calls to
 completion itself (see _run_async), so it works from a script, the REPL,
-the GUI, or a Jupyter notebook alike.
+or a Jupyter notebook alike.
 
 This module still imports without the tastytrade package installed; the
 builtins then raise a clear error when called.

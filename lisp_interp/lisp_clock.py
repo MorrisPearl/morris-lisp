@@ -5,6 +5,8 @@ A TIME is a list (year month day hour minute second), in local time, as
 current-time returns it: (2026 9 28 14 37 5) is 2:37:05 pm on September 28,
 2026. Wherever a time is expected, the hour, minute, and second may be left
 off (they're then 0), and a date means midnight at its start.
+
+(%clock-seconds) is a count of seconds for measuring how long something takes, which the time macro uses.
 """
 
 import datetime
@@ -117,7 +119,14 @@ def sleep_until(t):
         time.sleep(min(wait, SLEEP_UNTIL_CHECK_SECONDS))
 
 
+def clock_seconds():
+    """(%clock-seconds) -- a count of seconds, for measuring how long something takes: only the difference between
+    two counts means anything. The time macro (macros_init.lsp) uses it."""
+    return time.perf_counter()
+
+
 BUILTINS = {
+    "%clock-seconds": clock_seconds,
     "current-time": current_time,
     "today": today,
     "time-add": time_add,

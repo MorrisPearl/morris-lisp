@@ -7,7 +7,7 @@ colored by a value, and a symbol drawn on each, sized by a value.
         the places of one kind -- states, counties, ... -- as a table: their
         codes (GEOID), names, land and water areas, and outlines
   (plot-map shapes [options])
-        a map of them; it goes where every chart goes (a notebook, the GUI,
+        a map of them; it goes where every chart goes (a notebook,
         or the console's summary), and save-chart saves it
 
 The boundaries are the Census's cartographic boundary files

@@ -14,11 +14,11 @@
 
 ; The level monthly payment that pays off a loan. It has a bug: for a loan
 ; with no interest the formula divides by zero.
-(define (monthly-rate annual-percent)
+(define (monthly-interest-rate annual-percent)
   (/ annual-percent 1200))
 
 (define (level-payment balance annual-percent months)
-  (let ((r (monthly-rate annual-percent)))
+  (let ((r (monthly-interest-rate annual-percent)))
     (/ (* balance r) (- 1 (expt (+ 1 r) (- months))))))
 
 (define (round-cents x)
@@ -34,9 +34,9 @@
 
 (set-debug-hook! log-call)
 (break level-payment)
-(break monthly-rate)
+(break monthly-interest-rate)
 
-(display "1. Every call to level-payment and monthly-rate is logged:") (newline)
+(display "1. Every call to level-payment and monthly-interest-rate is logged:") (newline)
 (display (format "   payment = {}\n\n" (round-cents (level-payment 200000 6.0 360))))
 
 ; --- 2. A conditional breakpoint -----------------------------------------

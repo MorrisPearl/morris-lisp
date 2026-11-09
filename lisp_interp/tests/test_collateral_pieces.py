@@ -68,13 +68,13 @@ class TestSpeeds(PiecesCase):
         self.assertEqual([self.run_lisp("(psa-cpr %d)" % age) for age in (0, 15, 30, 100)], [0.0, 3.0, 6.0, 6.0])
 
     def test_a_psa_speed_is_a_multiple_of_the_curve_at_the_age_of_the_loans_and_the_others_are_not(self):
-        smms = self.vector("(speed-smms (prepayment-speed 'psa 200) 10 3)")
+        smms = self.vector("(prepayment-speed--speed-smms (prepayment-speed 'psa 200) 10 3)")
         expected = [1 - (1 - 2 * 0.06 * age / 30) ** (1 / 12) for age in (10, 11, 12)]          # (200% of 6 CPR x age / 30)
         np.testing.assert_allclose(smms, expected)
-        np.testing.assert_allclose(self.vector("(speed-smms (prepayment-speed 'psa 100) 40 1)"), [1 - 0.94 ** (1 / 12)])     # (6 CPR after 30 months)
-        np.testing.assert_allclose(self.vector("(speed-smms (prepayment-speed 'cpr 6) 10 2)"), [1 - (1 - 0.06) ** (1 / 12)] * 2)
-        np.testing.assert_allclose(self.vector("(speed-smms (prepayment-speed 'smm 0.5) 10 2)"), [0.005, 0.005])
-        np.testing.assert_allclose(self.vector("(speed-smms (prepayment-speed 'cpr '((0 12 2))) 99 2)"),
+        np.testing.assert_allclose(self.vector("(prepayment-speed--speed-smms (prepayment-speed 'psa 100) 40 1)"), [1 - 0.94 ** (1 / 12)])     # (6 CPR after 30 months)
+        np.testing.assert_allclose(self.vector("(prepayment-speed--speed-smms (prepayment-speed 'cpr 6) 10 2)"), [1 - (1 - 0.06) ** (1 / 12)] * 2)
+        np.testing.assert_allclose(self.vector("(prepayment-speed--speed-smms (prepayment-speed 'smm 0.5) 10 2)"), [0.005, 0.005])
+        np.testing.assert_allclose(self.vector("(prepayment-speed--speed-smms (prepayment-speed 'cpr '((0 12 2))) 99 2)"),
                                    [1 - (1 - 0.06) ** (1 / 12), 1 - (1 - 0.12) ** (1 / 12)])
 
     def test_a_speed_is_described_in_words(self):
@@ -84,7 +84,7 @@ class TestSpeeds(PiecesCase):
         self.assertShows("(describe-speed (prepayment-speed 'smm '((0.2 0.4 6))))", '"SMM: from 0.2 to 0.4 over 6 months"')
 
     def test_a_cpr_speed_is_capped_below_all_of_it(self):
-        self.assertLessEqual(self.vector("(speed-smms (prepayment-speed 'cpr 200) 0 1)")[0], 1.0)
+        self.assertLessEqual(self.vector("(prepayment-speed--speed-smms (prepayment-speed 'cpr 200) 0 1)")[0], 1.0)
 
 
 class TestProjecting(PiecesCase):
@@ -204,7 +204,7 @@ class TestADealOfPieces(PiecesCase):
         self.make()
         self.assertShows("(vector? (node-coupon pool))", "#t")
         for month in (0, 50, 200, 359):
-            self.assertAlmostEqual(self.run_lisp("(node-interest-due deal pool %d)" % month), self.run_lisp("(vector-ref (node-interest pool) %d)" % month), places=6)
+            self.assertAlmostEqual(self.run_lisp("(deal--node-interest-due deal pool %d)" % month), self.run_lisp("(vector-ref (node-interest pool) %d)" % month), places=6)
 
     def test_a_pieces_collateral_can_be_divided_in_every_way_that_has_no_fixed_coupon_to_find(self):
         self.make()
@@ -309,9 +309,9 @@ class TestCoupons(PiecesCase):
         self.assertShows("(coupon-at (vector 0.05 0.06 0.07) 0.03 2)", "0.07")
 
     def test_what_is_left_of_a_coupon_when_a_rate_is_taken_from_it(self):
-        self.assertAlmostEqual(self.run_lisp("((coupon-less (constant-coupon 0.05) 0.02) 0.0)"), 0.03)
-        self.assertShows("((coupon-less (constant-coupon 0.05) 0.07) 0.0)", "0.0")
-        np.testing.assert_allclose(self.vector("(coupon-less (vector 0.05 0.06 0.01) 0.02)"), [0.03, 0.04, 0.0])
+        self.assertAlmostEqual(self.run_lisp("((deal--coupon-less (constant-coupon 0.05) 0.02) 0.0)"), 0.03)
+        self.assertShows("((deal--coupon-less (constant-coupon 0.05) 0.07) 0.0)", "0.0")
+        np.testing.assert_allclose(self.vector("(deal--coupon-less (vector 0.05 0.06 0.01) 0.02)"), [0.03, 0.04, 0.0])
 
 
 class TestWhatTheLoansAreLike(PiecesCase):
@@ -349,9 +349,9 @@ class TestWhatTheLoansAreLike(PiecesCase):
         self.assertShows("(map car table)", '("balance" "wac" "coupon" "wam" "age" "loan size" "credit score" "ltv" "sato" "burnout" "investor share" '
                                             '"second home share" "cash-out share" "refinance share" "dti" "one borrower share" "mi percent")')
         self.assertShows('(table-column table "credit score")', "#(760.0 nan)")
-        self.assertShows("(map collateral-piece-credit-score (collateral-table-pieces table))", "(760.0 ())")
-        self.assertShows("(map collateral-piece-investor-share (collateral-table-pieces table))", "(0.1 ())")
-        self.assertShows("(map collateral-piece-ltv (collateral-table-pieces table))", "(() ())")
+        self.assertShows("(map collateral-piece-credit-score (deal--collateral-table-pieces table))", "(760.0 ())")
+        self.assertShows("(map collateral-piece-investor-share (deal--collateral-table-pieces table))", "(0.1 ())")
+        self.assertShows("(map collateral-piece-ltv (deal--collateral-table-pieces table))", "(() ())")
 
     def test_a_table_of_collateral_needs_only_the_first_four_columns(self):
         self.run_lisp('''(define deal (new-deal "D" :collateral (make-table "balance" (vector 1000.0) "wac" (vector 6.0) "coupon" (vector 5.5) "wam" (vector 12)

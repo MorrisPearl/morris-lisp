@@ -34,9 +34,9 @@
 ; Survey), with a circle sized by its GDP (BEA, in millions of dollars).
 ; census-profile gives each state's code in its "state" column; the BEA
 ; writes a state's code as "36000", which matches "36" all the same.
-(define profile (census-profile creds "state:*"))
+(define state-profile (census-profile creds "state:*"))
 (define gdp (bea-regional creds "SAGDP1" 3 "STATE" :start-year 2024 :end-year 2024))
-(plot-map states :data profile :key "state" :fill "poverty-rate" :fill-label "poverty rate, %"
+(plot-map states :data state-profile :key "state" :fill "poverty-rate" :fill-label "poverty rate, %"
           :colors "YlOrRd" :symbol-data gdp :symbol-key "fips" :symbols "2024"
           :symbol-label "GDP, millions of dollars" :symbol-color "navy" :format "{:,.0f}"
           :title "Poverty and GDP, by state")

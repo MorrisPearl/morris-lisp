@@ -7,12 +7,12 @@ any web API, CSV files, and SQLite), working with it as tables and vectors,
 and modeling it: regression, simulated prices and portfolios, option
 prices, the volatility smile, rates and mortgages, charts, and maps. It is
 a whole Lisp too, with macros, structs, hash tables, error handling, and a
-debugger, and it runs in a console, a small GUI, or a Jupyter notebook.
-**Requires `numpy`**; everything else (PyQt6, matplotlib, pandas, the
+debugger, and it runs in a Jupyter notebook (usually), at a console, or on a
+file. **Requires `numpy`**; everything else (ipykernel, matplotlib, pandas, the
 tastytrade package) is needed only for the features that use it. The code
 is meant to be read: "How the code is organized" says which file has what.
 
-There are three documents. **This one is the language**: its syntax, special
+There are nine documents. **This one is the language**: its syntax, special
 forms and macros, and the general builtins -- numbers, lists, strings, hash
 tables, vectors and statistics, tables, dates, charts, input and output,
 and the debugger. **The library manual,
@@ -25,8 +25,11 @@ investments. Its first chapter, ["Where things are"](lisp_library_reference.md#w
 mortgages, and a script for each part of the library -- and explains the
 programming techniques they show. **Yield curves and simulated paths**, of interest rates
 and of investment prices, are in [lisp_paths_manual.md](lisp_paths_manual.md); structured
-deals in [lisp_cmo_manual.md](lisp_cmo_manual.md); forecasting questions in
-[lisp_forecasting_manual.md](lisp_forecasting_manual.md).
+deals in [lisp_cmo_manual.md](lisp_cmo_manual.md); regression in
+[lisp_regression_manual.md](lisp_regression_manual.md); forecasting questions in
+[lisp_forecasting_manual.md](lisp_forecasting_manual.md); macroeconomic models, run with Dynare, in
+[lisp_macro_models_manual.md](lisp_macro_models_manual.md); and which agency publishes what data, and
+which function gets it, in [economic_data_guide.md](economic_data_guide.md).
 
 This document aims to cover **every builtin and special form** of the
 language: what its arguments mean, what it returns, and any non-obvious
@@ -45,6 +48,7 @@ end.
   - [Defining variables and procedures](#defining-variables-and-procedures)
     - [define](#define)
     - [set!](#set)
+    - [setf](#setf)
     - [push, pop, incf, decf](#push-pop-incf-decf)
     - [lambda](#lambda)
     - [begin](#begin)
@@ -67,6 +71,7 @@ end.
     - [or](#or)
   - [Looping](#looping)
     - [dolist](#dolist)
+    - [dotimes](#dotimes)
     - [while](#while)
     - [do](#do)
     - [loop](#loop)
@@ -116,7 +121,6 @@ end.
   - [Profiling](#profiling)
   - [Test coverage](#test-coverage)
 - [A short example](#a-short-example)
-- [A parser framework](#a-parser-framework)
 - [How the code is organized](#how-the-code-is-organized)
 - [Running the tests](#running-the-tests)
 - [Adding your own builtins](#adding-your-own-builtins)
@@ -124,89 +128,113 @@ end.
 
 ## Running it
 
-- **No arguments** — `python3 lisp_interpreter.py` opens the PyQt6 GUI (an
-  input box, an output log, a "Table" tab, and a chart tab). The
-  Table tab is filled only by an explicit `(display-table ...)` call (see
-  "Displaying tables", below) — there's no automatic scan of top-level
-  variables. If PyQt6 or matplotlib isn't installed, it falls back to a
-  plain console REPL instead.
-- **A filename argument** — `python3 lisp_interpreter.py script.lsp` runs
-  that file in batch mode (no GUI). `save-chart` still works in this mode
-  as long as matplotlib is installed (PyQt6 is not required for it).
-  - **Words after the file name** — `python3 lisp_interpreter.py script.lsp
+- **In a Jupyter notebook** -- the usual way. Run `python3
+  install_lisp_kernel.py` once, then choose "morris_lisp" in Jupyter's
+  kernel picker. Every cell is Lisp. One environment lasts as long as the
+  kernel (Kernel > Restart starts a new one).
+  - **What a cell shows.** Its last value, as the console prints it. A
+    table is shown as a table, as `display-table` shows it (its first 20
+    rows, and how many there are), and a long list or vector shows only its
+    first 100 elements, and how many more it has -- `(print x)` shows all of
+    it, and `(display-table t :max-rows #f)` every row. Charts are drawn in the
+    cell, and `display-table`, `display-markdown`, `display-html`, and
+    `display-svg` show what they're given. `_`, `__`, and `___` are the
+    last three values, and `_5` the value of cell 5.
+  - **Errors.** An error shows the chain of Lisp calls that led to it, then
+    the message (see "Errors", below). The whole cell is read before any of
+    it runs, so a cell with a missing parenthesis does nothing at all, and
+    the message says on which line the unclosed `(` is.
+  - **Stopping.** Kernel > Interrupt stops the cell, and shows the Lisp
+    calls that were running when it stopped -- which is also a quick way to
+    see where a slow program spends its time. `(abort)` stops it from inside
+    the program.
+  - **Help.** **Tab** completes a name, and **Shift-Tab** shows the help of
+    the name at the cursor, as `(help name)` does (see "Help", below).
+  - **The debugger.** A `(breakpoint)`, a `(break f)`, or an error with
+    `break-on-error` opens a debug REPL in the running cell's output, made
+    with `ipywidgets` (see "Debugging", below). `(read-line)` asks the
+    notebook for a line, as `input()` does in a Python notebook.
+  - It needs `ipykernel`, and `matplotlib` for charts; `ipywidgets` and
+    `ipydatagrid` for widgets (see "Widgets in a notebook").
+- **At the console** -- `python3 lisp_interpreter.py`, with no arguments (or
+  `-`). A form is run once its parentheses balance, so a definition can
+  take several lines, and its value is shown as a notebook cell's is.
+  Control-C stops what is running, and shows where it was.
+- **A file** -- `python3 lisp_interpreter.py script.lsp` runs that file.
+  `save-chart` saves a chart, as long as matplotlib is installed.
+  - **Words after the file name** -- `python3 lisp_interpreter.py script.lsp
     KO 6` gives the script the words `"KO"` and `"6"`: `(command-line-arguments)`
     returns `("KO" "6")`. `destructuring-bind` can name them, with defaults
     for any left off: `(destructuring-bind (&optional (symbol "BRK/B"))
     (command-line-arguments) ...)`, as `examples/option_methods_example.lsp`
     does. They're strings; `string->number` makes a number of one.
-  - **Argument just "-"** — `python3 lisp_interpreter.py -` runs
-  interactively with no GUI. `save-chart` still works in this mode
-  as long as matplotlib is installed (PyQt6 is not required for it).
+- **From another Python program** -- import `lisp_runner.py`, and call
+  `run_file` with the name of a `.lsp` file; it runs the file in a new
+  environment (a notebook's: the builtins, the libraries, and the init file)
+  and returns the value of its last form:
 
-- **Verbose flags** — `-v`, `-vv`, `-vvv` (levels 1–3), `--verbose` (level 1),
-  or `--verbose=N` (N = 0–3) may come before the script name (or before
-  `-`): `python3 lisp_interpreter.py -vv script.lsp` traces every procedure
-  call as the script runs — see "Verbose mode and stack traces", below. The
-  `LISP_VERBOSE` environment variable (0–3) does the same.
-- **Errors** — in batch mode, an error ends the run with exit status 1 and
+  ```python
+  import sys
+  sys.path.insert(0, "/path/to/morris_lisp/lisp_interp")   # the folder lisp_runner.py is in
+  import lisp_runner
+
+  value = lisp_runner.run_file("model.lsp")                # the value of the file's last form
+  lisp_runner.run_file("prices.lsp", arguments=["KO", "6"])    # its (command-line-arguments) is ("KO" "6")
+
+  env = lisp_runner.new_environment()                      # one environment for several things in turn
+  lisp_runner.run_file("setup.lsp", env)
+  lisp_runner.run_text("(+ 1 2)", env)                     # 3
+  ```
+
+  What the program displays goes to standard output, unless
+  `new_environment(output=texts.append)` collects it. A Lisp error raises
+  `lisp_core.LispError`; `lisp_core.format_error_report(error)` is the report
+  the console prints. A value comes back as the interpreter holds it -- a list
+  is a `lisp_core.Pair`, a vector a `lisp_core.LispVector` (its `.items` a
+  numpy array) -- and `lisp_core.to_string(value)` is the text the console
+  would show. `lisp_runner.repl(env)` opens the console.
+- **Verbose flags** -- `-v`, `-vv`, `-vvv` (levels 1-3), `--verbose` (level 1),
+  or `--verbose=N` (N = 0-3) may come before the script name: `python3
+  lisp_interpreter.py -vv script.lsp` traces every procedure call as the
+  script runs -- see "Verbose mode and stack traces", below. The
+  `LISP_VERBOSE` environment variable (0-3) does the same.
+- **Errors** -- a script that has an error stops with exit status 1 and
   prints, to stderr, the chain of procedure calls that led to it followed by
   the message (`Lisp traceback (most recent call last): ...` /
-  `Error: ...`) — the same report the REPL, the GUI log, and Jupyter show.
+  `Error: ...`) -- the same report the console and Jupyter show.
   The message starts with the name of the procedure, builtin, or special
   form that went wrong: `cons: expected 2 arguments, got 1`,
   `sqrt: expected a nonnegative input, got -1.0`,
   `define: badly formed: (define x)`. (A builtin is written in Python, and
   when Python itself objects to what it was given, the interpreter turns
-  Python's message into one of these.) Set `LISP_PYTHON_TRACEBACK=1` to get
-  Python's own traceback of the interpreter's internals as well, including
-  the Python exception behind a builtin's error.
+  Python's message into one of these.) A name that isn't defined says which
+  defined names are spelled nearly the same: `unbound symbol: tabel-head --
+  did you mean table-head?`. Set `LISP_PYTHON_TRACEBACK=1` to get Python's
+  own traceback of the interpreter's internals as well, including the
+  Python exception behind a builtin's error.
 
-Every fresh environment — batch mode, the console REPL, the GUI, and
-Jupyter alike — loads these Lisp files before doing anything else:
+Every fresh environment -- a notebook's, the console's, and a script's --
+loads these Lisp files before doing anything else:
 
 1. `macros_init.lsp` and `loop.lsp`, the standard macros, such as `let`,
    `dolist`, `while`, `case`, and `loop` (see "Special forms and standard
-   macros", below).
-   They're part of the interpreter: `make_global_env()` loads them into
-   every new environment.
-2. `init.lsp` (next to `lisp_interpreter.py`; override with the
+   macros", below). They're part of the interpreter: `make_global_env()`
+   loads them into every new environment.
+2. `lib/autoloads.lsp`, which makes the libraries' functions callable
+   without loading the libraries first (see `lazy-load`).
+3. `init.lsp` (next to `lisp_interpreter.py`; override with the
    `LISP_INIT_FILE` environment variable), if it exists. It's entirely
-   optional — a missing init file is silently skipped. Put your own
+   optional -- a missing init file is silently skipped. Put your own
    always-available definitions/macros there instead of `(load ...)`-ing
-   them by hand in every script.
+   them by hand in every notebook.
 
-- **From a Jupyter notebook, as its own native kernel, no GUI at all** —
-  run `python3 install_lisp_kernel.py` once (see `lisp_kernel.py`), then
-  pick "morris_lisp" from Jupyter's kernel picker / New menu, same as any
-  other kernel; every cell is then plain Lisp source directly, no magic
-  prefix needed. Charts render inline (a real `matplotlib`-rendered image,
-  not a GUI chart tab or a `save-chart` file) and `(display-table ...)`
-  renders as a real table instead of the console's plain text table. One environment persists for the kernel's
-  whole lifetime, the same as typing into the console REPL — restarting
-  the kernel (Jupyter's own "Restart" button) starts a fresh one. Built as
-  an `IPythonKernel` subclass specifically so `IPython.display.display()`
-  (which the chart/table rendering uses, in `lisp_jupyter.py`) keeps
-  resolving correctly — see `lisp_kernel.py`'s own docstring for why that
-  specific base class matters, and what else is worth knowing about how it
-  behaves (error display, history variables `_`/`__`/`___`/`_N`). **Tab**
-  completes a name, and **Shift-Tab** shows the help of the name at the
-  cursor, as `(help name)` does (see "Help", below). Needs `pandas` and `ipykernel` in addition to matplotlib;
-  falls back to the console's plain-text chart/table output if either
-  isn't installed. A `(breakpoint)`, a `(break f)`, or an error with
-  `break-on-error` opens a debug REPL made with `ipywidgets` in the
-  running cell's output (see "Debugging", below). Any of these builtins that fetch over the network
-  (`tastytrade-*`, `sofr-calibration-data`) work fine here too -- they run
-  their I/O via `asyncio`, and `_run_async()` (in `lisp_tastytrade.py`,
-  and an identical twin in `term_structure/sofr_market_data.py`)
-  specifically handles being called from inside a Jupyter kernel's own
-  already-running event loop, which a bare `asyncio.run()` call can't do.
-- **Where `load` finds a file** — `(load "name.lsp")` looks in the current
-  directory, then in each directory listed in the `LISP_PATH` environment
-  variable (separated by colons, as in `PATH`), then in the interpreter's
-  own `lib` and `examples` directories. So `(load "solver.lsp")` works from
-  a notebook in any directory, and so does a library that loads another.
-  To use your own directories, set `LISP_PATH` before starting Jupyter or
-  the interpreter, e.g. `export LISP_PATH=~/models:~/models/common`.
+**Where `load` finds a file** -- `(load "name.lsp")` looks in the current
+directory, then in each directory listed in the `LISP_PATH` environment
+variable (separated by colons, as in `PATH`), then in the interpreter's own
+`lib` and `examples` directories. So `(load "solver.lsp")` works from a
+notebook in any directory, and so does a library that loads another. To use
+your own directories, set `LISP_PATH` before starting Jupyter or the
+interpreter, e.g. `export LISP_PATH=~/models:~/models/common`.
 
 ## Syntax
 
@@ -315,14 +343,39 @@ already exists.
 x                               ; => 20
 ```
 
+#### setf
+#### `(setf place value)`
+Puts `value` in a **place**, and returns it, as Common Lisp's `setf` does.
+A place is a variable, or what one of these reads: `car`, `cdr`, `first`,
+`rest`, `nth`, `list-ref`, `vector-ref`, `hash-table-ref`, `struct-ref`,
+or a struct's accessor, such as `(point-x p)`. (A struct's accessor works
+because `defstruct` makes a setter for it, `point-x-set!`: `(setf (f
+arg...) value)` is `(f-set! arg... value)` for any `f` that has one.) The
+parts of a place, such as the `v` and `i` of `(vector-ref v i)`, are each
+evaluated once.
+
+```lisp
+(define v (vector 1 2 3))
+(setf (vector-ref v 0) 9)       ; => 9
+v                               ; => #(9 2 3)
+(define items (list 'a 'b 'c))
+(setf (nth 1 items) 'x)         ; => x
+items                           ; => (a x c)
+(define table (make-hash-table))
+(setf (hash-table-ref table 'rate) 0.05)   ; => 0.05
+(defstruct point x y)
+(define p (make-point :x 1 :y 2))
+(setf (point-x p) 5)            ; => 5
+p                               ; => #S(point :x 5 :y 2)
+```
+
 #### push, pop, incf, decf
-#### `(push item variable)`, `(pop variable)`, `(incf variable [n])`, `(decf variable [n])`
-Standard macros for changing a variable, as in Common Lisp — but only a
-variable, since there's no `setf` here. `push` puts `item` on the front
-of the list in `variable`, and returns the new list; `pop` takes the first
-element off, and returns it. `incf` adds `n` (1 unless given) to the
-number in `variable`, `decf` takes it away, and each returns the new
-value.
+#### `(push item place)`, `(pop place)`, `(incf place [n])`, `(decf place [n])`
+Standard macros for changing a variable or any other place that `setf`
+can set, as in Common Lisp. `push` puts `item` on the front of the list in
+the place, and returns the new list; `pop` takes the first element off,
+and returns it. `incf` adds `n` (1 unless given) to the number in the
+place, `decf` takes it away, and each returns the new value.
 
 ```lisp
 (define stack '())
@@ -333,6 +386,9 @@ stack                           ; => (1)
 (define n 10)
 (incf n)                        ; => 11
 (decf n 5)                      ; => 6
+(define counts (vector 0 0 0))
+(incf (vector-ref counts 1))    ; => 1
+(incf (vector-ref counts 1) 5)  ; => 6
 ```
 
 #### lambda
@@ -380,8 +436,9 @@ replace is an error (`lazy-load: solver.lsp didn't define ...`), not a
 loop. It works for functions, not for a file's macros or variables:
 a macro is needed before the code that uses it runs, and a variable isn't
 called. `lib/autoloads.lsp` has the lazy-loads for the libraries that come
-with the interpreter, and `init.lsp` loads it, so that `(option-methods
-creds "KO")` works without a `load`. `macros_init.lsp` shows what a stub
+with the interpreter, and every notebook, console, and script loads it
+before the init file, so that `(option-methods creds "KO")` works without
+a `load`. `macros_init.lsp` shows what a stub
 looks like.
 
 ### Variadic parameters
@@ -680,14 +737,26 @@ returns `#f`.
 
 ### Looping
 
-`dolist` runs a body for each element of a list or vector; `while` runs a
-body while a test is true; `do` steps variables until a test is true; and
-`loop` is Common Lisp's loop, which can count, step through lists, collect,
-sum, and more, in one form. `while`, `do`, and `dolist` each turn into a
-small local function that calls itself to go around again; that call is a
-tail call, so a loop can run any number of times without growing the
-stack, and the function's name comes from `gensym`, so it can't clash with
-a name in your code.
+`dolist` runs a body for each element of a list or vector; `dotimes` runs
+it a number of times; `while` runs a body while a test is true; `do` steps
+variables until a test is true; and `loop` is Common Lisp's loop, which can
+count, step through lists, collect, sum, and more, in one form. `while`,
+`do`, `dotimes`, and `dolist` each turn into a small local function that
+calls itself to go around again; that call is a tail call, so a loop can
+run any number of times without growing the stack, and the function's name
+comes from `gensym`, so it can't clash with a name in your code.
+
+**`(return [value])`** in the body of any of them leaves the loop at once,
+and makes it return `value` (`'()` if there's none), as in Common Lisp. It
+leaves the innermost loop it is written in. (`return` is a `throw` that the
+loop catches, so it must be written in the loop's own body, not in a
+function the loop calls. Only a loop whose body has a `return` in it gets
+the `catch`.)
+
+```lisp
+(dolist (x '(3 8 12 5))
+  (when (> x 10) (return x)))  ; => 12
+```
 
 #### dolist
 #### `(dolist (var list-expr [result-expr]) body...)`
@@ -709,8 +778,17 @@ total                          ; => 15
 (dolist (x #(10 20) total) (set! total (+ total x)))   ; => 45
 ```
 
-For loops that aren't over a list, see `while` and `do` under "Standard
-macros", below.
+#### dotimes
+#### `(dotimes (var count [result-expr]) body...)`
+Runs `body...` `count` times, with `var` bound to 0, 1, ..., `count` - 1,
+then evaluates and returns `result-expr` (`'()` if there's none), with
+`var` bound to `count`.
+
+```lisp
+(define total 0)
+(dotimes (i 5 total)
+  (set! total (+ total i)))    ; => 10  (0 + 1 + 2 + 3 + 4)
+```
 
 #### while
 #### `(while test body...)`
@@ -1637,7 +1715,7 @@ seeing right away (`(breakpoint (list "x=" x))`), without needing a separate
 registered, the hook is called instead of the REPL opening, with the kind
 `breakpoint` and the message. See "Debugging", below, for the hook, for
 `(break f)` (which stops at every call of a procedure without editing it),
-for `(abort)`, and for the GUI limitation (the REPL is console-only).
+and for `(abort)`.
 
 #### backtrace
 #### `(backtrace)`
@@ -1777,13 +1855,16 @@ number if `x` is one. For a vector, of each element.
 #### `(min a b ...)`, `(max a b ...)`
 Minimum / maximum of the given arguments (at least one required). With
 vectors, the smallest or largest *at each position*, so `(max v 0)`
-replaces every negative element of `v` with 0. For the smallest or largest
-element of one vector, use `vector-min` or `vector-max`.
+replaces every negative element of `v` with 0, and `(apply max vectors)` is
+the largest at each position of a list of vectors -- of one vector, the
+vector itself. For the largest or smallest element *of* a vector, use
+`vector-max` or `vector-min`.
 
 ```lisp
 (min 3 1 4 1 5)                ; => 1
 (max 3 1 4 1 5)                ; => 5
 (max #(-1 2 -3) 0)             ; => #(0 2 0)
+(vector-max #(-1 2 -3))        ; => 2
 ```
 
 #### `(sqrt x)`
@@ -1834,6 +1915,21 @@ from: `N(x) = 0.5 * (1 + erf(x / sqrt(2)))`, which is `normal-cdf`, under
 (erf 0)                        ; => 0.0
 ```
 
+#### `pi`, `(sin x)`, `(cos x)`, `(tan x)`, `(asin x)`, `(acos x)`, `(atan y [x])`
+The trigonometric functions, with angles in radians (`pi` radians is 180
+degrees). `asin`, `acos`, and `atan` give an angle back. `(atan y x)`, with
+two arguments, is the angle of the point (x, y) from the x axis, between
+`-pi` and `pi`: unlike `(atan (/ y x))` it knows which quarter the point is
+in, and works when x is 0. For a vector, of each element.
+
+```lisp
+pi                             ; => 3.141592653589793
+(sin (/ pi 2))                 ; => 1.0
+(cos 0)                        ; => 1.0
+(atan 1 1)                     ; => 0.7853981633974483
+(atan 1 -1)                    ; => 2.356194490192345
+```
+
 #### `(floor x)`, `(ceiling x)`, `(round x)`, `(truncate x)`
 Standard rounding. `round` uses banker's rounding (round-half-to-even) for
 exact ties, matching Python's built-in `round`. For a vector, the results
@@ -1849,17 +1945,18 @@ are whole numbers, stored as integers unless some elements are missing
 ```
 
 #### `(sigmoid z)`
-`1 / (1 + e^-z)`, computed in a numerically stable way for very large
-`|z|`. The same logistic function `logistic-regression`/`model-predict`
-use internally, exposed directly for convenience.
+`1 / (1 + e^-z)`, the S-curve from 0 to 1, computed in a numerically stable way for very large
+`|z|`: of a number, or of each number of a vector. The same logistic function `logistic-regression`/`model-predict`
+use, so a formula for `nonlinear-regression` can use it too (see the [regression manual](lisp_regression_manual.md)).
 
 ```lisp
 (sigmoid 0)                    ; => 0.5
+(sigmoid #(0 0))               ; => #(0.5 0.5)
 ```
 
 ### Random numbers
 
-`random-float`/`random-int` draw from a single, shared random number
+`random-float`, `random-int`, `random-normal`, and `random-normal-vector` draw from a single, shared random number
 generator (Python's own `random` module) — every call anywhere in a
 session advances the SAME underlying sequence, so `random-seed` affects
 every subsequent draw, not just calls made right after it. (This is a
@@ -1904,6 +2001,22 @@ raises `LispError` if `lo > hi`.
 ```lisp
 (random-int 1 6)                ; => one of 1, 2, 3, 4, 5, 6 -- a die roll
 (random-int 0 0)                ; => 0 -- a degenerate single-value range is fine
+```
+
+#### `(random-normal [mean sd])`, `(random-normal-vector n [mean sd])`
+A random number from the normal distribution (the bell curve) with this
+mean and standard deviation, 0 and 1 unless given; `random-normal-vector`
+makes a vector of `n` of them, which is much faster than `n` calls of
+`random-normal` -- for a simulation of thousands of paths. `random-seed`
+decides both. (`normal-cdf` and `normal-quantile`, in the library manual's
+"Option prices", give the chance of being below a number, and the number
+for a chance.)
+
+```lisp
+(random-normal)                       ; => e.g. -0.42
+(random-normal 100 15)                ; => e.g. 112.3
+(define shocks (random-normal-vector 10000 0 0.01))
+(vector-length shocks)                ; => 10000
 ```
 
 ### Comparison / equality / booleans
@@ -2031,13 +2144,14 @@ not passed around as a value and applied).
 ```
 
 #### `(list? x)`
-`#t` if `x` is `'()` or any cons cell — this does not verify the list is
-*proper* (nil-terminated); `(list? (cons 1 2))` is `#t` even though
-`(1 . 2)` is a dotted pair, not a real list.
+`#t` if `x` is a list: `'()`, or pairs whose last `cdr` is `'()`. A dotted
+pair such as `(1 . 2)` isn't one (`pair?` is `#t` for it), and nor is a
+list made into a circle with `set-cdr!`.
 
 ```lisp
 (list? '(1 2 3))               ; => #t
-(list? (cons 1 2))             ; => #t -- even though (1 . 2) isn't proper
+(list? '())                    ; => #t
+(list? (cons 1 2))             ; => #f -- (1 . 2) is a pair, not a list
 ```
 
 #### `(null? x)`
@@ -2063,7 +2177,7 @@ not passed around as a value and applied).
 ```
 
 #### `(model? x)`
-`#t` for any fitted regression model — see "Regression models", in the [library manual](lisp_library_reference.md#regression-models).
+`#t` for any fitted regression model — see "Using a model", in the [regression manual](lisp_regression_manual.md#using-a-model).
 
 #### `(struct? x)`
 `#t` for an instance of any `defstruct`-defined type — see "Structs",
@@ -2204,12 +2318,14 @@ characters in a string. Anything else, including a dotted list such as
 (length "abcd")                ; => 4
 ```
 
-#### `(list-ref l n)`
+#### `(list-ref l n)`, `(nth n l)`
 The `n`-th element (0-based). Raises `LispError: list-ref: index N out of
-range (0..M)` if `n` is out of bounds.
+range (0..M)` if `n` is out of bounds. `nth` is Common Lisp's name for it,
+with the arguments the other way around. (For a vector, use `vector-ref`.)
 
 ```lisp
 (list-ref (list 10 20 30) 1)   ; => 20
+(nth 1 (list 10 20 30))        ; => 20
 ```
 
 #### `(list-tail l n)`
@@ -3138,6 +3254,17 @@ to the even neighbor, like `round`.
 (vector-round #(2.5 3.5))            ; => #(2.0 4.0)
 ```
 
+#### `(vector-rank v)`
+Where each element stands among the others: 1 for the smallest, up to the number of
+elements for the largest. Equal elements share the average of the ranks they cover, and
+a missing value (`nan`) stays missing. Ranks are what to use when a few extreme values
+would decide an average or a spread.
+
+```lisp
+(vector-rank #(30 10 20))           ; => #(3.0 1.0 2.0)
+(vector-rank #(5 7 5 9))            ; => #(1.5 3.0 1.5 4.0)
+```
+
 #### `(vector-clip v low high)`
 Each element limited to the range `low` to `high`; pass `'()` for no limit
 on one side. Useful for capping outliers, e.g. an LTV over 150.
@@ -3453,8 +3580,8 @@ They work on whole columns with numpy, so tables of millions of rows are
 practical. Column names are strings; where a function takes several, pass
 a list — `(list "state" "month")` — or just one name by itself.
 
-To look at a table, use `(display-table t)` — a text table in the
-console, the Table tab in the GUI, and a rendered table in Jupyter — with
+To look at a table, use `(display-table t)` — a rendered table in Jupyter
+and a text table at the console (a cell whose value is a table shows it so too) — with
 a format for each column's numbers, if you like (see "Displaying
 tables"). To work with it a row at a time, see "Rows", below.
 
@@ -4296,8 +4423,7 @@ it waits, so it still wakes on time if the computer was asleep in between.
 
 In a **Jupyter notebook** the cell keeps running while it waits, and what
 it displays appears as it goes; Kernel → Interrupt stops it. At the
-**console**, Ctrl-C stops it. In the **GUI**, the window doesn't respond
-while it waits, so use the console or a notebook for this.
+**console**, Ctrl-C stops it.
 
 **Checking something every hour.** A loop that does the check, then
 sleeps until the top of the next hour:
@@ -4327,8 +4453,8 @@ for "an hour after this check finished", `(sleep (* 60 60))`.
 ### Charting
 
 `plot-chart`, `plot-histogram`, `plot-panels`, and `plot-map` build a chart
-and hand it to the GUI's chart tab (if it's running), a Jupyter cell (drawn
-there), or the console (a plain text summary). Only the most recently
+and hand it to a Jupyter cell (drawn there) or the console (a plain text
+summary). Only the most recently
 plotted chart is remembered, which is what `save-chart` saves to a file.
 `plot-chart` draws any number of series, each with its own X values, as
 symbols, lines, bars, or filled areas, and with a line fitted to a series
@@ -4565,8 +4691,7 @@ is inferred from `filename`'s extension (`.png`, `.pdf`, `.svg`, and
 anything else matplotlib recognizes). `width`/`height` default to the
 chart's own size (`plot-chart`'s `:width` and `:height`) or else `8.0`/
 `6.0` (inches); give `'()` for either to keep its default while giving
-`dpi`, which defaults to `150.0`. Works with or without the GUI
-running — needs only matplotlib, not PyQt6. Raises `LispError` if nothing
+`dpi`, which defaults to `150.0`. Needs matplotlib. Raises `LispError` if nothing
 has been plotted yet this session, if matplotlib isn't installed, or on any
 file-write failure. Returns `'()`.
 
@@ -4583,7 +4708,7 @@ Shows a table, with a heading for each column, numbers right-aligned and
 text left-aligned, and nothing in a cell whose value is missing (NaN, or
 `'()`). `table` is a table (see "Tables") or a list of rows (see
 `table-rows`). Where it appears depends on where you are: in a **Jupyter
-notebook**, a rendered table, in the notebook's own font but with every digit the same width, so that the digits of a column line up; in the **GUI**, the Table tab; at the
+notebook**, a rendered table, in the notebook's own font but with every digit the same width, so that the digits of a column line up; at the
 **console** or in a script, a text table. Returns `'()`. Headings and text
 appear just as they are, `$`, `*`, `_`, and `|` included (a notebook's
 Markdown would otherwise read them as a formula, emphasis, or a new cell).
@@ -4677,7 +4802,7 @@ balance, and the original balance on the first row.
 Shows `string` as Markdown. In a Jupyter notebook (the `morris_lisp`
 kernel) it renders as real Markdown — tables, headings, bold — so a cell
 can build a Markdown table with `string-append` and display it neatly.
-Anywhere else (console, GUI, `redirect-output`) the raw Markdown text is
+Anywhere else (console, `redirect-output`) the raw Markdown text is
 written as ordinary output, which is still readable. Returns `'()`. In a
 notebook, text between two `$` signs is a formula; write `\$` for a
 dollar sign. (`display-table` does that, and the like for `*`, `_`, and
@@ -4694,7 +4819,7 @@ Markdown's other special characters, for you.)
 #### `(display-html html [text])`
 Shows `html`, a string of HTML, in a Jupyter notebook (the `morris_lisp`
 kernel), where it can be anything a web page can show: colors, pictures,
-a layout of its own. Anywhere else (console, GUI, `redirect-output`),
+a layout of its own. Anywhere else (console, `redirect-output`),
 `text` is written instead -- the same thing without HTML -- or, if there's
 no `text`, the HTML itself. Returns `'()`. `chess.lsp` draws its board
 this way: in a notebook, as a table of light and dark squares with large
@@ -4713,7 +4838,7 @@ directory; without it, the notebook is the file's name with `.ipynb`. A notebook
 new one another name. The whole file is read first, so a syntax error stops it before anything is written.
 
 The notebook is written in the morris_lisp kernel's format. In a notebook, the call shows a link, "Open sample.ipynb", which opens the
-new notebook in a new tab, and the call returns its path. Outside a notebook (the console, the GUI), it says where the file was written.
+new notebook in a new tab, and the call returns its path. Outside a notebook (at the console), it says where the file was written.
 
 A comment on a line of its own above a form goes with that form; a comment at the end of a form's line stays with it; comments after
 the last form are left out.
@@ -4922,7 +5047,7 @@ of loans edited in a grid.
 #### `(command-line-arguments)`
 The words after the script's name on the command line, as a list of
 strings: `("KO" "6")` for `python3 lisp_interpreter.py script.lsp KO 6`
-(see "Running it"). `'()` if there are none, and in the GUI and Jupyter.
+(see "Running it"). `'()` if there are none, and at the console and in Jupyter.
 
 ```lisp
 (command-line-arguments)        ; => ()
@@ -4930,7 +5055,7 @@ strings: `("KO" "6")` for `python3 lisp_interpreter.py script.lsp KO 6`
 
 #### `(display x)`
 Writes `x`'s display form (strings unquoted, e.g. `hello` not `"hello"`) to
-the current output — the console, the GUI log, or a `redirect-output`
+the current output — a notebook cell, the console, or a `redirect-output`
 file, whichever is currently active — with no trailing newline. Returns
 `'()`.
 
@@ -4981,8 +5106,7 @@ Shows `prompt` (if given), waits for the user to type a line, and returns
 it as a string, without the newline. At the end of the input (Ctrl-D at a
 terminal, or the end of a file piped in) it returns `#f`. It works at the
 console REPL, in batch mode (reading standard input), and in a Jupyter
-notebook, where the notebook shows a box to type the line in -- but not in
-the PyQt window.
+notebook, where the notebook shows a box to type the line in.
 
 ```lisp
 (define name (read-line "Your name? "))
@@ -5030,8 +5154,8 @@ Returns `'()`.
 ```
 
 #### `(redirect-output "path.txt" [append?])`
-Retargets everything `display`/`newline`/`print` write (and the console/
-no-GUI default chart-summary text) from the console/GUI log to the given
+Retargets everything `display`/`newline`/`print` write (and the console's
+chart-summary text) from the console, or a notebook cell, to the given
 file, until `reset-output` switches back. Opens in overwrite mode by
 default; pass `#t` for `append?` to append instead. If a prior
 `redirect-output` is still active, its file is closed first (redirecting
@@ -5047,7 +5171,7 @@ output survives even if the script errors out before `reset-output`.
 
 #### `(reset-output)`
 Undoes `redirect-output`: closes whatever file is currently open (if any)
-and returns to writing to the console/GUI log. Safe to call even if no
+and returns to writing to the console, or the notebook cell. Safe to call even if no
 redirect is active.
 
 #### `(load-csv filename [headings] [:text columns] [:skip rows] [:missing texts] [:separator char])`
@@ -5232,7 +5356,7 @@ Until any cell has a slide type, all of the notebook's cells show as one scrolli
 #### `(display-svg svg [text])`
 Draws the picture that `svg`, a string `"<svg ...>...</svg>"`, describes, by itself in the output of a Jupyter notebook's cell. The
 notebook keeps it as a picture (of type `image/svg+xml`), not as part of a page, as `display-html` would. Anywhere else (console,
-GUI, `redirect-output`), `text` is written instead, or, if there's no `text`, a line that says there is a picture. Returns `'()`.
+`redirect-output`), `text` is written instead, or, if there's no `text`, a line that says there is a picture. Returns `'()`.
 
 The string must be well-formed XML whose outermost element is `<svg>`: an error says what is wrong if it is not. A declaration
 (`<?xml ...?>`) or a comment before the `<svg>` is left out, and the SVG namespace, `xmlns="http://www.w3.org/2000/svg"`, is
@@ -5271,7 +5395,7 @@ again quickly). Trying to is an error naming the variable, and nothing is
 written.
 
 **A struct's procedures.** A struct with a procedure in a slot, such as
-the `f` of `(defstruct tranche (money 0.0) (f (lambda (x) (* x 3))))`, can
+the `f` of `(defstruct account (money 0.0) (f (lambda (x) (* x 3))))`, can
 be saved with `:leave-out-procedures #t`. The slots that hold procedures
 are left out of the file, and `load-variables` gives them their defaults.
 So a struct whose procedure wasn't its slot's default gets the default
@@ -5279,9 +5403,9 @@ back, not its own. A procedure anywhere but in a struct's slot is still an
 error.
 
 ```lisp
-(defstruct tranche (money 0.0) (f (lambda (x) (* x 3))))
-(define senior (make-tranche :money 100.0))
-(save-variables "tranches.json" senior :leave-out-procedures #t)   ; => (senior)
+(defstruct account (money 0.0) (f (lambda (x) (* x 3))))
+(define savings (make-account :money 100.0))
+(save-variables "accounts.json" savings :leave-out-procedures #t)   ; => (savings)
 ```
 
 #### `(load-variables path)`
@@ -5304,9 +5428,9 @@ saved slot that the struct type no longer has is an error. A table's rows
 (see `table-rows`) need no `defstruct`.
 
 ```lisp
-(defstruct tranche (money 0.0) (f (lambda (x) (* x 3))))
-(load-variables "tranches.json")                  ; => (senior)
-((tranche-f senior) 2)                            ; => 6, from the default
+(defstruct account (money 0.0) (f (lambda (x) (* x 3))))
+(load-variables "accounts.json")                  ; => (savings)
+((account-f savings) 2)                            ; => 6, from the default
 ```
 
 - A vector comes back stored the same way: whole numbers stay whole numbers, and decimals are stored in the precision in
@@ -5437,7 +5561,7 @@ See "Errors and cleanup", above.
 ### Help
 
 Every function of the libraries, and most builtins, has a docstring that says how it is called and what it does. These show it, in
-the console, the GUI, or a notebook. The documentation of a name comes from the first of these that has it:
+a notebook or the console. The documentation of a name comes from the first of these that has it:
 
 1. Its **docstring**: the string a function's body begins with, `(define (f x) "What f does." ...)`; a builtin's own, which begins
    with how it is called; or what `defgeneric` was given. The functions that `defstruct` makes have one too.
@@ -5640,7 +5764,7 @@ the hook is called instead, and
 *it* decides: it can print something, look around with `(locals)`, and then
 call `(debug-repl)` to open the debug REPL, call `(abort)` to give up, or
 just return, and the program carries on. A hook needs no console, so hooks
-work in scripts, in Jupyter, and in the GUI.
+work in scripts and in Jupyter.
 
 **The debug REPL** is a prompt, opened in the middle of the program. What
 you type is evaluated in the scope where the program stopped: for a
@@ -5825,7 +5949,6 @@ depends on where you're running:
 |---|---|
 | The console REPL | Prints `Aborted -- back at the top level.` and gives you the next prompt. |
 | A script | Ends the run, printing `Aborted.` on stderr, with exit status 1. (There's nothing to go back to, and going on with a computation whose result is missing would only produce more errors.) |
-| The GUI | Writes `Aborted.` in the log; the window carries on. |
 | Jupyter | The cell ends with an `Aborted` error. |
 
 `catch-error` doesn't catch an abort, because it isn't an error, and
@@ -5894,9 +6017,7 @@ and the `catch` returns `no-payment`.
 **Where the debug REPL works.** At a **terminal** (running a script, or
 interactively) it reads the real console with `input()`, as described above.
 In a **Jupyter notebook**, JupyterLab or Notebook, it's made of widgets, in the
-output of the cell that's running (see below). In the **GUI**, it would read
-from whatever stdin the GUI process has (usually none, or the terminal it was
-launched from), so use a hook that prints there, and don't call `(debug-repl)`.
+output of the cell that's running (see below).
 
 **The debug REPL in Jupyter.** When the program stops in a notebook cell, the
 cell shows:
@@ -6015,8 +6136,7 @@ Since `let`, `let*`, and `dolist` are macros, their expansions show up too.
 - Values are **summarized**, never printed in full — a long list shows its
   first few elements and `...`, a big vector shows `#(7 7 7 ... n=1000000)` —
   so tracing a call on a large dataset stays fast and readable.
-- Trace lines go **wherever `display` output goes**: the console, the GUI
-  log, a Jupyter cell, or a file after `redirect-output`. Interleaved with
+- Trace lines go **wherever `display` output goes**: the console, a Jupyter cell, or a file after `redirect-output`. Interleaved with
   your own output, in order.
 - Level 0 costs nothing measurable, and turning tracing on mid-run is safe
   (indentation is counted from where you turned it on).
@@ -6043,7 +6163,7 @@ Error: car: not a pair: 5
 ```
 
 This appears wherever errors are shown — batch mode (which then exits with
-status 1), the console REPL, the GUI log, and Jupyter's error box — and it
+status 1), the console REPL, and Jupyter's error box — and it
 is always on, whether or not `verbose` is. Each line is `(name arguments...)`
 (summarized, as above), plus a note when there is something to explain:
 
@@ -6085,12 +6205,21 @@ Lisp call stack (most recent call last):
 
 ### Profiling
 
+#### `(time expression)`
+Evaluates `expression`, shows how long it took, and returns its value -- as
+`%time` does in a Python notebook. For which of a program's functions take
+the time, profile them (below).
+
+```lisp
+(time (vector-sum (vector-range 0 1000000)))   ; shows  time: 0.004 seconds
+```
+
 To find out where a program spends its time, say which functions to watch, run
 the program, and ask what was found:
 
 ```lisp
 (load "sql.lsp")                          ; the SQL interpreter, for something to watch
-(profile 'peg-match-item 'peg-call-rule 'tokenize 'string-downcase)
+(profile 'peg--match-item 'peg--call-rule 'tokenize 'string-downcase)
 (sql "SELECT 1 + 2")
 (show-profile)                            ; a table, the function that took the most time first
 (unprofile)                               ; stop watching them all
@@ -6209,102 +6338,6 @@ and the examples for each part of the library — see
 [lisp_example_programs.md](lisp_example_programs.md), which explains the programming
 techniques they show.
 
-## A parser framework
-
-`lib/parser.lsp` reads text in a small language -- a query language, a
-calculator, a configuration file, a data format -- by a **table of rules**,
-instead of a function for each part of the grammar. The text is cut into
-tokens with regular expressions, and the rules say what the tokens make.
-It is no more powerful than recursive descent: a rule that has to guess
-which way to go tries one way, and if that fails tries the next. The SQL
-interpreter in `examples/sql.lsp` is read by it, and the library is meant to be
-read, too; [the example programs](lisp_example_programs.md#a-language-from-a-table-the-parser-framework)
-explain how it works and what to learn from it.
-
-```lisp
-(load "parser.lsp")
-
-(define-grammar calculator
-  (token skip   "\\s+")                              ; spaces: read, and thrown away
-  (token number "\\d+(?:\\.\\d+)?"  string->number)  ; the text is made a number
-  (token symbol "[-+*/()]")
-
-  (rule expression ((chain term ("+" . +) ("-" . -))))
-  (rule term       ((chain factor ("*" . *) ("/" . /))))
-  (rule factor     (number))
-  (rule factor     ("(" expression ")")))
-
-(grammar-parse calculator "2 + 3 * (4 - 1)")         ; the tree (+ 2 (* 3 (- 4 1)))
-(eval (grammar-parse calculator "2 + 3 * (4 - 1)"))  ; 11
-```
-
-`define-grammar` is a macro, so load the library by hand (it isn't one of the
-autoloaded ones); `make-grammar` makes the same grammar from a list of rows, for
-a grammar a program builds. `(grammar-parse grammar text [:start rule])` returns
-the value of the text, or signals an error that says what was expected where.
-`(grammar-tokens grammar text)` shows how the text was cut up, as a list of
-`(kind text)`, to see what the token rows make of it.
-
-**Token rows**, `(token kind regular-expression [function])`. At each place in the
-text the regular expressions are tried in the order of the rows, and the first
-that matches takes its piece (not the longest, so `<=` goes before `<`, and
-keywords before names). The token's value is the text, or what the function makes
-of it. A token of kind `skip` is read and thrown away. A character no row matches is a
-token of kind `unknown`, which no rule accepts, so it's an error where it is. The
-expressions can't capture groups (use `(?:...)`) or begin with a flag such as `(?i)`
-(write `(?i:...)` around what it applies to); the grammar says so when it's made.
-
-**Rule rows**, `(rule name (item ...) [action])`. Several rows with the same name are
-alternatives, tried in the order written; the first whose items all match is the
-rule's value. An item is:
-
-| Item | Matches | Its value |
-|---|---|---|
-| `"text"` | a token with that text | none |
-| `kind` | a token of that kind (a name from a token row) | the token's value |
-| `name` | the rule of that name | what the rule makes |
-| `end` | only the end of the text | none |
-| `(opt item ...)` | the items, or nothing | their value, or `'()` |
-| `(flag item ...)` | the items, or nothing | `#t` or `#f` |
-| `(star item ...)`, `(plus item ...)` | the items again and again (`plus`: at least once) | the list of their values |
-| `(sep-by sep item ...)` | the items one or more times with `sep` between | the list of their values |
-| `(or item ...)` | the first of the items that matches | its value |
-| `(one-of "a" "b")` | one of these texts | the text as written in the rule |
-| `(seq item ...)` | the items in a row | their value |
-| `(drop item ...)` | the items | none |
-| `(not item ...)` | succeeds, reading nothing, if the items do not match | none |
-| `(chain operand ("+" . add) ...)` | an operand, and more of them each after an operator, grouped from the left | `(add left right)`, or the procedure's value |
-
-The value of several items together (the items of a rule, or inside an `opt`,
-`star`, and so on) is the value of the one that has a value, or the list of the
-values of several, or `#t` if none has one. A rule's **action** is a procedure called
-with the value of each item of the row that has one; what it returns is the rule's
-value. With no action the value is that of the items together. `(node-builder 'x)`
-makes the action that returns `(x value ...)`, for a tree. A `chain` operator's node is
-a symbol, which makes the tree `(node left right)` (so `("+" . +)` makes Lisp that
-`eval` can run), or, in a grammar made by `make-grammar`, a procedure.
-
-Other rows: `(option ignore-case #t)` (the texts in rules match in any case, and a
-message shows them in capitals), `(option start name)`, `(option error-prefix "sql:")`,
-`(option end-name "the end of the statement")`, and `(describe name "a number")`, which
-says what a rule or kind of token is called in a message.
-
-**When the text doesn't fit** the error says what could have come next at the furthest
-place the text was read to, and what was there:
-`sql: expected ; or the end of the statement but found t3 (at character 19)`. Parts that
-are optional aren't listed while something else was required, and a rule with a
-`describe` is named by it instead of by each thing it tried.
-
-How it works: the rules are tried in order at each place in the tokens, and what each rule
-found at each place is remembered. A rule that is tried again at a place -- as it is when
-an alternative that went some way fails and the next one starts the same way -- costs
-nothing, so the time is in proportion to the length of the text, however many alternatives
-begin alike. (This is the "packrat" method, and the grammars it reads, "parsing expression
-grammars".) A rule that begins with itself, as `sum = sum "+" product`, would never stop,
-and the error says so: write it as a `chain`, `star`, or `sep-by`.
-
----
-
 ## How the code is organized
 
 The interpreter is split into these Python files, all in `lisp_interp/`,
@@ -6313,11 +6346,10 @@ along with the standard macros (`macros_init.lsp`, `loop.lsp`) and your
 
 | Directory | What's in it |
 |---|---|
-| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `option_methods.lsp` (a stock's options valued three ways), `template.lsp`, `column_engine.lsp`, `model_utils.lsp`, `parser.lsp` (a framework for parsers of small languages: see "A parser framework") |
+| `lib/` | Lisp libraries you can `load`: `solver.lsp` (Ridders and Nelder-Mead), `vol_smile.lsp` (fitting implied volatility smiles), `option_check.lsp` (option prices checked against simulated paths), `option_methods.lsp` (a stock's options valued three ways), `template.lsp`, `column_engine.lsp`, `model_utils.lsp`, `parser.lsp` (a framework for parsers of small languages: see ["A parser framework"](lisp_library_reference.md#a-parser-framework) in the library manual) |
 | `examples/` | Example programs (`*_example.lsp`, `prepayment_demo.lsp`), with the data files they read -- among them the five after Norvig's *Paradigms of AI Programming*, a chess program, `chess.lsp`, with its opening book, `chess_book.lsp`, a KenKen solver, and an SQL interpreter, `sql.lsp`. They are described, and the techniques they show explained, in [lisp_example_programs.md](lisp_example_programs.md). Run one from that directory: `python3 ../lisp_interpreter.py macros_example.lsp` |
 | `notebooks/` | Jupyter notebooks that use the interpreter (on the `morris_lisp` kernel) |
-| `scratch/` | Experiments: not part of the interpreter, and not tested |
-| `tools/` | `make_contents.py`, which rebuilds the Contents of all three documents from their headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; `make_chess_book.py`, which makes the chess program's opening book from PGN files of games; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
+| `tools/` | `make_contents.py`, which rebuilds the Contents of each document from its headings (run it after adding a section); `build_pool_dataset.py`, which turns Freddie Mac loan-level files into a pool-level CSV; `make_chess_book.py`, which makes the chess program's opening book from PGN files of games; and `mbs_prepayment_data_guide.md`, which explains where that data comes from |
 
 `load` finds files in `lib/` and `examples/` from anywhere (see "Where
 `load` finds a file", under "Running it").
@@ -6326,7 +6358,8 @@ The Python files:
 
 | File | What's in it |
 |---|---|
-| `lisp_interpreter.py` | The command line (what runs when you type `python3 lisp_interpreter.py ...`), the console REPL, and batch mode |
+| `lisp_interpreter.py` | The command line: what runs when you type `python3 lisp_interpreter.py ...` |
+| `lisp_runner.py` | Running Lisp from Python: `new_environment`, `run_file`, `run_text`, and `repl` (the console) -- what the command line and the Jupyter kernel use, and what another Python program can import |
 | `lisp_core.py` | The language itself: data types, the reader, environments, the evaluator and special forms, call tracing, and the printer. It imports none of the other files. |
 | `lisp_builtins.py` | The general built-in procedures (numbers, lists, strings, making and reading vectors, dates, hash tables, output, ...) and `make_global_env()`, which builds a new environment containing every builtin |
 | `lisp_vector_math.py` | Arithmetic, comparisons, statistics, and time-series functions on whole vectors (`vector-mul`, `vector>`, `vector-mean`, `vector-lag`, ...) |
@@ -6338,7 +6371,7 @@ The Python files:
 | `lisp_help.py` | `help`'s documentation, `documentation`, `apropos`, and the notebook's Tab and Shift-Tab: where the documentation of a name comes from |
 | `lisp_profile.py` | `profile`, `unprofile`, `profile-reset!`, `profile-results`, `show-profile`: the profiling functions (the machinery is in `lisp_core.py`) |
 | `lisp_debug.py` | `break`, `unbreak`, `set-debug-hook!`, `abort`, `locals`, `break-on-error`, ...: the debugging functions (the machinery is in `lisp_core.py`) |
-| `lisp_regression.py` | `linear-regression`, `lad-regression`, `quantile-regression`, `logistic-regression`, `spline-regression`, `spline-lad`, `spline-quantile`, `spline-logistic`, `model-report`, ... |
+| `lisp_regression.py` | `linear-regression`, `lad-regression`, `quantile-regression`, `logistic-regression`, `poisson-regression`, `ridge-regression`, `lasso-regression`, `nonlinear-regression`, `spline-regression`, `spline-lad`, `spline-quantile`, `spline-logistic`, `spline-poisson`, `model-report`, ... (the [regression manual](lisp_regression_manual.md)) |
 | `lisp_save.py` | `save-variables` (with its macro in `macros_init.lsp`) and `load-variables`: variables in a JSON file |
 | `lisp_simplex.py` | `lp-read-file`, `lp-solve`: linear programming (uses `simplex/`) |
 | `lisp_clock.py` | The clock: `current-time`, `today`, `time-add`, `sleep`, `sleep-until`, ... |
@@ -6352,6 +6385,7 @@ The Python files:
 | `lisp_http.py` | `http-get-json`, `http-get-csv`, ... (downloads from any web API) |
 | `lisp_fred.py` | `fred-table` (downloads from FRED, through `lisp_http.py`) |
 | `lisp_nyfed.py` | `nyfed-rates`, `nyfed-rate-details`: the New York Fed's SOFR, EFFR, and other reference rates |
+| `lisp_dynare.py` | `dynare-run`: macroeconomic models, run by Dynare under GNU Octave (see [lisp_macro_models_manual.md](lisp_macro_models_manual.md)) |
 | `lisp_data_common.py` | What the data modules share: reading the credentials file, the years and lists of names they take, and making their tables |
 | `lisp_sec.py` | `sec-income-statement`, `sec-balance-sheet`, `sec-financials`, ...: financial statements from the SEC's XBRL data |
 | `lisp_fdic.py` | `fdic-balance-sheet`, `fdic-ratios`, `fdic-financials`, `fdic-get`, ...: banks' Call Report data from the FDIC |
@@ -6368,8 +6402,8 @@ The Python files:
 | `lisp_futures.py` | `futures-curve-fit`, `futures-leg-carry`: a futures curve's rich and cheap contracts, and its carry |
 | `lisp_portfolio.py` | `combine-returns`, `bootstrap-paths`, `portfolio-value`, `covariance-matrix`, `correlation-matrix`, `minimum-variance-weights`, `mean-variance-weights`, ...: portfolios |
 | `lisp_rates.py` | `simulate-rate-paths`, `calibrate-rate-model`, ...: paths of interest rates, and their fit to option prices; `sofr-*`: SOFR curves (uses `term_structure/`) |
-| `lisp_gui.py` | The PyQt6 window |
 | `lisp_kernel.py`, `lisp_jupyter.py` | The Jupyter kernel |
+| `lisp_notebook_files.py` | `file-to-notebook`, `set-slide-types`, `notebook-to-slides`: notebooks as files, and slideshows of them |
 | `lisp_jupyter_debug.py` | The debug REPL in Jupyter, made with ipywidgets |
 | `tests/` | The tests, a file for each part (see "Running the tests"): `python3 -m unittest discover -s tests` |
 
@@ -6400,8 +6434,8 @@ interpreter, about 1,300 of them:
 | `test_debugging.py` | tracing, stack traces, breakpoints, and the debug REPL, in the console and in Jupyter |
 | `test_profiling.py` | `profile` and its results: counts, times, self time, recursion, tail calls, and built-in functions |
 | `test_parser.py` | the parser framework, `lib/parser.lsp`: tokens, each kind of item, errors, and two grammars compared with Python's own parsing |
-| `test_programs.py` | the command line, the GUI's error report, the chess, KenKen, and SQL programs, and the example scripts |
-| `test_reference_doc.py` | **the three documents**, this manual, `lisp_library_reference.md`, and `lisp_example_programs.md`: every ` ```lisp ` example with a `; =>` result is run, and the test fails if the interpreter no longer returns that value. So when you change how something behaves, the tests say which documented examples need updating |
+| `test_programs.py` | the command line, the console (its display, and Control-C), the chess, KenKen, and SQL programs, and the example scripts |
+| `test_reference_doc.py` | **the documents**: every ` ```lisp ` example with a `; =>` result is run, and the test fails if the interpreter no longer returns that value. So when you change how something behaves, the tests say which documented examples need updating |
 
 `support.py` has what they all use: the interpreter's modules, and
 `LispTestCase`, which gives each test a fresh global environment.
@@ -6446,9 +6480,7 @@ LISP_TEST_SLOW=1 python3 -m unittest discover -s tests
 sources (FRED, tastytrade, Schwab, FINRA, and the others) are tested
 against a stand-in that answers as the real service does. The
 `http-get-*` functions are tested against a small web server that the
-tests start on your own computer. The GUI gets only a check that its error
-report looks right; it runs off-screen, so no window opens, and it's skipped
-if PyQt6 isn't installed. The Jupyter kernel is tested by starting a real
+tests start on your own computer. The Jupyter kernel is tested by starting a real
 one, which takes a few seconds: its error boxes, and the debug REPL, which a
 scripted stand-in for the browser types into and clicks. Those tests are
 skipped if ipykernel or ipywidgets isn't installed.

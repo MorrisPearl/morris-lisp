@@ -5,12 +5,12 @@ lisp_plot_chart.py, and plot-map, in lisp_maps.py.
 A chart goes through two steps:
   1. A builder turns Lisp values into a plain-data "chart spec", a dict
      (no plotting library involved).
-  2. Whoever receives the spec draws it: the GUI's chart tab, a Jupyter
-     cell, or the console (which just prints a summary). Drawing with
-     matplotlib is shared by all of them through draw_chart_on_axes(), so
-     the on-screen chart and a saved image always match.
+  2. Whoever receives the spec draws it: a Jupyter cell, or the console
+     (which just prints a summary). A notebook and save-chart both draw
+     with draw_chart_on_axes(), so the chart in the notebook and a saved
+     image always match.
 
-Only matplotlib is needed to draw or save a chart -- not PyQt6.
+Only matplotlib is needed to draw or save a chart.
 """
 
 from lisp_core import LispError, NIL
@@ -41,21 +41,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def draw_chart_on_axes(fig, ax, spec):
-    """Draw a chart spec onto an existing Matplotlib Figure and Axes:
+    """Draw a chart spec onto a new Matplotlib Figure and its Axes:
     plot-chart's, plot-histogram's, and plot-panels' with lisp_plot_chart,
-    and plot-map's with lisp_maps. Pure matplotlib -- no Qt."""
-    # The GUI draws every chart on the same figure and axes: first, undo
-    # what an earlier chart did to them -- secondary axes, panels, and color
-    # bars added, ax moved to the top panel and brought to the front, a
-    # figure title, a map's equal scales and hidden axes.
-    for other in list(fig.axes):
-        if other is not ax:
-            other.remove()
-    ax.set_subplotspec(fig.add_gridspec(1, 1)[0])
-    ax.set_zorder(0)
-    ax.set_aspect("auto")
-    ax.set_axis_on()
-    fig.suptitle("")
+    and plot-map's with lisp_maps."""
     if spec.get("kind") == "map":
         lisp_maps.draw(fig, ax, spec)
     else:
@@ -65,7 +53,7 @@ def draw_chart_on_axes(fig, ax, spec):
 def render_chart_to_file(spec, path, width=None, height=None, dpi=150):
     """Render a chart spec to a standalone image file (PNG, PDF, SVG, ...
     -- whatever matplotlib recognizes from the file extension). Uses a
-    throwaway headless Figure, so this works with or without a GUI running.
+    throwaway Figure, which is never shown on the screen.
     Its size, in inches, is width by height if they're given, or else the
     chart's own (plot-chart's :width and :height), or else 8 by 6."""
     if not MATPLOTLIB_AVAILABLE:
@@ -89,7 +77,7 @@ def render_chart_to_file(spec, path, width=None, height=None, dpi=150):
 def make_chart_builtins(plot):
     """The plot- and save-chart builtins for one environment. `plot` is
     that environment's callback: it receives each new chart spec and
-    shows it (in the GUI's chart tab, a Jupyter cell, or as a console
+    shows it (in a Jupyter cell, or as a console
     summary). The most recent spec is remembered so save-chart can render
     it to a file without being given the data again."""
     last_chart = {"spec": None}

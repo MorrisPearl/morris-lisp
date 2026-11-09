@@ -136,7 +136,7 @@ class TestADealThatDefaults(DefaultsCase):
         self.assertAlmostEqual(self.node("POOL", "principal").sum() + pool_loss.sum(), 10000000.0, places=3)
         defaults = self.run_lisp("(deal-piece-defaults deal (car (deal-pieces deal)) (deal-forward-path deal 36))")
         mdrs, severities = (np.array(v.items) for v in lisp_core.pairs_to_list(defaults))
-        flows = self.run_lisp("(project-pool 10000000.0 6.5 6.0 36 (speed-smms (prepayment-speed 'psa 150) 10 36) :mdrs (vector %s) :severities (vector %s) :lag 18)"
+        flows = self.run_lisp("(project-pool 10000000.0 6.5 6.0 36 (prepayment-speed--speed-smms (prepayment-speed 'psa 150) 10 36) :mdrs (vector %s) :severities (vector %s) :lag 18)"
                               % (" ".join(repr(float(x)) for x in mdrs), " ".join(repr(float(x)) for x in severities)))
         np.testing.assert_allclose(pool_loss, lisp_core.pairs_to_list(flows)[4].items, rtol=1e-9)
 
@@ -174,7 +174,7 @@ class TestADealThatDefaults(DefaultsCase):
         self.make_deal()
         self.assertLispError("(deal-set-defaults! deal -5)", "a percent of the default model, from 0")
         self.assertLispError("(deal-set-liquidation-lag! deal 2.5)", "a whole number, from 0")
-        self.assertLispError("(deal-clear-treasury-curve! deal)", "make the defaults 0 before taking the curve away")
+        self.assertLispError("(deal-pricing--clear-treasury-curve! deal)", "make the defaults 0 before taking the curve away")
         self.run_lisp('(define plain (new-deal "Plain" :collateral (list %s)))' % PIECE)
         self.assertLispError("(deal-set-defaults! plain 100)", "needs a Treasury curve")
         self.assertShows("(deal-defaults plain)", "0")
@@ -188,7 +188,7 @@ class TestTheFitsThatComeWithTheLibrary(LispTestCase):
         cwd = os.getcwd()
         os.chdir(folder)
         try:
-            self.run_lisp('(load "freddie_default.lsp") (define defaults (freddie-default-fit)) (define severity (freddie-severity-fit))')
+            self.run_lisp('(load "freddie_default.lsp") (define defaults (freddie-default--fit)) (define severity (freddie-default--severity-fit))')
         finally:
             os.chdir(cwd)
         self.assertShows("(model-kind defaults)", '"spline-logistic"')
@@ -209,12 +209,12 @@ class TestTheOas(DefaultsCase):
                             (cons "second_home" (vector 0.0 1.0 0.0 0.0)) (cons "cash_out" (vector 1.0 0.0 0.0 0.0)) (cons "refinance" (vector 0.0 0.0 0.0 1.0))
                             (cons "winter" (vector 1.0 0.0 0.0 0.0)) (cons "summer" (vector 0.0 1.0 0.0 0.0))) (vector 0.01 0.02 0.05 0.2) 0))''')
         self.run_lisp("(deal-set-rate-model! deal (make-rate-model :sigma1 0.0 :sigma2 0.0)) (deal-run-paths! deal :paths 2)")
-        flows = self.run_lisp("(deal-pricing-flows deal)")
+        flows = self.run_lisp("(deal--pricing-flows deal)")
         for name in ("POOL", "C"):
             paid = [np.array(v.items, dtype=float) for v in lisp_core.pairs_to_list(
                 self.run_lisp('(hash-table-ref (path-run-flows (path-sets-base (deal-path-sets deal))) "%s")' % name))]
-            expected = (np.array(self.run_lisp('(node-principal (get-node (deal-run-copy deal (deal-pricing-flows deal) #t) "%s"))' % name).items)
-                        + np.array(self.run_lisp('(node-interest (get-node (deal-run-copy deal (deal-pricing-flows deal) #t) "%s"))' % name).items))
+            expected = (np.array(self.run_lisp('(node-principal (get-node (deal--run-copy deal (deal--pricing-flows deal) #t) "%s"))' % name).items)
+                        + np.array(self.run_lisp('(node-interest (get-node (deal--run-copy deal (deal--pricing-flows deal) #t) "%s"))' % name).items))
             np.testing.assert_allclose(paid[0], expected, rtol=1e-9)
         self.assertGreater(np.array(flows.cdr.cdr.cdr.car.items).sum(), 0.0)           # (the pricing flows have their losses)
 

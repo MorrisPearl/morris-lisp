@@ -141,8 +141,9 @@ def encode(value, leave_out_procedures=False):
                                for key, v in value.table.items()]}
     if isinstance(value, LispStruct):
         return {"struct": str(value.struct_type.name), "slots": encode_slots(value, leave_out_procedures)}
-    if isinstance(value, (lisp_regression.LispModel, lisp_regression.LispSplineModel)):
-        return {"model": encode_plain(lisp_regression.model_data(value))}
+    if isinstance(value, (lisp_regression.LispModel, lisp_regression.LispSplineModel,
+                          lisp_regression.LispNonlinearModel)):
+        return {"model": encode_plain(lisp_regression.model_data(value))}      # (a nonlinear model says it can't be)
     raise LispError("it is or holds %s, which isn't data -- data is numbers, strings, symbols, lists, vectors, "
                     "tables, dates, hash tables, structs, and regression models" % (_brief(value),))
 

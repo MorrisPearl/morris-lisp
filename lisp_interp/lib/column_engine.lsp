@@ -103,11 +103,11 @@
 (define current-row '())
 (define current-column '())
 
-(define (position-of item lst i)
+(define (column-engine--position-of item lst i)
   (cond
     ((null? lst) -1)
     ((eq? (car lst) item) i)
-    (#t (position-of item (cdr lst) (+ i 1)))))
+    (#t (column-engine--position-of item (cdr lst) (+ i 1)))))
 
 ; name: a symbol, e.g. 'balance -- matched against each registered
 ; column's declared (string) `name` slot. The usual case is exactly one
@@ -136,7 +136,7 @@
     ((null? matches) (error "lag/find-column: no column named" name))
     ((null? (cdr matches)) (cdar matches))
     (#t
-     (let ((cur-pos (if (null? current-column) -1 (position-of current-column *columns* 0)))
+     (let ((cur-pos (if (null? current-column) -1 (column-engine--position-of current-column *columns* 0)))
            (last-match (cdar (reverse matches))))
        (define (scan remaining best)
          (cond
@@ -164,47 +164,47 @@
 ; () stays (), a single column becomes a one-element list, and a list
 ; (for a column that depends on more than one other -- useful once you're
 ; past a simple chain, e.g. modeling a CMO tranche) passes through as-is.
-(define (normalize-after a)
+(define (column-engine--normalize-after a)
   (cond
     ((null? a) '())
     ((column? a) (list a))
     (#t a)))
 
-(define (contains? item lst)
+(define (column-engine--contains? item lst)
   (cond
     ((null? lst) #f)
     ((eq? (car lst) item) #t)
-    (#t (contains? item (cdr lst)))))
+    (#t (column-engine--contains? item (cdr lst)))))
 
-(define (all-satisfied? prereqs done)
-  (every (lambda (prereq) (contains? prereq done)) prereqs))
+(define (column-engine--all-satisfied? prereqs done)
+  (every (lambda (prereq) (column-engine--contains? prereq done)) prereqs))
 
 ; Kahn's algorithm: repeatedly pull out every column whose `after`
 ; prerequisites are already in `done`, until every column has been
 ; placed (or nothing is ready, which means a cycle or a typo'd `after`).
-(define (topo-sort columns)
+(define (column-engine--topo-sort columns)
   (define (visit remaining done)
     (cond
       ((null? remaining) done)
       (#t
-       (let ((ready (filter (lambda (c) (all-satisfied? (normalize-after (column-after c)) done))
+       (let ((ready (filter (lambda (c) (column-engine--all-satisfied? (column-engine--normalize-after (column-after c)) done))
                              remaining)))
          (if (null? ready)
              (error "calculate-all: circular or missing `after` dependency")
-             (visit (remove-if (lambda (c) (contains? c ready)) remaining)
+             (visit (remove-if (lambda (c) (column-engine--contains? c ready)) remaining)
                     (append done ready)))))))
   (visit columns '()))
 
 ; Used by write-csv, below: turns a list of column structs into the
 ; (name vector decimals) shape write-columns-csv expects, keeping only the
 ; visible ones (visible #f columns, pure bookkeeping, are left out).
-(define (columns->display-pairs cols)
+(define (column-engine--columns->display-pairs cols)
   (map (lambda (c) (list (column-name c) (column-series c) (column-decimals c)))
        (filter column-visible cols)))
 
-; (display-column-table cols) -- shows the visible columns in `cols` with
+; (column-engine--display-column-table cols) -- shows the visible columns in `cols` with
 ; display-table, each number with commas and its column's `decimals`.
-(define (display-column-table cols)
+(define (column-engine--display-column-table cols)
   (let ((shown (filter column-visible cols)))
     (display-table (map (lambda (c) (cons (column-name c) (column-series c))) shown)
                    (map (lambda (c) (list (column-name c) (format ",.{}f" (column-decimals c)))) shown))))
@@ -229,7 +229,7 @@
 ;             still only ever saw the previous row's.
 ; Finally displays every visible column with display-column-table.
 (define (calculate-all columns n)
-  (define ordered (topo-sort columns))
+  (define ordered (column-engine--topo-sort columns))
   (dolist (c ordered)
     (column-series-set! c (make-vector n 0)))
   (dolist (c ordered)
@@ -251,7 +251,7 @@
         '()))
   (compute-row 1)
   (set! current-column '())
-  (display-column-table ordered)
+  (column-engine--display-column-table ordered)
   ordered)
 
 ; (write-csv filename cols) -- writes every VISIBLE column in `cols`
@@ -261,4 +261,4 @@
 ; any time after calculate-all has run (cols' `series` vectors just need
 ; to already be filled in).
 (define (write-csv filename cols)
-  (write-columns-csv filename (columns->display-pairs cols)))
+  (write-columns-csv filename (column-engine--columns->display-pairs cols)))

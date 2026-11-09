@@ -21,6 +21,13 @@ class TestOptionPrices(LispTestCase):
         self.assertAlmostEqual(self.price("(normal-cdf 0)"), 0.5, places=12)
         self.assertAlmostEqual(self.price("(normal-cdf 1.96)"), 0.9750021, places=6)
 
+    def test_normal_quantile_is_the_opposite_of_normal_cdf(self):
+        self.assertAlmostEqual(self.price("(normal-quantile 0.975)"), 1.959964, places=6)
+        self.assertAlmostEqual(self.price("(normal-quantile 0.5)"), 0.0, places=12)
+        self.assertAlmostEqual(self.price("(normal-cdf (normal-quantile 0.123))"), 0.123, places=12)
+        self.assertEqual(self.show("(normal-quantile (vector 0.5 nan))"), "#(0.0 nan)")
+        self.assertLispError("(normal-quantile 1)", "normal-quantile: p must be a chance between 0 and 1")
+
     def test_put_call_parity_holds_with_a_dividend_yield(self):
         call = self.price('(bsm-price "call" 100 110 0.75 0.04 0.3 :dividend-yield 0.02)')
         put = self.price('(bsm-price "put" 100 110 0.75 0.04 0.3 :dividend-yield 0.02)')
@@ -250,12 +257,12 @@ class TestVolSmile(LispTestCase):
     def test_dividends_present_value_counts_those_after_the_date_and_before_each_expiration(self):
         self.run_lisp("""(define dividends (list (cons "ex-date" (vector (date 2026 1 10) (date 2026 3 10) (date 2026 6 10)))
                                                 (cons "amount" (vector 1.0 2.0 4.0))))""")
-        values = self.run_lisp("(dividends-present-value (vector (date 2026 2 1) (date 2026 5 1) (date 2026 12 1)) 0.05 "
+        values = self.run_lisp("(vol-smile--dividends-present-value (vector (date 2026 2 1) (date 2026 5 1) (date 2026 12 1)) 0.05 "
                                "dividends (date 2026 2 1))").items
         march = 2.0 * math.exp(-0.05 * 37 / 365)                 # (the one in January is before the date)
         june = 4.0 * math.exp(-0.05 * 129 / 365)
         np.testing.assert_allclose(np.array(values, dtype=float), [0.0, march, march + june], rtol=1e-6)
-        self.assertShows("(dividends-present-value (vector (date 2026 5 1)) 0.05 '() (date 2026 2 1))", "#(0.0)")
+        self.assertShows("(vol-smile--dividends-present-value (vector (date 2026 5 1)) 0.05 '() (date 2026 2 1))", "#(0.0)")
 
     def test_black_price_and_implied_volatility(self):
         self.assertAlmostEqual(self.run_lisp("(vector-ref (black-price #(1) #(100) #(100) #(1) #(1) #(0.2)) 0)"),
@@ -1528,8 +1535,8 @@ class TestCallSpreads(OptionChainTestCase):
         table = self.run_lisp("(spread-search-spreads search)")
         return {str(name): list(vector.items) for name, vector in lisp_tables.table_columns(table, "test")}
 
-    COLUMNS = ["long-symbol", "short-symbol", "long-strike", "short-strike", "long-price", "short-price", "cost",
-               "worth", "profit", "ratio", "breakeven", "max-profit"]
+    COLUMNS = ["symbol-1", "symbol-2", "strike-1", "strike-2", "price-1", "price-2", "cost", "max-loss", "max-profit",
+               "worth", "profit", "ratio", "breakeven-1", "breakeven-2"]
 
     # -- a case worked out by hand ---------------------------------------------------------------------
 
@@ -1541,17 +1548,17 @@ class TestCallSpreads(OptionChainTestCase):
         self.make_chain(self.BASE + self.EXTRAS)
         table = self.spreads()
         self.assertEqual(list(table), self.COLUMNS)
-        self.assertEqual([(a, b) for a, b in zip(table["long-strike"], table["short-strike"])],
+        self.assertEqual([(a, b) for a, b in zip(table["strike-1"], table["strike-2"])],
                          [(100, 110), (100, 105), (105, 110)])                # best first
         for column, expected in [("cost", [5.0, 3.2, 2.0]), ("worth", [8.0, 5.0, 3.0]), ("profit", [3.0, 1.8, 1.0]),
-                                 ("ratio", [0.6, 0.5625, 0.5]), ("breakeven", [105.0, 103.2, 107.0]),
-                                 ("max-profit", [5.0, 1.8, 3.0]), ("long-price", [6.2, 6.2, 3.2]),
-                                 ("short-price", [1.2, 3.0, 1.2])]:
+                                 ("ratio", [0.6, 0.5625, 0.5]), ("breakeven-1", [105.0, 103.2, 107.0]),
+                                 ("max-profit", [5.0, 1.8, 3.0]), ("price-1", [6.2, 6.2, 3.2]),
+                                 ("price-2", [1.2, 3.0, 1.2])]:
             with self.subTest(column=column):
                 np.testing.assert_allclose(table[column], expected, rtol=1e-5)
-        self.assertEqual([str(s) for s in table["long-symbol"]],
+        self.assertEqual([str(s) for s in table["symbol-1"]],
                          ["XYZ   261120C00100000", "XYZ   261120C00100000", "XYZ   261120C00105000"])
-        self.assertEqual([str(s) for s in table["short-symbol"]],
+        self.assertEqual([str(s) for s in table["symbol-2"]],
                          ["XYZ   261120C00110000", "XYZ   261120C00105000", "XYZ   261120C00110000"])
         # what the search knows of the rest
         for expression, expected in [("(spread-search-stock search)", '"XYZ"'), ("(spread-search-stock-price search)", "104.0"),
@@ -1567,7 +1574,7 @@ class TestCallSpreads(OptionChainTestCase):
                 (200, (105, 110), [1.5, 1.0, 0.5625])]:                      # above them: the whole width is made
             with self.subTest(expected=expected):
                 table = self.spreads("(call-spreads-for-chain chain (date 2026 11 20) %d)" % expected)
-                self.assertEqual((table["long-strike"][0], table["short-strike"][0]), best)
+                self.assertEqual((table["strike-1"][0], table["strike-2"][0]), best)
                 np.testing.assert_allclose(sorted(table["ratio"], reverse=True), sorted(ratios, reverse=True), rtol=1e-5, atol=1e-6)
                 self.assertEqual(table["ratio"], sorted(table["ratio"], reverse=True))
 
@@ -1576,12 +1583,12 @@ class TestCallSpreads(OptionChainTestCase):
         1.9/3.1, 3.1/4.9, and 1.2/1.8, and it is the 105/110 that is best, where with bids and asks it is 100/110."""
         self.make_chain([dict(r, mid=m) for r, m in zip(self.BASE, (6.15, 3.05, 1.25))])
         table = self.spreads("(call-spreads-for-chain chain (date 2026 11 20) 108 :prices 'mid)")
-        self.assertEqual([(a, b) for a, b in zip(table["long-strike"], table["short-strike"])],
+        self.assertEqual([(a, b) for a, b in zip(table["strike-1"], table["strike-2"])],
                          [(105, 110), (100, 110), (100, 105)])
         np.testing.assert_allclose(table["cost"], [1.8, 4.9, 3.1], rtol=1e-5)
         np.testing.assert_allclose(table["ratio"], [1.2 / 1.8, 3.1 / 4.9, 1.9 / 3.1], rtol=1e-5)
         self.assertShows("(spread-search-prices search)", "mid")
-        self.assertShows("(table-column (spread-search-spreads (call-spreads-for-chain chain (date 2026 11 20) 108)) \"long-strike\")",
+        self.assertShows("(table-column (spread-search-spreads (call-spreads-for-chain chain (date 2026 11 20) 108)) \"strike-1\")",
                          "#(100.0 100.0 105.0)")                                # (the default is bid-ask)
 
     # -- the same, against a plain calculation, on random chains -------------------------------------------
@@ -1606,8 +1613,9 @@ class TestCallSpreads(OptionChainTestCase):
                     continue
                 worth = max(expected - low["strike"], 0) - max(expected - high["strike"], 0)
                 profit = worth - cost
+                breakeven = low["strike"] + cost if low["strike"] + cost <= high["strike"] else float("nan")    # (none, if it costs more than its width)
                 found.append((low["symbol"], high["symbol"], low["strike"], high["strike"], cost, worth, profit,
-                              profit / cost, low["strike"] + cost, high["strike"] - low["strike"] - cost))
+                              profit / cost, breakeven, high["strike"] - low["strike"] - cost))
         return found
 
     def random_rows(self, seed, strikes=range(80, 131), extras=True):
@@ -1641,9 +1649,9 @@ class TestCallSpreads(OptionChainTestCase):
                     # the same spreads (by their two options), with the same numbers
                     by_options = {(a, b): rest for a, b, *rest in mine}
                     for index in range(len(mine)):
-                        key = (str(table["long-symbol"][index]), str(table["short-symbol"][index]))
+                        key = (str(table["symbol-1"][index]), str(table["symbol-2"][index]))
                         rest = by_options[key]
-                        got = [table[c][index] for c in ("long-strike", "short-strike", "cost", "worth", "profit", "ratio", "breakeven", "max-profit")]
+                        got = [table[c][index] for c in ("strike-1", "strike-2", "cost", "worth", "profit", "ratio", "breakeven-1", "max-profit")]
                         np.testing.assert_allclose(got, rest, rtol=2e-4, atol=2e-4)
                     self.assertEqual(table["ratio"], sorted(table["ratio"], reverse=True))        # best first
                     np.testing.assert_allclose(table["ratio"][0], max(r[7] for r in mine), rtol=2e-4)
@@ -1651,7 +1659,7 @@ class TestCallSpreads(OptionChainTestCase):
     # -- which calls and pairs count ----------------------------------------------------------------------
 
     def strikes_in(self, table):
-        return sorted(set(table["long-strike"]) | set(table["short-strike"]))
+        return sorted(set(table["strike-1"]) | set(table["strike-2"]))
 
     def test_only_calls_of_that_day_with_quotes_open_interest_and_volume_count(self):
         rows = self.BASE + self.EXTRAS + [
@@ -1675,7 +1683,7 @@ class TestCallSpreads(OptionChainTestCase):
         # 105 is worth more than 100 here (the quotes disagree): buying 100 and selling 105 costs -0.2
         table = self.spreads(rows=[{"strike": 100, "bid": 5.0, "ask": 5.2}, {"strike": 105, "bid": 5.4, "ask": 5.6},
                                    {"strike": 110, "bid": 3.0, "ask": 3.2}])
-        self.assertEqual([(a, b) for a, b in zip(table["long-strike"], table["short-strike"])], [(100, 110), (105, 110)])
+        self.assertEqual([(a, b) for a, b in zip(table["strike-1"], table["strike-2"])], [(100, 110), (105, 110)])
         np.testing.assert_allclose(table["cost"], [2.2, 2.6], rtol=1e-5)
         # a cost of exactly 0 is not a loss to divide by either
         table = self.spreads(rows=[{"strike": 100, "bid": 4.8, "ask": 5.0}, {"strike": 105, "bid": 5.0, "ask": 5.2}])
@@ -1695,22 +1703,22 @@ class TestCallSpreads(OptionChainTestCase):
         table = self.spreads(rows=[{"strike": 100, "bid": 6.0, "ask": 6.2, "symbol": "XYZ   261120C00100000"},
                                    {"strike": 100, "bid": 5.9, "ask": 6.1, "symbol": "XYZW  261120C00100000"},
                                    {"strike": 105, "bid": 3.0, "ask": 3.2}])
-        self.assertEqual([(str(a), str(b)) for a, b in zip(table["long-symbol"], table["short-symbol"])],
+        self.assertEqual([(str(a), str(b)) for a, b in zip(table["symbol-1"], table["symbol-2"])],
                          [("XYZ   261120C00100000", "XYZ   261120C00105000")])      # (the 105 is XYZ's; XYZW has just the 100)
         table = self.spreads(rows=[{"strike": 100, "bid": 6.0, "ask": 6.2, "symbol": "XYZ   261120C00100000"},
                                    {"strike": 100, "bid": 5.9, "ask": 6.1, "symbol": "XYZW  261120C00100000"},
                                    {"strike": 105, "bid": 3.0, "ask": 3.2, "symbol": "XYZ   261120C00105000"},
                                    {"strike": 105, "bid": 2.9, "ask": 3.1, "symbol": "XYZW  261120C00105000"}])
-        self.assertEqual(sorted((str(a), str(b)) for a, b in zip(table["long-symbol"], table["short-symbol"])),
+        self.assertEqual(sorted((str(a), str(b)) for a, b in zip(table["symbol-1"], table["symbol-2"])),
                          [("XYZ   261120C00100000", "XYZ   261120C00105000"), ("XYZW  261120C00100000", "XYZW  261120C00105000")])
 
     def test_with_fewer_than_two_calls_there_are_no_spreads(self):
         self.make_chain(self.BASE[:1] + self.EXTRAS)
         table = self.spreads()
         self.assertEqual(list(table), self.COLUMNS)
-        self.assertEqual([len(v) for v in table.values()], [0] * 12)
+        self.assertEqual([len(v) for v in table.values()], [0] * len(self.COLUMNS))
         self.run_lisp("(show-call-spreads search)")
-        self.assertIn("No pair of its calls makes a spread", self.printed())
+        self.assertIn("No such spread can be made", self.printed())
         self.assertIn("volume today", self.printed())
         self.assertIn("give :min-volume 0 then", self.printed())
         self.assertIn("0 spreads", self.printed())
@@ -1813,23 +1821,23 @@ class TestCallSpreads(OptionChainTestCase):
     # -- showing them, and the example ---------------------------------------------------------------------
 
     def test_showing_the_spreads(self):
+        """show-call-spreads is show-option-spreads."""
         self.make_chain(self.BASE + self.EXTRAS)
         self.run_lisp("(show-call-spreads (call-spreads-for-chain chain (date 2026 11 20) 108))")
         shown = self.printed()
         for text in ["XYZ is at 104.00. Bull call spreads expiring 2026-11-20, if it is at 108.00 then; "
                      "bought and sold at the ask and bid prices. 3 spreads.",
-                     "The best: buy the 100.00 call, at 6.20, and sell the 110.00 call, at 1.20.",
-                     "It costs 5.00 a share (500.00 for a contract of 100). That is the most you can lose, "
-                     "if XYZ ends at 100.00 or less.",
-                     "With XYZ at 108.00 on 2026-11-20, the spread is worth 8.00 a share, a profit of 3.00 "
-                     "(300.00 a contract): 60% of the most you can lose.",
-                     "It breaks even with XYZ at 105.00; the most it can make is 5.00 a share, with XYZ at 110.00 or more.",
+                     "The best: buy 1 100.00 call at 6.20, sell 1 110.00 call at 1.20.",
+                     "It costs 5.00 a share: 500.00 for one contract of each option. The most you can lose is 5.00 a share (500.00).",
+                     "With XYZ at 108.00 on 2026-11-20, it is worth 8.00 a share, a profit of 3.00 (300.00): 60% of the most you can lose.",
+                     "The most it can make is 5.00 a share (500.00). It breaks even with XYZ at 105.00.",
                      "The best 3, by the ratio of profit to the most that can be lost",
-                     "(define order (call-spread-order search :contracts 1))", "(show-spread-order order)",
-                     "(schwab-preview-order creds \"your account\" order)", "(schwab-place-order creds \"your account\" order :confirm #t)"]:
+                     "(show-spread-order order)", "(schwab-preview-order creds \"your account\" order)",
+                     "(schwab-place-order creds \"your account\" order :confirm #t)"]:
             self.assertIn(text, shown)
-        self.assertIn(" 100.00        110.00        6.20         1.20  5.00   8.00    3.00    60%     105.00        5.00", shown)
-        self.assertNotIn("XYZ   2611", shown)                                    # (the symbols are not in the table)
+        self.out.clear()
+        self.run_lisp("(show-option-spreads (option-spreads-for-chain chain 'bull-call (date 2026 11 20) 108))")
+        self.assertEqual(self.printed(), shown)
         self.out.clear()
         self.run_lisp("(show-call-spreads (call-spreads-for-chain chain (date 2026 11 20) 108 :prices 'mid) :count 1)")
         self.assertIn("middle prices", self.printed())
@@ -1847,7 +1855,7 @@ class TestCallSpreads(OptionChainTestCase):
                 lisp_core.run_file(os.path.join(EXAMPLES, "call_spread_example.lsp"), self.env)
                 self.assertTrue(is_a_png(os.path.join(folder, "call_spread_profit.png")))      # the chart it saves
             self.assertEqual(asked, [("XYZ", "2026-11-20")])
-            self.assertIn("The best: buy the 100.00 call, at 6.20, and sell the 110.00 call, at 1.20.", self.printed())
+            self.assertIn("The best: buy 1 100.00 call at 6.20, sell 1 110.00 call at 1.20.", self.printed())
             self.assertIn("[chart] Bull call spread on XYZ, expiring 2026-11-20\nbuy 1 100.00 call, sell 1 110.00 call\n", self.printed())
             self.assertNotIn("schwab-place-order creds \"your account\" order :confirm #f", self.printed())
             lisp_builtins.set_command_line_arguments(["XYZ"])
@@ -2041,3 +2049,132 @@ class TestPortfolio(LispTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPrincipalComponents(LispTestCase):
+    """principal-components: the few combinations of a table's columns that explain most of their variation."""
+
+    def setUp(self):
+        super().setUp()
+        # x and y move together exactly; z is unrelated to them (its correlation with them is 0)
+        self.run_lisp('(define t (make-table "month" #("a" "b" "c" "d") "x" #(1.0 2.0 3.0 6.0) "y" #(2.0 4.0 6.0 12.0) "z" #(0.0 3.0 -4.0 1.0)))')
+
+    def part(self, name, expression="(principal-components t)"):
+        return '(cdr (assoc "%s" %s))' % (name, expression)
+
+    def test_two_columns_that_move_together_are_one_component(self):
+        self.run_lisp('(define two (make-table "x" #(1.0 2.0 3.0 6.0) "y" #(2.0 4.0 6.0 12.0)))')
+        self.assertShows('(vector-round (table-column %s "variance-share") 6)' % self.part("variance", "(principal-components two)"), "#(1.0 0.0)")
+        self.assertShows('(vector-round (table-column %s "pc1") 6)' % self.part("loadings", "(principal-components two)"), "#(0.707107 0.707107)")
+
+    def test_the_shares_add_up_and_each_columns_explained_share_reaches_1_with_all_components(self):
+        self.assertShows('(vector-round (table-column %s "cumulative-share") 6)' % self.part("variance"), "#(0.666667 1.0 1.0)")
+        self.assertShows('(vector-round (table-column %s "explained") 6)' % self.part("loadings"), "#(1.0 1.0 1.0)")
+
+    def test_count_keeps_that_many_and_no_more_than_the_rows_allow(self):
+        self.assertShows('(table-column-names %s)' % self.part("loadings", "(principal-components t :count 1)"), '("column" "pc1" "explained")')
+        # z has nothing to do with x and y, so one component explains none of it
+        self.assertShows('(vector-round (table-column %s "explained") 6)' % self.part("loadings", "(principal-components t :count 1)"), "#(1.0 1.0 0.0)")
+        self.assertShows('(table-row-count %s)' % self.part("variance", "(principal-components t :count 10)"), "3")
+
+    def test_the_scores_carry_the_other_columns_and_are_the_data_times_the_loadings(self):
+        scores = self.part("scores")
+        self.assertShows('(table-column-names %s)' % scores, '("month" "pc1" "pc2" "pc3")')
+        self.assertShows('(table-column %s "month")' % scores, '#("a" "b" "c" "d")')
+        # the scores add up to 0 (the columns are centred first), and the first rises with x
+        self.assertShows('(round (* 1000000 (vector-sum (table-column %s "pc1"))))' % scores, "0")
+        self.assertShows('(< (vector-ref (table-column %s "pc1") 0) (vector-ref (table-column %s "pc1") 3))' % (scores, scores), "#t")
+
+    def test_the_correlations_say_how_closely_each_column_moves_with_each_component(self):
+        # x and y are the first component exactly; z, unrelated to them, is the second
+        self.assertShows('(vector-round (vector-abs (table-column %s "pc1")) 6)' % self.part("correlations"), "#(1.0 1.0 0.0)")
+        self.assertShows('(vector-round (vector-abs (table-column %s "pc2")) 6)' % self.part("correlations"), "#(0.0 0.0 1.0)")
+
+    def test_the_sign_makes_the_loadings_add_up_to_more_than_0(self):
+        self.run_lisp('(define falling (make-table "x" #(1.0 2.0 3.0 6.0) "y" #(-2.0 -4.0 -6.0 -11.0) "w" #(1.0 2.0 3.1 6.0)))')
+        self.assertShows('(> (vector-sum (table-column %s "pc1")) 0)' % self.part("loadings", "(principal-components falling)"), "#t")
+
+    def test_without_standardizing_the_column_that_varies_most_decides_the_first_component(self):
+        self.run_lisp('(define scales (make-table "big" #(100.0 -100.0 50.0 -50.0) "small" #(1.0 1.0 -1.0 -1.0)))')
+        self.assertShows('(vector-round (table-column %s "pc1") 3)' % self.part("loadings", "(principal-components scales :standardize #f)"), "#(1.0 0.0)")
+        self.assertShows('(vector-round (table-column %s "variance-share") 3)' % self.part("variance", "(principal-components scales)"), "#(0.5 0.5)")
+
+    def test_a_missing_number_or_a_column_that_never_changes_is_an_error(self):
+        self.assertLispError('(principal-components (make-table "x" #(1.0 nan 3.0) "y" #(1.0 2.0 4.0)))', "x has one missing")
+        self.assertLispError('(principal-components (make-table "x" #(1.0 2.0 3.0) "y" #(5.0 5.0 5.0)))', "y never changes")
+        self.assertLispError('(principal-components (make-table "x" #(1.0 2.0 3.0)))', "at least two columns")
+
+
+class TestVarimax(LispTestCase):
+    """principal-components :rotate "varimax": the same components turned so that each column goes with as few as it can."""
+
+    def setUp(self):
+        super().setUp()
+        # x1 x2 x3 are the market and a, y1 y2 y3 the market and b, each with a little noise of its own
+        rng = np.random.default_rng(5)
+        rows = 200
+        market, a, b = rng.normal(size=rows), rng.normal(size=rows), rng.normal(size=rows)
+        columns = {}
+        for i in range(3):
+            columns["x%d" % (i + 1)] = market + a + 0.3 * rng.normal(size=rows)
+            columns["y%d" % (i + 1)] = market + b + 0.3 * rng.normal(size=rows)
+        source = " ".join('"%s" #(%s)' % (name, " ".join(repr(float(v)) for v in values)) for name, values in sorted(columns.items()))
+        self.run_lisp("(define groups (make-table %s))" % source)
+        self.plain = self.part_numbers('(principal-components groups :count 2)')
+        self.turned = self.part_numbers('(principal-components groups :count 2 :rotate "varimax")')
+
+    def part_numbers(self, expression):
+        """The correlations, explained shares, variance shares and scores, as numpy arrays."""
+        self.run_lisp("(define pca %s)" % expression)
+        def column(part, name):
+            return np.array(self.run_lisp('(table-column (cdr (assoc "%s" pca)) "%s")' % (part, name)).items, dtype=float)
+        return {"correlations": np.column_stack([column("correlations", "pc1"), column("correlations", "pc2")]),
+                "explained": column("loadings", "explained"),
+                "shares": column("variance", "variance-share"),
+                "scores": np.column_stack([column("scores", "pc1"), column("scores", "pc2")])}
+
+    def test_without_rotation_the_first_is_everything_and_the_second_x_against_y(self):
+        first, second = self.plain["correlations"][:, 0], self.plain["correlations"][:, 1]
+        self.assertTrue(np.all(first > 0.5))
+        self.assertTrue(np.all(np.sign(second[:3]) != np.sign(second[3:])))      # the columns are x1 x2 x3 y1 y2 y3
+
+    def test_after_rotation_each_group_has_a_component_of_its_own(self):
+        turned = np.abs(self.turned["correlations"])
+        groups = [set(np.argmax(turned[:3], axis=1)), set(np.argmax(turned[3:], axis=1))]
+        self.assertEqual([len(g) for g in groups], [1, 1])
+        self.assertNotEqual(groups[0], groups[1])
+        # and each column goes much more with its own group's component than with the other
+        self.assertTrue(np.all(turned.max(axis=1) > 2 * turned.min(axis=1)))
+
+    def test_rotation_explains_the_same_in_all_and_each_column_the_same(self):
+        self.assertAlmostEqual(self.plain["shares"].sum(), self.turned["shares"].sum())
+        np.testing.assert_allclose(self.plain["explained"], self.turned["explained"])
+
+    def test_the_rotated_components_are_still_unrelated_and_the_correlations_are_with_the_scores(self):
+        scores = self.turned["scores"]
+        self.assertAlmostEqual(np.corrcoef(scores.T)[0, 1], 0.0)
+        x1 = np.array(self.run_lisp('(table-column groups "x1")').items, dtype=float)
+        self.assertAlmostEqual(np.corrcoef(x1, scores[:, 0])[0, 1], self.turned["correlations"][0, 0])
+
+    def test_rotate_takes_only_varimax(self):
+        self.assertLispError('(principal-components groups :rotate "promax")', "varimax")
+
+    def test_weights_make_the_heavy_columns_decide_the_components(self):
+        # the y columns count for little: the first component is then the x group's (the market and a), not everything
+        weights = "(list %s)" % " ".join('(cons "%s" %s)' % (name, "100.0" if name[0] == "x" else "1.0")
+                                         for name in ["x1", "x2", "x3", "y1", "y2", "y3"])
+        weighted = self.part_numbers("(principal-components groups :count 2 :weights %s)" % weights)
+        first = np.abs(weighted["correlations"][:, 0])
+        self.assertTrue(np.all(first[:3] > 0.95))
+        self.assertTrue(np.all(first[3:] < first[:3]))
+        # the weighted first component explains more of the weighted variation than the plain one does of the plain
+        self.assertGreater(weighted["shares"][0], self.plain["shares"][0])
+
+    def test_a_column_of_weight_0_still_has_its_correlations(self):
+        weights = "(list %s)" % " ".join('(cons "%s" %s)' % (name, "0.0" if name == "y3" else "1.0")
+                                         for name in ["x1", "x2", "x3", "y1", "y2", "y3"])
+        weighted = self.part_numbers("(principal-components groups :count 2 :weights %s)" % weights)
+        self.assertGreater(weighted["explained"][5], 0.9)            # y3 is like y1 and y2, which the components explain
+
+    def test_weights_need_one_for_each_column(self):
+        self.assertLispError('(principal-components groups :weights (list (cons "x1" 1.0)))', "has none for")

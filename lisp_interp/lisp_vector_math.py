@@ -263,6 +263,26 @@ def vector_clip(v, low, high):
     return unary("vector-clip", v, lambda x: np.clip(x, lo, hi))
 
 
+def vector_rank(v):
+    """(vector-rank v) -- where each element stands among the others: 1 for the
+    smallest, up to the number of elements for the largest. Equal elements share
+    the average of the ranks they cover; a missing value (NaN) stays missing."""
+    values = numbers_of(v, "vector-rank")
+    ranks = np.full(len(values), np.nan)
+    present = ~np.isnan(values)
+    found = values[present]
+    order = np.argsort(found, kind="mergesort")
+    sorted_values = found[order]
+    # the first and last position (counting from 1) of each run of equal values
+    starts = np.searchsorted(sorted_values, sorted_values, side="left") + 1
+    ends = np.searchsorted(sorted_values, sorted_values, side="right")
+    ranks_in_order = (starts + ends) / 2.0
+    ranked = np.empty(len(found))
+    ranked[order] = ranks_in_order
+    ranks[present] = ranked
+    return to_vector(ranks)
+
+
 ARITHMETIC_BUILTINS = {
     "vector-add": vector_add,
     "vector-sub": vector_sub,
@@ -276,6 +296,7 @@ ARITHMETIC_BUILTINS = {
     "vector-round": vector_round,
     "round-to-nearest": round_to_nearest,
     "vector-clip": vector_clip,
+    "vector-rank": vector_rank,
 }
 
 
