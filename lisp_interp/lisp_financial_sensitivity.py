@@ -145,7 +145,8 @@ def sensitivity_tab(inputs=(), outputs=(), correlations=(), runs=DEFAULT_RUNS, s
         [("An input or output is a named range (Data > Named ranges) or a cell address such as DCF!B9. The macro types each draw into the input's cell, and puts back its number or formula at the end. A correlation makes two inputs move together (above 0) or in opposite directions (below 0).", ("italic",))],
         [None])
     add(pad([("Number of runs", ()), value_cell(runs)]),
-        pad([("Random seed (empty for a different one each time; the same seed gives the same runs)", ()), value_cell(seed)]),
+        pad([("Random seed", ()), value_cell(seed),
+             ("Empty for a different one each time; the same seed gives the same runs.", ("italic",))]),
         pad([("Status", ()), (None, ("italic",))]),
         [None])
 
