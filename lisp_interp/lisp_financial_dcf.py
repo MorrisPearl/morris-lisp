@@ -26,6 +26,9 @@ value of the shares. Every one is yellow, and the WACC itself can be typed over.
 A last table shows the value per share for discount rates a point or two either side of the WACC and growth rates
 either side of the terminal growth, which is how much to trust the number: terminal value is most of a company's value.
 
+Every value on the tab has a name (wacc, terminal_growth, enterprise_value), and every row of periods (fcf, discount_factor)
+is reached as OFFSET(name,0,the period number in row 5), as on the other tabs; only the table at the bottom has addresses.
+
 Banks and insurers have no DCF tab: their debt is their raw material, not financing, so free cash flow to the firm
 means nothing for them (the value of a bank is of its dividends and its equity, which a different model would do).
 """
@@ -63,19 +66,43 @@ class Valuation:
         for position, row in enumerate(self.rows):
             if row is not None:
                 self.row_of[row[0]] = model.FIRST_LINE_ROW + position
+        self.names = []                                 # (name, address) of each value and row that has a name
+        for row in self.rows:
+            kind = getattr(row[3], "kind", None) if row is not None else None
+            if kind == "single":
+                self.names.append((the_model.register_name(DCF, row[0], model.range_name(row[0])), "B%d" % self.row_of[row[0]]))
+            elif kind == "periods":
+                self.names.append((the_model.register_name(DCF, row[0], model.range_name(row[0])),
+                                   self.at(row[0], self.first_forecast)))
+        self.own_names = {name for name, _ in self.names}
 
     # --- addresses
 
+    def name_of(self, key):
+        return self.model.range_names[(DCF, key)]
+
     def single(self, key):
-        """The absolute address of a value kept in column B."""
-        return "$B$%d" % self.row_of[key]
+        """A value kept in column B, by its name."""
+        return self.name_of(key)
 
     def at(self, key, i):
-        """The address of a row's cell in period i."""
+        """A row's cell in period i: by the row's name, as in the other tabs, unless it is the row's own in an earlier
+        period, or the row has no name (then its address)."""
+        own_earlier_period = key == self.model.here_key and i != self.model.here
+        if self.model.here is not None and (DCF, key) in self.model.range_names and not own_earlier_period:
+            return self.model.named_ref(DCF, key, i)
         return "%s%d" % (column_letter(i + 1), self.row_of[key])
 
-    def absolute_at(self, key, i):
-        return "$%s$%d" % (column_letter(i + 1), self.row_of[key])
+    def at_last_forecast(self, key):
+        """A row's cell in the last forecast period."""
+        return "OFFSET(%s,0,%s)" % (self.name_of(key), self.name_of("last-forecast-period"))
+
+    def at_last_reported(self, tab, key):
+        """A line of another tab in the last period reported (the date of the valuation)."""
+        return "OFFSET(%s,0,%s)" % (self.model.range_names[(tab, key)], self.name_of("last-reported-period"))
+
+    def at_last_forecast_of(self, tab, key):
+        return "OFFSET(%s,0,%s)" % (self.model.range_names[(tab, key)], self.name_of("last-forecast-period"))
 
     def last_year(self, key):
         """The range of a row's cells in the last year of the forecast (the last period, for annual)."""
@@ -83,6 +110,7 @@ class Valuation:
         return first if self.years == 1 else "%s:%s" % (first, self.at(key, self.last))
 
     def other(self, tab, key, i):
+        """A line of another tab in period i (by its name; in the period of the cell being written)."""
         return self.model.ref(tab, key, i, DCF)
 
     def forecast_range(self, key):
@@ -93,21 +121,37 @@ class Valuation:
     def styled(self, value, number_format, *more):
         """(value, styles) for a cell: its format, and the green of a link to another tab."""
         styles = [number_format] if number_format else []
-        if model.is_formula(value) and model.is_plain_link(value):
-            styles.append("link")
+        if model.is_formula(value) and model.is_plain_link(value) and value[1:] not in self.own_names:
+            styles.append("link")                                # (a link to another tab, not to a value of this one)
         return (value, tuple(styles) + more)
+
+    def written_in(self, i, formula):
+        """The formula for period i, which names the lines of the period it is written in."""
+        self.model.here = i
+        try:
+            return formula(i)
+        finally:
+            self.model.here = None
+
+    def periods_row(self, formula, number_format, first, more):
+        def cells():
+            return {i + 1: self.styled(self.written_in(i, formula), number_format, *more) for i in range(first, self.count)}
+        cells.kind = "periods"
+        return cells
 
     def every_period(self, formula, number_format="money", start=0, *more):
         """The cells of a row that has a formula in every period from `start`."""
-        return lambda: {i + 1: self.styled(formula(i), number_format, *more) for i in range(start, self.count)}
+        return self.periods_row(formula, number_format, start, more)
 
     def forecast_periods(self, formula, number_format="money", *more):
-        return lambda: {i + 1: self.styled(formula(i), number_format, *more)
-                        for i in range(self.first_forecast, self.count)}
+        return self.periods_row(formula, number_format, self.first_forecast, more)
 
     def one(self, value, number_format, *more):
         """A single value in column B."""
-        return lambda: {1: self.styled(value() if callable(value) else value, number_format, *more)}
+        def cells():
+            return {1: self.styled(value() if callable(value) else value, number_format, *more)}
+        cells.kind = "single"
+        return cells
 
     def add(self, key, label, cells, label_style=()):
         self.rows.append((key, label, tuple(label_style), cells))
@@ -132,8 +176,8 @@ class Valuation:
     def add_inputs(self):
         m = self.model
         first = self.first_forecast
-        a = lambda key: self.model.range_names[key]               # (the name is of the first forecast period's cell)
-        bal = lambda key: self.other(BALANCE, key, first - 1)
+        a = lambda key: self.model.range_names[(ASSUMPTIONS, key)]     # (the name is of the first forecast period's cell)
+        bal = lambda key: self.at_last_reported(BALANCE, key)
         self.section("inputs-header", "Discount rate and terminal growth (yellow cells are yours; the risk-free rate, beta, risk premium, and growth are placeholders)")
         self.add("risk-free", "Risk-free rate (the 10-year Treasury yield)", self.one(RISK_FREE_RATE, "percent", "input"))
         self.add("beta", "Equity beta (1 = moves with the market)", self.one(BETA, "decimal", "input"))
@@ -151,7 +195,7 @@ class Valuation:
         if self.price is not None:
             self.add("share-price", "Share price, today", self.one(self.price, "per-share", "input"))
             self.add("market-value", "Market value of the shares (price x diluted shares, millions)",
-                     self.one(lambda: "=%s*%s" % (self.single("share-price"), self.other(INCOME, "shares", first - 1)), "money"))
+                     self.one(lambda: "=%s*%s" % (self.single("share-price"), self.at_last_reported(INCOME, "shares")), "money"))
             self.add("debt-weight", "Debt, as a share of debt and the market value of the shares",
                      self.one(lambda: "=(%s+%s)/(%s+%s+%s)" % (bal("current-debt"), bal("long-term-debt"), bal("current-debt"),
                                                                 bal("long-term-debt"), self.single("market-value")),
@@ -198,6 +242,8 @@ class Valuation:
         a = lambda key, i: self.other(ASSUMPTIONS, key, i)
         self.section("discount-header", "Present value of the forecast free cash flow (from the end of the last period reported, %s)"
                      % self.model.ends[self.history_count - 1].isoformat())
+        self.add("last-reported-period", "Period number of the last period reported (row 5 of the other tabs)", self.one(-1, None))
+        self.add("last-forecast-period", "Period number of the last forecast period", self.one(self.model.forecast_count - 1, None))
 
         def years_to_end(i):
             if i == self.first_forecast:
@@ -215,7 +261,7 @@ class Valuation:
 
     def add_value(self):
         m, first, last = self.model, self.first_forecast, self.last
-        bal = lambda key: self.other(BALANCE, key, first - 1)
+        bal = lambda key: self.at_last_reported(BALANCE, key)
         self.section("value-header", "Value of the company")
         self.add("sum-present-values", "Present value of the forecast free cash flow",
                  self.one(lambda: "=SUM(%s)" % self.forecast_range("present-value"), "money"))
@@ -224,7 +270,7 @@ class Valuation:
         self.add("last-year-nopat", "Operating income after taxes of the last year of the forecast",
                  self.one(lambda: "=SUM(%s)" % self.last_year("nopat"), "money"))
         self.add("invested-capital", "Invested capital at the end of the forecast (plant, goodwill, intangibles, receivables and inventory, less payables)",
-                 self.one(lambda: "=%s+%s+%s+%s+%s-%s" % tuple(self.other(BALANCE, key, last) for key in (
+                 self.one(lambda: "=%s+%s+%s+%s+%s-%s" % tuple(self.at_last_forecast_of(BALANCE, key) for key in (
                      "property-plant-equipment", "goodwill", "intangible-assets", "receivables", "inventory", "accounts-payable")),
                           "money"))
         self.add("terminal-fcf", "Free cash flow of the year after the forecast (by the method above)",
@@ -233,7 +279,7 @@ class Valuation:
                  self.one(lambda: "=%s/(%s-%s)" % (self.single("terminal-fcf"), self.single("wacc"),
                                                    self.single("terminal-growth")), "money"))
         self.add("present-terminal-value", "Present value of the terminal value",
-                 self.one(lambda: "=%s*%s" % (self.single("terminal-value"), self.absolute_at("discount-factor", last)), "money"))
+                 self.one(lambda: "=%s*%s" % (self.single("terminal-value"), self.at_last_forecast("discount-factor")), "money"))
         self.add("enterprise-value", "Enterprise value",
                  self.one(lambda: "=%s+%s" % (self.single("sum-present-values"), self.single("present-terminal-value")),
                           "money", "total"), ("total",))
@@ -251,7 +297,7 @@ class Valuation:
                  self.one(lambda: "=%s+%s+%s" % (self.single("enterprise-value"), self.single("less-debt"),
                                                  self.single("plus-cash")), "money", "total"), ("total",))
         self.add("shares", "Diluted shares, millions (the last period reported)",
-                 self.one(lambda: "=" + self.other(INCOME, "shares", first - 1), "decimal"))
+                 self.one(lambda: "=" + self.at_last_reported(INCOME, "shares"), "decimal"))
         self.add("value-per-share", "Value per share",
                  self.one(lambda: "=%s/%s" % (self.single("equity-value"), self.single("shares")), "per-share", "total"),
                  ("total",))
@@ -277,8 +323,8 @@ class Valuation:
         def cells():
             row = {1: self.styled("=%s%s" % (self.single("wacc"), "%+g" % step if step else ""), "percent")}
             for i in range(self.first_forecast, self.count):
-                row[i + 1] = self.styled("=%s/(1+$B%d)^%s" % (self.at("fcf", i), self.row_of[key], self.at("years-to-cash", i)),
-                                         "money")
+                row[i + 1] = self.styled(self.written_in(i, lambda i: "=%s/(1+$B%d)^%s" % (
+                    self.at("fcf", i), self.row_of[key], self.at("years-to-cash", i))), "money")
             return row
         return cells
 
@@ -300,7 +346,7 @@ class Valuation:
                 present = "SUM(%s)" % ("%s:%s" % (self.at("rate-%d" % number, self.first_forecast),
                                                   self.at("rate-%d" % number, self.last)))
                 terminal = "%s/(%s-%s)/(1+%s)^%s" % (self.terminal_flow(growth), rate, growth, rate,
-                                                     self.absolute_at("years-to-cash", self.last))
+                                                     self.at_last_forecast("years-to-cash"))
                 row[column] = self.styled("=(%s+%s+%s+%s)/%s" % (present, terminal, self.single("less-debt"),
                                                                   self.single("plus-cash"), self.single("shares")), "per-share")
             return row
@@ -328,11 +374,13 @@ class Valuation:
             if row is not None:
                 key, label, label_style, make_cells = row
                 line[0] = (label, label_style)
+                self.model.here_key = key
                 for column, cell in make_cells().items():
                     line[column] = cell
+                self.model.here_key = None
             cells.append(line)
         return {"name": DCF, "cells": cells, "frozen_rows": model.HEADER_ROWS, "frozen_columns": 1,
-                "widths": [(0, 0, model.LABEL_WIDTH + 80), (1, width - 1, model.PERIOD_WIDTH)]}
+                "widths": [(0, 0, model.LABEL_WIDTH + 80), (1, width - 1, model.PERIOD_WIDTH)], "names": self.names}
 
 
 def valuation_sheet(the_model):

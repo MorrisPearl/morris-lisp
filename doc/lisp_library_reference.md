@@ -2951,21 +2951,31 @@ reported, -2 in the one before (row 5; the formulas below use it).
 formula; **green** is a link to another tab. A cell on **yellow** is an assumption for you to change: black if it is a formula
 (most are), blue if it is a number.
 
-**Formulas reach an assumption by its name.** Each row of the Assumptions tab has a name, and a formula on another tab
-uses it with `OFFSET` and the period number in row 5 of its own column, so that a cell reads
+**Formulas reach a line by its name.** Every line of the Assumptions tab and of the three statements has a name, and a
+formula uses it with `OFFSET` and the period number in row 5 of its own column, so that cells read
 
 ```
-=F9*(1+OFFSET(greater_china_growth,0,G$5))
+=F9*(1+OFFSET(greater_china_growth,0,G$5))                       revenue: last year's times one plus the growth assumed
+=OFFSET(revenue,0,G$5)*(1-OFFSET(gross_margin,0,G$5))            cost of revenue
+=OFFSET(cash_end,0,G$5)                                          cash on the balance sheet: the cash flow's
+=OFFSET(receivables,0,G$5-1)-OFFSET(receivables,0,G$5)           change in receivables: last period's less this one's
+=SUM(G7:G11)                                                     total current assets
 ```
 
--- last year's revenue (the cell to the left, as in any formula copied across) times one plus the growth assumed for this
-period -- and not `=F9*(1+Assumptions!G12)`. The name is of the row's cell in the first forecast period, `OFFSET(name,0,0)`;
-`OFFSET(name,0,G$5)` moves along the row by this column's period number (and `F$5`, the period number of the column to the
-left, reaches the assumption of the period before). The names are the lines' own: `revenue_growth`, `gross_margin`,
-`tax_rate`, `interest_rate`, `receivable_days`, `days_in_period`, and for a segment its own name and `_growth`
-(`greater_china_growth`). Google Sheets lists them under *Data > Named ranges*. Typing over an assumption changes
+and not `=F9*(1+Assumptions!G12)` or `='Cash Flow'!G28`. The name is of the line's cell in the first forecast period, so
+`OFFSET(name,0,0)` is that cell; `OFFSET(name,0,G$5)` moves along the row by this column's period number (0 in the
+first forecast period, 1 in the next, -1 in the last reported), and `G$5-1` reaches the period before. A formula has an
+**address** only for the line's own earlier period (`F9`, as copying a formula across does), and for the ends of a sum down a
+column; on the DCF tab also the table at the bottom. The names are the lines' own: `revenue`, `net_income`, `receivables`,
+`cash_end`, `gross_margin`, `tax_rate`, `days_in_period` (`revenue_growth` for the revenue growth, because `GROWTH`
+and `DAYS` are functions of Google Sheets), and for a segment its own name and `_growth` (`greater_china_growth`). Where two
+tabs have a line of the same name, the later tab's has its tab's name before it (`cash_flow_net_income`, `dcf_tax_rate`).
+On the DCF tab the single values are named too (`wacc`, `terminal_growth`, `enterprise_value`), and `last_reported_period`
+(-1) and `last_forecast_period` say which column the debt and cash, or the end of the forecast, are taken from.
+Google Sheets lists the names under *Data > Named ranges*. Typing over an assumption changes
 the formulas that use it, as before; and you can write your own formula in the same style, on any tab:
-`=OFFSET(tax_rate,0,G$5)*G20`. (`OFFSET` is recalculated whenever anything changes, which a sheet this size does not notice.)
+`=OFFSET(tax_rate,0,G$5)*G20`. (`OFFSET` is recalculated whenever anything changes, which a sheet this size does not notice;
+the formulas are written for Google Sheets and have not been tried in Excel.)
 
 **The forecast assumptions are formulas.** In the first forecast period an assumption's cell is a formula of the reported
 periods that starts the forecast -- the last period's value, within the limits (`=MIN(MAX(F12,-0.2),0.2)`), or the average

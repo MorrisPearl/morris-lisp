@@ -5,6 +5,8 @@ these tests know the model balances."""
 
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
 
+import re
+
 import lisp_financial_model as fm
 import lisp_google
 import lisp_sec
@@ -279,7 +281,7 @@ class TestModelFromReportedNumbers(LispTestCase):
         self.assertIn("input", days_row[4][1])                      # (a plain number for you to change: blue on yellow)
         link = tabs["Cash Flow"][self.model.layouts["Cash Flow"].row_of["net-income"] - 1][1]
         self.assertIn("link", link[1])                              # a link to the income statement
-        self.assertTrue(link[0].startswith("='Income Statement'!"))
+        self.assertTrue(link[0].startswith("=OFFSET(net_income,0,"))
 
     def test_forecast_assumptions_are_formulas_the_first_from_the_history_and_the_rest_from_the_period_before(self):
         cells = self.model.sheets()[0]["cells"]
@@ -399,7 +401,7 @@ class TestModelByInSegment(LispTestCase):
         tabs = {t["name"]: t["cells"] for t in self.model.sheets()}
         row = tabs["Assumptions"][self.model.layouts["Assumptions"].row_of["growth"] - 1]
         self.assertTrue(row[4][0].startswith("="))
-        self.assertIn("Income Statement", row[4][0])
+        self.assertIn("OFFSET(revenue,0,", row[4][0])
         self.assertNotIn("input", row[4][1])
 
     def test_the_notes_say_where_the_segments_came_from(self):
@@ -425,17 +427,8 @@ class TestNamedAssumptions(LispTestCase):
 
     def test_formulas_read_with_the_name_of_the_assumption_and_the_period_number(self):
         self.assertEqual(self.formula("Income Statement", "revenue", 3), "=D7*(1+OFFSET(revenue_growth,0,E$5))")
-        self.assertEqual(self.formula("Income Statement", "cost-of-revenue", 3), "=E7*(1-OFFSET(gross_margin,0,E$5))")
+        self.assertEqual(self.formula("Income Statement", "cost-of-revenue", 3), "=OFFSET(revenue,0,E$5)*(1-OFFSET(gross_margin,0,E$5))")
         self.assertEqual(self.formula("Income Statement", "revenue", 4), "=E7*(1+OFFSET(revenue_growth,0,F$5))")
-
-    def test_no_formula_on_another_tab_refers_to_the_assumptions_tab_by_address(self):
-        for name, tab in self.tabs.items():
-            if name in ("Assumptions", "Notes"):
-                continue
-            for row in tab["cells"]:
-                for cell in row:
-                    if cell and isinstance(cell[0], str):
-                        self.assertNotIn("Assumptions!", cell[0], "%s: %s" % (name, cell[0]))
 
     def test_each_tab_numbers_its_periods_from_the_first_forecast_period(self):
         for name in ("Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF"):
@@ -487,6 +480,110 @@ class TestNamedAssumptions(LispTestCase):
         self.assertTrue(fm.is_plain_link("=tax_rate"))
         self.assertTrue(fm.is_plain_link("=OFFSET(tax_rate,0,E$5)"))
         self.assertFalse(fm.is_plain_link("=OFFSET(tax_rate,0,E$5)*2"))
+
+
+COORDINATE = re.compile(r"(?:'[^']+'!)?\$?([A-Z]{1,3})\$?(\d+)(?::\$?([A-Z]{1,3})\$?(\d+))?")
+
+
+def coordinates_outside_sums(formula):
+    """The cell addresses in a formula that are not inside a SUM(...) -- text such as SUM(G7:G14) is taken out first."""
+    text = re.sub(r"SUM\([^()]*\)", "", formula)
+    return [match for match in COORDINATE.finditer(text)]
+
+
+class TestNamesInPlaceOfCoordinates(LispTestCase):
+    """The formulas of every tab reach another tab's line, or another row's in the same period, by its name;
+    an address is left only for the period before, the ends of a SUM, and the corner of the DCF table."""
+
+    def check_tab(self, model, tab, first_row=1, last_row=None):
+        letters = {fm.column_letter(i + 1): i for i in range(model.count)}
+        for row_number, row in enumerate(tab["cells"], start=1):
+            if row_number < 6 or row_number < first_row or (last_row and row_number > last_row):
+                continue
+            for column, cell in enumerate(row):
+                if not (cell and isinstance(cell[0], str) and cell[0].startswith("=")):
+                    continue
+                for match in coordinates_outside_sums(cell[0]):
+                    text = match.group(0)
+                    self.assertNotIn("!", text, "%s row %d: %s" % (tab["name"], row_number, cell[0]))
+                    column_here = fm.column_letter(column)
+                    if match.group(2) == "5":
+                        self.assertEqual(match.group(1), column_here, cell[0])            # (the period number: its own column's)
+                        continue
+                    # (what is left is the same row, in an earlier column)
+                    self.assertEqual(int(match.group(2)), row_number, "%s row %d: %s" % (tab["name"], row_number, cell[0]))
+                    self.assertLess(letters[match.group(1)], letters[column_here], "%s row %d: %s" % (tab["name"], row_number, cell[0]))
+
+    def models(self):
+        import test_financial_asset_manager
+        import test_financial_bank_insurer as b
+        return [build(), build(period="quarterly", history=6, forecast=4, quarterly_facts=True),
+                build(segments=TestModelByInSegment.segments), b.build(b.bank_facts(), "bank"),
+                b.build(b.insurer_facts(), "insurer"), test_financial_asset_manager.build()]
+
+    def test_only_the_period_before_and_the_ends_of_a_sum_are_addresses(self):
+        for model in self.models():
+            for tab in model.sheets():
+                if tab["name"] in ("Notes", "DCF"):
+                    continue
+                self.check_tab(model, tab)
+
+    def test_the_dcf_tab_too_down_to_its_table(self):
+        for model in self.models():
+            dcf = next((tab for tab in model.sheets() if tab["name"] == "DCF"), None)
+            if dcf:
+                table = next(n for n, row in enumerate(dcf["cells"], start=1) if row[0] and row[0][0].startswith("How the discount rate"))
+                self.check_tab(model, dcf, last_row=table)
+
+    def test_every_line_has_a_name_that_is_its_own_and_a_cell_in_its_row(self):
+        model = build()
+        seen = set()
+        for tab in model.sheets():
+            for name, address in tab.get("names", []):
+                self.assertNotIn(name, seen)
+                seen.add(name)
+                self.assertTrue(lisp_google.VALID_RANGE_NAME.match(name) and not lisp_google.CELL_LIKE_NAME.match(name), name)
+        for expected in ("revenue", "net_income", "cash_flow_net_income", "cash", "cash_end", "property_plant_equipment",
+                         "gross_margin", "wacc", "dcf_tax_rate", "last_reported_period", "fcf"):
+            self.assertIn(expected, seen)
+
+    def test_a_name_on_a_statement_is_of_the_first_forecast_cell(self):
+        model = build()
+        tabs = {tab["name"]: tab for tab in model.sheets()}
+        names = dict(tabs["Balance Sheet"]["names"])
+        self.assertEqual(names["cash"], "E%d" % model.layouts["Balance Sheet"].row_of["cash"])
+        self.assertEqual(dict(tabs["Cash Flow"]["names"])["cash_flow_net_income"], "E%d" % model.layouts["Cash Flow"].row_of["net-income"])
+
+    def test_the_formulas_read_in_words(self):
+        model = build()
+        tabs = {tab["name"]: tab for tab in model.sheets()}
+
+        def formula(tab, key, i):
+            return tabs[tab]["cells"][model.layouts[tab].row_of[key] - 1][i + 1][0]
+        self.assertEqual(formula("Income Statement", "gross-profit", 3), "=OFFSET(revenue,0,E$5)-OFFSET(cost_of_revenue,0,E$5)")
+        self.assertEqual(formula("Balance Sheet", "cash", 3), "=OFFSET(cash_end,0,E$5)")
+        self.assertEqual(formula("Balance Sheet", "property-plant-equipment", 3),
+                         "=D13-OFFSET(capital_expenditures,0,E$5)-OFFSET(depreciation,0,E$5)")          # (D13 is the period before's)
+        self.assertEqual(formula("Balance Sheet", "current-assets", 3), "=SUM(E7:E11)")
+        self.assertEqual(formula("Cash Flow", "cash-begin", 3), "=OFFSET(cash,0,E$5-1)")
+        self.assertEqual(formula("Cash Flow", "change-in-receivables", 3), "=OFFSET(receivables,0,E$5-1)-OFFSET(receivables,0,E$5)")
+        self.assertEqual(formula("Cash Flow", "net-income", 3), "=OFFSET(net_income,0,E$5)")
+
+    def test_the_dcf_values_are_reached_by_name(self):
+        model = build()
+        tabs = {tab["name"]: tab for tab in model.sheets()}
+        row = {line[0][0]: n for n, line in enumerate(tabs["DCF"]["cells"], start=1) if line[0]}
+        by_label = lambda text: next(tabs["DCF"]["cells"][n - 1][1][0] for label, n in row.items() if label.startswith(text))
+        self.assertEqual(by_label("Terminal value, at the end"), "=terminal_fcf/(wacc-terminal_growth)")
+        self.assertEqual(by_label("Enterprise value"), "=sum_present_values+present_terminal_value")
+        self.assertEqual(by_label("Equity value"), "=enterprise_value+less_debt+plus_cash")
+        self.assertEqual(by_label("Less: debt"), "=-(OFFSET(current_debt,0,last_reported_period)+OFFSET(long_term_debt,0,last_reported_period))")
+
+    def test_the_names_of_lines_on_two_tabs_are_told_apart_by_the_tab(self):
+        model = build()
+        self.assertEqual(model.range_names[("Income Statement", "net-income")], "net_income")
+        self.assertEqual(model.range_names[("Cash Flow", "net-income")], "cash_flow_net_income")
+        self.assertEqual(model.range_names[("Cash Flow", "other-operating")], "cash_flow_other_operating")
 
 
 class TestHelpers(LispTestCase):

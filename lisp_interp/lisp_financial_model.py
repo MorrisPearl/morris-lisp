@@ -88,9 +88,12 @@ LABEL_WIDTH = 330               # pixels
 PERIOD_WIDTH = 90
 MILLION = 1e6
 
-# the names of assumptions in formulas, where the line's key won't do (growth and days are functions of Google Sheets);
-# the others are the keys with underscores, and a segment's growth is called after the segment (greater_china_growth)
+# The names of lines in formulas. A line's is its key with underscores (net_income, receivable_days), and a segment's
+# growth is called after the segment (greater_china_growth). Where the key won't do (growth and days are functions of
+# Google Sheets) ASSUMPTION_NAMES gives another; where two tabs have a line of the same name, the one of the tab that comes
+# later in TAB_ORDER has its tab's name before it (cash_flow_net_income).
 ASSUMPTION_NAMES = {"growth": "revenue_growth", "days": "days_in_period"}
+NAME_PREFIX = {ASSUMPTIONS: "assumption_", INCOME: "income_", BALANCE: "balance_", CASH_FLOW: "cash_flow_", DCF: "dcf_"}
 
 DEFAULT_COUNTS = {"annual": 5, "quarterly": 8}     # periods reported, and periods forecast
 PERIODS_PER_YEAR = {"annual": 1, "quarterly": 4}
@@ -145,12 +148,12 @@ def is_formula(value):
     return isinstance(value, str) and value.startswith("=")
 
 
-ASSUMPTION_LINK = re.compile(r"=(OFFSET\([a-z0-9_]+,0,[A-Z]+\$\d+\)|[a-z][a-z0-9_]*)$")
+NAMED_LINK = re.compile(r"=(OFFSET\([a-z0-9_]+,0,[A-Z]+\$\d+([+-]\d+)?\)|[a-z][a-z0-9_]*)$")
 
 
 def is_plain_link(value):
-    """A formula that is just another tab's cell: ='Income Statement'!E8, or an assumption's: =OFFSET(tax_rate,0,G$5)."""
-    if is_formula(value) and ASSUMPTION_LINK.match(value):
+    """A formula that is just a line by its name: =OFFSET(net_income,0,G$5) (or ='Income Statement'!E8)."""
+    if is_formula(value) and NAMED_LINK.match(value):
         return True
     return is_formula(value) and "!" in value and all(c not in value[1:] for c in "+-*/(,")
 
@@ -395,10 +398,13 @@ class Model:
         self.layouts = {}
         self.assumptions = {row[0]: row for row in self.assumption_series()}
         self.layouts[ASSUMPTIONS] = self.assumptions_layout()
-        self.make_range_names()
         self.layouts[INCOME] = self.income_layout()
         self.layouts[BALANCE] = self.balance_layout()
         self.layouts[CASH_FLOW] = self.cash_flow_layout()
+        self.range_names = {}                          # (tab, key) -> the name of the line in formulas
+        self.make_range_names()
+        self.here = None                               # the period of the cell being written (for ref)
+        self.here_key = None                           # and the key of its line
 
     # --- the periods
 
@@ -431,46 +437,59 @@ class Model:
 
     # --- references to cells
 
-    def make_range_names(self):
-        """Name each assumption's row, so that a formula on another tab reads =F9*(1+OFFSET(revenue_growth,0,G$5))
-        and not =F9*(1+Assumptions!G12). The name is of the row's cell in the first forecast period; OFFSET moves
-        along the row by the period number in row 5 of the formula's own column (0 in the first forecast period, 1
-        in the next; the reported periods have -1, -2, ...)."""
-        self.range_names = {}
-        taken = set()
-        for line in self.layouts[ASSUMPTIONS].lines:
-            if line is None or line.cell is None:
-                continue
-            name = line.name or ASSUMPTION_NAMES.get(line.key) or range_name(line.key)
-            while name in taken:
+    def register_name(self, tab, key, wanted):
+        """The name a line has in formulas (made if it hasn't one yet): `wanted`, or with its tab's name before it if
+        another line has that."""
+        if (tab, key) not in self.range_names:
+            name = wanted
+            if name in self.range_names.values():
+                name = NAME_PREFIX[tab] + wanted
+            while name in self.range_names.values():
                 name += "_"
-            taken.add(name)
-            self.range_names[line.key] = name
+            self.range_names[(tab, key)] = name
+        return self.range_names[(tab, key)]
 
-    def range_name_cells(self):
-        """(name, address) of each named range on the Assumptions tab: the row's first forecast cell."""
-        layout = self.layouts[ASSUMPTIONS]
+    def make_range_names(self):
+        """Name each line of the Assumptions and the three statements, so that a formula on another row or tab says
+        =F9*(1+OFFSET(revenue_growth,0,G$5)) and not =F9*(1+Assumptions!G12). A name is of the line's cell in the
+        first forecast period; OFFSET moves along the row by the period number in row 5 (see ref)."""
+        for tab in (ASSUMPTIONS, INCOME, BALANCE, CASH_FLOW):
+            for line in self.layouts[tab].lines:
+                if line is not None and line.cell is not None:
+                    wanted = line.name or (ASSUMPTION_NAMES.get(line.key) if tab == ASSUMPTIONS else None) or range_name(line.key)
+                    self.register_name(tab, line.key, wanted)
+
+    def range_name_cells(self, tab):
+        """(name, address) of each named line of a tab: the row's cell in the first forecast period."""
+        layout = self.layouts[tab]
         return [(name, "%s%d" % (column_letter(self.history_count + 1), layout.row_of[key]))
-                for key, name in self.range_names.items()]
+                for (named_tab, key), name in self.range_names.items() if named_tab == tab and key in layout.row_of]
 
-    def assumption_ref(self, key, i):
-        """An assumption in period i, for a formula on another tab, as OFFSET(its name, 0, the period number in
-        the column of period i) -- so in a formula in the same column, the period number is the one just above it."""
-        return "OFFSET(%s,0,%s$%d)" % (self.range_names[key], column_letter(i + 1), PERIOD_NUMBER_ROW)
+    def named_ref(self, tab, key, i):
+        """A line in period i, as OFFSET(its name, 0, the period number) -- the number in row 5 of the column of the
+        formula being written (self.here), less how many periods before that period i is."""
+        number = "%s$%d" % (column_letter(self.here + 1), PERIOD_NUMBER_ROW)
+        if i != self.here:
+            number += "%+d" % (i - self.here)
+        return "OFFSET(%s,0,%s)" % (self.range_names[(tab, key)], number)
 
-    def ref(self, tab, key, i, from_tab):
-        """The address of a line's cell in period i, as written on the tab `from_tab`."""
+    def ref(self, tab, key, i, from_tab, plain=False):
+        """A line's cell in period i, as written on the tab `from_tab` in a cell of the period self.here (of the line
+        self.here_key): the line's name (=OFFSET(net_income,0,E$5), or E$5-1 for the period before), unless it is the
+        line's own, in an earlier period, when it is the address (=D7, as copying across does) -- or if `plain`, the
+        ends of a SUM."""
         layout = self.layouts[tab]
         if key not in layout.row_of:
             raise LispError("three-statement-model: no line %s on the %s tab" % (key, tab))
-        if tab == ASSUMPTIONS and from_tab != ASSUMPTIONS:
-            return self.assumption_ref(key, i)
+        own_earlier_period = tab == from_tab and key == self.here_key and i != self.here
+        if not plain and self.here is not None and not own_earlier_period:
+            return self.named_ref(tab, key, i)
         address = "%s%d" % (column_letter(i + 1), layout.row_of[key])
         return address if tab == from_tab else "%s!%s" % (quoted_tab(tab), address)
 
     def refs(self, tab, from_tab):
         """A function (key, i) -> address, for formulas written on `from_tab` about `tab`."""
-        return lambda key, i: self.ref(tab, key, i, from_tab)
+        return lambda key, i, plain=False: self.ref(tab, key, i, from_tab, plain)
 
     # --- Assumptions
 
@@ -714,7 +733,7 @@ class Model:
                                                   a("segment-growth-%d" % number, i))))
             first, last = "segment-0", "segment-%d" % (len(self.segments) - 1)
             lines.append(Line("revenue", "Revenue", "money", ("total",),
-                              lambda i: "=SUM(%s:%s)" % (inc(first, i), inc(last, i))))
+                              lambda i: "=SUM(%s:%s)" % (inc(first, i, True), inc(last, i, True))))
         else:
             lines.append(Line("revenue", "Revenue", "money", ("bold",),
                               lambda i: h.revenue[i] if not self.is_forecast(i) else
@@ -793,7 +812,7 @@ class Model:
             line("other-current-assets", "Other current assets", h.other_current_assets,
                  same_as_before("other-current-assets")),
             Line("current-assets", "Total current assets", "money", ("total",),
-                 lambda i: "=SUM(%s:%s)" % (bal("cash", i), bal("other-current-assets", i))),
+                 lambda i: "=SUM(%s:%s)" % (bal("cash", i, True), bal("other-current-assets", i, True))),
             line("property-plant-equipment", "Property, plant and equipment", h.property_plant_equipment,
                  lambda i: "=%s-%s-%s" % (bal("property-plant-equipment", i - 1), cf("capital-expenditures", i),
                                           cf("depreciation", i))),
@@ -803,8 +822,8 @@ class Model:
             line("other-noncurrent-assets", "Other non-current assets", h.other_noncurrent_assets,
                  same_as_before("other-noncurrent-assets")),
             Line("total-assets", "Total assets", "money", ("total",),
-                 lambda i: "=%s+SUM(%s:%s)" % (bal("current-assets", i), bal("property-plant-equipment", i),
-                                                bal("other-noncurrent-assets", i))),
+                 lambda i: "=%s+SUM(%s:%s)" % (bal("current-assets", i), bal("property-plant-equipment", i, True),
+                                                bal("other-noncurrent-assets", i, True))),
             None,
             line("accounts-payable", "Accounts payable", h.accounts_payable,
                  lambda i: "=%s*%s/%s" % (inc(cost_key, i), a("payable-days", i), a("days", i))),
@@ -812,7 +831,7 @@ class Model:
             line("other-current-liabilities", "Other current liabilities", h.other_current_liabilities,
                  same_as_before("other-current-liabilities")),
             Line("current-liabilities", "Total current liabilities", "money", ("total",),
-                 lambda i: "=SUM(%s:%s)" % (bal("accounts-payable", i), bal("other-current-liabilities", i))),
+                 lambda i: "=SUM(%s:%s)" % (bal("accounts-payable", i, True), bal("other-current-liabilities", i, True))),
             line("long-term-debt", "Long-term debt", h.long_term_debt,
                  lambda i: "=%s+%s" % (bal("long-term-debt", i - 1), cf("borrowing", i))),
             line("other-noncurrent-liabilities", "Other non-current liabilities", h.other_noncurrent_liabilities,
@@ -870,7 +889,7 @@ class Model:
             Line("change-in-payables", "Change in payables", "money", (), sign_change("accounts-payable", False)),
             line("other-operating", "Other operating activities", h.other_operating, lambda i: 0.0),
             Line("operating-cash-flow", "Cash from operations", "money", ("total",),
-                 lambda i: "=SUM(%s:%s)" % (cf("net-income", i), cf("other-operating", i))),
+                 lambda i: "=SUM(%s:%s)" % (cf("net-income", i, True), cf("other-operating", i, True))),
             None,
             line("capital-expenditures", "Capital expenditures", h.capital_expenditures,
                  lambda i: "=-%s*%s" % (inc("revenue", i), a("capital-expenditures-percent", i))),
@@ -885,7 +904,7 @@ class Model:
             line("repurchases", "Shares repurchased", h.repurchases,
                  lambda i: "=-%s*MAX(%s,0)" % (a("buyback-payout", i), inc("net-income", i))),
             Line("financing-cash-flow", "Cash from financing", "money", ("total",),
-                 lambda i: "=SUM(%s:%s)" % (cf("borrowing", i), cf("repurchases", i))),
+                 lambda i: "=SUM(%s:%s)" % (cf("borrowing", i, True), cf("repurchases", i, True))),
             None,
             Line("net-change-in-cash", "Net change in cash", "money", ("total",),
                  lambda i: "=%s+%s+%s" % (cf("operating-cash-flow", i), cf("investing-cash-flow", i),
@@ -943,7 +962,9 @@ class Model:
                 row[0] = (line.label, line.label_style)
                 if line.cell is not None:
                     for i in range(self.count):
+                        self.here, self.here_key = i, line.key
                         value = line.cell(i)
+                        self.here, self.here_key = None, None
                         if value is not None:
                             row[i + 1] = (value, self.cell_styles(line, value, i))
                 elif "section" in line.label_style:
@@ -981,7 +1002,7 @@ class Model:
             "Black numbers are formulas. Green ones are links to another tab. Grey columns are forecast periods.",
             "Yellow cells on the Assumptions tab are the assumptions. In the first forecast period each is a formula of the reported periods (the last period's value, or an average, within limits); in each later period it is the period before's. Type a number, or a formula that depends on the period before (=G12*0.9), over any of them; everything to the right follows. The Balance Sheet's check line should read 0 in every period.",
             "Amounts are in millions of %s, except per-share amounts." % self.reported.currency,
-            "A formula on another tab reaches an assumption by its name: =D7*(1+OFFSET(revenue_growth,0,E$5)) is the revenue of the period before times one plus the revenue growth assumed for this period. The name is of the assumption's cell in the first forecast period, and OFFSET moves along its row by the period number in row 5 of the formula's own column (0 in the first forecast period, 1 in the next, -1 in the last reported). Data > Named ranges lists the names.",
+            "Formulas reach a line by its name, not its address: =OFFSET(revenue,0,E$5)*(1-OFFSET(gross_margin,0,E$5)) is this period's revenue times one less the gross margin assumed for it. A name is of the line's cell in the first forecast period, and OFFSET moves along the row by the period number in row 5 of the formula's own column (0 in the first forecast period, 1 in the next, -1 in the last reported; E$5-1 is the period before). Only the line's own earlier period (=D13, as copying across does) and the ends of a sum down a column (=SUM(E7:E11)) are addresses. Data > Named ranges lists the names; where two tabs have a line of the same name, the later tab's has its tab before it (cash_flow_net_income).",
             "",
             "How the forecast works",
             *self.forecast_notes(),
@@ -1033,8 +1054,7 @@ class Model:
             result.append({"name": name, "cells": self.sheet_cells(layout),
                            "frozen_rows": HEADER_ROWS, "frozen_columns": 1,
                            "widths": [(0, 0, LABEL_WIDTH), (1, self.count, PERIOD_WIDTH)]})
-            if name == ASSUMPTIONS:
-                result[-1]["names"] = self.range_name_cells()
+            result[-1]["names"] = self.range_name_cells(name)
         return result
 
 
