@@ -49,6 +49,10 @@ they say the interpreter does is what it does.
   absolute deviation, quantiles, logistic, Poisson, ridge and lasso, a
   formula of your own, and splines of them; standard errors for rows in
   groups or in time order; using, measuring, and cross-validating a model.
+- `doc/lisp_baseball_manual.md` -- baseball as a chain of states: transition matrices of
+  the league, of batters and of pitchers, from Retrosheet's plays, and games played from them.
+  (The information used there was obtained free of charge from and is copyrighted by
+  Retrosheet. Interested parties may contact Retrosheet at 20 Sunset Rd., Newark, DE 19711.)
 - `doc/lisp_example_programs.md` -- the example programs in
   `lisp_interp/examples/` (a chess player, a SQL interpreter, ELIZA, a
   Prolog, models of mortgages, and a script for each part of the library),

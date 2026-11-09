@@ -21,7 +21,8 @@ MANUALS = [os.path.join(HERE, "lisp_interpreter_reference.md"), os.path.join(HER
            os.path.join(HERE, "lisp_example_programs.md"), os.path.join(HERE, "lisp_cmo_manual.md"),
            os.path.join(HERE, "lisp_forecasting_manual.md"), os.path.join(HERE, "lisp_paths_manual.md"),
            os.path.join(HERE, "lisp_macro_models_manual.md"),
-           os.path.join(HERE, "lisp_regression_manual.md")]
+           os.path.join(HERE, "lisp_regression_manual.md"),
+           os.path.join(HERE, "lisp_baseball_manual.md")]
 
 
 def anchor_of(title):

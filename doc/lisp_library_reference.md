@@ -8,7 +8,8 @@ programming, and stratification), dates and cash flows, and investments
 (option prices, the volatility smile, option checks, and portfolios), and
 maps. Yield curves, and simulated paths of interest rates and of investment
 prices, are in their own manual, [lisp_paths_manual.md](lisp_paths_manual.md), regression in
-[lisp_regression_manual.md](lisp_regression_manual.md), and macroeconomic models (Dynare)
+[lisp_regression_manual.md](lisp_regression_manual.md), baseball (`lib/baseball.lsp`)
+in [lisp_baseball_manual.md](lisp_baseball_manual.md), and macroeconomic models (Dynare)
 in [lisp_macro_models_manual.md](lisp_macro_models_manual.md). Most are builtins,
 written in Python; the rest are libraries in `lib/`, written in Lisp.
 
@@ -51,6 +52,8 @@ that use all this are described in
   - [A parser framework](#a-parser-framework)
 - [Reporting](#reporting)
   - [Google Sheets](#google-sheets)
+  - [Three-statement models](#three-statement-models)
+  - [Comparing companies](#comparing-companies)
   - [Reports with control breaks](#reports-with-control-breaks)
 - [Dates and cash flows](#dates-and-cash-flows)
   - [Monthly time series](#monthly-time-series)
@@ -86,7 +89,8 @@ The functions for investment analysis, in the order an analysis uses them.
    (under "Input / output", in the language manual), and, for text in a
    small language of its own, "A parser framework". Each gives a
    **table**, so they all work the same way after that. And the other way:
-   "Google Sheets" sends tables out, to a spreadsheet, and "Reports with
+   "Google Sheets" sends tables out, to a spreadsheet, "Three-statement models" makes a
+   company's statements and a forecast of them, as formulas, in one, and "Reports with
    control breaks" writes a table as a text report, with totals for each group.
 2. **Tables and numbers.** In the language manual: "Tables", "Vectors",
    "Vector math and statistics" (`vector-drawdowns` is there), "Displaying
@@ -125,7 +129,8 @@ The functions for investment analysis, in the order an analysis uses them.
    (`lib/deal.lsp`).
 7. **Models.** Regression, in its own manual, [lisp_regression_manual.md](lisp_regression_manual.md) (least squares,
    least absolute deviation, quantiles, logistic, Poisson, ridge and lasso, nonlinear, and splines of them),
-   "Linear programming", and `lib/solver.lsp`.
+   "Linear programming", and `lib/solver.lsp`. Baseball, as a chain of states played from Retrosheet's plays, is in its own manual,
+   [lisp_baseball_manual.md](lisp_baseball_manual.md) (`lib/baseball.lsp`).
 
 **Built in, or loaded.** Everything above is built in, and there whenever
 the interpreter is, except the libraries in `lib/`, which are loaded with
@@ -2874,6 +2879,345 @@ fails part way, the error says where the spreadsheet is, and that it isn't
 finished. A spreadsheet holds at most 10,000,000 cells in all; a long table
 is sent in pieces. Google limits how fast a program can make spreadsheets
 -- about 60 changes a minute -- which a few tables don't come near.
+
+### Three-statement models
+
+(In `lisp_financial_model.py`, with `lisp_sec_segments.py`, `lisp_financial_bank.py`, and `lisp_financial_insurer.py`.)
+A company's income statement, balance sheet, and cash
+flow statement, as it reported them to the SEC for the last few years -- or quarters -- and **forecast** for the
+next few, in a Google Sheet. The forecast is made of formulas, which follow a short list of assumptions that
+you type over: revenue growth (for each segment, if the company reports them), margins, days of sales in
+receivables, capital spending, and so on. Change one and every statement follows, and the balance sheet still
+balances. It is the "integrated three-statement model" of a finance course (for example
+[this one](https://www.wallstreetprep.com/knowledge/build-integrated-3-statement-financial-model/)), built from
+the company's own numbers, so that the work left to you is the thinking: what *will* revenue do?
+
+```lisp
+(three-statement-model creds "AAPL")
+; makes a spreadsheet in your Google Drive, and gives its address
+(three-statement-model creds "AAPL" :period "quarterly" :history 8 :forecast 8)
+(three-statement-model creds "KO" :segments #f :title "Coca-Cola, total revenue only")
+(three-statement-model creds "JPM")       ; a bank: loans, deposits, interest rates, credit losses
+(three-statement-model creds "TRV")       ; a property and casualty insurer: premiums, loss and expense ratios, float
+```
+
+It needs what `sec-income-statement` and `google-sheet` need: the credentials file's `sec_user_agent` entry, and a
+Google sign-in (`(google-login creds)`, once; "Google Sheets" says how to set it up). The sheet is made in your own
+Drive, and shared with no one.
+
+#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :aum a :price p :segments s :title t])`
+Makes the spreadsheet and returns its address, as a string.
+
+- `:period` is `"annual"` (the default) or `"quarterly"`.
+- `:history` is how many periods to show as reported, and `:forecast` how many to forecast: 5 and 5 for years, 8 and 8
+  for quarters, unless you say. A company with fewer periods on file than `:history` gets the ones it has. A model needs
+  at least two years -- or five quarters, since a quarter's growth is measured against the same quarter a year before --
+  of history.
+- `:kind` is what kind of company it is, which decides the lines of the statements and what drives the forecast:
+  `"general"` (an ordinary company, described first below), `"bank"`, `"insurer"` (a property and casualty insurer),
+  or `"asset-manager"`, the last three described under "Banks, insurers, and asset managers" below. `"auto"`, the default,
+  chooses by the SEC's industry code for the company (national and state commercial banks and savings institutions are
+  banks; fire, marine, and casualty insurers and surety insurers are insurers; investment advisers are asset managers;
+  everything else is general; and a company is an asset manager if you give `:aum`), and models it as an ordinary company
+  if the SEC's facts lack what the other kind needs, saying why on the Notes tab. Asking for a kind is an error if its
+  lines are missing.
+- `:aum`, for an asset manager, is its assets under management in billions at the end of each period, oldest first, ending
+  with the latest period reported, such as `(list 8590 10010 11550)`. They are not in the SEC's data, so you type them from the
+  annual reports. If you give fewer than there are periods, the history is cut to the periods you have.
+- `:price` is today's share price, for the DCF tab (below): with it the weight of debt in the discount rate is worked out
+  from the market value of the shares, and the tab shows how the value compares with the price.
+- `:segments`, for an ordinary company, is how revenue is forecast. `"auto"` (the default) is by **business segment**, if the company reports
+  them, or else by **product or service**, and if it has neither (or they can't be found for every period) by its total
+  revenue alone, and the Notes tab says why. `"business"`, `"product"`, or `"geography"` asks for that breakdown, and it is
+  an error if it can't be found; `#f` is total revenue only.
+- `:title` is the spreadsheet's name; the default is the company's, and "annual" or "quarterly".
+
+**The tabs.** Every tab has the same periods in the same columns, so a period's revenue, in column E of the income
+statement, is in column E of the others, and of the assumptions. The reported periods come first and then the
+forecast, in grey. The first five rows say what each column is: its name (`FY2025`, `Q3 FY2026`, with an `E` for a
+forecast), when it ends, and its **period number**: 0 in the first forecast period, 1 in the next, and -1 in the last period
+reported, -2 in the one before (row 5; the formulas below use it).
+
+| Tab | What it has |
+|---|---|
+| Assumptions | One row for each assumption. In the reported periods it is worked out from the statements, so you can see what happened; in the forecast it is a **formula** on a yellow background, for you to type over (see below). |
+| Income Statement | Revenue (by segment, if any), cost of revenue, gross profit, research and development, selling, general and administrative, other operating expenses, operating income, interest, other income, taxes, net income, shares, and earnings per share. |
+| Balance Sheet | Cash, receivables, inventory, plant and equipment, goodwill, intangibles, payables, debt, equity, with their totals; and, at the bottom, a **check** -- assets less liabilities and equity -- that is 0 in every period. |
+| Cash Flow | Net income, depreciation, stock compensation, the changes in receivables, inventory, and payables, cash from operations; capital expenditures, cash from investing; borrowing, dividends, buybacks, cash from financing; the net change in cash, and the cash at the end. |
+| DCF | What the company is worth by discounting its forecast free cash flow (see "Valuation" below). Ordinary companies and asset managers; not banks and insurers. |
+| Notes | How to read the sheet, how the forecast works, which of the company's XBRL tags each reported line came from, and which lines it didn't report. |
+
+**Colors,** as in most models: **blue** is a number typed in -- reported by the company, or an assumption; **black** is a
+formula; **green** is a link to another tab. A cell on **yellow** is an assumption for you to change: black if it is a formula
+(most are), blue if it is a number.
+
+**Formulas reach a line by its name.** Every line of the Assumptions tab and of the three statements has a name, and a
+formula uses it with `OFFSET` and the period number in row 5 of its own column, so that cells read
+
+```
+=F9*(1+OFFSET(greater_china_growth,0,G$5))                       revenue: last year's times one plus the growth assumed
+=OFFSET(revenue,0,G$5)*(1-OFFSET(gross_margin,0,G$5))            cost of revenue
+=OFFSET(cash_end,0,G$5)                                          cash on the balance sheet: the cash flow's
+=OFFSET(receivables,0,G$5-1)-OFFSET(receivables,0,G$5)           change in receivables: last period's less this one's
+=SUM(G7:G11)                                                     total current assets
+```
+
+and not `=F9*(1+Assumptions!G12)` or `='Cash Flow'!G28`. The name is of the line's cell in the first forecast period, so
+`OFFSET(name,0,0)` is that cell; `OFFSET(name,0,G$5)` moves along the row by this column's period number (0 in the
+first forecast period, 1 in the next, -1 in the last reported), and `G$5-1` reaches the period before. A formula has an
+**address** only for the line's own earlier period (`F9`, as copying a formula across does), and for the ends of a sum down a
+column; on the DCF tab also the table at the bottom. The names are the lines' own: `revenue`, `net_income`, `receivables`,
+`cash_end`, `gross_margin`, `tax_rate`, `days_in_period` (`revenue_growth` for the revenue growth, because `GROWTH`
+and `DAYS` are functions of Google Sheets), and for a segment its own name and `_growth` (`greater_china_growth`). Where two
+tabs have a line of the same name, the later tab's has its tab's name before it (`cash_flow_net_income`, `dcf_tax_rate`).
+On the DCF tab the single values are named too (`wacc`, `terminal_growth`, `enterprise_value`), and `last_reported_period`
+(-1) and `last_forecast_period` say which column the debt and cash, or the end of the forecast, are taken from.
+Google Sheets lists the names under *Data > Named ranges*. Typing over an assumption changes
+the formulas that use it, as before; and you can write your own formula in the same style, on any tab:
+`=OFFSET(tax_rate,0,G$5)*G20`. (`OFFSET` is recalculated whenever anything changes, which a sheet this size does not notice;
+the formulas are written for Google Sheets and have not been tried in Excel.)
+
+**The forecast assumptions are formulas.** In the first forecast period an assumption's cell is a formula of the reported
+periods that starts the forecast -- the last period's value, within the limits (`=MIN(MAX(F12,-0.2),0.2)`), or the average
+of the last year's quarters, or of the last three years for a payout (`=MIN(MAX(AVERAGE(D30,E30,F30),0),1.5)`) -- so you can
+see where it came from. In every later forecast period it is the **period before's** (`=G12`), so changing one period
+changes all the periods after it, until one of them has a number or a formula of its own. Type over any cell: a number, or
+a formula that depends on the period before (`=G12*0.9` for a growth rate that fades a tenth each year; `=G12-0.01` for a
+margin that slips a point).
+
+**How the forecast works,** in the order the formulas depend on each other. Nothing refers to itself: interest uses
+the debt and cash at the *end of the period before* (so cash is "invested at the end of the period"), and so
+there are no circular formulas to iterate.
+
+1. *Revenue* is the revenue of the period a year before (for years, the year before; for quarters, the same quarter, so
+   the seasons stay) times one plus the assumed growth. With segments, each segment grows at its own rate and revenue is
+   their sum; the growth of the total is then a result, shown on the Assumptions tab.
+2. *Costs* are a percentage of revenue: cost of revenue as one less the gross margin, then research and development,
+   selling, general and administrative, and other operating expenses.
+3. *Interest expense* is the assumed rate times last period's debt (for a quarter, a quarter of the year's rate);
+   *interest and other income* is a yield on last period's cash and short-term investments. *Taxes* are the tax rate
+   times income before taxes. Net income follows; the diluted share count changes at the assumed rate, and earnings per share
+   is net income over shares.
+4. *The cash flow statement* starts with net income, adds depreciation and stock compensation (percentages of revenue),
+   and takes the changes in receivables, inventory, and payables from the balance sheet: receivables are assumed to be
+   so many days of revenue, and inventory and payables so many days of the cost of revenue. Capital expenditures are a
+   percentage of revenue; borrowing is an amount you type; dividends and buybacks are percentages of net income.
+5. *The balance sheet*: plant and equipment is last period's plus capital expenditures less depreciation; debt is
+   last period's plus what is borrowed; equity is last period's plus net income and stock compensation, less
+   dividends and buybacks; and **cash is last period's plus the net change in cash on the cash flow statement**. Short-term
+   investments, goodwill, intangibles, and the other assets and liabilities stay as they were.
+
+That every number on the balance sheet follows from a statement or an assumption, and the check is still 0, is
+the test that the formulas fit together. If you add a line of your own, the check will tell you whether you did it right.
+
+**The assumptions' starting values** are guesses from the reported periods, so that the sheet works as it comes: the last
+period's value (for quarters, the average of the last four), kept within limits so that one extraordinary year is not
+assumed to go on for ever -- growth between -20% and +20% a period, the tax rate between 0 and 40%, and so on (they are named at
+the top of `lisp_financial_model.py`). A payout is lumpy -- a company buys back no stock for years and then a great deal in
+one -- so the dividend and buyback percentages, for years, are the average of the last three. They are guesses, not
+forecasts: **replace them**. In particular, borrowing starts at 0 whatever the company has been doing, so a company
+that has been borrowing to fund its buybacks will show its cash piling up (or, if it spends more than it earns, going negative:
+nothing in the model borrows for you).
+
+**Where the numbers come from.** The reported lines are those of `sec-financials`: each found under whichever of the
+company's XBRL tags it uses, a fiscal year from its annual report and a quarter from its 10-Q or, for the fourth, the year less
+the nine months before. The model has fewer lines than a company's statements, so each statement has lines called *other* --
+other operating expenses, other current assets, other non-current liabilities, "other operating activities" -- which are
+what is left between the lines shown and the subtotals the company reported, so that every subtotal is the company's
+own, and the balance sheet balances as reported. (A line a company doesn't report is zero.) In the forecast the other balance
+sheet lines stay as they were, and the other cash flows are zero; they are plain numbers in blue, for you to change.
+
+**Segments.** The SEC's summary of a company's numbers has only its totals, so the segments are read from the
+filings themselves: since about 2019 each 10-K and 10-Q has its numbers tagged in the page ("inline XBRL"), and a number for a
+part of the company -- a business segment, a product, a region -- is tagged with the part it is for. `three-statement-model`
+reads the tagged revenue of the annual reports (and, for quarters, the quarterly ones) that cover the periods shown, and takes
+the largest set of segments that add up to the company's revenue: Apple's regions (Americas, Europe, ...), or, if you ask for
+`"product"`, iPhone, Mac, iPad, Wearables, and Services, but not Product and Service together, which overlap. A
+line called "Other revenue" is what the segments don't add up to, if it is more than rounding. Two cautions. A company that
+changes how it defines its segments restates only the few years it shows beside the new ones, so a jump between two years
+may be the definition and not the business: look at the numbers. And a segment that has no number for every period
+shown, such as a new one, can't be used, so the model falls back to total revenue and says why.
+The names come from the company's tags (`Rest Of Asia Pacific`), not its labels; rename them in the sheet if you like.
+
+**Limits.** The model is a way of working with a company's numbers, not a prediction. It has one line for debt and no minimum
+cash, so it does not borrow when cash runs out; it does not know about leases, taxes paid later than they are owed, acquisitions,
+or minority interests (the equity line includes them, and net income is the company's); accrued liabilities, deferred revenue,
+and the other current assets and liabilities stay as they were, though a service company's grow with its revenue (so its cash
+flow is a little understated); and a company that acquires others (Accenture, Equifax) has goodwill that stays as it was and
+intangibles that wear away, because the cash spent on acquisitions is an amount you type, 0 to begin with. A company outside the US that files only annual reports can have only annual models. A conglomerate that
+is part insurer, part something else (Berkshire Hathaway: insurance, a railroad, utilities, manufacturing, retail)
+is modeled as an ordinary company, by whatever segments its filings give (see below); a model that is half insurer
+and half railroad would need its insurance and the rest apart, which the SEC's summary of its numbers does not have.
+
+#### Service companies
+
+A company with little inventory and little plant -- Accenture, Equifax, Paychex, Cognizant -- is an ordinary company to the model, and
+the lines that matter to it work as they do for anyone: revenue (by segment if reported), receivables as days of revenue,
+a margin, taxes, payouts. What such companies report differently has its own handling:
+
+- **Costs.** Many report no cost of revenue (or one that leaves out depreciation: `CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization`),
+  and *selling and marketing* and *general and administrative* apart; the model finds the first and adds the other two
+  to make selling, general and administrative. A company with no cost of revenue has its payables (and inventory)
+  as days of **revenue**, as the Assumptions tab says; otherwise payables would be days of nothing and fall to zero.
+- **Depreciation and amortization.** Where the company reports the amortization of intangibles apart
+  (`AmortizationOfIntangibleAssets`) it is taken off the **intangibles**, as a percentage of last period's, and only the
+  depreciation comes off the plant; so a company that buys other companies does not see its plant shrink for the
+  amortization of the intangibles it bought. Depreciation is also never more than the plant there is (plant stays at 0 or more).
+- **Payouts.** Dividends are found under the tags companies use (`PaymentsOfDividends`, `...CommonStock`, `PaymentsOfOrdinaryDividends`),
+  and the payout assumptions are the average of three years, not the last, so a year of heavy buybacks does not become the plan.
+
+#### Banks, insurers, and asset managers
+
+A bank does not sell a product. It borrows, mostly from depositors, lends for more, and keeps the difference less its
+losses; an insurer collects premiums now, pays claims later, and invests the "float" in between. For them, revenue
+growth and gross margin say little, so their models have other lines and other assumptions. The tabs, the colors, the
+periods in the same columns, the "other" lines that make the subtotals the company's, the balance **check**, and the
+rule that nothing refers to itself are the same.
+
+**A bank** (`:kind "bank"`, or `"auto"` for a bank by industry code; `lisp_financial_bank.py`):
+
+| | |
+|---|---|
+| Balance sheet | Loans and deposits grow at the rates you assume; cash and securities are percentages of deposits; the allowance for credit losses is a percentage of loans. **Borrowings are what funds the rest** (total assets less deposits, other liabilities, and equity), so if loans grow faster than deposits, borrowings grow. Trading assets, premises, goodwill and the like stay as they were. |
+| Interest | A rate times the balance at the end of the period before: on loans, on securities and cash, on deposits, on borrowings. Net interest income is the difference. |
+| Credit losses | Net charge-offs are a percentage of last period's loans. The **provision** is the charge-offs plus the growth of the allowance. |
+| Other lines | Noninterest income grows at an assumed rate (from the same quarter a year before, for quarters); noninterest expense is the **efficiency ratio** times net revenue (net interest income plus noninterest income). Equity is last period's plus net income, less dividends and repurchases. |
+| Cash flow | The balance sheet seen as flows: net income, less the growth of loans and securities, plus the growth of deposits and borrowings, less the payouts. It ends with the cash the balance sheet has: a second check line on the Balance Sheet, 0 in every forecast period, says so. |
+| Ratios | Net interest margin, efficiency ratio, return on equity and on assets (below the income statement); loans to deposits, borrowings to assets, equity to assets, allowance to loans (below the balance sheet). They are results, not assumptions: they say whether the forecast is one a bank could live with. |
+
+Regulatory capital ratios (CET1) need risk-weighted assets, which are not in the SEC's summary of a company's numbers.
+Banks tag their statements in more different ways than other companies, and the model needs interest income and
+expense and their parts on loans and deposits, noninterest income and expense, loans, deposits, total assets, and equity.
+If the SEC's facts lack one in some of the older periods, the history starts later (the Notes tab says where and why); if
+they lack one in the latest, the company is modeled as an ordinary one. Of the large banks, JPMorgan, Bank of America,
+Citigroup, U.S. Bancorp, PNC, and most regional banks work; Wells Fargo (which stopped tagging its total loans in 2022) and
+M&T (which doesn't tag its deposit interest as a total) do not.
+
+**A property and casualty insurer** (`:kind "insurer"`; `lisp_financial_insurer.py`):
+
+| | |
+|---|---|
+| Income statement | Premiums earned grow at the rate you assume. Losses and loss adjustment expense are the **loss ratio** times premiums, and the other underwriting, acquisition, and operating costs the **expense ratio** times premiums; together they are the **combined ratio**, under 100% when the insurer makes money underwriting. Net investment income is a yield on last period's investments and cash. Realized gains are an amount you type, 0 to begin with. |
+| Balance sheet | Loss reserves are an assumed number of years of losses; unearned premiums a percentage of a year's premiums; premiums receivable some days of premiums; reinsurance recoverables a percentage of the reserves; deferred acquisition costs a percentage of unearned premiums. Equity is last period's plus net income, less dividends and repurchases (unrealized gains and losses on bonds, which move equity when interest rates do, are not forecast). |
+| Cash flow | Net income, plus the growth of the reserves and the unearned premiums (the **float**: money held before it is paid out), less the growth of receivables, recoverables, and acquisition costs. What is left after dividends, repurchases, and borrowing is **invested**, in the share you assume (all of it, to begin with), so investments grow by it; the rest stays as cash. |
+| Ratios | Underwriting income, loss ratio, expense ratio, and combined ratio (below the income statement); a year's premiums, reserves, and investments to equity (below the balance sheet). |
+
+The insurer's model needs premiums earned, losses incurred, net investment income, revenues, investments, loss reserves,
+unearned premiums, total assets, and equity. Travelers, Chubb, Progressive, Hartford, and W. R. Berkley have them; Allstate
+(whose losses are not tagged for every year) and Berkshire Hathaway (whose insurance is in one set of statements with its
+railroad, utilities, and manufacturing, without these lines) do not, and are modeled as ordinary companies. Life and health
+insurers have other lines (policy benefits, annuities), and are not covered.
+
+**An asset manager** (`:kind "asset-manager"`, or `"auto"` for an investment adviser, or whenever you give `:aum`;
+`lisp_financial_asset_manager.py`) earns a small fee on a very large amount of other people's money, so its model is driven
+by **assets under management (AUM)**, not by revenue:
+
+| | |
+|---|---|
+| AUM | At the end of each period, in billions. The reported periods' are the ones you gave (`:aum`), in blue; each forecast period's is last period's times one plus the **growth of AUM** you assume, which is the market's appreciation plus the net money the clients put in (flows) -- the one number that matters most, and the one nobody knows. To see the two apart, type a formula in the cell, such as `=0.06+0.02`. |
+| Revenue | The **fee rate**, in basis points of average AUM (a year's), times the average of the AUM at the start and the end of the period. The Assumptions tab works the fee rate out for the periods reported (T. Rowe Price: about 45 basis points) so you can see it drift down as money moves to index funds; the forecast starts from the last one. The growth of revenue is then a result. |
+| The rest | Operating expenses (compensation, distribution, general and administrative) are percentages of revenue, so the operating margin is what you assume; the rest is the ordinary company's: receivables and payables as days of revenue, plant, intangibles, interest, taxes, payouts. |
+
+The SEC's summary of a company's numbers has no AUM (T. Rowe Price tagged it until 2022; BlackRock and the others never did),
+and in the filings it is in the text of the annual report, not tagged; so the program asks you for it. Two cautions. Interest
+and other income is a yield on last period's cash, as for any company, though an asset manager's is mostly the return on
+the investments it holds (seed capital, consolidated funds), which it does not model; look at that line. And a company
+whose SEC filings changed hands -- BlackRock became a new registrant in 2024, so the SEC has only two years under its
+ticker -- has only the history there is. Alternative managers (Blackstone, KKR), whose income is performance fees and
+carried interest, are not what this model is for.
+
+**Berkshire Hathaway and segments that overlap.** Berkshire reports its revenue several ways, and the members overlap: its
+"Insurance and Other" contains the insurance group, and the manufacturing, McLane, and service and retailing businesses,
+all of which are also members. `three-statement-model` takes the segments that add up to the revenue **in every period**,
+exactly if there are such (a set that is only close in the latest year may be an accident of double counting), and does not
+use a member that is a total of the others ("Operating Segments"). For Berkshire that is *Insurance And Other* (87% of
+revenue) and *Railroad, Utilities And Energy*; its business segments (the insurance group, BNSF, Berkshire Hathaway Energy,
+manufacturing, McLane, Pilot, service and retailing) overlap and change from year to year, and so cannot be used.
+
+#### Valuation: the DCF tab
+
+An ordinary company's sheet (and an asset manager's) has a sixth tab, **DCF**, that values the company by discounting the free
+cash flow the forecast says it will make. It is the last step of the course the model comes from: the three statements
+tell you what the company will earn, and the DCF tells you what that is worth today.
+
+1. *Free cash flow* of each period is operating income less the taxes on it (the tax-rate assumption), plus depreciation and
+   amortization, less capital expenditures, less the growth of working capital (receivables, inventory, payables): what the
+   business throws off before it pays its lenders or its owners. Stock compensation is not added back, because it costs the
+   shareholders. The reported periods' free cash flow is there too, for comparison.
+2. *The discount rate* is the weighted average cost of capital (WACC): the **cost of equity** -- a risk-free rate plus the stock's
+   beta times the market's risk premium -- and the after-tax **cost of debt**, weighted by the share of the company's value that
+   each is. The cost of debt and the tax rate start from the model's assumptions for the first forecast period. The risk-free
+   rate (4.5%), the beta (1), the risk premium (5%), and the terminal growth rate (2.5%) are **placeholders**: the SEC's data
+   has none of them, and the answer depends on them a great deal. If you gave `:price`, the debt weight is the debt over the debt and
+   the market value of the shares; otherwise it is a guess of 20%. All are yellow cells, and the WACC itself can be typed over.
+3. *Each period's free cash flow* is divided by (1 + WACC) raised to the number of years until it arrives, counted from the end
+   of the last reported period. Set the "middle of the period" cell to 1 and each flow is half a period nearer.
+4. *The terminal value* is the free cash flow of the year after the forecast, divided by the WACC less the terminal growth rate, and
+   discounted with the last period's factor. By default that free cash flow is the **last forecast year's, grown**; for quarters
+   the last four quarters stand for the year. If the last forecast year is still one of fast growth -- the capital
+   expenditures and working capital it needs are those of a company growing 20%, not 2.5% -- that understates what is to come:
+   set the method cell to 1 and the free cash flow is the year's operating income after taxes, grown, less the terminal growth
+   rate times the **invested capital** (plant, goodwill, intangibles, receivables and inventory, less payables), which is what it
+   takes to grow that much. (For Microsoft, whose growth is held at the 20% limit to the last year, the second method gives more than twice the first's value
+   per share: the choice matters most where the forecast ends with growth still fast.)
+5. *The value*: the present values of the free cash flows and of the terminal value are the **enterprise value**; less the
+   debt, plus the cash and short-term investments, at the end of the last reported period, it is the **equity value**; over the diluted
+   shares, the **value per share**. Rows under it say how much of the enterprise value is terminal value (usually three-quarters or
+   more) and what multiple of the last year's operating income plus depreciation and amortization the terminal value is, as a check on
+   the growth and the WACC. A table at the bottom works out the value per share for discount rates one and two points either side
+   of the WACC and growth rates a half and one point either side of the assumed growth, each cell a formula.
+
+The valuation is only as good as the forecast, which is the model's guess from the reported periods: five years at the
+last year's growth, up to 20%, then 2.5% for ever. Look at the Assumptions tab first. Minority interests, leases, pensions, and
+options are not taken off the equity, and the debt is the book value. A bank or an insurer has **no DCF tab** (the Notes tab says so):
+its debt is its raw material, not its financing, so free cash flow to the firm means nothing for it. A forecast of less than a year
+(three quarters) is too short to value a company by, and has none.
+
+### Comparing companies
+
+(In `lisp_financial_compare.py`, with the models of `lisp_financial_model.py`.) The most recent period of several companies,
+side by side in a Google Sheet -- a column for each company, **the same rows for all**: the income statement, the balance
+sheet, the cash flow statement, and some ratios -- so that what one does differently from the others shows.
+
+```lisp
+(compare-companies creds '("ACN" "EFX" "CTSH"))                       ; the amounts, in millions
+(compare-companies creds '("ACN" "EFX" "CTSH") :basis "revenue")      ; each as a percentage of the company's revenue
+(compare-companies creds '("JPM" "BAC" "C" "USB") :basis "assets")    ; a bank's rows, as a percentage of assets
+```
+
+#### `(compare-companies creds tickers [:basis b :period p :kind k :title t])`
+Makes the spreadsheet and returns its address, as a string. It needs what `three-statement-model` needs: the credentials file's
+`sec_user_agent` entry and a Google sign-in.
+
+- `tickers` is a list of two or more companies, such as `'("ACN" "EFX")`.
+- `:basis` makes the numbers comparable. `"none"` (the default) shows the amounts in millions, which is only a comparison if the
+  companies are the same size and report in the same currency (it is an error if they don't). `"revenue"` shows every amount
+  as a **percentage of the company's top line** -- its revenue; a bank's *net revenue*, net interest income plus noninterest income;
+  an insurer's total revenues -- and `"assets"` as a percentage of its **balance sheet total**. Shares and earnings per share are
+  left as they are.
+- `:period` is `"annual"` (the default) or `"quarterly"`: each company's latest fiscal year, or quarter. Fiscal years end at
+  different times, so the date each ends is at the top.
+- `:kind` is `"general"`, `"bank"`, or `"insurer"`, as for `three-statement-model`, and decides the rows. `"auto"` (the
+  default) chooses for each company by the SEC's industry code, and **the companies must be all one kind**, because a bank's rows
+  are not an industrial's: it is an error if they are not, and `:kind "general"` compares them all as ordinary companies
+  (a bank's loans are then "other assets"). A company the SEC's numbers do not describe in its kind's lines is named in the error.
+
+**The sheet.** With `:basis "none"` the `Comparison` tab has the numbers themselves, in blue. With a basis it has **formulas**
+-- each amount over the basis, such as `='As reported'!B12/'As reported'!B$7` -- and a second tab, `As reported`, has the
+numbers in millions (in blue) and the ratios; change a number there and the comparison follows. Either way the last column is the
+**median** of the companies: what is typical, in every row of percentages and ratios. The `Notes` tab lists the companies, their
+industries and periods.
+
+**The rows.** The ordinary company's: revenue, cost of revenue, gross profit, research, selling, general and administrative,
+other operating expenses, operating income, interest, taxes, net income, shares and earnings per share; the balance sheet down to
+equity; the cash flow statement; and gross, operating, and net margin, the tax rate, free cash flow over revenue, return on equity
+and assets, debt to equity, net debt to operating income, the current ratio, receivable days, and capital spending over revenue.
+The lines a company reports that have no row of their own are in the *other* rows, as in `three-statement-model`, so every
+subtotal is the company's. A bank's rows are its net interest income, provision, noninterest income and expense, loans, deposits,
+and credit-loss lines, with the efficiency ratio, net interest margin, rates on loans and deposits, return on equity and assets,
+loans to deposits, equity to assets, the allowance, and the charge-off rate. An insurer's are premiums, investment income, losses,
+expenses, reserves, unearned premiums, and investments, with the loss, expense, and combined ratios, the investment yield, and
+the leverage ratios. The ratios use the period's end balances and a year's flows (a quarter's times 365 over its days).
 
 ### Reports with control breaks
 

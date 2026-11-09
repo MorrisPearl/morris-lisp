@@ -12,7 +12,7 @@ file. **Requires `numpy`**; everything else (ipykernel, matplotlib, pandas, the
 tastytrade package) is needed only for the features that use it. The code
 is meant to be read: "How the code is organized" says which file has what.
 
-There are nine documents. **This one is the language**: its syntax, special
+There are ten documents. **This one is the language**: its syntax, special
 forms and macros, and the general builtins -- numbers, lists, strings, hash
 tables, vectors and statistics, tables, dates, charts, input and output,
 and the debugger. **The library manual,
@@ -26,7 +26,8 @@ mortgages, and a script for each part of the library -- and explains the
 programming techniques they show. **Yield curves and simulated paths**, of interest rates
 and of investment prices, are in [lisp_paths_manual.md](lisp_paths_manual.md); structured
 deals in [lisp_cmo_manual.md](lisp_cmo_manual.md); regression in
-[lisp_regression_manual.md](lisp_regression_manual.md); forecasting questions in
+[lisp_regression_manual.md](lisp_regression_manual.md); baseball, in
+[lisp_baseball_manual.md](lisp_baseball_manual.md); forecasting questions in
 [lisp_forecasting_manual.md](lisp_forecasting_manual.md); macroeconomic models, run with Dynare, in
 [lisp_macro_models_manual.md](lisp_macro_models_manual.md); and which agency publishes what data, and
 which function gets it, in [economic_data_guide.md](economic_data_guide.md).
@@ -6396,6 +6397,13 @@ The Python files:
 | `lisp_alpha_vantage.py` | `alpha-vantage-dividends`: a stock's dividends from Alpha Vantage, through `lisp_http.py` |
 | `lisp_finra.py` | `finra-tba-prices`, `finra-mbs-prices`, `finra-arm-prices`, `finra-get`: agency MBS prices reported to FINRA's TRACE |
 | `lisp_google.py` | `google-login`, `google-sheet`: tables sent to a new Google spreadsheet |
+| `lisp_financial_model.py` | `three-statement-model`: a company's three statements from the SEC, forecast by formulas, in a new Google spreadsheet |
+| `lisp_financial_bank.py` | The bank model of `three-statement-model`: loans, deposits, interest rates, credit losses |
+| `lisp_financial_insurer.py` | The property and casualty insurer model of `three-statement-model`: premiums, loss and expense ratios, float |
+| `lisp_financial_asset_manager.py` | The asset manager model of `three-statement-model`: revenue from assets under management and a fee rate |
+| `lisp_financial_dcf.py` | The DCF tab of `three-statement-model`: free cash flow, WACC, terminal value, value per share, and a sensitivity table |
+| `lisp_financial_compare.py` | `compare-companies`: companies' latest statements side by side in a Google sheet, as amounts or percentages of revenue or assets |
+| `lisp_sec_segments.py` | A company's revenue by segment, read from the tagged numbers of its 10-Ks and 10-Qs (for `three-statement-model`) |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-option-chain`, `schwab-orders`, `schwab-spread-order`, `schwab-multi-leg-order`, ...: your Schwab accounts |
 | `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `bootstrap-days`, `volatility-model`, `volatility-history`, `volatility-forecast`, `option-value`, `option-payoffs`: simulated prices of an investment, with its volatility starting at today's if asked, and what options on it are worth |
 | `lisp_calendar.py` | `trading-day?`, `add-trading-days`, `trading-days-between`, `market-open?`, `nyse-holidays`, ...: the NYSE's trading days |

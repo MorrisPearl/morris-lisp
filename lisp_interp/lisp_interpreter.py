@@ -57,9 +57,14 @@ HOW THE CODE IS ORGANIZED
     lisp_tastytrade.py    tastytrade-*                     (downloads from tastytrade)
     lisp_futures.py       futures-curve-fit, futures-leg-carry (a futures curve's rich, cheap, and carry)
     lisp_google.py        google-*  (send tables to a new Google spreadsheet)
+    lisp_financial_model.py   three-statement-model (a company's statements, forecast by formulas, in a Google Sheet)
+    lisp_financial_dcf.py     the DCF tab of three-statement-model (free cash flow, WACC, terminal value, value per share)
+    lisp_financial_compare.py compare-companies (companies side by side in a Google Sheet, as amounts or percentages)
+    lisp_financial_bank.py, lisp_financial_insurer.py, lisp_financial_asset_manager.py   the bank, insurer, and asset manager models of three-statement-model
     lisp_schwab.py        schwab-*  (your Schwab accounts: positions, quotes, prices, orders, transactions)
     lisp_alpha_vantage.py alpha-vantage-dividends  (a stock's dividends, from Alpha Vantage)
     lisp_finra.py         finra-tba-prices, finra-mbs-prices, ...  (agency MBS prices reported to FINRA's TRACE)
+    lisp_baseball.py      transition-counts, simulate-games, ...  (baseball as a chain of states, from Retrosheet)
     lisp_investment_paths.py  daily-returns, adjust-returns, dividend-schedule, bootstrap-path, option-value
                           (simulated prices of an investment, and an option's value)
     lisp_calendar.py      trading-day?, add-trading-days, trading-days-between, market-open?: the NYSE's trading days

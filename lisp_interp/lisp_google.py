@@ -32,6 +32,10 @@ numbers, dates as dates, and text as text (never as a formula, even if it
 begins with =). A column's format -- the same list of formats display-table
 takes -- becomes its number format in the sheet, and a column whose format
 is hide, or just (name), is left out.
+
+google_workbook is the other way in, for programs (such as the three-statement
+model) that build a spreadsheet themselves: cells that are formulas, with
+fonts, fills, and number formats chosen by name (CELL_STYLES, below).
 """
 
 import base64
@@ -458,6 +462,12 @@ def google_sheet(credentials_path, title, formats, *arguments):
     def call(url, body):
         return google_request("POST", url, who, headers, json.dumps(body).encode())
 
+    for sheet in sheets:
+        for name, address in sheet.get("names", []):
+            if not VALID_RANGE_NAME.match(name) or CELL_LIKE_NAME.match(name) or name.lower() in taken:
+                raise LispError('%s: "%s" can\'t be the name of a range (letters, numbers and underscores, not like A1, '
+                                'a different one each)' % (who, name))
+            taken.add(name.lower())
     made = call(SHEETS_URL, {
         "properties": {"title": title.strip()},
         "sheets": [{"properties": {"title": name, "gridProperties": {"rowCount": max(len(columns[0]) + 1, 2),
@@ -489,6 +499,156 @@ def google_sheet(credentials_path, title, formats, *arguments):
     except LispError as e:
         raise LispError("%s -- the spreadsheet was made, at %s, but isn't finished" % (e, url))
     return LispString(url)
+
+
+# ---------------------------------------------------------------------------
+# google_workbook: a spreadsheet a program lays out itself, formulas and all
+# ---------------------------------------------------------------------------
+
+BLUE = {"red": 0.0, "green": 0.0, "blue": 1.0}              # the color of typed-in numbers
+GREEN = {"red": 0.0, "green": 0.5, "blue": 0.0}             # of links to another tab
+PALE_YELLOW = {"red": 1.0, "green": 1.0, "blue": 0.8}       # of the cells a person is meant to change
+PALE_GREY = {"red": 0.93, "green": 0.93, "blue": 0.93}
+PALE_BLUE = {"red": 0.85, "green": 0.9, "blue": 0.97}
+BLACK_LINE = {"style": "SOLID", "color": {"red": 0.0, "green": 0.0, "blue": 0.0}}
+
+# What a cell's styles, named, mean in Google's terms (a cell's "userEnteredFormat").
+# A cell can have several; they are applied in order, a later one over an earlier.
+CELL_STYLES = {
+    "bold": {"textFormat": {"bold": True}},
+    "italic": {"textFormat": {"italic": True}},
+    "title": {"textFormat": {"bold": True, "fontSize": 14}},
+    "header": {"textFormat": {"bold": True}, "horizontalAlignment": "RIGHT", "borders": {"bottom": BLACK_LINE}},
+    "section": {"textFormat": {"bold": True}, "backgroundColor": PALE_BLUE},
+    "total": {"textFormat": {"bold": True}, "borders": {"top": BLACK_LINE}},
+    "data": {"textFormat": {"foregroundColor": BLUE}},                      # a number typed in
+    "input": {"textFormat": {"foregroundColor": BLUE}, "backgroundColor": PALE_YELLOW},     # one to change
+    "input-formula": {"backgroundColor": PALE_YELLOW},                      # one to change that is a formula: black
+    "link": {"textFormat": {"foregroundColor": GREEN}},                     # a cell that is another tab's
+    "forecast": {"backgroundColor": PALE_GREY},
+    "wrap": {"wrapStrategy": "WRAP", "verticalAlignment": "TOP"},
+    "money": {"numberFormat": {"type": "NUMBER", "pattern": "#,##0.0;(#,##0.0)"}},
+    "percent": {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}},
+    "decimal": {"numberFormat": {"type": "NUMBER", "pattern": "0.0"}},
+    "per-share": {"numberFormat": {"type": "NUMBER", "pattern": "0.00"}},
+    "factor": {"numberFormat": {"type": "NUMBER", "pattern": "0.000"}},
+    "date": {"numberFormat": {"type": "DATE", "pattern": DATE_PATTERN}},
+}
+ROWS_PER_REQUEST = 200          # how many rows of a tab are sent at a time
+
+
+def style_format(style_names):
+    """The Google format of a list of CELL_STYLES names, one over another."""
+    combined = {}
+    for name in style_names:
+        if name not in CELL_STYLES:
+            raise LispError("google-workbook: there is no cell style called %s" % name)
+        for key, value in CELL_STYLES[name].items():
+            if isinstance(value, dict) and isinstance(combined.get(key), dict):
+                combined[key] = dict(combined[key], **value)
+            else:
+                combined[key] = value
+    return combined
+
+
+def api_cell(value, style_names):
+    """One cell, as Google's API wants it: its value (a number, text, or --
+    for text that begins with = -- a formula; a date is its day number) and
+    its format."""
+    cell = {}
+    if isinstance(value, bool):
+        cell["userEnteredValue"] = {"boolValue": value}
+    elif isinstance(value, datetime.date):
+        cell["userEnteredValue"] = {"numberValue": (value - SHEETS_EPOCH).days}
+    elif isinstance(value, (int, float)):
+        if math.isfinite(value):
+            cell["userEnteredValue"] = {"numberValue": value}
+    elif isinstance(value, str) and value.startswith("="):
+        cell["userEnteredValue"] = {"formulaValue": value}
+    elif isinstance(value, str) and value:
+        cell["userEnteredValue"] = {"stringValue": value}
+    if style_names:
+        cell["userEnteredFormat"] = style_format(style_names)
+    return cell
+
+
+VALID_RANGE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,249}$")
+CELL_LIKE_NAME = re.compile(r"([A-Za-z]{1,3}[0-9]+|[Rr][0-9]*[Cc][0-9]*)$")      # (A1 and R1C1 addresses can't be names)
+
+
+def cell_indexes(address):
+    """(row, column), counted from 0, of an address such as G12."""
+    match = re.match(r"([A-Z]+)([0-9]+)$", address)
+    column = 0
+    for letter in match.group(1):
+        column = column * 26 + ord(letter) - ord("A") + 1
+    return int(match.group(2)) - 1, column - 1
+
+
+def google_workbook(credentials_path, title, sheets):
+    """A new spreadsheet in your Google Drive, laid out by the program: its
+    address. `sheets` is a list of dicts, one for each tab:
+      "name"            the tab's name
+      "cells"           a list of rows, each a list of cells; a cell is None
+                        (empty), or (value, style names): value a number,
+                        text, a date, or a formula (text that begins with =)
+      "frozen_rows", "frozen_columns"     how many stay in place (optional)
+      "widths"          a list of (first column, last column, pixels), columns
+                        counted from 0 (optional)
+      "names"           a list of (name, address): a name for a cell of the tab,
+                        such as ("tax_rate", "G12"), for formulas to use (optional)"""
+    who = "google-workbook"
+    token = access_token(credentials_path, who)
+    headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+
+    def call(url, body):
+        return google_request("POST", url, who, headers, json.dumps(body).encode())
+
+    taken = set()
+    for sheet in sheets:
+        if not sheet["name"].strip() or len(sheet["name"]) > TAB_NAME_LENGTH or sheet["name"].lower() in taken:
+            raise LispError('%s: each tab needs a different name of 1 to %d characters, not "%s"'
+                            % (who, TAB_NAME_LENGTH, sheet["name"]))
+        taken.add(sheet["name"].lower())
+    for sheet in sheets:
+        for name, address in sheet.get("names", []):
+            if not VALID_RANGE_NAME.match(name) or CELL_LIKE_NAME.match(name) or name.lower() in taken:
+                raise LispError('%s: "%s" can\'t be the name of a range (letters, numbers and underscores, not like A1, '
+                                'a different one each)' % (who, name))
+            taken.add(name.lower())
+    made = call(SHEETS_URL, {
+        "properties": {"title": title.strip()},
+        "sheets": [{"properties": {"title": sheet["name"], "gridProperties": {
+            "rowCount": max(len(sheet["cells"]), 2), "columnCount": max(max(len(row) for row in sheet["cells"]), 2),
+            "frozenRowCount": sheet.get("frozen_rows", 0), "frozenColumnCount": sheet.get("frozen_columns", 0)}}}
+                   for sheet in sheets]})
+    url = made["spreadsheetUrl"]
+    try:
+        requests = []
+        for sheet, made_sheet in zip(sheets, made["sheets"]):         # (the names first: the formulas that use them follow)
+            for name, address in sheet.get("names", []):
+                row, column = cell_indexes(address)
+                requests.append({"addNamedRange": {"namedRange": {"name": name, "range": {
+                    "sheetId": made_sheet["properties"]["sheetId"], "startRowIndex": row, "endRowIndex": row + 1,
+                    "startColumnIndex": column, "endColumnIndex": column + 1}}}})
+        for sheet, made_sheet in zip(sheets, made["sheets"]):
+            sheet_id = made_sheet["properties"]["sheetId"]
+            rows = sheet["cells"]
+            for first in range(0, len(rows), ROWS_PER_REQUEST):
+                requests.append({"updateCells": {
+                    "start": {"sheetId": sheet_id, "rowIndex": first, "columnIndex": 0},
+                    "rows": [{"values": [api_cell(*cell) if cell else {} for cell in row]}
+                             for row in rows[first:first + ROWS_PER_REQUEST]],
+                    "fields": "userEnteredValue,userEnteredFormat"}})
+            for first_column, last_column, pixels in sheet.get("widths", []):
+                requests.append({"updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "COLUMNS",
+                              "startIndex": first_column, "endIndex": last_column + 1},
+                    "properties": {"pixelSize": pixels}, "fields": "pixelSize"}})
+        call("%s/%s:batchUpdate" % (SHEETS_URL, made["spreadsheetId"]), {"requests": requests})
+    except LispError as e:
+        raise LispError("%s -- the spreadsheet was made, at %s, but isn't finished" % (e, url))
+    return url
 
 
 BUILTINS = {
