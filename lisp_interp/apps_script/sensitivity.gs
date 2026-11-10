@@ -6,7 +6,9 @@
  *
  *   Number of runs, Random seed, Status   in column A, with their values in column B
  *   "Inputs"        a title in column A, a header row, and then a row for each cell to vary:
- *                     Input (a named range, or an address such as DCF!B9), Distribution, Low, Average, High
+ *                     Input (a named range, or an address such as DCF!B9), Distribution, Low, Average, High, Shape
+ *   "Custom values" (optional) a title, a header row, and a row for each possible value of an input whose distribution
+ *                  is custom: the Input, the Value, and its Chance (any positive numbers; they are divided by their total)
  *   "Correlations"  a title, a header row, and a row for each pair of inputs that move together:
  *                     the first Input, the second Input, and their correlation (-1 to 1)
  *   "Outputs"       a title, a header row, and a row for each cell to record: a named range or an address
@@ -17,12 +19,26 @@
  * inputs, and the outputs.  When it is finished (or stops) it puts every input cell back as it was: a number if it
  * was a number, a formula if it was a formula.
  *
- * The distributions are simple on purpose:
- *   uniform      every value from Low to High is equally likely (Average isn't used)
- *   triangular   values from Low to High, the likeliest being Average (it rises in a straight line from Low to
- *                Average, and falls in a straight line from Average to High)
- *   normal       the bell curve centered on Average, with Low and High two standard deviations either side of it
- *                (so (High - Low) / 4 is the standard deviation), and with no value outside Low and High
+ * Every distribution takes its numbers from the Low, Average, High and Shape columns, and no value is ever outside
+ * Low and High.  (The Distributions tab of the model's workbook lists them with examples.)
+ *   continuous
+ *     uniform      every value from Low to High is equally likely (Average isn't used)
+ *     triangular   Low to High, the likeliest being Average (a straight line up from Low to Average, and down to High)
+ *     pert         like triangular, but smoother: more of the values near Average, fewer in the tails
+ *     normal       the bell curve centered on Average, with Low and High two standard deviations either side of it
+ *                  (so (High - Low) / 4 is the standard deviation)
+ *     lognormal    never below Low (which must be above 0): the logarithm of the value is a bell curve; Average is the
+ *                  mean, and Low and High are two standard deviations of the logarithm either side
+ *     exponential  starts at Low, with mean Average: many small values and a few large ones
+ *     gamma        starts at Low, with mean Average; Shape (bigger than 0) makes it more bell-shaped as it grows
+ *     weibull      starts at Low, with mean Average; Shape (bigger than 0) says if the chance of a value rises or falls
+ *     beta         from Low to High, with mean Average; Shape (bigger than 0) is how tightly values bunch round Average
+ *   discrete
+ *     discrete uniform  the whole numbers from Low to High, each equally likely
+ *     bernoulli         Low or High, with mean Average (so the chance of High is (Average - Low) / (High - Low))
+ *     binomial          Low + the number of successes in (High - Low) tries, with mean Average
+ *     poisson           Low + a count of events with mean (Average - Low), with no more than High
+ *     custom            the values and chances in the Custom values table
  *
  * A correlation between two inputs makes them move together (positive) or in opposite directions (negative): the
  * bell curves behind the draws are correlated, and each is then turned into its input's distribution, so the
@@ -43,9 +59,14 @@ var MOST_SECONDS = 240;                 // stop this long after starting, to sta
 var CONTINUE_AFTER_SECONDS = 60;        // and go on this long after stopping
 var RUNS_PER_WRITE = 20;                // runs collected before the results sheet is written
 var MOST_CELLS_OF_RESULTS = 2000000;
-var DISTRIBUTIONS = ["uniform", "triangular", "normal"];
+var CONTINUOUS = ["uniform", "triangular", "pert", "normal", "lognormal", "exponential", "gamma", "weibull", "beta"];
+var DISCRETE = ["discrete uniform", "bernoulli", "binomial", "poisson", "custom"];
+var DISTRIBUTIONS = CONTINUOUS.concat(DISCRETE);
 var SECTIONS = ["inputs", "correlations", "outputs", "results"];
-var SETUP_COLUMNS = 6;                  // the setup is in columns A to F
+var OPTIONAL_SECTIONS = ["custom values"];
+var SETUP_COLUMNS = 7;                  // the setup is in columns A to G (G says what the input is, and isn't read)
+var MOST_TRIES = 100000;                // the most tries a binomial can have
+var BISECTION_STEPS = 60;
 var SAVED_INPUTS = "sensitivity_inputs";        // (document properties: the inputs as they were, and the seed)
 var SAVED_SEED = "sensitivity_seed";
 
@@ -167,26 +188,140 @@ function normalInverseCdf(p) {
     (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
 }
 
+/* The natural logarithm of the gamma function, for x above 0 (the Lanczos approximation). */
+function logGamma(x) {
+  var coefficients = [76.18009172947146, -86.50532032941677, 24.01409824083091,
+                      -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
+  var total = x + 5.5;
+  total -= (x + 0.5) * Math.log(total);
+  var series = 1.000000000190015;
+  for (var n = 0; n < coefficients.length; n++) {
+    series += coefficients[n] / (x + n + 1);
+  }
+  return -total + Math.log(2.5066282746310005 * series / x);
+}
+
+/* The chance that a gamma value with the given shape (and scale 1) is below x. */
+function gammaCdf(shape, x) {
+  if (x <= 0) {
+    return 0;
+  }
+  var front = Math.exp(-x + shape * Math.log(x) - logGamma(shape));
+  if (x < shape + 1) {
+    // a series that converges quickly when x is small
+    var term = 1 / shape, sum = term;
+    for (var n = 1; n < 100000 && Math.abs(term) > Math.abs(sum) * 1e-13; n++) {
+      term *= x / (shape + n);
+      sum += term;
+    }
+    return sum * front;
+  }
+  // a continued fraction for the chance of being above x, which converges quickly when x is large
+  var tiny = 1e-300, b = x + 1 - shape, c = 1 / tiny, d = 1 / b, fraction = d;
+  for (var i = 1; i < 100000; i++) {
+    var a = -i * (i - shape);
+    b += 2;
+    d = a * d + b;
+    d = Math.abs(d) < tiny ? tiny : d;
+    c = b + a / c;
+    c = Math.abs(c) < tiny ? tiny : c;
+    d = 1 / d;
+    fraction *= d * c;
+    if (Math.abs(d * c - 1) < 1e-13) {
+      break;
+    }
+  }
+  return 1 - front * fraction;
+}
+
+/* The continued fraction that betaCdf needs. */
+function betaFraction(x, first, second) {
+  var tiny = 1e-300;
+  var keepAway = function (value) { return Math.abs(value) < tiny ? tiny : value; };
+  var c = 1, d = 1 / keepAway(1 - (first + second) * x / (first + 1)), fraction = d;
+  for (var m = 1; m < 100000; m++) {
+    var twice = 2 * m;
+    var a = m * (second - m) * x / ((first + twice - 1) * (first + twice));
+    d = 1 / keepAway(1 + a * d);
+    c = keepAway(1 + a / c);
+    fraction *= d * c;
+    a = -(first + m) * (first + second + m) * x / ((first + twice) * (first + twice + 1));
+    d = 1 / keepAway(1 + a * d);
+    c = keepAway(1 + a / c);
+    fraction *= d * c;
+    if (Math.abs(d * c - 1) < 1e-13) {
+      break;
+    }
+  }
+  return fraction;
+}
+
+/* The chance that a beta value (between 0 and 1) with the two shapes is below x. */
+function betaCdf(x, first, second) {
+  if (x <= 0) {
+    return 0;
+  }
+  if (x >= 1) {
+    return 1;
+  }
+  var front = Math.exp(logGamma(first + second) - logGamma(first) - logGamma(second) +
+                       first * Math.log(x) + second * Math.log(1 - x));
+  if (x < (first + 1) / (first + second + 2)) {
+    return front * betaFraction(x, first, second) / first;
+  }
+  return 1 - front * betaFraction(1 - x, second, first) / second;
+}
+
 /*
- * The value of an input for a probability p (0 to 1): the value that a draw from its distribution is below with
- * chance p.  An input is {distribution, low, average, high}.
+ * The value from low to high for a probability p (0 to 1), for a distribution whose chance of being below x is
+ * cdf(x): found by halving the distance between low and high until the chance there is right.  The part of the
+ * distribution beyond low and high is left out, so p = 0 gives low and p = 1 gives high.
  */
-function valueForProbability(input, p) {
-  var low = input.low, average = input.average, high = input.high;
-  if (input.distribution === "uniform") {
-    return low + p * (high - low);
+function valueByCdf(cdf, low, high, p) {
+  if (p <= 0) {
+    return low;
   }
-  if (input.distribution === "triangular") {
-    if (high === low) {
-      return low;
-    }
-    var chanceBelowAverage = (average - low) / (high - low);
-    if (p < chanceBelowAverage) {
-      return low + Math.sqrt(p * (high - low) * (average - low));
-    }
-    return high - Math.sqrt((1 - p) * (high - low) * (high - average));
+  if (p >= 1) {
+    return high;
   }
-  // normal, with no value below low or above high: use only the part of the probabilities between theirs
+  var atLow = cdf(low), atHigh = cdf(high);
+  var target = atLow + p * (atHigh - atLow);
+  var below = low, above = high;
+  for (var step = 0; step < BISECTION_STEPS; step++) {
+    var middle = (below + above) / 2;
+    if (cdf(middle) < target) {
+      below = middle;
+    } else {
+      above = middle;
+    }
+  }
+  return (below + above) / 2;
+}
+
+function triangularValue(low, average, high, p) {
+  if (high === low) {
+    return low;
+  }
+  var chanceBelowAverage = (average - low) / (high - low);
+  if (p < chanceBelowAverage) {
+    return low + Math.sqrt(p * (high - low) * (average - low));
+  }
+  return high - Math.sqrt((1 - p) * (high - low) * (high - average));
+}
+
+/* A beta curve from low to high whose peak is at average (the "PERT" curve of project planning). */
+function pertValue(low, average, high, p) {
+  if (high === low) {
+    return low;
+  }
+  var span = high - low;
+  var first = 1 + 4 * (average - low) / span, second = 1 + 4 * (high - average) / span;
+  var share = valueByCdf(function (x) { return betaCdf(x, first, second); }, 0, 1, p);
+  return low + span * share;
+}
+
+/* The normal curve, with no value below low or above high: only the part of the probabilities between theirs is used. */
+function normalValue(low, average, high, p) {
   var deviation = (high - low) / 4;
   if (deviation === 0) {
     return average;
@@ -195,6 +330,125 @@ function valueForProbability(input, p) {
   var chanceBelowHigh = normalCdf((high - average) / deviation);
   var value = average + deviation * normalInverseCdf(chanceBelowLow + p * (chanceBelowHigh - chanceBelowLow));
   return Math.min(Math.max(value, low), high);
+}
+
+function lognormalValue(low, average, high, p) {
+  var deviation = (Math.log(high) - Math.log(low)) / 4;           // (of the logarithm)
+  if (deviation === 0) {
+    return average;
+  }
+  var center = Math.log(average) - deviation * deviation / 2;     // (so that the mean is average)
+  return valueByCdf(function (x) { return normalCdf((Math.log(x) - center) / deviation); }, low, high, p);
+}
+
+function exponentialValue(low, average, high, p) {
+  var mean = average - low;
+  var chanceBelowHigh = 1 - Math.exp(-(high - low) / mean);
+  return Math.min(low - mean * Math.log(1 - p * chanceBelowHigh), high);
+}
+
+function gammaValue(low, average, high, shape, p) {
+  var scale = (average - low) / shape;
+  return valueByCdf(function (x) { return gammaCdf(shape, (x - low) / scale); }, low, high, p);
+}
+
+function weibullValue(low, average, high, shape, p) {
+  var scale = (average - low) / Math.exp(logGamma(1 + 1 / shape));        // (so that the mean is average)
+  var chanceBelowHigh = 1 - Math.exp(-Math.pow((high - low) / scale, shape));
+  var value = low + scale * Math.pow(-Math.log(1 - p * chanceBelowHigh), 1 / shape);
+  return Math.min(value, high);
+}
+
+/* A beta curve from low to high with mean average; shape is the sum of the curve's two shapes. */
+function betaValue(low, average, high, shape, p) {
+  var share = (average - low) / (high - low);
+  var first = share * shape, second = (1 - share) * shape;
+  return low + (high - low) * valueByCdf(function (x) { return betaCdf(x, first, second); }, 0, 1, p);
+}
+
+function discreteUniformValue(low, high, p) {
+  var count = high - low + 1;
+  return low + Math.max(Math.ceil(p * count) - 1, 0);
+}
+
+function bernoulliValue(low, average, high, p) {
+  var chanceOfHigh = (average - low) / (high - low);
+  return p <= 1 - chanceOfHigh ? low : high;
+}
+
+/* low plus the number of successes in high - low tries, each succeeding with the chance that makes the mean average. */
+function binomialValue(low, average, high, p) {
+  var tries = high - low, chance = (average - low) / tries;
+  if (chance <= 0) {
+    return low;
+  }
+  if (chance >= 1) {
+    return high;
+  }
+  var logChance = Math.log(chance), logMiss = Math.log(1 - chance);
+  var logExactly = tries * logMiss;                                // (the chance of exactly 0 successes)
+  var atMost = 0;
+  for (var count = 0; count < tries; count++) {
+    atMost += Math.exp(logExactly);
+    if (atMost >= p) {
+      return low + count;
+    }
+    logExactly += Math.log((tries - count) / (count + 1)) + logChance - logMiss;
+  }
+  return high;
+}
+
+/* low plus a Poisson count with mean average - low, if that is no more than high. */
+function poissonValue(low, average, high, p) {
+  var mean = average - low, most = high - low;
+  if (mean <= 0) {
+    return low;
+  }
+  var target = p * (1 - gammaCdf(most + 1, mean));                 // (the chance of a count of most or less is that)
+  var logExactly = -mean;                                          // (the chance of exactly 0)
+  var atMost = 0;
+  for (var count = 0; count < most; count++) {
+    atMost += Math.exp(logExactly);
+    if (atMost >= target || (count > mean && logExactly < -50)) {
+      return low + count;
+    }
+    logExactly += Math.log(mean / (count + 1));
+  }
+  return high;
+}
+
+/* The value of a custom input: choices are {value, upTo} in order of value, upTo being the chance of that value or less. */
+function customValue(choices, p) {
+  for (var n = 0; n < choices.length; n++) {
+    if (p <= choices[n].upTo) {
+      return choices[n].value;
+    }
+  }
+  return choices[choices.length - 1].value;
+}
+
+/*
+ * The value of an input for a probability p (0 to 1): the value that a draw from its distribution is below with
+ * chance p.  An input is {distribution, low, average, high, shape, choices}.
+ */
+function valueForProbability(input, p) {
+  var low = input.low, average = input.average, high = input.high, shape = input.shape;
+  switch (input.distribution) {
+    case "uniform": return low + p * (high - low);
+    case "triangular": return triangularValue(low, average, high, p);
+    case "pert": return pertValue(low, average, high, p);
+    case "normal": return normalValue(low, average, high, p);
+    case "lognormal": return lognormalValue(low, average, high, p);
+    case "exponential": return exponentialValue(low, average, high, p);
+    case "gamma": return gammaValue(low, average, high, shape, p);
+    case "weibull": return weibullValue(low, average, high, shape, p);
+    case "beta": return betaValue(low, average, high, shape, p);
+    case "discrete uniform": return discreteUniformValue(low, high, p);
+    case "bernoulli": return bernoulliValue(low, average, high, p);
+    case "binomial": return binomialValue(low, average, high, p);
+    case "poisson": return poissonValue(low, average, high, p);
+    default: return customValue(input.choices, p);
+  }
 }
 
 /*
@@ -288,20 +542,98 @@ function isNumber(value) {
   return typeof value === "number" && isFinite(value);
 }
 
+/* The distributions that have no Average, that have a Shape, and that start at Low (so Average has to be above it). */
+var WITHOUT_AVERAGE = ["uniform", "discrete uniform", "custom"];
+var WITH_SHAPE = ["gamma", "weibull", "beta"];
+var STARTING_AT_LOW = ["exponential", "gamma", "weibull"];
+var WHOLE_NUMBERS = ["discrete uniform", "binomial", "poisson"];
+
+/* Checks the numbers of an input against what its distribution needs, saying what is wrong in a message. */
+function checkNumbers(input, row) {
+  var kind = input.distribution, name = input.name;
+  if (kind === "custom") {
+    return;                             // (its values are in the Custom values table)
+  }
+  var hasAverage = WITHOUT_AVERAGE.indexOf(kind) < 0;
+  if (!hasAverage && !isNumber(input.average)) {
+    input.average = (input.low + input.high) / 2;
+  }
+  if (!isNumber(input.low) || !isNumber(input.average) || !isNumber(input.high)) {
+    fail("Row " + row + ": " + name + " needs numbers for " + (hasAverage ? "Low, Average, and High" : "Low and High") + ".");
+  }
+  if (input.low > input.high || (hasAverage && (input.average < input.low || input.average > input.high))) {
+    fail("Row " + row + ": " + name + " needs " + (hasAverage ? "Low, Average, High" : "Low, High") + " in order, smallest first.");
+  }
+  if (WITH_SHAPE.indexOf(kind) >= 0 && (!isNumber(input.shape) || input.shape <= 0)) {
+    fail("Row " + row + ": " + name + " (" + kind + ") needs a Shape bigger than 0.");
+  }
+  if (kind === "lognormal" && input.low <= 0) {
+    fail("Row " + row + ": " + name + " (lognormal) needs a Low bigger than 0.");
+  }
+  if (STARTING_AT_LOW.indexOf(kind) >= 0 && input.average <= input.low) {
+    fail("Row " + row + ": " + name + " (" + kind + ") needs an Average above Low.");
+  }
+  if ((kind === "beta" && (input.average <= input.low || input.average >= input.high)) ||
+      ((kind === "bernoulli" || kind === "binomial") && input.high <= input.low)) {
+    fail("Row " + row + ": " + name + " (" + kind + ") needs Low below " + (kind === "beta" ? "Average below " : "") + "High.");
+  }
+  if (WHOLE_NUMBERS.indexOf(kind) >= 0 && (input.low !== Math.floor(input.low) || input.high !== Math.floor(input.high))) {
+    fail("Row " + row + ": " + name + " (" + kind + ") needs whole numbers for Low and High.");
+  }
+  if ((kind === "binomial" && input.high - input.low > MOST_TRIES) || (kind === "poisson" && input.average - input.low > MOST_TRIES)) {
+    fail("Row " + row + ": " + name + " (" + kind + ") is too large: " + MOST_TRIES + " is the most.");
+  }
+}
+
+/* Gives each custom input its choices {value, upTo}, from the rows of the Custom values table (Input, Value, Chance). */
+function readCustomValues(inputs, rows, block, numberOf) {
+  var chances = inputs.map(function () { return []; });
+  rows.forEach(function (r) {
+    var number = numberOf(block[r - 1][0], r), value = block[r - 1][1], chance = block[r - 1][2];
+    if (inputs[number].distribution !== "custom") {
+      fail("Row " + r + ": " + inputs[number].name + " is not a custom distribution, so it has no custom values.");
+    }
+    if (!isNumber(value) || !isNumber(chance) || chance < 0) {
+      fail("Row " + r + ": a custom value needs a number for Value and a chance that is 0 or more.");
+    }
+    chances[number].push({value: value, chance: chance});
+  });
+  inputs.forEach(function (input, number) {
+    if (input.distribution !== "custom") {
+      return;
+    }
+    var total = chances[number].reduce(function (sum, row) { return sum + row.chance; }, 0);
+    if (total <= 0) {
+      fail(input.name + " is a custom distribution: give it rows in the Custom values table, with chances above 0.");
+    }
+    var sorted = chances[number].slice().sort(function (first, second) { return first.value - second.value; });
+    var upTo = 0;
+    input.choices = sorted.map(function (row) {
+      upTo += row.chance / total;
+      return {value: row.value, upTo: upTo};
+    });
+    input.low = sorted[0].value;
+    input.high = sorted[sorted.length - 1].value;
+  });
+}
+
 /*
  * What the Sensitivity tab says to do, checked: {runs, seed (or null), inputs, correlations, outputs, rows} where an
- * input is {name, distribution, low, average, high, range}, a correlation {first, second, value} (the numbers of the
- * inputs), an output {name, range}, and resultsRow is the row with the Results title.
+ * input is {name, distribution, low, average, high, shape, choices, range} (choices only for a custom distribution),
+ * a correlation {first, second, value} (the numbers of the inputs), an output {name, range}, and resultsRow is the
+ * row with the Results title.
  */
 function readSetup(spreadsheet, sheet) {
   var titles = sheet.getRange(1, 1, sheet.getLastRow(), 1).getValues().map(function (row) { return normalized(row[0]); });
   var titleRow = {};
-  SECTIONS.forEach(function (title) {
+  SECTIONS.concat(OPTIONAL_SECTIONS).forEach(function (title) {
     var at = titles.indexOf(title);
-    if (at < 0) {
+    if (at < 0 && OPTIONAL_SECTIONS.indexOf(title) < 0) {
       fail('The ' + SHEET_NAME + ' tab needs a row with "' + title[0].toUpperCase() + title.slice(1) + '" in column A.');
     }
-    titleRow[title] = at + 1;
+    if (at >= 0) {
+      titleRow[title] = at + 1;
+    }
   });
   var resultsRow = titleRow.results;
   var block = sheet.getRange(1, 1, resultsRow, SETUP_COLUMNS).getValues();
@@ -309,7 +641,7 @@ function readSetup(spreadsheet, sheet) {
   // a table's rows: from two below its title (the header is between) until the next title
   var rowsOf = function (title) {
     var end = resultsRow;
-    SECTIONS.forEach(function (other) {
+    Object.keys(titleRow).forEach(function (other) {
       if (titleRow[other] > titleRow[title] && titleRow[other] < end) {
         end = titleRow[other];
       }
@@ -339,18 +671,11 @@ function readSetup(spreadsheet, sheet) {
     var name = String(block[r - 1][0]).trim();
     var distribution = normalized(block[r - 1][1]);
     if (DISTRIBUTIONS.indexOf(distribution) < 0) {
-      fail("Row " + r + ": the distribution of " + name + " must be uniform, triangular, or normal, not \"" + block[r - 1][1] + "\".");
+      fail("Row " + r + ": the distribution of " + name + " must be one of " + DISTRIBUTIONS.join(", ") + ", not \"" + block[r - 1][1] + "\".");
     }
-    var input = {name: name, distribution: distribution, low: block[r - 1][2], average: block[r - 1][3], high: block[r - 1][4]};
-    if (distribution === "uniform" && !isNumber(input.average)) {
-      input.average = (input.low + input.high) / 2;
-    }
-    if (!isNumber(input.low) || !isNumber(input.average) || !isNumber(input.high)) {
-      fail("Row " + r + ": " + name + " needs numbers for Low, Average, and High.");
-    }
-    if (input.low > input.high || (distribution !== "uniform" && (input.average < input.low || input.average > input.high))) {
-      fail("Row " + r + ": " + name + " needs Low, Average, High in order, smallest first.");
-    }
+    var input = {name: name, distribution: distribution, low: block[r - 1][2], average: block[r - 1][3],
+                 high: block[r - 1][4], shape: block[r - 1][5]};
+    checkNumbers(input, r);
     if (inputs.some(function (other) { return normalized(other.name) === normalized(name); })) {
       fail("Row " + r + ": " + name + " is already an input.");
     }
@@ -372,6 +697,8 @@ function readSetup(spreadsheet, sheet) {
     }
     fail("Row " + r + ": " + name + " is not one of the inputs.");
   };
+  readCustomValues(inputs, titleRow["custom values"] ? rowsOf("custom values") : [], block, numberOf);
+
   var correlations = [];
   rowsOf("correlations").forEach(function (r) {
     var first = numberOf(block[r - 1][0], r), second = numberOf(block[r - 1][1], r), value = block[r - 1][2];

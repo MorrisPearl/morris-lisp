@@ -3190,22 +3190,41 @@ The tab has, from the top:
 | Part | What you fill in |
 |---|---|
 | Number of runs, Random seed | How many runs (1000 to begin with). A seed makes a run repeatable: the same seed gives the same runs; leave it empty for new ones each time. |
-| Inputs | A row for each cell to vary: **Input** (a named range -- see *Data > Named ranges* -- or an address such as `DCF!B9`), **Distribution**, **Low**, **Average**, **High**, and a note of what it is. |
+| Inputs | A row for each cell to vary: **Input** (a named range -- see *Data > Named ranges* -- or an address such as `DCF!B9`), **Distribution** (a drop-down list of fourteen), **Low**, **Average**, **High**, **Shape** (for three of the distributions), and a note of what it is. |
+| Custom values | For an input whose distribution is *custom*: a row for each value it can take (**Input**, **Value**, **Chance**). |
 | Correlations | A row for each pair of inputs that move together: the two inputs (drop-down lists of the inputs above) and their **correlation**, from -1 to 1. |
 | Outputs | A row for each cell to record: a named range or an address. |
 | Results | Everything below this title is the macro's: a summary of each column (mean, standard deviation, lowest, the 5th, 25th, median, 75th, and 95th percentiles, highest) and then a row for each run: its number, the value of each input, and each output. |
 
-The distributions are meant to be easy to understand, not to be right in any deeper sense:
+The distributions are meant to be easy to understand, not to be right in any deeper sense. Whichever one an input has, **no value is
+ever below Low or above High**, and **Average is the mean** (or, for triangular and pert, the likeliest value). The **Distributions** tab of
+a model's workbook lists them with what each of Low, Average, High, and Shape means; here they are in brief.
 
-- **uniform**: any value from Low to High is equally likely (Average is not used).
-- **triangular**: values from Low to High, the likeliest at Average; the chance rises in a straight line from Low to Average and falls in a
-  straight line to High.
-- **normal**: the bell curve centered on Average, with Low and High two standard deviations out on either side (the standard deviation is
-  (High - Low) / 4, so about 95% of values are between them), and with no value outside Low and High.
+| Distribution | Low | Average | High | Shape | What it is |
+|---|---|---|---|---|---|
+| **uniform** | smallest | (not used) | largest | | Every value from Low to High is equally likely. |
+| **triangular** | smallest | likeliest | largest | | The chance rises in a straight line from Low to Average and falls in a straight line to High. |
+| **pert** | smallest | likeliest | largest | | Like triangular but smoother, with more of the values near Average and fewer in the tails (a beta curve; the mean is (Low + 4 Average + High) / 6). |
+| **normal** | 2 deviations below | mean | 2 deviations above | | The bell curve, with deviation (High - Low) / 4, cut off at Low and High. |
+| **lognormal** | smallest (above 0) | mean | largest | | Never negative, skewed to the right: the logarithm of the value is a bell curve with deviation (ln High - ln Low) / 4. For prices, and anything that grows by percentages. |
+| **exponential** | where it starts | mean | where the tail is cut off | | Waiting times: many small values, a few large ones. |
+| **gamma** | where it starts | mean | where the tail is cut off | above 0 | Skewed to the right, like the size of a loss. Shape 1 is the exponential; the bigger the Shape the more bell-shaped (deviation (Average - Low) / the square root of Shape). |
+| **weibull** | where it starts | mean | where the tail is cut off | above 0 | Lifetimes. Shape below 1: the chance of a value falls steeply at first; 1 is the exponential; above 1 it rises to a hump (things wear out). |
+| **beta** | smallest | mean (strictly between) | largest | above 0 | A proportion or a value between two limits. Shape is how tightly the values bunch round Average: 2 is very spread out, 50 is tight. |
+| **discrete uniform** | smallest whole number | (not used) | largest whole number | | Each whole number from Low to High is equally likely, like a die. |
+| **bernoulli** | value if it doesn't happen | mean | value if it does | | Two values only. The chance of High is (Average - Low) / (High - Low); with Low 0 and High 1, Average is the chance of a 1. |
+| **binomial** | smallest whole number | mean | largest whole number | | Low plus how many of (High - Low) tries succeed, each with the same chance (that gives the mean). |
+| **poisson** | smallest whole number | mean | largest whole number | | Low plus a count of random events with mean (Average - Low); counts above High are left out. |
+| **custom** | | | | | The values and chances you list in the Custom values table: a recession at 20%, a base case at 60%, a boom at 20%. The chances are relative, so 2, 7, 1 mean 20%, 70%, 10%. |
+
+(Lognormal needs Low above 0; exponential, gamma, and weibull need Average above Low; beta needs Average strictly between Low and High; discrete
+uniform, binomial, and poisson need whole numbers for Low and High; a binomial has at most 100,000 tries.) The curves are computed by the macro
+itself, and its values at many probabilities were checked against SciPy's quantile functions. A cut-off distribution is the original curve with the
+part outside Low and High removed and the rest scaled up, so cutting a tail moves the mean a little.
 
 A **correlation** makes two inputs move together (above 0) or against each other (below 0). The bell curves behind the draws are
 correlated, and each is turned into its input's own distribution, so the distributions are as you chose and the correlation of the
-values (as ranks) is close to what you gave. Inputs not in the table are independent. Correlations that cannot all be true at once -- A and B at
+values (as ranks) is close to what you gave -- a little less for the discrete distributions, whose many equal values cannot be ranked apart. Inputs not in the table are independent. Correlations that cannot all be true at once -- A and B at
 0.9, B and C at 0.9, A and C at -0.9 -- are refused with a message.
 
 A model's tab starts with five inputs, each centered on the model's own number: the revenue growth (or each of the first three segments'), the
@@ -3236,13 +3255,13 @@ in the tables. Or copy the Sensitivity tab and install the script in the spreads
 ```
 
 #### `(sensitivity-workbook creds title [:runs n])`
-Makes a spreadsheet with an empty Sensitivity tab (`:runs` is its number of runs; 1000 if you don't say) and the Sensitivity Macro tab, and
-returns its address, as a string. You need to be signed in to Google: `(google-login creds)`.
+Makes a spreadsheet with an empty Sensitivity tab (`:runs` is its number of runs; 1000 if you don't say), the Distributions tab that
+explains the distributions, and the Sensitivity Macro tab, and returns its address, as a string. You need to be signed in to Google: `(google-login creds)`.
 
 #### `(sensitivity-macro)`
 The macro's text, as a string: the same as the file `apps_script/sensitivity.gs`.
 
-**What has not been tried.** The macro runs here against a stand-in for Google's `SpreadsheetApp`, with the distributions checked against sampled means and spreads,
+**What has not been tried.** The macro runs here against a stand-in for Google's `SpreadsheetApp`, with the distributions checked against sampled means and spreads and (all but the first three) against SciPy's quantile functions,
 the correlations against sampled ones, and a whole run (including stopping and continuing, mistakes in the tab, and putting the inputs back); the tab has
 been made in a real spreadsheet and its formulas checked there. Running the macro inside Google -- how fast a recalculation is, and the permissions it asks for -- has not
 been.

@@ -2,6 +2,7 @@
 for Google's SpreadsheetApp (sensitivity_mock.js), and the Sensitivity tab that sets it up."""
 
 import json
+import math
 import os
 import shutil
 import statistics
@@ -43,6 +44,53 @@ def run_javascript(fixture=None):
 
 
 needs_javascript = unittest.skipUnless(shutil.which("osascript"), "macOS's JavaScript (osascript) is needed")
+
+try:
+    from scipy import stats
+except ImportError:                     # pragma: no cover
+    stats = None
+needs_scipy = unittest.skipUnless(stats, "SciPy is needed to check the distributions")
+
+
+def cut_off(curve, low, high, p):
+    """The value at probability p of a continuous SciPy distribution with nothing below low or above high."""
+    at_low, at_high = curve.cdf(low), curve.cdf(high)
+    return curve.ppf(at_low + p * (at_high - at_low))
+
+
+def scipy_value(case, p):
+    """What SciPy says the value of a distribution of the macro is at probability p (0 to 1, not the ends)."""
+    kind, low, average, high = case["distribution"], case.get("low"), case.get("average"), case.get("high")
+    shape = case.get("shape")
+    if kind == "pert":
+        span = high - low
+        curve = stats.beta(1 + 4 * (average - low) / span, 1 + 4 * (high - average) / span, loc=low, scale=span)
+        return curve.ppf(p)
+    if kind == "lognormal":
+        deviation = (math.log(high) - math.log(low)) / 4
+        curve = stats.lognorm(deviation, scale=math.exp(math.log(average) - deviation ** 2 / 2))
+        return cut_off(curve, low, high, p)
+    if kind == "exponential":
+        return cut_off(stats.expon(loc=low, scale=average - low), low, high, p)
+    if kind == "gamma":
+        return cut_off(stats.gamma(shape, loc=low, scale=(average - low) / shape), low, high, p)
+    if kind == "weibull":
+        return cut_off(stats.weibull_min(shape, loc=low, scale=(average - low) / math.gamma(1 + 1 / shape)), low, high, p)
+    if kind == "beta":
+        share = (average - low) / (high - low)
+        return stats.beta(share * shape, (1 - share) * shape, loc=low, scale=high - low).ppf(p)
+    if kind == "discrete uniform":
+        return stats.randint(low, high + 1).ppf(p)
+    if kind == "bernoulli":
+        return low + (high - low) * stats.bernoulli((average - low) / (high - low)).ppf(p)
+    if kind == "binomial":
+        return low + stats.binom(high - low, (average - low) / (high - low)).ppf(p)
+    if kind == "poisson":
+        curve = stats.poisson(average - low)
+        return low + curve.ppf(p * curve.cdf(high - low))
+    if kind == "custom":
+        return next(choice["value"] for choice in case["choices"] if p <= choice["upTo"] + 1e-12)
+    raise AssertionError(kind)
 
 
 @needs_javascript
@@ -97,6 +145,39 @@ class TestTheMacro(unittest.TestCase):
         self.assertEqual(ends["flat"], [4, 4, 4])
         self.assertTrue(all(0 <= value <= 10 for value in ends["skewed"]))          # (an average off center is allowed)
 
+    @needs_scipy
+    def test_the_other_distributions_match_scipy_at_every_probability(self):
+        for name, case in self.found["distributions"].items():
+            for p, value in case["values"]:
+                if 0 < p < 1:
+                    expected = scipy_value(case["input"], p)
+                    self.assertAlmostEqual(value, expected, delta=2e-6 * max(1, abs(expected)), msg="%s at %s" % (name, p))
+
+    def test_the_ends_of_every_distribution_are_low_and_high_and_nothing_goes_outside(self):
+        for name, case in self.found["distributions"].items():
+            values = [value for _, value in case["values"]]
+            self.assertEqual(values, sorted(values), name)              # (the draws never go down as p goes up)
+            given = case["input"]
+            if given["distribution"] == "custom":
+                low, high = given["choices"][0]["value"], given["choices"][-1]["value"]
+            else:
+                low, high = given["low"], given["high"]
+            self.assertAlmostEqual(values[0], low, delta=1e-9, msg=name)
+            if name not in ("poissonLarge", "poissonNoLimit"):      # (their limit is far out in a tail too thin to reach)
+                self.assertAlmostEqual(values[-1], high, delta=1e-9, msg=name)
+            for value in values:
+                self.assertTrue(low - 1e-9 <= value <= high + 1e-9, (name, value))
+
+    def test_discrete_distributions_give_only_the_values_they_should(self):
+        d = self.found["distributions"]
+        values = lambda name: {value for _, value in d[name]["values"]}
+        self.assertEqual(values("discreteUniform") <= set(range(3, 9)), True)
+        self.assertEqual(values("bernoulli"), {0, 1})
+        self.assertEqual(values("bernoulliValues"), {0.10, 0.15})
+        self.assertTrue(values("binomial") <= set(range(2, 23)))
+        self.assertTrue(values("poisson") <= set(range(1, 14)))
+        self.assertEqual(values("custom"), {5, 7, 20})
+
     def test_standard_normal_draws(self):
         draws = self.found["math"]["randomNormals"]
         self.assertAlmostEqual(draws["mean"], 0, delta=0.03)
@@ -119,6 +200,71 @@ class TestTheMacro(unittest.TestCase):
         self.assertTrue(found["impossible"])
         self.assertEqual(found["perfect"], [[1, 0], [1, 0]])
         self.assertEqual(found["identity"], [[1, 0], [0, 1]])
+
+
+@needs_javascript
+class TestEveryDistribution(unittest.TestCase):
+    """All the distributions through the macro's own reading of a tab (with a Shape column and a Custom values table)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.found = run_javascript()["every"]
+
+    def test_a_run_with_every_kind_of_input_finishes_and_the_total_is_their_sum(self):
+        self.assertEqual(self.found["alerts"], [])
+        self.assertEqual(self.found["status"], "Done: 300 runs, seed 5.")
+        self.assertEqual(self.found["header"], ["Run", "u", "tri", "pe", "no", "ln", "ex", "ga", "we", "be", "du", "bn", "bi", "po", "cu", "total"])
+        for run in self.found["runs"]:
+            self.assertAlmostEqual(sum(run[1:15]), run[15], places=9)
+
+    def test_each_input_stays_inside_its_limits_and_the_discrete_ones_are_the_right_kind_of_number(self):
+        bounds = [(1, 3), (1, 4), (1, 4), (0, 10), (1, 30), (1, 12), (0, 20), (0, 15), (0, 1), (3, 8), (0, 1), (0, 20), (0, 15), (5, 20)]
+        columns = list(zip(*self.found["runs"]))
+        for number, (low, high) in enumerate(bounds, start=1):
+            self.assertTrue(all(low <= value <= high for value in columns[number]), number)
+        self.assertTrue(all(value == int(value) for number in (10, 12, 13) for value in columns[number]))
+        self.assertTrue(set(columns[11]) <= {0, 1})
+        self.assertTrue(set(columns[14]) <= {5, 7, 20})
+
+    def test_custom_values_come_up_in_proportion_to_their_chances_whatever_order_they_are_listed_in(self):
+        values = [run[14] for run in self.found["runs"]]
+        for value, chance in ((5, 0.2), (7, 0.7), (20, 0.1)):
+            self.assertAlmostEqual(values.count(value) / len(values), chance, delta=0.08)
+
+    def test_the_means_are_the_averages_asked_for(self):
+        columns = list(zip(*self.found["runs"]))
+        for number, mean in ((6, 3), (12, 6), (13, 3), (11, 0.3)):       # (exponential, binomial, poisson, bernoulli)
+            self.assertAlmostEqual(statistics.mean(columns[number]), mean, delta=0.1 * max(1, mean) + 0.1)
+
+    def test_mistakes_with_the_new_distributions_are_explained(self):
+        wanted = {
+            "noShape": "ga (gamma) needs a Shape bigger than 0",
+            "zeroShape": "be (beta) needs a Shape bigger than 0",
+            "lognormalFromZero": "ln (lognormal) needs a Low bigger than 0",
+            "startsAtLow": "ex (exponential) needs an Average above Low",
+            "betaAtEnd": "be (beta) needs Low below Average below High",
+            "fractionalTries": "bi (binomial) needs whole numbers for Low and High",
+            "oneOutcome": "bn (bernoulli) needs Low below High",
+            "tooManyTries": "bi (binomial) is too large",
+            "tooManyEvents": "po (poisson) is too large",
+            "noValues": "cu is a custom distribution: give it rows in the Custom values table",
+            "notCustom": "no is not a custom distribution",
+            "badChance": "a chance that is 0 or more",
+            "badValue": "needs a number for Value",
+            "allChancesZero": "cu is a custom distribution: give it rows in the Custom values table, with chances above 0",
+            "unknownCustomInput": "zzz is not one of the inputs",
+            "uniformNeedsLowAndHigh": "u needs numbers for Low and High",
+            "discreteUniformFraction": "du (discrete uniform) needs whole numbers for Low and High",
+            "tableMissing": "cu is a custom distribution: give it rows in the Custom values table",
+        }
+        for name, text in wanted.items():
+            self.assertEqual(len(self.found[name]["alerts"]), 1, name)
+            self.assertIn(text, self.found[name]["alerts"][0], name)
+            self.assertTrue(self.found[name]["status"].startswith("Stopped: "), name)
+
+    def test_a_tab_without_a_custom_values_table_is_fine_when_no_input_is_custom(self):
+        self.assertEqual(self.found["noTable"]["alerts"], [])
+        self.assertEqual(self.found["noTable"]["status"], "Done: 20 runs, seed 5.")
 
 
 @needs_javascript
@@ -179,8 +325,9 @@ class TestARun(unittest.TestCase):
 
     def test_mistakes_in_the_setup_are_explained_and_leave_the_model_alone(self):
         wanted = {
-            "distribution": "uniform, triangular, or normal, not \"bell\"",
-            "order": "Low, Average, High in order",
+            "distribution": "must be one of uniform, triangular, pert, normal, lognormal, exponential, gamma, weibull, beta, "
+                            "discrete uniform, bernoulli, binomial, poisson, custom, not \"bell\"",
+            "order": "Low, High in order",                 # (the rate is uniform, which has no Average)
             "unknown": "no named range or cell called nothing_here",
             "noruns": "Number of runs",
             "notinput": "total is not one of the inputs",
@@ -231,7 +378,7 @@ class TestTheModelsTabs(unittest.TestCase):
 
     def test_the_tabs_follow_the_dcf_tab_and_a_company_without_a_dcf_has_neither(self):
         names = [tab["name"] for tab in self.model.sheets()]
-        self.assertEqual(names[names.index("DCF"):names.index("DCF") + 3], ["DCF", "Sensitivity", "Sensitivity Macro"])
+        self.assertEqual(names[names.index("DCF"):names.index("DCF") + 4], ["DCF", "Sensitivity", "Distributions", "Sensitivity Macro"])
         for kind_model in (build_kind(bank_facts(), "bank"),):
             self.assertNotIn("Sensitivity", [tab["name"] for tab in kind_model.sheets()])
 
@@ -239,16 +386,20 @@ class TestTheModelsTabs(unittest.TestCase):
         self.model.sensitivity = False
         names = [tab["name"] for tab in self.model.sheets()]
         self.assertNotIn("Sensitivity", names)
+        self.assertNotIn("Distributions", names)
         self.assertNotIn("Sensitivity Macro", names)
 
     def test_the_tab_has_the_parts_the_macro_looks_for(self):
         labels = self.column_a()
-        for title in ("Inputs", "Correlations", "Outputs", "Results"):
+        for title in ("Inputs", "Custom values", "Correlations", "Outputs", "Results"):
             self.assertEqual(labels.count(title), 1, title)
-        self.assertEqual(labels.index("Inputs") < labels.index("Correlations") < labels.index("Outputs") < labels.index("Results"), True)
+        self.assertEqual(labels.index("Inputs") < labels.index("Custom values") < labels.index("Correlations")
+                         < labels.index("Outputs") < labels.index("Results"), True)
         self.assertEqual(self.tab["cells"][labels.index("Inputs") + 1][0][0], "Input")
-        self.assertEqual([self.tab["cells"][labels.index("Inputs") + 1][c][0] for c in range(1, 6)],
-                         ["Distribution", "Low", "Average", "High", "What it is"])
+        self.assertEqual([self.tab["cells"][labels.index("Inputs") + 1][c][0] for c in range(1, 7)],
+                         ["Distribution", "Low", "Average", "High", "Shape", "What it is"])
+        self.assertEqual([self.tab["cells"][labels.index("Custom values") + 1][c][0] for c in range(3)],
+                         ["Input", "Value", "Chance"])
         self.assertEqual(self.sheets.value("Sensitivity", labels.index("Number of runs"), 1), 1000)
         self.assertTrue(any(label and label.startswith("Random seed") for label in labels))
         self.assertTrue(any(label == "Status" for label in labels))
@@ -304,15 +455,41 @@ class TestTheModelsTabs(unittest.TestCase):
 
     def test_the_distribution_and_correlation_cells_have_drop_down_lists(self):
         validations = self.tab["validations"]
-        inputs, correlations = self.table("Inputs"), self.table("Correlations")
-        self.assertEqual(validations[0], {"range": "B%d:B%d" % (inputs[0], inputs[-1]), "choices": ["uniform", "triangular", "normal"]})
-        self.assertEqual(validations[1], {"range": "A%d:B%d" % (correlations[0], correlations[-1]),
+        inputs, custom, correlations = self.table("Inputs"), self.table("Custom values"), self.table("Correlations")
+        self.assertEqual(validations[0], {"range": "B%d:B%d" % (inputs[0], inputs[-1]), "choices": list(sensitivity.DISTRIBUTIONS)})
+        self.assertEqual(validations[1], {"range": "A%d:A%d" % (custom[0], custom[-1]),
+                                          "from": "$A$%d:$A$%d" % (inputs[0], inputs[-1])})
+        self.assertEqual(validations[2], {"range": "A%d:B%d" % (correlations[0], correlations[-1]),
                                           "from": "$A$%d:$A$%d" % (inputs[0], inputs[-1])})
 
     def test_the_formulas_all_work_out(self):
         for row in range(len(self.tab["cells"])):
-            for column in range(6):
+            for column in range(7):
                 self.sheets.value("Sensitivity", row, column)
+
+    def test_the_distributions_tab_explains_every_distribution_in_the_drop_down_in_order(self):
+        tab = tab_named(self.model, "Distributions")
+        header = next(n for n, row in enumerate(tab["cells"]) if row and row[0] and row[0][0] == "Distribution")
+        rows = tab["cells"][header + 1:]
+        self.assertEqual([row[0][0] for row in rows], list(sensitivity.DISTRIBUTIONS))
+        self.assertEqual([cell[0] for cell in tab["cells"][header]], ["Distribution", "Kind", "Low", "Average", "High", "Shape", "What it is"])
+        for row in rows:
+            self.assertEqual(len(row), 7)
+            self.assertTrue(all(cell[0] for cell in row), row[0][0])
+        self.assertEqual({row[1][0] for row in rows}, {"continuous", "discrete"})
+
+    def test_the_macro_knows_the_same_distributions_as_the_tab(self):
+        import re
+        macro = sensitivity.macro_text()
+        lists = {name: re.search(r"var %s = \[(.*?)\];" % name, macro).group(1) for name in ("CONTINUOUS", "DISCRETE")}
+        in_macro = re.findall(r'"([^"]+)"', lists["CONTINUOUS"] + "," + lists["DISCRETE"])
+        self.assertEqual(in_macro, list(sensitivity.DISTRIBUTIONS))
+
+    def test_the_custom_values_table_starts_empty_with_room_for_scenarios(self):
+        rows = self.table("Custom values")
+        self.assertEqual(len(rows), sensitivity.CUSTOM_SLOTS)
+        for row in rows:
+            self.assertEqual([cell[0] if cell else None for cell in self.tab["cells"][row - 1][:3]], [None, None, None])
 
     def test_the_macro_tab_holds_the_script_in_one_cell_after_its_heading(self):
         macro = tab_named(self.model, "Sensitivity Macro")
@@ -335,7 +512,7 @@ class TestTheModelsTabs(unittest.TestCase):
         rows = []
         for r, row in enumerate(self.tab["cells"]):
             values = []
-            for c in range(6):
+            for c in range(7):
                 cell = row[c] if c < len(row) else None
                 content = cell[0] if cell else None
                 values.append(self.sheets.value("Sensitivity", r, c) if isinstance(content, str) and content.startswith("=") else content)
@@ -390,17 +567,19 @@ class TestAStandaloneWorkbook(LispTestCase):
         url = self.run_lisp('(sensitivity-workbook "creds" "My analysis" :runs 250)')
         self.assertEqual(str(url), "https://docs.google.com/spreadsheets/d/ID1/edit")
         made = self.requests[0][1]
-        self.assertEqual([sheet["properties"]["title"] for sheet in made["sheets"]], ["Sensitivity", "Sensitivity Macro"])
+        self.assertEqual([sheet["properties"]["title"] for sheet in made["sheets"]],
+                         ["Sensitivity", "Distributions", "Sensitivity Macro"])
         edits = self.requests[1][1]["requests"]
         validations = [edit["setDataValidation"] for edit in edits if "setDataValidation" in edit]
-        self.assertEqual(len(validations), 2)
+        self.assertEqual(len(validations), 3)
         self.assertEqual(validations[0]["rule"]["condition"]["type"], "ONE_OF_LIST")
         self.assertEqual([v["userEnteredValue"] for v in validations[0]["rule"]["condition"]["values"]],
-                         ["uniform", "triangular", "normal"])
+                         list(sensitivity.DISTRIBUTIONS))
         self.assertEqual(validations[0]["range"], {"sheetId": 7, "startRowIndex": 11, "endRowIndex": 23,
                                                    "startColumnIndex": 1, "endColumnIndex": 2})
-        self.assertEqual(validations[1]["rule"]["condition"],
-                         {"type": "ONE_OF_RANGE", "values": [{"userEnteredValue": "=$A$12:$A$23"}]})
+        for validation in validations[1:]:
+            self.assertEqual(validation["rule"]["condition"],
+                             {"type": "ONE_OF_RANGE", "values": [{"userEnteredValue": "=$A$12:$A$23"}]})
         runs = edits[0]["updateCells"]["rows"][5]["values"][1]["userEnteredValue"]
         self.assertEqual(runs, {"numberValue": 250})
 

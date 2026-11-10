@@ -172,7 +172,7 @@ class TestModelFromReportedNumbers(LispTestCase):
     def test_there_are_the_statements_the_dcf_the_sensitivity_tabs_and_the_notes_with_the_periods_in_the_same_columns(self):
         tabs = self.model.sheets()
         self.assertEqual([t["name"] for t in tabs],
-                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF", "Sensitivity", "Sensitivity Macro", "Notes"])
+                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF", "Sensitivity", "Distributions", "Sensitivity Macro", "Notes"])
         self.assertEqual(self.model.labels, ["FY2021", "FY2022", "FY2023", "FY2024E", "FY2025E", "FY2026E"])
         for tab in tabs[:4]:
             self.assertEqual([cell[0] for cell in tab["cells"][2][1:]], self.model.labels)
@@ -527,7 +527,7 @@ class TestNamesInPlaceOfCoordinates(LispTestCase):
     def test_only_the_period_before_and_the_ends_of_a_sum_are_addresses(self):
         for model in self.models():
             for tab in model.sheets():
-                if tab["name"] in ("Notes", "DCF", "Sensitivity", "Sensitivity Macro"):
+                if tab["name"] in ("Notes", "DCF", "Sensitivity", "Distributions", "Sensitivity Macro"):
                     continue
                 self.check_tab(model, tab)
 

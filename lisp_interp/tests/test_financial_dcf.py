@@ -71,7 +71,7 @@ class TestTheTab(DcfTestCase):
 
     def test_the_tab_comes_after_the_cash_flow_statement_and_every_formula_works(self):
         self.assertEqual([t["name"] for t in self.model.sheets()],
-                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF", "Sensitivity", "Sensitivity Macro", "Notes"])
+                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF", "Sensitivity", "Distributions", "Sensitivity Macro", "Notes"])
         for (row, column) in list(self.sheets.cells["DCF"]):
             self.sheets.value("DCF", row, column)
 

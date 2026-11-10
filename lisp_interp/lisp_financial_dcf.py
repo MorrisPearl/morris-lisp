@@ -417,6 +417,6 @@ def valuation_notes(the_model):
     else:
         notes.append("The weight of debt in the WACC is the debt over the debt and the market value of the shares at the price given.")
     if the_model.sensitivity:
-        notes.append("The Sensitivity tab runs this valuation many times with random values for the inputs you choose (beta, the risk premium, terminal growth, and the main assumptions to start with): each Low, Average, High and distribution (uniform, triangular, or normal) is yours to change, inputs can be correlated, and the outputs recorded are the DCF's results. It needs the macro on the Sensitivity Macro tab, installed once through Extensions > Apps Script.")
+        notes.append("The Sensitivity tab runs this valuation many times with random values for the inputs you choose (beta, the risk premium, terminal growth, and the main assumptions to start with): each Low, Average, High and distribution (uniform, triangular, normal, and a dozen more, explained on the Distributions tab) is yours to change, inputs can be correlated, and the outputs recorded are the DCF's results. It needs the macro on the Sensitivity Macro tab, installed once through Extensions > Apps Script.")
     notes.append("The last table shows the value per share at other discount rates and growth rates. The terminal value is usually most of the enterprise value (the row below it says how much): a forecast that ends before the company's growth has slowed will overstate it.")
     return notes

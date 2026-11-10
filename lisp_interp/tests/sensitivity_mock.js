@@ -235,6 +235,40 @@ function mathScenario() {
   return result;
 }
 
+/* The other distributions: the value at each of several probabilities (test_sensitivity.py compares them with SciPy's). */
+function distributionScenario() {
+  var cases = {
+    pert: {distribution: "pert", low: 2, average: 3, high: 10},
+    pertCentered: {distribution: "pert", low: 0, average: 5, high: 10},
+    lognormal: {distribution: "lognormal", low: 1, average: 5, high: 30},
+    exponential: {distribution: "exponential", low: 1, average: 3, high: 12},
+    gammaRounded: {distribution: "gamma", low: 0, average: 6, high: 20, shape: 2.5},
+    gammaSkewed: {distribution: "gamma", low: 1, average: 4, high: 15, shape: 0.6},
+    gammaLarge: {distribution: "gamma", low: 0, average: 50, high: 90, shape: 40},
+    weibullRising: {distribution: "weibull", low: 0, average: 5, high: 15, shape: 1.8},
+    weibullFalling: {distribution: "weibull", low: 2, average: 5, high: 30, shape: 0.7},
+    beta: {distribution: "beta", low: 0.1, average: 0.3, high: 0.9, shape: 8},
+    betaTight: {distribution: "beta", low: 0, average: 0.8, high: 1, shape: 60},
+    betaSmall: {distribution: "beta", low: 0, average: 0.5, high: 4, shape: 0.5},
+    discreteUniform: {distribution: "discrete uniform", low: 3, average: 0, high: 8},
+    bernoulli: {distribution: "bernoulli", low: 0, average: 0.3, high: 1},
+    bernoulliValues: {distribution: "bernoulli", low: 0.10, average: 0.14, high: 0.15},
+    binomial: {distribution: "binomial", low: 2, average: 8, high: 22},
+    binomialLarge: {distribution: "binomial", low: 0, average: 400, high: 1000},
+    poisson: {distribution: "poisson", low: 1, average: 5, high: 12},
+    poissonLarge: {distribution: "poisson", low: 0, average: 40, high: 100},
+    poissonNoLimit: {distribution: "poisson", low: 0, average: 3, high: 1000000},
+    custom: {distribution: "custom", choices: [{value: 5, upTo: 0.2}, {value: 7, upTo: 0.9}, {value: 20, upTo: 1}]}
+  };
+  var probabilities = [0, 0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 0.999, 1];
+  var result = {};
+  Object.keys(cases).forEach(function (name) {
+    var input = cases[name];
+    result[name] = {input: input, values: probabilities.map(function (p) { return [p, valueForProbability(input, p)]; })};
+  });
+  return result;
+}
+
 /* Correlated draws: the correlation of what comes out, and the matrices that can't be. */
 function correlationScenario() {
   var result = {};
@@ -276,7 +310,7 @@ function smallWorld(runs, seed) {
     ["Status"],
     [],
     ["Inputs"],
-    ["Input", "Distribution", "Low", "Average", "High", "What it is"],
+    ["Input", "Distribution", "Low", "Average", "High", "Shape", "What it is"],
     ["rate", "uniform", 0.03, 0.05, 0.07],
     ["Model!B2", "Triangular", 0.01, 0.02, 0.04],
     [],
@@ -376,6 +410,90 @@ function runScenario() {
   return result;
 }
 
+var EVERY_DISTRIBUTION = [
+  ["u", "uniform", 1, "", 3], ["tri", "triangular", 1, 2, 4], ["pe", "pert", 1, 2, 4], ["no", "normal", 0, 5, 10],
+  ["ln", "lognormal", 1, 5, 30], ["ex", "exponential", 1, 3, 12], ["ga", "gamma", 0, 6, 20, 2.5],
+  ["we", "weibull", 0, 5, 15, 1.8], ["be", "beta", 0, 0.3, 1, 8], ["du", "Discrete Uniform", 3, "", 8],
+  ["bn", "bernoulli", 0, 0.3, 1], ["bi", "binomial", 0, 6, 20], ["po", "poisson", 0, 3, 15], ["cu", "custom"]
+];
+var CUSTOM_ROWS = [["cu", 5, 2], ["cu", 20, 1], ["cu", 7, 7]];            // (not in order of value; chances 2, 7, 1)
+
+/* A model with a cell for each input (the model's total is their sum) and a Sensitivity tab with the given rows of
+ * the Inputs table and of the Custom values table (null for no such table). */
+function mixedWorld(inputRows, customRows, runs) {
+  resetWorld();
+  workbook = new MockWorkbook();
+  var model = workbook.addSheet("Model", []);
+  var names = inputRows.map(function (row) { return row[0]; });
+  names.forEach(function (name, n) {
+    workbook.names[name] = ["Model", "B" + (n + 1)];
+    model.cell(n + 1, 2).value = 1;
+  });
+  workbook.names.total = ["Model", "D1"];
+  putFormula(model.getRange(1, 4), "=total", function () {
+    return names.reduce(function (sum, name) { return sum + modelValue(name); }, 0);
+  });
+  var rows = [["Title"], ["Number of runs", runs], ["Random seed", 5], ["Status"], [], ["Inputs"],
+              ["Input", "Distribution", "Low", "Average", "High", "Shape", "What it is"]].concat(inputRows, [[]]);
+  if (customRows) {
+    rows = rows.concat([["Custom values"], ["Input", "Value", "Chance"]], customRows, [[]]);
+  }
+  rows = rows.concat([["Correlations"], ["Input", "Input", "Correlation"], [], ["Outputs"], ["Output"], ["total"], [], ["Results"]]);
+  var sheet = workbook.addSheet("Sensitivity", rows);
+  sheet.resultsRow = rows.length;
+  return sheet;
+}
+
+/* Every distribution through the macro's own reading of the tab, and what the mistakes with the new ones look like. */
+function everyDistributionScenario() {
+  var result = {};
+  var sheet = mixedWorld(EVERY_DISTRIBUTION, CUSTOM_ROWS, 300);
+  runMonteCarlo();
+  var width = 1 + EVERY_DISTRIBUTION.length + 1;
+  result.alerts = alerts.slice();
+  result.status = sheet.getRange(4, 2).getValue();
+  result.header = sheet.getRange(sheet.resultsRow + 10, 1, 1, width).getValues()[0];
+  result.runs = sheet.getRange(sheet.resultsRow + 11, 1, 300, width).getValues();
+
+  var tryRows = function (name, change) {
+    var rows = EVERY_DISTRIBUTION.map(function (row) { return row.slice(); });
+    var custom = CUSTOM_ROWS.map(function (row) { return row.slice(); });
+    var tables = {inputs: rows, custom: custom};
+    change(tables);
+    var s = mixedWorld(tables.inputs, tables.custom, 10);
+    runMonteCarlo();
+    result[name] = {alerts: alerts.slice(), status: s.getRange(4, 2).getValue()};
+  };
+  var row = function (tables, name) { return tables.inputs.filter(function (r) { return r[0] === name; })[0]; };
+  tryRows("noShape", function (t) { row(t, "ga")[5] = ""; });
+  tryRows("zeroShape", function (t) { row(t, "be")[5] = 0; });
+  tryRows("lognormalFromZero", function (t) { row(t, "ln")[2] = 0; });
+  tryRows("startsAtLow", function (t) { row(t, "ex")[3] = 1; });
+  tryRows("betaAtEnd", function (t) { row(t, "be")[3] = 0; });
+  tryRows("fractionalTries", function (t) { row(t, "bi")[4] = 20.5; });
+  tryRows("oneOutcome", function (t) { row(t, "bn")[3] = 0; row(t, "bn")[4] = 0; });
+  tryRows("tooManyTries", function (t) { row(t, "bi")[4] = 1000000; });
+  tryRows("tooManyEvents", function (t) { row(t, "po")[3] = 1000000; row(t, "po")[4] = 2000000; });
+  tryRows("noValues", function (t) { t.custom.length = 0; });
+  tryRows("notCustom", function (t) { t.custom.push(["no", 1, 1]); });
+  tryRows("badChance", function (t) { t.custom[0][2] = -1; });
+  tryRows("badValue", function (t) { t.custom[0][1] = "five"; });
+  tryRows("allChancesZero", function (t) { t.custom.forEach(function (r) { r[2] = 0; }); });
+  tryRows("unknownCustomInput", function (t) { t.custom[0][0] = "zzz"; });
+  tryRows("uniformNeedsLowAndHigh", function (t) { row(t, "u")[4] = ""; });
+  tryRows("discreteUniformFraction", function (t) { row(t, "du")[2] = 3.5; });
+
+  // a sheet with no Custom values table at all is fine unless an input is custom
+  var plain = EVERY_DISTRIBUTION.slice(0, 13);
+  var s = mixedWorld(plain, null, 20);
+  runMonteCarlo();
+  result.noTable = {alerts: alerts.slice(), status: s.getRange(4, 2).getValue()};
+  s = mixedWorld(EVERY_DISTRIBUTION, null, 20);
+  runMonteCarlo();
+  result.tableMissing = {alerts: alerts.slice(), status: s.getRange(4, 2).getValue()};
+  return result;
+}
+
 /* The tab the three-statement model makes, run against a workbook that has its names (the model itself is not here:
  * each output is the sum of the inputs). */
 function fixtureScenario() {
@@ -413,5 +531,5 @@ function fixtureScenario() {
 }
 
 function run() {
-  return JSON.stringify({math: mathScenario(), correlation: correlationScenario(), run: runScenario(), fixture: fixtureScenario()});
+  return JSON.stringify({math: mathScenario(), distributions: distributionScenario(), every: everyDistributionScenario(), correlation: correlationScenario(), run: runScenario(), fixture: fixtureScenario()});
 }

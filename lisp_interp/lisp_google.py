@@ -462,12 +462,6 @@ def google_sheet(credentials_path, title, formats, *arguments):
     def call(url, body):
         return google_request("POST", url, who, headers, json.dumps(body).encode())
 
-    for sheet in sheets:
-        for name, address in sheet.get("names", []):
-            if not VALID_RANGE_NAME.match(name) or CELL_LIKE_NAME.match(name) or name.lower() in taken:
-                raise LispError('%s: "%s" can\'t be the name of a range (letters, numbers and underscores, not like A1, '
-                                'a different one each)' % (who, name))
-            taken.add(name.lower())
     made = call(SHEETS_URL, {
         "properties": {"title": title.strip()},
         "sheets": [{"properties": {"title": name, "gridProperties": {"rowCount": max(len(columns[0]) + 1, 2),
