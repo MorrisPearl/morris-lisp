@@ -169,10 +169,10 @@ class TestModelFromReportedNumbers(LispTestCase):
     def v(self, tab, key, i):
         return value(self.sheets, self.model, tab, key, i)
 
-    def test_there_are_six_tabs_with_the_periods_in_the_same_columns(self):
+    def test_there_are_the_statements_the_dcf_the_sensitivity_tabs_and_the_notes_with_the_periods_in_the_same_columns(self):
         tabs = self.model.sheets()
         self.assertEqual([t["name"] for t in tabs],
-                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF", "Notes"])
+                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF", "Sensitivity", "Distributions", "Sensitivity Macro", "Notes"])
         self.assertEqual(self.model.labels, ["FY2021", "FY2022", "FY2023", "FY2024E", "FY2025E", "FY2026E"])
         for tab in tabs[:4]:
             self.assertEqual([cell[0] for cell in tab["cells"][2][1:]], self.model.labels)
@@ -433,8 +433,10 @@ class TestNamedAssumptions(LispTestCase):
     def test_each_tab_numbers_its_periods_from_the_first_forecast_period(self):
         for name in ("Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF"):
             if name in self.tabs:
-                self.assertEqual([cell[0] for cell in self.tabs[name]["cells"][4][1:7]], [-3, -2, -1, 0, 1, 2], name)
-                self.assertIn("Period number", self.tabs[name]["cells"][4][0][0])
+                row = next(r for r in self.tabs[name]["cells"] if r[0] and r[0][0].startswith("Period number"))
+                self.assertEqual([cell[0] for cell in row[1:7]], [-3, -2, -1, 0, 1, 2], name)
+                if name != "DCF":
+                    self.assertIs(self.tabs[name]["cells"][4], row)         # (row 5, except on the DCF tab)
 
     def test_a_name_is_of_the_first_forecast_cell_of_its_row(self):
         names = dict(self.tabs["Assumptions"]["names"])
@@ -497,8 +499,9 @@ class TestNamesInPlaceOfCoordinates(LispTestCase):
 
     def check_tab(self, model, tab, first_row=1, last_row=None):
         letters = {fm.column_letter(i + 1): i for i in range(model.count)}
+        number_row = next(n for n, row in enumerate(tab["cells"], start=1) if row[0] and row[0][0].startswith("Period number"))
         for row_number, row in enumerate(tab["cells"], start=1):
-            if row_number < 6 or row_number < first_row or (last_row and row_number > last_row):
+            if row_number < 6 and tab["name"] != "DCF" or row_number < first_row or (last_row and row_number > last_row):
                 continue
             for column, cell in enumerate(row):
                 if not (cell and isinstance(cell[0], str) and cell[0].startswith("=")):
@@ -507,7 +510,7 @@ class TestNamesInPlaceOfCoordinates(LispTestCase):
                     text = match.group(0)
                     self.assertNotIn("!", text, "%s row %d: %s" % (tab["name"], row_number, cell[0]))
                     column_here = fm.column_letter(column)
-                    if match.group(2) == "5":
+                    if match.group(2) == str(number_row):
                         self.assertEqual(match.group(1), column_here, cell[0])            # (the period number: its own column's)
                         continue
                     # (what is left is the same row, in an earlier column)
@@ -524,7 +527,7 @@ class TestNamesInPlaceOfCoordinates(LispTestCase):
     def test_only_the_period_before_and_the_ends_of_a_sum_are_addresses(self):
         for model in self.models():
             for tab in model.sheets():
-                if tab["name"] in ("Notes", "DCF"):
+                if tab["name"] in ("Notes", "DCF", "Sensitivity", "Distributions", "Sensitivity Macro"):
                     continue
                 self.check_tab(model, tab)
 

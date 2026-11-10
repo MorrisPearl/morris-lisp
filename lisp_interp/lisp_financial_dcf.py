@@ -26,8 +26,12 @@ value of the shares. Every one is yellow, and the WACC itself can be typed over.
 A last table shows the value per share for discount rates a point or two either side of the WACC and growth rates
 either side of the terminal growth, which is how much to trust the number: terminal value is most of a company's value.
 
+The periods' labels, ends, and numbers are above the first row that has a value in each period (free cash flow), not at the
+top, because the rows above are single values.
+
 Every value on the tab has a name (wacc, terminal_growth, enterprise_value), and every row of periods (fcf, discount_factor)
-is reached as OFFSET(name,0,the period number in row 5), as on the other tabs; only the table at the bottom has addresses.
+is reached as OFFSET(name,0,the period number), as on the other tabs (the period number row here is not row 5); only the
+table at the bottom has addresses.
 
 Banks and insurers have no DCF tab: their debt is their raw material, not financing, so free cash flow to the firm
 means nothing for them (the value of a bank is of its dividends and its equity, which a different model would do).
@@ -47,6 +51,7 @@ TERMINAL_GROWTH = 0.025
 DEBT_WEIGHT = 0.20                  # (if the share price is not given)
 RATE_STEPS = (-0.02, -0.01, 0.0, 0.01, 0.02)            # the discount rates of the last table, around the WACC
 GROWTH_STEPS = (-0.01, -0.005, 0.0, 0.005, 0.01)        # and its terminal growth rates, around the assumed one
+FIRST_ROW = 4                                           # (the title, the units, and an empty row come first)
 SENSITIVITY_FIRST_COLUMN = 2                            # (the grid's growth rates are in columns C to G)
 
 
@@ -65,7 +70,8 @@ class Valuation:
         self.add_rows()
         for position, row in enumerate(self.rows):
             if row is not None:
-                self.row_of[row[0]] = model.FIRST_LINE_ROW + position
+                self.row_of[row[0]] = FIRST_ROW + position
+        the_model.period_number_row[DCF] = self.row_of["period-number"]       # (the formulas find the period here, not in row 5)
         self.names = []                                 # (name, address) of each value and row that has a name
         for row in self.rows:
             kind = getattr(row[3], "kind", None) if row is not None else None
@@ -90,7 +96,7 @@ class Valuation:
         period, or the row has no name (then its address)."""
         own_earlier_period = key == self.model.here_key and i != self.model.here
         if self.model.here is not None and (DCF, key) in self.model.range_names and not own_earlier_period:
-            return self.model.named_ref(DCF, key, i)
+            return self.model.named_ref(DCF, key, i, self.model.period_number_row[DCF])
         return "%s%d" % (column_letter(i + 1), self.row_of[key])
 
     def at_last_forecast(self, key):
@@ -165,6 +171,7 @@ class Valuation:
     def add_rows(self):
         self.add_inputs()
         self.blank()
+        self.add_period_rows()
         self.add_free_cash_flow()
         self.blank()
         self.add_discounting()
@@ -215,6 +222,13 @@ class Valuation:
                  self.one(0, "decimal", "input"))
         self.add("growth-check", "Check: WACC less terminal growth (must be positive)",
                  self.one(lambda: "=%s-%s" % (self.single("wacc"), self.single("terminal-growth")), "percent"), ("italic",))
+
+    def add_period_rows(self):
+        """The periods' labels, ends, and numbers, above the rows that have a value in each period (the rows above
+        them are single values, for which the periods are in the way)."""
+        for key, row in zip(("period", "period-ends", "period-number"), self.model.period_rows()):
+            label, label_style = row[0]
+            self.add(key, label, lambda row=row: {column: cell for column, cell in enumerate(row) if column > 0}, label_style)
 
     def add_free_cash_flow(self):
         inc, cf, a = (lambda key, i: self.other(INCOME, key, i), lambda key, i: self.other(CASH_FLOW, key, i),
@@ -367,7 +381,7 @@ class Valuation:
         class Title:
             title = "Discounted cash flow valuation"
         width = max(self.count + 1, SENSITIVITY_FIRST_COLUMN + len(GROWTH_STEPS) + 1)
-        cells = [list(row) + [None] * (width - len(row)) for row in self.model.header_rows(Title)]
+        cells = [list(row) + [None] * (width - len(row)) for row in self.model.title_rows(Title)]
         cells.append([None] * width)
         for row in self.rows:
             line = [None] * width
@@ -379,7 +393,7 @@ class Valuation:
                     line[column] = cell
                 self.model.here_key = None
             cells.append(line)
-        return {"name": DCF, "cells": cells, "frozen_rows": model.HEADER_ROWS, "frozen_columns": 1,
+        return {"name": DCF, "cells": cells, "frozen_columns": 1,
                 "widths": [(0, 0, model.LABEL_WIDTH + 80), (1, width - 1, model.PERIOD_WIDTH)], "names": self.names}
 
 
@@ -402,5 +416,7 @@ def valuation_notes(the_model):
         notes.append("The share price was not given (:price), so the weight of debt in the WACC is a guess, and the value is not compared with the price.")
     else:
         notes.append("The weight of debt in the WACC is the debt over the debt and the market value of the shares at the price given.")
+    if the_model.sensitivity:
+        notes.append("The Sensitivity tab runs this valuation many times with random values for the inputs you choose (beta, the risk premium, terminal growth, and the main assumptions to start with): each Low, Average, High and distribution (uniform, triangular, normal, and a dozen more, explained on the Distributions tab) is yours to change, inputs can be correlated, and the outputs recorded are the DCF's results. It needs the macro on the Sensitivity Macro tab, installed once through Extensions > Apps Script.")
     notes.append("The last table shows the value per share at other discount rates and growth rates. The terminal value is usually most of the enterprise value (the row below it says how much): a forecast that ends before the company's growth has slowed will overstate it.")
     return notes

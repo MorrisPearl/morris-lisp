@@ -71,14 +71,33 @@ class TestTheTab(DcfTestCase):
 
     def test_the_tab_comes_after_the_cash_flow_statement_and_every_formula_works(self):
         self.assertEqual([t["name"] for t in self.model.sheets()],
-                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF", "Notes"])
+                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF", "Sensitivity", "Distributions", "Sensitivity Macro", "Notes"])
         for (row, column) in list(self.sheets.cells["DCF"]):
             self.sheets.value("DCF", row, column)
 
     def test_the_periods_are_in_the_same_columns_as_on_the_other_tabs(self):
         tabs = {t["name"]: t for t in self.model.sheets()}
-        self.assertEqual([cell[0] for cell in tabs["DCF"]["cells"][2][1:4 + 3]], self.model.labels)
+        row = self.valuation.row_of["period"] - 1
+        self.assertEqual([cell[0] for cell in tabs["DCF"]["cells"][row][1:4 + 3]], self.model.labels)
         self.assertEqual(self.d("operating-income", 4), self.v("Income Statement", "operating-income", 4))
+
+    def test_the_period_rows_are_just_above_the_free_cash_flow_not_at_the_top(self):
+        rows = self.valuation.row_of
+        self.assertEqual([rows["period"], rows["period-ends"], rows["period-number"], rows["fcf-header"]],
+                         list(range(rows["fcf-header"] - 3, rows["fcf-header"] + 1)))
+        self.assertLess(rows["growth-check"], rows["period"])
+        cells = {t["name"]: t for t in self.model.sheets()}["DCF"]["cells"]
+        self.assertEqual([cells[rows["period"] - 1][0][0], cells[rows["period-ends"] - 1][0][0], cells[rows["period-number"] - 1][0][0]],
+                         ["Period", "Period ends", "Period number (0 is the first forecast period)"])
+        numbers = [cell[0] for cell in cells[rows["period-number"] - 1][1:self.model.count + 1]]
+        self.assertEqual(numbers, [i - self.model.history_count for i in range(self.model.count)])
+
+    def test_the_formulas_find_the_period_in_the_period_number_row_of_the_tab(self):
+        row = self.valuation.row_of["period-number"]
+        cells = {t["name"]: t for t in self.model.sheets()}["DCF"]["cells"]
+        formula = cells[self.valuation.row_of["operating-income"] - 1][4][0]
+        self.assertIn("E$%d" % row, formula)
+        self.assertNotIn("E$5", formula)
 
     def test_free_cash_flow_is_the_operating_income_after_tax_plus_depreciation_less_capital_and_working_capital(self):
         for i in range(1, self.model.count):
