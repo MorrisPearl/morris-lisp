@@ -58,6 +58,8 @@ function MockSheet(book, name) {
   this.book = book;
   this.name = name;
   this.cells = {};
+  this.rowCount = 1000;                 // the grid: like Google's, reading or writing outside it is an error
+  this.columnCount = 26;
 }
 
 MockSheet.prototype.cell = function (row, column) {
@@ -68,8 +70,28 @@ MockSheet.prototype.cell = function (row, column) {
   return this.cells[key];
 };
 MockSheet.prototype.getName = function () { return this.name; };
-MockSheet.prototype.getMaxRows = function () { return 2000; };
-MockSheet.prototype.getMaxColumns = function () { return 26; };
+MockSheet.prototype.getMaxRows = function () { return this.rowCount; };
+MockSheet.prototype.getMaxColumns = function () { return this.columnCount; };
+MockSheet.prototype.insertRowsAfter = function (after, count) { this.shiftRows(after + 1, count); this.rowCount += count; };
+MockSheet.prototype.insertColumnsAfter = function (after, count) { this.columnCount += count; };
+MockSheet.prototype.deleteRows = function (first, count) {
+  if (first < 1 || first + count - 1 > this.rowCount) { throw new Error("those rows are outside the sheet"); }
+  this.shiftRows(first + count, -count);
+  this.rowCount -= count;
+};
+/* Move the cells from a row on down by count rows (or up, if count is negative: the rows in the way are lost). */
+MockSheet.prototype.shiftRows = function (fromRow, count) {
+  var moved = {};
+  for (var key in this.cells) {
+    var parts = key.split(","), row = Number(parts[0]);
+    if (row >= fromRow) {
+      moved[(row + count) + "," + parts[1]] = this.cells[key];
+    } else if (count >= 0 || row < fromRow + count) {
+      moved[key] = this.cells[key];
+    }
+  }
+  this.cells = moved;
+};
 MockSheet.prototype.getLastRow = function () {
   var last = 1;
   for (var key in this.cells) {
@@ -93,6 +115,10 @@ function MockRange(sheet, row, column, rows, columns) {
 }
 
 MockRange.prototype.eachCell = function (action) {
+  if (this.row < 1 || this.column < 1 || this.row + this.rows - 1 > this.sheet.rowCount ||
+      this.column + this.columns - 1 > this.sheet.columnCount) {
+    throw new Error("the coordinates of the range are outside the dimensions of the sheet");
+  }
   for (var r = 0; r < this.rows; r++) {
     for (var c = 0; c < this.columns; c++) {
       action(this.sheet.cell(this.row + r, this.column + c), r, c);
@@ -148,9 +174,13 @@ function MockWorkbook() {
   this.sheets = {};
   this.names = {};
 }
-MockWorkbook.prototype.addSheet = function (name, rows) {
+MockWorkbook.prototype.addSheet = function (name, rows, exactGrid) {
   var sheet = new MockSheet(this, name);
   this.sheets[name] = sheet;
+  if (exactGrid) {                      // (a sheet as the Python makes them: no more rows and columns than it has cells)
+    sheet.rowCount = rows.length;
+    sheet.columnCount = Math.max.apply(null, rows.map(function (row) { return row.length; }));
+  }
   (rows || []).forEach(function (row, r) {
     row.forEach(function (value, c) {
       if (value !== null) { sheet.cell(r + 1, c + 1).value = value; }
@@ -324,7 +354,7 @@ function smallWorld(runs, seed) {
     ["other"],
     [],
     ["Results"]
-  ]);
+  ], true);
   return workbook.sheets.Sensitivity;
 }
 
@@ -439,7 +469,7 @@ function mixedWorld(inputRows, customRows, runs) {
     rows = rows.concat([["Custom values"], ["Input", "Value", "Chance"]], customRows, [[]]);
   }
   rows = rows.concat([["Correlations"], ["Input", "Input", "Correlation"], [], ["Outputs"], ["Output"], ["total"], [], ["Results"]]);
-  var sheet = workbook.addSheet("Sensitivity", rows);
+  var sheet = workbook.addSheet("Sensitivity", rows, true);
   sheet.resultsRow = rows.length;
   return sheet;
 }
@@ -494,6 +524,47 @@ function everyDistributionScenario() {
   return result;
 }
 
+/* Running again with another number of runs: the formulas follow, nothing of the earlier results is left, and the sheet
+ * has exactly the rows it needs (the macro adds them itself).  Then a run during which something disturbs the formulas. */
+function rerunScenario() {
+  var result = {};
+  var sheet = smallWorld(100, 3);
+  var look = function () {
+    return {mean: sheet.getRange(21, 2).getFormula(), highest: sheet.getRange(29, 5).getFormula(),
+            rows: sheet.getMaxRows(), columns: sheet.getMaxColumns(), lastRow: sheet.getLastRow(),
+            status: sheet.getRange(4, 2).getValue(), alerts: alerts.slice()};
+  };
+  runMonteCarlo();
+  result.first = look();
+  sheet.getRange(2, 2).setValue(30);
+  runMonteCarlo();
+  result.fewer = look();
+  sheet.getRange(2, 2).setValue(200);
+  runMonteCarlo();
+  result.more = look();
+
+  // an earlier copy of the results left lower down is cleared away
+  sheet.getRange(2, 2).setValue(100);
+  sheet.insertRowsAfter(sheet.getMaxRows(), 150);
+  sheet.getRange(231, 1, 1, 2).setValues([["Run", "old"]]);
+  sheet.getRange(300, 1).setValue(99);
+  runMonteCarlo();
+  result.stale = look();
+  result.staleCells = [sheet.getRange(231, 1).getValue(), sheet.getRange(130, 1).getValue()];
+
+  // something moves the summary's references during the run (as if rows had been inserted): the macro puts them right
+  var flushes = 0;
+  var realFlush = SpreadsheetApp.flush;
+  SpreadsheetApp.flush = function () {
+    flushes++;
+    if (flushes === 5) { sheet.getRange(21, 2).setFormula("=AVERAGE(B1173:B1272)"); }
+  };
+  runMonteCarlo();
+  SpreadsheetApp.flush = realFlush;
+  result.disturbed = look();
+  return result;
+}
+
 /* The tab the three-statement model makes, run against a workbook that has its names (the model itself is not here:
  * each output is the sum of the inputs). */
 function fixtureScenario() {
@@ -508,7 +579,7 @@ function fixtureScenario() {
     model.cell(row, 1).value = names[name];
     row++;
   });
-  var tab = workbook.addSheet("Sensitivity", FIXTURE.sensitivity);
+  var tab = workbook.addSheet("Sensitivity", FIXTURE.sensitivity, true);
   var inputs = FIXTURE.inputs, outputs = FIXTURE.outputs;
   outputs.forEach(function (name) {
     var range = workbook.getRangeByName(name);
@@ -531,5 +602,5 @@ function fixtureScenario() {
 }
 
 function run() {
-  return JSON.stringify({math: mathScenario(), distributions: distributionScenario(), every: everyDistributionScenario(), correlation: correlationScenario(), run: runScenario(), fixture: fixtureScenario()});
+  return JSON.stringify({math: mathScenario(), distributions: distributionScenario(), every: everyDistributionScenario(), correlation: correlationScenario(), run: runScenario(), rerun: rerunScenario(), fixture: fixtureScenario()});
 }

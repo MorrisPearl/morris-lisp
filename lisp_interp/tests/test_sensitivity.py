@@ -268,6 +268,35 @@ class TestEveryDistribution(unittest.TestCase):
 
 
 @needs_javascript
+class TestRunningAgain(unittest.TestCase):
+    """A different number of runs, with the results of an earlier run still on the sheet."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.found = run_javascript()["rerun"]
+
+    def test_the_formulas_follow_the_number_of_runs_and_the_sheet_has_the_rows_it_needs(self):
+        # (Results is row 20; the summary is rows 21 to 29, the heading row 30, and the runs from row 31)
+        for name, runs in (("first", 100), ("fewer", 30), ("more", 200)):
+            found = self.found[name]
+            self.assertEqual(found["alerts"], [], name)
+            self.assertEqual(found["mean"], "=AVERAGE(OFFSET(B$30,1,0,%d,1))" % runs, name)
+            self.assertEqual(found["highest"], "=MAX(OFFSET(E$30,1,0,%d,1))" % runs, name)
+            self.assertEqual(found["rows"], 30 + runs, name)                # (no rows left over, none missing)
+            self.assertEqual(found["lastRow"], 30 + runs, name)
+            self.assertEqual(found["columns"], 7, name)
+
+    def test_an_earlier_copy_of_the_results_further_down_is_cleared_away(self):
+        self.assertEqual(self.found["stale"]["rows"], 130)
+        self.assertEqual(self.found["stale"]["lastRow"], 130)
+        self.assertEqual(self.found["staleCells"], ["", 100])               # (and run 100 is on row 130)
+
+    def test_the_summary_is_put_right_at_the_end_whatever_happened_to_it_during_the_run(self):
+        self.assertEqual(self.found["disturbed"]["mean"], "=AVERAGE(OFFSET(B$30,1,0,100,1))")
+        self.assertEqual(self.found["disturbed"]["status"], "Done: 100 runs, seed 3.")
+
+
+@needs_javascript
 class TestARun(unittest.TestCase):
 
     @classmethod
@@ -306,7 +335,10 @@ class TestARun(unittest.TestCase):
     def test_the_summary_is_formulas_over_the_runs_and_the_columns_keep_their_formats(self):
         self.assertEqual(self.found["summaryLabels"][0], "Mean")
         self.assertEqual(self.found["summaryLabels"][-1], "Highest")
-        self.assertEqual(self.found["summaryFormulas"], ["=AVERAGE(B31:B430)", "=PERCENTILE(D31:D430,0.05)", "=MAX(E31:E430)"])
+        # (each is the runs under its column's heading, the heading at row 30)
+        self.assertEqual(self.found["summaryFormulas"], ["=AVERAGE(OFFSET(B$30,1,0,400,1))",
+                                                          "=PERCENTILE(OFFSET(D$30,1,0,400,1),0.05)",
+                                                          "=MAX(OFFSET(E$30,1,0,400,1))"])
         self.assertEqual(self.found["format"], "General")
 
     def test_the_same_seed_gives_the_same_runs(self):

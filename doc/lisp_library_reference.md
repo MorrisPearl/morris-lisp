@@ -3244,6 +3244,8 @@ number, so the result is the same however many pieces it comes in. Each run take
 macro to type and read cells -- a second or so for a model this size -- so a thousand runs take some minutes, and the macro leaves the spreadsheet
 to itself meanwhile.
 
+Each fresh run deletes everything below the Results title and adds the rows it needs, so an earlier run's results (or a different number of runs) never leave anything behind. The summary formulas count the runs from the column's heading -- `=AVERAGE(OFFSET(B$72,1,0,100,1))` is the 100 cells under B72 -- so they follow the heading if rows are inserted above it, and the macro writes them again at the end of every run.
+
 The macro does not know about the three-statement model. It does Monte Carlo analysis of any spreadsheet that has a tab called Sensitivity laid out
 like this one (the name is at the top of the script). To use it on your own: `(sensitivity-workbook creds "My analysis")` makes a spreadsheet with an
 empty Sensitivity tab and the macro tab; copy your model's tabs into it (right-click a tab, *Copy to*), name the cells you vary and record, and fill

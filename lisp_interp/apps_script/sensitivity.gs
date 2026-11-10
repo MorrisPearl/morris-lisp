@@ -826,21 +826,53 @@ function resultsLayout(setup) {
   return {header: header, width: header.length, summaryRow: summaryRow, headerRow: headerRow, firstRunRow: headerRow + 1};
 }
 
-/* The headings, the summary formulas over the rows of runs, and the number formats, as the setup now calls for. */
-function writeResultsFrame(sheet, setup, layout) {
-  var lastRunRow = layout.firstRunRow + setup.runs - 1;
-  sheet.getRange(layout.headerRow, 1, 1, layout.width).setValues([layout.header]).setFontWeight("bold");
-  var labels = SUMMARY.map(function (row) { return [row[0]]; });
-  sheet.getRange(layout.summaryRow, 1, SUMMARY.length, 1).setValues(labels);
+/*
+ * The summary formulas.  Each takes the runs of its column as the setup's number of rows starting just below the
+ * column's heading (OFFSET(B$72,1,0,100,1) is the 100 cells under B72), so that it follows the heading if rows are
+ * inserted or deleted above it, and never reaches past the last run.
+ */
+function writeSummary(sheet, setup, layout) {
   var formulas = SUMMARY.map(function (row) {
     var cells = [];
     for (var column = 2; column <= layout.width; column++) {
-      var letter = columnLetter(column);
-      cells.push("=" + row[1].replace("%", letter + layout.firstRunRow + ":" + letter + lastRunRow));
+      var runs = "OFFSET(" + columnLetter(column) + "$" + layout.headerRow + ",1,0," + setup.runs + ",1)";
+      cells.push("=" + row[1].replace("%", runs));
     }
     return cells;
   });
   sheet.getRange(layout.summaryRow, 2, SUMMARY.length, layout.width - 1).setFormulas(formulas);
+}
+
+/*
+ * Makes room for the results: the sheet is given rows down to the last run, and columns across to the last output,
+ * added at the bottom and the right (this is not left to Google, which grows a sheet by itself when something is written
+ * past its edge).
+ */
+function makeRoom(sheet, setup, layout) {
+  var lastRunRow = layout.firstRunRow + setup.runs - 1;
+  if (sheet.getMaxRows() < lastRunRow) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), lastRunRow - sheet.getMaxRows());
+  }
+  if (sheet.getMaxColumns() < layout.width) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), layout.width - sheet.getMaxColumns());
+  }
+}
+
+/* Removes the rows of an earlier run's results: everything below the Results title (the summary, headings, and runs). */
+function deleteOldResults(sheet, layout) {
+  var rows = sheet.getMaxRows() - layout.summaryRow + 1;
+  if (rows > 0) {
+    sheet.deleteRows(layout.summaryRow, rows);
+  }
+}
+
+/* The headings, the summary formulas over the rows of runs, and the number formats, as the setup now calls for. */
+function writeResultsFrame(sheet, setup, layout) {
+  makeRoom(sheet, setup, layout);
+  sheet.getRange(layout.headerRow, 1, 1, layout.width).setValues([layout.header]).setFontWeight("bold");
+  var labels = SUMMARY.map(function (row) { return [row[0]]; });
+  sheet.getRange(layout.summaryRow, 1, SUMMARY.length, 1).setValues(labels);
+  writeSummary(sheet, setup, layout);
   var cells = setup.inputs.concat(setup.outputs);
   cells.forEach(function (cell, n) {
     var format = cell.range.getNumberFormat();
@@ -898,7 +930,7 @@ function execute(continuing) {
     } else {
       seed = setup.seed !== null ? setup.seed : Math.floor(Math.random() * 1000000000);
       properties.setProperty(SAVED_SEED, String(seed));
-      sheet.getRange(layout.summaryRow, 1, Math.max(sheet.getMaxRows() - layout.summaryRow + 1, 1), Math.max(sheet.getMaxColumns(), layout.width)).clear();
+      deleteOldResults(sheet, layout);
     }
     writeResultsFrame(sheet, setup, layout);
 
@@ -919,6 +951,7 @@ function execute(continuing) {
       }
     }
     restoreInputs(spreadsheet);
+    writeSummary(sheet, setup, layout);         // (again, last, so that they are right whatever happened to the rows meanwhile)
     var last = run - 1;                 // (the last run made: everything collected has been written)
     if (stopped && last < setup.runs) {
       var goingOn = "it goes on by itself in a minute (or choose Sensitivity > Continue a run that stopped)";
