@@ -1025,49 +1025,59 @@ What SPY's model expected, from the close of October 6, 2026 (with
                    (iota 1000)))
 ```
 
-**An example, with numbers.** Here is the first block of the first of
-those paths (`:seed 1000`), worked by hand. The history is SPY's ten
-years to October 6, 2026, when it closed at 779.09, and the path starts
-from that price. (These prices are Yahoo's, and the weights that fit them
-best are 0.037 for an up day, 0.230 for a down day, and 0.830 for the
-variance: a little different from the ones above. The model's volatility
-for the next day is 9.63%, and for the long run 18.05%.)
+**An example, with numbers.** Here is the first block of the first path
+(`:seed 1000`, with blocks of 10 days), worked by hand. The history is
+Schwab's prices of SPY for the ten years to October 6, 2026, when it
+closed at 779.09, and the path starts from that price. The returns have
+SPY's dividends in them, and are adjusted to 8% a year:
 
-The seed's first block happens to start at October 4, 2023, so the path's
-first ten days are made from the ten trading days from then to October 17.
-SPY closed at 421.59 the day before, October 3.
+```lisp
+(define prices (schwab-price-history creds "SPY" :start-date "2016-10-07" :end-date "2026-10-07"))
+(define returns (adjust-returns (daily-returns prices :dividends (alpha-vantage-dividends creds "SPY")) 0.08))
+(define model (volatility-model returns))
+```
+
+The model has the weights given above: 0.036 for an up day, 0.236 for a
+down day, and 0.827 for the variance. Its volatility for the next day is
+9.58%, and for the long run 17.99%. (Without the dividends, the weights
+come out a little different: 0.037, 0.230, and 0.830.)
+
+The seed's first block happens to start at October 3, 2023, so the path's
+first ten days are made from the ten trading days from then to October 16.
+SPY closed at 427.31 the day before, October 2.
 
 *From prices to shocks.* Each day of the block, in the history:
 
 | 2023 | Close | Log return | Adjusted return | Move | Volatility, for a year | for a day | Shock |
 |---|---|---|---|---|---|---|---|
-| Oct 4 | 424.66 | +0.726% | +0.698% | +0.674% | 17.3% | 1.089% | +0.619 |
-| Oct 5 | 424.50 | -0.038% | -0.065% | -0.089% | 16.2% | 1.018% | -0.087 |
-| Oct 6 | 429.54 | +1.180% | +1.153% | +1.129% | 15.0% | 0.947% | +1.192 |
-| Oct 9 | 432.29 | +0.638% | +0.611% | +0.587% | 14.4% | 0.909% | +0.645 |
-| Oct 10 | 434.54 | +0.519% | +0.492% | +0.468% | 13.6% | 0.857% | +0.546 |
-| Oct 11 | 436.32 | +0.409% | +0.382% | +0.358% | 12.8% | 0.808% | +0.443 |
-| Oct 12 | 433.66 | -0.612% | -0.639% | -0.663% | 12.1% | 0.762% | -0.870 |
-| Oct 13 | 431.50 | -0.499% | -0.527% | -0.551% | 12.5% | 0.787% | -0.700 |
-| Oct 16 | 436.04 | +1.047% | +1.019% | +0.995% | 12.5% | 0.787% | +1.265 |
-| Oct 17 | 436.02 | -0.005% | -0.032% | -0.056% | 12.2% | 0.765% | -0.073 |
+| Oct 3 | 421.59 | -1.348% | -1.381% | -1.405% | 14.3% | 0.903% | -1.556 |
+| Oct 4 | 424.66 | +0.726% | +0.692% | +0.668% | 17.3% | 1.088% | +0.614 |
+| Oct 5 | 424.50 | -0.038% | -0.071% | -0.095% | 16.1% | 1.015% | -0.094 |
+| Oct 6 | 429.54 | +1.180% | +1.147% | +1.123% | 15.0% | 0.943% | +1.191 |
+| Oct 9 | 432.29 | +0.638% | +0.605% | +0.581% | 14.3% | 0.903% | +0.643 |
+| Oct 10 | 434.54 | +0.519% | +0.486% | +0.462% | 13.5% | 0.850% | +0.543 |
+| Oct 11 | 436.32 | +0.409% | +0.376% | +0.351% | 12.7% | 0.800% | +0.439 |
+| Oct 12 | 433.66 | -0.612% | -0.645% | -0.669% | 12.0% | 0.754% | -0.887 |
+| Oct 13 | 431.50 | -0.499% | -0.533% | -0.557% | 12.4% | 0.783% | -0.711 |
+| Oct 16 | 436.04 | +1.047% | +1.013% | +0.989% | 12.5% | 0.785% | +1.260 |
 
-Taking October 4, column by column:
+Taking October 3, column by column:
 
-- **Log return**: ln(424.66 / 421.59) = +0.726%, as `daily-returns` makes
-  it.
-- **Adjusted return**: `adjust-returns` takes 0.027% off every day's
-  return, so that the returns average what makes 8% a year, not the 13.8%
-  SPY had: +0.726% - 0.027% = +0.698% (the numbers here are rounded).
+- **Log return**: ln(421.59 / 427.31) = -1.348%, as `daily-returns` makes
+  it. (No dividend came in these ten days, so each return is from the
+  prices alone.)
+- **Adjusted return**: `adjust-returns` takes 0.033% off every day's
+  return, so that the returns average what makes 8% a year, not the 15.6%
+  SPY had, with its dividends: -1.348% - 0.033% = -1.381%.
 - **Move**: the adjusted return less the adjusted returns' average,
-  0.024%: +0.674%.
+  0.024%: -1.405%.
 - **Volatility**: what the model's formula gives that day, from the day
   before's variance and move, all the way back from the start of the
-  history: 17.3% for a year, which is 1.089% for a day (divided by the
-  square root of 252). SPY had fallen 1.3% the day before, which put the
-  volatility up, and it came down over the days after.
-- **Shock**: the move divided by the day's volatility, 0.674 / 1.089 =
-  +0.619. SPY rose by 0.62 of a standard deviation that day.
+  history: 14.3% for a year, which is 0.903% for a day (divided by the
+  square root of 252). The fall that day puts it up to 17.3% for October
+  4, and it comes down over the days after.
+- **Shock**: the move divided by the day's volatility, -1.405 / 0.903 =
+  -1.556. SPY fell by 1.56 standard deviations that day.
 
 *From shocks to the path.* The path takes the shocks, in order, and
 nothing else from those days:
@@ -1075,48 +1085,50 @@ nothing else from those days:
 | Day | Shock | Path's volatility, for a year | for a day | Move | Return | Price |
 |---|---|---|---|---|---|---|
 | | | | | | | 779.09 |
-| 1 | +0.619 | 9.63% | 0.6065% | +0.3755% | +0.4093% | 782.29 |
-| 2 | -0.087 | 9.21% | 0.5801% | -0.0507% | -0.0169% | 782.15 |
-| 3 | +1.192 | 8.78% | 0.5530% | +0.6593% | +0.6930% | 787.59 |
-| 4 | +0.645 | 8.64% | 0.5440% | +0.3511% | +0.3848% | 790.63 |
-| 5 | +0.546 | 8.34% | 0.5255% | +0.2870% | +0.3206% | 793.17 |
-| 6 | +0.443 | 8.07% | 0.5081% | +0.2249% | +0.2585% | 795.22 |
-| 7 | -0.870 | 7.81% | 0.4921% | -0.4279% | -0.3944% | 792.09 |
-| 8 | -0.700 | 8.23% | 0.5187% | -0.3630% | -0.3294% | 789.49 |
-| 9 | +1.265 | 8.39% | 0.5288% | +0.6688% | +0.7025% | 795.05 |
-| 10 | -0.073 | 8.32% | 0.5240% | -0.0382% | -0.0046% | 795.01 |
+| 1 | -1.556 | 9.58% | 0.6033% | -0.9386% | -0.9045% | 772.08 |
+| 2 | +0.614 | 11.61% | 0.7311% | +0.4491% | +0.4835% | 775.82 |
+| 3 | -0.094 | 10.94% | 0.6891% | -0.0646% | -0.0303% | 775.58 |
+| 4 | +1.191 | 10.28% | 0.6475% | +0.7713% | +0.8055% | 781.85 |
+| 5 | +0.643 | 9.96% | 0.6275% | +0.4034% | +0.4376% | 785.28 |
+| 6 | +0.543 | 9.49% | 0.5976% | +0.3247% | +0.3587% | 788.11 |
+| 7 | +0.439 | 9.05% | 0.5698% | +0.2503% | +0.2843% | 790.35 |
+| 8 | -0.887 | 8.64% | 0.5444% | -0.4828% | -0.4489% | 786.81 |
+| 9 | -0.711 | 9.06% | 0.5707% | -0.4059% | -0.3719% | 783.89 |
+| 10 | +1.260 | 9.17% | 0.5778% | +0.7282% | +0.7622% | 789.89 |
 
 Day 1:
 
 - **The path's volatility** is today's, the model's for the day after the
-  history's last: 9.63% for a year, 0.6065% for a day.
-- **Move**: the shock times that, 0.619 x 0.6065% = +0.3755%. In 2023 the
-  same shock was a move of 0.674%, since the volatility then was 17.3%.
+  history's last: 9.58% for a year, 0.6033% for a day.
+- **Move**: the shock times that, -1.556 x 0.6033% = -0.9386%. In 2023 the
+  same shock was a move of -1.405%, since the volatility then was 14.3%.
 - **Return**: the move plus the drift, 0.034% a day, the number that makes
-  the paths' prices grow by 8% a year on average: +0.4093%.
-- **Price**: 779.09 x e^0.004093 = 782.29.
+  the paths' prices grow by 8% a year on average: -0.9045%.
+- **Price**: 779.09 x e^-0.009045 = 772.08.
 
 Then the formula gives day 2's variance, from the move the path just made
-(up, so with the up-day weight) and the variance it had. The constant is
-0.000002597, and day 1's variance is 0.006065 squared, 0.00003678:
+(down, so with the down-day weight) and the variance it had. The constant
+is 0.000002559, and day 1's variance is 0.006033 squared, 0.00003640:
 
 ```
-day 2's variance = 0.000002597 + 0.037 x 0.003755² + 0.830 x 0.00003678
-                 = 0.000002597 + 0.000000522      + 0.000030531
-                 = 0.00003365
+day 2's variance = 0.000002559 + 0.236 x 0.009386² + 0.827 x 0.00003640
+                 = 0.000002559 + 0.00002079       + 0.00003010
+                 = 0.00005345
 ```
 
-Its square root is 0.5801% for a day, 9.21% for a year: day 2's
+Its square root is 0.7311% for a day, 11.61% for a year: day 2's
 volatility, which day 2's shock is multiplied by. And so on down the
-table. Six days without a big fall take the volatility from 9.63% to 7.81%; then day 7
-is a fall, which counts with the down-day weight, 0.230, and day 8's
-volatility is back up at 8.23%. After ten days the path is at 795.01, and
-the second block starts, at another day of the history picked at random,
-with the path's volatility going on from 8.32%.
+table. The fall on day 1 puts the volatility up from 9.58% to 11.61%; six
+days without a fall of any size bring it down to 8.64%; and the fall of
+day 8 puts it back up to 9.06%. (A rise does much less: after day 4's,
+which is as big as any here, the volatility still goes down.) After ten
+days the path is at 789.89, and the second block starts, at another day of
+the history picked at random, with the path's volatility going on from
+9.17%.
 
-In those ten days of 2023 SPY rose 3.4%, at a volatility between 12% and
-17%. The path rises 2.0% from the same shocks, because it makes them at
-the volatility of October 2026, 8% to 10%. Without the model,
+In those ten days of 2023 SPY rose 2.0%, at a volatility between 12% and
+17%. The path rises 1.4% from the same shocks, because it makes them at
+the volatility of October 2026, 9% to 12%. Without the model,
 `bootstrap-path` would have copied the adjusted returns themselves, and
 the path's ten days would have been as wild as October 2023's.
 
