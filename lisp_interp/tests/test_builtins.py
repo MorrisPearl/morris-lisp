@@ -764,8 +764,10 @@ class TestStrings(LispTestCase):
         self.assertShows('(list->string (string->list "ab"))', '"ab"')
         self.assertShows('(string "a" "b" "c")', '"abc"')
 
-    def test_characters_from_string_to_list_are_not_strings(self):
-        self.assertShows('(string? (car (string->list "ab")))', "#f")
+    def test_characters_from_string_to_list_are_strings_of_one_character(self):
+        self.assertShows('(string->list "ab")', '("a" "b")')
+        self.assertShows('(string? (car (string->list "ab")))', "#t")
+        self.assertShows('(equal? (car (string->list "ab")) "a")', "#t")
 
     def test_symbol_conversion(self):
         self.assertShows('(string->symbol "foo")', "foo")

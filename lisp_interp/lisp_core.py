@@ -39,7 +39,10 @@ args)`, `(eval expr)`, `(load "file.lsp")`, a callback passed to `map`/
 `filter`/`reduce`/`vector-map`/`vectors-map`, and a macro transformer's own
 body while it is building its expansion all call back into seval() with an
 ordinary Python function call (see apply_proc()), so those paths are still
-bounded by Python's recursion limit. In practice this rarely matters.
+bounded by Python's recursion limit: PYTHON_RECURSION_LIMIT, below, which
+is a few thousand of them, each inside another. A program that goes deeper
+stops with a Lisp error that says so (see nested_too_deeply), and
+catch-error doesn't catch it.
 """
 
 import datetime
@@ -50,6 +53,16 @@ import time
 import sys
 
 import numpy as np    # LispVector's backing store -- see its class docstring
+
+
+# How many Python calls can be in progress at once. Python's own limit is
+# 1000, and one evaluation nested inside another (see CAVEAT, above) takes
+# about six of them, so that a function that called itself through map could
+# only go about 170 deep. With this limit it can go ten times as deep.
+# seval() sets it each time an evaluation starts from the top, and not just
+# once here, because other software sets it too: importing the notebook's
+# widgets puts it at 3000.
+PYTHON_RECURSION_LIMIT = 10000
 
 
 # ---------------------------------------------------------------------------
@@ -748,13 +761,43 @@ def pairs_to_list(p):
 
 def check_name(name):
     """Raise a clear error unless name can be a variable's name: a symbol,
-    but not a keyword. Catches (define nan 5), which would otherwise bind
-    nothing useful, since the reader turns nan, inf, and infinity into
-    numbers."""
+    but not a keyword, and not the name of a special form. Catches
+    (define nan 5), which would otherwise bind nothing useful, since the
+    reader turns nan, inf, and infinity into numbers. And catches a variable
+    or parameter called if, or quote: (if a b c) would still be the special
+    form, whatever the variable held, so the name could only confuse."""
+    if isinstance(name, Symbol) and name in SPECIAL_FORMS:
+        raise LispError("%s can't be used as a name -- it is a special form, a part of the language itself" % name)
     if isinstance(name, Symbol) and not isinstance(name, Keyword):
         return
     note = " (nan, inf, and infinity are read as numbers)" if isinstance(name, float) else ""
     raise LispError("%s can't be used as a name -- a name must be a symbol%s" % (to_string(name), note))
+
+
+def warn_if_builtin(name, env, who):
+    """Write a warning if name is a built-in function in env, the scope where
+    `who` (define, set!, or defmacro) is about to give it a new value. Only
+    the global scope has the built-in functions, so this is for
+    (define count 0) at the top level, and not for a parameter or a local
+    variable called count, which only hides the function inside its own
+    procedure.
+
+    Why warn: the standard macros and the libraries are Lisp code that calls
+    the built-in functions by name. After (define car 5), let* stops with
+    "not a procedure: 5", which says nothing about what went wrong. It is
+    a warning and not an error because replacing a built-in function can be
+    what is wanted: a test puts a stand-in in place of a function that
+    downloads. The warning comes once: after it, the name is no longer a
+    built-in function's."""
+    if name in env and is_builtin(env[name]):
+        _trace_write(env, "Warning: %s: %s is a built-in function, and this gives the name a new value. The standard "
+                          "macros and the libraries that call %s will get the new value too, so unless you mean to "
+                          "replace the function, choose another name." % (who, name, name))
+
+
+def is_builtin(value):
+    """Whether a value is one of the built-in functions: a Python function that make_global_env gave a Lisp name."""
+    return callable(value) and not isinstance(value, (Procedure, Macro, GenericFunction)) and value in builtin_names
 
 
 LAMBDA_LIST_MARKERS = (Symbol("&optional"), Symbol("&rest"), Symbol("&body"), Symbol("&key"))
@@ -1712,6 +1755,8 @@ def eval_special_form(op, args, env, control_stack, value_stack):
     elif op == "defmacro":
         # (defmacro name params body...) -- params as in lambda (see parse_params).
         name = args.car
+        check_name(name)
+        warn_if_builtin(name, env, op)
         fixed, optional, rest, keyword_specs = parse_params(args.cdr.car)
         body = pairs_to_list(args.cdr.cdr)
         env[name] = Macro(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs, name=name,
@@ -1731,6 +1776,7 @@ def eval_special_form(op, args, env, control_stack, value_stack):
             # (define (name params...) body...) -- params as in lambda.
             name = target.car
             check_name(name)
+            warn_if_builtin(name, env, op)
             fixed, optional, rest, keyword_specs = parse_params(target.cdr)
             body = pairs_to_list(args.cdr)
             env[name] = Procedure(fixed, body, env, rest_param=rest, keyword_specs=keyword_specs,
@@ -1741,12 +1787,14 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         else:
             name = target
             check_name(name)
+            warn_if_builtin(name, env, op)
             control_stack.append(('DEFINE', name, env))
             control_stack.append(('EVAL', args.cdr.car, env))
 
     elif op == "set!":
         name = args.car
         check_name(name)
+        warn_if_builtin(name, env.find(name), op)
         control_stack.append(('SET', name, env))
         control_stack.append(('EVAL', args.cdr.car, env))
 
@@ -1807,6 +1855,9 @@ def eval_special_form(op, args, env, control_stack, value_stack):
         # if this weren't here. (KeyboardInterrupt and the like still propagate.)
         # This needs a real Python try/except, so protected-expr runs in a nested
         # seval(); tail calls inside it are optimized only up to that boundary.
+        # Running out of Python's stack (RecursionError) passes on too: a handler
+        # that caught it would carry on with a wrong value from somewhere in the
+        # middle of the calls, and nothing would say so.
         protected_expr = args.car
         var_name = args.cdr.car.car
         handler_body = pairs_to_list(args.cdr.cdr)
@@ -1822,6 +1873,8 @@ def eval_special_form(op, args, env, control_stack, value_stack):
                 result = seval(protected_expr, env)
             finally:
                 debug_state.catching.pop()
+        except RecursionError:
+            raise
         except Exception as e:
             if kinds is not None and getattr(e, "kind", None) not in kinds:
                 raise
@@ -1897,6 +1950,8 @@ def seval(expr, env, call=None):
                 frame = _profile_enter(proc)
                 if frame is not None:
                     control_stack.insert(0, frame)
+    if not _active_stacks and sys.getrecursionlimit() < PYTHON_RECURSION_LIMIT:
+        sys.setrecursionlimit(PYTHON_RECURSION_LIMIT)
     _active_stacks.append(control_stack)
     try:
         if call is not None and isinstance(call[0], Procedure):
@@ -1907,6 +1962,9 @@ def seval(expr, env, call=None):
         _call_depth = entry_depth
         if debug_state.break_on_error:
             stop_on_error(exc, env)
+        if isinstance(exc, RecursionError) and len(_active_stacks) == 1:
+            # The outermost evaluation: every nested one has finished, so there is room on the stack again.
+            raise nested_too_deeply(exc) from None
         raise
     except KeyboardInterrupt as exc:
         _record_lisp_trace(exc, control_stack)     # so the notebook or console can say where the program was stopped
@@ -1917,6 +1975,17 @@ def seval(expr, env, call=None):
         raise
     finally:
         _active_stacks.pop()
+
+
+def nested_too_deeply(exc):
+    """The Lisp error for a program that ran out of Python's stack (exc, a
+    RecursionError), with the calls that were in progress, for the report."""
+    error = LispError("the program is nested too deeply: map, filter, apply, eval, load, catch-error, catch, and "
+                      "unwind-protect each start an evaluation inside the one that is running, and there can be only "
+                      "a few thousand of those, each inside another. (An ordinary call of a function by itself can go "
+                      "as deep as memory allows.) Is a function calling itself without end?")
+    error.lisp_trace = getattr(exc, "lisp_trace", None)
+    return error
 
 
 def _run_eval_loop(control_stack, value_stack):

@@ -330,6 +330,35 @@ below. Returns `name`.
 (square 5)                     ; => 25
 ```
 
+**Names that are taken.** Two kinds of name are already in use:
+
+- **A special form's name can't be a variable's** — `if`, `quote`,
+  `define`, `set!`, `lambda`, `begin`, `cond`, `and`, `or`, and the others
+  of this chapter that the evaluator itself carries out. `(if a b c)` is
+  always the special form, whatever a variable called `if` held, so such a
+  variable could only confuse. It is an error in `define`, in `set!`, as a
+  parameter, and in `let`:
+
+  ```lisp
+  (let ((if 3)) if)
+  ; an error: if can't be used as a name -- it is a special form, a part of the language itself
+  ```
+
+- **Giving a built-in function's name a new value, at the top level, gets
+  a warning.** The standard macros and the libraries are written in Lisp,
+  and call the built-in functions by name: after `(define car 5)`, `let*`
+  stops with "not a procedure: 5". So `(define count 0)` goes ahead, but
+  says `Warning: define: count is a built-in function, and this gives the
+  name a new value...`, once (after that, the name is no longer a built-in
+  function's). `set!` and `defmacro` warn the same way. It is a warning and
+  not an error because replacing a function is sometimes what you want: a
+  test, say, that puts a stand-in in place of a function that downloads.
+  A parameter or a local variable with a built-in function's name, such as
+  `list` or `count`, hides the function only inside its own procedure, and
+  gets no warning. (Macros used there that call the function would still
+  get the variable, so another name is safer.) The functions that
+  libraries define in Lisp can be defined again without a warning.
+
 #### set!
 #### `(set! name expr)`
 Evaluates `expr` and rebinds the *existing* binding of `name`, found by
@@ -1229,7 +1258,8 @@ error's message (a string) and evaluates `handler-body...` (implicit
 a builtin (`sqrt` of a negative number, an out-of-range `vector-ref`, ...)
 — propagates all the way to the top and ends the script; this is the only
 way Lisp code itself can catch one and keep going. Running out of memory,
-or the process being interrupted, isn't caught: those keep propagating
+the process being interrupted, or a program nested too deeply (see "How
+deep they can nest", below) isn't caught: those keep propagating
 exactly as if this weren't here. To evaluate more than one protected
 expression, wrap them in a `begin`.
 
@@ -1282,16 +1312,16 @@ must not be left behind, such as an open database connection or a
 redirected output file. (`with-sqlite`, below, is built on it.) To protect more than one expression, wrap them in a `begin`.
 
 ```lisp
-(define log '())
+(define events '())
 (unwind-protect (+ 1 2)
-  (set! log (cons 'cleaned-up log)))     ; => 3
-log                                      ; => (cleaned-up)
+  (set! events (cons 'cleaned-up events)))     ; => 3
+events                                      ; => (cleaned-up)
 
 (catch-error
   (unwind-protect (car 5)                ; an error...
-    (set! log (cons 'again log)))        ; ...but this still runs
+    (set! events (cons 'again events)))        ; ...but this still runs
   (e) e)                                 ; => "car: not a pair: 5"
-log                                      ; => (again cleaned-up)
+events                                      ; => (again cleaned-up)
 ```
 
 Nested `unwind-protect`s run their cleanups innermost first. If a cleanup
@@ -1345,11 +1375,27 @@ ordinary function. `catch` and `throw` work as they do in Common Lisp.
 **How deep they can nest.** Like `catch-error`, `catch` and
 `unwind-protect` run their body in a nested evaluation, which uses some of
 Python's own stack while it's running. So they can be nested inside each
-other only a few hundred deep: a function that calls itself *through* a
-`catch`, starting a new `catch` on every call, stops with "maximum
-recursion depth exceeded" after about 250 levels (about 330 for
+other only a few thousand deep: a function that calls itself *through* a
+`catch`, starting a new `catch` on every call, stops with the error "the
+program is nested too deeply" after about 2,000 levels (about 3,000 for
 `unwind-protect` and `catch-error`). A loop *inside* one `catch`, like the
 examples above, can run any number of times.
+
+The same goes for a function that calls itself *through* `map`, `filter`,
+`apply`, `eval`, or `load`: the function that `map` calls is run in a
+nested evaluation too, and such calls can go about 1,500 deep. (An
+ordinary call of a function by itself can go as deep as memory allows.)
+`catch-error` doesn't catch this error: a handler that did would carry on
+with a wrong value from the middle of the calls.
+
+```lisp
+(define (depth tree)                 ; how deeply a list of lists is nested
+  (if (pair? tree) (+ 1 (apply max 0 (map depth tree))) 0))
+(depth '(1 (2 (3 (4)))))             ; => 4
+(define (forever) (+ 1 (apply forever '())))
+(catch-error (forever) (e) 'caught)
+; an error: the program is nested too deeply: ...
+```
 
 #### assert
 #### `(assert test [message...])`
@@ -2096,14 +2142,14 @@ fractional part (e.g. `3.0`).
 ```
 
 #### `(string? x)`
-`#t` only for a genuine Lisp string (something written as a `"..."`
-literal, or returned by a function documented as returning a string) —
-**not** for a plain single character as produced by `string->list`, which
-are a different underlying type. If in doubt, `(string? (string->list
-"ab"))`'s first element is `#f`, not `#t`.
+`#t` for a string: something written as a `"..."` literal, or returned by
+a function that returns a string. A single character, as `string->list`
+gives, is a string of one character. A symbol is not a string.
 
 ```lisp
 (string? "hi")                 ; => #t
+(string? 'hi)                  ; => #f
+(string? (car (string->list "hi")))   ; => #t
 ```
 
 #### `(symbol? x)`
@@ -2681,10 +2727,11 @@ Converts a number to its display string, e.g. `3` → `"3"`, `3.0` →
 ```
 
 #### `(string->list s)`, `(list->string l)`
-Convert between a string and a list of its individual characters.
+Convert between a string and a list of its individual characters, each a
+string of one character.
 
 ```lisp
-(string->list "ab")            ; => (a b)  -- a list of single characters
+(string->list "ab")            ; => ("a" "b")
 (list->string (string->list "ab"))   ; => "ab"
 ```
 
@@ -5784,19 +5831,19 @@ them with `set!`. These commands are also there:
 A session at the console:
 
 ```
-lisp> (define (payment balance rate) (* balance (/ rate 12)))
-payment
-lisp> (break payment)
-payment
-lisp> (payment 1000 0.06)
---- break: entering payment(1000, 0.06) ---
---- payment: debug REPL -- (continue) resumes, (abort) abandons the computation, (locals) shows the variables ---
-payment> (locals)
+lisp> (define (monthly-interest balance rate) (* balance (/ rate 12)))
+monthly-interest
+lisp> (break monthly-interest)
+monthly-interest
+lisp> (monthly-interest 1000 0.06)
+--- break: entering monthly-interest(1000, 0.06) ---
+--- monthly-interest: debug REPL -- (continue) resumes, (abort) abandons the computation, (locals) shows the variables ---
+monthly-interest> (locals)
 ((balance . 1000) (rate . 0.06))
-payment> (set! rate 0.12)
+monthly-interest> (set! rate 0.12)
 ()
-payment> (continue)
---- payment: resuming ---
+monthly-interest> (continue)
+--- monthly-interest: resuming ---
 10.0
 ```
 
@@ -5821,13 +5868,13 @@ symbol or a string. `(break f)` and `(break 'f)` do the same thing, because
 `(break f)` gets the procedure `f` and uses its name. Returns the name.
 
 ```lisp
-(define (payment balance rate) (* balance (/ rate 12)))
-(break payment)                    ; => payment
-(break 'payment)                   ; => payment  (the same breakpoint)
-(breakpoints)                      ; => ((payment))
+(define (monthly-interest balance rate) (* balance (/ rate 12)))
+(break monthly-interest)                    ; => monthly-interest
+(break 'monthly-interest)                   ; => monthly-interest  (the same breakpoint)
+(breakpoints)                      ; => ((monthly-interest))
 ```
 
-- **It goes on the name.** Every procedure called `payment` stops,
+- **It goes on the name.** Every procedure called `monthly-interest` stops,
   including one you define later, a local one, and a new definition that
   replaces the old one. Every call stops: recursive calls, tail calls, and
   calls made by `map` and other functions that take a procedure. If the name
@@ -5840,16 +5887,16 @@ symbol or a string. `(break f)` and `(break 'f)` do the same thing, because
   condition is an error of the program.
 
 ```lisp
-(define (payment balance rate) (* balance (/ rate 12)))
-(break payment)
-(break payment '(> balance 5000))  ; => payment  (only for big loans; this replaces the old breakpoint)
-(breakpoints)                      ; => ((payment (> balance 5000)))
+(define (monthly-interest balance rate) (* balance (/ rate 12)))
+(break monthly-interest)
+(break monthly-interest '(> balance 5000))  ; => monthly-interest  (only for big loans; this replaces the old breakpoint)
+(breakpoints)                      ; => ((monthly-interest (> balance 5000)))
 ```
 
 - **Not for everything.** Only functions you define can have breakpoints:
   `(break car)` and a macro are errors, and so is a procedure with no name
   (a `lambda` that was never `define`d).
-- **The stop** prints `--- break: entering payment(1000, 0.06) ---` and opens
+- **The stop** prints `--- break: entering monthly-interest(1000, 0.06) ---` and opens
   the debug REPL, or, if there's a hook, calls it with the kind `break`.
 
 #### `(unbreak [procedure-or-name])`
@@ -5857,9 +5904,9 @@ Removes the breakpoint on a procedure. `(unbreak)` with no argument removes
 every breakpoint. Removing one that isn't there does nothing. Returns `'()`.
 
 ```lisp
-(define (payment balance rate) (* balance (/ rate 12)))
-(break payment)
-(unbreak payment)
+(define (monthly-interest balance rate) (* balance (/ rate 12)))
+(break monthly-interest)
+(unbreak monthly-interest)
 (breakpoints)                      ; => ()
 ```
 
@@ -5904,14 +5951,14 @@ that was there before (or `'()`), so you can put it back, and `(debug-hook)`
 returns the current one. Something that isn't a procedure is an error.
 
 ```lisp
-(define (payment balance rate) (* balance (/ rate 12)))
-(define log '())
+(define (monthly-interest balance rate) (* balance (/ rate 12)))
+(define events '())
 (define (note kind name args)
-  (set! log (cons (list kind name args) log)))
+  (set! events (cons (list kind name args) events)))
 (set-debug-hook! note)
-(break payment)
-(payment 1000 0.06)                ; => 5.0  (the hook returned, so the program went on)
-log                                ; => ((break payment (1000 0.06)))
+(break monthly-interest)
+(monthly-interest 1000 0.06)                ; => 5.0  (the hook returned, so the program went on)
+events                                ; => ((break monthly-interest (1000 0.06)))
 ```
 
 A hook that decides whether to open the debug REPL, here only for a large
@@ -5966,7 +6013,7 @@ innermost is shown. Use it in the debug REPL or in a hook; anywhere else it's
 an error, because the program isn't stopped.
 
 ```
-payment> (locals)
+monthly-interest> (locals)
 ((balance . 1000) (rate . 0.06))
 ```
 
@@ -6023,8 +6070,8 @@ output of the cell that's running (see below).
 **The debug REPL in Jupyter.** When the program stops in a notebook cell, the
 cell shows:
 
-- the stop, `--- break: entering payment(1000, 0.06) ---`, and a heading such
-  as `payment> debug REPL`;
+- the stop, `--- break: entering monthly-interest(1000, 0.06) ---`, and a heading such
+  as `monthly-interest> debug REPL`;
 - a **text area** with a **Run** button. Type Lisp and press Run, and it's
   evaluated in the scope where the program stopped, as at the console (any
   number of forms; an error stops the rest). The text stays in the box, so you can

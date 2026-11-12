@@ -1401,7 +1401,7 @@ STRING_BUILTINS = {
     "string>?": lambda a, b: a > b,
     "string->number": string_to_number,
     "number->string": lambda n: LispString(to_display_string(n)),
-    "string->list": lambda s: list_to_pairs(list(s)),
+    "string->list": lambda s: list_to_pairs([LispString(character) for character in s]),
     "list->string": lambda p: LispString("".join(list_items(p, "list->string"))),
     "string-upcase": lambda s: LispString(s.upper()),
     "string-downcase": lambda s: LispString(s.lower()),

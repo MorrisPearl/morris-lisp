@@ -712,8 +712,8 @@ class TestBreakOnError(LispTestCase):
     def test_running_out_of_stack_is_not_debugged(self):
         self.run_lisp("(define count 0) (set-debug-hook! (lambda (k n a) (set! count (+ count 1))))"
                       "(break-on-error #t)")
-        self.assertRaisesFromLisp(RecursionError, "(eval '(define (loop-forever) (+ 1 (eval '(loop-forever)))))"
-                                                  " (eval '(loop-forever))")
+        self.assertLispError("(eval '(define (loop-forever) (+ 1 (eval '(loop-forever))))) (eval '(loop-forever))",
+                             "nested too deeply")
         self.assertShows("count", "0")
 
 

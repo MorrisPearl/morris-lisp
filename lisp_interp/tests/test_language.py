@@ -5,6 +5,12 @@ support.py says how to run them."""
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
 
 
+def printed_by(case, src):
+    """What running src in a test case's environment prints (warnings too), and nothing from before."""
+    del case.out[:]
+    case.run_lisp(src)
+    return case.printed()
+
 class TestReader(LispTestCase):
 
     def test_a_syntax_error_says_on_which_line(self):
@@ -1168,6 +1174,51 @@ class TestErrorsAndCatchError(LispTestCase):
 
     def test_catch_error_returns_the_protected_value_on_success(self):
         self.assertShows("(catch-error (+ 1 2) (e) 'handler-ran)", "3")
+
+    def test_a_function_can_call_itself_through_map_a_thousand_deep(self):
+        self.run_lisp("(define (tree d) (if (= d 0) 1 (apply + (map (lambda (i) (tree (- d 1))) '(1)))))")
+        self.assertShows("(tree 1000)", "1")
+
+    def test_nesting_too_deeply_is_a_lisp_error_that_says_so(self):
+        self.run_lisp("(define (forever) (+ 1 (apply forever '())))")
+        self.assertLispError("(forever)", "nested too deeply")
+        self.assertShows("(+ 1 2)", "3")                    # and the interpreter carries on
+
+    def test_catch_error_does_not_catch_nesting_too_deeply(self):
+        # it used to: the handler ran somewhere in the middle of the calls, and (deep 2000) was 329
+        self.run_lisp("(define (deep n) (if (= n 0) 0 (+ 1 (catch-error (deep (- n 1)) (e) -1))))")
+        self.assertShows("(deep 2000)", "2000")
+        self.assertLispError("(deep 100000)", "nested too deeply")
+        self.run_lisp("(define (forever) (+ 1 (apply forever '())))")
+        self.assertLispError("(catch-error (forever) (e) 'caught)", "nested too deeply")
+
+    def test_a_special_forms_name_cannot_be_a_variables(self):
+        message = "can't be used as a name -- it is a special form"
+        self.assertLispError("(define if 3)", "if " + message)
+        self.assertLispError("(define (quote x) x)", "quote " + message)
+        self.assertLispError("(define x 1) (set! begin 2)", "begin " + message)
+        self.assertLispError("(lambda (and) 1)", "and " + message)
+        self.assertLispError("(define (f x &key (or 2)) x)", "or " + message)
+        self.assertLispError("(let ((if 3)) if)", "if " + message)
+        self.assertLispError("(defmacro cond (x) x)", "cond " + message)
+        self.assertShows("(if #t 1 2)", "1")                # and the special form is as it was
+
+    def test_giving_a_builtins_name_a_new_value_at_the_top_level_warns_once(self):
+        warning = "Warning: define: count is a built-in function, and this gives the name a new value."
+        self.assertIn(warning, printed_by(self, "(define count 0)"))
+        self.assertShows("count", "0")                      # (it goes ahead)
+        self.assertEqual(printed_by(self, "(define count 1)"), "")        # count is no longer a built-in function's name
+        self.assertIn("Warning: set!: car is a built-in function", printed_by(self, "(set! car 5)"))
+        self.assertIn("Warning: defmacro: cdr is a built-in function", printed_by(self, "(defmacro cdr (x) x)"))
+        self.assertIn("Warning: define: list is a built-in function", printed_by(self, "(define (list . items) items)"))
+
+    def test_a_local_variable_with_a_builtins_name_gets_no_warning(self):
+        self.assertEqual(printed_by(self, "(define (f list) (define count 3) (let ((max 2)) (set! count 4) (+ max count (length list))))"
+                                        "(display (f '(1 2)))"), "8")
+        self.assertShows("(count 2 '(1 2 2))", "2")     # the built-in count is as it was
+
+    def test_a_function_defined_in_lisp_can_be_defined_again_without_a_warning(self):
+        self.assertEqual(printed_by(self, "(define (twice x) (* 2 x)) (define (twice x) (+ x x)) (define twice 2)"), "")
 
     def test_catch_error_only_catches_the_kinds_of_error_it_names(self):
         self.assertShows("(catch-error (error :kind 'network \"site down\") (m) :only (network) (list 'caught m))", '(caught "site down")')
