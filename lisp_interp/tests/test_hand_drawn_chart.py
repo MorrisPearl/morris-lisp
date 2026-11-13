@@ -49,3 +49,12 @@ class TestHandDrawnChart(LispTestCase):
             self.run_lisp('(hand-drawn-chart \'("a" "b") \'(("p" (1))))')
         with self.assertRaises(lisp_core.LispError):
             self.run_lisp('(hand-drawn-chart \'("a") \'(("p" (1) "blob")))')
+
+    def test_end_labels_only_leaves_out_the_labels_between(self):
+        src = '\'("a" "b" "c" "d") \'(("p" (1 2 3 4)))'
+        self.assertEqual(self.texts(self.chart(src))[2:6], ["a", "b", "c", "d"])
+        texts = self.texts(self.chart(src + " :end-labels-only #t"))
+        self.assertIn("a", texts)
+        self.assertIn("d", texts)
+        self.assertNotIn("b", texts)
+        self.assertNotIn("c", texts)

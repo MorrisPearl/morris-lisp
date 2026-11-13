@@ -4560,7 +4560,8 @@ the lowest to the highest of all the numbers, written at its bottom and top;
 `:y-min 0` makes the bars start from zero. The other keys are `:title`,
 `:wobble` (the largest move of a point, in pixels; 4), `:seed` (a number, to
 draw the same picture again), `:width` and `:height` (600 and 400), and
-`:y-max`. The saved file can be inserted into a Google Slide. The font is
+`:y-max`, and `:end-labels-only` (`#t` writes only the first and last labels,
+when there are too many to fit). The saved file can be inserted into a Google Slide. The font is
 fetched from Google Fonts when the picture is shown; without a connection a
 cursive font stands in.
 

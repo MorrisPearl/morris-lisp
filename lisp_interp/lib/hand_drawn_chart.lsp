@@ -26,7 +26,8 @@
 ; Keys:
 ;   :title  text above the chart (none)                      :wobble  the largest move of a point, in pixels (4)
 ;   :seed   a number, to draw the same picture again (none)  :width :height  the picture's size in pixels (600, 400)
-;   :y-min :y-max  the ends of the vertical axis
+;   :y-min :y-max  the ends of the vertical axis       :end-labels-only  #t writes only the first and last labels, for
+;                                                       when there are too many to fit (#f)
 
 ; The font. The @import fetches it from Google Fonts when the picture is shown; without it, a cursive font is used.
 (define hand-chart-font "'Architects Daughter', 'Comic Sans MS', cursive")
@@ -136,7 +137,8 @@
                                 shape)))))))
 
 (define (hand-drawn-chart labels series
-                          &key (title #f) (wobble 4) (seed #f) (width 600) (height 400) (y-min #f) (y-max #f))
+                          &key (title #f) (wobble 4) (seed #f) (width 600) (height 400) (y-min #f) (y-max #f)
+                               (end-labels-only #f))
   (if seed (random-seed seed))
   (let* ((series (hand-chart--complete-all series))
          (labels (if (vector? labels) (vector->list labels) labels))
@@ -173,7 +175,8 @@
     (if title (add! (hand-chart--text (/ (+ left right) 2) 30 title "middle" 22)))
     ; each label
     (loop for i from 0 below count
-          do (add! (hand-chart--text (center i) (+ bottom 28) (list-ref labels i) "middle" 16)))
+          do (if (or (not end-labels-only) (= i 0) (= i (- count 1)))
+                 (add! (hand-chart--text (center i) (+ bottom 28) (list-ref labels i) "middle" 16))))
     ; each series: its bars or symbols at each label, and its place in the key at the top right
     (loop for one in series
           for place from 0
