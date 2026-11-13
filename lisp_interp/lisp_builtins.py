@@ -50,6 +50,7 @@ import lisp_help
 import lisp_profile
 import lisp_dynare
 import lisp_coverage
+import lisp_cluster
 import lisp_explore
 import lisp_fdic
 import lisp_finance
@@ -2123,7 +2124,7 @@ COMMAND_LINE_BUILTINS = {
 SHARED_BUILTIN_TABLES = (
     NUMBER_BUILTINS, BOOLEAN_BUILTINS, LIST_BUILTINS, CXR_BUILTINS, POSITION_BUILTINS, PROCEDURE_BUILTINS,
     STRUCT_BUILTINS, HASH_TABLE_BUILTINS, STRING_BUILTINS, lisp_regex.BUILTINS, VECTOR_BUILTINS, DATE_BUILTINS,
-    COMMAND_LINE_BUILTINS, lisp_vector_math.BUILTINS, lisp_tables.BUILTINS, lisp_stratify.BUILTINS, lisp_explore.BUILTINS,
+    COMMAND_LINE_BUILTINS, lisp_vector_math.BUILTINS, lisp_tables.BUILTINS, lisp_stratify.BUILTINS, lisp_explore.BUILTINS, lisp_cluster.BUILTINS,
     lisp_time_series.BUILTINS, lisp_csv.BUILTINS, lisp_regression.BUILTINS, lisp_sqlite.BUILTINS, lisp_fred.BUILTINS, lisp_nyfed.BUILTINS,
     lisp_sec.BUILTINS, lisp_sec_filings.BUILTINS, lisp_fdic.BUILTINS, lisp_census.BUILTINS, lisp_bls.BUILTINS, lisp_bea.BUILTINS,
     lisp_maps.BUILTINS, lisp_google.BUILTINS, lisp_financial_model.BUILTINS, lisp_financial_sensitivity.BUILTINS, lisp_financial_compare.BUILTINS, lisp_schwab.BUILTINS, lisp_alpha_vantage.BUILTINS, lisp_finra.BUILTINS,

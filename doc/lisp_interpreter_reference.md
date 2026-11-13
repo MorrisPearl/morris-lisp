@@ -4173,6 +4173,31 @@ that does not vary in them.
 (table-column c "rows")          ; => #(6 6 6 6 6)
 ```
 
+#### `(table-cluster t columns k [:name text] [:scale bool] [:seed n])`
+Groups the rows of a table that look alike, and adds a column that says which
+group each row is in. `columns` is the name of a column, or a list of names, to
+compare rows by, and `k` is how many groups to make. The groups are found by
+*k-means*: each row is a point whose coordinates are its values in those
+columns, and the groups are found by giving each row to the nearest group
+center, moving each center to the average of its rows, and repeating until no
+row changes group. It is tried 10 times from different starting centers, and
+the grouping with the rows closest to their centers is kept.
+
+The new column is called `cluster` (unless `:name` says), and holds the numbers
+1 to `k`, with 1 the group with the most rows. A row missing a value in any of
+the columns is in no group: its value is NaN. Each column is first put on the
+same scale (average 0, standard deviation 1), so that a column of dollars does
+not count for more than a column of rates; `:scale #f` compares the values as
+they are. `:seed` (0, unless given) is any whole number: the same seed gives
+the same groups again. To see what the groups are like, stratify the new
+column with `stratify`, or take each group's averages with `table-group-by`.
+
+```lisp
+(define loans (make-table "balance" #(100000 110000 105000 900000 950000 920000 940000)
+                          "rate"    #(3.0 3.1 2.9 7.0 7.2 6.9 7.1)))
+(table-column (table-cluster loans (list "balance" "rate") 2) "cluster")   ; => #(2 2 2 1 1 1 1)
+```
+
 ### Structs
 
 See `defstruct`, under "Structs" in "Special forms and standard macros", above, for the
@@ -6415,6 +6440,7 @@ The Python files:
 | `lisp_tables.py` | Tables: `table-filter`, `table-sort`, `table-group-by`, `table-join`, ... |
 | `lisp_stratify.py` | Stratification tables: `stratify`, `stratify-all`, `stratify-plan` |
 | `lisp_explore.py` | A first look at a table: `table-profile`, `table-missing`, `table-outliers`, `table-correlations` |
+| `lisp_cluster.py` | `table-cluster`: groups of alike rows (k-means), as a new column |
 | `lisp_time_series.py` | Month numbers and monthly series: `yyyymm->month-number`, `series-monthly`, `series-table`, ... |
 | `lisp_help.py` | `help`'s documentation, `documentation`, `apropos`, and the notebook's Tab and Shift-Tab: where the documentation of a name comes from |
 | `lisp_profile.py` | `profile`, `unprofile`, `profile-reset!`, `profile-results`, `show-profile`: the profiling functions (the machinery is in `lisp_core.py`) |
