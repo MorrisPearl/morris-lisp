@@ -65,6 +65,7 @@ that use all this are described in
   - [Models fitted to Freddie Mac's loans](#models-fitted-to-freddie-macs-loans)
   - [Linear programming](#linear-programming)
   - [Stratification tables](#stratification-tables)
+  - [Hand-drawn charts](#hand-drawn-charts)
 - [Investments](#investments)
   - [Option prices](#option-prices)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
@@ -4529,6 +4530,32 @@ The form can also be read from a cell:
 pool of 5,000 made-up loans, and shows how to load real loan data from
 SQLite instead. The tables are ordinary tables, so `write-columns-csv`
 writes one to a CSV file, and `table-filter` and the rest work on them.
+
+### Hand-drawn charts
+
+(In `lib/hand_drawn_chart.lsp`.) `hand-drawn-chart` makes a simple chart that
+looks drawn by hand, as an SVG string: bars for one list of values, and
+squares, triangles, stars and the like for more lists. Each end of each line
+(the axes, the sides of the bars, each stroke of a symbol) is moved a small
+random distance, and all the text is in the Architects Daughter font.
+
+```lisp
+(display-svg (hand-drawn-chart '("Jan" "Feb" "Mar") '(3 5 4)
+               :title "Sales"
+               :extras '(("target" "star" (4 4 5)) ("last year" "triangle" (2 6 3)))))
+(write-text-file "sales.svg" (hand-drawn-chart '("Jan" "Feb" "Mar") '(3 5 4) :seed 7))
+```
+
+The labels go under the horizontal axis, one for each value. The vertical
+axis runs from the lowest to the highest of all the numbers, written at its
+bottom and top; `:y-min 0` makes the bars start from zero. Each extra is
+`(name symbol values)`, the symbol being `"square"`, `"triangle"`,
+`"diamond"`, `"circle"`, `"cross"` or `"star"`; the names are in a key at the
+top right. The other keys are `:title`, `:wobble` (the largest move of a
+point, in pixels; 2), `:seed` (a number, to draw the same picture again),
+`:width` and `:height` (600 and 400), and `:y-max`. The saved file can be
+inserted into a Google Slide. The font is fetched from Google Fonts when the
+picture is shown; without a connection a cursive font stands in.
 
 ## Investments
 

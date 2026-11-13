@@ -341,3 +341,6 @@
 (lazy-load "baseball.lsp"
   retrosheet-notice fit-baseball-model baseball-batter-matrix baseball-pitcher-matrix baseball-bullpen-matrix baseball-park-matrix baseball-matchup baseball-players
   baseball-starter-batters baseball-team-in-game baseball-team-in-last-game simulate-baseball-games home-win-probability baseball-backtest baseball-scores)
+
+; A simple chart that looks hand drawn, as an SVG string (see "Hand-drawn charts" in lisp_library_reference.md)
+(lazy-load "hand_drawn_chart.lsp" hand-drawn-chart)
