@@ -896,6 +896,13 @@ and its arithmetic:
 (show-kenken 4 puzzle :solution (solve-kenken 4 puzzle))
 ```
 
+To watch the solver work, add `:show-steps #t`: `(solve-kenken 4 puzzle :show-steps #t)`.
+Each time a rule rules digits out it says which rule (a cage, a row or a column) and
+in which cells, and draws the grid with the digits each cell could still be — a settled
+cell large, the others small (in text, a cell with more than four digits left shows
+`...`). Each guess, and each guess given up, is shown too. The 4 × 4 puzzle takes 16
+steps; the 9 × 9 one thousands, so use it on small puzzles.
+
 (`kenken-solutions` returns up to `:limit` solutions, default 2, so its length says
 whether a puzzle has exactly one; a puzzle that isn't well formed — a cell in two
 cages, or none — is an error that says what's wrong. In a notebook, `show-kenken`

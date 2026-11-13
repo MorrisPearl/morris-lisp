@@ -285,6 +285,26 @@ class TestKenKen(unittest.TestCase):
                     self.run_lisp(src)
                 self.assertIn(message, str(caught.exception))
 
+    def test_show_steps_draws_the_grid_after_each_step(self):
+        del self.out[:]
+        solution = self.show("(solve-kenken 4 puzzle-4 :show-steps #t)")
+        text = "".join(self.out)
+        self.assertEqual(solution, "((4 3 1 2) (3 2 4 1) (2 1 3 4) (1 4 2 3))")
+        self.assertIn("Step 1: the cage 9+ (11 21 22) ruled digits out of (11 22):", text)
+        self.assertIn("| 234 |1234  1234 |1234 |", text)          # what each cell could still be
+        self.assertEqual(text.count("Step "), 16)
+        self.assertIn("Every cell is settled: a solution.", text)
+        del self.out[:]
+        self.run_lisp("(solve-kenken 4 puzzle-4)")                 # without it, nothing is shown
+        self.assertEqual("".join(self.out), "")
+
+    def test_show_steps_shows_each_guess(self):
+        del self.out[:]
+        self.run_lisp("(kenken-solutions 2 '(((11 12 21 22) (+ 6))) :show-steps #t)")      # only a guess settles it
+        text = "".join(self.out)
+        self.assertIn("Nothing more can be ruled out. Guess 1: cell 11 is 1 (it could be (1 2)).", text)
+        self.assertIn("Every cell is settled: a solution.", text)
+
     def test_drawing_a_puzzle_as_text(self):
         del self.out[:]
         self.run_lisp("(show-kenken 4 puzzle-4 :solution (solve-kenken 4 puzzle-4))")

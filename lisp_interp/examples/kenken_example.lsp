@@ -33,6 +33,14 @@
 ; turn, and carries on from there -- going back to try the next digit if a
 ; guess leads to a cell or cage with nothing left.
 ;
+; To watch it work, give solve-kenken (or kenken-solutions) :show-steps #t:
+;   (solve-kenken 4 puzzle-4 :show-steps #t)
+; Each time a rule rules digits out, it says which rule and draws the grid
+; with the digits each cell could still be (a settled cell shows its digit
+; large; in text, a cell with more than four digits left shows "...").
+; Each guess, and each time a guess is given up, is shown too. The 4 x 4
+; puzzle takes a few dozen steps; the 9 x 9 one thousands.
+;
 ; Run it from the examples directory:
 ;   python3 ../lisp_interpreter.py kenken_example.lsp
 ; In a Jupyter notebook, the puzzles are drawn as grids with their cages
@@ -155,6 +163,7 @@ combinations, which make-kenken adds."
 
 (defstruct puzzle
   size
+  descriptions     ; as given, for drawing the puzzle
   cages            ; as make-cages makes them
   groups           ; every group: each cage, row, and column
   groups-of)       ; a hash table: cell -> the groups it's in (its cage, row, and column)
@@ -173,7 +182,7 @@ combinations, which make-kenken adds."
     (dolist (group groups)
       (dolist (cell (group-cells group))
         (hash-table-update! groups-of cell (lambda (groups) (cons group groups)) '())))
-    (make-puzzle :size size :cages cages :groups groups :groups-of groups-of)))
+    (make-puzzle :size size :descriptions descriptions :cages cages :groups groups :groups-of groups-of)))
 
 ; The solver's state: for each cell, the digits it could still be, and for
 ; each cage, the combinations still possible. When it guesses, it works on
@@ -266,6 +275,26 @@ others, and a digit with only one cell it can go in goes there."
                  (push (car cells) changed))))
     changed))
 
+(define *show-steps* #f)       ; #t to draw the grid after each step (see show-step)
+(define *step-count* 0)
+
+(define (group-name group)
+  "Which group it is, for show-step: the cage's number and cells, or the row or column."
+  (let ((cells (group-cells group)))
+    (cond ((group-cage group)
+           (format "the cage {} {}" (cage-label (group-cage group)) cells))
+          ((= (row-of (first cells)) (row-of (second cells)))
+           (format "row {}" (row-of (first cells))))
+          (else (format "column {}" (column-of (first cells)))))))
+
+(define (show-step puzzle possibilities group changed)
+  "Say which group's rule ruled digits out, in which cells, and draw what's possible now."
+  (incf *step-count*)
+  (display (format "Step {}: {} ruled digits out of {}:\n"
+                   *step-count* (group-name group) (sort (remove-duplicates changed))))
+  (show-kenken (puzzle-size puzzle) (puzzle-descriptions puzzle) :possibilities possibilities)
+  (newline))
+
 (define (rule-out! possibilities puzzle to-do)
   "Apply the rules until none of them rules anything more out. A group's
 rule is worth applying again only when one of its cells has lost a digit
@@ -278,13 +307,16 @@ they're on it already)."
     (while (pair? to-do)
       (let ((group (pop to-do)))
         (hash-table-remove! waiting (group-number group))
-        (dolist (cell (if (group-cage group)
-                          (apply-cage! possibilities (group-cage group))
-                          (apply-line! possibilities (group-cells group) (puzzle-size puzzle))))
-          (dolist (affected (hash-table-ref (puzzle-groups-of puzzle) cell))
-            (unless (hash-table-has? waiting (group-number affected))
-              (hash-table-set! waiting (group-number affected) #t)
-              (push affected to-do))))))))
+        (let ((changed (if (group-cage group)
+                           (apply-cage! possibilities (group-cage group))
+                           (apply-line! possibilities (group-cells group) (puzzle-size puzzle)))))
+          (when (and *show-steps* (pair? changed))
+            (show-step puzzle possibilities group changed))
+          (dolist (cell changed)
+            (dolist (affected (hash-table-ref (puzzle-groups-of puzzle) cell))
+              (unless (hash-table-has? waiting (group-number affected))
+                (hash-table-set! waiting (group-number affected) #t)
+                (push affected to-do)))))))))
 
 ; ---------------------------------------------------------------------------
 ; 4. Solving
@@ -309,34 +341,44 @@ settled."
 
 (define *guesses* 0)
 
-(define (kenken-solutions size descriptions &key (limit 2))
+(define (kenken-solutions size descriptions &key (limit 2) (show-steps #f))
   "The puzzle's solutions -- up to limit of them, each a list of rows --
 so (length (kenken-solutions ...)) is 1 for a puzzle with exactly one
-solution."
+solution. With :show-steps #t, each step is shown as it is taken."
   (let ((puzzle (make-kenken size descriptions))
         (found '()))
     (define (search possibilities to-do)
-      (when (and (< (length found) limit)
-                 (catch 'impossible
+      (when (< (length found) limit)
+        (if (not (catch 'impossible
                    (rule-out! possibilities puzzle to-do)
                    #t))
-        (let ((cell (least-settled-cell possibilities size)))
-          (if (not cell)
-              (push (grid-of possibilities size) found)
-              (dolist (digit (digits-of possibilities cell))
-                (let ((guess (copy-of possibilities)))
-                  (incf *guesses*)
-                  (hash-table-set! (possibilities-digits guess) cell (list digit))
-                  ; Only the guessed cell's cage, row, and column need looking at, at first.
-                  (search guess (hash-table-ref (puzzle-groups-of puzzle) cell))))))))
+            (when *show-steps*
+              (display "A cell or cage has no digits left, so the last guess was wrong; going back.\n\n"))
+            (let ((cell (least-settled-cell possibilities size)))
+              (if (not cell)
+                  (begin
+                    (when *show-steps* (display "Every cell is settled: a solution.\n\n"))
+                    (push (grid-of possibilities size) found))
+                  (dolist (digit (digits-of possibilities cell))
+                    (let ((guess (copy-of possibilities)))
+                      (incf *guesses*)
+                      (when *show-steps*
+                        (display (format "Nothing more can be ruled out. Guess {}: cell {} is {} (it could be {}).\n\n"
+                                         *guesses* cell digit (digits-of possibilities cell))))
+                      (hash-table-set! (possibilities-digits guess) cell (list digit))
+                      ; Only the guessed cell's cage, row, and column need looking at, at first.
+                      (search guess (hash-table-ref (puzzle-groups-of puzzle) cell)))))))))
+    (set! *show-steps* show-steps)
+    (set! *step-count* 0)
     (set! *guesses* 0)
     (search (starting-possibilities puzzle) (puzzle-groups puzzle))
     (reverse found)))
 
-(define (solve-kenken size descriptions)
+(define (solve-kenken size descriptions &key (show-steps #f))
   "The puzzle's solution, as a list of rows -- the first one found, if
-there's more than one -- or #f if there's none."
-  (let ((solutions (kenken-solutions size descriptions :limit 1)))
+there's more than one -- or #f if there's none. With :show-steps #t, each
+step is shown as it is taken (see the top of the file)."
+  (let ((solutions (kenken-solutions size descriptions :limit 1 :show-steps show-steps)))
     (if (null? solutions) #f (car solutions))))
 
 ; ---------------------------------------------------------------------------
@@ -365,13 +407,15 @@ there's more than one -- or #f if there's none."
         (hash-table-set! table cell cage)))
     table))
 
-(define (show-kenken size descriptions &key (solution '()))
-  "Draw the puzzle -- with the digits of solution, a list of rows, if given."
+(define (show-kenken size descriptions &key (solution '()) (possibilities #f))
+  "Draw the puzzle -- with the digits of solution, a list of rows, if given,
+or the digits each cell could still be, if given the solver's possibilities."
   (let* ((cages (make-cages size descriptions))
          (cage-at (cage-lookup cages))
          (digit-at (lambda (cell)
-                     (if (null? solution) ""
-                         (list-ref (list-ref solution (- (row-of cell) 1)) (- (column-of cell) 1)))))
+                     (cond (possibilities (string-join (map to-string (digits-of possibilities cell)) ""))
+                           ((null? solution) "")
+                           (else (list-ref (list-ref solution (- (row-of cell) 1)) (- (column-of cell) 1))))))
          (label-at (lambda (cell)
                      (let ((cage (hash-table-ref cage-at cell)))
                        (if (= cell (apply min (cage-cells cage))) (cage-label cage) ""))))
@@ -402,7 +446,9 @@ there's more than one -- or #f if there's none."
     (loop for row from 1 to size
           do (add! (border-line row))
              (add! (cell-line row (lambda (cell) (format "{:<5}" (label-at cell)))))
-             (add! (cell-line row (lambda (cell) (format "{:^5}" (digit-at cell))))))
+             (add! (cell-line row (lambda (cell)
+                                    (let ((text (to-string (digit-at cell))))      ; too many to fit: "..."
+                                      (format "{:^5}" (if (> (string-length text) 5) "..." text)))))))
     (add! (border-line (+ size 1)))
     (string-join (reverse lines) "\n")))
 
@@ -414,9 +460,11 @@ there's more than one -- or #f if there's none."
                            "background:white; color:black; border-top:{}; border-bottom:{}; "
                            "border-left:{}; border-right:{}\">"
                            "<div style=\"font-size:11px; height:13px; text-align:left\">{}</div>"
-                           "<div style=\"font-size:24px; text-align:center\">{}</div></td>")
+                           "<div style=\"font-size:{}px; text-align:center; word-break:break-all\">{}</div></td>")
             (side cell (- cell 10)) (side cell (+ cell 10)) (side cell (- cell 1)) (side cell (+ cell 1))
-            (label-at cell) (digit-at cell)))
+            (label-at cell)
+            (if (> (string-length (to-string (digit-at cell))) 1) 11 24)         ; candidates are drawn small
+            (digit-at cell)))
   (string-append
     "<table style=\"border-collapse:collapse\">"
     (apply string-append
