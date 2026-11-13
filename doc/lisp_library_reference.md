@@ -4534,28 +4534,35 @@ writes one to a CSV file, and `table-filter` and the rest work on them.
 ### Hand-drawn charts
 
 (In `lib/hand_drawn_chart.lsp`.) `hand-drawn-chart` makes a simple chart that
-looks drawn by hand, as an SVG string: bars for one list of values, and
-squares, triangles, stars and the like for more lists. Each end of each line
-(the axes, the sides of the bars, each stroke of a symbol) is moved a small
-random distance, and all the text is in the Architects Daughter font.
+looks drawn by hand, as an SVG string, of any number of series of numbers,
+each drawn as bars or as a symbol (a square, triangle, star and the like).
+Each end of each line (the axes, the sides of the bars, each stroke of a
+symbol) is moved a small random distance, and all the text is in the
+Architects Daughter font.
 
 ```lisp
-(display-svg (hand-drawn-chart '("Jan" "Feb" "Mar") '(3 5 4)
-               :title "Sales"
-               :extras '(("target" "star" (4 4 5)) ("last year" "triangle" (2 6 3)))))
-(write-text-file "sales.svg" (hand-drawn-chart '("Jan" "Feb" "Mar") '(3 5 4) :seed 7))
+(display-svg (hand-drawn-chart '("Jan" "Feb" "Mar")
+               '(("sales" (3 5 4) "bar")
+                 ("target" (4 4 5))
+                 ("last year" (2 6 3) "triangle"))
+               :title "Sales"))
+(write-text-file "sales.svg" (hand-drawn-chart '("Jan" "Feb" "Mar") '(("sales" (3 5 4) "bar")) :seed 7))
 ```
 
-The labels go under the horizontal axis, one for each value. The vertical
-axis runs from the lowest to the highest of all the numbers, written at its
-bottom and top; `:y-min 0` makes the bars start from zero. Each extra is
-`(name symbol values)`, the symbol being `"square"`, `"triangle"`,
-`"diamond"`, `"circle"`, `"cross"` or `"star"`; the names are in a key at the
-top right. The other keys are `:title`, `:wobble` (the largest move of a
-point, in pixels; 2), `:seed` (a number, to draw the same picture again),
-`:width` and `:height` (600 and 400), and `:y-max`. The saved file can be
-inserted into a Google Slide. The font is fetched from Google Fonts when the
-picture is shown; without a connection a cursive font stands in.
+The labels go under the horizontal axis. Each series is `(name values)` or
+`(name values shape)`, with a value for each label, and the shape is `"bar"`,
+`"square"`, `"triangle"`, `"diamond"`, `"circle"`, `"cross"` or `"star"`. The
+series with no shape get `"square"`, `"star"`, `"cross"`, `"circle"`,
+`"triangle"` and `"diamond"` in turn; a bar is only drawn when asked for.
+Several series of bars stand side by side, and every series has its own
+color. The names are in a key at the top right. The vertical axis runs from
+the lowest to the highest of all the numbers, written at its bottom and top;
+`:y-min 0` makes the bars start from zero. The other keys are `:title`,
+`:wobble` (the largest move of a point, in pixels; 4), `:seed` (a number, to
+draw the same picture again), `:width` and `:height` (600 and 400), and
+`:y-max`. The saved file can be inserted into a Google Slide. The font is
+fetched from Google Fonts when the picture is shown; without a connection a
+cursive font stands in.
 
 ## Investments
 
