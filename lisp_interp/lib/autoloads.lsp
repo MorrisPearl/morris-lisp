@@ -344,3 +344,14 @@
 
 ; A simple chart that looks hand drawn, as an SVG string (see "Hand-drawn charts" in lisp_library_reference.md)
 (lazy-load "hand_drawn_chart.lsp" hand-drawn-chart)
+
+; Backgammon: the rules (lib/backgammon.lsp) and a neural network that learns to play by playing itself, as TD-Gammon did,
+; with the play against it (see "Backgammon" in lisp_library_reference.md)
+(lazy-load "backgammon.lsp"
+  backgammon-start backgammon-flip backgammon-off backgammon-opponent-off backgammon-pips backgammon-opponent-pips
+  backgammon-checker-moves backgammon-move-checker backgammon-plays backgammon-roll backgammon-opening-roll
+  backgammon-game-over? backgammon-step-text backgammon-play-text backgammon-parse-steps backgammon-find-play backgammon-show)
+(lazy-load "backgammon_net.lsp"
+  backgammon-new-net backgammon-features backgammon-value backgammon-train! backgammon-network-policy
+  backgammon-random-policy backgammon-heuristic-policy backgammon-match backgammon-save-net backgammon-load-net
+  play-backgammon)

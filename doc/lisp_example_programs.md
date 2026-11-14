@@ -41,6 +41,7 @@ section of the language manual, unless it says otherwise.
   - [Unification, Prolog, and grammars that run both ways (chapters 11, 20, and 21)](#unification-prolog-and-grammars-that-run-both-ways-chapters-11-20-and-21)
 - [A chess program](#a-chess-program)
 - [A KenKen solver](#a-kenken-solver)
+- [Backgammon, learned by self-play](#backgammon-learned-by-self-play)
 - [Languages](#languages)
   - [A language from a table: the parser framework](#a-language-from-a-table-the-parser-framework)
   - [SQL: an interpreter over tables](#sql-an-interpreter-over-tables)
@@ -115,6 +116,7 @@ files in `examples/` and `lib/` from anywhere:
 |---|---|---|
 | `chess.lsp`, `chess_book.lsp`, `chess_example.lsp` | a complete chess program: rules, notation, search with alpha-beta and a table, an opening book | nothing |
 | `kenken_example.lsp` | constraint propagation and backtracking | nothing |
+| `backgammon_train.lsp`, `backgammon_play.lsp` | a neural network that learns backgammon by playing itself (TD-Gammon), and a game against it: vectors of features, back-propagation as whole-vector arithmetic, TD(lambda) | nothing (training takes a long while; see below) |
 
 **Languages**
 
@@ -956,6 +958,99 @@ destructuring in a `loop` clause; and `check-puzzle`, which validates its input 
 raises precise `error`s, so a mistake in a puzzle never becomes a mystery in the solver.
 
 ---
+
+## Backgammon, learned by self-play
+
+`backgammon_train.lsp` and `backgammon_play.lsp`, with `lib/backgammon.lsp` (the rules)
+and `lib/backgammon_net.lsp` (the network and the learning). Tesauro's TD-Gammon
+(*Temporal Difference Learning and TD-Gammon*, Communications of the ACM, 1995) learned
+to play backgammon at a strong level by playing itself: a neural network judges every
+position, both sides choose the move whose position it judges best, and after each move
+the network learns from what it judged. The program does the same, in the interpreter,
+and it is the teaching point of the section: the network knows nothing of backgammon
+when it starts. It learns from wins and losses alone, and its early play is random.
+
+Train it, then play it:
+
+```bash
+cd lisp_interp/examples
+python3 ../lisp_interpreter.py backgammon_train.lsp 1000 40 backgammon_net.txt
+python3 ../lisp_interpreter.py backgammon_play.lsp backgammon_net.txt
+```
+
+The training program reports every 100 games (the average game length, which falls as
+the network learns to finish games), and every 500 games the points a game it wins against
+random play and against a simple heuristic player (hits, points made and blots). A game takes
+one to three seconds in this interpreter, so the run takes a long while; the network is
+saved after every batch of 100, so the run can be stopped and played against at any
+point. In a notebook, `(play-backgammon :file "backgammon_net.txt")` plays the same game
+and `:human-first #f` lets the computer start. You type your moves in the usual notation
+(`24/18 13/11`, `bar/20`, `3/off`), and `?` lists the plays your dice allow.
+
+The techniques, in the order the program uses them:
+
+**The board, from the mover's point of view.** A position is a vector of 26 numbers
+(`backgammon-start`). Index 1 to 24 are the points, positive for the player to move and
+negative for the opponent, and indexes 0 and 25 are the two bars. A position is always
+written from the mover's side, so `backgammon-flip` turns it around for the other player:
+its counts change sign and point `p` becomes point `25 - p`, which is one `vector-gather`
+with a fixed list of positions. Nothing needs a second copy of the rules for each side.
+
+**Moves by recursion over the dice.** `backgammon--sequences` plays one die, then the
+next, with every checker that can move it, and returns the positions where no die can be
+played. `backgammon-plays` then keeps the sequences that use the most dice, and when only
+one die can be used, the higher one if it can be. Different orders of the same moves often
+reach the same position, so the plays are kept once for each distinct board. Each play
+keeps its steps, which is how `backgammon-find-play` reads a move typed in notation: the
+steps are compared as text, sorted, so the order of the moves does not matter.
+
+**Crafted features as whole-vector arithmetic.** `backgammon-features` gives the network
+its 211 inputs: the 198 that TD-Gammon's board encoding has (four units for each point and
+side, which are comparisons of the count with 1, 2 and 3 and the excess over three),
+and 12 crafted features that encode what expert players look at: blots, points made, points
+made at home, anchors in the opponent's home, the longest prime, and the pips. Each is a
+mask (a comparison, which gives 0 and 1) and a sum, not a loop over the 24 points:
+`backgammon--longest-prime` finds the gaps between the points that are not made, with
+`vector-select`, and the longest run is the largest gap less one.
+
+**A layer as one matrix product.** The hidden layer's weights are one flat vector, a row of
+211 for each unit, and `matrix-vector-product` computes all the units' sums at once.
+`vector-outer` makes the change to those weights from a unit's error and its inputs. The
+network's gradients (`backgammon--value-and-gradients`) are back-propagation written as
+these operations, and the tests check them against finite differences.
+
+**TD(lambda) with an eligibility trace for every weight.** After each move, the error is the
+difference between the position's value and the value of the position after the opponent's
+reply (one minus it, since the value is the chance the player who moved wins), and each
+weight moves in proportion to that error and to its trace. A trace is how much the weight
+has helped to produce the recent values, and it fades by `trace-decay` each move, so the
+error reaches back over the moves that led to it. `backgammon--self-play-game!` is the whole
+learning loop, and the comments in `backgammon_net.lsp` say what each line is for.
+
+**Measuring against something.** A learning program needs a benchmark. `backgammon-match`
+plays two ways of choosing a play against each other, alternating who moves first, and the
+training program uses a random player (which the network should beat soon) and a heuristic
+player that counts hits, points and blots (which it should beat later). The heuristic is
+weak, so a win against it is a real sign of progress, and a loss is not a disaster.
+
+**Gammons and the cube.** The network has five outputs, not one: the chance of a win, of a
+gammon or better, of a backgammon, and the chances of a gammon or a backgammon lost. Its
+expected score is `2 * win + gammon + backgammon - 1 - lost gammon - lost backgammon`, so a
+single win is worth one point, and a gammon two. Training learns those outcomes from each
+game's result (`backgammon-result`), and the loser's outputs are the mirror of the winner's
+(`backgammon-mirror`): each side's wins are the other's losses, and the gammons swap.
+The cube is a policy, not something the network learns, as in TD-Gammon: a player doubles
+when its expected score is worth doubling, and the other takes unless the doubler's score
+is above half a point. A player who doubles too well (playing on for a gammon) does not.
+
+**What it leaves out.** TD-Gammon learned to play the cube too, and it played one move ahead
+in training (greedy on the network's value) where the 1995 article searched two plies in real
+time. This program's cube decisions come from fixed thresholds on the network's expected
+score, and its features are a handful of TD-Gammon's crafted ones, not all of them. Those are
+the differences that make the strongest versions play better; the structure is the same.
+
+The rules and the board are described in the library section of the reference:
+"Backgammon" in `lisp_library_reference.md`.
 
 ## Languages
 

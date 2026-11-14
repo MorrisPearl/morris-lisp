@@ -3322,6 +3322,36 @@ on one side. Useful for capping outliers, e.g. an LTV over 150.
 (vector-clip #(5 50 150) '() 100)    ; => #(5 50 100)
 ```
 
+#### `(matrix-vector-product weights x)`
+The product of a matrix and a vector. The matrix is one flat vector of its rows, one
+after another: with `n` the length of `x`, it has `(length weights) / n` rows, and the
+result has a number for each row, that row's dot product with `x`. A neural network's
+layer is this, with a row of weights for each unit. The rows must divide evenly.
+
+```lisp
+(matrix-vector-product #(1 2 3 4 5 6) #(1 0 1))     ; => #(4.0 10.0)   two rows of three
+```
+
+#### `(vector-outer a b)`
+The outer product of `a` and `b` as one flat vector: element `i * (length b) + j` is
+`a[i] * b[j]`, so there is a row for each element of `a`, that row being `b` scaled by
+it. A layer's change to its weights is the outer product of its units' errors and its
+inputs.
+
+```lisp
+(vector-outer #(1 2) #(3 4 5))                       ; => #(3.0 4.0 5.0 6.0 8.0 10.0)
+```
+
+#### `(transpose-matrix-vector-product weights d)`
+The product of the transpose of a matrix and a vector, with the matrix kept as
+`matrix-vector-product` keeps it: one flat vector of its rows, one row for each element
+of `d`. The result has, for each column, the sum over the rows of the row's element
+times the element of `d`. Passing an error back through a layer is this.
+
+```lisp
+(transpose-matrix-vector-product #(1 2 3 4 5 6) #(1 10))   ; => #(41.0 52.0 63.0)
+```
+
 #### Comparisons, masks, and picking elements
 
 A comparison gives a **mask**: a vector of `1` (true) and `0` (false), one

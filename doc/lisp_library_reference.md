@@ -66,6 +66,8 @@ that use all this are described in
   - [Linear programming](#linear-programming)
   - [Stratification tables](#stratification-tables)
   - [Hand-drawn charts](#hand-drawn-charts)
+- [Games](#games)
+  - [Backgammon](#backgammon)
 - [Investments](#investments)
   - [Option prices](#option-prices)
   - [Implied volatility smiles: finding options out of line](#implied-volatility-smiles-finding-options-out-of-line)
@@ -4564,6 +4566,107 @@ draw the same picture again), `:width` and `:height` (600 and 400), and
 when there are too many to fit). The saved file can be inserted into a Google Slide. The font is
 fetched from Google Fonts when the picture is shown; without a connection a
 cursive font stands in.
+
+## Games
+
+### Backgammon
+
+(In `lib/backgammon.lsp` and `lib/backgammon_net.lsp`; the example programs that use
+them are `examples/backgammon_train.lsp` and `examples/backgammon_play.lsp`, and
+"Backgammon, learned by self-play" in lisp_example_programs.md says how they work.)
+
+A position is a vector of 26 numbers from the point of view of the player to move:
+index 0 is that player's checkers on the bar, 1 to 24 the points (positive for its
+checkers, negative for the opponent's), and 25 the opponent's checkers on the bar as
+a negative count. Checkers borne off are not stored: `backgammon-off` counts them.
+A **play** has its `board` (the position after the play, from the same point of view)
+and its `steps`, each `(from to die)`, where from 0 is the bar and to 0 is bearing off.
+
+- `(backgammon-start)` -- the opening position.
+- `(backgammon-flip board)` -- the same position from the other player's point of view.
+- `(backgammon-plays board dice)` -- every play with these dice (a list such as `(3 1)`
+  or `(4 4 4 4)`), one for each distinct resulting position, following the rules: as
+  many dice as possible must be used, and only one can be used, it must be the higher.
+  A position with no legal move gives the one play that stays put.
+- `(backgammon-roll)` and `(backgammon-opening-roll)` -- random dice; the opening
+  roll is two different dice, the higher played first.
+- `(backgammon-pips board)` and `(backgammon-opponent-pips board)` -- the pip counts;
+  `(backgammon-off board)` and `(backgammon-opponent-off board)` -- the checkers borne
+  off; `(backgammon-game-over? board)` -- whether the mover has borne them all off.
+- `(backgammon-play-text play)` -- a play's steps in the usual notation, `13/7 8/5`;
+  `(backgammon-parse-steps "24/18 bar/20 3/off")` reads the notation back, and
+  `(backgammon-find-play plays steps)` gives the play with those moves, in any order.
+- `(backgammon-show board)` -- draws the board from the mover's point of view: its
+  checkers are X and the opponent's O.
+
+```lisp
+(backgammon-pips (backgammon-start))                 ; => 167
+(equal? (backgammon-flip (backgammon-flip (backgammon-start))) (backgammon-start)) ; => #t
+(length (backgammon-plays (backgammon-start) '(6 5))) ; => 7
+(backgammon-play-text (backgammon-find-play (backgammon-plays (backgammon-start) '(6 5)) '((13 8) (24 18)))) ; => "24/18 13/8"
+```
+
+The network (`lib/backgammon_net.lsp`) follows TD-Gammon (Tesauro, 1995), with gammons
+and the doubling cube. One hidden layer of sigmoid units, and five sigmoid outputs, each
+the chance of an event for the player who just moved: wins (a single game or more), wins
+a gammon or better, wins a backgammon, loses a gammon or worse, loses a backgammon. From
+them, `backgammon-value` is the expected score in points, `2 * o0 + o1 + o2 - 1 - o3 - o4`,
+from -3 to 3. Its 211 inputs (`backgammon-features`) are the board as TD-Gammon encodes it
+(198: for each point and side, one unit each for at least one checker, at least two,
+exactly three, and the checkers beyond three, halved; then the bar, the checkers off, and
+whose turn is next), 12 crafted features (for each side: blots, points made, points made
+in its home board, advanced anchors, the longest prime, and the pip count), and a
+constant 1.
+
+- `(backgammon-new-net &key (hidden 40))` -- a network with small random weights
+  (`random-seed` makes them repeatable). A network is a struct: `backgammon-net-hidden`,
+  `backgammon-net-hidden-weights` (one row of 211 per unit, flat) and
+  `backgammon-net-output-weights` (one row of a weight per unit and the bias, for each of
+  the five outputs, flat).
+- `(backgammon-value net board)` -- the expected score, in points, for the player who
+  just moved to this position. `(backgammon-outcomes net board)` gives the five outputs,
+  and `(backgammon-expected-points net board)` the score for the player on roll, who has
+  not moved yet.
+- `(backgammon-outcome result)` and `(backgammon-mirror outputs)` -- the outputs a winner
+  should have, for a game worth 1, 2 or 3 (see `backgammon-result`, which gives the result
+  of a finished game), and the outputs of the other player, which swap each side's
+  gammons.
+- `(backgammon-train! net games &key (learning-rate 0.1) (trace-decay 0.7))` -- trains the
+  network by playing it against itself, with TD(lambda) and an eligibility trace for every
+  weight of every output; returns the average number of moves a game took. It changes
+  `net`. Training does not use the cube, as in TD-Gammon: the cube is decided by the
+  policies below.
+- `(backgammon-network-policy net &key (double-at 0.6) (too-good 1.2))`,
+  `(backgammon-random-policy)` and `(backgammon-heuristic-policy)` -- ways of choosing
+  plays and the cube. A policy is a struct, `backgammon-policy-choose` (the play to make),
+  `backgammon-policy-double` (whether to double, before the roll) and
+  `backgammon-policy-take` (whether to take a double, from the doubler's point of view).
+  The network's policy plays the best position by its score, doubles when its expected
+  score is at least `double-at` and below `too-good` (above that it plays on for the
+  gammon), and takes unless the doubler's score is above 0.5. The random policy never
+  doubles and always takes; the heuristic counts hits, points and blots.
+- `(backgammon-match policy-a policy-b games)` -- the average points per game that policy
+  A wins against B, with the cube and gammons, A moving first in alternate games.
+- `(backgammon-save-net net file)` and `(backgammon-load-net file)` -- the network in a
+  text file, as one Lisp list with its numbers exactly. A file saved before the cube and
+  gammons were added has one output, and is refused.
+- `(play-backgammon &key (file "backgammon_net.txt") (human-first #t))` -- plays a game
+  against the saved network. You type moves as `24/18 13/11`, `?` lists your plays and
+  `quit` stops. Before each roll you may type `double`, and the computer takes or drops
+  by its network; when the computer doubles, you are asked to take or drop. Returns
+  `'human`, `'computer` or `'quit`.
+
+```lisp
+(define net (backgammon-new-net :hidden 8))
+(length (backgammon-features (backgammon-start)))    ; => 211
+(length (backgammon-outcomes net (backgammon-start))) ; => 5
+(backgammon-equity-of #(1 1 0 0 0))                   ; => 2
+(backgammon-result (vector 0 0 0 0 0 0 0 -15 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)) ; => 2
+```
+
+Training is slow in this interpreter: a game of the network against itself takes one to
+three seconds, so the example program's default of 1000 games takes a long while, and
+it saves the network after every 100 games.
 
 ## Investments
 

@@ -283,6 +283,43 @@ def vector_rank(v):
     return to_vector(ranks)
 
 
+def matrix_vector_product(weights, x):
+    """(matrix-vector-product weights x) -- the product of a matrix and a
+    vector. The matrix is kept as one flat vector of its rows, one after
+    another: with n the length of x, the matrix has length(weights) / n rows,
+    and the result has a number for each row, that row's dot product with x.
+    A neural net's layer is this, with a row of weights for each unit."""
+    flat = floats_of(weights, "matrix-vector-product")
+    values = floats_of(x, "matrix-vector-product")
+    if len(values) == 0 or len(flat) % len(values) != 0:
+        raise LispError("matrix-vector-product: the weights (%d numbers) are not a whole number of rows of %d"
+                        % (len(flat), len(values)))
+    return to_vector(flat.reshape(-1, len(values)) @ values)
+
+
+def transpose_matrix_vector_product(weights, d):
+    """(transpose-matrix-vector-product weights d) -- the product of the
+    transpose of a matrix and a vector: the matrix is kept as one flat vector
+    of its rows, as matrix-vector-product keeps it, with one row for each
+    element of d; the result is, for each column, the sum over the rows of
+    the row's element times d's element. Back-propagating an error through a
+    layer is this."""
+    flat = floats_of(weights, "transpose-matrix-vector-product")
+    values = floats_of(d, "transpose-matrix-vector-product")
+    if len(values) == 0 or len(flat) % len(values) != 0:
+        raise LispError("transpose-matrix-vector-product: the weights (%d numbers) are not a whole number of rows of %d"
+                        % (len(flat), len(values)))
+    return to_vector(flat.reshape(len(values), -1).T @ values)
+
+
+def vector_outer(a, b):
+    """(vector-outer a b) -- the outer product of a and b as one flat vector:
+    element i * length(b) + j is a[i] * b[j], so the result is a row for each
+    element of a, that row being b scaled by it. The change to a layer's
+    weights is the outer product of its units' errors and its inputs."""
+    return to_vector(np.outer(floats_of(a, "vector-outer"), floats_of(b, "vector-outer")).ravel())
+
+
 ARITHMETIC_BUILTINS = {
     "vector-add": vector_add,
     "vector-sub": vector_sub,
@@ -297,6 +334,9 @@ ARITHMETIC_BUILTINS = {
     "round-to-nearest": round_to_nearest,
     "vector-clip": vector_clip,
     "vector-rank": vector_rank,
+    "matrix-vector-product": matrix_vector_product,
+    "vector-outer": vector_outer,
+    "transpose-matrix-vector-product": transpose_matrix_vector_product,
 }
 
 
