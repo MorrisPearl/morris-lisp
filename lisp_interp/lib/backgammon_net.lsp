@@ -277,6 +277,67 @@ and learns nothing from its end."
                       (set! dice (backgammon-roll))))))
     moves))
 
+(define (backgammon--heuristic-game! net learning-rate trace-decay)
+  "One game of the network against the heuristic player, learning only from the
+network's own moves. Each of the network's positions is learned from the next
+position the network reaches, the heuristic's move in between being part of the
+game the network learns from. Returns the number of moves made (plies), as
+backgammon--self-play-game! does."
+  (let* ((board (backgammon-start))
+         (dice (backgammon-opening-roll))
+         (heuristic (backgammon-policy-choose (backgammon-heuristic-policy)))
+         (traces (backgammon--zero-traces net))
+         (net-to-move (= (random-int 0 1) 0))
+         (previous #f)
+         (moves 0)
+         (finished #f))
+    (loop while (not finished)
+          do (let* ((plays (backgammon-plays board dice))
+                    (after (backgammon-play-board
+                            (if net-to-move
+                                (backgammon--best-play net plays)
+                                (heuristic board plays))))
+                    (over (backgammon-game-over? after))
+                    (current (if net-to-move (backgammon--outputs-and-gradients net after) #f)))
+               (set! moves (+ moves 1))
+               (cond ((and net-to-move over)
+                      (if previous
+                          (set! traces (backgammon--learn! net traces (first previous) (rest previous)
+                                                           (first current) learning-rate trace-decay)))
+                      (set! traces (backgammon--learn! net traces (first current) (rest current)
+                                                       (backgammon-outcome (backgammon-result after))
+                                                       learning-rate trace-decay))
+                      (set! finished #t))
+                     (net-to-move
+                      (if previous
+                          (set! traces (backgammon--learn! net traces (first previous) (rest previous)
+                                                           (first current) learning-rate trace-decay)))
+                      (set! previous current))
+                     (over
+                      (if previous
+                          (set! traces (backgammon--learn! net traces (first previous) (rest previous)
+                                                           (backgammon-mirror (backgammon-outcome (backgammon-result after)))
+                                                           learning-rate trace-decay)))
+                      (set! finished #t))
+                     (else #f))
+               (if (and (not finished) (> moves 1000))
+                   (set! finished #t))
+               (if (not finished)
+                   (begin
+                     (set! board (backgammon-flip after))
+                     (set! dice (backgammon-roll))
+                     (set! net-to-move (not net-to-move))))))
+    moves))
+
+(define (backgammon-train-against-heuristic! net games &key (learning-rate 0.1) (trace-decay 0.7))
+  "Like backgammon-train!, but each game is the network against the heuristic
+player (backgammon-heuristic-policy), and the network learns only from its own
+moves. Changes net in place and returns the average number of moves per game."
+  (let ((total 0))
+    (dotimes (game games)
+      (set! total (+ total (backgammon--heuristic-game! net learning-rate trace-decay))))
+    (/ total games)))
+
 (define (backgammon-train! net games &key (learning-rate 0.1) (trace-decay 0.7))
   "Trains the network by playing GAMES games of itself (see the top of this
 file). learning-rate is how far each step moves the weights, and trace-decay

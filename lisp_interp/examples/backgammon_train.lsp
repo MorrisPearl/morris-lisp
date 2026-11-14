@@ -13,23 +13,33 @@
 ; so a run can be stopped and the file played against.
 ;
 ; Run it from the examples directory. The arguments are the number of games,
-; the number of hidden units and the file for the network:
-;   python3 ../lisp_interpreter.py backgammon_train.lsp 1000 40 backgammon_net.txt
-; The defaults are 1000 games, 40 hidden units and backgammon_net.txt. Expect
+; the number of hidden units, the file for the network and the number of games
+; to play first against the heuristic player (the rest are self-play):
+;   python3 ../lisp_interpreter.py backgammon_train.lsp 1000 40 backgammon_net.txt 0
+; The defaults are 1000 games, 40 hidden units, backgammon_net.txt and 0
+; heuristic games (all self-play). Expect
 ; a game to take a second or two, so 1000 games take a while (the reports
 ; show how far it has got). Then play it with backgammon_play.lsp.
 
-(destructuring-bind (&optional (games "1000") (hidden "40") (file "backgammon_net.txt"))
+(destructuring-bind (&optional (games "1000") (hidden "40") (file "backgammon_net.txt") (heuristic-games "0"))
     (command-line-arguments)
   (let ((games (string->number games))
+        (heuristic-games (string->number heuristic-games))
         (net (backgammon-new-net :hidden (string->number hidden)))
         (played 0))
     (random-seed 1)
     (display (format "Training a network with {} hidden units for {} games; it is saved in {}\n"
                      (string->number hidden) games file))
+    (if (> heuristic-games 0)
+        (display (format "The first {} games are against the heuristic player, the rest self-play\n"
+                         heuristic-games)))
     (loop while (< played games)
-          do (let* ((batch (min 100 (- games played)))
-                    (average-moves (backgammon-train! net batch)))
+          do (let* ((against-heuristic (< played heuristic-games))
+                    (stage-end (if against-heuristic heuristic-games games))
+                    (batch (min 100 (- stage-end played)))
+                    (average-moves (if against-heuristic
+                                       (backgammon-train-against-heuristic! net batch)
+                                       (backgammon-train! net batch))))
                (set! played (+ played batch))
                (display (format "{} games: {:.1f} moves a game\n" played average-moves))
                (if (= (mod played 500) 0)

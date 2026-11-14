@@ -352,6 +352,6 @@
   backgammon-checker-moves backgammon-move-checker backgammon-plays backgammon-roll backgammon-opening-roll
   backgammon-game-over? backgammon-step-text backgammon-play-text backgammon-parse-steps backgammon-find-play backgammon-show)
 (lazy-load "backgammon_net.lsp"
-  backgammon-new-net backgammon-features backgammon-value backgammon-train! backgammon-network-policy
+  backgammon-new-net backgammon-features backgammon-value backgammon-train! backgammon-train-against-heuristic! backgammon-network-policy
   backgammon-random-policy backgammon-heuristic-policy backgammon-match backgammon-save-net backgammon-load-net
   play-backgammon)

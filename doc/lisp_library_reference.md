@@ -4636,6 +4636,12 @@ constant 1.
   weight of every output; returns the average number of moves a game took. It changes
   `net`. Training does not use the cube, as in TD-Gammon: the cube is decided by the
   policies below.
+- `(backgammon-train-against-heuristic! net games &key (learning-rate 0.1) (trace-decay 0.7))`
+  -- the same training, but each game is the network against the heuristic player below, and
+  the network learns only from its own moves. Returns the average number of moves a game took.
+  Training against a fixed opponent first and then against itself is one way to start learning
+  from a position that is not random (`backgammon_train.lsp` takes the number of such games as
+  its fourth argument).
 - `(backgammon-network-policy net &key (double-at 0.6) (too-good 1.2))`,
   `(backgammon-random-policy)` and `(backgammon-heuristic-policy)` -- ways of choosing
   plays and the cube. A policy is a struct, `backgammon-policy-choose` (the play to make),

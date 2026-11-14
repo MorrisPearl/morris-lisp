@@ -228,6 +228,13 @@ class TestBackgammonNetwork(LispTestCase):
         self.assertGreater(float(self.show("average")), 1)
         self.assertNotEqual(self.show("(vector-sum (backgammon-net-hidden-weights net))"), before)
 
+    def test_a_game_against_the_heuristic_ends_and_teaches_the_network_only_its_own_moves(self):
+        self.run_lisp("(define net (backgammon-new-net :hidden 8))")
+        before = self.show("(vector-sum (backgammon-net-hidden-weights net))")
+        self.run_lisp("(define average (backgammon-train-against-heuristic! net 2))")
+        self.assertGreater(float(self.show("average")), 1)
+        self.assertNotEqual(self.show("(vector-sum (backgammon-net-hidden-weights net))"), before)
+
     def test_a_network_saved_and_loaded_gives_the_same_values(self):
         self.run_lisp("(define net (backgammon-new-net :hidden 4))")
         with tempfile.TemporaryDirectory() as d:
