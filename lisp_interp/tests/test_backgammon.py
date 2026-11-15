@@ -265,10 +265,19 @@ class TestBackgammonNetwork(LispTestCase):
         before = self.show("(vector-sum (backgammon-net-hidden-weights net))")
         self.run_lisp("(backgammon-train! net 2)")
         self.assertShows("backgammon-stalled-games", "2")
+        self.assertShows("backgammon-stalled-races", "0")
+        self.assertTrue(int(float(self.show("backgammon-stalled-borne-off"))) >= 0)
         self.assertNotEqual(self.show("(vector-sum (backgammon-net-hidden-weights net))"), before)
         self.run_lisp("(backgammon-train-against-heuristic! net 2)")
         self.assertShows("backgammon-stalled-games", "2")
         self.run_lisp("(set! backgammon-stall-limit 300)")
+
+    def test_a_stalled_race_and_the_checkers_borne_off_are_counted(self):
+        self.run_lisp("(backgammon--reset-stall-counts!)")
+        self.run_lisp("(backgammon--note-stall! %s)" % board_source(mover={5: 10}, opponent={10: 11}))
+        self.assertShows("backgammon-stalled-games", "1")
+        self.assertShows("backgammon-stalled-races", "1")
+        self.assertShows("backgammon-stalled-borne-off", "9")
 
     def test_a_network_saved_and_loaded_gives_the_same_values(self):
         self.run_lisp("(define net (backgammon-new-net :hidden 4))")

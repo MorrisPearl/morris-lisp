@@ -53,6 +53,10 @@
                  (set! played (+ played batch))
                  (display (format "{} games: {:.1f} moves a game, {} stalled, trace decay {:.2f}\n"
                                   played average-moves backgammon-stalled-games decay))
+                 (if (> backgammon-stalled-games 0)
+                     (display (format "    of the stalled games {} ended in a race, and {:.1f} checkers a game had been borne off\n"
+                                      backgammon-stalled-races
+                                      (/ backgammon-stalled-borne-off backgammon-stalled-games))))
                  (if (= (mod played 500) 0)
                      (display (format "    points a game against random play: {:+.2f}   against the heuristic: {:+.2f}\n"
                                       (backgammon-match (backgammon-network-policy net)
