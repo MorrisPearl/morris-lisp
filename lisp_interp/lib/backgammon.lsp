@@ -246,12 +246,31 @@ a list of steps (from to). Anything else is an error."
 different order give the same key."
   (string-join (sort (map backgammon-step-text steps)) " "))
 
+(define (backgammon--join-steps steps)
+  "The steps with each checker's consecutive steps made one: 13/10 10/8 becomes
+13/8. A step joins an earlier one when it starts where that one ended on the
+board (not off the board)."
+  (let ((joined '()))
+    (dolist (step steps)
+      (let ((earlier (find-if (lambda (other) (and (> (second other) 0) (= (second other) (first step))))
+                              joined)))
+        (if earlier
+            (set! joined (map (lambda (other)
+                                (if (eq? other earlier) (list (first other) (second step)) other))
+                              joined))
+            (set! joined (append joined (list step))))))
+    joined))
+
 (define (backgammon-find-play plays steps)
-  "The play whose moves are these steps (in any order), or #f if there is none."
+  "The play whose moves are these steps (in any order), or #f if there is none.
+A checker's moves may be written as one: with a roll of 3-2, 13/8 is the play
+13/10 10/8 or 13/11 11/8, whichever the board allows."
   (let ((key (backgammon--steps-key steps)) (found #f))
     (dolist (play plays)
       (if (and (not found)
-               (string=? key (backgammon--steps-key (backgammon-play-steps play))))
+               (or (string=? key (backgammon--steps-key (backgammon-play-steps play)))
+                   (string=? key (backgammon--steps-key
+                                  (backgammon--join-steps (backgammon-play-steps play))))))
           (set! found play)))
     found))
 
@@ -264,8 +283,9 @@ different order give the same key."
 (define (backgammon-show board)
   "Draws the board from the mover's point of view: its checkers are X and the
 opponent's O. Points 24 to 13 run along the top and 12 to 1 along the bottom,
-so the mover's home board is at the bottom. A point with more than five
-checkers shows its count in the top cell."
+so the mover's home board is at the bottom. Checkers are stacked from the
+number of their point toward the middle of the board. A point with more than
+five checkers shows its count in the cell farthest from the number."
   (let* ((top (loop for point from 24 downto 13 collect point))
          (bottom (loop for point from 1 to 12 collect point))
          (cell (lambda (point row)
@@ -283,9 +303,9 @@ checkers shows its count in the top cell."
                      (vector-ref board 0) (- (vector-ref board 25))
                      (backgammon-off board) (backgammon-opponent-off board)))
     (display (format " {}\n" (string-join (map label top) "")))
-    (loop for row from 5 downto 1
+    (loop for row from 1 to 5
           do (display (format " {}\n" (line top row))))
     (display " ---------------------------------------\n")
-    (loop for row from 1 to 5
+    (loop for row from 5 downto 1
           do (display (format " {}\n" (line bottom row))))
     (display (format " {}\n" (string-join (map label bottom) "")))))

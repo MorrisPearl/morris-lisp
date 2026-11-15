@@ -982,7 +982,8 @@ The training arguments, in order, are the number of games, the hidden units, the
 number of games first against the heuristic player, a random seed, and the trace decay
 (lambda) at the start and at the end of training, which changes in a straight line over the
 games (equal values keep it constant). `backgammon_train.lsp 5000 40 net.txt 0 1 0.9 0.3`
-starts with a long trace and shortens it.
+starts with a long trace and shortens it. An eighth argument, the file of a trained
+network, goes on training that network instead of a new one (its hidden units are used).
 
 The training program reports every 100 games (the average game length, which falls as
 the network learns to finish games, and how many games stalled past 300 moves and were scored as lost by both players), and every 500 games the points a game it wins against
@@ -991,7 +992,7 @@ one to three seconds in this interpreter, so the run takes a long while; the net
 saved after every batch of 100, so the run can be stopped and played against at any
 point. In a notebook, `(play-backgammon :file "backgammon_net.txt")` plays the same game
 and `:human-first #f` lets the computer start. You type your moves in the usual notation
-(`24/18 13/11`, `bar/20`, `3/off`), and `?` lists the plays your dice allow.
+(`24/18 13/11`, `bar/20`, `3/off`; one checker that uses both dice can be written as a single move, `13/8` for a 3-2, if either order of the dice is legal), and `?` lists the plays your dice allow.
 
 The techniques, in the order the program uses them:
 

@@ -117,6 +117,32 @@ class TestBackgammonRules(LispTestCase):
                          "'(6 5)) '((13 8) (24 18))))", '"24/18 13/8"')
         self.assertShows("(backgammon-find-play (backgammon-plays (backgammon-start) '(6 5)) '((24 1)))", "#f")
 
+    def test_both_dice_may_be_typed_as_one_move_if_either_order_is_legal(self):
+        roll = "'(3 2)"
+        # from the start 13/8 can be 13/10 10/8 or 13/11 11/8
+        self.assertNotEqual(self.show("(backgammon-find-play (backgammon-plays (backgammon-start) %s) '((13 8)))" % roll), "#f")
+        # with the 10 point blocked it is still legal by way of the 11 point
+        blocked_one = board_source(mover={13: 1}, opponent={10: 2})
+        self.assertNotEqual(self.show("(backgammon-find-play (backgammon-plays %s %s) '((13 8)))" % (blocked_one, roll)), "#f")
+        # with both blocked it is not
+        blocked_both = board_source(mover={13: 1}, opponent={10: 2, 11: 2})
+        self.assertShows("(backgammon-find-play (backgammon-plays %s %s) '((13 8)))" % (blocked_both, roll), "#f")
+        # the steps written one at a time still work
+        self.assertNotEqual(self.show("(backgammon-find-play (backgammon-plays (backgammon-start) %s) '((13 10) (10 8)))" % roll), "#f")
+
+    def test_checkers_are_drawn_next_to_the_number_of_their_point(self):
+        self.run_lisp("(backgammon-show (backgammon-start))")
+        lines = self.printed().rstrip("\n").split("\n")
+        cell = lambda line, point_index: line[1 + 3 * point_index: 4 + 3 * point_index]
+        # top: point 24 (two checkers) is the first column, the rows count down from the numbers
+        self.assertEqual(cell(lines[2], 0), " X ")
+        self.assertEqual(cell(lines[3], 0), " X ")
+        self.assertEqual(cell(lines[4], 0), " . ")
+        # bottom: point 8 (three checkers) is the eighth column, the rows count up toward the numbers
+        self.assertEqual(cell(lines[-2], 7), " X ")
+        self.assertEqual(cell(lines[-4], 7), " X ")
+        self.assertEqual(cell(lines[-5], 7), " . ")
+
     def test_the_board_is_drawn_from_the_players_point_of_view(self):
         self.run_lisp("(backgammon-show (backgammon-start))")
         text = self.printed()
@@ -345,6 +371,24 @@ class TestBackgammonNetwork(LispTestCase):
             self.run_lisp('(backgammon-save-net (backgammon-new-net :hidden 4) "%s")' % path)
             self.run_with_input('(play-backgammon :file "%s")' % path, ["", "24/1", "quit"])
         self.assertIn("is not one of the plays", self.printed())
+
+    def test_the_board_is_shown_after_the_computers_move_before_the_person_is_asked_to_double(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "net.txt")
+            self.run_lisp('(backgammon-save-net (backgammon-new-net :hidden 4) "%s")' % path)
+            answers = iter(["", "quit"])
+            shown_when_asked = []
+
+            def fake_input(prompt=""):
+                if "Double the cube" in prompt:
+                    shown_when_asked.append(self.printed())
+                return next(answers)
+
+            with mock.patch("builtins.input", fake_input):
+                self.run_lisp('(play-backgammon :file "%s" :human-first #f)' % path)
+        text = shown_when_asked[0]
+        self.assertIn("The computer plays", text)
+        self.assertGreater(text.rindex("bar: X"), text.index("The computer plays"))
 
     def test_the_person_can_double_and_the_computer_takes_or_drops(self):
         with tempfile.TemporaryDirectory() as d:

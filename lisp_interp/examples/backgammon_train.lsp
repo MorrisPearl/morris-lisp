@@ -16,9 +16,10 @@
 ; Run it from the examples directory. The arguments are, in order: the number
 ; of games, the number of hidden units, the file for the network, the number of
 ; games to play first against the heuristic player (the rest are self-play), a
-; random seed, and the trace decay (lambda) at the start and at the end of
-; training. The trace decay changes in a straight line over the games; equal
-; values keep it constant:
+; random seed, the trace decay (lambda) at the start and at the end of
+; training, and a file of a trained network to go on training (instead of a new
+; one; the number of hidden units is then the file's). The trace decay changes
+; in a straight line over the games; equal values keep it constant:
 ;   python3 ../lisp_interpreter.py backgammon_train.lsp 5000 40 net.txt 0 1 0.9 0.3
 ; The defaults are 1000 games, 40 hidden units, backgammon_net.txt, 0 heuristic
 ; games, seed 1 and a trace decay of 0.7 throughout. Expect a game to take a
@@ -26,7 +27,7 @@
 ; Then play it with backgammon_play.lsp.
 
 (destructuring-bind (&optional (games "1000") (hidden "40") (file "backgammon_net.txt")
-                     (heuristic-games "0") (seed "1") (lambda-start "0.7") (lambda-end "0.7"))
+                     (heuristic-games "0") (seed "1") (lambda-start "0.7") (lambda-end "0.7") (start-file ""))
     (command-line-arguments)
   (let ((games (string->number games))
         (heuristic-games (string->number heuristic-games))
@@ -34,9 +35,13 @@
         (lambda-end (string->number lambda-end))
         (played 0))
     (random-seed (string->number seed))
-    (let ((net (backgammon-new-net :hidden (string->number hidden))))
+    (let ((net (if (= start-file "")
+                   (backgammon-new-net :hidden (string->number hidden))
+                   (backgammon-load-net start-file))))
       (display (format "Training a network with {} hidden units for {} games; it is saved in {}\n"
-                       (string->number hidden) games file))
+                       (backgammon-net-hidden net) games file))
+      (if (not (= start-file ""))
+          (display (format "It starts from the network in {}\n" start-file)))
       (if (> heuristic-games 0)
           (display (format "The first {} games are against the heuristic player, the rest self-play\n"
                            heuristic-games)))

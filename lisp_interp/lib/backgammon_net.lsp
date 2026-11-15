@@ -648,7 +648,9 @@ policy, the person's from the questions asked."
 (define (play-backgammon &key (file "backgammon_net.txt") (human-first #t))
   "Plays a game of backgammon against the network saved in file (see
 backgammon-save-net, and examples/backgammon_train.lsp, which makes it). You
-move with the moves written as in 24/18 13/11, bar/20 or 3/off, where the
+move with the moves written as in 24/18 13/11, bar/20 or 3/off (one checker
+that uses both dice may be written as one move, 13/8 for a 3-2, if either order
+is legal), where the
 points are as on the board you are shown: the points run 24 to 13 along the top
 and 12 to 1 along the bottom, and you bear off past 1. The computer's moves
 are shown the same way. Before each roll the player on roll may double the
@@ -671,6 +673,9 @@ Returns 'human or 'computer for the winner, or 'quit."
           do (let* ((mover (if human-to-move 'human 'computer))
                     (other (if human-to-move 'computer 'human))
                     (may-double (and (< cube 64) (or (eq? cube-owner 'none) (eq? cube-owner mover))))
+                    (view (if human-to-move board (backgammon-flip board)))
+                    ; the board is drawn before the cube is asked about
+                    (drawn (begin (display "\n") (backgammon-show view) #t))
                     (decision (if may-double
                                   (backgammon--cube-decision human-to-move policy board cube)
                                   'no-double)))
@@ -687,11 +692,8 @@ Returns 'human or 'computer for the winner, or 'quit."
                       (set! cube (* 2 cube))
                       (set! cube-owner other)))
                (if (not result)
-                   (let* ((view (if human-to-move board (backgammon-flip board)))
-                          (plays (backgammon-plays board dice))
+                   (let* ((plays (backgammon-plays board dice))
                           (play #f))
-                     (display "\n")
-                     (backgammon-show view)
                      (display (format "Cube: {:d}, {}.\n" cube
                                       (cond ((eq? cube-owner 'none) "centered")
                                             ((eq? cube-owner 'human) "yours")
