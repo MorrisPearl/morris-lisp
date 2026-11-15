@@ -1016,7 +1016,7 @@ side, which are comparisons of the count with 1, 2 and 3 and the excess over thr
 and 12 crafted features that encode what expert players look at: blots, points made, points
 made at home, anchors in the opponent's home, the longest prime, and the pips. The first five
 are zero in a race, where no checker can hit another (`backgammon-contact?`), and a race
-flag, with four race features (checkers still to come home and wastage for each side), are
+flag, with four race features (crossovers, the quarters each side still has to travel to be borne off, and wastage for each side), are
 zero in a contact position. Each is a
 mask (a comparison, which gives 0 and 1) and a sum, not a loop over the 24 points:
 `backgammon--longest-prime` finds the gaps between the points that are not made, with

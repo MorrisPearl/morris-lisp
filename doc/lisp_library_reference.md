@@ -4617,8 +4617,9 @@ exactly three, and the checkers beyond three, halved; then the bar, the checkers
 whose turn is next), 6 crafted features for each side (blots, points made, points made
 in its home board, advanced anchors and the longest prime, which are zero in a race, and
 the pip count), a race flag (1 when no checker can hit another, `backgammon-contact?`), 4
-race features that are zero in a contact position (each side's checkers still to come
-home, and each side's wastage: checkers beyond two on its first two points), and a
+race features that are zero in a contact position (each side's crossovers, the quarters of
+the board its checkers still have to travel to be borne off, divided by 75, and each
+side's wastage: checkers beyond two on its first two points, divided by 15), and a
 constant 1.
 
 - `(backgammon-new-net &key (hidden 40))` -- a network with small random weights

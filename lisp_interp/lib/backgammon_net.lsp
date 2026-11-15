@@ -37,9 +37,10 @@
 ;       count is for both. These are concepts that expert players use and that
 ;       the raw board only shows indirectly.
 ;   1 race flag: 1 when no checker can hit another (backgammon-contact?), else 0.
-;   4 race features, 0 in contact positions: each side's checkers still to come
-;       home (crossovers, divided by 15) and each side's wastage (checkers in
-;       excess of two on its first two points, divided by 15).
+;   4 race features, 0 in contact positions: each side's crossovers (the quarters
+;       of the board its checkers still have to travel to be borne off, divided
+;       by 75) and each side's wastage (checkers in excess of two on its first
+;       two points, divided by 15).
 ;   1 constant 1, so that a unit's bias is one more weight.
 ;
 ; THE LEARNING. TD(lambda), with an eligibility trace for every weight, for
@@ -134,12 +135,17 @@ contact is 0), then the pip count, which is for both."
                                        (/ (backgammon--longest-prime counts) 6)))
                    (vector (/ (backgammon-pips board) 167)))))
 
+(define backgammon-quarters
+  (list->vector (map (lambda (x) (+ 1 (quotient x 6))) (iota 24))))
+
 (define (backgammon--side-crossovers board)
-  "The checkers of the side whose checkers are positive in board that have not
-yet come home (on the bar or on points 7 to 24), divided by 15. In a race these
-are the crossings still to make."
+  "The crossovers still to make for the side whose checkers are positive in
+board, divided by 75 (15 checkers, 5 quarters each at most): the quarter each
+checker is in, counted from its home board, so a checker on the bar is 5, one
+in the home board is 1, one in the opponent's home board is 4. The sum is the
+distance each checker still has to travel, in quarters, to be borne off."
   (let ((counts (vector-clip (vector-slice board 1 25) 0 '())))
-    (/ (+ (vector-ref board 0) (vector-sum (vector-slice counts 6 24))) 15)))
+    (/ (+ (* 5 (vector-ref board 0)) (vector-sum (* counts backgammon-quarters))) 75)))
 
 (define (backgammon--side-wastage board)
   "The checkers in excess of two on the first two points of the side whose

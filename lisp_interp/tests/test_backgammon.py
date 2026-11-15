@@ -169,8 +169,13 @@ class TestBackgammonNetwork(LispTestCase):
         features = "(backgammon-features %s)" % board_source(mover={5: 15}, opponent={10: 15})
         self.assertShows("(vector-ref %s 210)" % features, "1.0")          # the race flag
         self.assertShows("(vector-ref %s 198)" % features, "0.0")          # blots, gated to contact
-        self.assertShows("(vector-ref %s 211)" % features, "0.0")          # the mover's checkers still to come home
-        self.assertShows("(vector-ref %s 212)" % features, "1.0")          # the opponent's, all 15 on point 10
+        self.assertShows("(vector-ref %s 211)" % features, "0.2")          # the mover's 15 in its home board: 15 quarters of 75
+        self.assertShows("(vector-ref %s 212)" % features, "0.6")          # the opponent's 15 on its point 15 (our point 10), in its third quarter: 45 of 75
+
+    def test_crossovers_count_the_quarters_each_checker_still_has_to_travel(self):
+        # a checker on the bar is 5 quarters, one in the home board 1, one in the opponent's home board 4
+        board = board_source(bar=1, mover={1: 2, 19: 1})
+        self.assertShows("(* 75 (backgammon--side-crossovers %s))" % board, "11.0")
 
     def test_wastage_counts_the_checkers_beyond_two_on_points_one_and_two(self):
         # 5 on point 1 wastes 3, 3 on point 2 wastes 1; the 2 on point 5 are not counted
