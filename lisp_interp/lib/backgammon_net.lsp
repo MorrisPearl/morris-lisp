@@ -24,17 +24,22 @@
 ; of three vectors for its winner (backgammon-outcome), and the outputs of the
 ; loser are the mirror of the winner's (backgammon-mirror).
 ;
-; THE INPUTS. 211 numbers, made by backgammon-features:
+; THE INPUTS. 216 numbers, made by backgammon-features:
 ;   198 raw inputs, as TD-Gammon's board encoding: for each side, 24 points
 ;       times 4 units (one unit for at least one checker, one for at least two,
 ;       one for exactly three, and 0.5 times the checkers beyond three), then
 ;       the checkers on the bar (halved), the checkers borne off (divided by
 ;       15) and one unit for the side whose turn is next.
-;   12 crafted features, for each side: blots (single checkers), points made,
+;   6 crafted features for each side. Blots (single checkers), points made,
 ;       points made in its home board, advanced anchors (points made in the
-;       opponent's home board), the longest run of points made in a row (a
-;       prime), and the pip count. These are concepts that expert players use
-;       and that the raw board only shows indirectly.
+;       opponent's home board) and the longest run of points made in a row (a
+;       prime) are for contact positions only: they are 0 in a race. The pip
+;       count is for both. These are concepts that expert players use and that
+;       the raw board only shows indirectly.
+;   1 race flag: 1 when no checker can hit another (backgammon-contact?), else 0.
+;   4 race features, 0 in contact positions: each side's checkers still to come
+;       home (crossovers, divided by 15) and each side's wastage (checkers in
+;       excess of two on its first two points, divided by 15).
 ;   1 constant 1, so that a unit's bias is one more weight.
 ;
 ; THE LEARNING. TD(lambda), with an eligibility trace for every weight, for
@@ -57,7 +62,7 @@
 ; taker's score then is worse than -0.5, and twice that is worse than the
 ; point it loses by dropping.
 
-(define backgammon-inputs 211)
+(define backgammon-inputs 216)
 (define backgammon-outputs 5)
 
 (defstruct backgammon-net hidden hidden-weights output-weights)
@@ -70,7 +75,7 @@
 
 (define (backgammon-new-net &key (hidden 40))
   "A network with the given number of hidden units and small random weights
-(random-seed makes them repeatable). The hidden weights are one row of 211 for
+(random-seed makes them repeatable). The hidden weights are one row of backgammon-inputs for
 each unit, as one flat vector. The output weights are one row for each output:
 a weight for each hidden unit, then one for the bias, as one flat vector."
   (make-backgammon-net :hidden hidden
@@ -101,26 +106,65 @@ point 25 after point 24, are one more than the runs."
   (let ((open-points (vector-select backgammon-point-numbers (< counts 2))))
     (- (vector-max (vector-diff (vector-append (vector 0) open-points (vector 25)))) 1)))
 
-(define (backgammon--side-crafted board)
-  "The 6 crafted features of the side whose checkers are positive in board."
+(define (backgammon-contact? board)
+  "Whether the two sides can still hit each other: a checker is on the bar, or
+a checker of the mover is on a higher point than a checker of the opponent's
+(points numbered from the mover's side, as in board). When it is false the
+position is a race: nothing can be hit, and the game is decided by the pips,
+the wastage and the checkers still to come home."
+  (let* ((counts (vector-slice board 1 25))
+         (mover-high (vector-max (vector-append (vector 0) (vector-mul (> counts 0) backgammon-point-numbers))))
+         (opponent-low (vector-min (vector-append (vector 25) (vector-select backgammon-point-numbers (< counts 0))))))
+    (or (> (vector-ref board 0) 0)
+        (< (vector-ref board 25) 0)
+        (> mover-high opponent-low))))
+
+(define (backgammon--side-crafted board contact)
+  "The 6 crafted features of the side whose checkers are positive in board:
+blots, points made, points made in its home board, advanced anchors and the
+longest prime, which are for contact positions (so they are 0 in a race, where
+contact is 0), then the pip count, which is for both."
   (let* ((counts (vector-clip (vector-slice board 1 25) 0 '()))
          (made (>= counts 2)))
-    (vector (/ (vector-sum (= counts 1)) 6)
-            (/ (vector-sum made) 12)
-            (/ (vector-sum (vector-slice made 0 6)) 6)
-            (/ (vector-sum (vector-slice made 18 24)) 6)
-            (/ (backgammon--longest-prime counts) 6)
-            (/ (backgammon-pips board) 167))))
+    (vector-append (vector-mul contact
+                               (vector (/ (vector-sum (= counts 1)) 6)
+                                       (/ (vector-sum made) 12)
+                                       (/ (vector-sum (vector-slice made 0 6)) 6)
+                                       (/ (vector-sum (vector-slice made 18 24)) 6)
+                                       (/ (backgammon--longest-prime counts) 6)))
+                   (vector (/ (backgammon-pips board) 167)))))
+
+(define (backgammon--side-crossovers board)
+  "The checkers of the side whose checkers are positive in board that have not
+yet come home (on the bar or on points 7 to 24), divided by 15. In a race these
+are the crossings still to make."
+  (let ((counts (vector-clip (vector-slice board 1 25) 0 '())))
+    (/ (+ (vector-ref board 0) (vector-sum (vector-slice counts 6 24))) 15)))
+
+(define (backgammon--side-wastage board)
+  "The checkers in excess of two on the first two points of the side whose
+checkers are positive in board, divided by 15: checkers that a bear-off wastes."
+  (let ((low-counts (vector-clip (vector-slice board 1 3) 0 '())))
+    (/ (vector-sum (vector-clip (vector-sub low-counts 2) 0 '())) 15)))
 
 (define (backgammon-features board)
-  "The 211 inputs of the network for a position, from the point of view of the
+  "The 216 inputs of the network for a position, from the point of view of the
 player who just moved (the mover of board): the raw inputs, the crafted
-features, and a constant 1."
-  (let ((opponent (backgammon-flip board)))
+features, the race flag and the race features, and a constant 1. In a race
+(see backgammon-contact?) the contact features are 0 and the race features
+count; in a contact position the reverse."
+  (let* ((opponent (backgammon-flip board))
+         (contact (if (backgammon-contact? board) 1.0 0.0))
+         (race (- 1.0 contact)))
     (vector-append (backgammon--side-raw board 0)
                    (backgammon--side-raw opponent 1)
-                   (backgammon--side-crafted board)
-                   (backgammon--side-crafted opponent)
+                   (backgammon--side-crafted board contact)
+                   (backgammon--side-crafted opponent contact)
+                   (vector race)
+                   (vector-mul race (vector (backgammon--side-crossovers board)
+                                            (backgammon--side-crossovers opponent)
+                                            (backgammon--side-wastage board)
+                                            (backgammon--side-wastage opponent)))
                    (vector 1.0))))
 
 ; ---------------------------------------------------------------------------
@@ -473,6 +517,9 @@ the gammons and the cube were added has one output, not five, and is refused."
     (let ((net (make-backgammon-net :hidden (second saved)
                                     :hidden-weights (third saved)
                                     :output-weights (fourth saved))))
+      (if (not (= (vector-length (backgammon-net-hidden-weights net))
+                  (* (backgammon-net-hidden net) backgammon-inputs)))
+          (error (format "{} has the wrong number of hidden weights for this program" file)))
       (if (not (= (vector-length (backgammon-net-output-weights net))
                   (* backgammon-outputs (+ (backgammon-net-hidden net) 1))))
           (error (format "{} has the wrong number of output weights for this program" file)))

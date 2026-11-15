@@ -978,6 +978,12 @@ python3 ../lisp_interpreter.py backgammon_train.lsp 1000 40 backgammon_net.txt
 python3 ../lisp_interpreter.py backgammon_play.lsp backgammon_net.txt
 ```
 
+The training arguments, in order, are the number of games, the hidden units, the file, the
+number of games first against the heuristic player, a random seed, and the trace decay
+(lambda) at the start and at the end of training, which changes in a straight line over the
+games (equal values keep it constant). `backgammon_train.lsp 5000 40 net.txt 0 1 0.9 0.3`
+starts with a long trace and shortens it.
+
 The training program reports every 100 games (the average game length, which falls as
 the network learns to finish games), and every 500 games the points a game it wins against
 random play and against a simple heuristic player (hits, points made and blots). A game takes
@@ -1005,16 +1011,19 @@ keeps its steps, which is how `backgammon-find-play` reads a move typed in notat
 steps are compared as text, sorted, so the order of the moves does not matter.
 
 **Crafted features as whole-vector arithmetic.** `backgammon-features` gives the network
-its 211 inputs: the 198 that TD-Gammon's board encoding has (four units for each point and
+its 216 inputs: the 198 that TD-Gammon's board encoding has (four units for each point and
 side, which are comparisons of the count with 1, 2 and 3 and the excess over three),
 and 12 crafted features that encode what expert players look at: blots, points made, points
-made at home, anchors in the opponent's home, the longest prime, and the pips. Each is a
+made at home, anchors in the opponent's home, the longest prime, and the pips. The first five
+are zero in a race, where no checker can hit another (`backgammon-contact?`), and a race
+flag, with four race features (checkers still to come home and wastage for each side), are
+zero in a contact position. Each is a
 mask (a comparison, which gives 0 and 1) and a sum, not a loop over the 24 points:
 `backgammon--longest-prime` finds the gaps between the points that are not made, with
 `vector-select`, and the longest run is the largest gap less one.
 
 **A layer as one matrix product.** The hidden layer's weights are one flat vector, a row of
-211 for each unit, and `matrix-vector-product` computes all the units' sums at once.
+216 for each unit, and `matrix-vector-product` computes all the units' sums at once.
 `vector-outer` makes the change to those weights from a unit's error and its inputs. The
 network's gradients (`backgammon--value-and-gradients`) are back-propagation written as
 these operations, and the tests check them against finite differences.

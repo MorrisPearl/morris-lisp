@@ -136,9 +136,9 @@ class TestBackgammonNetwork(LispTestCase):
         self.run_lisp('(load "backgammon_net.lsp")')
         self.run_lisp("(random-seed 7)")
 
-    def test_the_inputs_are_211_numbers_ending_in_the_constant_one(self):
-        self.assertShows("(vector-length (backgammon-features (backgammon-start)))", "211")
-        self.assertShows("(vector-ref (backgammon-features (backgammon-start)) 210)", "1.0")
+    def test_the_inputs_are_216_numbers_ending_in_the_constant_one(self):
+        self.assertShows("(vector-length (backgammon-features (backgammon-start)))", "216")
+        self.assertShows("(vector-ref (backgammon-features (backgammon-start)) 215)", "1.0")
 
     def test_the_raw_inputs_follow_tesauros_encoding(self):
         # 4 units for each point of each side: on the starting board the mover has 2 on 24, so the
@@ -152,11 +152,30 @@ class TestBackgammonNetwork(LispTestCase):
 
     def test_the_crafted_features_count_blots_and_points(self):
         # a mover with one blot on point 6 and a point made on 4: one blot, two points made
-        board = board_source(mover={6: 1, 4: 2}, opponent={20: 13})
+        board = board_source(mover={6: 1, 4: 2}, opponent={20: 12, 3: 1})   # the opponent's checker on 3 is a contact
         features = "(backgammon-features %s)" % board
         raw = 198
         self.assertShows("(vector-ref %s %d)" % (features, raw), "0.16666666666666666")     # 1 blot / 6
         self.assertShows("(vector-ref %s %d)" % (features, raw + 1), "0.08333333333333333")  # 1 point made / 12
+
+    def test_a_position_is_a_race_once_no_checker_can_hit_another(self):
+        self.assertShows("(backgammon-contact? (backgammon-start))", "#t")
+        # the mover's checkers on point 5 are below the opponent's on point 10: nothing can be hit
+        self.assertShows("(backgammon-contact? %s)" % board_source(mover={5: 15}, opponent={10: 15}), "#f")
+        # a checker on the bar is still in contact
+        self.assertShows("(backgammon-contact? %s)" % board_source(mover={5: 14}, bar=1, opponent={10: 15}), "#t")
+
+    def test_in_a_race_the_contact_features_are_zero_and_the_race_features_count(self):
+        features = "(backgammon-features %s)" % board_source(mover={5: 15}, opponent={10: 15})
+        self.assertShows("(vector-ref %s 210)" % features, "1.0")          # the race flag
+        self.assertShows("(vector-ref %s 198)" % features, "0.0")          # blots, gated to contact
+        self.assertShows("(vector-ref %s 211)" % features, "0.0")          # the mover's checkers still to come home
+        self.assertShows("(vector-ref %s 212)" % features, "1.0")          # the opponent's, all 15 on point 10
+
+    def test_wastage_counts_the_checkers_beyond_two_on_points_one_and_two(self):
+        # 5 on point 1 wastes 3, 3 on point 2 wastes 1; the 2 on point 5 are not counted
+        board = board_source(mover={1: 5, 2: 3, 5: 2})
+        self.assertShows("(* 15 (backgammon--side-wastage %s))" % board, "4.0")
 
     def test_the_longest_prime_counts_the_points_in_a_row(self):
         self.assertShows("(backgammon--longest-prime #(2 2 2 0 2 2 2 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0))", "4.0")
@@ -166,7 +185,7 @@ class TestBackgammonNetwork(LispTestCase):
         self.assertShows("(transpose-matrix-vector-product #(1 2 3 4 5 6) #(1 10))", "#(41.0 52.0 63.0)")
 
     def test_the_gradients_agree_with_finite_differences(self):
-        # the hidden gradient for output k is the block k of the gradients: unit j, input i at k * 3 * 211 + j * 211 + i
+        # the hidden gradient for output k is the block k of the gradients: unit j, input i at k * 3 * 216 + j * 216 + i
         self.run_lisp("(define net (backgammon-new-net :hidden 3))")
         self.run_lisp("(define board (backgammon-start))")
         self.run_lisp("(define gradients (backgammon--outputs-and-gradients net board))")
@@ -177,10 +196,10 @@ class TestBackgammonNetwork(LispTestCase):
                              (let ((up (vector-ref (backgammon-outcomes net board) k)))
                                (vector-set! w weight base)
                                (< (abs (- (/ (- up (vector-ref (first gradients) k)) epsilon) gradient-value)) 0.000001))))""")
-        # hidden weights: block k of the gradients (k * 3 * 211 long) holds output k's gradient for each weight
+        # hidden weights: block k of the gradients (k * 3 * 216 long) holds output k's gradient for each weight
         for k, unit, input in ((1, 2, 50), (4, 0, 23), (2, 1, 200)):
-            weight = unit * 211 + input
-            gradient = "(vector-ref (second gradients) %d)" % (k * 3 * 211 + weight)
+            weight = unit * 216 + input
+            gradient = "(vector-ref (second gradients) %d)" % (k * 3 * 216 + weight)
             self.assertShows("(numeric-change backgammon-net-hidden-weights %d %d %s)" % (k, weight, gradient), "#t")
         # output weights: row k holds the gradients for output k, of 4 weights (3 hidden units and the bias)
         for k, weight in ((0, 2), (3, 0), (4, 3)):
@@ -215,7 +234,7 @@ class TestBackgammonNetwork(LispTestCase):
 
     def test_a_new_network_has_its_weights_and_repeats_with_a_seed(self):
         self.assertShows("(vector-length (backgammon-net-hidden-weights (backgammon-new-net :hidden 5)))",
-                         str(5 * 211))
+                         str(5 * 216))
         self.assertShows("(vector-length (backgammon-net-output-weights (backgammon-new-net :hidden 5)))", "30")
         first = self.show("(begin (random-seed 3) (backgammon-value (backgammon-new-net :hidden 5) (backgammon-start)))")
         second = self.show("(begin (random-seed 3) (backgammon-value (backgammon-new-net :hidden 5) (backgammon-start)))")
@@ -251,10 +270,18 @@ class TestBackgammonNetwork(LispTestCase):
             with open(path, "w") as f:
                 f.write("(something else)")
             self.assertLispError('(backgammon-load-net "%s")' % path, "not a saved backgammon network")
+            # a network with 2 hidden units for 216 inputs, but one output, as before the cube
+            hidden = " ".join(["0.1"] * (2 * 216))
+            one_output = os.path.join(d, "one_output.txt")
+            with open(one_output, "w") as f:
+                f.write("(backgammon-net 2 #(%s) #(1 2 3))" % hidden)
+            self.assertLispError('(backgammon-load-net "%s")' % one_output, "wrong number of output weights")
+            # a network trained on the 211 inputs of the old layout is refused
+            old_inputs = " ".join(["0.1"] * (2 * 211))
             old = os.path.join(d, "old.txt")
             with open(old, "w") as f:
-                f.write("(backgammon-net 2 #(1 2 3 4) #(1 2 3))")      # one output, as before the cube
-            self.assertLispError('(backgammon-load-net "%s")' % old, "wrong number of output weights")
+                f.write("(backgammon-net 2 #(%s) #(%s))" % (old_inputs, " ".join(["0.1"] * 15)))
+            self.assertLispError('(backgammon-load-net "%s")' % old, "wrong number of hidden weights")
 
     def test_the_random_policy_never_doubles_and_always_takes(self):
         self.assertShows("((backgammon-policy-double (backgammon-random-policy)) (backgammon-start))", "#f")

@@ -4611,16 +4611,19 @@ and the doubling cube. One hidden layer of sigmoid units, and five sigmoid outpu
 the chance of an event for the player who just moved: wins (a single game or more), wins
 a gammon or better, wins a backgammon, loses a gammon or worse, loses a backgammon. From
 them, `backgammon-value` is the expected score in points, `2 * o0 + o1 + o2 - 1 - o3 - o4`,
-from -3 to 3. Its 211 inputs (`backgammon-features`) are the board as TD-Gammon encodes it
+from -3 to 3. Its 216 inputs (`backgammon-features`) are the board as TD-Gammon encodes it
 (198: for each point and side, one unit each for at least one checker, at least two,
 exactly three, and the checkers beyond three, halved; then the bar, the checkers off, and
-whose turn is next), 12 crafted features (for each side: blots, points made, points made
-in its home board, advanced anchors, the longest prime, and the pip count), and a
+whose turn is next), 6 crafted features for each side (blots, points made, points made
+in its home board, advanced anchors and the longest prime, which are zero in a race, and
+the pip count), a race flag (1 when no checker can hit another, `backgammon-contact?`), 4
+race features that are zero in a contact position (each side's checkers still to come
+home, and each side's wastage: checkers beyond two on its first two points), and a
 constant 1.
 
 - `(backgammon-new-net &key (hidden 40))` -- a network with small random weights
   (`random-seed` makes them repeatable). A network is a struct: `backgammon-net-hidden`,
-  `backgammon-net-hidden-weights` (one row of 211 per unit, flat) and
+  `backgammon-net-hidden-weights` (one row of 216 per unit, flat) and
   `backgammon-net-output-weights` (one row of a weight per unit and the bias, for each of
   the five outputs, flat).
 - `(backgammon-value net board)` -- the expected score, in points, for the player who
@@ -4664,7 +4667,7 @@ constant 1.
 
 ```lisp
 (define net (backgammon-new-net :hidden 8))
-(length (backgammon-features (backgammon-start)))    ; => 211
+(length (backgammon-features (backgammon-start)))    ; => 216
 (length (backgammon-outcomes net (backgammon-start))) ; => 5
 (backgammon-equity-of #(1 1 0 0 0))                   ; => 2
 (backgammon-result (vector 0 0 0 0 0 0 0 -15 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)) ; => 2
