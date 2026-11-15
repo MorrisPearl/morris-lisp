@@ -295,10 +295,21 @@ the first such play."
               (set! best-value value)))))
     best))
 
+(define backgammon-stall-limit 300)
+
+(define backgammon-stalled-games 0)
+
+(define backgammon-stalled-outcome (vector 0.0 0.0 0.0 0.0 0.0))
+
+(define (backgammon--note-stall!)
+  (set! backgammon-stalled-games (+ backgammon-stalled-games 1)))
+
 (define (backgammon--self-play-game! net learning-rate trace-decay)
   "One game of the network against itself, learning from every move. Returns
-the number of moves made (plies). A game that runs past 1000 moves is cut off
-and learns nothing from its end."
+the number of moves made (plies). A game that runs past backgammon-stall-limit
+moves has stalled (neither side is making progress): it is scored as a loss for
+both players, so that the last position learns to be worth a lost game, and
+backgammon-stalled-games counts it."
   (let* ((board (backgammon-start))
          (dice (backgammon-opening-roll))
          (traces (backgammon--zero-traces net))
@@ -319,7 +330,11 @@ and learns nothing from its end."
                                                        (backgammon-outcome (backgammon-result after))
                                                        learning-rate trace-decay))
                       (set! finished #t))
-                     ((> moves 1000)
+                     ((> moves backgammon-stall-limit)
+                      (set! traces (backgammon--learn! net traces (first current) (rest current)
+                                                       backgammon-stalled-outcome
+                                                       learning-rate trace-decay))
+                      (backgammon--note-stall!)
                       (set! finished #t))
                      (else
                       (set! previous current)
@@ -370,8 +385,14 @@ backgammon--self-play-game! does."
                                                            learning-rate trace-decay)))
                       (set! finished #t))
                      (else #f))
-               (if (and (not finished) (> moves 1000))
-                   (set! finished #t))
+               (if (and (not finished) (> moves backgammon-stall-limit))
+                   (begin
+                     (if previous
+                         (set! traces (backgammon--learn! net traces (first previous) (rest previous)
+                                                          backgammon-stalled-outcome
+                                                          learning-rate trace-decay)))
+                     (backgammon--note-stall!)
+                     (set! finished #t)))
                (if (not finished)
                    (begin
                      (set! board (backgammon-flip after))
@@ -382,8 +403,10 @@ backgammon--self-play-game! does."
 (define (backgammon-train-against-heuristic! net games &key (learning-rate 0.1) (trace-decay 0.7))
   "Like backgammon-train!, but each game is the network against the heuristic
 player (backgammon-heuristic-policy), and the network learns only from its own
-moves. Changes net in place and returns the average number of moves per game."
+moves. Changes net in place and returns the average number of moves per game;
+backgammon-stalled-games is then the number of games that stalled."
   (let ((total 0))
+    (set! backgammon-stalled-games 0)
     (dotimes (game games)
       (set! total (+ total (backgammon--heuristic-game! net learning-rate trace-decay))))
     (/ total games)))
@@ -392,8 +415,11 @@ moves. Changes net in place and returns the average number of moves per game."
   "Trains the network by playing GAMES games of itself (see the top of this
 file). learning-rate is how far each step moves the weights, and trace-decay
 (lambda) how far back in the game each move's error reaches. Changes net in
-place and returns the average number of moves per game."
+place and returns the average number of moves per game; backgammon-stalled-games
+is then the number of games that stalled (ran past backgammon-stall-limit moves
+and were scored as a loss for both players)."
   (let ((total 0))
+    (set! backgammon-stalled-games 0)
     (dotimes (game games)
       (set! total (+ total (backgammon--self-play-game! net learning-rate trace-decay))))
     (/ total games)))

@@ -985,7 +985,7 @@ games (equal values keep it constant). `backgammon_train.lsp 5000 40 net.txt 0 1
 starts with a long trace and shortens it.
 
 The training program reports every 100 games (the average game length, which falls as
-the network learns to finish games), and every 500 games the points a game it wins against
+the network learns to finish games, and how many games stalled past 300 moves and were scored as lost by both players), and every 500 games the points a game it wins against
 random play and against a simple heuristic player (hits, points made and blots). A game takes
 one to three seconds in this interpreter, so the run takes a long while; the network is
 saved after every batch of 100, so the run can be stopped and played against at any

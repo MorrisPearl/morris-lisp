@@ -259,6 +259,17 @@ class TestBackgammonNetwork(LispTestCase):
         self.assertGreater(float(self.show("average")), 1)
         self.assertNotEqual(self.show("(vector-sum (backgammon-net-hidden-weights net))"), before)
 
+    def test_a_game_that_runs_past_the_stall_limit_is_counted_and_scored_as_a_loss_for_both(self):
+        self.run_lisp("(define net (backgammon-new-net :hidden 8))")
+        self.run_lisp("(set! backgammon-stall-limit 3)")
+        before = self.show("(vector-sum (backgammon-net-hidden-weights net))")
+        self.run_lisp("(backgammon-train! net 2)")
+        self.assertShows("backgammon-stalled-games", "2")
+        self.assertNotEqual(self.show("(vector-sum (backgammon-net-hidden-weights net))"), before)
+        self.run_lisp("(backgammon-train-against-heuristic! net 2)")
+        self.assertShows("backgammon-stalled-games", "2")
+        self.run_lisp("(set! backgammon-stall-limit 300)")
+
     def test_a_network_saved_and_loaded_gives_the_same_values(self):
         self.run_lisp("(define net (backgammon-new-net :hidden 4))")
         with tempfile.TemporaryDirectory() as d:

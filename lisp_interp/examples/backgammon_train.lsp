@@ -5,7 +5,8 @@
 ; random, so at first it plays badly. Each game is the network against
 ; itself, and after every move it learns from the position it reached, using
 ; TD(lambda) (see lib/backgammon_net.lsp). Every 100 games it reports its
-; average game length, and every 500 games the points a game it wins against
+; average game length (and how many games stalled, running past 300 moves and
+; scored as lost by both players), and every 500 games the points a game it wins against
 ; a player that chooses moves at random and against a simple heuristic player
 ; that counts hits, points and blots. Games are scored with gammons and the
 ; doubling cube (the network doubles by its own expected score, see
@@ -50,8 +51,8 @@
                                          (backgammon-train-against-heuristic! net batch :trace-decay decay)
                                          (backgammon-train! net batch :trace-decay decay))))
                  (set! played (+ played batch))
-                 (display (format "{} games: {:.1f} moves a game, trace decay {:.2f}\n"
-                                  played average-moves decay))
+                 (display (format "{} games: {:.1f} moves a game, {} stalled, trace decay {:.2f}\n"
+                                  played average-moves backgammon-stalled-games decay))
                  (if (= (mod played 500) 0)
                      (display (format "    points a game against random play: {:+.2f}   against the heuristic: {:+.2f}\n"
                                       (backgammon-match (backgammon-network-policy net)

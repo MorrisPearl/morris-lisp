@@ -4638,7 +4638,9 @@ constant 1.
 - `(backgammon-train! net games &key (learning-rate 0.1) (trace-decay 0.7))` -- trains the
   network by playing it against itself, with TD(lambda) and an eligibility trace for every
   weight of every output; returns the average number of moves a game took. It changes
-  `net`. Training does not use the cube, as in TD-Gammon: the cube is decided by the
+  `net`. A game that runs past `backgammon-stall-limit` (300) moves has stalled, with neither
+  side making progress; it is scored as a loss for both players, and `backgammon-stalled-games`
+  is the number of such games in the last call. Training does not use the cube, as in TD-Gammon: the cube is decided by the
   policies below.
 - `(backgammon-train-against-heuristic! net games &key (learning-rate 0.1) (trace-decay 0.7))`
   -- the same training, but each game is the network against the heuristic player below, and
