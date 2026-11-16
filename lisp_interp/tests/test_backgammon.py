@@ -390,6 +390,25 @@ class TestBackgammonNetwork(LispTestCase):
         self.assertIn("The computer plays", text)
         self.assertGreater(text.rindex("bar: X"), text.index("The computer plays"))
 
+    def test_the_moves_the_cubes_and_the_result_can_be_logged_to_a_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "net.txt")
+            log = os.path.join(d, "log.txt")
+            self.run_lisp('(backgammon-save-net (backgammon-new-net :hidden 4) "%s")' % path)
+            self.run_with_input('(play-backgammon :file "%s" :human-first #f :log-file "%s")' % (path, log),
+                                ["double", "quit"])
+            lines = [line.split("\t") for line in open(log).read().splitlines()]
+        kinds = [line[1] for line in lines]
+        self.assertEqual(kinds[0], "game")
+        self.assertEqual(lines[0][2], "computer first")
+        self.assertIn("move", kinds)
+        move = lines[kinds.index("move")]
+        self.assertEqual(move[2:4], ["1", "computer"])
+        self.assertEqual(len(move[6].split()), 26)               # the position before the move
+        self.assertEqual(kinds[-1], "result")
+        self.assertEqual(lines[-1][2:], ["quit", "0"])
+        self.assertIn("cube", kinds)                              # the person doubled, and was taken or dropped
+
     def test_the_person_can_double_and_the_computer_takes_or_drops(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "net.txt")

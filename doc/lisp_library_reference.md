@@ -4664,11 +4664,16 @@ constant 1.
 - `(backgammon-save-net net file)` and `(backgammon-load-net file)` -- the network in a
   text file, as one Lisp list with its numbers exactly. A file saved before the cube and
   gammons were added has one output, and is refused.
-- `(play-backgammon &key (file "backgammon_net.txt") (human-first #t))` -- plays a game
+- `(play-backgammon &key (file "backgammon_net.txt") (human-first #t) (log-file #f))` -- plays a game
   against the saved network. You type moves as `24/18 13/11`, `?` lists your plays and
   `quit` stops. Before each roll you may type `double`, and the computer takes or drops
   by its network; when the computer doubles, you are asked to take or drop. Returns
-  `'human`, `'computer` or `'quit`.
+  `'human`, `'computer` or `'quit`. With `:log-file "games.txt"` each move, double and result
+  is added to that file, one tab-separated line each: the game's start time, the kind of line
+  (`game`, `move`, `cube` or `result`), then for a move its number, who made it, the dice,
+  the cube, the position before it (26 numbers, yours positive), the play, the network's
+  expected score for the mover after the play, and the play the network would have chosen
+  with that play's score. The docstring has the details.
 
 ```lisp
 (define net (backgammon-new-net :hidden 8))

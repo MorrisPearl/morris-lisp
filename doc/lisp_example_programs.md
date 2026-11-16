@@ -992,7 +992,8 @@ one to three seconds in this interpreter, so the run takes a long while; the net
 saved after every batch of 100, so the run can be stopped and played against at any
 point. In a notebook, `(play-backgammon :file "backgammon_net.txt")` plays the same game
 and `:human-first #f` lets the computer start. You type your moves in the usual notation
-(`24/18 13/11`, `bar/20`, `3/off`; one checker that uses both dice can be written as a single move, `13/8` for a 3-2, if either order of the dice is legal), and `?` lists the plays your dice allow.
+(`24/18 13/11`, `bar/20`, `3/off`; one checker that uses both dice can be written as a single move, `13/8` for a 3-2, if either order of the dice is legal), and `?` lists the plays your dice allow. `:log-file "games.txt"` adds every move, double and
+result to a file, one tab-separated line each, to look at the games later.
 
 The techniques, in the order the program uses them:
 

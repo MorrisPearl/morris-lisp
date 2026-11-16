@@ -645,7 +645,30 @@ policy, the person's from the questions asked."
            (display (format "The computer doubles to {:d}.\n" (* 2 cube)))
            (if (backgammon--human-takes? cube) 'take 'drop)))))
 
-(define (play-backgammon &key (file "backgammon_net.txt") (human-first #t))
+(define (backgammon--log! log-file game &rest fields)
+  "Adds one line to the log file: the game's name and the fields, separated by
+tabs. Does nothing when there is no log file."
+  (if log-file
+      (write-text-file log-file
+                       (string-append (string-join (cons game (map (lambda (field) (format "{}" field)) fields))
+                                                   "\t")
+                                      "\n")
+                       #t)))
+
+(define (backgammon--position-text view)
+  "The 26 entries of a board as numbers separated by spaces: the person's
+checkers positive and the computer's negative (see backgammon-start)."
+  (string-join (map (lambda (entry) (format "{:.0f}" entry)) (vector->list view)) " "))
+
+(define (backgammon--play-text-as-shown play)
+  "A play of the computer's in the numbering the person sees."
+  (string-join (map (lambda (step)
+                      (backgammon-step-text (list (backgammon--view-point (first step))
+                                                  (backgammon--view-point (second step)))))
+                    (backgammon-play-steps play))
+               " "))
+
+(define (play-backgammon &key (file "backgammon_net.txt") (human-first #t) (log-file #f))
   "Plays a game of backgammon against the network saved in file (see
 backgammon-save-net, and examples/backgammon_train.lsp, which makes it). You
 move with the moves written as in 24/18 13/11, bar/20 or 3/off (one checker
@@ -658,7 +681,23 @@ cube: the computer doubles by its network, and you type double (the computer
 then takes or drops by its network, and you are asked to take or drop its
 double). Type ? for the plays with your dice, quit to stop. The game is worth
 the cube times 1 for a single game, 2 for a gammon, or 3 for a backgammon.
-Returns 'human or 'computer for the winner, or 'quit."
+Returns 'human or 'computer for the winner, or 'quit.
+
+With :log-file (a file name) every move, double and result is added to that file,
+one line each, with the fields separated by tabs, so that games can be looked
+at later. The first field is the game's start time. The second says what the
+line is:
+  game    who moves first, and the network file;
+  move    the number of the move, who made it (human or computer), the dice,
+          the cube and its owner, the position before the move (26 numbers:
+          the bar, points 1 to 24 and the other bar, as in backgammon-start,
+          with the person's checkers positive and the computer's negative, the
+          person's point numbers as on the board shown), the play made, the
+          network's expected score for the mover after that play, and the
+          play the network would have made with its expected score;
+  cube    who doubled, and the cube before the double, then the answer, take
+          or drop;
+  result  who won, and the points it was worth ('quit if you stopped)."
   (let* ((net (backgammon-load-net file))
          (policy (backgammon-network-policy net))
          (board (backgammon-start))
@@ -666,7 +705,13 @@ Returns 'human or 'computer for the winner, or 'quit."
          (human-to-move human-first)
          (cube 1)
          (cube-owner 'none)
-         (result #f))
+         (result #f)
+         (started (current-time))
+         (game (format "{}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}" (nth 0 started) (nth 1 started) (nth 2 started)
+                       (nth 3 started) (nth 4 started) (nth 5 started)))
+         (move-number 0)
+         (points-won 0))
+    (backgammon--log! log-file game "game" (if human-first "human first" "computer first") file)
     (display (format "You play {}. Points are numbered as on the board you see.\n"
                      (if human-first "first" "second")))
     (loop while (not result)
@@ -679,12 +724,17 @@ Returns 'human or 'computer for the winner, or 'quit."
                     (decision (if may-double
                                   (backgammon--cube-decision human-to-move policy board cube)
                                   'no-double)))
+               (if (not (eq? decision 'no-double))
+                   (begin
+                     (backgammon--log! log-file game "cube" mover (format "doubles from {:d}" cube))
+                     (backgammon--log! log-file game "cube" other (if (eq? decision 'take) "take" "drop"))))
                (cond ((eq? decision 'drop)
                       (display (format "{} drop{}; {} won {:d} point{}.\n"
                                        (if human-to-move "The computer" "You")
                                        (if human-to-move "s" "")
                                        (if human-to-move "You" "The computer")
                                        cube (if (= cube 1) "" "s")))
+                      (set! points-won cube)
                       (set! result mover))
                      ((eq? decision 'take)
                       (display (format "{} take{}.\n" (if human-to-move "The computer" "You")
@@ -718,6 +768,22 @@ Returns 'human or 'computer for the winner, or 'quit."
                                                    (backgammon-play-steps play))
                                               " ")))))
                      (if (and (not result) (not (eq? play 'quit)))
+                         (begin
+                           (set! move-number (+ move-number 1))
+                           (let ((network-play ((backgammon-policy-choose policy) board plays))
+                                 (as-shown (lambda (a-play)
+                                             (if human-to-move
+                                                 (backgammon-play-text a-play)
+                                                 (backgammon--play-text-as-shown a-play)))))
+                             (backgammon--log! log-file game "move" move-number mover
+                                               (backgammon--dice-text dice)
+                                               (format "cube {:d} {}" cube cube-owner)
+                                               (backgammon--position-text view)
+                                               (as-shown play)
+                                               (format "{:+.3f}" (backgammon-value net (backgammon-play-board play)))
+                                               (as-shown network-play)
+                                               (format "{:+.3f}" (backgammon-value net (backgammon-play-board network-play)))))))
+                     (if (and (not result) (not (eq? play 'quit)))
                          (let ((after (backgammon-play-board play)))
                            (if (backgammon-game-over? after)
                                (let ((points (* cube (backgammon-result after))))
@@ -725,9 +791,11 @@ Returns 'human or 'computer for the winner, or 'quit."
                                  (display (format "{} won {:d} point{}.\n"
                                                   (if human-to-move "You" "The computer")
                                                   points (if (= points 1) "" "s")))
+                                 (set! points-won points)
                                  (set! result mover))
                                (begin
                                  (set! board (backgammon-flip after))
                                  (set! dice (backgammon-roll))
                                  (set! human-to-move (not human-to-move))))))))))
+    (backgammon--log! log-file game "result" result points-won)
     result))
