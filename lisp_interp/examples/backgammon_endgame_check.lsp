@@ -1,4 +1,4 @@
-; backgammon_endgames.lsp
+; backgammon_endgame_check.lsp
 ;
 ; Checks a trained backgammon network on positions where the exact chance of
 ; winning is easy to work out: each side has some checkers left, all of them on
@@ -12,7 +12,7 @@
 ;           + 5/6 * (1 if a <= 2, else 1 - P(b, a - 2))
 ; This compares that with the network's chance of a win in the same position,
 ; for the networks named on the command line:
-;   python3 ../lisp_interpreter.py backgammon_endgames.lsp net1.txt net2.txt
+;   python3 ../lisp_interpreter.py backgammon_endgame_check.lsp net1.txt net2.txt
 
 (define largest 14)                          ; checkers left on each side, at most
 

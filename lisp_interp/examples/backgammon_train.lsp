@@ -17,8 +17,10 @@
 ; of games, the number of hidden units, the file for the network, the number of
 ; games to play first against the heuristic player (the rest are self-play), a
 ; random seed, the trace decay (lambda) at the start and at the end of
-; training, and a file of a trained network to go on training (instead of a new
-; one; the number of hidden units is then the file's). The trace decay changes
+; training, a file of a trained network to go on training (instead of a new
+; one; the number of hidden units is then the file's), and the number of end
+; games to teach the network the exact chance of winning in after each game of
+; self-play (see lib/backgammon_endgames.lsp; 0, the default, teaches none). The trace decay changes
 ; in a straight line over the games; equal values keep it constant:
 ;   python3 ../lisp_interpreter.py backgammon_train.lsp 5000 40 net.txt 0 1 0.9 0.3
 ; The defaults are 1000 games, 40 hidden units, backgammon_net.txt, 0 heuristic
@@ -27,14 +29,16 @@
 ; Then play it with backgammon_play.lsp.
 
 (destructuring-bind (&optional (games "1000") (hidden "40") (file "backgammon_net.txt")
-                     (heuristic-games "0") (seed "1") (lambda-start "0.7") (lambda-end "0.7") (start-file ""))
+                     (heuristic-games "0") (seed "1") (lambda-start "0.7") (lambda-end "0.7") (start-file "") (endgame-steps "0"))
     (command-line-arguments)
   (let ((games (string->number games))
         (heuristic-games (string->number heuristic-games))
         (lambda-start (string->number lambda-start))
         (lambda-end (string->number lambda-end))
+        (endgame-steps (string->number endgame-steps))
         (played 0))
     (random-seed (string->number seed))
+    (define endgames (if (> endgame-steps 0) (backgammon-endgames) #f))
     (let ((net (if (= start-file "")
                    (backgammon-new-net :hidden (string->number hidden))
                    (backgammon-load-net start-file))))
@@ -54,7 +58,8 @@
                                                 (/ (+ played (/ batch 2)) games))))
                       (average-moves (if against-heuristic
                                          (backgammon-train-against-heuristic! net batch :trace-decay decay)
-                                         (backgammon-train! net batch :trace-decay decay))))
+                                         (backgammon-train! net batch :trace-decay decay
+                                                            :endgames endgames :endgame-steps endgame-steps))))
                  (set! played (+ played batch))
                  (display (format "{} games: {:.1f} moves a game, {} stalled, trace decay {:.2f}\n"
                                   played average-moves backgammon-stalled-games decay))
@@ -62,6 +67,10 @@
                      (display (format "    of the stalled games {} ended in a race, and {:.1f} checkers a game had been borne off\n"
                                       backgammon-stalled-races
                                       (/ backgammon-stalled-borne-off backgammon-stalled-games))))
+                 (if (and endgames (= (mod played 1000) 0))
+                     (display (format "    end games, average difference from the exact chance: {:.3f} in the end games it is taught, {:.3f} in those kept out\n"
+                                      (backgammon-endgame-error net endgames #f 300)
+                                      (backgammon-endgame-error net endgames #t 300))))
                  (if (= (mod played 500) 0)
                      (display (format "    points a game against random play: {:+.2f}   against the heuristic: {:+.2f}\n"
                                       (backgammon-match (backgammon-network-policy net)

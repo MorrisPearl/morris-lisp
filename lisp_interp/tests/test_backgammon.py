@@ -305,6 +305,59 @@ class TestBackgammonNetwork(LispTestCase):
         self.assertShows("backgammon-stalled-races", "1")
         self.assertShows("backgammon-stalled-borne-off", "9")
 
+    def small_endgames(self):
+        """An endgame-set of two side states: one checker on the 1 point, and two."""
+        self.run_lisp('(load "backgammon_endgames.lsp")')
+        self.run_lisp("(define states '((1 0 0 0 0 0) (2 0 0 0 0 0)))")
+        self.run_lisp("(define endgames (make-endgame-set :count 2 "
+                      ":mover-rows (apply vector-append (map backgammon--mover-row states)) "
+                      ":opponent-rows (apply vector-append (map backgammon--opponent-row states)) "
+                      ":chances (make-vector 4 0.0)))")
+        self.run_lisp("(dotimes (i 2) (dotimes (j 2) (vector-set! (endgame-set-chances endgames) (+ (* i 2) j) "
+                      "(backgammon-endgame-chance (backgammon-endgame-board endgames i j)))))")
+
+    def test_exact_end_game_chances_match_the_ones_worked_out_by_hand(self):
+        self.run_lisp('(load "backgammon_endgames.lsp")')
+        # 3 checkers against 1, all on the 1 points: the player on roll needs doubles (1 in 6)
+        three_against_one = board_source(mover={1: 3}, opponent={24: 1})
+        self.assertAlmostEqual(float(self.show("(backgammon-endgame-chance %s)" % three_against_one)), 1 / 6, places=9)
+        # one checker on the 1 point bears off with any roll, so it wins
+        one_against_five = board_source(mover={1: 1}, opponent={24: 5})
+        self.assertAlmostEqual(float(self.show("(backgammon-endgame-chance %s)" % one_against_five)), 1.0, places=9)
+
+    def test_end_game_chances_of_stacks_on_the_one_point_follow_the_recursion(self):
+        self.run_lisp('(load "backgammon_endgames.lsp")')
+
+        def chance(a, b):
+            if a <= 2:
+                return 1.0
+            doubles = 1.0 if a <= 4 else 1 - chance(b, a - 4)
+            others = 1 - chance(b, a - 2)
+            return doubles / 6 + others * 5 / 6
+
+        for a, b in [(5, 5), (6, 4), (8, 10)]:
+            board = board_source(mover={1: a}, opponent={24: b})
+            self.assertAlmostEqual(float(self.show("(backgammon-endgame-chance %s)" % board)), chance(a, b), places=9)
+
+    def test_teaching_the_network_end_games_moves_it_toward_the_exact_chances(self):
+        self.small_endgames()
+        self.run_lisp("(define net (backgammon-new-net :hidden 6))")
+        self.run_lisp("(random-seed 3)")
+        # pair 3 (2 checkers against 2) is not held out; pair 0 is
+        before = float(self.show("(abs (- (backgammon-endgame-network-chance net (backgammon-endgame-board endgames 1 1)) "
+                                 "(vector-ref (endgame-set-chances endgames) 3)))"))
+        self.run_lisp("(backgammon-learn-endgames! net endgames 600 0.1)")
+        after = float(self.show("(abs (- (backgammon-endgame-network-chance net (backgammon-endgame-board endgames 1 1)) "
+                                "(vector-ref (endgame-set-chances endgames) 3)))"))
+        self.assertLess(after, before)
+        self.assertLess(after, 0.1)
+
+    def test_self_play_training_can_include_end_games(self):
+        self.small_endgames()
+        self.run_lisp("(define net (backgammon-new-net :hidden 4))")
+        self.run_lisp("(define average (backgammon-train! net 1 :endgames endgames :endgame-steps 5))")
+        self.assertGreater(float(self.show("average")), 1)
+
     def test_a_network_saved_and_loaded_gives_the_same_values(self):
         self.run_lisp("(define net (backgammon-new-net :hidden 4))")
         with tempfile.TemporaryDirectory() as d:

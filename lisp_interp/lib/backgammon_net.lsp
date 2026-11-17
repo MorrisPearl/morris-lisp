@@ -429,10 +429,12 @@ borne off in them altogether."
       (set! total (+ total (backgammon--heuristic-game! net learning-rate trace-decay))))
     (/ total games)))
 
-(define (backgammon-train! net games &key (learning-rate 0.1) (trace-decay 0.7))
+(define (backgammon-train! net games &key (learning-rate 0.1) (trace-decay 0.7) (endgames #f) (endgame-steps 0))
   "Trains the network by playing GAMES games of itself (see the top of this
 file). learning-rate is how far each step moves the weights, and trace-decay
-(lambda) how far back in the game each move's error reaches. Changes net in
+(lambda) how far back in the game each move's error reaches. With endgames (see
+backgammon-endgames), after each game the network is also taught the exact chance
+of winning in endgame-steps end games chosen at random. Changes net in
 place and returns the average number of moves per game; backgammon-stalled-games
 is then the number of games that stalled (and backgammon-stalled-races and
 backgammon-stalled-borne-off say how many ended in a race and how many checkers had been
@@ -441,7 +443,9 @@ and were scored as a loss for both players)."
   (let ((total 0))
     (backgammon--reset-stall-counts!)
     (dotimes (game games)
-      (set! total (+ total (backgammon--self-play-game! net learning-rate trace-decay))))
+      (set! total (+ total (backgammon--self-play-game! net learning-rate trace-decay)))
+      (if endgames
+          (backgammon-learn-endgames! net endgames endgame-steps learning-rate)))
     (/ total games)))
 
 ; ---------------------------------------------------------------------------

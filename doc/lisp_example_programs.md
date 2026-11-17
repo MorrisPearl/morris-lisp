@@ -117,7 +117,7 @@ files in `examples/` and `lib/` from anywhere:
 | `chess.lsp`, `chess_book.lsp`, `chess_example.lsp` | a complete chess program: rules, notation, search with alpha-beta and a table, an opening book | nothing |
 | `kenken_example.lsp` | constraint propagation and backtracking | nothing |
 | `backgammon_train.lsp`, `backgammon_play.lsp` | a neural network that learns backgammon by playing itself (TD-Gammon), and a game against it: vectors of features, back-propagation as whole-vector arithmetic, TD(lambda) | nothing (training takes a long while; see below) |
-| `backgammon_endgames.lsp` | checks a trained network on end-game positions with checkers only on the 1 points, where the exact chance of winning is a short recursion | a trained network file (see above) |
+| `backgammon_endgame_check.lsp` | checks a trained network on end-game positions with checkers only on the 1 points, where the exact chance of winning is a short recursion | a trained network file (see above) |
 
 **Languages**
 
@@ -734,10 +734,7 @@ simple enough to read, that knows all the rules (castling, en passant, promotion
 check, checkmate, stalemate; not draws by repetition, the fifty-move rule, or
 too little material), takes moves in standard notation, and looks ahead. It is
 about a thousand lines in eight sections, and each section's comment says what the
-code is doing. `backgammon_endgames.lsp net.txt` compares the network's chance of winning with the exact
-chance in positions where each side has only checkers on its 1 point (each roll bears off
-two, or four on doubles), so how well the network has learned the end of the game can be
-measured.
+code is doing.
 
 The techniques, in the order the program uses them:
 
@@ -1000,6 +997,11 @@ point. In a notebook, `(play-backgammon :file "backgammon_net.txt")` plays the s
 and `:human-first #f` lets the computer start. You type your moves in the usual notation
 (`24/18 13/11`, `bar/20`, `3/off`; one checker that uses both dice can be written as a single move, `13/8` for a 3-2, if either order of the dice is legal), and `?` lists the plays your dice allow. `:log-file "games.txt"` adds every move, double and
 result to a file, one tab-separated line each, to look at the games later.
+
+`backgammon_endgame_check.lsp net.txt` compares the network's chance of winning with the exact
+chance in positions where each side has only checkers on its 1 point (each roll bears off
+two, or four on doubles), so how well the network has learned the end of the game can be
+measured.
 
 The techniques, in the order the program uses them:
 

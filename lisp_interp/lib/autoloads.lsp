@@ -355,3 +355,6 @@
   backgammon-new-net backgammon-features backgammon-value backgammon-train! backgammon-train-against-heuristic! backgammon-network-policy
   backgammon-random-policy backgammon-heuristic-policy backgammon-match backgammon-save-net backgammon-load-net
   play-backgammon)
+(lazy-load "backgammon_endgames.lsp"
+  backgammon-endgames backgammon-endgame-chance backgammon-endgame-board backgammon-endgame-network-chance
+  backgammon-endgame-error backgammon-learn-endgames!)
