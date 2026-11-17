@@ -117,6 +117,7 @@ files in `examples/` and `lib/` from anywhere:
 | `chess.lsp`, `chess_book.lsp`, `chess_example.lsp` | a complete chess program: rules, notation, search with alpha-beta and a table, an opening book | nothing |
 | `kenken_example.lsp` | constraint propagation and backtracking | nothing |
 | `backgammon_train.lsp`, `backgammon_play.lsp` | a neural network that learns backgammon by playing itself (TD-Gammon), and a game against it: vectors of features, back-propagation as whole-vector arithmetic, TD(lambda) | nothing (training takes a long while; see below) |
+| `backgammon_endgames.lsp` | checks a trained network on end-game positions with checkers only on the 1 points, where the exact chance of winning is a short recursion | a trained network file (see above) |
 
 **Languages**
 
@@ -733,7 +734,12 @@ simple enough to read, that knows all the rules (castling, en passant, promotion
 check, checkmate, stalemate; not draws by repetition, the fifty-move rule, or
 too little material), takes moves in standard notation, and looks ahead. It is
 about a thousand lines in eight sections, and each section's comment says what the
-code is doing. The techniques, in the order the program uses them:
+code is doing. `backgammon_endgames.lsp net.txt` compares the network's chance of winning with the exact
+chance in positions where each side has only checkers on its 1 point (each roll bears off
+two, or four on doubles), so how well the network has learned the end of the game can be
+measured.
+
+The techniques, in the order the program uses them:
 
 **The board, as in Othello but sharper.** A vector of 120 numbers, 64 squares with a
 border two deep (a knight's jump of two files can't wrap around), and pieces as
