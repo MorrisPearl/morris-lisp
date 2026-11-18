@@ -20,7 +20,10 @@
 ; training, a file of a trained network to go on training (instead of a new
 ; one; the number of hidden units is then the file's), and the number of end
 ; games to teach the network the exact chance of winning in after each game of
-; self-play (see lib/backgammon_endgames.lsp; 0, the default, teaches none). The trace decay changes
+; self-play (see lib/backgammon_endgames.lsp; 0, the default, teaches none), and 1 or 0
+; for whether to use the exact chances of winning in the end games that have them
+; (see EXACT END GAMES in lib/backgammon_net.lsp; 1, the default, uses them, and a
+; self-play game then stops at the first of those positions). The trace decay changes
 ; in a straight line over the games; equal values keep it constant:
 ;   python3 ../lisp_interpreter.py backgammon_train.lsp 5000 40 net.txt 0 1 0.9 0.3
 ; The defaults are 1000 games, 40 hidden units, backgammon_net.txt, 0 heuristic
@@ -29,7 +32,7 @@
 ; Then play it with backgammon_play.lsp.
 
 (destructuring-bind (&optional (games "1000") (hidden "40") (file "backgammon_net.txt")
-                     (heuristic-games "0") (seed "1") (lambda-start "0.7") (lambda-end "0.7") (start-file "") (endgame-steps "0"))
+                     (heuristic-games "0") (seed "1") (lambda-start "0.7") (lambda-end "0.7") (start-file "") (endgame-steps "0") (exact-endgames "1"))
     (command-line-arguments)
   (let ((games (string->number games))
         (heuristic-games (string->number heuristic-games))
@@ -38,6 +41,7 @@
         (endgame-steps (string->number endgame-steps))
         (played 0))
     (random-seed (string->number seed))
+    (backgammon-use-exact-endgames! (= (string->number exact-endgames) 1))
     (define endgames (if (> endgame-steps 0) (backgammon-endgames) #f))
     (let ((net (if (= start-file "")
                    (backgammon-new-net :hidden (string->number hidden))

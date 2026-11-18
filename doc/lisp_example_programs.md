@@ -986,7 +986,11 @@ number of games first against the heuristic player, a random seed, and the trace
 (lambda) at the start and at the end of training, which changes in a straight line over the
 games (equal values keep it constant). `backgammon_train.lsp 5000 40 net.txt 0 1 0.9 0.3`
 starts with a long trace and shortens it. An eighth argument, the file of a trained
-network, goes on training that network instead of a new one (its hidden units are used).
+network, goes on training that network instead of a new one (its hidden units are used). A
+ninth argument is the number of end games to teach the exact chance of winning after each game (see
+`backgammon_endgame_check.lsp` below; 0 by default), and a tenth is 1 (the default) or 0 for whether
+to use the exact chances of winning in the end games that have them (`backgammon-bearoff-chance`): the
+network then never evaluates those positions, and a self-play game stops at the first of them.
 
 The training program reports every 100 games (the average game length, which falls as
 the network learns to finish games, and how many games stalled past 300 moves and were scored as lost by both players), and every 500 games the points a game it wins against

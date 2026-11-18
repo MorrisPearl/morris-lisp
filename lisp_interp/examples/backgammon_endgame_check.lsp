@@ -42,7 +42,7 @@ b checkers on the opponent's 1 point (point 24 of this board)."
 (define (network-chance net a b)
   "The network's chance that the player on roll wins: one minus the chance it
 gives the other player, who has just moved there in the flipped position."
-  (- 1 (vector-ref (backgammon-outcomes net (backgammon-flip (endgame-board a b))) 0)))
+  (- 1 (vector-ref (backgammon-network-outcomes net (backgammon-flip (endgame-board a b))) 0)))
 
 (define exact (exact-table))
 

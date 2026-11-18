@@ -4631,6 +4631,19 @@ constant 1.
   just moved to this position. `(backgammon-outcomes net board)` gives the five outputs,
   and `(backgammon-expected-points net board)` the score for the player on roll, who has
   not moved yet.
+- `(backgammon-bearoff-chance board)` -- the exact chance that the player on roll wins an end
+  game, or `#f` if the position is not one: nothing can be hit, and each side has either at most 6
+  checkers (on any of its points) or any number up to 14 all on its 1 point. Both sides have
+  borne off a checker, so there are no gammons. The chances are worked out, for the player on
+  roll's best play at every roll, the first time one is asked for (a couple of seconds; `lisp_backgammon.py`).
+  In these positions `backgammon-outcomes` (and so `backgammon-value`, and the network's play and cube
+  decisions) gives the exact outputs, and never the network's; `(backgammon-use-exact-endgames! #f)`
+  turns that off, and `(backgammon-network-outcomes net board)` always gives the network's own outputs.
+  A self-play training game stops at the first of these positions: the move before it learns from the exact
+  chance, and the rest of the game has nothing left to teach.
+- `(backgammon-widen-net net extra)` -- a new network with `extra` more hidden units that plays almost as
+  `net` does: the new units have random hidden weights but weights to the outputs of only 0.01, so training
+  can start using them. `net` is not changed.
 - `(backgammon-outcome result)` and `(backgammon-mirror outputs)` -- the outputs a winner
   should have, for a game worth 1, 2 or 3 (see `backgammon-result`, which gives the result
   of a finished game), and the outputs of the other player, which swap each side's
@@ -4660,7 +4673,9 @@ constant 1.
   gammon), and takes unless the doubler's score is above 0.5. The random policy never
   doubles and always takes; the heuristic counts hits, points and blots.
 - `(backgammon-match policy-a policy-b games)` -- the average points per game that policy
-  A wins against B, with the cube and gammons, A moving first in alternate games.
+  A wins against B, with the cube and gammons, A moving first in alternate games. Afterward
+  `backgammon-games-ended-by-drop` and `backgammon-games-ended-by-bear-off` say how many of the
+  games ended each way (`backgammon-reset-game-endings!` sets them to 0).
 - `(backgammon-save-net net file)` and `(backgammon-load-net file)` -- the network in a
   text file, as one Lisp list with its numbers exactly. A file saved before the cube and
   gammons were added has one output, and is refused.

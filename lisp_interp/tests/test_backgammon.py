@@ -339,6 +339,88 @@ class TestBackgammonNetwork(LispTestCase):
             board = board_source(mover={1: a}, opponent={24: b})
             self.assertAlmostEqual(float(self.show("(backgammon-endgame-chance %s)" % board)), chance(a, b), places=9)
 
+    def test_the_exact_table_gives_the_hand_values_and_agrees_with_the_slow_calculation(self):
+        self.run_lisp('(load "backgammon_endgames.lsp")')
+        # 3 checkers against 1, all on the 1 points: the player on roll needs doubles (1 in 6)
+        three_against_one = board_source(mover={1: 3}, opponent={24: 1})
+        self.assertAlmostEqual(float(self.show("(backgammon-bearoff-chance %s)" % three_against_one)), 1 / 6, places=9)
+        # stacks on the 1 point, up to 14 checkers
+        def chance(a, b):
+            if a <= 2:
+                return 1.0
+            doubles = 1.0 if a <= 4 else 1 - chance(b, a - 4)
+            return doubles / 6 + (1 - chance(b, a - 2)) * 5 / 6
+        for a, b in [(5, 5), (6, 4), (8, 10), (14, 14)]:
+            board = board_source(mover={1: a}, opponent={24: b})
+            self.assertAlmostEqual(float(self.show("(backgammon-bearoff-chance %s)" % board)), chance(a, b), places=9)
+        # checkers on several points, against the slow calculation
+        for mover, opponent in [({6: 1, 4: 1}, {24: 1, 22: 1}), ({3: 1, 2: 1, 1: 1}, {19: 1, 21: 1}),
+                                ({5: 2}, {20: 1, 24: 2})]:
+            board = board_source(mover=mover, opponent=opponent)
+            self.assertAlmostEqual(float(self.show("(backgammon-bearoff-chance %s)" % board)),
+                                   float(self.show("(backgammon-endgame-chance %s)" % board)), places=9)
+
+    def test_the_exact_table_has_the_positions_with_6_checkers_and_not_other_positions(self):
+        six_against_six = board_source(mover={6: 1, 5: 1, 4: 1, 3: 1, 2: 1, 1: 1}, opponent={19: 6})
+        chance = float(self.show("(backgammon-bearoff-chance %s)" % six_against_six))
+        self.assertTrue(0 < chance < 1)
+        # 7 checkers spread out, a checker on the bar, a checker outside the home board, or contact: not exact
+        for board in [board_source(mover={6: 1, 5: 1, 4: 1, 3: 1, 2: 1, 1: 2}, opponent={24: 1}),
+                      board_source(mover={1: 1}, opponent={24: 1}, bar=1),
+                      board_source(mover={1: 1, 8: 1}, opponent={24: 1}),
+                      board_source(mover={1: 1}, opponent={24: 1, 18: 1}),
+                      board_source(mover={1: 1}, opponent={24: 15})]:
+            self.assertShows("(backgammon-bearoff-chance %s)" % board, "#f")
+
+    def test_outcomes_are_exact_in_those_end_games_unless_that_is_turned_off(self):
+        self.run_lisp("(define net (backgammon-new-net :hidden 5))")
+        # seen by the player who just moved: 3 checkers against 1, with the opponent (1 checker) on roll
+        position = board_source(mover={1: 3}, opponent={24: 1})
+        # the opponent on roll wins with a single checker on its 1 point (a sure win), so the mover's chance is 0
+        self.assertShows("(backgammon-outcomes net %s)" % position, "#(0.0 0.0 0.0 0.0 0.0)")
+        self.run_lisp("(backgammon-use-exact-endgames! #f)")
+        self.assertShows("(equal? (backgammon-outcomes net %s) (backgammon-network-outcomes net %s))" % (position, position), "#t")
+        self.assertNotEqual(self.show("(backgammon-outcomes net %s)" % position), "#(0.0 0.0 0.0 0.0 0.0)")
+        self.run_lisp("(backgammon-use-exact-endgames! #t)")
+        # a position with contact is the network's
+        self.assertShows("(equal? (backgammon-outcomes net (backgammon-start)) (backgammon-network-outcomes net (backgammon-start)))", "#t")
+
+    def test_a_self_play_game_stops_at_the_first_exact_end_game(self):
+        # the same network and dice both times: the game is the same until the end game is reached
+        def moves_in_a_game(exact):
+            self.run_lisp("(backgammon-use-exact-endgames! %s)" % exact)
+            self.run_lisp("(random-seed 4)")
+            self.run_lisp("(define net (backgammon-new-net :hidden 5))")
+            return float(self.show("(backgammon-train! net 1)"))
+        with_table = moves_in_a_game("#t")
+        without_table = moves_in_a_game("#f")
+        self.run_lisp("(backgammon-use-exact-endgames! #t)")
+        self.assertLess(with_table, without_table)
+
+    def test_a_widened_network_plays_almost_as_the_old_one_did(self):
+        self.run_lisp("(define net (backgammon-new-net :hidden 6))")
+        self.run_lisp("(define wide (backgammon-widen-net net 4))")
+        self.assertShows("(backgammon-net-hidden wide)", "10")
+        self.assertShows("(vector-length (backgammon-net-hidden-weights wide))", str(10 * 216))
+        self.assertShows("(vector-length (backgammon-net-output-weights wide))", str(5 * 11))
+        self.assertShows("(backgammon-net-hidden net)", "6")
+        difference = float(self.show("(abs (- (backgammon-value net (backgammon-start)) (backgammon-value wide (backgammon-start))))"))
+        self.assertLess(difference, 0.1)
+
+    def test_games_that_end_by_a_drop_and_by_bearing_off_are_counted(self):
+        self.run_lisp("(define doubler (make-backgammon-policy :choose (lambda (b plays) (car plays))"
+                      " :double (lambda (b) #t) :take (lambda (b) #f)))")
+        self.run_lisp("(define dropper (make-backgammon-policy :choose (lambda (b plays) (car plays))"
+                      " :double (lambda (b) #f) :take (lambda (b) #f)))")
+        self.run_lisp("(backgammon-reset-game-endings!)")
+        self.run_lisp("(backgammon--play-game doubler dropper #t)")
+        self.assertShows("backgammon-games-ended-by-drop", "1")
+        self.assertShows("backgammon-games-ended-by-bear-off", "0")
+        self.run_lisp("(random-seed 5)")
+        self.run_lisp("(backgammon-match (backgammon-heuristic-policy) (backgammon-random-policy) 2)")
+        self.assertShows("backgammon-games-ended-by-bear-off", "2")
+        self.assertShows("backgammon-games-ended-by-drop", "0")
+
     def test_teaching_the_network_end_games_moves_it_toward_the_exact_chances(self):
         self.small_endgames()
         self.run_lisp("(define net (backgammon-new-net :hidden 6))")

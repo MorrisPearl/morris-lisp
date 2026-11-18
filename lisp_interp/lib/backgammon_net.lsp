@@ -62,6 +62,16 @@
 ; gammon). A taker takes unless the doubler's expected score is above 0.5: the
 ; taker's score then is worse than -0.5, and twice that is worse than the
 ; point it loses by dropping.
+;
+; EXACT END GAMES. When nothing can be hit, and each side either has at most 6
+; checkers left or has all of its checkers (up to 14) on its 1 point, the chance
+; of winning can be worked out exactly (backgammon-bearoff-chance, in
+; lisp_backgammon.py): there are no gammons, and the game is decided by the
+; dice. In these positions backgammon-outcomes gives the exact outputs and never
+; the network's (unless backgammon-exact-endgames is set to #f), so the network
+; plays them perfectly. In self-play the game stops at the first such position:
+; the move before it learns from the exact chance, and nothing after it has
+; anything left to teach. backgammon-network-outcomes gives the network's own outputs.
 
 (define backgammon-inputs 216)
 (define backgammon-outputs 5)
@@ -82,6 +92,33 @@ a weight for each hidden unit, then one for the bias, as one flat vector."
   (make-backgammon-net :hidden hidden
                        :hidden-weights (vector-mul 0.1 (random-normal-vector (* hidden backgammon-inputs)))
                        :output-weights (vector-mul 0.1 (random-normal-vector (* backgammon-outputs (+ hidden 1))))))
+
+(define (backgammon-widen-net net extra &key (hidden-spread 0.1) (output-spread 0.01))
+  "A new network with extra more hidden units than net, which plays almost as
+net does. Each new unit gets random hidden weights of size hidden-spread, as a
+new network's would, but its weights to the outputs are only output-spread, so
+it hardly changes what the network says until training makes use of it. (They
+cannot be exactly 0, because a hidden weight learns only through the weight
+from the unit to an output.) net is not changed."
+  (let* ((units (backgammon-net-hidden net))
+         (row-length (+ units 1))
+         (old-rows (map (lambda (output)
+                          (vector-slice (backgammon-net-output-weights net) (* output row-length) (* (+ output 1) row-length)))
+                        (iota backgammon-outputs))))
+    (make-backgammon-net
+     :hidden (+ units extra)
+     :hidden-weights (vector-append (backgammon-net-hidden-weights net)
+                                    (vector-mul hidden-spread (random-normal-vector (* extra backgammon-inputs))))
+     :output-weights (apply vector-append
+                            (map (lambda (row)
+                                   (vector-append (vector-slice row 0 units)
+                                                  (vector-mul output-spread (random-normal-vector extra))
+                                                  (vector-slice row units row-length)))
+                                 old-rows)))))
+
+(define (backgammon-use-exact-endgames! on)
+  "Turns on (#t) or off (#f) the use of exact chances in end games (see EXACT END GAMES at the top of this file)."
+  (set! backgammon-exact-endgames on))
 
 ; ---------------------------------------------------------------------------
 ; The inputs
@@ -185,12 +222,34 @@ count; in a contact position the reverse."
   "The hidden units' outputs for these inputs, as a vector."
   (backgammon-sigmoid (matrix-vector-product (backgammon-net-hidden-weights net) inputs)))
 
-(define (backgammon-outcomes net board)
+(define backgammon-exact-endgames #t)
+
+(define (backgammon-exact-outcomes board)
+  "The exact five outputs for an end game whose chance of winning is known (see
+backgammon-bearoff-chance, and EXACT END GAMES at the top of this file), from the
+point of view of the player who just moved to board; #f if the position is
+not one of them, or backgammon-exact-endgames is #f. There are no gammons in
+these end games, so the other four outputs are 0."
+  (if backgammon-exact-endgames
+      (let ((chance-for-player-on-roll (backgammon-bearoff-chance (backgammon-flip board))))
+        (if chance-for-player-on-roll
+            (vector (- 1.0 chance-for-player-on-roll) 0.0 0.0 0.0 0.0)
+            #f))
+      #f))
+
+(define (backgammon-network-outcomes net board)
   "The network's five outputs for a position (see the top of this file), from
 the point of view of the player who just moved to it."
   (let ((hidden (backgammon--hidden-units net (backgammon-features board))))
     (backgammon-sigmoid (matrix-vector-product (backgammon-net-output-weights net)
                                                (vector-append hidden (vector 1.0))))))
+
+(define (backgammon-outcomes net board)
+  "The five outputs for a position, from the point of view of the player who
+just moved to it: the exact ones in an end game whose chance of winning is
+known (backgammon-exact-outcomes), otherwise the network's."
+  (or (backgammon-exact-outcomes board)
+      (backgammon-network-outcomes net board)))
 
 (define (backgammon-equity-of outcomes)
   "The expected score in points for the mover, from its five outputs."
@@ -335,13 +394,17 @@ backgammon-stalled-games counts it."
     (loop while (not finished)
           do (let* ((play (backgammon--best-play net (backgammon-plays board dice)))
                     (after (backgammon-play-board play))
-                    (current (backgammon--outputs-and-gradients net after)))
+                    (exact (backgammon-exact-outcomes after))
+                    (current (if exact #f (backgammon--outputs-and-gradients net after))))
                (set! moves (+ moves 1))
                (if previous
                    (set! traces (backgammon--learn! net traces (first previous) (rest previous)
-                                                    (backgammon-mirror (first current))
+                                                    (backgammon-mirror (if exact exact (first current)))
                                                     learning-rate trace-decay)))
-               (cond ((backgammon-game-over? after)
+               (cond (exact
+                      ; the rest of the game has no uncertainty left to learn from
+                      (set! finished #t))
+                     ((backgammon-game-over? after)
                       (set! traces (backgammon--learn! net traces (first current) (rest current)
                                                        (backgammon-outcome (backgammon-result after))
                                                        learning-rate trace-decay))
@@ -497,13 +560,25 @@ the best: a simple benchmark for the network. It never doubles, and always takes
 ; Matches: games between two policies, with the cube
 ; ---------------------------------------------------------------------------
 
+(define backgammon-games-ended-by-drop 0)
+
+(define backgammon-games-ended-by-bear-off 0)
+
+(define (backgammon-reset-game-endings!)
+  "Sets the counts of how games ended (backgammon-games-ended-by-drop and
+backgammon-games-ended-by-bear-off) back to 0."
+  (set! backgammon-games-ended-by-drop 0)
+  (set! backgammon-games-ended-by-bear-off 0))
+
 (define (backgammon--play-game policy-a policy-b a-first)
   "One game between two policies, A and B; a-first says whether A moves first.
 Before each roll the player on roll may double the cube, if it is centered or
 its own and below 64: the other player takes (owning the cube at twice its
 value) or drops (the doubler wins the value it had). A game is worth the cube
 times its result (1, 2 or 3). Returns the points A wins: positive if A wins,
-negative if B does, and 0 for a game cut off after 1000 moves."
+negative if B does, and 0 for a game cut off after 1000 moves. It counts the
+game in backgammon-games-ended-by-drop if a player dropped a double, or in
+backgammon-games-ended-by-bear-off if a player bore off the last checker."
   (let ((board (backgammon-start))
         (dice (backgammon-opening-roll))
         (a-to-move a-first)
@@ -525,6 +600,7 @@ negative if B does, and 0 for a game cut off after 1000 moves."
                          (set! cube-owner other))
                        (begin
                          (set! points (if (eq? mover 'a) cube (- cube)))
+                         (set! backgammon-games-ended-by-drop (+ backgammon-games-ended-by-drop 1))
                          (set! winner mover))))
                (if (eq? winner 'draw)
                    (let* ((plays (backgammon-plays board dice))
@@ -532,6 +608,7 @@ negative if B does, and 0 for a game cut off after 1000 moves."
                      (set! moves (+ moves 1))
                      (if (backgammon-game-over? after)
                          (begin
+                           (set! backgammon-games-ended-by-bear-off (+ backgammon-games-ended-by-bear-off 1))
                            (set! points (* cube (backgammon-result after)))
                            (if (eq? mover 'b) (set! points (- points)))
                            (set! winner mover))
@@ -544,8 +621,11 @@ negative if B does, and 0 for a game cut off after 1000 moves."
 (define (backgammon-match policy-a policy-b games)
   "The average points per game that policy A wins against policy B over GAMES
 games (negative if A loses), with A moving first in every other game so that
-neither has the advantage of starting. A game cut off after 1000 moves scores 0."
+neither has the advantage of starting. A game cut off after 1000 moves scores 0.
+Afterward backgammon-games-ended-by-drop and backgammon-games-ended-by-bear-off
+say how many of the games ended each way."
   (let ((total 0))
+    (backgammon-reset-game-endings!)
     (dotimes (game games)
       (set! total (+ total (backgammon--play-game policy-a policy-b (even? game)))))
     (/ total games)))

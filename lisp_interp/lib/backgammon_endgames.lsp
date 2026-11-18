@@ -131,7 +131,7 @@ chance of winning for the player on roll, as an endgame-set."
 (define (backgammon-endgame-network-chance net board)
   "The network's chance that the player on roll wins: one minus the chance it
 gives the other player, who has just moved to the position seen from his side."
-  (- 1.0 (vector-ref (backgammon-outcomes net (backgammon-flip board)) 0)))
+  (- 1.0 (vector-ref (backgammon-network-outcomes net (backgammon-flip board)) 0)))
 
 (define (backgammon-endgame-held-out? endgames k)
   "Whether pair number k (i * count + j) is kept out of the training, to see
