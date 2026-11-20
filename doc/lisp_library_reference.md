@@ -682,6 +682,22 @@ takes), unless `"limit"` is given.
                                ("fields" . "REPDTE,ASSET,DEP,LNCI,LNRENRES")))
 ```
 
+#### `(fdic-loan-losses creds bank)`
+A bank's loans by type, from its latest Call Report, and what it has lost on each: a table with a row for each type
+(1-4 family residential mortgages, multifamily, construction, commercial real estate, farmland, commercial and industrial,
+credit cards, auto, other consumer, agricultural, loans to financial companies that are not banks, leases, and everything
+else) and one for all loans, with the columns `type`, `loans` (in millions), `share` (of all loans), `noncurrent` (the share
+90 days or more past due or not accruing interest), `losses-last-year` (net charge-offs in the 12 months to the latest
+report, over the loans a year before), `losses-average-5-years`, `losses-worst-year` (since 2001), and `worst-year` (the
+date the worst 12 months ended). `bank` is a certificate number, a list of them, the name of a bank open now, or the name
+of a **holding company** ("KeyCorp", "JPMorgan Chase & Co."), whose banks are added up. The bank model's Credit Losses tab
+("Three-statement models") is made from the same numbers.
+
+```lisp
+(display-table (fdic-loan-losses creds "JPMorgan Chase & Co."))
+(display-table (fdic-loan-losses creds '(628 21761)))      ; the same, by certificate numbers
+```
+
 #### `(fdic-fields creds dataset [search])`
 What a dataset's fields mean: a table of `field`, `title`, and
 `description` — only those whose name or title contains `search`, if it's
@@ -2908,7 +2924,7 @@ It needs what `sec-income-statement` and `google-sheet` need: the credentials fi
 Google sign-in (`(google-login creds)`, once; "Google Sheets" says how to set it up). The sheet is made in your own
 Drive, and shared with no one.
 
-#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :aum a :price p :segments s :sensitivity b :title t])`
+#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :aum a :price p :segments s :sensitivity b :fdic f :title t])`
 Makes the spreadsheet and returns its address, as a string.
 
 - `:period` is `"annual"` (the default) or `"quarterly"`.
@@ -2935,6 +2951,10 @@ Makes the spreadsheet and returns its address, as a string.
   an error if it can't be found; `#f` is total revenue only.
 - `:sensitivity`, `#f` to leave out the two Monte Carlo tabs that an ordinary company or asset manager has after its DCF tab ("Sensitivity
   analysis" below).
+- `:fdic`, for a bank: where its loans by type come from, for the Credit Losses and FDIC Loans tabs ("Credit losses by type of
+  loan, and scenarios" below). `#t`, the default, looks for the company's banks at the FDIC by its name; a string is the
+  name of a bank or holding company as the FDIC has it; a number, or a list of them, is the banks' FDIC certificate numbers
+  (`fdic-find-bank` finds them); `#f` leaves the tabs out.
 - `:title` is the spreadsheet's name; the default is the company's, and "annual" or "quarterly".
 
 **The tabs.** Every tab has the same periods in the same columns, so a period's revenue, in column E of the income
@@ -3093,7 +3113,41 @@ rule that nothing refers to itself are the same.
 | Cash flow | The balance sheet seen as flows: net income, less the growth of loans and securities, plus the growth of deposits and borrowings, less the payouts. It ends with the cash the balance sheet has: a second check line on the Balance Sheet, 0 in every forecast period, says so. |
 | Ratios | Net interest margin, efficiency ratio, return on equity and on assets (below the income statement); loans to deposits, borrowings to assets, equity to assets, allowance to loans (below the balance sheet). They are results, not assumptions: they say whether the forecast is one a bank could live with. |
 
-Regulatory capital ratios (CET1) need risk-weighted assets, which are not in the SEC's summary of a company's numbers.
+**Credit losses by type of loan, and scenarios** (`lisp_financial_credit.py`). The SEC's facts say how much a bank lost on
+all its loans, not on which. The FDIC's **Call Reports** say both, for every insured bank: how much it has lent on houses,
+apartment buildings, construction, offices and shops, to businesses, on credit cards, cars, and farms, how much of each it
+has charged off every year, and how much is past due. So a bank's model has two more tabs, before the Notes, made from the
+Call Reports of the company's banks -- all of a holding company's, added up (JPMorgan Chase & Co. has two; the SEC's name
+and the FDIC's, "JPMORGAN CHASE&CO", are matched by their words):
+
+| Tab | What it has |
+|---|---|
+| FDIC Loans | For each type of loan, the loans at the end of each 12 months since 2001 (the 12 months to the date of the latest Call Report: June 30, if that is the latest), the net charge-offs in them, and the noncurrent loans (90 days or more past due, or no longer accruing interest); then the **loss rate**, net charge-offs over the loans at the start of the 12 months, as formulas; then the banks' common equity tier 1 capital and risk-weighted assets. |
+| Credit Losses | A row for each type: today's loans and their share, the share noncurrent, and the loss rate last year, on average over the last five years, and in the worst year since 2001. Then three **scenarios**, Base, Adverse, and Severe, each a **default rate** (the share of the loans that stop paying in a year) and a **recovery** (how much of a defaulted loan the bank gets back); a scenario's loss rate is the default rate times the share not recovered. A drop-down cell at the top chooses the scenario of the forecast, and another how many periods it lasts (2 years, or 8 quarters, to start with). At the bottom, what each scenario would cost, side by side, from today's loans alone: the losses over the periods of stress, the part more than the base scenario's after taxes, and the CET1 ratio left if nothing else changed. |
+
+The scenarios start from the bank's own history: **Base** has the default rates of its last five years' average loss rates,
+**Severe** those of its worst year (for most banks, the 12 months around 2009 or 2010), and **Adverse** halfway between. The
+recoveries start from a typical figure for each type -- 70% for a house, 10% for a credit card; the Call Report doesn't say
+what a bank recovers -- and are 5 points lower in Adverse, 10 in Severe. Every one is a yellow cell to type over: a higher
+default rate on commercial real estate alone, a lower recovery on construction loans. The forecast's **net charge-off rate**
+(Assumptions tab) is the chosen scenario's loss rate (all types weighted by today's loans) for the periods of stress and the
+base scenario's after, so a worse scenario raises the provision and lowers net income, equity, and a new line under the
+balance sheet: the **common equity tier 1 ratio**, the banks' own (from the FDIC) in the periods reported, and in the forecast
+their capital plus the growth of the company's equity since, over their risk-weighted assets grown with its loans -- an
+estimate, since the holding company's own ratio is in its reports to the Federal Reserve, not here.
+
+What the scenarios leave out: the allowance stays the percentage of loans assumed (a bank expecting losses would raise it
+at once, so its provision would come sooner), interest is still earned on the loans that default, and a bank's history is
+its banks' under their own certificates (a bank it bought keeps its own, so loans may jump in the year of the purchase; the
+rates are what matter). If the FDIC has no bank by the company's name, the model has no such tabs and the Notes say how to
+name the banks with `:fdic`.
+
+```lisp
+(three-statement-model creds "KEY")                          ; KeyCorp: its bank, KeyBank, found by the name
+(three-statement-model creds "WAL" :fdic 57512)              ; the bank given by its certificate number
+(display-table (fdic-loan-losses creds "KeyCorp"))           ; the same numbers as a table, without a spreadsheet
+```
+
 Banks tag their statements in more different ways than other companies, and the model needs interest income and
 expense and their parts on loans and deposits, noninterest income and expense, loans, deposits, total assets, and equity.
 If the SEC's facts lack one in some of the older periods, the history starts later (the Notes tab says where and why); if

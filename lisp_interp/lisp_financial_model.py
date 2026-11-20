@@ -95,6 +95,8 @@ MILLION = 1e6
 ASSUMPTION_NAMES = {"growth": "revenue_growth", "days": "days_in_period"}
 NAME_PREFIX = {ASSUMPTIONS: "assumption_", INCOME: "income_", BALANCE: "balance_", CASH_FLOW: "cash_flow_", DCF: "dcf_"}
 
+NOTES_HEADINGS = ("How to read this sheet", "How the forecast works", "The DCF tab", "No DCF tab",
+                  "Credit losses by type of loan (the Credit Losses and FDIC Loans tabs)")
 DEFAULT_COUNTS = {"annual": 5, "quarterly": 8}     # periods reported, and periods forecast
 PERIODS_PER_YEAR = {"annual": 1, "quarterly": 4}
 QUARTER_AVERAGE = 4             # a forecast ratio starts as the average of this many quarters (the last year's)
@@ -383,8 +385,9 @@ class Model:
 
     has_valuation = True            # whether it has a DCF tab (not a bank's or an insurer's: see lisp_financial_dcf.py)
 
-    def __init__(self, company_name, ticker, period, reported, history, forecast_count, segment_note=""):
+    def __init__(self, company_name, ticker, period, reported, history, forecast_count, segment_note="", loan_book=None):
         self.segment_note = segment_note
+        self.loan_book = loan_book                     # (a bank's loans by type from the FDIC: lisp_fdic.LoanBook)
         self.kind_note = ""                            # (why the model is of this kind of company, if that needs saying)
         self.share_price = None                        # (today's, if given: for the DCF tab)
         self.company_name, self.ticker, self.period = company_name, ticker, period
@@ -1041,7 +1044,7 @@ class Model:
     def notes_tab(self):
         rows = []
         for text in self.sources_for_notes():
-            heading = text in ("How to read this sheet", "How the forecast works", "The DCF tab", "No DCF tab") or text.startswith("Where the reported")
+            heading = text in NOTES_HEADINGS or text.startswith("Where the reported")
             rows.append([(text, ("section",) if heading else ("wrap",))] if text else [None])
         return {"name": NOTES, "cells": [[(self.company_name + " model", ("title",))], [None]] + rows,
                 "widths": [(0, 0, 900)]}
@@ -1137,14 +1140,15 @@ def count_option(options, name, default, who):
 
 
 def build_model(facts, ticker, period, history_count, forecast_count, who="three-statement-model",
-                find_segments=None, kind="general", aum=None, price=None):
+                find_segments=None, kind="general", aum=None, price=None, find_loan_book=None):
     """The Model of a company from its SEC facts, of the kind (a name in templates()) given. `find_segments`,
     if given (for an ordinary company), is a function of the periods (oldest first) and the company's total
     revenue in each, in millions, that gives the revenue by segment: (segments, a note), segments being
     [(name, a revenue for each period)] or None. `aum`, for an asset manager, is its assets under management
     in billions at the end of each period, oldest first, ending with the latest (the SEC's facts have them for
-    few companies). `price`, if given, is today's share price, for the DCF tab. Raises MissingLines if the kind needs
-    lines that the company's facts don't have."""
+    few companies). `price`, if given, is today's share price, for the DCF tab. `find_loan_book`, if given (for a bank),
+    is a function of the company's name that gives (its lisp_fdic.LoanBook or None, a note). Raises MissingLines if the
+    kind needs lines that the company's facts don't have."""
     template = templates()[kind]
     periods = lisp_sec.chosen_periods(facts, {"period": period, "count": history_count}, who)
     periods = list(reversed(periods))
@@ -1188,8 +1192,13 @@ def build_model(facts, ticker, period, history_count, forecast_count, who="three
     history = template.history_class(reported, segments)
     if template.needs_aum:
         history.set_aum(aum)
-    result = template.model_class(facts.get("entityName") or ticker, ticker, period, reported, history,
-                                  forecast_count, note)
+    company_name = facts.get("entityName") or ticker
+    loan_book = None
+    if find_loan_book and kind == "bank":
+        loan_book, loan_note = find_loan_book(company_name)
+        if loan_note:
+            notes.append(loan_note)
+    result = template.model_class(company_name, ticker, period, reported, history, forecast_count, note, loan_book)
     result.kind_note = " ".join(notes)
     result.share_price = price
     return result
@@ -1209,6 +1218,28 @@ def segment_finder(credentials_path, company, kind, who):
         if kind != "auto":
             raise LispError("%s: no %s segments: %s" % (who, kind, description))
         return None, "Revenue is modeled in total, not by segment: " + description
+    return find
+
+
+def loan_book_finder(credentials_path, given, who):
+    """build_model's find_loan_book: the FDIC's loan book of the banks given (`given` is True to look for them by the
+    company's name, or a name, a certificate number, or a list of them). Looking by the company's name, not finding
+    any (or not reaching the FDIC) is a note, not an error."""
+    import lisp_fdic
+
+    def find(company_name):
+        if given is True:
+            try:
+                banks = lisp_fdic.banks_of_company(credentials_path, company_name, who)
+                if not banks:
+                    return None, ("No FDIC data: the FDIC has no bank open now whose holding company (or itself) is "
+                                  "called %s. Give the banks with :fdic -- a name as the FDIC has it, or certificate "
+                                  "numbers, which (fdic-find-bank creds name) finds -- for the Credit Losses tab."
+                                  % company_name)
+                return lisp_fdic.loan_book(credentials_path, banks, who), ""
+            except LispError as problem:
+                return None, "No FDIC data: %s" % problem
+        return lisp_fdic.loan_book(credentials_path, lisp_fdic.banks_given(credentials_path, given, who), who), ""
     return find
 
 
@@ -1233,7 +1264,7 @@ def kind_for_industry(sic):
 
 def three_statement_model(credentials_path, company, *options):
     """(three-statement-model creds ticker [:period "annual" :history n :forecast n :kind "auto"
-    :segments "auto" :price p :sensitivity #t :title t]) -- a new Google spreadsheet with the company's income statement, balance sheet,
+    :segments "auto" :price p :sensitivity #t :fdic #t :title t]) -- a new Google spreadsheet with the company's income statement, balance sheet,
     and cash flow statement as reported to the SEC, for the last `:history` years (or quarters), and forecast
     for the next `:forecast`, by formulas that follow assumptions on an Assumptions tab. Returns the
     spreadsheet's address. :period is "annual" or "quarterly" (5 years each way, or 8 quarters, unless
@@ -1246,11 +1277,16 @@ def three_statement_model(credentials_path, company, *options):
     company if the SEC's facts lack what the other kind needs. An ordinary company or asset manager also has a DCF tab, a
     discounted-cash-flow valuation; :price, today's share price, makes the weight of debt in its discount rate the
     market's and shows how the value compares with the price. It also has a Sensitivity tab and a tab with a macro for it,
-    which runs the DCF many times with random values for the inputs you choose (#f for :sensitivity leaves them out). :segments, for an ordinary company: "auto" (the default) models revenue by business
+    which runs the DCF many times with random values for the inputs you choose (#f for :sensitivity leaves them out).
+    A bank also has its loans by type from the FDIC's Call Reports of its banks (all of a holding company's, added up),
+    and scenarios -- Base, Adverse, Severe -- of default rates and recoveries on each type, which the forecast's
+    charge-offs follow: :fdic is #t (the default: look for the banks by the company's name), #f (none), the name of a
+    bank or holding company as the FDIC has it, or a certificate number or a list of them (fdic-find-bank finds them). :segments, for an ordinary company: "auto" (the default) models revenue by business
     segment if the company reports them, or else by product; "business", "product", or "geography" asks
     for that one; #f for total revenue only. You need to be signed in to Google: (google-login creds)."""
     who = "three-statement-model"
-    options = keyword_options(options, ["period", "history", "forecast", "kind", "aum", "price", "segments", "sensitivity", "title"], who)
+    options = keyword_options(options, ["period", "history", "forecast", "kind", "aum", "price", "segments", "sensitivity",
+                                        "fdic", "title"], who)
     period = str(options.get("period", "annual"))
     if period not in DEFAULT_COUNTS:
         raise LispError('%s: :period is "annual" or "quarterly", not %s' % (who, period))
@@ -1272,6 +1308,8 @@ def three_statement_model(credentials_path, company, *options):
     facts = lisp_sec.company_facts(credentials_path, company, who)
     ticker = str(company).upper()
     finder = None if segments is False else segment_finder(credentials_path, company, str(segments), who)
+    fdic = options.get("fdic", True)
+    loans = None if fdic is False else loan_book_finder(credentials_path, fdic, who)
     kind_note = ""
     if kind == "auto":
         sic, description = company_industry(credentials_path, company, who)
@@ -1279,7 +1317,7 @@ def three_statement_model(credentials_path, company, *options):
         if aum is not None and kind == "general":              # (AUM given: an asset manager, if nothing else)
             kind = "asset-manager"
         try:
-            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum, price)
+            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum, price, loans)
         except MissingLines as problem:
             if kind == "general":
                 raise
@@ -1287,7 +1325,7 @@ def three_statement_model(credentials_path, company, *options):
                          % (description or "another kind of company", str(problem).split(": ", 1)[1]))
             model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, "general", None, price)
     else:
-        model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum, price)
+        model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum, price, loans)
     model.kind_note = (model.kind_note + " " + kind_note).strip()
     model.sensitivity = options.get("sensitivity", True) is not False
     title = options.get("title") or "%s %s model" % (model.company_name, period)

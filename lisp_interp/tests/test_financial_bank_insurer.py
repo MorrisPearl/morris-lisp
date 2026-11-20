@@ -5,6 +5,7 @@ know the models balance, and that the cash flow statement ends where the balance
 
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
 
+import lisp_fdic
 import lisp_financial_bank
 import lisp_financial_insurer
 import lisp_financial_model as fm
@@ -522,6 +523,7 @@ class TestChoosingTheKind(LispTestCase):
         self.facts = bank_facts()
         for patcher in (mock.patch.object(lisp_sec, "company_facts", lambda creds, company, who: self.facts),
                         mock.patch.object(fm, "company_industry", lambda creds, company, who: self.industry),
+                        mock.patch.object(lisp_fdic, "fdic_records", lambda *arguments: []),     # (an FDIC with no banks)
                         mock.patch.object(lisp_google, "google_workbook",
                                           lambda creds, title, sheets: self.written.append((title, sheets)) or "https://sheet")):
             patcher.start()

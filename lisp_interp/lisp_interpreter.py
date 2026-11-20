@@ -50,7 +50,7 @@ HOW THE CODE IS ORGANIZED
     lisp_data_common.py   what the data modules share: the credentials file, years, tables
     lisp_sec.py           sec-income-statement, sec-financials, ... (financial statements from the SEC)
     lisp_sec_filings.py   sec-filings, sec-filing-text, text-tone (what companies write in their filings, and its tone)
-    lisp_fdic.py          fdic-balance-sheet, fdic-financials, fdic-get, ... (bank data from the FDIC)
+    lisp_fdic.py          fdic-balance-sheet, fdic-financials, fdic-loan-losses, fdic-get, ... (bank data from the FDIC)
     lisp_census.py        census-get, census-profile, ... (demographic and economic data from the Census)
     lisp_bls.py           bls-series, bls-local-area, ... (prices, jobs, and pay from the BLS)
     lisp_bea.py           bea-series, bea-nipa, bea-regional, ... (national and regional accounts from the BEA)
@@ -62,6 +62,7 @@ HOW THE CODE IS ORGANIZED
     lisp_financial_sensitivity.py  sensitivity-workbook, sensitivity-macro; the Sensitivity tabs (Monte Carlo macro in apps_script/)
     lisp_financial_compare.py compare-companies (companies side by side in a Google Sheet, as amounts or percentages)
     lisp_financial_bank.py, lisp_financial_insurer.py, lisp_financial_asset_manager.py   the bank, insurer, and asset manager models of three-statement-model
+    lisp_financial_credit.py  a bank model's Credit Losses and FDIC Loans tabs (loans by type, Base/Adverse/Severe scenarios)
     lisp_schwab.py        schwab-*  (your Schwab accounts: positions, quotes, prices, orders, transactions)
     lisp_alpha_vantage.py alpha-vantage-dividends  (a stock's dividends, from Alpha Vantage)
     lisp_finra.py         finra-tba-prices, finra-mbs-prices, ...  (agency MBS prices reported to FINRA's TRACE)

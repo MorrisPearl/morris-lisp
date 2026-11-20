@@ -1,0 +1,475 @@
+"""Loans by type from the FDIC (lisp_fdic.py: a holding company's banks, the LoanBook, fdic-loan-losses) and the bank
+model's Credit Losses and FDIC Loans tabs (lisp_financial_credit.py), with a fake FDIC -- no network.
+
+The fake FDIC has a holding company, ABC BCORP, with two banks (the second half the first's size), each filing a Call
+Report every quarter since 1999: every type of loan grows 2% a year, and loses its own rate a year of the loans at the
+end of the year before (three times as much in 2009); a quarter's year-to-date charge-offs are that quarter's share of
+the year's. The latest report is June 30, 2026, so a period is the 12 months to June 30.
+"""
+
+from support import *  # noqa: F401,F403 -- the interpreter's modules, mock, and LispTestCase
+
+import lisp_fdic
+import lisp_financial_credit as credit
+import lisp_financial_model as fm
+import lisp_google
+import lisp_sec
+from sheet_formulas import Sheets
+from test_financial_bank_insurer import ModelTestCase, bank_facts, YEARS
+from test_financial_model import set_input
+
+
+# a type's loans in 2000, in thousands of dollars, and its loss rate in an ordinary year
+BASE_LOANS = {"LNRERES": 400000, "LNREMULT": 60000, "LNRECONS": 30000, "LNRENRES": 150000, "LNREAG": 5000,
+              "LNCI": 200000, "LNCRCD": 50000, "LNAUTO": 40000, "LNCONOTH": 20000, "LNAG": 8000, "LNOTHER": 30000,
+              "LS": 7000}
+LOSS_RATES = {"LNRERES": 0.002, "LNREMULT": 0.001, "LNRECONS": 0.004, "LNRENRES": 0.003, "LNREAG": 0.0,
+              "LNCI": 0.005, "LNCRCD": 0.04, "LNAUTO": 0.008, "LNCONOTH": 0.012, "LNAG": 0.003, "LNOTHER": 0.002,
+              "LS": 0.001}
+EVERYTHING_ELSE = 25000                 # (loans of no type, in 2000; they lose nothing)
+CRISIS = {2009: 3.0}
+NAME_OF = {t[2]: t for t in lisp_fdic.LOAN_TYPES}
+LATEST = "20260630"
+
+
+def quarter_ends():
+    dates = []
+    for year in range(1999, 2027):
+        for month_day in ("0331", "0630", "0930", "1231"):
+            date = "%d%s" % (year, month_day)
+            if date <= LATEST:
+                dates.append(date)
+    return dates
+
+
+def loans_at(field, date, scale):
+    """A type's loans (thousands) at the end of a quarter: 2% more a year, from 2000."""
+    years = int(date[:4]) - 2000 + (int(date[4:6]) / 12)
+    return BASE_LOANS[field] * scale * 1.02 ** years
+
+
+def year_losses(field, year, scale):
+    """A type's net charge-offs in a calendar year: its rate (more in a crisis) times the loans at the end of the year before."""
+    return LOSS_RATES[field] * CRISIS.get(year, 1.0) * loans_at(field, "%d1231" % (year - 1), scale)
+
+
+def report(date, scale):
+    """One Call Report, as the FDIC's API gives it (thousands of dollars)."""
+    quarter = int(date[4:6]) // 3
+    record = {"REPDTE": date, "NAME": "ABC Bank"}
+    total_loans = total_losses = total_noncurrent = 0.0
+    for field, kind in NAME_OF.items():
+        _, _, balance_field, charge_off_field, noncurrent_field, _ = kind
+        balance = loans_at(field, date, scale)
+        to_date = year_losses(field, int(date[:4]), scale) * quarter / 4
+        record[balance_field], record[charge_off_field], record[noncurrent_field] = balance, to_date, 0.01 * balance
+        total_loans += balance
+        total_losses += to_date
+        total_noncurrent += 0.01 * balance
+    record["LNLSGR"] = total_loans + EVERYTHING_ELSE * scale
+    record["NTLNLS"] = total_losses
+    record["NCLNLS"] = total_noncurrent
+    if date >= "20150331":
+        record["RBCT1C"] = 120000.0 * scale
+        record["RWAJ"] = 1000000.0 * scale
+    return record
+
+
+INSTITUTIONS = [
+    {"CERT": 1, "NAME": "ABC Bank, National Association", "NAMEHCR": "ABC BCORP", "RSSDHCR": 99, "ASSET": 2000000},
+    {"CERT": 2, "NAME": "ABC Bank West", "NAMEHCR": "ABC BCORP", "RSSDHCR": 99, "ASSET": 1000000},
+    {"CERT": 3, "NAME": "ABC Bank of Smalltown", "NAMEHCR": "A.B.C. BANCORP", "RSSDHCR": 7, "ASSET": 5000},
+    {"CERT": 4, "NAME": "Zed Bancorporation, N.A.", "NAMEHCR": None, "RSSDHCR": None, "ASSET": 800000},
+    {"CERT": 5, "NAME": "Other Bank", "NAMEHCR": "OTHER HOLDINGS INC", "RSSDHCR": 5, "ASSET": 900000},
+]
+SCALE = {1: 1.0, 2: 0.5, 3: 0.001, 4: 0.4, 5: 0.3}
+
+
+def fake_records(credentials_path, dataset, params, who):
+    """lisp_fdic.fdic_records, from the fake FDIC."""
+    if dataset == "institutions":
+        return [dict(bank) for bank in INSTITUTIONS]
+    cert = int(params["filters"].split(":")[1])
+    if cert not in SCALE:
+        return []
+    return [report(date, SCALE[cert]) for date in reversed(quarter_ends())]
+
+
+class FakeFdic(LispTestCase):
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(lisp_fdic, "fdic_records", fake_records)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("creds.json")
+
+    def book(self):
+        return lisp_fdic.loan_book("creds.json", [(1, "ABC Bank"), (2, "ABC Bank West")], "test")
+
+
+# ---------------------------------------------------------------------------
+# Names, and a holding company's banks
+# ---------------------------------------------------------------------------
+
+class TestNames(unittest.TestCase):
+
+    def test_the_secs_names_and_the_fdics_are_the_same_once_their_words_are(self):
+        for sec, fdic in (("US BANCORP \\DE\\", "U S BCORP"), ("WELLS FARGO & COMPANY/MN", "WELLS FARGO&COMPANY"),
+                          ("HUNTINGTON BANCSHARES INC /MD/", "HUNTINGTON BANCSHARES INC"),
+                          ("SCHWAB CHARLES CORP", "CHARLES SCHWAB CORP THE"), ("FNB CORP/PA/", "F N B CORP"),
+                          ("ZIONS BANCORPORATION, NATIONAL ASSOCIATION /UT/", "Zions Bancorporation, N.A."),
+                          ("PNC FINANCIAL SERVICES GROUP, INC.", "PNC FINL SERVICES GROUP INC"),
+                          ("KEYCORP /NEW/", "KEYCORP"), ("M&T BANK CORP", "M&T BANK CORP"),
+                          ("JPMorgan Chase & Co.", "JPMORGAN CHASE&CO")):
+            self.assertEqual(lisp_fdic.name_key(sec), lisp_fdic.name_key(fdic), sec)
+
+    def test_different_companies_have_different_keys(self):
+        for first, second in (("FIFTH THIRD BANCORP", "FIRST HORIZON CORP"), ("CITIZENS FINANCIAL GROUP", "CITIGROUP INC"),
+                              ("BANK OF AMERICA CORP", "BANK OF HAWAII CORP")):
+            self.assertNotEqual(lisp_fdic.name_key(first), lisp_fdic.name_key(second))
+
+
+class TestBanksOfACompany(FakeFdic):
+
+    def test_a_holding_companys_banks_largest_first_and_the_larger_of_two_holding_companies_with_one_name(self):
+        # (A.B.C. BANCORP's key is ABC BCORP's too, but it is much smaller)
+        self.assertEqual(lisp_fdic.banks_of_company("creds.json", "ABC BANCORP /DE/", "test"),
+                         [(1, "ABC Bank, National Association"), (2, "ABC Bank West")])
+
+    def test_a_bank_with_no_holding_company_by_its_own_name(self):
+        self.assertEqual(lisp_fdic.banks_of_company("creds.json", "ZED BANCORPORATION, NATIONAL ASSOCIATION /UT/", "test"),
+                         [(4, "Zed Bancorporation, N.A.")])
+
+    def test_nothing_for_a_company_the_fdic_does_not_know(self):
+        self.assertEqual(lisp_fdic.banks_of_company("creds.json", "NOBODY FINANCIAL CORP", "test"), [])
+
+    def test_banks_can_be_given_by_certificate_number_or_a_list_of_them(self):
+        self.assertEqual(lisp_fdic.banks_given("creds.json", 5, "test"), [(5, "certificate 5")])
+        two = lisp_core.list_to_pairs([1, 2])
+        self.assertEqual([cert for cert, _ in lisp_fdic.banks_given("creds.json", two, "test")], [1, 2])
+
+
+# ---------------------------------------------------------------------------
+# The loan book
+# ---------------------------------------------------------------------------
+
+class TestTheLoanBook(FakeFdic):
+
+    def setUp(self):
+        super().setUp()
+        self.loans = self.book()
+
+    def test_the_periods_are_the_12_months_to_the_latest_reports_day_each_year(self):
+        self.assertEqual(self.loans.latest, LATEST)
+        self.assertEqual(self.loans.period_ends[0], "20000630")
+        self.assertEqual(self.loans.period_ends[-1], LATEST)
+        self.assertEqual(len(self.loans.period_ends), 27)
+        self.assertEqual(self.loans.bank_names(), "ABC Bank (1); ABC Bank (2)")
+
+    def test_the_banks_are_added_up_in_dollars(self):
+        self.assertAlmostEqual(self.loans.balance("commercial", LATEST), loans_at("LNCI", LATEST, 1.5) * 1000, delta=1e-3)
+        self.assertAlmostEqual(self.loans.noncurrent("credit-cards", LATEST), 0.01 * loans_at("LNCRCD", LATEST, 1.5) * 1000,
+                               delta=1e-3)
+
+    def test_12_months_of_charge_offs_are_this_years_to_date_and_the_rest_of_last_years(self):
+        expected = (year_losses("LNCRCD", 2026, 1.5) / 2 + year_losses("LNCRCD", 2025, 1.5) / 2) * 1000
+        self.assertAlmostEqual(self.loans.charge_offs("credit-cards", LATEST), expected, delta=1e-3)
+        self.assertAlmostEqual(self.loans.charge_offs("credit-cards", "20251231"), year_losses("LNCRCD", 2025, 1.5) * 1000,
+                               delta=1e-3)
+
+    def test_everything_else_is_what_the_types_leave_of_all_loans(self):
+        self.assertAlmostEqual(self.loans.balance("everything-else", LATEST), EVERYTHING_ELSE * 1.5 * 1000, delta=1e-3)
+        self.assertAlmostEqual(self.loans.charge_offs("everything-else", LATEST), 0, places=3)
+
+    def test_a_loss_rate_is_the_charge_offs_over_the_loans_a_year_before(self):
+        rates = self.loans.loss_rates("credit-cards")
+        self.assertEqual(len(rates), 26)
+        expected = (year_losses("LNCRCD", 2026, 1) + year_losses("LNCRCD", 2025, 1)) / 2 / loans_at("LNCRCD", "20250630", 1)
+        self.assertAlmostEqual(rates[-1], expected)
+        worst = max(rates)
+        self.assertGreater(worst, 2 * rates[-1])                       # (the 12 months to June 2009 and 2010 have half the crisis each)
+
+    def test_the_capital_is_there_since_2015(self):
+        self.assertEqual(self.loans.capital(LATEST), (180000.0 * 1000, 1500000.0 * 1000))
+        self.assertEqual(self.loans.capital("20100630"), (None, None))
+
+
+class TestYearsLeftOut(unittest.TestCase):
+    """A year in which a type's loans more than doubled (a purchase), or in which it was under 1% of all loans, has no loss rate."""
+
+    def setUp(self):
+        def report(total, commercial, commercial_lost, cards, cards_lost):
+            return {"LNLSGR": total, "LNCI": commercial, "NTCI": commercial_lost, "LNCRCD": cards, "NTCRCD": cards_lost}
+        self.book = lisp_fdic.LoanBook([(1, "A bank")], {
+            "20231231": report(1000.0, 400.0, 0.0, 5.0, 0.0),
+            "20241231": report(1100.0, 420.0, 4.0, 60.0, 2.0),           # (cards were 0.5% of the loans at the start)
+            "20251231": report(1600.0, 900.0, 90.0, 70.0, 3.5),          # (commercial loans more than doubled)
+        })
+
+    def test_the_rates_left_out(self):
+        self.assertEqual(self.book.loss_rates("commercial"), [4.0 / 400.0, None])
+        self.assertEqual(self.book.loss_rates("credit-cards"), [None, 3.5 / 60.0])
+
+    def test_the_sheets_formulas_leave_out_the_same(self):
+        model = fm.build_model(bank_facts(), "ABC", "annual", 3, 3, "test", None, "bank",
+                               find_loan_book=lambda name: (self.book, ""))
+        tab = credit.FdicTab(self.book, model)
+        sheets = Sheets([tab.sheet()])
+        for key, expected in (("commercial", [4.0 / 400.0, ""]), ("credit-cards", ["", 3.5 / 60.0])):
+            row = tab.row_of[("rates", key)]
+            found = [sheets.value(credit.FDIC_TAB, row - 1, column) for column in (2, 3)]
+            self.assertEqual([round(v, 12) if isinstance(v, float) else v for v in found],
+                             [round(v, 12) if isinstance(v, float) else v for v in expected], key)
+
+
+class TestFdicLoanLosses(FakeFdic):
+
+    def test_the_table_has_a_row_for_each_type_and_all_loans(self):
+        table = self.run_lisp('(fdic-loan-losses creds "ABC BANCORP")')
+        types = [str(x) for x in self.run_lisp('(table-column (fdic-loan-losses creds "ABC BANCORP") "type")').items]
+        self.assertEqual(len(types), len(lisp_fdic.LOAN_TYPES) + 2)
+        self.assertEqual(types[-1], "All loans")
+        shares = self.run_lisp('(table-column (fdic-loan-losses creds 1) "share")').items.tolist()
+        self.assertAlmostEqual(shares[-1], 1.0)
+        self.assertAlmostEqual(sum(shares[:-1]), 1.0)
+        self.assertIsNotNone(table)
+
+    def test_a_types_losses_last_year_and_its_worst(self):
+        row = self.run_lisp('(table-column (fdic-loan-losses creds 1) "losses-last-year")').items.tolist()
+        cards = next(n for n, t in enumerate(lisp_fdic.LOAN_TYPES) if t[0] == "credit-cards")
+        expected = (year_losses("LNCRCD", 2026, 1) + year_losses("LNCRCD", 2025, 1)) / 2 / loans_at("LNCRCD", "20250630", 1)
+        self.assertAlmostEqual(row[cards], expected)
+        worst = self.run_lisp('(table-column (fdic-loan-losses creds 1) "losses-worst-year")').items.tolist()
+        self.assertGreater(worst[cards], 0.05)
+
+
+# ---------------------------------------------------------------------------
+# The bank model with the FDIC's loans
+# ---------------------------------------------------------------------------
+
+def build_with_loans(book, period="annual", history=3, forecast=4, facts=None):
+    return fm.build_model(facts or bank_facts(), "ABC", period, history, forecast, "test", None, "bank",
+                          find_loan_book=lambda name: (book, ""))
+
+
+class TestTheCreditTabs(ModelTestCase):
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(lisp_fdic, "fdic_records", fake_records)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.book = lisp_fdic.loan_book("creds.json", [(1, "ABC Bank"), (2, "ABC Bank West")], "test")
+        self.use(build_with_loans(self.book))
+        self.tabs = self.model.sheets()
+        self.credit = next(tab for tab in self.tabs if tab["name"] == credit.CREDIT)
+
+    def choose(self, scenario):
+        row = next(n for n, cells in enumerate(self.credit["cells"]) if cells[0] and str(cells[0][0]).startswith("Scenario in"))
+        self.sheets.cells[credit.CREDIT][(row, 1)] = scenario
+        self.sheets.worked_out.clear()
+
+    def named(self, name):
+        tab, address = self.sheets.names[name]
+        return self.sheets.at(tab, address)
+
+    def test_the_tabs_come_after_the_cash_flow_and_before_the_notes(self):
+        self.assertEqual([tab["name"] for tab in self.tabs],
+                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "Credit Losses", "FDIC Loans", "Notes"])
+
+    def test_every_formula_on_every_tab_works_out_in_every_scenario(self):
+        for scenario in credit.SCENARIOS:
+            self.choose(scenario)
+            for tab in self.tabs:
+                for (row, column) in list(self.sheets.cells[tab["name"]]):
+                    self.sheets.value(tab["name"], row, column)
+            self.assertBalances(7)
+
+    def test_the_fdic_tab_has_the_banks_loans_and_the_rates_are_formulas_of_them(self):
+        fdic = credit.FdicTab(self.book, self.model)
+        cards = fdic.row_of[("rates", "credit-cards")]
+        last = len(self.book.period_ends)
+        formula = self.sheets.cells[credit.FDIC_TAB][(cards - 1, last)]
+        self.assertTrue(formula.startswith("=IF(") and "IFERROR(" in formula, formula)
+        self.assertAlmostEqual(self.sheets.value(credit.FDIC_TAB, cards - 1, last), self.book.loss_rates("credit-cards")[-1])
+        loans = fdic.row_of[("loans", "total")]
+        self.assertAlmostEqual(self.sheets.value(credit.FDIC_TAB, loans - 1, last), self.book.balance("total", LATEST) / 1e6)
+
+    def test_the_base_loss_rate_is_the_average_of_the_last_five_years_weighted_by_todays_loans(self):
+        total = self.book.balance("total", LATEST)
+        expected = 0.0
+        for key in self.book.keys:
+            recent = [rate for rate in self.book.loss_rates(key)[-5:] if rate is not None]
+            average = max(sum(recent) / len(recent), 0) if recent else 0.0
+            expected += self.book.balance(key, LATEST) / total * average
+        self.assertAlmostEqual(self.named("base_loss_rate"), expected, places=9)
+
+    def test_a_worse_scenario_has_more_defaults_and_less_recovered(self):
+        base, adverse, severe = (self.named(name) for name in ("base_loss_rate", "adverse_loss_rate", "severe_loss_rate"))
+        self.assertLess(base, adverse)
+        self.assertLess(adverse, severe)
+        cards = 0.04
+        self.assertGreater(severe, 2 * base)
+        self.assertLess(severe, 10 * cards)
+
+    def test_the_forecasts_charge_offs_follow_the_scenario_for_the_periods_of_stress_then_the_base(self):
+        base = self.named("base_loss_rate")
+        for i in range(3, 7):
+            self.assertAlmostEqual(self.v("Assumptions", "charge-off-rate", i), base)
+        self.choose("Severe")
+        severe = self.named("severe_loss_rate")
+        self.assertEqual([round(self.v("Assumptions", "charge-off-rate", i), 12) for i in range(3, 7)],
+                         [round(severe, 12)] * 2 + [round(base, 12)] * 2)
+        self.assertAlmostEqual(self.named("chosen_loss_rate"), severe)
+
+    def test_a_worse_scenario_costs_its_extra_charge_offs_after_tax_in_net_income(self):
+        base_income = self.v("Income Statement", "net-income", 3)
+        base_charge_offs = self.v("Income Statement", "net-charge-offs", 3)
+        self.choose("Adverse")
+        extra = self.v("Income Statement", "net-charge-offs", 3) - base_charge_offs
+        self.assertGreater(extra, 0)
+        tax = self.v("Assumptions", "tax-rate", 3)
+        self.assertAlmostEqual(base_income - self.v("Income Statement", "net-income", 3), extra * (1 - tax), places=6)
+        self.assertAlmostEqual(self.v("Income Statement", "provision", 3),
+                               self.v("Income Statement", "net-charge-offs", 3) + self.v("Balance Sheet", "allowance", 3)
+                               - self.v("Balance Sheet", "allowance", 2))
+
+    def test_the_capital_ratio_is_the_banks_then_grows_with_the_equity_and_the_loans(self):
+        for i, year in enumerate(YEARS):
+            self.assertAlmostEqual(self.v("Balance Sheet", "capital-ratio", i), 0.12)
+        last = len(YEARS) - 1
+        for i in range(3, 7):
+            equity_growth = self.v("Balance Sheet", "equity", i) - self.v("Balance Sheet", "equity", last)
+            loans_growth = self.v("Balance Sheet", "loans", i) / self.v("Balance Sheet", "loans", last)
+            expected = (180000 / 1000 + equity_growth) / (1500000 / 1000 * loans_growth)
+            self.assertAlmostEqual(self.v("Balance Sheet", "capital-ratio", i), expected)
+        # (the made-up bank pays out more than it earns, which a year of losses would stop: no payouts, to compare)
+        for key in ("dividend-payout", "buyback-payout"):
+            set_input(self.sheets, self.model, "Assumptions", key, 3, 0.0)
+        base_ratio = self.v("Balance Sheet", "capital-ratio", 4)
+        self.choose("Severe")
+        self.assertLess(self.v("Balance Sheet", "capital-ratio", 4), base_ratio)
+
+    def test_the_table_of_what_each_scenario_costs(self):
+        rows = self.credit["cells"]
+        start = next(n for n, cells in enumerate(rows) if cells[0] and str(cells[0][0]).startswith("What each scenario costs"))
+        labels = [rows[n][0][0] for n in range(start + 2, start + 7)]
+        self.assertEqual(labels[0], "Losses a year, % of loans")
+        total_loans = self.book.balance("total", LATEST) / 1e6
+        severe = self.named("severe_loss_rate")
+        losses = self.sheets.value(credit.CREDIT, start + 3, 3)
+        self.assertAlmostEqual(losses, severe * total_loans * 2)
+        extra = self.sheets.value(credit.CREDIT, start + 4, 3)
+        tax = self.named("tax_rate")
+        self.assertAlmostEqual(extra, (losses - self.sheets.value(credit.CREDIT, start + 3, 1)) * (1 - tax))
+        self.assertAlmostEqual(self.sheets.value(credit.CREDIT, start + 6, 3), (180 - extra) / 1500)
+
+    def test_the_scenario_is_a_drop_down_and_the_cells_have_names(self):
+        self.assertEqual(self.credit["validations"][0]["choices"], ["Base", "Adverse", "Severe"])
+        self.assertEqual({name for name, _ in self.credit["names"]}, set(credit.NAMES))
+
+    def test_the_notes_say_where_the_data_came_from_and_what_is_left_out(self):
+        notes = "\n".join(cells[0][0] for cells in self.tabs[-1]["cells"] if cells and cells[0])
+        self.assertIn("Credit losses by type of loan (the Credit Losses and FDIC Loans tabs)", notes)
+        self.assertIn("ABC Bank (1); ABC Bank (2)", notes)
+        self.assertIn("The allowance stays the percentage of loans assumed", notes)
+        self.assertNotIn("which the SEC's facts do not give (the FDIC", notes)
+
+    def test_a_typed_scenario_rate_flows_through(self):
+        # (a default rate on commercial real estate typed over, in the severe scenario)
+        self.choose("Severe")
+        before = self.named("severe_loss_rate")
+        table = next(n for n, cells in enumerate(self.credit["cells"]) if cells[0] and cells[0][0] == "Loan type")
+        row = next(n for n in range(table, table + 20) if self.credit["cells"][n][0][0].startswith("Commercial real estate"))
+        self.sheets.cells[credit.CREDIT][(row, credit.COLUMN_OF["severe-default"])] = 0.5
+        self.sheets.worked_out.clear()
+        share = self.sheets.value(credit.CREDIT, row, credit.COLUMN_OF["share"])
+        recovery = self.sheets.value(credit.CREDIT, row, credit.COLUMN_OF["severe-recovery"])
+        self.assertGreater(self.named("severe_loss_rate"), before)
+        self.assertAlmostEqual(self.v("Assumptions", "charge-off-rate", 3), self.named("severe_loss_rate"))
+        self.assertGreater(share * 0.5 * (1 - recovery), 0)
+
+
+class TestWithoutTheFdic(ModelTestCase):
+
+    def test_a_bank_without_a_loan_book_is_as_before(self):
+        self.use(fm.build_model(bank_facts(), "ABC", "annual", 3, 3, "test", None, "bank"))
+        names = [tab["name"] for tab in self.model.sheets()]
+        self.assertNotIn(credit.CREDIT, names)
+        self.assertNotIn("capital-ratio", self.model.layouts["Balance Sheet"].row_of)
+        self.assertFalse(str(self.model.sheets()[0]["cells"][self.model.layouts["Assumptions"].row_of["charge-off-rate"] - 1][4][0]).startswith("=IF("))
+
+
+class TestQuarterlyWithTheFdic(ModelTestCase):
+
+    def test_quarters_have_eight_periods_of_stress_and_everything_works_out(self):
+        with mock.patch.object(lisp_fdic, "fdic_records", fake_records):
+            book = lisp_fdic.loan_book("creds.json", [(1, "ABC Bank")], "test")
+        self.use(build_with_loans(book, "quarterly", 6, 8, bank_facts(quarterly=True)))
+        self.assertEqual(self.sheets.at(*self.sheets.names["stress_periods"]), 8)
+        for tab in self.model.sheets():
+            for (row, column) in list(self.sheets.cells[tab["name"]]):
+                self.sheets.value(tab["name"], row, column)
+
+
+class TestTheBuiltin(LispTestCase):
+    """(three-statement-model creds "ABC" :fdic ...) with a made-up bank, a fake FDIC, and a fake Google."""
+
+    def setUp(self):
+        super().setUp()
+        self.written = []
+        self.requests = []
+        self.facts = bank_facts()
+        self.facts = dict(self.facts)
+
+        def records(credentials_path, dataset, params, who):
+            self.requests.append((dataset, params.get("filters")))
+            return fake_records(credentials_path, dataset, params, who)
+        for patcher in (mock.patch.object(lisp_sec, "company_facts", lambda creds, company, who: self.facts),
+                        mock.patch.object(fm, "company_industry", lambda creds, company, who: (6021, "National Commercial Banks")),
+                        mock.patch.object(lisp_fdic, "fdic_records", records),
+                        mock.patch.object(lisp_google, "google_workbook",
+                                          lambda creds, title, sheets: self.written.append((title, sheets)) or "https://sheet")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("creds.json")
+
+    def tab_names(self):
+        return [tab["name"] for tab in self.written[-1][1]]
+
+    def notes(self):
+        return "\n".join(cells[0][0] for cells in self.written[-1][1][-1]["cells"] if cells and cells[0])
+
+    def test_the_banks_are_found_by_the_companys_name(self):
+        self.facts["entityName"] = "ABC BANCORP"
+        self.run_lisp('(three-statement-model creds "ABC")')
+        self.assertIn("Credit Losses", self.tab_names())
+        self.assertEqual(sorted(f for d, f in self.requests if d == "financials"), ["CERT:1", "CERT:2"])
+
+    def test_a_company_the_fdic_does_not_know_has_a_note_instead(self):
+        self.facts["entityName"] = "NOBODY FINANCIAL CORP"
+        self.run_lisp('(three-statement-model creds "ABC")')
+        self.assertNotIn("Credit Losses", self.tab_names())
+        self.assertIn("No FDIC data: the FDIC has no bank open now whose holding company (or itself) is called "
+                      "NOBODY FINANCIAL CORP", self.notes())
+
+    def test_banks_given_by_certificate_number(self):
+        self.run_lisp("(three-statement-model creds \"ABC\" :fdic '(5))")
+        self.assertIn("Credit Losses", self.tab_names())
+        self.assertEqual([f for d, f in self.requests if d == "financials"], ["CERT:5"])
+
+    def test_no_fdic_and_no_requests_with_fdic_false(self):
+        self.run_lisp('(three-statement-model creds "ABC" :fdic #f)')
+        self.assertNotIn("Credit Losses", self.tab_names())
+        self.assertEqual(self.requests, [])
+
+    def test_an_fdic_that_cannot_be_reached_is_a_note_when_looking_by_name(self):
+        def broken(*arguments):
+            raise lisp_core.LispError("fdic: the network is down")
+        with mock.patch.object(lisp_fdic, "fdic_records", broken):
+            self.run_lisp('(three-statement-model creds "ABC")')
+        self.assertIn("No FDIC data: fdic: the network is down", self.notes())
+
+
+if __name__ == "__main__":
+    unittest.main()

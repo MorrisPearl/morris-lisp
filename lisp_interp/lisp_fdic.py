@@ -15,11 +15,14 @@ builtins put them in tables:
   (fdic-get creds dataset [parameters])    any of the FDIC's datasets: failures,
                                            branch locations, history, ...
   (fdic-fields creds dataset [search])     what the fields of a dataset mean
+  (fdic-loan-losses creds bank)            the loans by type (mortgages, commercial real estate, credit
+                                           cards, ...) and how much of each has been lost a year since 2001
 
 A bank is its FDIC certificate number (Wells Fargo Bank is 3511), or a name
 that matches just one bank that's open now. The data is for each insured
 bank, not its holding company: Wells Fargo Bank, N.A., not Wells Fargo &
-Company.
+Company. (fdic-loan-losses also takes a holding company's name, or a list of
+certificate numbers, and adds up its banks.)
 
 The FDIC reports dollar amounts in thousands; these give them in dollars
 (or, for the statements, in millions). Ratios are percents, as the FDIC
@@ -34,6 +37,7 @@ it has one. Downloads are kept for 12 hours (in lisp_http's cache).
 """
 
 import json
+import re
 import urllib.parse
 
 from lisp_core import LispDate, LispError, LispString, NIL, Pair, keyword_options, pairs_to_list
@@ -400,7 +404,259 @@ def fdic_fields(credentials_path, dataset, search=NIL):
     ])
 
 
+# ---------------------------------------------------------------------------
+# A holding company's banks
+# ---------------------------------------------------------------------------
+# The SEC knows a bank holding company by one name (U.S. BANCORP \DE\) and the FDIC by another (U S BCORP), so names are
+# compared by their words, after making the usual abbreviations the same and leaving out the words that say nothing.
+
+SAME_WORDS = {"BANCORP": "BCORP", "BANCORPORATION": "BCORP", "FINANCIAL": "FINL", "SERVICES": "SVC", "SVCS": "SVC",
+              "BANCSHARES": "BSHRS", "BANKSHARES": "BKSHRS", "NATIONAL": "NATL", "HOLDINGS": "HLDGS",
+              "HOLDING": "HLDG", "BANK": "BK", "BANKING": "BKG", "CORPORATION": "CORP", "COMPANY": "CO",
+              "SYSTEMS": "SYS", "SYSTEM": "SYS", "GROUP": "GRP", "INCORPORATED": "INC"}
+EMPTY_WORDS = {"THE", "INC", "CORP", "CO", "LTD", "PLC", "AND", "OF", "NEW", "NA"}
+STATE_SUFFIX = re.compile(r"\s*[/\\][A-Z]{2,3}[/\\]?\s*$")           # (the SEC's /DE/, \DE\, /MN at the end of a name)
+
+
+def name_key(name):
+    """The words of a company's name that tell it apart, in order: "U.S. BANCORP \\DE\\" and "U S BCORP" are both
+    ('BCORP', 'US')."""
+    text = str(name).upper()
+    while STATE_SUFFIX.search(text):
+        text = STATE_SUFFIX.sub("", text)
+    text = text.replace("NATIONAL ASSOCIATION", " ").replace("&", " AND ")
+    words = [SAME_WORDS.get(word, word) for word in re.findall(r"[A-Z0-9]+", text)]
+    words = [word for word in words if word not in EMPTY_WORDS]
+    joined = []                         # (single letters run together: U S is US, F N B is FNB)
+    previous_single = False
+    for word in words:
+        single = len(word) == 1
+        if single and previous_single:
+            joined[-1] += word
+        else:
+            joined.append(word)
+        previous_single = single
+    return tuple(sorted(word for word in joined if word not in EMPTY_WORDS))       # (N A is NA)
+
+
+def open_banks(credentials_path, who):
+    """Every bank open now: a list of dicts with CERT, NAME, NAMEHCR (its holding company), RSSDHCR, and ASSET."""
+    return fdic_records(credentials_path, "institutions",
+                        {"filters": "ACTIVE:1", "fields": "CERT,NAME,NAMEHCR,RSSDHCR,ASSET"}, who)
+
+
+def banks_of_company(credentials_path, name, who):
+    """The banks open now that belong to the company of this name (its holding company has the name, or the bank
+    itself has it): a list of (certificate number, bank name), largest first. If two holding companies have names
+    alike, the larger one's. Empty if there are none."""
+    wanted = name_key(name)
+    banks = open_banks(credentials_path, who)
+    by_holder = {}
+    for bank in banks:
+        if bank.get("NAMEHCR") and name_key(bank["NAMEHCR"]) == wanted:
+            by_holder.setdefault(bank.get("RSSDHCR"), []).append(bank)
+    if by_holder:
+        chosen = max(by_holder.values(), key=lambda group: sum(b.get("ASSET") or 0 for b in group))
+    else:
+        chosen = [bank for bank in banks if name_key(bank["NAME"]) == wanted]
+    chosen.sort(key=lambda b: -(b.get("ASSET") or 0))
+    return [(int(b["CERT"]), str(b["NAME"])) for b in chosen]
+
+
+def banks_given(credentials_path, given, who):
+    """The banks a function was given: a certificate number, a list of them, or a name -- of a bank open now, or of
+    a holding company (all its banks). A list of (certificate number, name)."""
+    if isinstance(given, Pair) or given is NIL:
+        certs = [int(x) for x in pairs_to_list(given)]
+        if not certs:
+            raise LispError("%s: the list of certificate numbers is empty" % who)
+        return [(cert, "certificate %d" % cert) for cert in certs]
+    if isinstance(given, (int, float)) and not isinstance(given, bool) or str(given).strip().isdigit():
+        cert = int(str(given).strip()) if not isinstance(given, (int, float)) else int(given)
+        return [(cert, "certificate %d" % cert)]
+    found = banks_of_company(credentials_path, given, who)
+    if found:
+        return found
+    return [(bank_cert(credentials_path, given, who), str(given))]
+
+
+# ---------------------------------------------------------------------------
+# Loans by type, and their losses
+# ---------------------------------------------------------------------------
+# Each type of loan: (key, label, the field of its balance, of its net charge-offs for the year to date, of the part
+# of it that is noncurrent (90 days or more past due, or not accruing interest), and how much of a defaulted loan of
+# this type a lender typically gets back -- a rough figure for a start, not the bank's own: the Call Report doesn't say).
+# The types are the Call Report's; "everything else" is what is left of the total (loans to governments, to other
+# banks, real estate abroad, ...).
+
+LOAN_TYPES = [
+    ("residential", "1-4 family residential mortgages (and home equity lines)", "LNRERES", "NTRERES", "NCRERES", 0.70),
+    ("multifamily", "Multifamily (apartment) real estate", "LNREMULT", "NTREMULT", "NCREMULT", 0.65),
+    ("construction", "Construction and land development", "LNRECONS", "NTRECONS", "NCRECONS", 0.50),
+    ("commercial-real-estate", "Commercial real estate (nonfarm nonresidential)", "LNRENRES", "NTRENRES", "NCRENRES", 0.60),
+    ("farmland", "Farmland", "LNREAG", "NTREAG", "NCREAG", 0.65),
+    ("commercial", "Commercial and industrial", "LNCI", "NTCI", "NCCI", 0.55),
+    ("credit-cards", "Credit cards", "LNCRCD", "NTCRCD", "NCCRCD", 0.10),
+    ("auto", "Auto loans", "LNAUTO", "NTAUTO", "NCAUTO", 0.50),
+    ("other-consumer", "Other consumer loans", "LNCONOTH", "NTCONOTH", "NCCONOTH", 0.30),
+    ("agricultural", "Agricultural (not real estate)", "LNAG", "NTAG", "NCAG", 0.55),
+    ("financial-and-other", "Loans to financial companies that are not banks, and other loans", "LNOTHER", "NTOTHER",
+     "NCOTHLN", 0.50),
+    ("leases", "Leases", "LS", "NTLS", "NCLS", 0.50),
+]
+EVERYTHING_ELSE = ("everything-else", "Everything else (governments, other banks, real estate abroad, ...)", 0.50)
+TOTAL_FIELDS = {"balance": "LNLSGR", "charge-offs": "NTLNLS", "noncurrent": "NCLNLS"}
+CAPITAL_FIELDS = {"common-equity": "RBCT1C", "risk-weighted-assets": "RWAJ"}
+FIRST_YEAR = 2001                       # the first year of losses (the year before gives its starting loans)
+MOST_GROWTH = 2.0                       # a year in which a type's loans grew more than this many times is left out,
+LEAST_SHARE = 0.01                      # and one in which they were less than this share of all loans at the start
+
+
+def year_before(date_text):
+    return "%04d%s" % (int(date_text[:4]) - 1, date_text[4:])
+
+
+class LoanBook:
+    """The loans of a bank, or of all of a holding company's banks added up, by type, from every Call Report since
+    FIRST_YEAR - 1: balances at a date, net charge-offs in the 12 months to it, and noncurrent loans at it, in dollars;
+    and the banks' common equity tier 1 capital and risk-weighted assets."""
+
+    def __init__(self, banks, reports):
+        self.banks = banks                         # [(certificate number, name)]
+        self.reports = reports                     # date (YYYYMMDD) -> field -> dollars, added up over the banks
+        self.latest = max(reports)
+        # the periods: the 12 months to the latest report's day of the year, each year back to FIRST_YEAR (the
+        # first only for its loans at the end, which start the next one)
+        self.period_ends = []
+        date = self.latest
+        while int(date[:4]) >= FIRST_YEAR - 1 and date in reports:
+            self.period_ends.insert(0, date)
+            date = year_before(date)
+        self.keys = [t[0] for t in LOAN_TYPES] + [EVERYTHING_ELSE[0]]
+        self.labels = dict([(t[0], t[1]) for t in LOAN_TYPES] + [EVERYTHING_ELSE[:2]])
+        self.recoveries = dict([(t[0], t[5]) for t in LOAN_TYPES] + [(EVERYTHING_ELSE[0], EVERYTHING_ELSE[2])])
+
+    def field(self, name, date):
+        return self.reports.get(date, {}).get(name)
+
+    def amount(self, kind, key, date):
+        """One type's balance, year-to-date charge-offs, or noncurrent loans at the date (kind is "balance",
+        "charge-offs", or "noncurrent"); for everything else, what the types leave of the total."""
+        column = {"balance": 2, "charge-offs": 3, "noncurrent": 4}[kind]
+        if key == "total":
+            return self.field(TOTAL_FIELDS[kind], date)
+        if key == EVERYTHING_ELSE[0]:
+            total = self.field(TOTAL_FIELDS[kind], date)
+            if total is None:
+                return None
+            return total - sum(self.field(t[column], date) or 0.0 for t in LOAN_TYPES)
+        return self.field(next(t[column] for t in LOAN_TYPES if t[0] == key), date)
+
+    def balance(self, key, date):
+        return self.amount("balance", key, date)
+
+    def noncurrent(self, key, date):
+        return self.amount("noncurrent", key, date)
+
+    def charge_offs(self, key, date):
+        """Net charge-offs in the 12 months to the date: the year to date, and the rest of the year before (a Call
+        Report's income is for the year to date)."""
+        to_date = self.amount("charge-offs", key, date)
+        if date.endswith("1231") or to_date is None:
+            return to_date
+        last_december = "%04d1231" % (int(date[:4]) - 1)
+        whole_year, same_part = self.amount("charge-offs", key, last_december), self.amount("charge-offs", key, year_before(date))
+        if whole_year is None or same_part is None:
+            return None
+        return to_date + whole_year - same_part
+
+    def loss_rates(self, key):
+        """The type's net charge-offs in each period, over its loans at the end of the period before: a list, one for
+        each period after the first. None where there were no loans at the start; where the loans grew more than
+        MOST_GROWTH times in the period -- a bank bought, or a new kind of lending begun -- since then the losses are
+        mostly on loans that were not there at the start (PNC's credit cards, the year it bought National City); and
+        where the type was less than LEAST_SHARE of all the loans at the start, since a few dollars lost on a few dollars
+        lent says nothing about a kind of lending that is a large part of the bank today."""
+        rates = []
+        for before, end in zip(self.period_ends, self.period_ends[1:]):
+            loans, lost, loans_after = self.balance(key, before), self.charge_offs(key, end), self.balance(key, end)
+            all_loans = self.balance("total", before) or 0.0
+            if not loans or loans <= 0 or lost is None or (loans_after or 0) > MOST_GROWTH * loans \
+                    or loans < LEAST_SHARE * all_loans:
+                rates.append(None)
+            else:
+                rates.append(lost / loans)
+        return rates
+
+    def capital(self, date):
+        """(common equity tier 1 capital, risk-weighted assets) at the date, in dollars, or None for either."""
+        return self.field(CAPITAL_FIELDS["common-equity"], date), self.field(CAPITAL_FIELDS["risk-weighted-assets"], date)
+
+    def bank_names(self):
+        return "; ".join("%s (%d)" % (name, cert) for cert, name in self.banks)
+
+
+def loan_book(credentials_path, banks, who):
+    """The LoanBook of these banks [(certificate number, name)]: every one of their Call Reports, added up date by date."""
+    fields = sorted({f for t in LOAN_TYPES for f in t[2:5]} | set(TOTAL_FIELDS.values()) | set(CAPITAL_FIELDS.values()))
+    reports = {}
+    named = []
+    for cert, name in banks:
+        records = fdic_records(credentials_path, "financials",
+                               {"filters": "CERT:%d" % cert, "fields": ",".join(["REPDTE", "NAME"] + fields),
+                                "sort_by": "REPDTE", "sort_order": "DESC"}, who)
+        if not records:
+            raise LispError("%s: the FDIC has no reports for certificate number %d" % (who, cert))
+        named.append((cert, str(records[0].get("NAME") or name)))
+        for record in records:
+            date = str(record["REPDTE"])
+            if int(date[:4]) < FIRST_YEAR - 2:
+                continue
+            added = reports.setdefault(date, {})
+            for field in fields:
+                if record.get(field) is not None:
+                    added[field] = added.get(field, 0.0) + record[field] * 1000.0        # (the FDIC's are thousands)
+    return LoanBook(named, reports)
+
+
+def fdic_loan_losses(credentials_path, bank):
+    """(fdic-loan-losses creds bank) -- a bank's loans by type, from its latest Call Report, and what it has lost on
+    each: a table with a row per type (and one for all loans) of type, loans (in millions), share (of all loans),
+    noncurrent (the share 90 days or more past due or not accruing interest), losses-last-year (net charge-offs in
+    the last 12 months, over the loans a year before), losses-average-5-years, losses-worst-year (since 2001), and
+    worst-year (the year it ended). bank is a certificate number, a list of them, the name of a bank open now, or the
+    name of a holding company ("KeyCorp"), whose banks are added up."""
+    who = "fdic-loan-losses"
+    book = loan_book(credentials_path, banks_given(credentials_path, bank, who), who)
+    latest = book.latest
+    total = book.balance("total", latest) or 0.0
+    rows = []
+    for key in book.keys + ["total"]:
+        rates = book.loss_rates(key)
+        known = [(rate, end) for rate, end in zip(rates, book.period_ends[1:]) if rate is not None]
+        recent = [rate for rate in rates[-5:] if rate is not None]
+        worst = max(known) if known else (None, None)
+        loans = book.balance(key, latest)
+        noncurrent = book.noncurrent(key, latest)
+        rows.append((book.labels.get(key, "All loans"), None if loans is None else loans / 1e6,
+                     safe_share(loans, total), safe_share(noncurrent, loans), rates[-1] if rates else None,
+                     sum(recent) / len(recent) if recent else None, worst[0],
+                     report_date(worst[1]) if worst[1] else None))
+    names = ["type", "loans", "share", "noncurrent", "losses-last-year", "losses-average-5-years",
+             "losses-worst-year", "worst-year"]
+    columns = []
+    for n, name in enumerate(names):
+        values = [row[n] for row in rows]
+        columns.append((name, column_vector([LispString(v) if n == 0 else v for v in values])))
+    return make_table_value(columns)
+
+
+def safe_share(part, whole):
+    return part / whole if part is not None and whole else None
+
+
 BUILTINS = {
+    "fdic-loan-losses": fdic_loan_losses,
     "fdic-find-bank": fdic_find_bank,
     "fdic-balance-sheet": fdic_balance_sheet,
     "fdic-income-statement": fdic_income_statement,

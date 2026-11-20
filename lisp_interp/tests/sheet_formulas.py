@@ -3,7 +3,7 @@
 It reads the tabs as lisp_google.google_workbook is given them (a list of dicts with "name" and
 "cells") and works out every formula. It knows what the model's formulas use: numbers, text in
 quotes, cell references (A1, or 'Tab name'!A1), ranges of them in SUM, AVERAGE, MEDIAN, MAX, MIN, ROUND, IFERROR,
-the operators + - * / ^, parentheses, named cells (a tab's "names", such as tax_rate) and OFFSET(a name or cell, rows,
+SUMPRODUCT, IF, the operators + - * / ^ and the comparisons = <> < > <= >=, parentheses, named cells (a tab's "names", such as tax_rate) and OFFSET(a name or cell, rows,
 columns), which moves from it. Anything else is an error, so a formula that uses
 something new says so here.
 """
@@ -16,8 +16,12 @@ TOKEN = re.compile(r"""\s*(?:
   | (?P<reference>(?:'[^']+'!)?\$?[A-Z]{1,3}\$?\d+(?::\$?[A-Z]{1,3}\$?\d+)?)
   | (?P<function>[A-Z]+)\(
   | (?P<name>[a-z_][a-z0-9_]*)
+  | (?P<compare><=|>=|<>|[<>=])
   | (?P<symbol>[-+*/^(),])
 )""", re.VERBOSE)
+
+COMPARISONS = {"=": lambda a, b: a == b, "<>": lambda a, b: a != b, "<": lambda a, b: a < b, ">": lambda a, b: a > b,
+               "<=": lambda a, b: a <= b, ">=": lambda a, b: a >= b}
 
 
 def column_number(letters):
@@ -111,6 +115,15 @@ class Formula:
         return token
 
     def expression(self):
+        """A comparison, or just a sum (a comparison is true or false, as Sheets' are)."""
+        value = self.sum()
+        while self.peek()[0] == "compare":
+            operator = self.take()[1]
+            other = self.sum()
+            value = COMPARISONS[operator](value, other)
+        return value
+
+    def sum(self):
         value = self.term()
         while self.peek() in (("symbol", "+"), ("symbol", "-")):
             operator = self.take()[1]
@@ -191,9 +204,59 @@ class Formula:
             raise ValueError("OFFSET goes off the sheet in =%s" % self.text)
         return self.sheets.value(tab, row + rows, column + columns)
 
+    def range_cells(self, text):
+        """Every cell of a range, in order, a number or 0 (text and empty cells are 0, as SUMPRODUCT takes them)."""
+        tab = self.tab
+        if "!" in text:
+            name, text = text.split("!")
+            tab = name.strip("'")
+        (row1, column1), (row2, column2) = [split_address(part) for part in text.split(":")]
+        values = [self.sheets.value(tab, row, column) for row in range(row1, row2 + 1) for column in range(column1, column2 + 1)]
+        return [v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0 for v in values]
+
+    def skip_to_end_of_call(self):
+        """Move past the rest of a function's arguments and its closing parenthesis."""
+        depth = 0
+        while True:
+            kind, text = self.take()
+            if kind == "function" or (kind, text) == ("symbol", "("):
+                depth += 1
+            elif (kind, text) == ("symbol", ")"):
+                if depth == 0:
+                    return
+                depth -= 1
+
     def function(self, name):
         if name == "OFFSET":
             return self.offset()
+        if name == "IF":
+            condition = self.expression()
+            self.take()                                  # the comma
+            if condition:
+                value = self.expression()
+                self.skip_to_end_of_call()
+                return value
+            self.skip_argument(self.position)
+            self.take()                                  # the comma
+            value = self.expression()
+            self.take()
+            return value
+        if name == "SUMPRODUCT":
+            ranges = []
+            while True:
+                kind, text = self.take()
+                if kind != "reference" or ":" not in text:
+                    raise ValueError("SUMPRODUCT of ranges only, in =%s" % self.text)
+                ranges.append(self.range_cells(text))
+                if self.take() == ("symbol", ")"):
+                    break
+            total = 0.0
+            for values in zip(*ranges):
+                product = 1.0
+                for value in values:
+                    product *= value
+                total += product
+            return total
         if name == "IFERROR":
             start = self.position
             try:
@@ -223,9 +286,9 @@ class Formula:
         if name == "AVERAGE":
             return sum(numbers) / len(numbers)
         if name == "MAX":
-            return max(numbers)
+            return max(numbers) if numbers else 0          # (as Sheets: MAX of no numbers is 0)
         if name == "MIN":
-            return min(numbers)
+            return min(numbers) if numbers else 0
         if name == "ROUND":
             return round(numbers[0], int(numbers[1]))
         raise ValueError("the calculator doesn't know %s" % name)

@@ -34,6 +34,7 @@ borrowings are repurchase agreements, short-term borrowings and long-term debt.
 """
 
 import lisp_sec
+import lisp_financial_credit as credit
 import lisp_financial_model as model
 
 Line, SheetLayout = model.Line, model.SheetLayout
@@ -299,12 +300,21 @@ class BankModel(model.Model):
         section("balances-header", "The balance sheet (borrowings are what is needed to fund the rest)",
                 ["loan-growth", "deposit-growth", "cash-to-deposits", "securities-to-deposits"])
         section("rates-header", "Interest rates", ["loan-yield", "securities-yield", "deposit-cost", "borrowing-cost"])
-        section("credit-header", "Credit losses", ["allowance-ratio", "charge-off-rate"])
+        section("credit-header", "Credit losses" + (" (the forecast's net charge-offs follow the scenario chosen on the "
+                                                    "Credit Losses tab)" if self.loan_book else ""),
+                ["allowance-ratio", "charge-off-rate"])
+        if self.loan_book:
+            self.follow_scenario(next(line for line in lines if line is not None and line.key == "charge-off-rate"))
         section("costs-header", "Fees, costs, and taxes", ["noninterest-growth", "efficiency", "tax-rate"])
         section("payout-header", "Shares and payouts", ["share-growth", "dividend-payout", "buyback-payout"])
         lines.pop()
         lines += [None, self.days_line()]
         return SheetLayout(ASSUMPTIONS, "Assumptions", lines)
+
+    def follow_scenario(self, line):
+        """The forecast's net charge-off rate: the Credit Losses tab's, for the scenario chosen there."""
+        history_cell = line.cell
+        line.cell = lambda i: credit.charge_off_formula(self, i) if self.is_forecast(i) else history_cell(i)
 
     # --- Income statement
 
@@ -448,7 +458,25 @@ class BankModel(model.Model):
             Line("allowance-to-loans", "Allowance / loans", "percent", ("italic",),
                  lambda i: '=IFERROR(%s/%s,"")' % (bal("allowance", i), bal("loans", i))),
         ]
+        if self.loan_book and credit.has_capital(self.loan_book, self):
+            lines.append(self.capital_ratio_line(bal))
         return SheetLayout(BALANCE, "Balance Sheet", lines)
+
+    def capital_ratio_line(self, bal):
+        """The common equity tier 1 ratio: the banks' own, from the FDIC, in the periods reported; in the forecast,
+        their capital (on the Credit Losses tab) plus the growth of the company's equity since the date of that capital
+        (the last period reported, unless the FDIC has no report for it yet), over their risk-weighted assets grown
+        with the company's loans."""
+        reported = credit.capital_ratios(self)
+        last = credit.capital_period(self.loan_book, self)          # (the period the banks' capital is at)
+
+        def cell(i):
+            if not self.is_forecast(i):
+                return reported[i]
+            return ('=IFERROR((common_equity_capital+%s-%s)/(risk_weighted_assets*%s/%s),"")'
+                    % (bal("equity", i), bal("equity", last), bal("loans", i), bal("loans", last)))
+        return Line("capital-ratio", "Common equity tier 1 ratio (the banks', from the FDIC; estimated in the forecast)",
+                    "percent", ("italic",), cell)
 
     # --- Cash flow statement
 
@@ -512,8 +540,23 @@ class BankModel(model.Model):
             "The allowance for credit losses is a percentage of loans. Net charge-offs are a percentage of last period's loans. The provision is the charge-offs plus the growth of the allowance.",
             "Noninterest income grows at the rate assumed (from the same quarter a year before, for quarters). Noninterest expense is the efficiency ratio times net revenue (net interest income plus noninterest income).",
             "Equity is last period's plus net income, less dividends and repurchases. The Cash Flow tab is the balance sheet seen as flows (net income, less the growth of loans and securities, plus the growth of deposits and borrowings, less the payouts), and ends with the cash the balance sheet has: the second check line on the Balance Sheet says so.",
-            "Other assets (trading assets, premises, goodwill, and the rest) and other liabilities stay as they were. Regulatory capital ratios need risk-weighted assets, which the SEC's facts do not give.",
+            "Other assets (trading assets, premises, goodwill, and the rest) and other liabilities stay as they were." +
+            ("" if self.loan_book else " Regulatory capital ratios need risk-weighted assets, which the SEC's facts do not give (the FDIC's Call Reports do: see :fdic)."),
         ]
+
+    def valuation_notes(self):
+        notes = super().valuation_notes()
+        if self.loan_book:
+            notes += [""] + credit.notes(self)
+        return notes
+
+    def sheets(self):
+        """The tabs, with the Credit Losses and FDIC Loans tabs before the Notes tab if the model has the FDIC's loans."""
+        tabs = super().sheets()
+        if self.loan_book:
+            at = next(n for n, tab in enumerate(tabs) if tab["name"] == model.NOTES)
+            tabs[at:at] = credit.credit_tabs(self)
+        return tabs
 
 
 TEMPLATE = model.Template("bank", "a bank", BANK_ITEMS, BankHistory, BankModel, BANK_REQUIRED, BANK_SIC_CODES)
