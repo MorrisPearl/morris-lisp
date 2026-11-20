@@ -70,11 +70,11 @@ def report(date, scale):
     record["LNLSGR"] = total_loans + EVERYTHING_ELSE * scale
     record["NTLNLS"] = total_losses
     record["NCLNLS"] = total_noncurrent
-    if date >= "20150331":
+    record["RBCT1"] = 130000.0 * scale          # (tier 1 and total capital in every report, as the FDIC has them)
+    record["RBC"] = 150000.0 * scale
+    if date >= "20150331":                     # (common equity tier 1 since 2015)
         record["RBCT1C"] = 120000.0 * scale
         record["RWAJ"] = 1000000.0 * scale
-        record["RBCT1"] = 130000.0 * scale
-        record["RBC"] = 150000.0 * scale
     # funding, securities, the allowance, and commercial real estate (see the FUNDING... constants)
     record["ASSET"] = ASSETS_TO_LOANS * record["LNLSGR"]
     record["DEP"] = DEPOSITS_TO_LOANS * record["LNLSGR"]
@@ -374,7 +374,8 @@ class TestTheCreditTabs(ModelTestCase):
     def test_commercial_real_estate_is_empty_before_the_call_report_said_who_occupies_it(self):
         year_2006 = self.book.period_ends.index("20060630")
         self.assertEqual(self.fdic_value("real-estate", "total", year_2006), "")
-        self.assertEqual(self.fdic_value("real-estate", "to-capital", year_2006), "")
+        self.assertEqual(self.fdic_value("real-estate", "to-capital", year_2006), "")      # (not 0%, as Sheets would say)
+        self.assertEqual(self.fdic_value("real-estate", "growth", self.book.period_ends.index("20090630")), "")
 
     def warning_signs(self):
         """{measure: (the banks' value, the guide, past it?)} of the Credit Losses tab's last table."""

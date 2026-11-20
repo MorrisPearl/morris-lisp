@@ -32,6 +32,7 @@ INCOME, BALANCE, CASH_FLOW, ASSUMPTIONS, QUALITY = model.INCOME, model.BALANCE, 
 # Altman's Z'' (for any company): the weights of its four ratios, and where its zones begin
 ALTMAN_WEIGHTS = {"working-capital": 6.56, "retained": 3.26, "operating-income": 6.72, "equity": 1.05}
 ALTMAN_SAFE, ALTMAN_DISTRESS = 2.6, 1.1
+RATIO_DIGITS = 9                        # (the Piotroski tests compare ratios rounded to this many places)
 
 
 def quality_layout(the_model):
@@ -156,7 +157,9 @@ def piotroski_lines(m, inc, bal, cf, q):
                     lambda i: "=IFERROR(IF(%s,1,0),0)" % condition(i, i - lag) if i >= lag else None)
 
     def over(numerator, denominator):
-        return lambda i: "%s/%s" % (numerator(i), denominator(i))
+        """A ratio, rounded so that two that are the same but for the last digits (a forecast that holds a margin) are
+        equal, in Sheets and here alike: a test of "up" is then not passed by rounding."""
+        return lambda i: "ROUND(%s/%s,%d)" % (numerator(i), denominator(i), RATIO_DIGITS)
 
     roa = over(lambda i: inc("net-income", i), lambda i: bal("total-assets", i))
     leverage = over(lambda i: bal("long-term-debt", i), lambda i: bal("total-assets", i))

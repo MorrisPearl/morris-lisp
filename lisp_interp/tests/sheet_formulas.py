@@ -21,6 +21,29 @@ TOKEN = re.compile(r"""\s*(?:
   | (?P<symbol>[-+*/^(),])
 )""", re.VERBOSE)
 
+class EmptyCell:
+    """What a reference to an empty cell gives, inside a formula: as in Sheets, it is 0 to arithmetic, equal both to 0
+    and to "", and false to IF. (A formula whose whole result is an empty cell gives 0, as =A1 does.)"""
+
+    def __bool__(self):
+        return False
+
+    def __repr__(self):
+        return "EMPTY"
+
+
+EMPTY = EmptyCell()
+
+
+def comparable(a, b):
+    """The two sides of a comparison, with an empty cell made what the other side is: "" beside text, 0 beside a number."""
+    if a is EMPTY:
+        a = "" if isinstance(b, str) else 0
+    if b is EMPTY:
+        b = "" if isinstance(a, str) else 0
+    return a, b
+
+
 COMPARISONS = {"=": lambda a, b: a == b, "<>": lambda a, b: a != b, "<": lambda a, b: a < b, ">": lambda a, b: a > b,
                "<=": lambda a, b: a <= b, ">=": lambda a, b: a >= b}
 
@@ -74,6 +97,12 @@ class Sheets:
         self.worked_out[key] = content
         return content
 
+    def cell_or_empty(self, tab, row, column):
+        """A cell's value, as a formula that refers to it sees it: EMPTY if there is nothing in it."""
+        if self.cells[tab].get((row, column)) is None:
+            return EMPTY
+        return self.value(tab, row, column)
+
     def at(self, tab, address):
         row, column = split_address(address)
         return self.value(tab, row, column)
@@ -105,7 +134,7 @@ class Formula:
         value = self.expression()
         if self.position != len(self.tokens):
             raise ValueError("extra text in =%s" % self.text)
-        return value
+        return 0 if value is EMPTY else value
 
     def peek(self):
         return self.tokens[self.position] if self.position < len(self.tokens) else (None, None)
@@ -121,7 +150,7 @@ class Formula:
         while self.peek()[0] == "compare":
             operator = self.take()[1]
             other = self.sum()
-            value = COMPARISONS[operator](value, other)
+            value = COMPARISONS[operator](*comparable(value, other))
         return value
 
     def sum(self):
@@ -163,7 +192,7 @@ class Formula:
             return self.reference(text)
         if kind == "name":
             tab, address = self.sheets.names[text]
-            return self.sheets.at(tab, address)
+            return self.sheets.cell_or_empty(tab, *split_address(address))
         if kind == "function":
             return self.function(text)
         if (kind, text) == ("symbol", "("):
@@ -184,7 +213,7 @@ class Formula:
             cells = [(row, column) for row in range(row1, row2 + 1) for column in range(column1, column2 + 1)]
             values = [self.sheets.value(tab, row, column) for row, column in cells if self.sheets.cells[tab].get((row, column)) is not None]
             return [v for v in values if isinstance(v, (int, float))]
-        return self.sheets.at(tab, text)
+        return self.sheets.cell_or_empty(tab, *split_address(text))
 
     def offset(self):
         """OFFSET(name or cell, rows, columns): the value of the cell that far from the first."""
@@ -203,7 +232,7 @@ class Formula:
         row, column = split_address(address)
         if row + rows < 0 or column + columns < 0:
             raise ValueError("OFFSET goes off the sheet in =%s" % self.text)
-        return self.sheets.value(tab, row + rows, column + columns)
+        return self.sheets.cell_or_empty(tab, row + rows, column + columns)
 
     def range_cells(self, text):
         """Every cell of a range, in order, a number or 0 (text and empty cells are 0, as SUMPRODUCT takes them)."""
@@ -282,6 +311,10 @@ class Formula:
             self.take()
             arguments.append(self.expression())
         self.take()                                       # the closing parenthesis
+        if name == "OR":
+            return any(bool(argument) for argument in arguments)
+        if name == "AND":
+            return all(bool(argument) for argument in arguments)
         numbers = []
         for argument in arguments:
             numbers += [number(x) for x in argument] if isinstance(argument, list) else [number(argument)]
@@ -323,6 +356,10 @@ class Formula:
 
 
 def number(x):
+    """A value as arithmetic takes it: an empty cell, and text with nothing in it, are 0, as in Sheets; other text is an
+    error (#VALUE!)."""
+    if x is EMPTY or x == "":
+        return 0
     if isinstance(x, bool) or not isinstance(x, (int, float)):
         raise TypeError("%r isn't a number" % (x,))
     return x

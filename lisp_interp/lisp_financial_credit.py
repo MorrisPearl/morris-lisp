@@ -189,9 +189,10 @@ class FdicTab:
                  [("=" + formula(n), (number_format,) + style) for n in range(first, len(self.ends))])
 
     def ratio_row(self, section, key, label, top, bottom):
-        """A row of top / bottom, each (section, key) of a row of this tab."""
-        self.formula_row(section, key, label, lambda n: 'IFERROR(%s/%s,"")' % (self.address(*top, n),
-                                                                             self.address(*bottom, n)))
+        """A row of top / bottom, each (section, key) of a row of this tab; empty where top is (Sheets would make an
+        empty cell 0, and the ratio 0%)."""
+        self.formula_row(section, key, label, lambda n: 'IF(%s="","",IFERROR(%s/%s,""))' % (
+            self.address(*top, n), self.address(*top, n), self.address(*bottom, n)))
 
     def add_capital(self):
         book = self.book
@@ -235,8 +236,9 @@ class FdicTab:
             self.reported_row("securities", key, label)
 
         def gain(kind):
-            return lambda n: "%s-%s" % (self.address("securities", kind + "-value", n),
-                                        self.address("securities", kind + "-cost", n))
+            value, cost = (lambda n: self.address("securities", kind + "-value", n),
+                           lambda n: self.address("securities", kind + "-cost", n))
+            return lambda n: 'IF(%s="","",%s-%s)' % (value(n), value(n), cost(n))
         self.formula_row("securities", "available-for-sale-gain", "Unrealized gain (loss), available for sale (already "
                          "in equity, through other comprehensive income)", gain("available-for-sale"), "money")
         self.formula_row("securities", "held-to-maturity-gain", "Unrealized gain (loss), held to maturity (in neither "
@@ -289,8 +291,9 @@ class FdicTab:
         self.ratio_row("real-estate", "construction-to-capital", "Construction and land, % of total risk-based capital "
                        "(guidance: 100%)", ("real-estate", "construction"), ("capital", "total-capital"))
         self.formula_row("real-estate", "growth", "Growth of commercial real estate over 3 years (guidance: 50%, with "
-                         "the 300%)", lambda n: 'IFERROR(%s/%s-1,"")' % (self.address("real-estate", "total", n),
-                                                                          self.address("real-estate", "total", n - 3)),
+                         "the 300%)", lambda n: 'IF(OR(%s="",%s=""),"",IFERROR(%s/%s-1,""))' % (
+                             self.address("real-estate", "total", n), self.address("real-estate", "total", n - 3),
+                             self.address("real-estate", "total", n), self.address("real-estate", "total", n - 3)),
                          first=3)
 
     def sheet(self):
@@ -495,7 +498,8 @@ class CreditTab:
         self.add([(heading, ("bold", "wrap")) for heading in ("Measure", "The banks'", "Guide (the regulators', or a rule of thumb)", "Past it?", "What to watch")])
         for section, key, label, guide, test, watch in self.WARNING_SIGNS:
             row = len(self.rows) + 1
-            value = ('=IFERROR(%s+0,"")' % self.fdic_ref(fdic.address(section, key, last_period)), ("percent", "link"))
+            measure = self.fdic_ref(fdic.address(section, key, last_period))
+            value = ('=IF(%s="","",%s)' % (measure, measure), ("percent", "link"))
             if guide is None:
                 self.add([(label, ()), value, None, None, (watch, ("italic",))])
             else:
