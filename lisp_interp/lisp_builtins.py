@@ -75,6 +75,7 @@ import lisp_save
 import lisp_schwab
 import lisp_sec
 import lisp_sec_filings
+import lisp_sec_insiders
 import lisp_simplex
 import lisp_rates
 import lisp_sqlite
@@ -2127,7 +2128,7 @@ SHARED_BUILTIN_TABLES = (
     STRUCT_BUILTINS, HASH_TABLE_BUILTINS, STRING_BUILTINS, lisp_regex.BUILTINS, VECTOR_BUILTINS, DATE_BUILTINS,
     COMMAND_LINE_BUILTINS, lisp_vector_math.BUILTINS, lisp_tables.BUILTINS, lisp_stratify.BUILTINS, lisp_explore.BUILTINS, lisp_cluster.BUILTINS,
     lisp_time_series.BUILTINS, lisp_csv.BUILTINS, lisp_regression.BUILTINS, lisp_sqlite.BUILTINS, lisp_fred.BUILTINS, lisp_nyfed.BUILTINS,
-    lisp_sec.BUILTINS, lisp_sec_filings.BUILTINS, lisp_fdic.BUILTINS, lisp_census.BUILTINS, lisp_bls.BUILTINS, lisp_bea.BUILTINS,
+    lisp_sec.BUILTINS, lisp_sec_filings.BUILTINS, lisp_sec_insiders.BUILTINS, lisp_fdic.BUILTINS, lisp_census.BUILTINS, lisp_bls.BUILTINS, lisp_bea.BUILTINS,
     lisp_maps.BUILTINS, lisp_google.BUILTINS, lisp_financial_model.BUILTINS, lisp_financial_sensitivity.BUILTINS, lisp_financial_compare.BUILTINS, lisp_schwab.BUILTINS, lisp_alpha_vantage.BUILTINS, lisp_finra.BUILTINS,
     lisp_http.BUILTINS,
     lisp_tastytrade.BUILTINS, lisp_futures.BUILTINS, lisp_rates.BUILTINS, lisp_simplex.BUILTINS,

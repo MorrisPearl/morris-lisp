@@ -18,8 +18,9 @@ import lisp_financial_sensitivity as sensitivity
 import lisp_google
 from sheet_formulas import Sheets
 from test_financial_asset_manager import build as build_asset_manager
-from test_financial_bank_insurer import bank_facts, build as build_kind
-from test_financial_model import build, TestModelByInSegment
+from test_financial_bank_insurer import insurer_facts, build as build_kind
+from test_financial_model import build, made_up_facts, TestModelByInSegment
+import lisp_financial_model as fm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MACRO = os.path.join(HERE, "..", "apps_script", "sensitivity.gs")
@@ -411,8 +412,12 @@ class TestTheModelsTabs(unittest.TestCase):
     def test_the_tabs_follow_the_dcf_tab_and_a_company_without_a_dcf_has_neither(self):
         names = [tab["name"] for tab in self.model.sheets()]
         self.assertEqual(names[names.index("DCF"):names.index("DCF") + 4], ["DCF", "Sensitivity", "Distributions", "Sensitivity Macro"])
-        for kind_model in (build_kind(bank_facts(), "bank"),):
-            self.assertNotIn("Sensitivity", [tab["name"] for tab in kind_model.sheets()])
+        for kind_model in (build_kind(insurer_facts(), "insurer"),):          # (a Valuation tab, in place of the DCF)
+            names = [tab["name"] for tab in kind_model.sheets()]
+            self.assertEqual(names[names.index("Valuation"):names.index("Valuation") + 4],
+                             ["Valuation", "Sensitivity", "Distributions", "Sensitivity Macro"])
+        short = fm.build_model(made_up_facts(quarterly=True), "ABC", "quarterly", 6, 3, "test")    # (less than a year)
+        self.assertNotIn("Sensitivity", [tab["name"] for tab in short.sheets()])
 
     def test_the_option_leaves_them_out(self):
         self.model.sensitivity = False

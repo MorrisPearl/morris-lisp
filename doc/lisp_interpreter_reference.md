@@ -6497,14 +6497,18 @@ The Python files:
 | `lisp_bls.py` | `bls-series`, `bls-local-area`, `bls-names`, ...: prices, jobs, and pay from the Bureau of Labor Statistics |
 | `lisp_bea.py` | `bea-series`, `bea-nipa`, `bea-regional`, `bea-get`, ...: the national and regional accounts from the Bureau of Economic Analysis |
 | `lisp_tastytrade.py` | `tastytrade-get`, `tastytrade-quotes`, `tastytrade-option-chain`, ... (data from tastytrade; read only) |
-| `lisp_alpha_vantage.py` | `alpha-vantage-dividends`: a stock's dividends from Alpha Vantage, through `lisp_http.py` |
-| `lisp_finra.py` | `finra-tba-prices`, `finra-mbs-prices`, `finra-arm-prices`, `finra-get`: agency MBS prices reported to FINRA's TRACE |
+| `lisp_alpha_vantage.py` | `alpha-vantage-dividends`, `alpha-vantage-price`, `alpha-vantage-estimates`: a stock's dividends, its latest price, and analysts' estimates, from Alpha Vantage, through `lisp_http.py` |
+| `lisp_finra.py` | `finra-tba-prices`, `finra-mbs-prices`, `finra-arm-prices`, `finra-get`: agency MBS prices reported to FINRA's TRACE; `finra-short-interest`: the shares of a stock sold short |
+| `lisp_sec_insiders.py` | `sec-insider-trades`: what a company's officers, directors, and large owners bought and sold (Form 4) |
 | `lisp_google.py` | `google-login`, `google-sheet`: tables sent to a new Google spreadsheet |
 | `lisp_financial_model.py` | `three-statement-model`: a company's three statements from the SEC, forecast by formulas, in a new Google spreadsheet |
 | `lisp_financial_bank.py` | The bank model of `three-statement-model`: loans, deposits, interest rates, credit losses |
 | `lisp_financial_insurer.py` | The property and casualty insurer model of `three-statement-model`: premiums, loss and expense ratios, float |
 | `lisp_financial_asset_manager.py` | The asset manager model of `three-statement-model`: revenue from assets under management and a fee rate |
-| `lisp_financial_dcf.py` | The DCF tab of `three-statement-model`: free cash flow, WACC, terminal value, value per share, and a sensitivity table |
+| `lisp_financial_dcf.py` | The DCF tab of `three-statement-model`: free cash flow, WACC, terminal value, value per share, returns on invested capital, the growth the price implies, and a sensitivity table |
+| `lisp_financial_quality.py` | The Quality and Risk tab of `three-statement-model`: leverage, interest coverage, quality of earnings, the Altman Z'' score, the Piotroski F-score |
+| `lisp_financial_equity_valuation.py` | The Valuation tab of a bank's or insurer's `three-statement-model`: excess returns on tangible equity, price to tangible book |
+| `lisp_financial_credit.py` | A bank model's Credit Losses and FDIC Call Reports tabs: loans by type, scenarios, funding, securities, commercial real estate |
 | `lisp_financial_compare.py` | `compare-companies`: companies' latest statements side by side in a Google sheet, as amounts or percentages of revenue or assets |
 | `lisp_sec_segments.py` | A company's revenue by segment, read from the tagged numbers of its 10-Ks and 10-Qs (for `three-statement-model`) |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-option-chain`, `schwab-orders`, `schwab-spread-order`, `schwab-multi-leg-order`, ...: your Schwab accounts |

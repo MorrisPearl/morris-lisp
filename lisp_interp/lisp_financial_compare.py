@@ -274,6 +274,45 @@ INSURER_ROWS = [
 ]
 
 ROWS = {"general": GENERAL_ROWS, "bank": BANK_ROWS, "insurer": INSURER_ROWS}
+
+# With share prices (:prices), the market's view of each company: what it is worth, against what it earns and owns.
+# ("price" and "eps-before" are a company's price and its earnings per share of the period before, a year earlier for
+# annual periods, which CompanyColumn.value gives.)
+GENERAL_MARKET_ROWS = [
+    ("section", "Market value (at the share prices given)"),
+    ("absolute", "price", "Share price", None, "per-share"),
+    ("ratio", "market-value", "Market value of the shares, millions (price x diluted shares)",
+     lambda cell, year: '=IFERROR(%s*%s,"")' % (cell("price"), cell("shares"))),
+    ("ratio", "enterprise-value", "Enterprise value, millions (market value + debt - cash and short-term investments)",
+     lambda cell, year: '=IFERROR(%s+%s+%s-%s-%s,"")' % (cell("market-value"), cell("current-debt"), cell("long-term-debt"),
+                                                         cell("cash"), cell("short-term-investments"))),
+    ("ratio", "ev-to-ebitda", "Enterprise value / a year's EBITDA (operating income + depreciation and amortization)",
+     lambda cell, year: '=IFERROR(%s/((%s+%s+%s)*%s),"")' % (cell("enterprise-value"), cell("operating-income"),
+                                                             cell("depreciation"), cell("amortization"), year)),
+    ("ratio", "ev-to-revenue", "Enterprise value / a year's revenue",
+     lambda cell, year: '=IFERROR(%s/(%s*%s),"")' % (cell("enterprise-value"), cell("revenue"), year)),
+    ("ratio", "price-to-earnings", "Price / a year's earnings per share",
+     lambda cell, year: '=IFERROR(%s/(%s*%s),"")' % (cell("price"), cell("eps"), year)),
+    ("ratio", "free-cash-flow-yield", "Free cash flow yield (a year's free cash flow / market value)",
+     lambda cell, year: '=IFERROR((%s+%s)*%s/%s,"")' % (cell("operating-cash-flow"), cell("capital-expenditures"), year,
+                                                        cell("market-value"))),
+    ("ratio", "price-to-book", "Price / book value (market value / equity)", ratio_of("market-value", "equity")),
+]
+GROWTH_MARKET_ROWS = [                  # (annual periods only: the growth of earnings per share over a year)
+    ("absolute", "eps-before", "Earnings per share, diluted, the year before", None, "per-share"),
+    ("ratio", "peg", "PEG: price / earnings, over the growth of earnings per share in points (under 1 is cheap for the growth)",
+     lambda cell, year: '=IFERROR(%s/((%s/%s-1)*100),"")' % (cell("price-to-earnings"), cell("eps"), cell("eps-before"))),
+]
+FINANCIAL_MARKET_ROWS = [               # (a bank's or an insurer's: its debt is its raw material, so no enterprise value)
+    ("section", "Market value (at the share prices given)"),
+    ("absolute", "price", "Share price", None, "per-share"),
+    ("ratio", "market-value", "Market value of the shares, millions (price x diluted shares)",
+     lambda cell, year: '=IFERROR(%s*%s,"")' % (cell("price"), cell("shares"))),
+    ("ratio", "price-to-earnings", "Price / a year's earnings per share",
+     lambda cell, year: '=IFERROR(%s/(%s*%s),"")' % (cell("price"), cell("eps"), year)),
+    ("ratio", "price-to-book", "Price / book value (market value / equity)", ratio_of("market-value", "equity")),
+]
+MONEY_RATIOS = ("market-value", "enterprise-value")            # (amounts, not ratios: the market rows' first two)
 BASIS_NAMES = {"general": "revenue", "bank": "net revenue (net interest income plus noninterest income)",
                "insurer": "total revenues"}
 
@@ -316,8 +355,16 @@ class CompanyColumn:
         else:
             self.days = (end.end - end.year_start).days + 1
 
+    price = None                        # (today's share price, if given: compare_companies)
+
     def value(self, row):
         """The value of a "money" or "absolute" row for this company: a number, or None."""
+        if row[1] == "price":
+            return self.price
+        if row[1] == "eps-before":
+            before = self.latest - 1
+            shares = self.history.shares[before]
+            return self.history.net_income[before] / shares if shares else None
         number = row[3](self.history, self.latest)
         return None if number is None else float(number)
 
@@ -331,7 +378,11 @@ class Comparison:
 
     def __init__(self, columns, kind, basis, period):
         self.columns, self.kind, self.basis, self.period = columns, kind, basis, period
-        self.rows = ROWS[kind]
+        self.rows = list(ROWS[kind])
+        if all(column.price is not None for column in columns):
+            self.rows += GENERAL_MARKET_ROWS if kind == "general" else FINANCIAL_MARKET_ROWS
+            if kind == "general" and period == "annual":
+                self.rows += GROWTH_MARKET_ROWS
         self.count = len(columns)
         self.first_data_row = 0
         self.layout = self.layout_rows()
@@ -419,7 +470,7 @@ class Comparison:
                     letter = self.column_letter(j)
                     formula = line[3](lambda key, letter=letter: "%s%d" % (letter, self.row_of[key]),
                                       "365/%s%d" % (letter, self.row_of["days"]))
-                    row[FIRST_COMPANY_COLUMN + j] = (formula, ("percent" if self.is_percent_ratio(line[1]) else "decimal",))
+                    row[FIRST_COMPANY_COLUMN + j] = (formula, (self.ratio_format(line[1]),))
                 if with_median:
                     row[width - 1] = (self.median(line[1]), (self.ratio_format(line[1]),))
             cells.append(row)
@@ -432,10 +483,14 @@ class Comparison:
     DECIMAL_RATIOS = ("receivable-days", "debt-to-equity", "net-debt-to-operating-income", "current-ratio", "premiums-to-equity",
                       "reserves-to-equity", "investments-to-equity")
 
+    DECIMAL_RATIOS += ("ev-to-ebitda", "ev-to-revenue", "price-to-earnings", "price-to-book", "peg")
+
     def is_percent_ratio(self, key):
-        return key not in self.DECIMAL_RATIOS
+        return key not in self.DECIMAL_RATIOS and key not in MONEY_RATIOS
 
     def ratio_format(self, key):
+        if key in MONEY_RATIOS:
+            return "money"
         return "percent" if self.is_percent_ratio(key) else "decimal"
 
     # --- the comparison
@@ -554,17 +609,40 @@ def build_comparison(columns, kind, basis, period, who):
     return Comparison(columns, kinds[0], basis, period)
 
 
+def share_prices(credentials_path, given, tickers, who):
+    """The companies' share prices, in order: as given (a list of numbers, one for each company), from Alpha Vantage
+    (#t: alpha-vantage-price), or none (None for each, without :prices)."""
+    if given is None or given is False:
+        return [None] * len(tickers)
+    if given is True:
+        import lisp_alpha_vantage
+        return [lisp_alpha_vantage.alpha_vantage_price(credentials_path, ticker) for ticker in tickers]
+    try:
+        import lisp_financial_asset_manager
+        prices = lisp_financial_asset_manager.number_list(given, who, ":prices")
+    except LispError:
+        prices = None
+    if prices is None or len(prices) != len(tickers) or any(price <= 0 for price in prices):
+        raise LispError("%s: :prices is the share price of each company, in the order given (%d numbers), or #t to get "
+                        "them from Alpha Vantage" % (who, len(tickers)))
+    return prices
+
+
 def compare_companies(credentials_path, companies, *options):
-    """(compare-companies creds '("ACN" "EFX" "CTSH") [:basis "revenue" :period "annual" :kind "auto" :title t])
+    """(compare-companies creds '("ACN" "EFX" "CTSH") [:basis "revenue" :period "annual" :kind "auto" :prices p :title t])
     -- a new Google spreadsheet with the companies' most recent annual (or quarterly) statements side by side, a
     column for each, the same rows for all: the income statement, balance sheet, cash flow statement, and ratios,
     of an ordinary company, a bank, or a property and casualty insurer (:kind; "auto" chooses by the SEC's
     industry codes, and the companies must be all one kind). :basis "none" (the default) shows the amounts in
     millions; "revenue" shows each as a percentage of the company's top line (a bank's net revenue), and "assets"
     of its total assets, so that companies of different sizes compare; a column of medians shows what is typical.
+    :prices, the share prices (a list, one for each company, or #t to get them from Alpha Vantage), adds the market's
+    view: market value, enterprise value, enterprise value over EBITDA and over revenue, price over earnings, free cash
+    flow yield, price over book value, and (for annual periods) PEG; a bank's or insurer's, market value, price over
+    earnings and over book value.
     Returns the spreadsheet's address. You need to be signed in to Google: (google-login creds)."""
     who = "compare-companies"
-    options = keyword_options(options, ["basis", "period", "kind", "title"], who)
+    options = keyword_options(options, ["basis", "period", "kind", "prices", "title"], who)
     tickers = text_list(companies, who, "the companies")
     if len(tickers) < 2:
         raise LispError("%s: give at least two companies, such as '(\"ACN\" \"EFX\")" % who)
@@ -582,6 +660,8 @@ def compare_companies(credentials_path, companies, *options):
     if kind != "auto" and kind not in ROWS:
         raise LispError('%s: :kind is "auto", "general", "bank", or "insurer", not %s' % (who, kind))
     columns = [CompanyColumn(credentials_path, ticker, kind, period, who) for ticker in tickers]
+    for column, price in zip(columns, share_prices(credentials_path, options.get("prices"), tickers, who)):
+        column.price = price
     comparison = build_comparison(columns, kind, basis, period, who)
     title = options.get("title") or "%s compared (%s)" % (", ".join(c.ticker for c in columns), basis if basis != "none" else period)
     return LispString(lisp_google.google_workbook(credentials_path, str(title), comparison.sheets()))

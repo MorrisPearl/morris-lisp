@@ -87,15 +87,23 @@ ASSUMPTION_SPREADS = [
     ("segment-growth-0", "triangular", "-0.03", "+0.03"),
     ("segment-growth-1", "triangular", "-0.03", "+0.03"),
     ("segment-growth-2", "triangular", "-0.03", "+0.03"),
-    ("aum-growth", "triangular", "-0.03", "+0.03"),             # (an asset manager's)
+    ("aum-growth", "triangular", "-0.03", "+0.03"),             # (an asset manager's; with :flows, the next two)
+    ("organic-growth", "triangular", "-0.02", "+0.02"),
+    ("market-return", "normal", "-0.08", "+0.08"),
     ("fee-rate", "normal", "*0.9", "*1.1"),
     ("gross-margin", "normal", "-0.02", "+0.02"),
+    ("loan-growth", "triangular", "-0.03", "+0.03"),           # (a bank's)
+    ("efficiency", "normal", "-0.02", "+0.02"),
+    ("fed-funds", "normal", "-0.01", "+0.01"),
+    ("premium-growth", "triangular", "-0.03", "+0.03"),        # (an insurer's)
+    ("loss-ratio", "normal", "-0.03", "+0.03"),
 ]
 # and the DCF tab's: (key, distribution, Low, High, number format, what it is)
 DCF_SPREADS = [
-    ("beta", "triangular", "-0.25", "+0.25", "decimal", "Equity beta (DCF tab)"),
-    ("risk-premium", "normal", "-0.01", "+0.01", "percent", "Equity risk premium (DCF tab)"),
-    ("terminal-growth", "uniform", "-0.01", "+0.01", "percent", "Growth of free cash flow after the forecast, forever (DCF tab)"),
+    ("beta", "triangular", "-0.25", "+0.25", "decimal", "Equity beta"),
+    ("risk-premium", "normal", "-0.01", "+0.01", "percent", "Equity risk premium"),
+    ("terminal-growth", "uniform", "-0.01", "+0.01", "percent", "Growth after the forecast, forever"),
+    ("terminal-return", "normal", "-0.02", "+0.02", "percent", "Return on tangible common equity after the forecast"),
 ]
 DCF_OUTPUTS = [
     ("sum-present-values", "Present value of the forecast free cash flow"),
@@ -104,6 +112,7 @@ DCF_OUTPUTS = [
     ("terminal-share", "Terminal value, as a share of the enterprise value"),
     ("equity-value", "Equity value"),
     ("value-per-share", "Value per share"),
+    ("price-to-tangible-book", "Value / tangible book value per share"),
     ("against-price", "Value compared with the share price"),
 ]
 
@@ -269,7 +278,9 @@ def model_setup(the_model):
             add(the_model.range_names[(ASSUMPTIONS, key)], distribution, low, high, line.number_format,
                 "%s (the first forecast period's; the later periods follow it)" % line.label)
     for key, distribution, low, high, number_format, description in DCF_SPREADS:
-        add(the_model.range_names[(DCF, key)], distribution, low, high, number_format, description)
+        if (DCF, key) in the_model.range_names:
+            add(the_model.range_names[(DCF, key)], distribution, low, high, number_format,
+                "%s (%s tab)" % (description, the_model.valuation_tab_name))
     outputs = [(the_model.range_names[(DCF, key)], description) for key, description in DCF_OUTPUTS
                if (DCF, key) in the_model.range_names]
     return inputs, outputs

@@ -71,7 +71,8 @@ class TestTheTab(DcfTestCase):
 
     def test_the_tab_comes_after_the_cash_flow_statement_and_every_formula_works(self):
         self.assertEqual([t["name"] for t in self.model.sheets()],
-                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "DCF", "Sensitivity", "Distributions", "Sensitivity Macro", "Notes"])
+                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "Quality and Risk", "DCF", "Sensitivity",
+                          "Distributions", "Sensitivity Macro", "Notes"])
         for (row, column) in list(self.sheets.cells["DCF"]):
             self.sheets.value("DCF", row, column)
 
@@ -245,11 +246,19 @@ class TestQuarters(DcfTestCase):
 
 class TestWhereThereIsNoTab(LispTestCase):
 
-    def test_a_bank_and_an_insurer_have_no_dcf_tab_and_the_notes_say_why(self):
-        for facts, kind in ((bank_facts(), "bank"), (insurer_facts(), "insurer")):
-            model = build_kind(facts, kind)
-            self.assertNotIn("DCF", [t["name"] for t in model.sheets()])
-            self.assertIn("No DCF tab", model.sources_for_notes())
+    def test_an_insurer_has_a_valuation_tab_in_place_of_a_dcf(self):
+        model = build_kind(insurer_facts(), "insurer")
+        names = [t["name"] for t in model.sheets()]
+        self.assertNotIn("DCF", names)
+        self.assertIn("Valuation", names)
+        self.assertIn("The Valuation tab", model.sources_for_notes())
+
+    def test_a_bank_has_a_valuation_tab_in_place_of_a_dcf(self):
+        model = build_kind(bank_facts(), "bank")
+        names = [t["name"] for t in model.sheets()]
+        self.assertNotIn("DCF", names)
+        self.assertIn("Valuation", names)
+        self.assertIn("The Valuation tab", model.sources_for_notes())
 
     def test_a_forecast_of_less_than_a_year_has_none(self):
         model = build(period="quarterly", history=6, forecast=3)

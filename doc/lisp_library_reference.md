@@ -48,7 +48,7 @@ that use all this are described in
   - [FINRA (agency MBS and TBA prices)](#finra-agency-mbs-and-tba-prices)
   - [A database of market history](#a-database-of-market-history)
   - [Do industries separate returns?](#do-industries-separate-returns)
-  - [Alpha Vantage (dividends)](#alpha-vantage-dividends)
+  - [Alpha Vantage (dividends, prices, analysts' estimates)](#alpha-vantage-dividends-prices-analysts-estimates)
   - [A parser framework](#a-parser-framework)
 - [Reporting](#reporting)
   - [Google Sheets](#google-sheets)
@@ -510,6 +510,22 @@ is the whole filing as one text file, the way it was sent to the SEC.
 ```lisp
 (define apple-8ks (sec-filings creds "AAPL" :forms "8-K" :count 4))
 (display-table apple-8ks '(("url" hide) ("description" hide)))
+```
+
+#### `(sec-insider-trades creds company [:count n])`
+(In `lisp_sec_insiders.py`.) What the company's **insiders** -- its officers, its directors, and anyone who owns a tenth of
+it -- have bought and sold of its shares, from the reports they must file within two business days (Form 4): a table with a
+row for each trade of the last `:count` Form 4s (40 unless you say), oldest first, of `filing-date`, `date` (of the trade),
+`insider`, `role` (their title, director, ten-percent owner), `code`, `what` (the code in words), `shares` (above 0 acquired,
+below 0 disposed of), `price`, `value` (shares times price), `owned-after` (the shares they own after it), `planned` (`#t` if
+the trade was under a plan set up in advance, a "10b5-1 plan"), and `url` (the Form 4). The codes that matter most: `P`, bought
+in the open market with their own money, the trade that says the most; `S`, sold (often planned, which says little); `A`, a
+grant of shares as pay; `M`, an option exercised; `F`, shares withheld for the tax on a grant; `G`, a gift. Only the shares
+are read, not the table of options.
+
+```lisp
+(define trades (sec-insider-trades creds "AAPL"))
+(display-table (table-where trades "code" "P"))             ; the open-market purchases
 ```
 
 #### `(sec-filing-text creds url [:section s])`
@@ -2332,6 +2348,24 @@ tested against a stand-in for FINRA, and `finra-tba-prices` has since been
 run against FINRA itself (October 2026). FINRA's TBA prices go back to
 October 2016.
 
+#### `(finra-short-interest symbol [:months n])`
+How many of a stock's shares are sold short -- borrowed and sold by
+investors betting the price will fall -- at each of the dates FINRA
+collects them (the middle and the end of each month): a table, oldest
+first, of `date`, `short-shares`, `change` (since the date before, as a
+fraction), `average-daily-volume` (the shares traded a day), and
+`days-to-cover`, the days of ordinary trading it would take the short
+sellers to buy their shares back. For the last `:months` months (12 unless
+you say). This is FINRA's public data: it needs no account or credentials.
+Short interest that is a large share of the shares outstanding, or many days
+to cover (above 5 or so), says many investors think the stock will fall, and
+that a rise in its price could force them to buy (a "squeeze").
+
+```lisp
+(define short (finra-short-interest "AAPL"))
+(display-table (table-tail short 3))
+```
+
 #### A database of TBA prices
 
 `finra-tba-prices` gives the last week, or the days you ask for. To keep
@@ -2648,10 +2682,11 @@ component (`pc1`, ...), `explained` (the share of its variation the components e
 unrelated to each other, the correlations' squares added up) and `periods` (how many of the components' periods it
 has; it is compared over those).
 
-### Alpha Vantage (dividends)
+### Alpha Vantage (dividends, prices, analysts' estimates)
 
-(In `lisp_alpha_vantage.py`.) The dividends a stock has paid, from Alpha
-Vantage (https://www.alphavantage.co), a market-data site with a free tier.
+(In `lisp_alpha_vantage.py`.) The dividends a stock has paid, its latest
+price, and what analysts expect it to earn, from Alpha Vantage
+(https://www.alphavantage.co), a market-data site with a free tier.
 Schwab's API gives only a stock's latest dividend, not its history.
 
 It needs a free API key (https://www.alphavantage.co/support/#api-key), as
@@ -2680,6 +2715,32 @@ table with no rows.
 ```
 
 `daily-returns` takes this table as its `:dividends`: see Part 4 of [lisp_paths_manual.md](lisp_paths_manual.md).
+
+#### `(alpha-vantage-price creds symbol)`
+The stock's latest price, a number: during the trading day the price now
+(a few minutes late, with a free key), after it the day's close. A price is
+kept for an hour, not 12. `compare-companies` uses it for `:prices #t`.
+
+#### `(alpha-vantage-estimates creds symbol)`
+What analysts expect the company to earn: a table with a row for each
+fiscal quarter and year, the coming ones and those already reported, oldest
+first, of `period-end`, `horizon` (`"fiscal quarter"` or `"fiscal year"`),
+`eps` (the average of the analysts' estimates of earnings per share),
+`eps-low`, `eps-high`, `eps-analysts` (how many), `eps-7-days-ago`,
+`eps-30-days-ago`, `eps-90-days-ago` (what the average was then),
+`eps-revision-30-days` (the change since 30 days ago, as a fraction),
+`raised-30-days` and `lowered-30-days` (how many analysts raised or cut
+theirs), and `revenue`, `revenue-low`, `revenue-high` (in millions) and
+`revenue-analysts`. **Revisions** are the signal: estimates being raised
+tend to go on being raised, and a stock with them tends to do better than
+one whose estimates are cut. The coming year's `revenue` is also a check on
+a forecast of `three-statement-model`: a forecast far from what analysts
+expect needs a reason.
+
+```lisp
+(define estimates (alpha-vantage-estimates creds "AAPL"))
+(display-table (table-where estimates "horizon" "fiscal year"))
+```
 
 ### A parser framework
 
@@ -2901,7 +2962,8 @@ is sent in pieces. Google limits how fast a program can make spreadsheets
 
 ### Three-statement models
 
-(In `lisp_financial_model.py`, with `lisp_sec_segments.py`, `lisp_financial_bank.py`, and `lisp_financial_insurer.py`.)
+(In `lisp_financial_model.py`, with `lisp_sec_segments.py`, `lisp_financial_bank.py` (and `lisp_financial_credit.py` and
+`lisp_financial_equity_valuation.py`), `lisp_financial_quality.py`, and `lisp_financial_insurer.py`.)
 A company's income statement, balance sheet, and cash
 flow statement, as it reported them to the SEC for the last few years -- or quarters -- and **forecast** for the
 next few, in a Google Sheet. The forecast is made of formulas, which follow a short list of assumptions that
@@ -2924,7 +2986,7 @@ It needs what `sec-income-statement` and `google-sheet` need: the credentials fi
 Google sign-in (`(google-login creds)`, once; "Google Sheets" says how to set it up). The sheet is made in your own
 Drive, and shared with no one.
 
-#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :aum a :price p :segments s :sensitivity b :fdic f :title t])`
+#### `(three-statement-model creds ticker [:period p :history n :forecast n :kind k :aum a :flows f :price p :volatility v :segments s :sensitivity b :fdic f :title t])`
 Makes the spreadsheet and returns its address, as a string.
 
 - `:period` is `"annual"` (the default) or `"quarterly"`.
@@ -2943,15 +3005,25 @@ Makes the spreadsheet and returns its address, as a string.
 - `:aum`, for an asset manager, is its assets under management in billions at the end of each period, oldest first, ending
   with the latest period reported, such as `(list 8590 10010 11550)`. They are not in the SEC's data, so you type them from the
   annual reports. If you give fewer than there are periods, the history is cut to the periods you have.
+- `:flows`, for an asset manager (with `:aum`), is its **net flows** in billions -- the new money its clients put in during each
+  period, less what they took out -- oldest first, ending with the latest, such as `(list -11 -51 -86)`. They split the growth of
+  AUM into organic growth and the market's (below). Fewer than there are periods leave the earliest without.
 - `:price` is today's share price, for the DCF tab (below): with it the weight of debt in the discount rate is worked out
-  from the market value of the shares, and the tab shows how the value compares with the price.
+  from the market value of the shares, and the tab shows how the value compares with the price. For a bank it is for the
+  Valuation tab (and an insurer's): price to tangible book value, the return on tangible equity the price implies, and price to
+  earnings. With it the DCF tab also works out the growth the price implies (a reverse DCF, below).
+- `:volatility`, with `:price`, is the **implied volatility** of the company's options, a year's, as a fraction (0.3 for 30%):
+  what the options market expects the price to move. The DCF or Valuation tab then shows the range the market expects the price
+  to be in a year from now, about two chances in three -- the price times e to the minus and the plus the volatility -- and how
+  far the value is from the price in those standard deviations. Find it with `tastytrade-option-chain` or
+  `schwab-option-chain` (the `implied-volatility` of the options near the money, a year out).
 - `:segments`, for an ordinary company, is how revenue is forecast. `"auto"` (the default) is by **business segment**, if the company reports
   them, or else by **product or service**, and if it has neither (or they can't be found for every period) by its total
   revenue alone, and the Notes tab says why. `"business"`, `"product"`, or `"geography"` asks for that breakdown, and it is
   an error if it can't be found; `#f` is total revenue only.
-- `:sensitivity`, `#f` to leave out the two Monte Carlo tabs that an ordinary company or asset manager has after its DCF tab ("Sensitivity
-  analysis" below).
-- `:fdic`, for a bank: where its loans by type come from, for the Credit Losses and FDIC Loans tabs ("Credit losses by type of
+- `:sensitivity`, `#f` to leave out the two Monte Carlo tabs that an ordinary company or asset manager has after its DCF tab,
+  and a bank after its Valuation tab ("Sensitivity analysis" below).
+- `:fdic`, for a bank: where its loans by type come from, for the Credit Losses and FDIC Call Reports tabs ("Credit losses by type of
   loan, and scenarios" below). `#t`, the default, looks for the company's banks at the FDIC by its name; a string is the
   name of a bank or holding company as the FDIC has it; a number, or a list of them, is the banks' FDIC certificate numbers
   (`fdic-find-bank` finds them); `#f` leaves the tabs out.
@@ -2971,8 +3043,9 @@ in each period, and its formulas use the period number there.)
 | Income Statement | Revenue (by segment, if any), cost of revenue, gross profit, research and development, selling, general and administrative, other operating expenses, operating income, interest, other income, taxes, net income, shares, and earnings per share. |
 | Balance Sheet | Cash, receivables, inventory, plant and equipment, goodwill, intangibles, payables, debt, equity, with their totals; and, at the bottom, a **check** -- assets less liabilities and equity -- that is 0 in every period. |
 | Cash Flow | Net income, depreciation, stock compensation, the changes in receivables, inventory, and payables, cash from operations; capital expenditures, cash from investing; borrowing, dividends, buybacks, cash from financing; the net change in cash, and the cash at the end. |
-| DCF | What the company is worth by discounting its forecast free cash flow (see "Valuation" below). Ordinary companies and asset managers; not banks and insurers. |
-| Sensitivity, Sensitivity Macro | Monte Carlo analysis of the DCF: the cells to vary and how, the results of many runs, and the macro that makes them (see "Sensitivity analysis" below). With the DCF tab. |
+| Quality and Risk | Ordinary companies and asset managers: debt and interest coverage, the quality of earnings, the Altman Z'' score, and the Piotroski F-score, in every period, as formulas of the statements (see "Quality and risk" below). |
+| DCF | What the company is worth by discounting its forecast free cash flow (see "Valuation" below), with its returns on invested capital and the growth the share price implies. Ordinary companies and asset managers; a bank or an insurer has a **Valuation** tab in its place ("Valuation of a bank or an insurer" below). |
+| Sensitivity, Sensitivity Macro | Monte Carlo analysis of the DCF (or a bank's Valuation tab): the cells to vary and how, the results of many runs, and the macro that makes them (see "Sensitivity analysis" below). With the DCF or Valuation tab. |
 | Notes | How to read the sheet, how the forecast works, which of the company's XBRL tags each reported line came from, and which lines it didn't report. |
 
 **Colors,** as in most models: **blue** is a number typed in -- reported by the company, or an assumption; **black** is a
@@ -3106,12 +3179,14 @@ rule that nothing refers to itself are the same.
 
 | | |
 |---|---|
-| Balance sheet | Loans and deposits grow at the rates you assume; cash and securities are percentages of deposits; the allowance for credit losses is a percentage of loans. **Borrowings are what funds the rest** (total assets less deposits, other liabilities, and equity), so if loans grow faster than deposits, borrowings grow. Trading assets, premises, goodwill and the like stay as they were. |
+| Balance sheet | Loans and deposits grow at the rates you assume; cash and securities are percentages of deposits; the allowance for credit losses is a percentage of loans. **Borrowings are what funds the rest** (total assets less deposits, other liabilities, and equity), so if loans grow faster than deposits, borrowings grow. Goodwill and intangibles (a line of their own), trading assets, premises and the like stay as they were. |
 | Interest | A rate times the balance at the end of the period before: on loans, on securities and cash, on deposits, on borrowings. Net interest income is the difference. |
+| The Fed's rate | The **federal funds rate**, the average of each period reported (the effective rate, from the New York Fed), is on the Assumptions tab; in the forecast it is held at the last period's, for you to type the rates you expect the Fed to set. Each forecast interest rate is the period before's plus its **beta** times the change in the federal funds rate (never below 0). A beta is the share of a move of the Fed's rate that a rate follows: how much it moved over the biggest move of the Fed's rate in the history (for most banks' annual models, FY2022 to FY2024), over that move, between 0 and 1. Deposits' is the **deposit beta** that analysts watch: a bank whose depositors are paid more as soon as rates rise has a high one, and earns less from higher rates. If the history has no move of a point or more (eight quarters of 2024-2026 do not), the betas are typical figures: loans 0.5, securities and cash 0.6, deposits 0.35, borrowings 0.9. If the New York Fed can't be reached, the rates are as they were without it, and the Notes say so. |
+| The common shareholders | **Net income to common shareholders** is net income less the preferred dividends (held at the last period's), and earnings per share are of it. **Tangible common equity**, under the balance sheet, is equity less preferred stock and minority interests (held as they are) and goodwill and intangibles: what the common shareholders own that a bank in trouble could sell. |
 | Credit losses | Net charge-offs are a percentage of last period's loans. The **provision** is the charge-offs plus the growth of the allowance. |
 | Other lines | Noninterest income grows at an assumed rate (from the same quarter a year before, for quarters); noninterest expense is the **efficiency ratio** times net revenue (net interest income plus noninterest income). Equity is last period's plus net income, less dividends and repurchases. |
 | Cash flow | The balance sheet seen as flows: net income, less the growth of loans and securities, plus the growth of deposits and borrowings, less the payouts. It ends with the cash the balance sheet has: a second check line on the Balance Sheet, 0 in every forecast period, says so. |
-| Ratios | Net interest margin, efficiency ratio, return on equity and on assets (below the income statement); loans to deposits, borrowings to assets, equity to assets, allowance to loans (below the balance sheet). They are results, not assumptions: they say whether the forecast is one a bank could live with. |
+| Ratios | Net interest margin, efficiency ratio, return on equity, on assets, and on **tangible common equity** (ROTCE, what banks are priced by), and pre-provision net revenue -- profit before credit losses, the cushion that takes the losses of a scenario (below the income statement); tangible common equity to tangible assets, loans to deposits, borrowings to assets, equity to assets, allowance to loans (below the balance sheet). They are results, not assumptions: they say whether the forecast is one a bank could live with. |
 
 **Credit losses by type of loan, and scenarios** (`lisp_financial_credit.py`). The SEC's facts say how much a bank lost on
 all its loans, not on which. The FDIC's **Call Reports** say both, for every insured bank: how much it has lent on houses,
@@ -3122,8 +3197,8 @@ and the FDIC's, "JPMORGAN CHASE&CO", are matched by their words):
 
 | Tab | What it has |
 |---|---|
-| FDIC Loans | For each type of loan, the loans at the end of each 12 months since 2001 (the 12 months to the date of the latest Call Report: June 30, if that is the latest), the net charge-offs in them, and the noncurrent loans (90 days or more past due, or no longer accruing interest); then the **loss rate**, net charge-offs over the loans at the start of the 12 months, as formulas; then the banks' common equity tier 1 capital and risk-weighted assets. |
-| Credit Losses | A row for each type: today's loans and their share, the share noncurrent, and the loss rate last year, on average over the last five years, and in the worst year since 2001. Then three **scenarios**, Base, Adverse, and Severe, each a **default rate** (the share of the loans that stop paying in a year) and a **recovery** (how much of a defaulted loan the bank gets back); a scenario's loss rate is the default rate times the share not recovered. A drop-down cell at the top chooses the scenario of the forecast, and another how many periods it lasts (2 years, or 8 quarters, to start with). At the bottom, what each scenario would cost, side by side, from today's loans alone: the losses over the periods of stress, the part more than the base scenario's after taxes, and the CET1 ratio left if nothing else changed. |
+| FDIC Call Reports | For each type of loan, the loans at the end of each 12 months since 2001 (the 12 months to the date of the latest Call Report: June 30, if that is the latest), the net charge-offs in them, and the noncurrent loans (90 days or more past due, or no longer accruing interest); then the **loss rate**, net charge-offs over the loans at the start of the 12 months, as formulas. Then, for the end of each of those 12 months: the banks' **capital** (common equity tier 1, tier 1, total risk-based capital, risk-weighted assets, the CET1 ratio, tier 1 over total assets); their **funding** (deposits, those that pay no interest, the uninsured ones -- above the FDIC's limit, the banks' estimate -- brokered deposits, and Federal Home Loan Bank advances, each as a share, and loans to deposits); their **securities** at cost and at fair value, available for sale and held to maturity, the unrealized gains or losses, those as a share of CET1 capital, and the CET1 ratio counting them (as if the bank had to sell); the **allowance** for credit losses, as a share of loans and of the noncurrent loans (its coverage); and **commercial real estate as the regulators count it** (construction and land, multifamily, nonresidential not occupied by its owner, and loans to finance real estate not secured by it, from 2007, when the Call Report began to say who occupies the buildings) over total risk-based capital, construction over it, and its growth over 3 years. |
+| Credit Losses | A row for each type: today's loans and their share, the share noncurrent, and the loss rate last year, on average over the last five years, and in the worst year since 2001. Then three **scenarios**, Base, Adverse, and Severe, each a **default rate** (the share of the loans that stop paying in a year) and a **recovery** (how much of a defaulted loan the bank gets back); a scenario's loss rate is the default rate times the share not recovered. A drop-down cell at the top chooses the scenario of the forecast, and another how many periods it lasts (2 years, or 8 quarters, to start with). At the bottom, what each scenario would cost, side by side, from today's loans alone: the losses over the periods of stress, the part more than the base scenario's after taxes, and the CET1 ratio left if nothing else changed. Last, the **warning signs** from the latest Call Report, each with the guide the regulators use (or a rule of thumb), a "Yes" where the bank is past it, and what to watch: commercial real estate over 300% of total risk-based capital, construction over 100%, and commercial real estate that grew over 50% in 3 years (the regulators' guidance of 2006); the allowance as a share of loans, and under 100% of the noncurrent loans; uninsured deposits over half of deposits (Silicon Valley Bank's were over 90%), deposits that pay no interest, brokered deposits and Federal Home Loan Bank advances over 10%, loans over deposits; unrealized losses on securities over a quarter of CET1 capital, and the CET1 ratio counting them under 7%. |
 
 The scenarios start from the bank's own history: **Base** has the default rates of its last five years' average loss rates,
 **Severe** those of its worst year (for most banks, the 12 months around 2009 or 2010), and **Adverse** halfway between. The
@@ -3162,7 +3237,8 @@ M&T (which doesn't tag its deposit interest as a total) do not.
 | Income statement | Premiums earned grow at the rate you assume. Losses and loss adjustment expense are the **loss ratio** times premiums, and the other underwriting, acquisition, and operating costs the **expense ratio** times premiums; together they are the **combined ratio**, under 100% when the insurer makes money underwriting. Net investment income is a yield on last period's investments and cash. Realized gains are an amount you type, 0 to begin with. |
 | Balance sheet | Loss reserves are an assumed number of years of losses; unearned premiums a percentage of a year's premiums; premiums receivable some days of premiums; reinsurance recoverables a percentage of the reserves; deferred acquisition costs a percentage of unearned premiums. Equity is last period's plus net income, less dividends and repurchases (unrealized gains and losses on bonds, which move equity when interest rates do, are not forecast). |
 | Cash flow | Net income, plus the growth of the reserves and the unearned premiums (the **float**: money held before it is paid out), less the growth of receivables, recoverables, and acquisition costs. What is left after dividends, repurchases, and borrowing is **invested**, in the share you assume (all of it, to begin with), so investments grow by it; the rest stays as cash. |
-| Ratios | Underwriting income, loss ratio, expense ratio, and combined ratio (below the income statement); a year's premiums, reserves, and investments to equity (below the balance sheet). |
+| Ratios | Underwriting income, loss ratio, expense ratio, and combined ratio (below the income statement); a year's premiums, reserves, and investments to equity, tangible book value (equity less goodwill and intangibles), book value per share, and its growth over a year -- with the dividends, what an insurer's shareholders earn (below the balance sheet). |
+| Reserve development | Where the insurer reports it, the losses incurred for **prior years' claims**: above 0, the reserves it set aside before were too small (they "developed adversely"), and its past profits were overstated; below 0, they were too large. As a percentage of premiums it is points of the combined ratio. Travelers and Hartford tag it only by line of business, which the SEC's summary leaves out, so their sheets don't have it; Chubb's, Progressive's, and Berkley's do. |
 
 The insurer's model needs premiums earned, losses incurred, net investment income, revenues, investments, loss reserves,
 unearned premiums, total assets, and equity. Travelers, Chubb, Progressive, Hartford, and W. R. Berkley have them; Allstate
@@ -3179,6 +3255,12 @@ by **assets under management (AUM)**, not by revenue:
 | AUM | At the end of each period, in billions. The reported periods' are the ones you gave (`:aum`), in blue; each forecast period's is last period's times one plus the **growth of AUM** you assume, which is the market's appreciation plus the net money the clients put in (flows) -- the one number that matters most, and the one nobody knows. To see the two apart, type a formula in the cell, such as `=0.06+0.02`. |
 | Revenue | The **fee rate**, in basis points of average AUM (a year's), times the average of the AUM at the start and the end of the period. The Assumptions tab works the fee rate out for the periods reported (T. Rowe Price: about 45 basis points) so you can see it drift down as money moves to index funds; the forecast starts from the last one. The growth of revenue is then a result. |
 | The rest | Operating expenses (compensation, distribution, general and administrative) are percentages of revenue, so the operating margin is what you assume; the rest is the ordinary company's: receivables and payables as days of revenue, plant, intangibles, interest, taxes, payouts. |
+
+**Net flows** (`:flows`) split the growth of AUM in two: **organic growth**, the net new money over the AUM at the start -- the measure
+of an asset manager's business that the market's ups and downs hide -- and **market and other**, the rest (the market's
+appreciation, currencies, acquisitions). In the forecast both are assumptions and the growth of AUM is their sum; the flows are
+organic growth times the AUM at the start. The asset manager's Quality and Risk tab also has the **compensation ratio**,
+compensation over revenue, where the company reports its compensation.
 
 The SEC's summary of a company's numbers has no AUM (T. Rowe Price tagged it until 2022; BlackRock and the others never did),
 and in the filings it is in the text of the annual report, not tagged; so the program asks you for it. Two cautions. Interest
@@ -3229,11 +3311,69 @@ tell you what the company will earn, and the DCF tells you what that is worth to
    the growth and the WACC. A table at the bottom works out the value per share for discount rates one and two points either side
    of the WACC and growth rates a half and one point either side of the assumed growth, each cell a formula.
 
+6. *Returns on invested capital*, in a section of their own above the discounting: the **return on invested capital** (ROIC: a
+   year's operating income after taxes over the invested capital at the start of the period), the **economic profit** (operating
+   income after taxes less the WACC times that capital: above 0, growth adds value; below 0, it destroys it), the net investment
+   and the **reinvestment rate** (net investment over operating income after taxes), the growth reinvestment buys (ROIC times the
+   reinvestment rate), and the **incremental margin** (the growth of operating income over the growth of revenue, over a year).
+   Under the value, the last forecast year's ROIC, the reinvestment rate the terminal growth needs at it (growth over ROIC), and
+   the last year's own, to compare: a terminal growth that needs more reinvestment than the forecast makes is too high. (Invested
+   capital here is plant, goodwill, intangibles, receivables and inventory, less payables, so for a company with large payables,
+   such as Apple, it is small and the ROIC very large.)
+7. *What the share price implies*, with `:price`: a **reverse DCF**. The enterprise value at the price (market value plus debt
+   less cash), less the present value of the forecast's free cash flow, moved to the end of the forecast, is the terminal value the
+   price pays for; the terminal growth that gives it (by the method chosen, worked out in closed form) is **the growth after the
+   forecast the price implies**. And with no forecast at all, the growth forever of the last reported year's free cash flow that
+   the price implies, (EV x WACC - FCF) / (EV + FCF). A price that implies more growth than seems possible is a price that has
+   counted on it. (For Apple at $349, November 2026: 5.2% after this forecast, 6.6% from today's cash flow.)
+
 The valuation is only as good as the forecast, which is the model's guess from the reported periods: five years at the
 last year's growth, up to 20%, then 2.5% for ever. Look at the Assumptions tab first. Minority interests, leases, pensions, and
-options are not taken off the equity, and the debt is the book value. A bank or an insurer has **no DCF tab** (the Notes tab says so):
-its debt is its raw material, not its financing, so free cash flow to the firm means nothing for it. A forecast of less than a year
-(three quarters) is too short to value a company by, and has none.
+options are not taken off the equity, and the debt is the book value. A bank or an insurer has **no DCF tab**: its debt is its
+raw material, not its financing, so free cash flow to the firm means nothing for it: each has the Valuation tab instead (next).
+A forecast of less than a year (three quarters) is too short to value a company by, and has none.
+
+#### Valuation of a bank or an insurer: the Valuation tab
+
+(In `lisp_financial_equity_valuation.py`.) What a bank's shareholders own is its **tangible common equity**, and an insurer's its
+**tangible book value** (equity less goodwill and intangibles); what they are paid for is earning more on it than it costs them.
+So a bank or an insurer is valued by its **excess returns** (the "residual income" model, which is the dividend discount model in
+another form). For a bank, as below; for an insurer the same with its tangible book value and net income, and a beta of 0.8
+(property and casualty insurers' are mostly 0.6 to 1):
+
+1. *The cost of equity* is the risk-free rate (4.5%) plus beta (1.1; banks' are mostly 1 to 1.3) times the risk premium (5%):
+   placeholders, in yellow, and the cost of equity itself can be typed over.
+2. *Each forecast period's equity charge* is the cost of equity times the tangible common equity at its start (for the period's
+   share of a year); its **excess return** is net income to common shareholders less the charge.
+3. *After the forecast* the bank earns the **return on tangible common equity after the forecast** -- the last forecast year's,
+   on the equity at its start, in yellow -- on the tangible common equity at the end of the forecast, growing at the terminal
+   growth rate (3%): the excess return of the year after, over the cost of equity less the growth. Type the cost of equity over
+   that return to say the bank's advantage fades (then it adds nothing after the forecast).
+4. *The value of the common shares* is today's tangible common equity plus the present values (at the cost of equity) of the
+   forecast's excess returns and of those after it; over the diluted shares, the **value per share**. Under it: tangible book
+   value per share, the value over it, and the **price to tangible book** of a bank earning the return after the forecast forever,
+   (return - growth) / (cost of equity - growth) -- how banks are priced: one earning its cost of equity is worth its tangible
+   book. With `:price`: the price over tangible book, the return on tangible common equity the price implies (growth + price to
+   tangible book times the cost of equity less growth), price to earnings, and the value against the price.
+5. A table at the bottom works out the value per share for costs of equity one and two points either side, and returns after
+   the forecast two and four points either side: the two numbers a bank's value depends on most.
+
+The Sensitivity tab, for a bank, draws beta, the risk premium, the terminal growth, the return after the forecast, and the growth
+of loans, the efficiency ratio, and the federal funds rate (for an insurer, the growth of premiums and the loss ratio); and records
+the Valuation tab's results.
+
+#### Quality and risk: the Quality and Risk tab
+
+(In `lisp_financial_quality.py`.) An ordinary company's sheet (and an asset manager's) has a tab, after the Cash Flow, of
+measures of how sound its earnings and balance sheet are: each a formula of the statements in every period, the forecast's too,
+so a forecast that piles on debt or lets receivables grow faster than revenue shows here.
+
+| Section | What |
+|---|---|
+| Debt and interest | EBITDA (operating income plus depreciation and amortization); net debt (debt less cash and short-term investments) and net debt over a year's EBITDA (above 3 or 4 is a lot); **interest coverage**, operating income over interest (below 2 or 3 is thin); debt over equity; current assets over current liabilities. |
+| Quality of earnings | Free cash flow over net income (well under 100% for years is a warning: earnings that don't become cash); the **accruals ratio**, net income less cash from operations over average assets (high accruals are the earnings most often reversed); stock compensation over revenue, a real cost that "adjusted" earnings leave out; the growth of the share count over a year (dilution, or buybacks); the cash conversion cycle, days of receivables and inventory less days of payables; the **incremental margin**; and, where reported, compensation over revenue. |
+| Altman Z'' score | Altman's distress score for any company (his first was for manufacturers, and needs the market value of the shares): 6.56 x working capital / assets + 3.26 x retained earnings / assets + 6.72 x a year's operating income / assets + 1.05 x equity / liabilities. Above 2.6 is **safe**, below 1.1 **distress**, between **grey**. Retained earnings are as reported, and in the forecast the period before's plus net income less dividends and repurchases (as a company that retires the shares it buys back records them; one that holds them as treasury stock does not, so its score in the forecast is a little low). A company that doesn't report retained earnings to the SEC has none. |
+| Piotroski F-score | Nine tests against the same period a year before, 1 for each passed: profitable, cash from operations above 0, return on assets up, cash from operations above net income, long-term debt over assets down, current ratio up, no more shares, gross margin up, revenue over assets up. 8 or 9 is strong, 0 to 2 weak. (Assets are at the end of each period here; Piotroski used those at the start.) |
 
 #### Sensitivity analysis: the Sensitivity tab and its macro
 
@@ -3337,7 +3477,7 @@ sheet, the cash flow statement, and some ratios -- so that what one does differe
 (compare-companies creds '("JPM" "BAC" "C" "USB") :basis "assets")    ; a bank's rows, as a percentage of assets
 ```
 
-#### `(compare-companies creds tickers [:basis b :period p :kind k :title t])`
+#### `(compare-companies creds tickers [:basis b :period p :kind k :prices p :title t])`
 Makes the spreadsheet and returns its address, as a string. It needs what `three-statement-model` needs: the credentials file's
 `sec_user_agent` entry and a Google sign-in.
 
@@ -3353,6 +3493,14 @@ Makes the spreadsheet and returns its address, as a string. It needs what `three
   default) chooses for each company by the SEC's industry code, and **the companies must be all one kind**, because a bank's rows
   are not an industrial's: it is an error if they are not, and `:kind "general"` compares them all as ordinary companies
   (a bank's loans are then "other assets"). A company the SEC's numbers do not describe in its kind's lines is named in the error.
+- `:prices` adds the **market's view** of each company: the share prices, a list with one for each company in the order given
+  (`'(310 88 70)`), or `#t` to get them from Alpha Vantage (`alpha-vantage-price`: the free key's 25 requests a day are enough
+  for a group or two). Then a section of rows, each a formula: market value, enterprise value (market value plus debt less cash and
+  short-term investments), enterprise value over a year's EBITDA and over a year's revenue, price over earnings, the free cash
+  flow yield, price over book value, and, for annual periods, **PEG** (price over earnings, over the growth of earnings per share
+  in points: under 1 is cheap for the growth). A bank or an insurer has its market value, price over earnings, and price over book
+  (its debt is its raw material, so it has no enterprise value). The median column is the group's multiple: a company far from
+  it needs a reason.
 
 **The sheet.** With `:basis "none"` the `Comparison` tab has the numbers themselves, in blue. With a basis it has **formulas**
 -- each amount over the basis, such as `='As reported'!B12/'As reported'!B$7` -- and a second tab, `As reported`, has the

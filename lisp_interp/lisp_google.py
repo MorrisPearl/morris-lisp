@@ -550,6 +550,8 @@ def api_cell(value, style_names):
     for text that begins with = -- a formula; a date is its day number) and
     its format."""
     cell = {}
+    if isinstance(value, LispDate):
+        value = value.date
     if isinstance(value, bool):
         cell["userEnteredValue"] = {"boolValue": value}
     elif isinstance(value, datetime.date):

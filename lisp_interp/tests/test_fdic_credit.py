@@ -1,5 +1,5 @@
 """Loans by type from the FDIC (lisp_fdic.py: a holding company's banks, the LoanBook, fdic-loan-losses) and the bank
-model's Credit Losses and FDIC Loans tabs (lisp_financial_credit.py), with a fake FDIC -- no network.
+model's Credit Losses and FDIC Call Reports tabs (lisp_financial_credit.py), with a fake FDIC -- no network.
 
 The fake FDIC has a holding company, ABC BCORP, with two banks (the second half the first's size), each filing a Call
 Report every quarter since 1999: every type of loan grows 2% a year, and loses its own rate a year of the loans at the
@@ -9,6 +9,7 @@ the year's. The latest report is June 30, 2026, so a period is the 12 months to 
 
 from support import *  # noqa: F401,F403 -- the interpreter's modules, mock, and LispTestCase
 
+import datetime
 import lisp_fdic
 import lisp_financial_credit as credit
 import lisp_financial_model as fm
@@ -72,7 +73,29 @@ def report(date, scale):
     if date >= "20150331":
         record["RBCT1C"] = 120000.0 * scale
         record["RWAJ"] = 1000000.0 * scale
+        record["RBCT1"] = 130000.0 * scale
+        record["RBC"] = 150000.0 * scale
+    # funding, securities, the allowance, and commercial real estate (see the FUNDING... constants)
+    record["ASSET"] = ASSETS_TO_LOANS * record["LNLSGR"]
+    record["DEP"] = DEPOSITS_TO_LOANS * record["LNLSGR"]
+    record["DEPNIDOM"] = NONINTEREST_SHARE * record["DEP"]
+    record["DEPUNINS"] = UNINSURED_SHARE * record["DEP"]
+    record["BRO"] = BROKERED_SHARE * record["DEP"]
+    record["OTHBFHLB"] = HOME_LOAN_BANK_SHARE * record["ASSET"]
+    record["SCAA"], record["SCAF"] = 200000.0 * scale, 200000.0 * scale * (1 + AVAILABLE_FOR_SALE_GAIN)
+    record["SCHA"], record["SCHF"] = 100000.0 * scale, 100000.0 * scale * (1 + HELD_TO_MATURITY_GAIN)
+    record["LNATRES"] = ALLOWANCE_SHARE * record["LNLSGR"]
+    if date >= "20070331":
+        record["LNRENROT"] = NOT_OWNER_OCCUPIED * record["LNRENRES"]
+        record["LNCOMRE"] = 10000.0 * scale
     return record
+
+
+ASSETS_TO_LOANS, DEPOSITS_TO_LOANS = 1.5, 1.2
+NONINTEREST_SHARE, UNINSURED_SHARE, BROKERED_SHARE, HOME_LOAN_BANK_SHARE = 0.25, 0.6, 0.05, 0.02
+AVAILABLE_FOR_SALE_GAIN, HELD_TO_MATURITY_GAIN = -0.10, -0.15        # (what the securities are worth, over their cost, less 1)
+ALLOWANCE_SHARE = 0.012
+NOT_OWNER_OCCUPIED = 0.6                # (of the nonfarm nonresidential loans)
 
 
 INSTITUTIONS = [
@@ -275,7 +298,8 @@ class TestTheCreditTabs(ModelTestCase):
 
     def test_the_tabs_come_after_the_cash_flow_and_before_the_notes(self):
         self.assertEqual([tab["name"] for tab in self.tabs],
-                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "Credit Losses", "FDIC Loans", "Notes"])
+                         ["Assumptions", "Income Statement", "Balance Sheet", "Cash Flow", "Valuation", "Sensitivity",
+                          "Distributions", "Sensitivity Macro", "Credit Losses", "FDIC Call Reports", "Notes"])
 
     def test_every_formula_on_every_tab_works_out_in_every_scenario(self):
         for scenario in credit.SCENARIOS:
@@ -294,6 +318,84 @@ class TestTheCreditTabs(ModelTestCase):
         self.assertAlmostEqual(self.sheets.value(credit.FDIC_TAB, cards - 1, last), self.book.loss_rates("credit-cards")[-1])
         loans = fdic.row_of[("loans", "total")]
         self.assertAlmostEqual(self.sheets.value(credit.FDIC_TAB, loans - 1, last), self.book.balance("total", LATEST) / 1e6)
+
+    def test_the_period_ends_reach_google_as_dates(self):
+        fdic = credit.FdicTab(self.book, self.model).sheet()
+        header = fdic["cells"][3]
+        self.assertEqual(header[0][0], "12 months to")
+        for (value, styles), end in zip(header[1:], self.book.period_ends):
+            cell = lisp_google.api_cell(value, styles)
+            day = lisp_google.SHEETS_EPOCH + datetime.timedelta(days=cell["userEnteredValue"]["numberValue"])
+            self.assertEqual(day, lisp_fdic.report_date(end).date)
+            self.assertEqual(cell["userEnteredFormat"]["numberFormat"]["type"], "DATE")
+
+    def fdic_value(self, section, key, period=None):
+        fdic = credit.FdicTab(self.book, self.model)
+        period = len(self.book.period_ends) - 1 if period is None else period
+        return self.sheets.at(credit.FDIC_TAB, fdic.address(section, key, period))
+
+    def test_the_funding_ratios_are_formulas_of_the_call_reports(self):
+        self.assertAlmostEqual(self.fdic_value("funding", "uninsured-share"), UNINSURED_SHARE)
+        self.assertAlmostEqual(self.fdic_value("funding", "noninterest-share"), NONINTEREST_SHARE)
+        self.assertAlmostEqual(self.fdic_value("funding", "brokered-share"), BROKERED_SHARE)
+        self.assertAlmostEqual(self.fdic_value("funding", "home-loan-bank-share"), HOME_LOAN_BANK_SHARE)
+        self.assertAlmostEqual(self.fdic_value("funding", "loans-to-deposits"), 1 / DEPOSITS_TO_LOANS)
+        self.assertAlmostEqual(self.fdic_value("funding", "deposits"), self.book.reported("deposits", LATEST) / 1e6)
+
+    def test_the_securities_losses_and_the_capital_ratio_counting_them(self):
+        scale = 1.5                                         # (banks 1 and 2)
+        available, held = 200 * scale * AVAILABLE_FOR_SALE_GAIN, 100 * scale * HELD_TO_MATURITY_GAIN
+        capital, risk_weighted = 120 * scale, 1000 * scale
+        self.assertAlmostEqual(self.fdic_value("securities", "available-for-sale-gain"), available)
+        self.assertAlmostEqual(self.fdic_value("securities", "held-to-maturity-gain"), held)
+        self.assertAlmostEqual(self.fdic_value("securities", "gain-to-capital"), (available + held) / capital)
+        self.assertAlmostEqual(self.fdic_value("securities", "ratio-with-held-to-maturity"), (capital + held) / risk_weighted)
+        self.assertAlmostEqual(self.fdic_value("securities", "ratio-with-all"), (capital + held + available) / risk_weighted)
+
+    def test_the_allowance_and_its_coverage_of_the_noncurrent_loans(self):
+        self.assertAlmostEqual(self.fdic_value("allowance", "to-loans"), ALLOWANCE_SHARE)
+        noncurrent = self.book.noncurrent("total", LATEST)
+        self.assertAlmostEqual(self.fdic_value("allowance", "to-noncurrent"),
+                               ALLOWANCE_SHARE * self.book.balance("total", LATEST) / noncurrent)
+
+    def test_commercial_real_estate_as_the_guidance_counts_it(self):
+        b = lambda key: self.book.balance(key, LATEST)
+        real_estate = (b("construction") + b("multifamily") + NOT_OWNER_OCCUPIED * b("commercial-real-estate")
+                       + 10000 * 1000 * 1.5)
+        total_capital = 150 * 1.5 * 1e6
+        self.assertAlmostEqual(self.fdic_value("real-estate", "total"), real_estate / 1e6)
+        self.assertAlmostEqual(self.fdic_value("real-estate", "to-capital"), real_estate / total_capital)
+        self.assertAlmostEqual(self.fdic_value("real-estate", "construction-to-capital"), b("construction") / total_capital)
+        three_years_before = self.book.period_ends[-4]
+        before = (self.book.balance("construction", three_years_before) + self.book.balance("multifamily", three_years_before)
+                  + NOT_OWNER_OCCUPIED * self.book.balance("commercial-real-estate", three_years_before) + 10000 * 1000 * 1.5)
+        self.assertAlmostEqual(self.fdic_value("real-estate", "growth"), real_estate / before - 1)
+
+    def test_commercial_real_estate_is_empty_before_the_call_report_said_who_occupies_it(self):
+        year_2006 = self.book.period_ends.index("20060630")
+        self.assertEqual(self.fdic_value("real-estate", "total", year_2006), "")
+        self.assertEqual(self.fdic_value("real-estate", "to-capital", year_2006), "")
+
+    def warning_signs(self):
+        """{measure: (the banks' value, the guide, past it?)} of the Credit Losses tab's last table."""
+        cells = self.credit["cells"]
+        start = next(r for r, row in enumerate(cells) if row[0] and str(row[0][0]).startswith("Concentration, reserves"))
+        signs = {}
+        for r in range(start + 2, start + 2 + len(credit.CreditTab.WARNING_SIGNS)):
+            signs[cells[r][0][0]] = tuple(self.sheets.value(credit.CREDIT, r, c) for c in (1, 2, 3))
+        return signs
+
+    def test_the_warning_signs_flag_what_is_past_its_guide(self):
+        signs = self.warning_signs()
+        self.assertEqual(len(signs), len(credit.CreditTab.WARNING_SIGNS))
+        value, guide, flag = signs["Uninsured deposits, % of deposits"]
+        self.assertAlmostEqual(value, UNINSURED_SHARE)
+        self.assertEqual((guide, flag), (0.5, "Yes"))
+        value, guide, flag = signs["Commercial real estate, % of total risk-based capital"]
+        self.assertAlmostEqual(value, self.fdic_value("real-estate", "to-capital"))
+        self.assertEqual(flag, "" if value <= 3 else "Yes")
+        self.assertEqual(signs["Brokered deposits, % of deposits"][2], "")
+        self.assertEqual(signs["Deposits that pay no interest, % of deposits"][1:], (0, 0))      # (no guide)
 
     def test_the_base_loss_rate_is_the_average_of_the_last_five_years_weighted_by_todays_loans(self):
         total = self.book.balance("total", LATEST)
@@ -370,7 +472,7 @@ class TestTheCreditTabs(ModelTestCase):
 
     def test_the_notes_say_where_the_data_came_from_and_what_is_left_out(self):
         notes = "\n".join(cells[0][0] for cells in self.tabs[-1]["cells"] if cells and cells[0])
-        self.assertIn("Credit losses by type of loan (the Credit Losses and FDIC Loans tabs)", notes)
+        self.assertIn("Credit losses by type of loan (the Credit Losses and FDIC Call Reports tabs)", notes)
         self.assertIn("ABC Bank (1); ABC Bank (2)", notes)
         self.assertIn("The allowance stays the percentage of loans assumed", notes)
         self.assertNotIn("which the SEC's facts do not give (the FDIC", notes)
@@ -428,6 +530,7 @@ class TestTheBuiltin(LispTestCase):
         for patcher in (mock.patch.object(lisp_sec, "company_facts", lambda creds, company, who: self.facts),
                         mock.patch.object(fm, "company_industry", lambda creds, company, who: (6021, "National Commercial Banks")),
                         mock.patch.object(lisp_fdic, "fdic_records", records),
+                        mock.patch.object(fm, "fed_funds_finder", lambda who: lambda periods: ([0.01] * len(periods), "")),
                         mock.patch.object(lisp_google, "google_workbook",
                                           lambda creds, title, sheets: self.written.append((title, sheets)) or "https://sheet")):
             patcher.start()
@@ -439,6 +542,14 @@ class TestTheBuiltin(LispTestCase):
 
     def notes(self):
         return "\n".join(cells[0][0] for cells in self.written[-1][1][-1]["cells"] if cells and cells[0])
+
+    def test_a_bank_has_the_federal_funds_rate_and_the_valuation_tab(self):
+        self.facts["entityName"] = "ABC BANCORP"
+        self.run_lisp('(three-statement-model creds "ABC")')
+        self.assertIn("Valuation", self.tab_names())
+        assumptions = next(tab for tab in self.written[-1][1] if tab["name"] == "Assumptions")
+        labels = [cells[0][0] for cells in assumptions["cells"] if cells and cells[0]]
+        self.assertIn("Federal funds rate (the average over the period; in the forecast, what you expect)", labels)
 
     def test_the_banks_are_found_by_the_companys_name(self):
         self.facts["entityName"] = "ABC BANCORP"

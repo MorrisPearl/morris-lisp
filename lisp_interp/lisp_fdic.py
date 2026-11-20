@@ -507,7 +507,27 @@ LOAN_TYPES = [
 EVERYTHING_ELSE = ("everything-else", "Everything else (governments, other banks, real estate abroad, ...)", 0.50)
 TOTAL_FIELDS = {"balance": "LNLSGR", "charge-offs": "NTLNLS", "noncurrent": "NCLNLS"}
 CAPITAL_FIELDS = {"common-equity": "RBCT1C", "risk-weighted-assets": "RWAJ"}
-FIRST_YEAR = 2001                       # the first year of losses (the year before gives its starting loans)
+# The rest of what a bank model shows from the Call Reports (all amounts at the report's date): its funding, its
+# securities (what they cost and what they are worth), its allowance and capital, and the commercial real estate
+# loans that the regulators' concentration guidance counts.
+REPORT_FIELDS = {
+    "assets": "ASSET",                              # total assets
+    "deposits": "DEP",                              # all deposits
+    "noninterest-bearing": "DEPNIDOM",              # deposits that pay no interest (in the United States)
+    "uninsured": "DEPUNINS",                        # the banks' estimate of the deposits above the FDIC's limit
+    "brokered": "BRO",                              # deposits placed by brokers
+    "home-loan-bank": "OTHBFHLB",                   # advances from the Federal Home Loan Banks
+    "available-for-sale-cost": "SCAA",              # securities available for sale, at what they cost
+    "available-for-sale-value": "SCAF",             # and at what they are worth
+    "held-to-maturity-cost": "SCHA",                # securities held to maturity, at what they cost
+    "held-to-maturity-value": "SCHF",               # and at what they are worth
+    "allowance": "LNATRES",                         # the allowance for credit losses on loans
+    "tier-1": "RBCT1",                              # tier 1 capital
+    "total-capital": "RBC",                         # total risk-based capital (tier 1 and tier 2)
+    "nonresidential-not-owner-occupied": "LNRENROT",    # nonfarm nonresidential real estate loans, not owner-occupied
+    "real-estate-not-secured": "LNCOMRE",           # loans to finance commercial real estate not secured by real estate
+}
+FIRST_YEAR = 2001                      # the first year of losses (the year before gives its starting loans)
 MOST_GROWTH = 2.0                       # a year in which a type's loans grew more than this many times is left out,
 LEAST_SHARE = 0.01                      # and one in which they were less than this share of all loans at the start
 
@@ -519,7 +539,8 @@ def year_before(date_text):
 class LoanBook:
     """The loans of a bank, or of all of a holding company's banks added up, by type, from every Call Report since
     FIRST_YEAR - 1: balances at a date, net charge-offs in the 12 months to it, and noncurrent loans at it, in dollars;
-    and the banks' common equity tier 1 capital and risk-weighted assets."""
+    the banks' common equity tier 1 capital and risk-weighted assets; and the REPORT_FIELDS (funding, securities,
+    the allowance, capital, commercial real estate)."""
 
     def __init__(self, banks, reports):
         self.banks = banks                         # [(certificate number, name)]
@@ -592,13 +613,18 @@ class LoanBook:
         """(common equity tier 1 capital, risk-weighted assets) at the date, in dollars, or None for either."""
         return self.field(CAPITAL_FIELDS["common-equity"], date), self.field(CAPITAL_FIELDS["risk-weighted-assets"], date)
 
+    def reported(self, key, date):
+        """One of the REPORT_FIELDS at the date, in dollars, or None."""
+        return self.field(REPORT_FIELDS[key], date)
+
     def bank_names(self):
         return "; ".join("%s (%d)" % (name, cert) for cert, name in self.banks)
 
 
 def loan_book(credentials_path, banks, who):
     """The LoanBook of these banks [(certificate number, name)]: every one of their Call Reports, added up date by date."""
-    fields = sorted({f for t in LOAN_TYPES for f in t[2:5]} | set(TOTAL_FIELDS.values()) | set(CAPITAL_FIELDS.values()))
+    fields = sorted({f for t in LOAN_TYPES for f in t[2:5]} | set(TOTAL_FIELDS.values()) | set(CAPITAL_FIELDS.values())
+                    | set(REPORT_FIELDS.values()))
     reports = {}
     named = []
     for cert, name in banks:

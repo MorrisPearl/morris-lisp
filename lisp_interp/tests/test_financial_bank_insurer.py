@@ -524,6 +524,7 @@ class TestChoosingTheKind(LispTestCase):
         for patcher in (mock.patch.object(lisp_sec, "company_facts", lambda creds, company, who: self.facts),
                         mock.patch.object(fm, "company_industry", lambda creds, company, who: self.industry),
                         mock.patch.object(lisp_fdic, "fdic_records", lambda *arguments: []),     # (an FDIC with no banks)
+                        mock.patch.object(fm, "fed_funds_finder", lambda who: lambda periods: ([0.01] * len(periods), "")),
                         mock.patch.object(lisp_google, "google_workbook",
                                           lambda creds, title, sheets: self.written.append((title, sheets)) or "https://sheet")):
             patcher.start()

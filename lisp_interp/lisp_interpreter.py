@@ -50,6 +50,7 @@ HOW THE CODE IS ORGANIZED
     lisp_data_common.py   what the data modules share: the credentials file, years, tables
     lisp_sec.py           sec-income-statement, sec-financials, ... (financial statements from the SEC)
     lisp_sec_filings.py   sec-filings, sec-filing-text, text-tone (what companies write in their filings, and its tone)
+    lisp_sec_insiders.py  sec-insider-trades (what officers, directors, and large owners bought and sold: Form 4)
     lisp_fdic.py          fdic-balance-sheet, fdic-financials, fdic-loan-losses, fdic-get, ... (bank data from the FDIC)
     lisp_census.py        census-get, census-profile, ... (demographic and economic data from the Census)
     lisp_bls.py           bls-series, bls-local-area, ... (prices, jobs, and pay from the BLS)
@@ -62,10 +63,13 @@ HOW THE CODE IS ORGANIZED
     lisp_financial_sensitivity.py  sensitivity-workbook, sensitivity-macro; the Sensitivity tabs (Monte Carlo macro in apps_script/)
     lisp_financial_compare.py compare-companies (companies side by side in a Google Sheet, as amounts or percentages)
     lisp_financial_bank.py, lisp_financial_insurer.py, lisp_financial_asset_manager.py   the bank, insurer, and asset manager models of three-statement-model
-    lisp_financial_credit.py  a bank model's Credit Losses and FDIC Loans tabs (loans by type, Base/Adverse/Severe scenarios)
+    lisp_financial_credit.py  a bank model's Credit Losses and FDIC Call Reports tabs (loans by type, Base/Adverse/Severe scenarios,
+                              funding, securities, commercial real estate concentration, warning signs)
+    lisp_financial_equity_valuation.py  a bank's or insurer's Valuation tab (excess returns on tangible equity, price to tangible book)
+    lisp_financial_quality.py the Quality and Risk tab (leverage, quality of earnings, Altman Z'', Piotroski F-score)
     lisp_schwab.py        schwab-*  (your Schwab accounts: positions, quotes, prices, orders, transactions)
-    lisp_alpha_vantage.py alpha-vantage-dividends  (a stock's dividends, from Alpha Vantage)
-    lisp_finra.py         finra-tba-prices, finra-mbs-prices, ...  (agency MBS prices reported to FINRA's TRACE)
+    lisp_alpha_vantage.py alpha-vantage-dividends, alpha-vantage-price, alpha-vantage-estimates  (dividends, the latest price, analysts' estimates)
+    lisp_finra.py         finra-tba-prices, finra-mbs-prices, ...  (agency MBS prices reported to FINRA's TRACE); finra-short-interest
     lisp_backgammon.py    backgammon-bearoff-chance  (the exact chance of winning a backgammon end game)
     lisp_baseball.py      transition-counts, simulate-games, ...  (baseball as a chain of states, from Retrosheet)
     lisp_investment_paths.py  daily-returns, adjust-returns, dividend-schedule, bootstrap-path, option-value

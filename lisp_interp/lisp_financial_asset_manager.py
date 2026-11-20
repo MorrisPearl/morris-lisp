@@ -37,8 +37,8 @@ FEE_RATE_LIMITS = (0.0, 1000.0)                 # basis points
 AUM_CONCEPTS = ["AssetsUnderManagementCarryingAmount"]       # (T. Rowe Price's, to 2022)
 
 
-def number_list(value, who):
-    """A list or vector of numbers, as a Python list of floats."""
+def number_list(value, who, name=":aum"):
+    """A list or vector of numbers (the option `name`), as a Python list of floats."""
     if isinstance(value, Pair):
         items = pairs_to_list(value)
     elif isinstance(value, LispVector):
@@ -48,6 +48,9 @@ def number_list(value, who):
     else:
         items = None
     if not items or any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in items):
+        if name == ":flows":
+            raise LispError("%s: :flows is a list of numbers, the net new money clients put in during each period, in "
+                            "billions (below 0 if they took more out), oldest first, such as (120 -35 80)" % who)
         raise LispError("%s: :aum is a list of numbers, the assets under management in billions at the end of each "
                         "period, oldest first, such as (8590 10010 11550)" % who)
     return [float(x) for x in items]
@@ -66,9 +69,17 @@ class AssetManagerHistory(model.History):
     """The reported numbers of an ordinary company's, and the AUM at the end of each period (in billions)."""
 
     aum = None
+    flows = None
 
     def set_aum(self, aum):
         self.aum = list(aum)
+
+    def set_flows(self, flows):
+        """The net flows of each period, in billions: the last ones given are the latest periods' (an earlier period
+        without one has None)."""
+        count = len(self.aum)
+        flows = list(flows)[-count:]
+        self.flows = [None] * (count - len(flows)) + flows
 
 
 class AssetManagerModel(model.Model):
@@ -89,6 +100,21 @@ class AssetManagerModel(model.Model):
                      ("quarter" if self.period == "quarterly" else "year"), "percent",
                      [None if i < 1 or not h.aum[i - 1] else h.aum[i] / h.aum[i - 1] - 1 for i in range(n)], limits,
                      lambda i: "=IFERROR(%s/%s-1,0)" % (a("aum", i), a("aum", i - 1)) if i >= 1 else None))
+        if h.flows is not None:
+            # (the growth of AUM, in two: the net money the clients put in, and what the market and the rest added)
+            organic = [None if i < 1 or h.flows[i] is None or not h.aum[i - 1] else h.flows[i] / h.aum[i - 1]
+                       for i in range(n)]
+            rows.append(("organic-growth", "Net flows: the new money clients put in, less what they took out, %% of the "
+                         "AUM at the start (organic growth, over the %s)" % ("quarter" if self.period == "quarterly" else "year"),
+                         "percent", organic, limits,
+                         lambda i: "=IFERROR(%s/%s,0)" % (a("flows", i), a("aum", i - 1)) if i >= 1 and h.flows[i] is not None
+                         else None))
+            market = [None if organic[i] is None or i < 1 or not h.aum[i - 1] else h.aum[i] / h.aum[i - 1] - 1 - organic[i]
+                      for i in range(n)]
+            rows.append(("market-return", "Market and other: the rest of the growth of AUM (the market's appreciation, "
+                         "currencies, acquisitions)", "percent", market, limits,
+                         lambda i: "=%s-%s" % (a("aum-growth", i), a("organic-growth", i)) if i >= 1 and h.flows[i] is not None
+                         else None))
         rows.append(("fee-rate", "Revenue, basis points of average AUM (a year's)", "decimal",
                      [None if i < 1 or not (h.aum[i - 1] + h.aum[i]) else
                       h.revenue[i] * 10 / ((h.aum[i - 1] + h.aum[i]) / 2) / year_fraction for i in range(n)],
@@ -104,14 +130,35 @@ class AssetManagerModel(model.Model):
                    lambda i: self.h.aum[i] if not self.is_forecast(i) else
                    "=%s*(1+%s)" % (self.ref(ASSUMPTIONS, "aum", i - 1, ASSUMPTIONS),
                                    self.ref(ASSUMPTIONS, "aum-growth", i, ASSUMPTIONS)))
+        if self.h.flows is not None:
+            aum_lines = [aum, self.flows_line(), self.main_line_from_series("organic-growth"),
+                         self.main_line_from_series("market-return"), self.aum_growth_result()]
+        else:
+            aum_lines = [aum, self.main_line_from_series("aum-growth")]
         lines = []
         for line in base.lines:
             if line is not None and line.key == "growth":
-                lines += [aum, self.main_line_from_series("aum-growth"), self.main_line_from_series("fee-rate"),
-                          Line("growth", "Revenue growth, as AUM and the fee rate give", growth_format, (), growth_formula)]
+                lines += aum_lines + [self.main_line_from_series("fee-rate"),
+                                      Line("growth", "Revenue growth, as AUM and the fee rate give", growth_format, (),
+                                           growth_formula)]
             else:
                 lines.append(line)
         return SheetLayout(ASSUMPTIONS, "Assumptions", lines)
+
+    def flows_line(self):
+        """The net flows, in billions: as given, then the organic growth assumed times the AUM at the start."""
+        flows = self.h.flows
+        a = self.refs(ASSUMPTIONS, ASSUMPTIONS)
+        return Line("flows", "Net flows, billions (new money less money taken out)", "money", (),
+                    lambda i: flows[i] if not self.is_forecast(i) else "=%s*%s" % (a("organic-growth", i), a("aum", i - 1)))
+
+    def aum_growth_result(self):
+        """With the flows given, the growth of AUM is a result: organic growth plus the market's."""
+        _, label, number_format, _, _, history_formula = self.assumptions["aum-growth"]
+        a = self.refs(ASSUMPTIONS, ASSUMPTIONS)
+        return Line("aum-growth", "Growth of assets under management (net flows and the market together)", number_format,
+                    (), lambda i: history_formula(i) if not self.is_forecast(i) else
+                    "=%s+%s" % (a("organic-growth", i), a("market-return", i)))
 
     # --- Income statement
 
@@ -133,6 +180,8 @@ class AssetManagerModel(model.Model):
             "Assets under management (AUM, in billions) at the end of a period are the last period's times one plus the growth assumed: the market's appreciation plus the net money clients put in. Type a formula such as =0.06+0.02 to see the two apart.",
             "Revenue is the fee rate (basis points of average AUM, a year's) times the average of the AUM at the start and end of the period (and a quarter's worth, for quarters). The Assumptions tab shows the fee rate in the reported periods; it drifts down as money moves to index funds.",
             "The AUM is not in the SEC's data: it was given to the program (:aum), and can be changed on the Assumptions tab.",
+            *(["The net flows (:flows) split the growth of AUM in two: organic growth, the new money clients put in less what they took out over the AUM at the start, and the market and other, the rest. In the forecast both are assumptions, and the growth of AUM is their sum; the flows are organic growth times the AUM at the start. Organic growth is the measure of an asset manager's business that the market's ups and downs hide."]
+              if self.h.flows is not None else []),
             "Operating expenses (compensation, distribution, and general and administrative) are percentages of revenue, so the operating margin is an assumption. Interest uses last period's debt and cash, so no formula refers to itself.",
             "Receivables and payables follow days of revenue. Plant and equipment is last period's plus capital expenditures less depreciation; intangibles fall by their amortization. Debt is last period's plus what is borrowed (repaid), an assumption. Equity is last period's plus net income and stock compensation, less dividends and repurchases.",
             "Cash is last period's plus the net change in cash on the Cash Flow tab. Goodwill, investments, and the other assets and liabilities stay as they were.",

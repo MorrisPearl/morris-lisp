@@ -8,6 +8,9 @@ loses on loans that are not repaid. So the model's drivers are the balance sheet
   Borrowings are what is needed to fund the rest: total assets less deposits, other liabilities, and equity.
   Interest is a rate times the balance at the END of the period before (so nothing refers to itself):
     on loans, on securities and cash, on deposits, on borrowings. Net interest income is the difference.
+    With the federal funds rate (from the New York Fed: build_model's find_fed_funds), each forecast rate is the
+    period before's plus its beta times the change in the Fed's rate, which you type for the forecast; a beta is
+    how much the rate moved over the biggest move of the Fed's rate in the history, over that move.
   Credit losses: the allowance for credit losses is a percentage of loans; the bank charges off a percentage
     of its loans a year; the provision on the income statement is what charge-offs and the growth of the
     allowance add up to -- the bank "provides" for the losses it expects and for the loans it has lost.
@@ -17,7 +20,10 @@ loses on loans that are not repaid. So the model's drivers are the balance sheet
   The cash flow statement is the bank's balance sheet seen as flows: net income, less the growth of loans and
     securities, plus the growth of deposits and borrowings, less the payouts. It must end where the balance
     sheet's cash does -- the second check line on the balance sheet, 0 in every forecast period, says so.
-  The other assets and liabilities (trading assets, premises, goodwill, ...) stay as they were.
+  The other assets and liabilities (goodwill and intangibles, trading assets, premises, ...) stay as they were.
+  Tangible common equity is equity less preferred stock, minority interests, goodwill and intangibles; net income
+    to common shareholders is net income less preferred dividends. The Valuation tab values the common shares by
+    the excess returns on tangible common equity (lisp_financial_equity_valuation.py).
 
 So if loans grow faster than deposits, borrowings grow -- and if deposits grow faster than loans, they shrink,
 and nothing keeps them from going negative: change the growth rates. The lines under the statements -- the
@@ -34,6 +40,7 @@ borrowings are repurchase agreements, short-term borrowings and long-term debt.
 """
 
 import lisp_sec
+import lisp_financial_equity_valuation as equity_valuation
 import lisp_financial_credit as credit
 import lisp_financial_model as model
 
@@ -47,6 +54,18 @@ ALLOWANCE_LIMITS = (0.0, 0.10)                      # of loans
 SHARE_OF_DEPOSITS_LIMITS = (0.0, 2.0)               # cash, or securities, as a fraction of deposits
 CHARGE_OFF_LIMITS = (-0.01, 0.15)                   # of loans, in a year
 EFFICIENCY_LIMITS = (0.0, 2.0)                      # noninterest expense, as a fraction of net revenue
+BETA_LIMITS = (0.0, 1.0)                            # the share of a change in the Fed's rate that a rate follows
+LEAST_RATE_MOVE = 0.01                              # a move of the federal funds rate smaller than this tells nothing
+RATE_CYCLE_TOLERANCE = 0.0025                       # (the end of a move: the last period still this near its rate)
+
+# Each rate of the forecast, and its beta: (the rate's assumption, the beta's key, what it is, the beta if the history
+# has no move of the Fed's rate to measure it by -- typical figures)
+RATE_BETAS = [
+    ("loan-yield", "loan-beta", "Loans", 0.50),
+    ("securities-yield", "securities-beta", "Securities and cash", 0.60),
+    ("deposit-cost", "deposit-beta", "Deposits", 0.35),
+    ("borrowing-cost", "borrowing-beta", "Borrowings", 0.90),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +82,7 @@ BANK_ITEMS = shared(
     "pretax-income", "income-tax", "net-income", "shares-basic", "shares-diluted",
     "total-assets", "total-liabilities", "stockholders-equity", "equity-including-minority", "liabilities-and-equity",
     "operating-cash-flow", "investing-cash-flow", "financing-cash-flow", "dividends-paid", "share-repurchases",
+    "goodwill", "intangible-assets",
 ) + [
     # The income statement
     ("interest-income", "Interest income", "income",
@@ -112,6 +132,16 @@ BANK_ITEMS = shared(
     ("long-term-debt", "Long-term debt", "balance",
      ["LongTermDebt", "LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
       "LongTermDebtAndCapitalLeaseObligations"], None),
+    # What is not the common shareholders': preferred stock, minority interests (the equity of the whole company
+    # less the parent's), and preferred dividends
+    ("parent-equity", "Stockholders' equity, without minority interests", "balance", ["StockholdersEquity"], None),
+    ("preferred-stock", "Preferred stock", "balance",
+     ["PreferredStockValue", "PreferredStockValueOutstanding", "PreferredStockIncludingAdditionalPaidInCapitalNetOfDiscount",
+      "PreferredStockIncludingAdditionalPaidInCapital"], None),
+    ("preferred-dividends", "Preferred dividends", "income",
+     ["PreferredStockDividendsIncomeStatementImpact", "DividendsPreferredStock", "DividendsPreferredStockCash"], None),
+    ("income-to-common", "Net income available to common shareholders", "income",
+     ["NetIncomeLossAvailableToCommonStockholdersBasic"], None),
 ]
 
 # Lines without which the model means nothing (of the alternatives in a tuple, one is enough)
@@ -166,8 +196,10 @@ class BankHistory:
         self.net_loans = [loans - allowance for loans, allowance in zip(self.loans, self.allowance)]
         self.total_assets = [r.values["total-assets"][i] if r.values["total-assets"][i] is not None
                              else r.values["liabilities-and-equity"][i] for i in range(count)]
-        self.other_assets = [total - cash - securities - loans for total, cash, securities, loans in
-                             zip(self.total_assets, self.cash, self.securities, self.net_loans)]
+        self.goodwill_and_intangibles = [a + b for a, b in zip(z("goodwill"), z("intangible-assets"))]
+        self.other_assets = [total - cash - securities - loans - goodwill for total, cash, securities, loans, goodwill in
+                             zip(self.total_assets, self.cash, self.securities, self.net_loans,
+                                 self.goodwill_and_intangibles)]
         self.deposits = z("deposits")
         self.borrowings = [sum(x) for x in zip(z("repurchase-agreements"), z("short-term-borrowings"),
                                                z("long-term-debt"))]
@@ -177,6 +209,24 @@ class BankHistory:
             self.equity.append(r.values["stockholders-equity"][i] if equity is None else equity)
         self.other_liabilities = [assets - equity - deposits - borrowings for assets, equity, deposits, borrowings in
                                   zip(self.total_assets, self.equity, self.deposits, self.borrowings)]
+        # --- what is not the common shareholders': preferred stock, and minority interests (the equity above less the
+        # parent's own, where the company reports both); and the preferred dividends (as reported, or net income less
+        # what is left for the common shareholders)
+        self.preferred_and_minority = []
+        for i in range(count):
+            parent = r.values["parent-equity"][i]
+            minority = self.equity[i] - parent if parent is not None and self.equity[i] > parent else 0.0
+            self.preferred_and_minority.append(z("preferred-stock")[i] + minority)
+        self.preferred_dividends = []
+        for i in range(count):
+            reported_dividends, to_common = r.values["preferred-dividends"][i], r.values["income-to-common"][i]
+            if reported_dividends is not None:
+                self.preferred_dividends.append(reported_dividends)
+            elif to_common is not None and to_common <= self.net_income[i]:
+                self.preferred_dividends.append(self.net_income[i] - to_common)
+            else:
+                self.preferred_dividends.append(0.0)
+        self.fed_funds = None          # (the federal funds rate in each period, if the model is given it: set_fed_funds)
         # --- credit losses: net charge-offs as reported, or charge-offs less recoveries, or what the provision
         # and the growth of the allowance say they must have been
         self.net_charge_offs = []
@@ -204,6 +254,29 @@ class BankHistory:
                                     self.dividends, self.repurchases)]
 
 
+def rate_cycle(fed_funds, first=1):
+    """The periods of the history (from `first`, the first with interest rates) between which the federal funds rate
+    moved the most -- (start, end), the end moved on to the last period whose rate was still within
+    RATE_CYCLE_TOLERANCE of it, since the bank's rates follow the Fed's late -- or None if it never moved
+    LEAST_RATE_MOVE."""
+    best = None
+    for i in range(first, len(fed_funds)):
+        for j in range(i + 1, len(fed_funds)):
+            if fed_funds[i] is None or fed_funds[j] is None:
+                continue
+            move = abs(fed_funds[j] - fed_funds[i])
+            if best is None or move > best[0]:
+                best = (move, i, j)
+    if best is None or best[0] < LEAST_RATE_MOVE:
+        return None
+    _, start, end = best
+    extreme = fed_funds[end]
+    while end + 1 < len(fed_funds) and fed_funds[end + 1] is not None \
+            and abs(fed_funds[end + 1] - extreme) <= RATE_CYCLE_TOLERANCE:
+        end += 1
+    return start, end
+
+
 # ---------------------------------------------------------------------------
 # The sheets
 # ---------------------------------------------------------------------------
@@ -211,8 +284,11 @@ class BankHistory:
 class BankModel(model.Model):
     """The model of a bank: the same tabs as an ordinary company's, with a bank's lines."""
 
-    has_valuation = False                  # (no DCF tab: see lisp_financial_dcf.py)
+    valuation_tab_name = equity_valuation.TAB_NAME    # (not a DCF: see lisp_financial_equity_valuation.py)
 
+
+    def quality_layout(self):
+        return None                        # (the Quality and Risk tab is an ordinary company's)
     def growth_limits(self):
         """Limits for the growth of a balance in one period (a year's, scaled to the period)."""
         return tuple(limit * self.days_in_period / 365 for limit in BALANCE_GROWTH_LIMITS)
@@ -299,7 +375,26 @@ class BankModel(model.Model):
 
         section("balances-header", "The balance sheet (borrowings are what is needed to fund the rest)",
                 ["loan-growth", "deposit-growth", "cash-to-deposits", "securities-to-deposits"])
-        section("rates-header", "Interest rates", ["loan-yield", "securities-yield", "deposit-cost", "borrowing-cost"])
+        if self.h.fed_funds:
+            lines.append(Line("rates-header", "Interest rates (each forecast rate is the period before's, plus its beta "
+                              "times the change in the federal funds rate: type the rates you expect the Fed to set)",
+                              "money", ("section",), None))
+            lines.append(self.fed_funds_line())
+            for rate_key, beta_key, _, _ in RATE_BETAS:
+                lines.append(self.main_line_from_series(rate_key))
+                self.follow_fed_funds(lines[-1], beta_key)
+            lines.append(None)
+            cycle = rate_cycle(self.h.fed_funds)
+            lines.append(Line("betas-header", "Betas: the share of a change in the federal funds rate that each rate "
+                              "follows" + (" (from %s, the biggest move of the Fed's rate in the history, to %s)"
+                                           % (self.labels[cycle[0]], self.labels[cycle[1]]) if cycle else
+                                           " (typical figures: the history has no move of the Fed's rate to measure them by)"),
+                              "money", ("section",), None))
+            for rate_key, beta_key, what, typical in RATE_BETAS:
+                lines.append(self.beta_line(rate_key, beta_key, what, typical, cycle))
+            lines.append(None)
+        else:
+            section("rates-header", "Interest rates", ["loan-yield", "securities-yield", "deposit-cost", "borrowing-cost"])
         section("credit-header", "Credit losses" + (" (the forecast's net charge-offs follow the scenario chosen on the "
                                                     "Credit Losses tab)" if self.loan_book else ""),
                 ["allowance-ratio", "charge-off-rate"])
@@ -310,6 +405,52 @@ class BankModel(model.Model):
         lines.pop()
         lines += [None, self.days_line()]
         return SheetLayout(ASSUMPTIONS, "Assumptions", lines)
+
+    def fed_funds_line(self):
+        """The federal funds rate: the average of each period reported (from the New York Fed), and in the forecast
+        the last one's, held, for you to replace with the rates you expect."""
+        fed_funds = self.h.fed_funds
+        last = self.history_count - 1
+
+        def cell(i):
+            if not self.is_forecast(i):
+                return fed_funds[i]
+            return "=" + self.ref(ASSUMPTIONS, "fed-funds", i - 1 if i > self.history_count else last, ASSUMPTIONS)
+        line = Line("fed-funds", "Federal funds rate (the average over the period; in the forecast, what you expect)",
+                    "percent", (), cell)
+        line.editable = True
+        return line
+
+    def beta_line(self, rate_key, beta_key, what, typical, cycle):
+        """A rate's beta: how much it moved over the biggest move of the federal funds rate in the history, over that
+        move (within BETA_LIMITS), or a typical figure; then the period before's."""
+        a = self.refs(ASSUMPTIONS, ASSUMPTIONS)
+
+        def cell(i):
+            if not self.is_forecast(i):
+                return None
+            if i > self.history_count:
+                return "=" + a(beta_key, i - 1)
+            if cycle is None:
+                return typical
+            start, end = cycle
+            return "=MIN(MAX(IFERROR((%s-%s)/(%s-%s),%s),%s),%s)" % (
+                a(rate_key, end), a(rate_key, start), a("fed-funds", end), a("fed-funds", start), typical,
+                BETA_LIMITS[0], BETA_LIMITS[1])
+        line = Line(beta_key, "%s: the share of a change in the federal funds rate passed on" % what, "decimal", (), cell)
+        line.editable = True
+        return line
+
+    def follow_fed_funds(self, line, beta_key):
+        """A forecast rate: the period before's, plus its beta times the change in the federal funds rate."""
+        history_cell = line.cell
+        a = self.refs(ASSUMPTIONS, ASSUMPTIONS)
+
+        def cell(i):
+            if not self.is_forecast(i):
+                return history_cell(i)
+            return "=MAX(%s+%s*(%s-%s),0)" % (a(line.key, i - 1), a(beta_key, i), a("fed-funds", i), a("fed-funds", i - 1))
+        line.cell = cell
 
     def follow_scenario(self, line):
         """The forecast's net charge-off rate: the Credit Losses tab's, for the scenario chosen there."""
@@ -361,7 +502,7 @@ class BankModel(model.Model):
                  lambda i: "=%s+%s" % (inc("net-interest-income", i), inc("noninterest-income", i))),
             line("noninterest-expense", "Noninterest expense", h.noninterest_expense,
                  lambda i: "=%s*%s" % (a("efficiency", i), inc("net-revenue", i))),
-            Line("pre-provision-profit", "Profit before credit losses", "money", ("total",),
+            Line("pre-provision-profit", "Pre-provision net revenue (profit before credit losses)", "money", ("total",),
                  lambda i: "=%s-%s" % (inc("net-revenue", i), inc("noninterest-expense", i))),
             line("provision", "Provision for credit losses", h.provision,
                  lambda i: "=%s+%s-%s" % (inc("net-charge-offs", i), bal("allowance", i), bal("allowance", i - 1))),
@@ -372,11 +513,15 @@ class BankModel(model.Model):
             line("other-net-income", "Minority interests, preferred dividends, other", h.other_net_income, lambda i: 0.0),
             Line("net-income", "Net income", "money", ("total",),
                  lambda i: "=%s-%s+%s" % (inc("pretax-income", i), inc("income-tax", i), inc("other-net-income", i))),
+            line("preferred-dividends", "Preferred dividends (in the forecast, the period before's)", h.preferred_dividends,
+                 lambda i: "=%s" % inc("preferred-dividends", i - 1)),
+            Line("income-to-common", "Net income to common shareholders", "money", ("total",),
+                 lambda i: "=%s-%s" % (inc("net-income", i), inc("preferred-dividends", i))),
             None,
             line("shares", "Diluted shares, millions", h.shares,
                  lambda i: "=%s*(1+%s)" % (inc("shares", i - 1), a("share-growth", i))),
-            Line("eps", "Earnings per share, diluted", "per-share", (),
-                 lambda i: '=IFERROR(%s/%s,"")' % (inc("net-income", i), inc("shares", i))),
+            Line("eps", "Earnings per share, diluted (net income to common shareholders / shares)", "per-share", (),
+                 lambda i: '=IFERROR(%s/%s,"")' % (inc("income-to-common", i), inc("shares", i))),
             None,
             Line("ratios-header", "Credit losses and ratios", "money", ("section",), None),
             line("net-charge-offs", "Net charge-offs (loans written off less recoveries)", h.net_charge_offs,
@@ -392,6 +537,10 @@ class BankModel(model.Model):
                  lambda i: '=IFERROR(%s*%s/%s,"")' % (inc("net-income", i), per_year(i), average(bal, "equity", i))),
             Line("return-on-assets", "Return on assets (a year's net income / average assets)", "percent", ("italic",),
                  lambda i: '=IFERROR(%s*%s/%s,"")' % (inc("net-income", i), per_year(i), average(bal, "total-assets", i))),
+            Line("return-on-tangible-equity", "Return on tangible common equity (a year's net income to common "
+                 "shareholders / average tangible common equity)", "percent", ("italic",),
+                 lambda i: '=IFERROR(%s*%s/%s,"")' % (inc("income-to-common", i), per_year(i),
+                                                      average(bal, "tangible-common-equity", i))),
         ]
         return SheetLayout(INCOME, "Income Statement", lines)
 
@@ -424,11 +573,13 @@ class BankModel(model.Model):
                  lambda i: "=%s*%s" % (a("allowance-ratio", i), bal("loans", i))),
             Line("net-loans", "Loans, net of the allowance", "money", ("total",),
                  lambda i: "=%s-%s" % (bal("loans", i), bal("allowance", i))),
-            line("other-assets", "Other assets (trading assets, premises, goodwill, ...)", h.other_assets,
+            line("goodwill-and-intangibles", "Goodwill and intangible assets", h.goodwill_and_intangibles,
+                 same_as_before("goodwill-and-intangibles")),
+            line("other-assets", "Other assets (trading assets, premises, ...)", h.other_assets,
                  same_as_before("other-assets")),
             Line("total-assets", "Total assets", "money", ("total",),
-                 lambda i: "=%s+%s+%s+%s" % (bal("cash", i), bal("securities", i), bal("net-loans", i),
-                                             bal("other-assets", i))),
+                 lambda i: "=%s+%s+%s+%s+%s" % (bal("cash", i), bal("securities", i), bal("net-loans", i),
+                                                bal("goodwill-and-intangibles", i), bal("other-assets", i))),
             None,
             line("deposits", "Deposits", h.deposits, grown("deposits", "deposit-growth")),
             line("borrowings", "Borrowings (repurchase agreements, short-term borrowings, long-term debt)", h.borrowings,
@@ -448,7 +599,19 @@ class BankModel(model.Model):
             Line("cash-check", "Check: cash here less cash at the end of the Cash Flow tab (should be 0)", "money", ("italic",),
                  lambda i: "=ROUND(%s-%s,3)" % (bal("cash", i), cf("cash-end", i)) if self.is_forecast(i) else None),
             None,
+            Line("tangible-header", "What the common shareholders own (less goodwill and intangibles, which a bank "
+                 "in trouble cannot sell)", "money", ("section",), None),
+            line("preferred-and-minority", "Preferred stock and minority interests (held as they are)",
+                 h.preferred_and_minority, same_as_before("preferred-and-minority")),
+            Line("tangible-common-equity", "Tangible common equity (equity less preferred stock, minority interests, "
+                 "goodwill and intangibles)", "money", ("total",),
+                 lambda i: "=%s-%s-%s" % (bal("equity", i), bal("preferred-and-minority", i),
+                                          bal("goodwill-and-intangibles", i))),
+            None,
             Line("ratios-header", "Ratios", "money", ("section",), None),
+            Line("tangible-equity-to-assets", "Tangible common equity / tangible assets", "percent", ("italic",),
+                 lambda i: '=IFERROR(%s/(%s-%s),"")' % (bal("tangible-common-equity", i), bal("total-assets", i),
+                                                       bal("goodwill-and-intangibles", i))),
             Line("loans-to-deposits", "Loans / deposits", "percent", ("italic",),
                  lambda i: '=IFERROR(%s/%s,"")' % (bal("loans", i), bal("deposits", i))),
             Line("borrowings-to-assets", "Borrowings / assets", "percent", ("italic",),
@@ -544,14 +707,20 @@ class BankModel(model.Model):
             ("" if self.loan_book else " Regulatory capital ratios need risk-weighted assets, which the SEC's facts do not give (the FDIC's Call Reports do: see :fdic)."),
         ]
 
+    def valuation_sheet(self):
+        return equity_valuation.BankValuation(self).sheet()
+
     def valuation_notes(self):
-        notes = super().valuation_notes()
+        if self.has_valuation_tab():
+            notes = ["The Valuation tab"] + equity_valuation.valuation_notes(self, equity_valuation.BankValuation)
+        else:
+            notes = super().valuation_notes()
         if self.loan_book:
             notes += [""] + credit.notes(self)
         return notes
 
     def sheets(self):
-        """The tabs, with the Credit Losses and FDIC Loans tabs before the Notes tab if the model has the FDIC's loans."""
+        """The tabs, with the Credit Losses and FDIC Call Reports tabs before the Notes tab if the model has the FDIC's loans."""
         tabs = super().sheets()
         if self.loan_book:
             at = next(n for n, tab in enumerate(tabs) if tab["name"] == model.NOTES)

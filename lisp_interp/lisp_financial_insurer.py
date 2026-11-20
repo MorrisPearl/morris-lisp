@@ -31,6 +31,7 @@ Chubb, Progressive.)
 """
 
 import lisp_sec
+import lisp_financial_equity_valuation as equity_valuation
 import lisp_financial_model as model
 
 Line, SheetLayout = model.Line, model.SheetLayout
@@ -82,6 +83,10 @@ INSURER_ITEMS = shared(
      ["DebtLongtermAndShorttermCombinedAmount", "LongTermDebt", "LongTermDebtNoncurrent", "SeniorNotes",
       "DebtInstrumentCarryingAmount"], None),
     ("short-term-debt", "Short-term borrowings", "balance", ["ShortTermBorrowings"], None),
+    # how much the losses of earlier years' accidents turned out to be more (or less) than reserved for them
+    ("reserve-development", "Losses incurred for prior years' claims (reserve development)", "income",
+     ["LiabilityForUnpaidClaimsAndClaimsAdjustmentExpenseIncurredClaimsPriorYears",
+      "SupplementalInformationForPropertyCasualtyInsuranceUnderwritersPriorYearClaimsAndClaimsAdjustmentExpense"], None),
 ]
 
 INSURER_REQUIRED = [
@@ -117,6 +122,7 @@ class InsurerHistory:
                                zip(self.revenue, self.losses, self.interest_expense, self.pretax_income)]
         self.other_net_income = [ni - (pre - tax) for ni, pre, tax in zip(self.net_income, self.pretax_income, self.income_tax)]
         self.shares = z("shares-diluted")
+        self.reserve_development = r.values["reserve-development"]          # (None where it isn't reported)
         # --- balance sheet
         self.cash, self.investments = z("cash"), z("investments")
         self.premiums_receivable, self.reinsurance_recoverable = z("premiums-receivable"), z("reinsurance-recoverable")
@@ -164,10 +170,21 @@ class InsurerHistory:
 class InsurerModel(model.Model):
     """The model of a property and casualty insurer: the same tabs as an ordinary company's, with an insurer's lines."""
 
-    has_valuation = False                  # (no DCF tab: see lisp_financial_dcf.py)
+    valuation_tab_name = equity_valuation.TAB_NAME    # (not a DCF: see lisp_financial_equity_valuation.py)
+
+    def valuation_sheet(self):
+        return equity_valuation.InsurerValuation(self).sheet()
+
+    def valuation_notes(self):
+        if not self.has_valuation_tab():
+            return super().valuation_notes()
+        return ["The Valuation tab"] + equity_valuation.valuation_notes(self, equity_valuation.InsurerValuation)
 
     # --- Assumptions
 
+
+    def quality_layout(self):
+        return None                        # (the Quality and Risk tab is an ordinary company's)
     def assumption_series(self):
         h, n, lag, days = self.h, self.history_count, self.lag, self.days_in_period
         year_fraction = days / 365
@@ -318,6 +335,17 @@ class InsurerModel(model.Model):
             Line("return-on-equity", "Return on equity (a year's net income / average equity)", "percent", ("italic",),
                  lambda i: '=IFERROR(%s*365/%s/%s,"")' % (inc("net-income", i), a("days", i), average("equity", i))),
         ]
+        development = h.reserve_development
+        if any(value is not None for value in development):
+            lines += [
+                Line("reserve-development", "Losses for prior years' claims (above 0: the reserves set aside before were "
+                     "too small), as reported", "money", ("italic",),
+                     lambda i: None if self.is_forecast(i) else development[i]),
+                Line("reserve-development-percent", "Prior years' losses, % of premiums earned (points of the combined ratio)",
+                     "percent", ("italic",),
+                     lambda i: None if self.is_forecast(i) or development[i] is None else
+                     '=IFERROR(%s/%s,"")' % (inc("reserve-development", i), inc("premiums-earned", i))),
+            ]
         return SheetLayout(INCOME, "Income Statement", lines)
 
     # --- Balance sheet
@@ -379,6 +407,14 @@ class InsurerModel(model.Model):
                  lambda i: '=IFERROR(%s/%s,"")' % (bal("loss-reserves", i), bal("equity", i))),
             Line("investments-to-equity", "Investments and cash / equity", "decimal", ("italic",),
                  lambda i: '=IFERROR((%s+%s)/%s,"")' % (bal("investments", i), bal("cash", i), bal("equity", i))),
+            Line("tangible-book-value", "Tangible book value (equity less goodwill and intangibles)", "money", ("italic",),
+                 lambda i: "=%s-%s-%s" % (bal("equity", i), bal("goodwill", i), bal("intangible-assets", i))),
+            Line("book-value-per-share", "Book value per share (equity / diluted shares)", "per-share", ("italic",),
+                 lambda i: '=IFERROR(%s/%s,"")' % (bal("equity", i), inc("shares", i))),
+            Line("book-value-growth", "Growth of book value per share over a year (with the dividends, what an "
+                 "insurer's shareholders earn)", "percent", ("italic",),
+                 lambda i: '=IFERROR(%s/%s-1,"")' % (bal("book-value-per-share", i), bal("book-value-per-share", i - self.lag))
+                 if i >= self.lag else None),
         ]
         return SheetLayout(BALANCE, "Balance Sheet", lines)
 

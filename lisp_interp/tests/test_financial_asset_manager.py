@@ -164,7 +164,7 @@ class TestChoosingAnAssetManager(LispTestCase):
         self.industry = (6282, "Investment Advice")
         self.run_lisp('(three-statement-model creds "ABC" :segments #f)')
         self.assertIn("Gross profit", self.labels())
-        notes = "\n".join(self.labels(8))            # (the Notes tab, after the Sensitivity, Distributions, and macro tabs)
+        notes = "\n".join(self.labels(-1))           # (the Notes tab, the last)
         self.assertIn("The SEC classifies this company as Investment Advice, but it is modeled as an ordinary company because "
                       "a model of an asset manager needs the assets under management", notes)
         self.assertIn("give them with :aum", notes)

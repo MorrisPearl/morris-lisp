@@ -79,7 +79,8 @@ import lisp_sec_segments
 
 INCOME, BALANCE, CASH_FLOW, ASSUMPTIONS, DCF, NOTES = \
     "Income Statement", "Balance Sheet", "Cash Flow", "Assumptions", "DCF", "Notes"
-TAB_ORDER = [ASSUMPTIONS, INCOME, BALANCE, CASH_FLOW, DCF, NOTES]
+QUALITY = "Quality and Risk"
+TAB_ORDER = [ASSUMPTIONS, INCOME, BALANCE, CASH_FLOW, QUALITY, DCF, NOTES]
 
 HEADER_ROWS = 5                 # title, units, period names, period ends, period numbers
 PERIOD_NUMBER_ROW = 5           # (the last of them: 0 in the first forecast period, 1 in the next, -1 in the last reported)
@@ -93,10 +94,12 @@ MILLION = 1e6
 # Google Sheets) ASSUMPTION_NAMES gives another; where two tabs have a line of the same name, the one of the tab that comes
 # later in TAB_ORDER has its tab's name before it (cash_flow_net_income).
 ASSUMPTION_NAMES = {"growth": "revenue_growth", "days": "days_in_period"}
-NAME_PREFIX = {ASSUMPTIONS: "assumption_", INCOME: "income_", BALANCE: "balance_", CASH_FLOW: "cash_flow_", DCF: "dcf_"}
+NAME_PREFIX = {ASSUMPTIONS: "assumption_", INCOME: "income_", BALANCE: "balance_", CASH_FLOW: "cash_flow_",
+               QUALITY: "quality_", DCF: "dcf_"}
 
-NOTES_HEADINGS = ("How to read this sheet", "How the forecast works", "The DCF tab", "No DCF tab",
-                  "Credit losses by type of loan (the Credit Losses and FDIC Loans tabs)")
+NOTES_HEADINGS = ("How to read this sheet", "How the forecast works", "The Quality and Risk tab", "The DCF tab",
+                  "The Valuation tab", "No DCF tab",
+                  "Credit losses by type of loan (the Credit Losses and FDIC Call Reports tabs)")
 DEFAULT_COUNTS = {"annual": 5, "quarterly": 8}     # periods reported, and periods forecast
 PERIODS_PER_YEAR = {"annual": 1, "quarterly": 4}
 QUARTER_AVERAGE = 4             # a forecast ratio starts as the average of this many quarters (the last year's)
@@ -189,6 +192,10 @@ GENERAL_ITEMS = [
     ("depreciation-only", "Depreciation", "cash-flow", ["Depreciation"], None),
     ("amortization-of-intangibles", "Amortization of intangible assets", "cash-flow",
      ["AmortizationOfIntangibleAssets"], None),
+    # (for the Quality and Risk tab: lisp_financial_quality.py)
+    ("retained-earnings", "Retained earnings", "balance", ["RetainedEarningsAccumulatedDeficit"], None),
+    ("compensation", "Compensation", "income",
+     ["LaborAndRelatedExpense", "EmployeeBenefitsAndShareBasedCompensation", "SalariesAndWages"], None),
 ]
 
 class Reported:
@@ -383,13 +390,15 @@ class SheetLayout:
 class Model:
     """The whole model: the tabs, and the periods their columns are."""
 
-    has_valuation = True            # whether it has a DCF tab (not a bank's or an insurer's: see lisp_financial_dcf.py)
+    has_valuation = True            # whether it has a DCF tab (not an insurer's; a bank's is its Valuation tab)
+    valuation_tab_name = DCF        # (what the valuation tab is called)
 
     def __init__(self, company_name, ticker, period, reported, history, forecast_count, segment_note="", loan_book=None):
         self.segment_note = segment_note
         self.loan_book = loan_book                     # (a bank's loans by type from the FDIC: lisp_fdic.LoanBook)
         self.kind_note = ""                            # (why the model is of this kind of company, if that needs saying)
         self.share_price = None                        # (today's, if given: for the DCF tab)
+        self.share_volatility = None                   # (the implied volatility of its options, a year's, if given)
         self.company_name, self.ticker, self.period = company_name, ticker, period
         self.reported, self.h = reported, history
         self.history_count, self.forecast_count = history.count, forecast_count
@@ -404,6 +413,9 @@ class Model:
         self.layouts[INCOME] = self.income_layout()
         self.layouts[BALANCE] = self.balance_layout()
         self.layouts[CASH_FLOW] = self.cash_flow_layout()
+        quality = self.quality_layout()
+        if quality is not None:
+            self.layouts[QUALITY] = quality
         self.range_names = {}                          # (tab, key) -> the name of the line in formulas
         self.make_range_names()
         self.sensitivity = True                         # whether a model with a DCF tab has the Sensitivity tabs
@@ -458,7 +470,9 @@ class Model:
         """Name each line of the Assumptions and the three statements, so that a formula on another row or tab says
         =F9*(1+OFFSET(revenue_growth,0,G$5)) and not =F9*(1+Assumptions!G12). A name is of the line's cell in the
         first forecast period; OFFSET moves along the row by the period number in row 5 (see ref)."""
-        for tab in (ASSUMPTIONS, INCOME, BALANCE, CASH_FLOW):
+        for tab in (ASSUMPTIONS, INCOME, BALANCE, CASH_FLOW, QUALITY):
+            if tab not in self.layouts:
+                continue
             for line in self.layouts[tab].lines:
                 if line is not None and line.cell is not None:
                     wanted = line.name or (ASSUMPTION_NAMES.get(line.key) if tab == ASSUMPTIONS else None) or range_name(line.key)
@@ -1000,13 +1014,20 @@ class Model:
             "Depreciation and amortization all reduces plant and equipment here, though some of it is amortization of intangibles: if plant shrinks too fast, lower depreciation or raise capital expenditures.",
         ]
 
+    def quality_notes(self):
+        """The Notes tab's section on the Quality and Risk tab (with an empty line after it), if the model has one."""
+        if QUALITY not in self.layouts:
+            return []
+        import lisp_financial_quality
+        return lisp_financial_quality.notes(self) + [""]
+
     def valuation_notes(self):
         """The Notes tab's section on the DCF tab, or why there is none."""
         if self.has_valuation_tab():
             import lisp_financial_dcf
             return ["The DCF tab"] + lisp_financial_dcf.valuation_notes(self)
         if not self.has_valuation:
-            return ["No DCF tab", "A bank's or an insurer's debt is its raw material, not its financing, so a discounted free cash flow means nothing for it: its value is better found from its dividends and its equity. (A share price given with :price was not used.)"]
+            return ["No DCF tab", "An insurer's debt is its raw material, not its financing, so a discounted free cash flow means nothing for it: its value is better found from its dividends and its equity. (A share price given with :price was not used.)"]
         return ["No DCF tab", "The forecast is shorter than a year, which is too short to value a company by."]
 
     def sources_for_notes(self):
@@ -1024,6 +1045,7 @@ class Model:
             "The starting assumptions are guesses from the reported periods (the last period's, or the average of the last year's quarters), kept within limits: replace them with your own.",
             "The lines called other are what is left between the lines shown and the company's own subtotals, so that the subtotals are as reported.",
             "",
+            *self.quality_notes(),
             *self.valuation_notes(),
         ]
         concept_lines = {item[0] for item in self.reported.items if item[3]}       # the lines that come from concepts
@@ -1049,6 +1071,16 @@ class Model:
         return {"name": NOTES, "cells": [[(self.company_name + " model", ("title",))], [None]] + rows,
                 "widths": [(0, 0, 900)]}
 
+    def quality_layout(self):
+        """The Quality and Risk tab (lisp_financial_quality.py), or None for a kind of company without one."""
+        import lisp_financial_quality
+        return lisp_financial_quality.quality_layout(self)
+
+    def valuation_sheet(self):
+        """The valuation tab: the DCF tab (a bank's or an insurer's has its own: lisp_financial_equity_valuation.py)."""
+        import lisp_financial_dcf
+        return lisp_financial_dcf.valuation_sheet(self)
+
     def has_valuation_tab(self):
         """Whether the DCF tab is made: this kind of company has one, and the forecast is a year or more."""
         return self.has_valuation and self.forecast_count >= self.lag
@@ -1060,11 +1092,13 @@ class Model:
             if name == NOTES:
                 result.append(self.notes_tab())
                 continue
+            if name == QUALITY and QUALITY not in self.layouts:
+                continue
             if name == DCF:
                 if self.has_valuation_tab():
                     import lisp_financial_dcf
                     import lisp_financial_sensitivity
-                    result.append(lisp_financial_dcf.valuation_sheet(self))
+                    result.append(self.valuation_sheet())
                     if self.sensitivity:                  # (after the DCF tab, whose names it uses)
                         result += lisp_financial_sensitivity.model_tabs(self)
                 continue
@@ -1140,14 +1174,18 @@ def count_option(options, name, default, who):
 
 
 def build_model(facts, ticker, period, history_count, forecast_count, who="three-statement-model",
-                find_segments=None, kind="general", aum=None, price=None, find_loan_book=None):
+                find_segments=None, kind="general", aum=None, price=None, find_loan_book=None, find_fed_funds=None,
+                flows=None):
     """The Model of a company from its SEC facts, of the kind (a name in templates()) given. `find_segments`,
     if given (for an ordinary company), is a function of the periods (oldest first) and the company's total
     revenue in each, in millions, that gives the revenue by segment: (segments, a note), segments being
     [(name, a revenue for each period)] or None. `aum`, for an asset manager, is its assets under management
     in billions at the end of each period, oldest first, ending with the latest (the SEC's facts have them for
     few companies). `price`, if given, is today's share price, for the DCF tab. `find_loan_book`, if given (for a bank),
-    is a function of the company's name that gives (its lisp_fdic.LoanBook or None, a note). Raises MissingLines if the
+    is a function of the company's name that gives (its lisp_fdic.LoanBook or None, a note); `find_fed_funds`, if given
+    (for a bank), a function of the periods that gives (the federal funds rate in each, or None, a note); `flows`, for an
+    asset manager, the net new money its clients put in during each period, in billions, oldest first, ending with the
+    latest (as many as you have). Raises MissingLines if the
     kind needs lines that the company's facts don't have."""
     template = templates()[kind]
     periods = lisp_sec.chosen_periods(facts, {"period": period, "count": history_count}, who)
@@ -1190,8 +1228,14 @@ def build_model(facts, ticker, period, history_count, forecast_count, who="three
     if find_segments and kind == "general":
         segments, note = find_segments(periods, template.history_class(reported).revenue)
     history = template.history_class(reported, segments)
+    if find_fed_funds and kind == "bank":
+        history.fed_funds, rate_note = find_fed_funds(periods)
+        if rate_note:
+            notes.append(rate_note)
     if template.needs_aum:
         history.set_aum(aum)
+        if flows is not None:
+            history.set_flows(flows)
     company_name = facts.get("entityName") or ticker
     loan_book = None
     if find_loan_book and kind == "bank":
@@ -1243,6 +1287,37 @@ def loan_book_finder(credentials_path, given, who):
     return find
 
 
+def period_start(period):
+    """The day before a period's first: the end of the quarter before, or the day before its fiscal year began."""
+    if period.previous_end is not None:
+        return period.previous_end
+    return period.year_start - datetime.timedelta(days=1)
+
+
+def fed_funds_finder(who):
+    """build_model's find_fed_funds: the average of the effective federal funds rate (from the New York Fed) over
+    each period, as a fraction. Not reaching the New York Fed is a note, not an error (the rates then follow no
+    federal funds rate)."""
+    import lisp_nyfed
+
+    def find(periods):
+        try:
+            records = lisp_nyfed.rate_records("EFFR", {"start-date": period_start(periods[0]).isoformat(),
+                                                       "end-date": periods[-1].end.isoformat()}, who)
+        except LispError as problem:
+            return None, "No federal funds rate (so the forecast's interest rates do not follow one): %s" % problem
+        averages = []
+        for period in periods:
+            start = period_start(period)
+            rates = [lisp_nyfed.number(record["percentRate"]) for day, record in records.items() if start < day <= period.end]
+            rates = [rate for rate in rates if rate == rate]          # (not NaN)
+            averages.append(sum(rates) / len(rates) / 100 if rates else None)
+        if any(average is None for average in averages):
+            return None, "No federal funds rate for every period (so the forecast's interest rates do not follow one)."
+        return averages, ""
+    return find
+
+
 def company_industry(credentials_path, company, who):
     """The SEC's industry code (SIC) and its description for a company, such as (6021, "National Commercial
     Banks"), or (None, "") if they can't be found."""
@@ -1264,7 +1339,7 @@ def kind_for_industry(sic):
 
 def three_statement_model(credentials_path, company, *options):
     """(three-statement-model creds ticker [:period "annual" :history n :forecast n :kind "auto"
-    :segments "auto" :price p :sensitivity #t :fdic #t :title t]) -- a new Google spreadsheet with the company's income statement, balance sheet,
+    :segments "auto" :aum a :flows f :price p :volatility v :sensitivity #t :fdic #t :title t]) -- a new Google spreadsheet with the company's income statement, balance sheet,
     and cash flow statement as reported to the SEC, for the last `:history` years (or quarters), and forecast
     for the next `:forecast`, by formulas that follow assumptions on an Assumptions tab. Returns the
     spreadsheet's address. :period is "annual" or "quarterly" (5 years each way, or 8 quarters, unless
@@ -1274,10 +1349,16 @@ def three_statement_model(credentials_path, company, *options):
     on assets under management, which you give with :aum, a list of numbers in billions, one for the end of
     each period, oldest first, ending with the latest period reported); "auto", the default, chooses by the
     SEC's industry code for the company (an asset manager if you give :aum), and models it as an ordinary
-    company if the SEC's facts lack what the other kind needs. An ordinary company or asset manager also has a DCF tab, a
-    discounted-cash-flow valuation; :price, today's share price, makes the weight of debt in its discount rate the
-    market's and shows how the value compares with the price. It also has a Sensitivity tab and a tab with a macro for it,
-    which runs the DCF many times with random values for the inputs you choose (#f for :sensitivity leaves them out).
+    company if the SEC's facts lack what the other kind needs. :flows, for an asset manager, is its net flows in billions
+    in each period (with :aum), which split the growth of AUM into organic growth and the market's. An ordinary company or
+    asset manager also has a Quality and Risk tab (leverage, interest coverage, quality of earnings, the Altman Z'' and
+    Piotroski F scores) and a DCF tab, a discounted-cash-flow valuation with the returns on invested capital; :price,
+    today's share price, makes the weight of debt in its discount rate the market's, shows how the value compares with
+    the price, and works out the growth the price implies. A bank or an insurer has a Valuation tab in place of the DCF:
+    excess returns on its tangible equity, and price to tangible book. :volatility, with :price, is the implied
+    volatility of the company's options (0.3 for 30%), and adds the range the options market expects the price to be in
+    a year. Each valuation tab has a Sensitivity tab and a tab with a macro for it, which runs the valuation many times
+    with random values for the inputs you choose (#f for :sensitivity leaves them out).
     A bank also has its loans by type from the FDIC's Call Reports of its banks (all of a holding company's, added up),
     and scenarios -- Base, Adverse, Severe -- of default rates and recoveries on each type, which the forecast's
     charge-offs follow: :fdic is #t (the default: look for the banks by the company's name), #f (none), the name of a
@@ -1285,7 +1366,8 @@ def three_statement_model(credentials_path, company, *options):
     segment if the company reports them, or else by product; "business", "product", or "geography" asks
     for that one; #f for total revenue only. You need to be signed in to Google: (google-login creds)."""
     who = "three-statement-model"
-    options = keyword_options(options, ["period", "history", "forecast", "kind", "aum", "price", "segments", "sensitivity",
+    options = keyword_options(options, ["period", "history", "forecast", "kind", "aum", "flows", "price", "volatility",
+                                        "segments", "sensitivity",
                                         "fdic", "title"], who)
     period = str(options.get("period", "annual"))
     if period not in DEFAULT_COUNTS:
@@ -1301,15 +1383,29 @@ def three_statement_model(credentials_path, company, *options):
         aum = lisp_financial_asset_manager.number_list(options["aum"], who)
         if kind not in ("auto", "asset-manager"):
             raise LispError('%s: :aum, the assets under management, is for :kind "asset-manager", not %s' % (who, kind))
+    flows = None
+    if "flows" in options:
+        import lisp_financial_asset_manager
+        if aum is None:
+            raise LispError("%s: :flows, an asset manager's net flows, goes with :aum, its assets under management" % who)
+        flows = lisp_financial_asset_manager.number_list(options["flows"], who, ":flows")
     price = options.get("price")
     if price is not None and (isinstance(price, bool) or not isinstance(price, (int, float)) or price <= 0):
         raise LispError("%s: :price is today's share price, a positive number" % who)
+    volatility = options.get("volatility")
+    if volatility is not None and (isinstance(volatility, bool) or not isinstance(volatility, (int, float))
+                                   or not 0 < volatility < 5):
+        raise LispError("%s: :volatility is the implied volatility of the company's options, a year's, as a fraction "
+                        "(0.3 for 30%%)" % who)
+    if volatility is not None and price is None:
+        raise LispError("%s: :volatility goes with :price (the range is around the share price)" % who)
     segments = options.get("segments", "auto")
     facts = lisp_sec.company_facts(credentials_path, company, who)
     ticker = str(company).upper()
     finder = None if segments is False else segment_finder(credentials_path, company, str(segments), who)
     fdic = options.get("fdic", True)
     loans = None if fdic is False else loan_book_finder(credentials_path, fdic, who)
+    rates = fed_funds_finder(who)
     kind_note = ""
     if kind == "auto":
         sic, description = company_industry(credentials_path, company, who)
@@ -1317,7 +1413,8 @@ def three_statement_model(credentials_path, company, *options):
         if aum is not None and kind == "general":              # (AUM given: an asset manager, if nothing else)
             kind = "asset-manager"
         try:
-            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum, price, loans)
+            model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum, price, loans,
+                                rates, flows)
         except MissingLines as problem:
             if kind == "general":
                 raise
@@ -1325,9 +1422,11 @@ def three_statement_model(credentials_path, company, *options):
                          % (description or "another kind of company", str(problem).split(": ", 1)[1]))
             model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, "general", None, price)
     else:
-        model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum, price, loans)
+        model = build_model(facts, ticker, period, history_count, forecast_count, who, finder, kind, aum, price, loans,
+                            rates, flows)
     model.kind_note = (model.kind_note + " " + kind_note).strip()
     model.sensitivity = options.get("sensitivity", True) is not False
+    model.share_volatility = volatility
     title = options.get("title") or "%s %s model" % (model.company_name, period)
     return LispString(lisp_google.google_workbook(credentials_path, str(title), model.sheets()))
 

@@ -5,14 +5,17 @@ tell both, for every insured bank since 1984: how much it has lent on houses, on
 and shops, to businesses, on credit cards, and so on, how much of each it has charged off a year, and how much is
 past due. A bank model (lisp_financial_bank.py) made with them has two more tabs:
 
-  FDIC Loans      the Call Reports of the company's banks, added up: for each type of loan, the loans at the end of
+  FDIC Call Reports  the Call Reports of the company's banks, added up: for each type of loan, the loans at the end of
                   each 12 months since 2001, the net charge-offs in them, the noncurrent loans, and the net
-                  charge-offs as a percentage of the loans at the start; and the banks' capital.
+                  charge-offs as a percentage of the loans at the start; and the banks' capital, their funding (deposits,
+                  uninsured, brokered, Federal Home Loan Bank advances), their securities at cost and at fair value,
+                  the allowance, and commercial real estate as the regulators' concentration guidance counts it.
   Credit Losses   a row for each type: today's loans, how much has been lost on them a year (last year, the last
                   five years on average, the worst year), and three scenarios -- Base, Adverse, Severe -- each a
                   default rate (the share of the loans that stop paying in a year) and a recovery (how much of a
                   defaulted loan the bank gets back). A loss rate is the default rate times what is not recovered.
-                  A cell chooses the scenario of the forecast, and another how many periods it lasts.
+                  A cell chooses the scenario of the forecast, and another how many periods it lasts. Last, the
+                  warning signs of the latest Call Report, beside the regulators' guides (or rules of thumb).
 
 The forecast's net charge-offs (on the Assumptions tab) are the chosen scenario's loss rate for those periods, and
 the base scenario's after; so a worse scenario raises the provision, lowers net income and equity, and with them
@@ -32,7 +35,7 @@ import lisp_fdic
 import lisp_financial_model as model
 
 ASSUMPTIONS, BALANCE = model.ASSUMPTIONS, model.BALANCE
-CREDIT, FDIC_TAB = "Credit Losses", "FDIC Loans"
+CREDIT, FDIC_TAB = "Credit Losses", "FDIC Call Reports"
 SCENARIOS = ("Base", "Adverse", "Severe")
 STRESS_YEARS = 2                         # how long a scenario lasts, to start with
 RECOVERY_CUTS = {"Adverse": 0.05, "Severe": 0.10}       # how much lower the recovery is than the base scenario's
@@ -76,11 +79,11 @@ def has_capital(book, the_model):
 
 
 # ---------------------------------------------------------------------------
-# The FDIC Loans tab
+# The FDIC Call Reports tab
 # ---------------------------------------------------------------------------
 
 class FdicTab:
-    """The FDIC Loans tab: its cells, and where its rows are (for the Credit Losses tab's formulas)."""
+    """The FDIC Call Reports tab: its cells, and where its rows are (for the Credit Losses tab's formulas)."""
 
     def __init__(self, book, the_model):
         self.book, self.model = book, the_model
@@ -154,19 +157,141 @@ class FdicTab:
                                  self.address("charge-offs", key, n), start), ("percent",)))
             self.add(cells)
         self.add([None])
-        self.add([("The banks' capital", ("section",))] + [(None, ("section",))] * len(self.ends))
+        self.add_capital()
+        self.add([None])
+        self.add_funding()
+        self.add([None])
+        self.add_securities()
+        self.add([None])
+        self.add_allowance()
+        self.add([None])
+        self.add_real_estate_concentration()
+
+    # --- the rows after the loans
+
+    def section(self, title):
+        self.add([(title, ("section",))] + [(None, ("section",))] * len(self.ends))
+
+    def reported_row(self, section, key, label, amount_of=None):
+        """A row of amounts ($ millions) from the Call Reports: one of lisp_fdic.REPORT_FIELDS, or amount_of(date)."""
+        self.row_of[(section, key)] = len(self.rows) + 1
+        cells = [(label, ())]
+        for end in self.ends:
+            value = millions(amount_of(end) if amount_of else self.book.reported(key, end))
+            cells.append(None if value is None else (value, ("money", "data")))
+        self.add(cells)
+
+    def formula_row(self, section, key, label, formula, number_format="percent", first=0):
+        """A row with a formula in each period from `first`: formula(n) is period n's, without its = sign."""
+        self.row_of[(section, key)] = len(self.rows) + 1
+        style = ("italic",) if number_format == "percent" else ()
+        self.add([(label, style)] + [None] * first +
+                 [("=" + formula(n), (number_format,) + style) for n in range(first, len(self.ends))])
+
+    def ratio_row(self, section, key, label, top, bottom):
+        """A row of top / bottom, each (section, key) of a row of this tab."""
+        self.formula_row(section, key, label, lambda n: 'IFERROR(%s/%s,"")' % (self.address(*top, n),
+                                                                             self.address(*bottom, n)))
+
+    def add_capital(self):
+        book = self.book
+        self.section("The banks' capital")
         for key, label in (("common-equity", "Common equity tier 1 capital"),
                            ("risk-weighted-assets", "Risk-weighted assets")):
-            self.row_of[("capital", key)] = len(self.rows) + 1
-            cells = [(label, ())]
-            for end in self.ends:
-                value = millions(book.capital(end)[0 if key == "common-equity" else 1])
-                cells.append(None if value is None else (value, ("money", "data")))
-            self.add(cells)
-        ratio_row = len(self.rows) + 1
-        self.add([("Common equity tier 1 ratio (capital / risk-weighted assets)", ("italic",))] +
-                 [('=IFERROR(%s%d/%s%d,"")' % (column(n + 1), ratio_row - 2, column(n + 1), ratio_row - 1),
-                   ("percent", "italic")) for n in range(len(self.ends))])
+            self.reported_row("capital", key, label,
+                              lambda end, key=key: book.capital(end)[0 if key == "common-equity" else 1])
+        self.ratio_row("capital", "ratio", "Common equity tier 1 ratio (capital / risk-weighted assets)",
+                       ("capital", "common-equity"), ("capital", "risk-weighted-assets"))
+        self.reported_row("capital", "tier-1", "Tier 1 capital (common equity tier 1, and preferred stock)")
+        self.reported_row("capital", "total-capital", "Total risk-based capital (tier 1, and tier 2: some debt and part of the allowance)")
+        self.reported_row("capital", "assets", "Total assets")
+        self.ratio_row("capital", "leverage", "Tier 1 capital / total assets (near the leverage ratio, which uses the "
+                       "quarter's average assets)", ("capital", "tier-1"), ("capital", "assets"))
+
+    def add_funding(self):
+        self.section("Deposits and other funding, at the end of the period (who could take their money out, and how fast)")
+        for key, label in (("deposits", "Deposits"),
+                           ("noninterest-bearing", "Deposits that pay no interest (in the United States)"),
+                           ("uninsured", "Uninsured deposits (above the FDIC's limit; the banks' estimate)"),
+                           ("brokered", "Brokered deposits (placed by brokers, for the rate)"),
+                           ("home-loan-bank", "Advances from the Federal Home Loan Banks")):
+            self.reported_row("funding", key, label)
+        self.ratio_row("funding", "noninterest-share", "Deposits that pay no interest, % of deposits",
+                       ("funding", "noninterest-bearing"), ("funding", "deposits"))
+        self.ratio_row("funding", "uninsured-share", "Uninsured deposits, % of deposits",
+                       ("funding", "uninsured"), ("funding", "deposits"))
+        self.ratio_row("funding", "brokered-share", "Brokered deposits, % of deposits",
+                       ("funding", "brokered"), ("funding", "deposits"))
+        self.ratio_row("funding", "home-loan-bank-share", "Federal Home Loan Bank advances, % of total assets",
+                       ("funding", "home-loan-bank"), ("capital", "assets"))
+        self.ratio_row("funding", "loans-to-deposits", "Loans / deposits", ("loans", "total"), ("funding", "deposits"))
+
+    def add_securities(self):
+        self.section("Securities: what they cost, and what they are worth (a rise in interest rates lowers what they are worth)")
+        for key, label in (("available-for-sale-cost", "Available for sale, at cost (amortized)"),
+                           ("available-for-sale-value", "Available for sale, at fair value"),
+                           ("held-to-maturity-cost", "Held to maturity, at cost (amortized)"),
+                           ("held-to-maturity-value", "Held to maturity, at fair value")):
+            self.reported_row("securities", key, label)
+
+        def gain(kind):
+            return lambda n: "%s-%s" % (self.address("securities", kind + "-value", n),
+                                        self.address("securities", kind + "-cost", n))
+        self.formula_row("securities", "available-for-sale-gain", "Unrealized gain (loss), available for sale (already "
+                         "in equity, through other comprehensive income)", gain("available-for-sale"), "money")
+        self.formula_row("securities", "held-to-maturity-gain", "Unrealized gain (loss), held to maturity (in neither "
+                         "equity nor capital)", gain("held-to-maturity"), "money")
+        self.formula_row("securities", "gain-to-capital", "Unrealized gain (loss) on all securities, % of common equity "
+                         "tier 1 capital", lambda n: 'IFERROR((%s+%s)/%s,"")' % (
+                             self.address("securities", "available-for-sale-gain", n),
+                             self.address("securities", "held-to-maturity-gain", n), self.address("capital", "common-equity", n)))
+        self.formula_row("securities", "ratio-with-held-to-maturity", "Common equity tier 1 ratio counting the "
+                         "held-to-maturity gain (loss), before taxes", lambda n: 'IFERROR((%s+%s)/%s,"")' % (
+                             self.address("capital", "common-equity", n), self.address("securities", "held-to-maturity-gain", n),
+                             self.address("capital", "risk-weighted-assets", n)))
+        self.formula_row("securities", "ratio-with-all", "Common equity tier 1 ratio counting all the unrealized gains "
+                         "(losses), before taxes (for a bank that leaves those available for sale out of its capital, "
+                         "as banks under $700 billion may)", lambda n: 'IFERROR((%s+%s+%s)/%s,"")' % (
+                             self.address("capital", "common-equity", n), self.address("securities", "held-to-maturity-gain", n),
+                             self.address("securities", "available-for-sale-gain", n),
+                             self.address("capital", "risk-weighted-assets", n)))
+
+    def add_allowance(self):
+        self.section("The allowance for credit losses on loans")
+        self.reported_row("allowance", "allowance", "Allowance for credit losses")
+        self.ratio_row("allowance", "to-loans", "Allowance, % of loans", ("allowance", "allowance"), ("loans", "total"))
+        self.ratio_row("allowance", "to-noncurrent", "Allowance, % of noncurrent loans (coverage: under 100% means "
+                       "less put aside than is already past due)", ("allowance", "allowance"), ("noncurrent", "total"))
+
+    def add_real_estate_concentration(self):
+        """Commercial real estate as the regulators' guidance of 2006 counts it: construction and land, multifamily,
+        nonfarm nonresidential not occupied by its owner, and loans to finance real estate not secured by it; over the
+        total risk-based capital. The guidance looks harder at a bank above 300% (if it grew 50% in 3 years), or with
+        construction above 100%."""
+        self.section("Commercial real estate concentration (the regulators look harder above 300% of capital, or "
+                     "construction above 100%)")
+        self.formula_row("real-estate", "construction", "Construction and land development loans",
+                         lambda n: self.address("loans", "construction", n), "money")
+        self.formula_row("real-estate", "multifamily", "Multifamily (apartment) loans",
+                         lambda n: self.address("loans", "multifamily", n), "money")
+        self.reported_row("real-estate", "nonresidential-not-owner-occupied",
+                          "Nonfarm nonresidential loans not occupied by their owners (offices, shops, hotels, ...)")
+        self.reported_row("real-estate", "real-estate-not-secured", "Loans to finance commercial real estate, not "
+                          "secured by real estate")
+        first = self.row_of[("real-estate", "construction")]
+        # (empty before 2007, when the Call Report began to say which nonresidential loans their owners occupy)
+        self.formula_row("real-estate", "total", "Commercial real estate, as the guidance counts it",
+                         lambda n: 'IF(ISBLANK(%s),"",SUM(%s%d:%s%d))' % (
+                             self.address("real-estate", "nonresidential-not-owner-occupied", n),
+                             column(n + 1), first, column(n + 1), first + 3), "money")
+        self.ratio_row("real-estate", "to-capital", "Commercial real estate, % of total risk-based capital (guidance: 300%)",
+                       ("real-estate", "total"), ("capital", "total-capital"))
+        self.ratio_row("real-estate", "construction-to-capital", "Construction and land, % of total risk-based capital "
+                       "(guidance: 100%)", ("real-estate", "construction"), ("capital", "total-capital"))
+        self.formula_row("real-estate", "growth", "Growth of commercial real estate over 3 years (guidance: 50%, with "
+                         "the 300%)", lambda n: 'IFERROR(%s/%s-1,"")' % (self.address("real-estate", "total", n),
+                                                                          self.address("real-estate", "total", n - 3)),
+                         first=3)
 
     def sheet(self):
         return {"name": FDIC_TAB, "cells": self.rows, "frozen_rows": 4, "frozen_columns": 1,
@@ -218,7 +343,7 @@ class CreditTab:
         days = m.range_names[(ASSUMPTIONS, "days")]
         latest = lisp_fdic.report_date(book.latest).date.isoformat()
         self.add([("%s (%s): Credit losses, and scenarios with more of them" % (m.company_name, m.ticker), ("title",))])
-        self.add([("Loans by type from the FDIC's Call Reports of the company's banks (the FDIC Loans tab), at %s. "
+        self.add([("Loans by type from the FDIC's Call Reports of the company's banks (the FDIC Call Reports tab), at %s. "
                    "$ millions." % latest, ("italic",))])
         self.add([("Choose a scenario below: the forecast's net charge-offs (Assumptions tab) are its loss rate for "
                    "the periods of stress, and the base scenario's after. Every yellow cell can be typed over: a "
@@ -329,6 +454,53 @@ class CreditTab:
                       for n in range(len(SCENARIOS))])
             self.add([("A bank needs 4.5% at least, plus a buffer of 2.5% or more (more for the largest banks) to pay "
                        "dividends and buy back shares freely: about 7% is the least it can run on.", ("italic",))])
+        self.add([None])
+        self.add_warning_signs()
+
+    # the measures of the last table: (FDIC tab section, key, label, the guide's number or None, its test, what to watch)
+    WARNING_SIGNS = [
+        ("real-estate", "to-capital", "Commercial real estate, % of total risk-based capital", 3.0, ">",
+         "The regulators look harder at a bank above 300% (whose commercial real estate grew 50% in 3 years)"),
+        ("real-estate", "construction-to-capital", "Construction and land, % of total risk-based capital", 1.0, ">",
+         "And at one above 100%: construction loans lose the most in a downturn"),
+        ("real-estate", "growth", "Growth of commercial real estate over the last 3 years", 0.5, ">",
+         "Fast growth in commercial real estate preceded many of the bank failures of 2009-2011"),
+        ("allowance", "to-loans", "Allowance, % of loans", None, None,
+         "Compare with the losses a year of the scenarios above: an allowance smaller than a year of them is thin"),
+        ("allowance", "to-noncurrent", "Allowance, % of noncurrent loans", 1.0, "<",
+         "Under 100%: less is put aside than is already past due"),
+        ("funding", "uninsured-share", "Uninsured deposits, % of deposits", 0.5, ">",
+         "Uninsured depositors leave first in a scare; Silicon Valley Bank's were over 90%"),
+        ("funding", "noninterest-share", "Deposits that pay no interest, % of deposits", None, None,
+         "The cheapest funding, and the most likely to move to higher rates when rates rise"),
+        ("funding", "brokered-share", "Brokered deposits, % of deposits", 0.1, ">",
+         "Deposits bought for the rate: they leave for a better one"),
+        ("funding", "home-loan-bank-share", "Federal Home Loan Bank advances, % of total assets", 0.1, ">",
+         "Borrowing to replace deposits that left, or to grow faster than deposits"),
+        ("funding", "loans-to-deposits", "Loans / deposits", 1.0, ">",
+         "Above 100%: some loans are funded by borrowing"),
+        ("securities", "gain-to-capital", "Unrealized gain (loss) on securities, % of common equity tier 1 capital",
+         -0.25, "<", "What selling the securities would cost: a quarter of capital or more is a lot"),
+        ("securities", "ratio-with-all", "Common equity tier 1 ratio counting the unrealized gains (losses) on "
+         "securities", 0.07, "<", "Below about 7% the bank would be short of capital if it had to sell its securities"),
+    ]
+
+    def add_warning_signs(self):
+        """A table of the measures from the latest Call Report that warn of trouble, with the guide the regulators use
+        (or a rule of thumb) and a flag where the bank is past it."""
+        fdic = self.fdic
+        last_period = len(fdic.ends) - 1
+        self.add([("Concentration, reserves, funding, and securities (latest Call Report: the FDIC Call Reports tab "
+                   "has their history)", ("section",))] + [(None, ("section",))] * 3)
+        self.add([(heading, ("bold", "wrap")) for heading in ("Measure", "The banks'", "Guide (the regulators', or a rule of thumb)", "Past it?", "What to watch")])
+        for section, key, label, guide, test, watch in self.WARNING_SIGNS:
+            row = len(self.rows) + 1
+            value = ('=IFERROR(%s+0,"")' % self.fdic_ref(fdic.address(section, key, last_period)), ("percent", "link"))
+            if guide is None:
+                self.add([(label, ()), value, None, None, (watch, ("italic",))])
+            else:
+                flag = '=IF(B%d="","",IF(B%d%s%s,"Yes",""))' % (row, row, test, "C%d" % row)
+                self.add([(label, ()), value, (guide, ("percent",)), (flag, ("bold",)), (watch, ("italic",))])
 
     def sheet(self):
         width = len(COLUMNS)
@@ -351,7 +523,7 @@ def check_names(the_model):
 
 
 def credit_tabs(the_model):
-    """The Credit Losses and FDIC Loans tabs of a bank model that has the FDIC's loan book."""
+    """The Credit Losses and FDIC Call Reports tabs of a bank model that has the FDIC's loan book."""
     check_names(the_model)
     fdic = FdicTab(the_model.loan_book, the_model)
     return [CreditTab(the_model.loan_book, the_model, fdic).sheet(), fdic.sheet()]
@@ -378,7 +550,7 @@ def notes(the_model):
     """The Notes tab's section on the FDIC's data and the scenarios."""
     book = the_model.loan_book
     lines = [
-        "Credit losses by type of loan (the Credit Losses and FDIC Loans tabs)",
+        "Credit losses by type of loan (the Credit Losses and FDIC Call Reports tabs)",
         "The FDIC's Call Reports of the company's banks, added up: %s. The SEC's numbers are the holding company's, which may have loans outside its banks; the rates found from the banks' are used on the holding company's loans." % book.bank_names(),
         "The forecast's net charge-off rate (Assumptions tab) is the Credit Losses tab's: the chosen scenario's for the periods of stress, the base scenario's after. The provision is the charge-offs plus the growth of the allowance, so a worse scenario lowers net income, equity, and the common equity tier 1 ratio on the Balance Sheet.",
         "The allowance stays the percentage of loans assumed, though a bank expecting losses would raise it at the start (the provision would come sooner); interest is still earned on the loans that default. Both make the forecast a little kinder than it would be.",

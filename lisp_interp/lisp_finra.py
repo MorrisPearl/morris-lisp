@@ -9,6 +9,8 @@ mortgage-backed securities traded at each day, as reported to TRACE.
         specified ARM and hybrid pools, by agency and fixed-rate period
   (finra-get creds group dataset [:start-date d :end-date d :filters f])
         any of the API's other datasets, as FINRA sends it
+  (finra-short-interest symbol [:months n])
+        the shares of a stock sold short, twice a month (FINRA's public data: no account needed)
 
 Each pricing table has a row for each day, product, agency, (settlement
 month,) and coupon, and a column for each of the statistics FINRA gives:
@@ -232,7 +234,57 @@ def finra_get(credentials_path, group, dataset, *options):
     return records_table(finra_records(credentials_path, str(group), str(dataset), request, who))
 
 
+SHORT_INTEREST_URL = API_URL + "/data/group/otcMarket/name/consolidatedShortInterest"
+SHORT_INTEREST_MONTHS = 12
+
+
+def finra_short_interest(symbol, *options):
+    """(finra-short-interest symbol [:months n]) -- how many of a stock's shares are sold short: a table with a row for
+    each of the dates FINRA collects them (the middle and end of each month), oldest first, of date, short-shares,
+    change (since the date before, as a fraction), average-daily-volume (shares traded a day), and days-to-cover (the
+    days of ordinary trading it would take the short sellers to buy their shares back: above 5 or so, a rise in the
+    price could squeeze them). For the last :months months (12, unless you say). The shares short as a share of all
+    the shares are short-shares over the shares outstanding (sec-balance-sheet has them). FINRA's public data: no
+    account is needed. Kept for 12 hours."""
+    who = "finra-short-interest"
+    options = keyword_options(options, ["months"], who)
+    months = options.get("months", SHORT_INTEREST_MONTHS)
+    if isinstance(months, bool) or not isinstance(months, int) or months < 1:
+        raise LispError("%s: :months is a whole number of months" % who)
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=round(months * 365 / 12))
+    request = {"limit": PAGE_SIZE,
+               "compareFilters": [{"compareType": "EQUAL", "fieldName": "symbolCode", "fieldValue": str(symbol).upper()}],
+               "dateRangeFilters": [{"fieldName": "settlementDate", "startDate": start.isoformat(), "endDate": end.isoformat()}]}
+    data = lisp_http.download(SHORT_INTEREST_URL, CACHE_HOURS, headers({"Accept": "application/json",
+                                                                        "Content-Type": "application/json"}),
+                              who, body=json.dumps(request).encode())
+    text = lisp_http.as_text(data).strip()
+    try:
+        records = json.loads(text) if text else []
+    except ValueError:
+        raise LispError("%s: FINRA didn't answer with data; it says: %s" % (who, " ".join(text.split())[:300]))
+    if not isinstance(records, list):
+        raise LispError("%s: FINRA didn't answer with data; it says: %s" % (who, text[:300]))
+    if not records:
+        raise LispError("%s: FINRA has no short interest for %s since %s" % (who, str(symbol).upper(), start.isoformat()))
+    records.sort(key=lambda record: str(record.get("settlementDate")))
+
+    def number(record, field, scale=1.0):
+        value = record.get(field)
+        return float(value) * scale if value is not None else None
+    columns = [
+        ("date", [LispDate(*(int(part) for part in str(record["settlementDate"]).split("-"))) for record in records]),
+        ("short-shares", [number(record, "currentShortPositionQuantity") for record in records]),
+        ("change", [number(record, "changePercent", 0.01) for record in records]),
+        ("average-daily-volume", [number(record, "averageDailyVolumeQuantity") for record in records]),
+        ("days-to-cover", [number(record, "daysToCoverQuantity") for record in records]),
+    ]
+    return make_table_value([(name, column_vector(values)) for name, values in columns])
+
+
 BUILTINS = {
+    "finra-short-interest": finra_short_interest,
     "finra-tba-prices": finra_tba_prices,
     "finra-mbs-prices": finra_mbs_prices,
     "finra-arm-prices": finra_arm_prices,

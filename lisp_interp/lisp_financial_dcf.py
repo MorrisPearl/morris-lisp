@@ -33,8 +33,13 @@ Every value on the tab has a name (wacc, terminal_growth, enterprise_value), and
 is reached as OFFSET(name,0,the period number), as on the other tabs (the period number row here is not row 5); only the
 table at the bottom has addresses.
 
+Above the discounting, the returns on invested capital: ROIC, economic profit (operating income after taxes less the WACC
+on the capital), the reinvestment rate, and the incremental margin. With the share price, a reverse DCF below the value:
+the terminal growth the price implies, and the growth forever from today's free cash flow it implies. With the options'
+implied volatility too, the range the options market expects for the price in a year.
+
 Banks and insurers have no DCF tab: their debt is their raw material, not financing, so free cash flow to the firm
-means nothing for them (the value of a bank is of its dividends and its equity, which a different model would do).
+means nothing for them. A bank or an insurer has a Valuation tab in its place (lisp_financial_equity_valuation.py), built the same way.
 """
 
 import lisp_financial_model as model
@@ -102,6 +107,10 @@ class Valuation:
     def at_last_forecast(self, key):
         """A row's cell in the last forecast period."""
         return "OFFSET(%s,0,%s)" % (self.name_of(key), self.name_of("last-forecast-period"))
+
+    def before_last_forecast(self, key, periods):
+        """A row's cell `periods` before the last forecast period."""
+        return "OFFSET(%s,0,%s-%d)" % (self.name_of(key), self.name_of("last-forecast-period"), periods)
 
     def at_last_reported(self, tab, key):
         """A line of another tab in the last period reported (the date of the valuation)."""
@@ -174,10 +183,15 @@ class Valuation:
         self.add_period_rows()
         self.add_free_cash_flow()
         self.blank()
+        self.add_returns()
+        self.blank()
         self.add_discounting()
         self.blank()
         self.add_value()
         self.blank()
+        if self.price is not None:
+            self.add_price_implies()
+            self.blank()
         self.add_sensitivity()
 
     def add_inputs(self):
@@ -252,6 +266,42 @@ class Valuation:
                                                               self.at("capital-expenditures", i), self.at("working-capital", i)),
                                    "money", 1, "total"), ("total",))
 
+    def add_returns(self):
+        """What the company earns on the capital it has put into the business, against what that capital costs: the
+        return on invested capital (ROIC) and the economic profit; and how much of its operating income after taxes
+        it reinvests, and the growth that buys."""
+        bal, inc, a = (lambda key, i: self.other(BALANCE, key, i), lambda key, i: self.other(INCOME, key, i),
+                       lambda key, i: self.other(ASSUMPTIONS, key, i))
+        lag = self.years
+        self.section("returns-header", "Returns on invested capital (what the business earns on the capital put into it)")
+        self.add("invested-capital-of-period", "Invested capital at the end of the period (plant, goodwill, intangibles, "
+                 "receivables and inventory, less payables)",
+                 self.every_period(lambda i: "=%s+%s+%s+%s+%s-%s" % tuple(bal(key, i) for key in (
+                     "property-plant-equipment", "goodwill", "intangible-assets", "receivables", "inventory",
+                     "accounts-payable"))))
+        self.add("roic", "Return on invested capital (a year's operating income after taxes / the invested capital at the start)",
+                 self.every_period(lambda i: '=IFERROR(%s*365/%s/%s,"")' % (
+                     self.at("nopat", i), a("days", i), self.at("invested-capital-of-period", i - 1)), "percent", 1),
+                 ("italic",))
+        self.add("economic-profit", "Economic profit (operating income after taxes less the WACC on the invested capital "
+                 "at the start): above 0, growth adds value",
+                 self.every_period(lambda i: "=%s-%s*%s*%s/365" % (
+                     self.at("nopat", i), self.single("wacc"), self.at("invested-capital-of-period", i - 1), a("days", i)),
+                     "money", 1))
+        self.add("net-investment", "Net investment (the growth of invested capital)",
+                 self.every_period(lambda i: "=%s-%s" % (self.at("invested-capital-of-period", i),
+                                                         self.at("invested-capital-of-period", i - 1)), "money", 1))
+        self.add("reinvestment-rate", "Reinvestment rate (net investment / operating income after taxes)",
+                 self.every_period(lambda i: '=IFERROR(%s/%s,"")' % (self.at("net-investment", i), self.at("nopat", i)),
+                                   "percent", 1), ("italic",))
+        self.add("reinvestment-growth", "Growth that reinvestment buys (ROIC x reinvestment rate, a year's)",
+                 self.every_period(lambda i: '=IFERROR(%s*%s,"")' % (self.at("roic", i), self.at("reinvestment-rate", i)),
+                                   "percent", 1), ("italic",))
+        self.add("incremental-margin", "Incremental margin (growth of operating income / growth of revenue, over a year)",
+                 self.every_period(lambda i: '=IFERROR((%s-%s)/(%s-%s),"")' % (
+                     inc("operating-income", i), inc("operating-income", i - lag), inc("revenue", i),
+                     inc("revenue", i - lag)), "percent", lag), ("italic",))
+
     def add_discounting(self):
         a = lambda key, i: self.other(ASSUMPTIONS, key, i)
         self.section("discount-header", "Present value of the forecast free cash flow (from the end of the last period reported, %s)"
@@ -303,6 +353,18 @@ class Valuation:
         self.add("terminal-multiple", "Terminal value / the last year's operating income plus depreciation and amortization",
                  self.one(lambda: "=%s/(SUM(%s)+SUM(%s))" % (self.single("terminal-value"), self.last_year("operating-income"),
                                                              self.last_year("depreciation")), "decimal"), ("italic",))
+        self.add("last-year-roic", "Return on invested capital of the last forecast year (its operating income after "
+                 "taxes / the invested capital at its start)",
+                 self.one(lambda: '=IFERROR(SUM(%s)/%s,"")' % (self.last_year("nopat"),
+                                                             self.before_last_forecast("invested-capital-of-period", self.years)),
+                          "percent"), ("italic",))
+        self.add("needed-reinvestment", "Reinvestment rate that the terminal growth needs at that return (growth / ROIC; "
+                 "compare the last year's, below)",
+                 self.one(lambda: '=IFERROR(%s/%s,"")' % (self.single("terminal-growth"), self.single("last-year-roic")),
+                          "percent"), ("italic",))
+        self.add("last-year-reinvestment", "Reinvestment rate of the last forecast year",
+                 self.one(lambda: '=IFERROR(SUM(%s)/SUM(%s),"")' % (self.last_year("net-investment"),
+                                                                  self.last_year("nopat")), "percent"), ("italic",))
         self.add("less-debt", "Less: debt at the end of the last period reported",
                  self.one(lambda: "=-(%s+%s)" % (bal("current-debt"), bal("long-term-debt")), "money"))
         self.add("plus-cash", "Plus: cash and short-term investments",
@@ -319,6 +381,64 @@ class Valuation:
             self.add("against-price", "Value compared with the share price",
                      self.one(lambda: "=%s/%s-1" % (self.single("value-per-share"), self.single("share-price")), "percent"),
                      ("italic",))
+        self.add_market_range()
+
+    def add_market_range(self):
+        """With the share price and the implied volatility of its options (:price and :volatility), the range the
+        options market expects the price to be in a year from now, about two chances in three -- the price times e to
+        the minus and the plus the volatility -- and how far outside it the value is, in standard deviations."""
+        volatility = getattr(self.model, "share_volatility", None)
+        if self.price is None or volatility is None:
+            return
+        self.add("implied-volatility", "Implied volatility of the options (a year's; :volatility)",
+                 self.one(volatility, "percent", "input"))
+        self.add("price-low", "Low end of the options market's range for the price in a year (about 2 chances in 3 "
+                 "of being inside: price x e^-volatility)",
+                 self.one(lambda: "=%s*EXP(-%s)" % (self.single("share-price"), self.single("implied-volatility")),
+                          "per-share"))
+        self.add("price-high", "High end (price x e^volatility)",
+                 self.one(lambda: "=%s*EXP(%s)" % (self.single("share-price"), self.single("implied-volatility")),
+                          "per-share"))
+        self.add("value-in-deviations", "Value against the price, in the options' standard deviations (beyond 1 or -1, "
+                 "outside the range the market expects)",
+                 self.one(lambda: '=IFERROR(LN(%s/%s)/%s,"")' % (self.single("value-per-share"), self.single("share-price"),
+                                                                self.single("implied-volatility")), "decimal"),
+                 ("italic",))
+
+    def add_price_implies(self):
+        """A reverse DCF: the growth that the share price implies, worked out backward from it in closed form. The
+        enterprise value at the price is the market value of the shares plus the debt less the cash; less the present
+        value of the forecast's free cash flow, and moved to the end of the forecast, it is the terminal value the
+        price pays for; and the terminal growth that gives that terminal value, by the method chosen, is
+
+            g = (terminal value x WACC - A) / (terminal value + A - method x invested capital)
+
+        where A is the year after's free cash flow before its growth (the last year's free cash flow, or with method 1
+        its operating income after taxes). The second is simpler still: the growth forever, from the last reported
+        year's free cash flow, that the price implies with no forecast at all, (EV x WACC - FCF) / (EV + FCF)."""
+        first, years = self.first_forecast, self.years
+        method = lambda: self.single("terminal-method")          # (made when the rows are all known)
+        self.section("implied-header", "What the share price implies (a reverse DCF: the growth the price pays for)")
+        self.add("price-enterprise-value", "Enterprise value at the share price (market value + debt - cash)",
+                 self.one(lambda: "=%s-%s-%s" % (self.single("market-value"), self.single("less-debt"),
+                                                 self.single("plus-cash")), "money"))
+        self.add("price-terminal-value", "Terminal value the price pays for, at the end of the forecast ((that - the "
+                 "present value of the forecast) / the last discount factor)",
+                 self.one(lambda: '=IFERROR((%s-%s)/%s,"")' % (self.single("price-enterprise-value"),
+                                                               self.single("sum-present-values"),
+                                                               self.at_last_forecast("discount-factor")), "money"))
+        base = lambda: "((1-%s)*%s+%s*%s)" % (method(), self.single("last-year-fcf"), method(), self.single("last-year-nopat"))
+        self.add("implied-terminal-growth", "Growth after the forecast, forever, that the price implies (with this forecast)",
+                 self.one(lambda: '=IFERROR((%s*%s-%s)/(%s+%s-%s*%s),"")' % (
+                     self.single("price-terminal-value"), self.single("wacc"), base(), self.single("price-terminal-value"),
+                     base(), method(), self.single("invested-capital")), "percent"), ("bold",))
+        self.add("reported-year-fcf", "Free cash flow of the last reported year",
+                 self.one(lambda: "=SUM(%s:%s)" % (self.at("fcf", first - years), self.at("fcf", first - 1)), "money"))
+        self.add("implied-steady-growth", "Growth of free cash flow forever, from the last reported year's, that the "
+                 "price implies with no forecast at all ((EV x WACC - FCF) / (EV + FCF))",
+                 self.one(lambda: '=IFERROR((%s*%s-%s)/(%s+%s),"")' % (
+                     self.single("price-enterprise-value"), self.single("wacc"), self.single("reported-year-fcf"),
+                     self.single("price-enterprise-value"), self.single("reported-year-fcf")), "percent"), ("bold",))
 
     def add_sensitivity(self):
         first, last = self.first_forecast, self.last

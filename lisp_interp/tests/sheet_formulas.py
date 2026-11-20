@@ -8,6 +8,7 @@ columns), which moves from it. Anything else is an error, so a formula that uses
 something new says so here.
 """
 
+import math
 import re
 
 TOKEN = re.compile(r"""\s*(?:
@@ -241,6 +242,13 @@ class Formula:
             value = self.expression()
             self.take()
             return value
+        if name == "ISBLANK":                            # (whether a cell has nothing in it: not even a formula)
+            kind, text = self.take()
+            if kind != "reference" or ":" in text:
+                raise ValueError("ISBLANK of one cell only, in =%s" % self.text)
+            self.take()                                  # the closing parenthesis
+            tab = text.split("!")[0].strip("'") if "!" in text else self.tab
+            return self.sheets.cells[tab].get(split_address(text.split("!")[-1])) is None
         if name == "SUMPRODUCT":
             ranges = []
             while True:
@@ -291,6 +299,12 @@ class Formula:
             return min(numbers) if numbers else 0
         if name == "ROUND":
             return round(numbers[0], int(numbers[1]))
+        if name == "EXP":
+            return math.exp(numbers[0])
+        if name == "LN":
+            if numbers[0] <= 0:
+                raise ZeroDivisionError("LN of a number not above 0")      # (an error, as in Sheets: IFERROR catches it)
+            return math.log(numbers[0])
         raise ValueError("the calculator doesn't know %s" % name)
 
     def skip_argument(self, start):
