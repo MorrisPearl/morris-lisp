@@ -6509,7 +6509,9 @@ The Python files:
 | `lisp_financial_quality.py` | The Quality and Risk tab of `three-statement-model`: leverage, interest coverage, quality of earnings, the Altman Z'' score, the Piotroski F-score |
 | `lisp_financial_equity_valuation.py` | The Valuation tab of a bank's or insurer's `three-statement-model`: excess returns on tangible equity, price to tangible book |
 | `lisp_financial_credit.py` | A bank model's Credit Losses and FDIC Call Reports tabs: loans by type, scenarios, funding, securities, commercial real estate |
-| `lisp_financial_compare.py` | `compare-companies`: companies' latest statements side by side in a Google sheet, as amounts or percentages of revenue or assets |
+| `lisp_financial_compare.py` | `compare-companies`: companies' latest statements side by side in a Google sheet, as amounts or percentages of revenue or assets, with valuation rows and peers chosen by industry and size |
+| `lisp_financial_compare_valuation.py` | The valuation rows at the bottom of a `compare-companies` sheet: market value, enterprise value, multiples, yields, and what a company would be worth at its peers' median multiples |
+| `lisp_financial_peers.py` | `comparable-companies`: the stocks in a stock's industry, nearest in market capitalization (from `ticker_industry` and `stock_returns` in `financial_data.db`); and the peers `compare-companies` chooses |
 | `lisp_sec_segments.py` | A company's revenue by segment, read from the tagged numbers of its 10-Ks and 10-Qs (for `three-statement-model`) |
 | `lisp_schwab.py` | `schwab-login`, `schwab-accounts`, `schwab-positions`, `schwab-quotes`, `schwab-price-history`, `schwab-option-chain`, `schwab-orders`, `schwab-spread-order`, `schwab-multi-leg-order`, ...: your Schwab accounts |
 | `lisp_investment_paths.py` | `daily-returns`, `adjust-returns`, `dividend-schedule`, `bootstrap-path`, `bootstrap-days`, `volatility-model`, `volatility-history`, `volatility-forecast`, `option-value`, `option-payoffs`: simulated prices of an investment, with its volatility starting at today's if asked, and what options on it are worth |

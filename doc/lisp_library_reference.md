@@ -3467,21 +3467,24 @@ been.
 
 ### Comparing companies
 
-(In `lisp_financial_compare.py`, with the models of `lisp_financial_model.py`.) The most recent period of several companies,
-side by side in a Google Sheet -- a column for each company, **the same rows for all**: the income statement, the balance
-sheet, the cash flow statement, and some ratios -- so that what one does differently from the others shows.
+(In `lisp_financial_compare.py`, with the models of `lisp_financial_model.py`, the valuation rows of
+`lisp_financial_compare_valuation.py`, and the choice of peers in `lisp_financial_peers.py`.) The most recent period of several
+companies, side by side in a Google Sheet -- a column for each company, **the same rows for all**: the income statement, the
+balance sheet, the cash flow statement, some ratios, and, at the bottom, what the market pays for each -- so that what one does
+differently from the others shows.
 
 ```lisp
 (compare-companies creds '("ACN" "EFX" "CTSH"))                       ; the amounts, in millions
 (compare-companies creds '("ACN" "EFX" "CTSH") :basis "revenue")      ; each as a percentage of the company's revenue
 (compare-companies creds '("JPM" "BAC" "C" "USB") :basis "assets")    ; a bank's rows, as a percentage of assets
+(compare-companies creds "KEY" :peers 5)       ; KeyCorp, and the five banks nearest to it in size: what it is worth beside them
 ```
 
-#### `(compare-companies creds tickers [:basis b :period p :kind k :prices p :title t])`
+#### `(compare-companies creds tickers [:basis b :period p :kind k :prices p :estimates e :peers n :industry i :database path :title t])`
 Makes the spreadsheet and returns its address, as a string. It needs what `three-statement-model` needs: the credentials file's
 `sec_user_agent` entry and a Google sign-in.
 
-- `tickers` is a list of two or more companies, such as `'("ACN" "EFX")`.
+- `tickers` is a list of two or more companies, such as `'("ACN" "EFX")` -- or, with `:peers`, one company.
 - `:basis` makes the numbers comparable. `"none"` (the default) shows the amounts in millions, which is only a comparison if the
   companies are the same size and report in the same currency (it is an error if they don't). `"revenue"` shows every amount
   as a **percentage of the company's top line** -- its revenue; a bank's *net revenue*, net interest income plus noninterest income;
@@ -3493,20 +3496,67 @@ Makes the spreadsheet and returns its address, as a string. It needs what `three
   default) chooses for each company by the SEC's industry code, and **the companies must be all one kind**, because a bank's rows
   are not an industrial's: it is an error if they are not, and `:kind "general"` compares them all as ordinary companies
   (a bank's loans are then "other assets"). A company the SEC's numbers do not describe in its kind's lines is named in the error.
-- `:prices` adds the **market's view** of each company: the share prices, a list with one for each company in the order given
-  (`'(310 88 70)`), or `#t` to get them from Alpha Vantage (`alpha-vantage-price`: the free key's 25 requests a day are enough
-  for a group or two). Then a section of rows, each a formula: market value, enterprise value (market value plus debt less cash and
-  short-term investments), enterprise value over a year's EBITDA and over a year's revenue, price over earnings, the free cash
-  flow yield, price over book value, and, for annual periods, **PEG** (price over earnings, over the growth of earnings per share
-  in points: under 1 is cheap for the growth). A bank or an insurer has its market value, price over earnings, and price over book
-  (its debt is its raw material, so it has no enterprise value). The median column is the group's multiple: a company far from
-  it needs a reason.
+- `:prices` says where the **share prices** for the valuation rows (below) come from. By default, the closing prices in the table
+  `stock_returns` of the database `financial_data.db` (see "A database of market history" and `industry_returns.lsp`: the day of
+  the prices is in the Notes), if it has one for every company; if not, there are no valuation rows, and the Notes say so. `#t` gets
+  the latest from Alpha Vantage (`alpha-vantage-price`: a request for each company, and the free key allows 25 a day); `"database"`
+  insists on the database's (an error if it lacks one); a list with a price for each company in the order given (`'(310 88 70)`)
+  gives them; `#f` leaves the valuation out.
+- `:estimates #t` adds what analysts expect each company to earn, from Alpha Vantage (`alpha-vantage-estimates`; a request for
+  each company; annual periods only): the earnings per share expected for its next two fiscal years, the **forward price over
+  earnings**, the growth expected, and the forward PEG.
+- `:peers` chooses the companies to compare with, given one: `n` of them (1 to 15), or `#t` for 5. See "Choosing the peers" below.
+  `:industry` (a name, or a list of names) looks for the peers in those industries of `ticker_industry` instead of the company's
+  own; `:database` is the path of the database (the current folder, or the repository's `data` folder, if it is not given).
+
+**The valuation rows,** at the bottom of the sheet, are formulas of the rows above them, so a price or a share count can be
+changed and everything follows. A **multiple** is empty where its denominator is not above 0 (a company that lost money has no
+price over earnings: a negative one means nothing); a **yield** is the inverse, and is not empty. A year's flows are a quarter's
+times 365 over its days.
+
+| For | The rows |
+|---|---|
+| Every company | The share price; the **market value** of the shares (price times diluted shares); price over earnings, and the **earnings yield** (a year's earnings per share over the price) |
+| An ordinary company | **Enterprise value** (market value plus debt, less cash and short-term investments: what the whole business is priced at, whoever finances it) over a year's EBITDA, operating income (EBIT), revenue, and free cash flow; **price over sales**, over **cash earnings** (net income plus depreciation and amortization: for a REIT, close to price over funds from operations, FFO); the **free cash flow yield**; the **dividend**, **buyback**, and **shareholder yield** (dividends and buybacks over market value); price over book value and over **tangible book value** (without goodwill and intangibles); the **return on invested capital** (a year's operating income after taxes over the plant, goodwill, intangibles, receivables, and inventory, less payables, that the business uses) and enterprise value over that capital; and, for annual periods, **PEG** |
+| A bank | Price over book value and over **tangible book value** (its tangible common equity: without preferred stock, minority interests, goodwill, and intangibles); the **return on tangible common equity**; market value over a year's **profit before credit losses**, and over its **deposits**; the dividend, buyback, and shareholder yields. (Its debt is its raw material, so it has no enterprise value.) |
+| An insurer | Price over book value and over tangible book value; market value over a year's **premiums earned**; the dividend, buyback, and shareholder yields |
+| With `:estimates` | Earnings per share expected for the next two fiscal years; the growth they say; price over each (the forward price over earnings); the forward PEG |
+
+A multiple is only as comparable as the companies: a company that grows faster, or earns more on its capital, deserves a higher
+one, which is what the PEG and the return on invested capital are there to say.
+
+**Choosing the peers.** Who a company is compared with decides what the comparison says: a bank held up against a software company says
+nothing. `:peers` takes the stocks the user's own table `ticker_industry` (ticker, industry: 97 industries, with the names of Value
+Line's) has in the **same industry** as the company, that **trade now** (the table `stock_returns` has a market capitalization and a
+price for them: a delisted company has none), **nearest to it in market capitalization** first -- by the ratio of the two, so one a
+third the size and one three times it are equally near, since multiples, margins, and growth depend on size. It then takes the
+nearest of these in turn that the SEC's statements can be used for, and **skips** a stock that is **another stock of a company already
+in the sheet** (First Citizens has two; they share an SEC number), **another kind of company** (a bank among the insurers), one that
+**reports in another currency**, one whose **latest report is old** (more than 15 months for a year, 200 days for a quarter: it has
+stopped reporting), and one the SEC has no statements for (a foreign company that does not file the same way); it looks at up to four
+for each peer wanted. A bank may be in `"Bank"` or `"Bank (Regional)"`: `:industry (list "Bank" "Bank (Regional)")` looks in both.
+The **Notes** tab says who was chosen, their market capitalizations (and how many times the company's), who was skipped, and why.
+
+With peers, the company is the **first column** and the others follow, nearest first. The median column is **the peers' median**
+(the company is left out of it), and beside it, for each multiple, a column says **how far above or below the peers' median the
+company's multiple is**. At the very bottom is **what the company would be worth at its peers' median multiples**: the price per share
+that each of its own numbers -- earnings, EBITDA, operating income, revenue, free cash flow, book value (a bank's, tangible book value, profit
+before credit losses, deposits; an insurer's, tangible book value, premiums) -- gives at the peers' median multiple of it, the median of
+those prices, and how far that is above or below the share price. It is a comparison, not a forecast: it says whether the market prices the
+company above or below its peers, not whether it should.
+
+```lisp
+(compare-companies creds "KEY" :peers 5)                                   ; the banks nearest KeyCorp in size
+(compare-companies creds "KEY" :peers 6 :industry (list "Bank" "Bank (Regional)"))
+(compare-companies creds "AAPL" :peers 8 :estimates #t :prices #t)         ; with the latest prices, and what analysts expect
+(compare-companies creds "ACN" :peers 4 :basis "revenue")                  ; a percentage of revenue, with peers
+```
 
 **The sheet.** With `:basis "none"` the `Comparison` tab has the numbers themselves, in blue. With a basis it has **formulas**
 -- each amount over the basis, such as `='As reported'!B12/'As reported'!B$7` -- and a second tab, `As reported`, has the
 numbers in millions (in blue) and the ratios; change a number there and the comparison follows. Either way the last column is the
 **median** of the companies: what is typical, in every row of percentages and ratios. The `Notes` tab lists the companies, their
-industries and periods.
+industries and periods, where the share prices came from, and (with `:peers`) how the peers were chosen.
 
 **The rows.** The ordinary company's: revenue, cost of revenue, gross profit, research, selling, general and administrative,
 other operating expenses, operating income, interest, taxes, net income, shares and earnings per share; the balance sheet down to
@@ -3515,9 +3565,29 @@ and assets, debt to equity, net debt to operating income, the current ratio, rec
 The lines a company reports that have no row of their own are in the *other* rows, as in `three-statement-model`, so every
 subtotal is the company's. A bank's rows are its net interest income, provision, noninterest income and expense, loans, deposits,
 and credit-loss lines, with the efficiency ratio, net interest margin, rates on loans and deposits, return on equity and assets,
-loans to deposits, equity to assets, the allowance, and the charge-off rate. An insurer's are premiums, investment income, losses,
+loans to deposits, equity to assets, the allowance, and the charge-off rate (and its goodwill and intangibles, preferred stock and
+minority interests, and net income to common shareholders, which its valuation rows use). An insurer's are premiums, investment income, losses,
 expenses, reserves, unearned premiums, and investments, with the loss, expense, and combined ratios, the investment yield, and
 the leverage ratios. The ratios use the period's end balances and a year's flows (a quarter's times 365 over its days).
+
+#### `(comparable-companies ticker [:count n :industry i :database path])`
+(In `lisp_financial_peers.py`.) The stocks the table `ticker_industry` of the database `financial_data.db` has in the same industry as
+the ticker, nearest to it in size first: a table with a row for each of `ticker`, `industry`, `market-cap` (in millions of dollars),
+`relative-size` (its market capitalization over the ticker's: 1.1 is a tenth bigger, 0.5 half the size), `price`, and `price-date`,
+from the tables `ticker_industry` and `stock_returns` (see `stock-returns-update` in `industry_returns.lsp`). `:count` is how many (10,
+unless you say). `:industry`, a name or a list of names, looks in those industries instead of the ticker's own. Only stocks that trade
+now are listed: those with a market capitalization and a price. It does not look at the SEC: `compare-companies` with `:peers` takes
+the nearest of these that the SEC's statements can be used for. The database is found in the current folder or the repository's
+`data` folder, unless `:database` gives a path; it is only read.
+
+```lisp
+(display-table (comparable-companies "KEY" :count 6))
+; ticker  industry  market-cap  relative-size   price  price-date
+; ------  --------  ----------  -------------  ------  ----------
+; RF      Bank           24310           1.08   29.03  2026-11-04
+; CIB     Bank           24501           1.09   94.38  2026-11-04
+; ...
+```
 
 ### Reports with control breaks
 

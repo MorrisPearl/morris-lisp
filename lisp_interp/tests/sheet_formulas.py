@@ -321,6 +321,8 @@ class Formula:
         if name == "SUM":
             return sum(numbers)
         if name == "MEDIAN":
+            if not numbers:
+                raise ZeroDivisionError("MEDIAN of no numbers")          # (an error in Sheets, which IFERROR catches)
             numbers.sort()
             middle = len(numbers) // 2
             return numbers[middle] if len(numbers) % 2 else (numbers[middle - 1] + numbers[middle]) / 2

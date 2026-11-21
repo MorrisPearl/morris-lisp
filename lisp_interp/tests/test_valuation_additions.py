@@ -7,7 +7,6 @@ import math
 
 from support import *  # noqa: F401,F403 -- the interpreter's modules, mock, and LispTestCase
 
-import lisp_alpha_vantage
 import lisp_financial_dcf
 import lisp_financial_equity_valuation as equity_valuation
 import lisp_financial_model as fm
@@ -15,7 +14,6 @@ import lisp_sec
 from sheet_formulas import Sheets
 from test_financial_asset_manager import AUM
 from test_financial_bank_insurer import ModelTestCase, insurer_facts, company_facts, INSURER_FLOWS, INSURER_BALANCES
-from test_financial_compare import CompareTestCase, scaled
 from test_financial_dcf import DcfTestCase
 from test_financial_model import build, made_up_facts
 
@@ -217,60 +215,3 @@ class TestNetFlows(ModelTestCase):
             self.assertLispError("(three-statement-model creds \"ABC\" :flows '(1 2 3))", ":flows, an asset manager's net flows, goes with :aum")
             self.assertLispError("(three-statement-model creds \"ABC\" :aum '(5000 5500 6050) :flows '(\"a\"))",
                                  ":flows is a list of numbers")
-
-
-# ---------------------------------------------------------------------------
-# The market's multiples, in compare-companies
-# ---------------------------------------------------------------------------
-
-class TestPeerMultiples(CompareTestCase):
-
-    def setUp(self):
-        super().setUp()
-        self.add("ABC", made_up_facts())
-        self.add("BIG", scaled(made_up_facts(), 2.0, "Big Co"))
-
-    def test_with_prices_the_market_rows_are_formulas_of_the_statements(self):
-        self.compare(["ABC", "BIG"], ":prices '(40 90)")
-        _, cells, sheets = self.worked()
-        tab = "Comparison"
-        get = lambda label, column: self.number(sheets, tab, cells, label, column)
-        for column, price in ((1, 40.0), (2, 90.0)):
-            shares = get("Diluted shares, millions", column)
-            market = get("Market value of the shares, millions (price x diluted shares)", column)
-            self.assertAlmostEqual(get("Share price", column), price)
-            self.assertAlmostEqual(market, price * shares)
-            debt = get("Current debt", column) + get("Long-term debt", column)
-            cash = get("Cash and equivalents", column) + get("Short-term investments", column)
-            enterprise = get("Enterprise value, millions (market value + debt - cash and short-term investments)", column)
-            self.assertAlmostEqual(enterprise, market + debt - cash)
-            ebitda = get("Operating income", column) + get("Depreciation (and amortization, if not reported apart)", column) \
-                + get("Amortization of intangible assets", column)
-            self.assertAlmostEqual(get("Enterprise value / a year's EBITDA (operating income + depreciation and amortization)",
-                                       column), enterprise / ebitda)
-            eps = get("Earnings per share, diluted", column)
-            pe = get("Price / a year's earnings per share", column)
-            self.assertAlmostEqual(pe, price / eps)
-            self.assertAlmostEqual(get("Price / book value (market value / equity)", column),
-                                   market / get("Stockholders' equity (with minority interests)", column))
-            before = get("Earnings per share, diluted, the year before", column)
-            self.assertAlmostEqual(get("PEG: price / earnings, over the growth of earnings per share in points (under 1 is "
-                                       "cheap for the growth)", column), pe / ((eps / before - 1) * 100))
-
-    def test_without_prices_there_are_no_market_rows(self):
-        self.compare(["ABC", "BIG"])
-        _, cells, _ = self.worked()
-        labels = [row[0][0] for row in cells["Comparison"] if row and row[0]]
-        self.assertNotIn("Share price", labels)
-
-    def test_the_prices_can_come_from_alpha_vantage(self):
-        asked = []
-        with mock.patch.object(lisp_alpha_vantage, "alpha_vantage_price",
-                               lambda creds, ticker: asked.append(ticker) or 50.0):
-            self.compare(["ABC", "BIG"], ":prices #t")
-        self.assertEqual(asked, ["ABC", "BIG"])
-        _, cells, sheets = self.worked()
-        self.assertAlmostEqual(self.number(sheets, "Comparison", cells, "Share price", 2), 50.0)
-
-    def test_a_price_for_each_company(self):
-        self.assertLispError("(compare-companies creds '(\"ABC\" \"BIG\") :prices '(40))", ":prices is the share price of each company")

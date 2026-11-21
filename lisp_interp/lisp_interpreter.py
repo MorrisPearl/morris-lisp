@@ -61,7 +61,9 @@ HOW THE CODE IS ORGANIZED
     lisp_financial_model.py   three-statement-model (a company's statements, forecast by formulas, in a Google Sheet)
     lisp_financial_dcf.py     the DCF tab of three-statement-model (free cash flow, WACC, terminal value, value per share)
     lisp_financial_sensitivity.py  sensitivity-workbook, sensitivity-macro; the Sensitivity tabs (Monte Carlo macro in apps_script/)
-    lisp_financial_compare.py compare-companies (companies side by side in a Google Sheet, as amounts or percentages)
+    lisp_financial_compare.py compare-companies (companies side by side in a Google Sheet, as amounts or percentages; valuation rows; peers)
+    lisp_financial_compare_valuation.py  the valuation rows at the bottom of a compare-companies sheet
+    lisp_financial_peers.py   comparable-companies (stocks in the same industry, nearest in size, from ticker_industry in financial_data.db)
     lisp_financial_bank.py, lisp_financial_insurer.py, lisp_financial_asset_manager.py   the bank, insurer, and asset manager models of three-statement-model
     lisp_financial_credit.py  a bank model's Credit Losses and FDIC Call Reports tabs (loans by type, Base/Adverse/Severe scenarios,
                               funding, securities, commercial real estate concentration, warning signs)

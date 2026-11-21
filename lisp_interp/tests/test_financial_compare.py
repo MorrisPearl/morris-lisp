@@ -2,11 +2,17 @@
 network. sheet_formulas.py works out the formulas of the sheets as Google would."""
 
 import copy
+import datetime
+import os
+import shutil
+import sqlite3
+import tempfile
 
 from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mock, and LispTestCase
 
 import lisp_financial_compare as fc
 import lisp_financial_model as fm
+import lisp_financial_peers
 import lisp_google
 import lisp_sec
 from sheet_formulas import Sheets
@@ -38,16 +44,47 @@ class CompareTestCase(LispTestCase):
         super().setUp()
         self.written = []
         self.companies = {}
-        for patcher in (mock.patch.object(lisp_sec, "company_facts", lambda creds, company, who: self.companies[str(company)][0]),
+        self.data_folder = tempfile.mkdtemp()                 # (where the database is looked for: empty, until make_database)
+        self.addCleanup(shutil.rmtree, self.data_folder, True)
+        for patcher in (mock.patch.object(lisp_sec, "company_facts", lambda creds, company, who: self.facts_of(company)),
                         mock.patch.object(fm, "company_industry", lambda creds, company, who: self.companies[str(company)][1]),
+                        mock.patch.object(lisp_financial_peers, "database_folders", lambda: [self.data_folder]),
+                        mock.patch.object(fc, "today", lambda: datetime.date(2024, 6, 1)),
                         mock.patch.object(lisp_google, "google_workbook",
                                           lambda creds, title, sheets: self.written.append((title, sheets)) or "https://sheet")):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.env[lisp_core.Symbol("creds")] = lisp_core.LispString("creds.json")
 
-    def add(self, ticker, facts, industry=(3571, "Electronic Computers")):
+    def facts_of(self, company):
+        ticker = str(company)
+        if ticker not in self.companies:
+            raise lisp_core.LispError("check: the SEC has no company with the ticker %s" % ticker)
+        return self.companies[ticker][0]
+
+    def add(self, ticker, facts, industry=(3571, "Electronic Computers"), cik=None):
+        """A company the SEC knows: its facts, its SIC code and description, and its SEC number (a different one for each,
+        unless two are said to be one company)."""
+        facts["cik"] = cik if cik is not None else 1000 + len(self.companies)
         self.companies[ticker] = (facts, industry)
+
+    def make_database(self, stocks):
+        """The database financial_data.db, in the folder it is looked for in: its tables ticker_industry and stock_returns
+        for these stocks: (ticker, industry, market cap in dollars or None, price or None)."""
+        path = os.path.join(self.data_folder, "financial_data.db")
+        if os.path.exists(path):
+            os.remove(path)
+        connection = sqlite3.connect(path)
+        connection.execute("CREATE TABLE ticker_industry(ticker NUM, industry NUM)")
+        connection.execute("CREATE TABLE stock_returns (ticker TEXT PRIMARY KEY, year_end TEXT, start_date TEXT, end_date TEXT, "
+                           "start_price REAL, end_price REAL, dividend REAL, market_cap REAL, return REAL, note TEXT)")
+        for ticker, industry, market_cap, price in stocks:
+            connection.execute("INSERT INTO ticker_industry VALUES (?, ?)", (ticker, industry))
+            connection.execute("INSERT INTO stock_returns (ticker, end_date, end_price, market_cap) VALUES (?, ?, ?, ?)",
+                               (ticker, "2024-05-31" if price else None, price, market_cap))
+        connection.commit()
+        connection.close()
+        return path
 
     def compare(self, tickers, options=""):
         text = "(compare-companies creds '(%s) %s)" % (" ".join('"%s"' % t for t in tickers), options)

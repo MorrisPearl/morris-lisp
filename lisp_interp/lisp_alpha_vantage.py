@@ -148,6 +148,25 @@ def estimate_value(estimate, field):
     return number / 1e6 if field.startswith("revenue_estimate") and not field.endswith("count") else number
 
 
+def estimate_records(credentials_path, symbol):
+    """Alpha Vantage's estimates for the symbol, oldest first: a list of dicts as Alpha Vantage gives them (the numbers
+    as text). A company it has no estimates for has none."""
+    answer = alpha_vantage_answer(credentials_path, "EARNINGS_ESTIMATES", symbol, "estimates", CACHE_HOURS,
+                                  "alpha-vantage-estimates")
+    return sorted(answer["estimates"], key=lambda estimate: (str(estimate.get("date")), str(estimate.get("horizon"))))
+
+
+def fiscal_year_eps(records, after):
+    """The analysts' estimates of earnings per share for the fiscal years that end after the date `after` (a datetime.date),
+    soonest first: a list of (the year's end, the average estimate)."""
+    years = []
+    for estimate in records:
+        value = estimate_value(estimate, "eps_estimate_average")
+        if estimate.get("horizon") == "fiscal year" and str(estimate.get("date")) > after.isoformat() and value is not None:
+            years.append((str(estimate["date"]), value))
+    return sorted(years)
+
+
 def alpha_vantage_estimates(credentials_path, symbol):
     """(alpha-vantage-estimates creds symbol) -- what analysts expect the company to earn: a table with a row for
     each coming fiscal quarter and year (and the ones just reported), oldest first, of its period-end, horizon
@@ -156,9 +175,7 @@ def alpha_vantage_estimates(credentials_path, symbol):
     eps-revision-30-days (the change since 30 days ago, as a fraction: estimates being raised is a good sign, being
     cut a bad one), raised-30-days and lowered-30-days (how many analysts did each), revenue, revenue-low,
     revenue-high (in millions), and revenue-analysts."""
-    who = "alpha-vantage-estimates"
-    answer = alpha_vantage_answer(credentials_path, "EARNINGS_ESTIMATES", symbol, "estimates", CACHE_HOURS, who)
-    estimates = sorted(answer["estimates"], key=lambda estimate: (str(estimate.get("date")), str(estimate.get("horizon"))))
+    estimates = estimate_records(credentials_path, symbol)
     columns = []
     for field, name in ESTIMATE_COLUMNS:
         columns.append((name, column_vector([estimate_value(estimate, field) for estimate in estimates])))
