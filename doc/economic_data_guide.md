@@ -83,6 +83,66 @@ Good to know:
 - **Limits.** The BLS allows 500 requests a day, and the BEA 100 a minute.
   The others are generous.
 
+### Keeping the database of market history up to date
+
+`financial-data-update` fills `data/financial_data.db` with TBA prices,
+Treasury yields, SOFR, the Freddie Mac mortgage rate and current coupons
+(see "A database of market history" in the
+[library manual](lisp_library_reference.md#a-database-of-market-history)).
+The Mac can keep it up to date by itself, with a job that runs
+`examples/update_financial_data.lsp` when you log in, and each morning at
+9:00; if the Mac is asleep or off at 9:00, the job runs when it wakes. The
+script asks `financial-data-update-if-behind` whether any source is behind
+the last day it could have (the trading day before today, or a week ago for
+the weekly mortgage rate). If none is, it says so and stops, in a second or
+two. If one is, it updates the database, which takes seconds when it is a
+few days behind. It updates at most once a day: a source that is still
+behind afterwards (it has not published yet, or it was a bond-market
+holiday) waits for the next day. An update that fails, because the network
+isn't up yet just after waking, say, is tried twice more, a minute apart.
+
+The job is `lisp_interp/tools/financial_data_update.plist`, a launchd
+*LaunchAgent*. Its paths are for `/Users/morris`; change them if the files
+are elsewhere. It needs no shell settings: the keys come from the
+credentials file that `init.lsp` names. To install it:
+
+```bash
+cp ~/morris_lisp/lisp_interp/tools/financial_data_update.plist ~/Library/LaunchAgents/local.morris-lisp.financial-data-update.plist
+```
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.morris-lisp.financial-data-update.plist
+```
+
+It runs at once, and then as above. What it did each time is in
+`~/Library/Logs/financial_data_update.log`, and each update is a row of the
+database's `update_runs` table (the day, what was behind, and `done` or why it
+failed). To see whether launchd has it, and how its last run ended:
+
+```bash
+launchctl print gui/$(id -u)/local.morris-lisp.financial-data-update
+```
+
+To run it now (it still updates only if the database is behind):
+
+```bash
+launchctl kickstart gui/$(id -u)/local.morris-lisp.financial-data-update
+```
+
+After changing the plist, remove the job and install it again. To remove it:
+
+```bash
+launchctl bootout gui/$(id -u)/local.morris-lisp.financial-data-update
+```
+
+```bash
+rm ~/Library/LaunchAgents/local.morris-lisp.financial-data-update.plist
+```
+
+To update by hand even though it was updated today already:
+`python3 lisp_interpreter.py examples/update_financial_data.lsp --force`,
+from `lisp_interp/`.
+
 ## 2. Where to find it
 
 Each table below gives what you might want to know, how to ask for it, and

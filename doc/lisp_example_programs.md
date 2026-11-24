@@ -165,6 +165,7 @@ files in `examples/` and `lib/` from anywhere:
 | `sofr_and_mortgage_rates.lsp` | whether the 30-year mortgage rate can be told from SOFR (it can't; the 10-year yield tells it) | a FRED key |
 | `yield_curve_example.lsp` | today's Treasury yield curve from the Treasury and from the Fed: zero rates and forward rates, charted | nothing: free downloads |
 | `yield_slope_example.lsp` | the slope of the Treasury curve as expected rates, a term premium and convexity since 1972, and as real yields and inflation since 2004, charted | nothing: free downloads |
+| `update_financial_data.lsp` | brings `data/financial_data.db` up to date if it is behind, and stops in a second or two if not: the job the Mac runs each day | FINRA and FRED keys |
 | `map_example.lsp` | maps colored by a value | Census and BEA keys |
 | `plot_chart_example.lsp` | `plot-chart`: lines, symbols, bars, categories, two axes | nothing |
 | `report_example.lsp` | a table written as a text report with control breaks: mortgages with subtotals by zip code and state and a grand total, on pages; a letter to each client | nothing |
@@ -1530,6 +1531,13 @@ New York Fed's model fitted to the Fed's curve since 1961 (`term-premium-decompo
 compensation, from the Fed's TIPS curve (`tips-curve`, `yield-slope-inflation`). It prints today's
 pieces and charts both. See "What the slope of the curve is made of" in
 [lisp_paths_manual.md](lisp_paths_manual.md#what-the-slope-of-the-curve-is-made-of).
+
+`update_financial_data.lsp` is the job that keeps the database of market history up to date
+(`financial-data-update-if-behind`). It checks whether the TBA prices, Treasury yields, SOFR
+and mortgage rate have every day they could, and updates the database only if not, at most
+once a day (`--force` updates again). The
+[data guide](economic_data_guide.md#keeping-the-database-of-market-history-up-to-date) says how
+to have the Mac run it when it starts or wakes and each morning.
 
 `plot_chart_example.lsp` needs nothing, and is a tour of `plot-chart` in eleven small
 charts: a monthly line over grouped quarterly bars on one date axis; stacked bars with

@@ -2451,6 +2451,29 @@ from then on; it is how a series is worked out again after its definition change
 A table of the time series: for each instrument and term, its `rows`, `first_day` and
 `last_day`.
 
+#### `(financial-data-behind "path/to/financial_data.db" [day])`
+The sources that are behind on `day` (today): a list of `(name last-day due-day)`, one
+for each of the TBA prices, the Treasury's par yields, SOFR and Freddie Mac's mortgage
+rate whose last day is before the last day it could have. That is the trading day before
+`day` for the daily ones, and a week before it for the weekly mortgage rate. `last-day` is
+`'()` for a source with nothing yet. An empty list means the database is up to date.
+
+```lisp
+(financial-data-behind db (date 2026 11 24))
+; (("SOFR (New York Fed)" 2026-11-20 2026-11-23))   -- SOFR alone is behind
+```
+
+#### `(financial-data-update-if-behind creds "path/to/financial_data.db" [:force #t :tries n :wait-seconds s])`
+Runs `financial-data-update` only if a source is behind, and not if an update has already
+gone through today (unless `:force #t`): a source still behind afterwards has not published
+yet, or had a holiday, and asking again the same day would not bring it. An update that
+fails is tried `:tries` times (1), `:wait-seconds` apart (60). It prints a line or two about
+what it found and did, notes each update in the database's `update_runs` table (`day`,
+`started`, `behind`, `result`: `done` or `failed: ` and why), and returns `up-to-date`,
+`already-updated-today`, `updated` or `failed`. `examples/update_financial_data.lsp` calls
+it; the [data guide](economic_data_guide.md#keeping-the-database-of-market-history-up-to-date)
+says how to have the Mac run that each day.
+
 The `time_series` table has a row for each day, instrument and term, with these columns:
 
 | Column | What |

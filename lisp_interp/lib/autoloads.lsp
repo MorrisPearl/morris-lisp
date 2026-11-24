@@ -322,7 +322,8 @@
 (lazy-load "finra_database.lsp" finra-tba-update finra-tba-summary)
 
 ; The database of market history (TBA prices, Treasury, SOFR and mortgage rates, current coupons), and reading it (see "A database of market history" in lisp_library_reference.md)
-(lazy-load "financial_data.lsp" financial-data-update financial-data-summary time-series time-series-table)
+(lazy-load "financial_data.lsp" financial-data-update financial-data-summary time-series time-series-table
+           financial-data-behind financial-data-update-if-behind financial-data-updated-on?)
 
 ; Macroeconomic models run with Dynare: the oil model and the stock-crash model (financial accelerator), their scenarios and their estimates from US data (see lisp_macro_models_manual.md)
 (lazy-load "macro_models.lsp"

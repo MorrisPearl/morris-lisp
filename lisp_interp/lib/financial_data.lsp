@@ -209,3 +209,106 @@ nan where a series has no value for the day. series is a list of (instrument ter
     (reduce (lambda (t pair) (table-rename-column t (format "c{}" (car pair)) (cdr pair)))
             (map cons (iota (length series)) names)
             found)))
+
+; ---------------------------------------------------------------------------
+; Keeping it up to date by itself
+; ---------------------------------------------------------------------------
+;
+; (financial-data-update-if-behind creds db) brings the database up to date only if it is behind, so that a job can call it as often as it likes:
+; when the computer starts or wakes, and once a day. A source is behind when its last day is before the last day it could have: the trading day before
+; today for the daily ones (a day's numbers come out that evening or the next morning), and a week before today for Freddie Mac's weekly survey. Each run
+; is written down in the table update_runs (the day, what was behind, and how it went), and after a run that went through, the database is not asked
+; for again that day: a day the stock market is open but the bond market is not (Veterans Day, say) has no Treasury yields, and asking again would not
+; bring them. examples/update_financial_data.lsp is the job, and economic_data_guide.md says how to make the Mac run it.
+
+; The sources to check: a name for each, the SQL that finds its last day, and whether it comes out each trading day or each week.
+(define financial-data-sources-to-check
+  '(("TBA prices (FINRA)" "SELECT MAX(date) FROM tba_prices" daily)
+    ("Treasury par yields" "SELECT MAX(date) FROM time_series WHERE instrument = 'treasury-par'" daily)
+    ("SOFR (New York Fed)" "SELECT MAX(date) FROM time_series WHERE instrument = 'sofr'" daily)
+    ("Freddie Mac mortgage rates" "SELECT MAX(date) FROM time_series WHERE instrument = 'freddie-mac-mortgage-rate'" weekly)))
+
+(define (financial-data--last-day conn sql)
+  "The day the query finds, or '() if it finds none (an empty table, or no table at all)."
+  (catch-error (let ((day (vector-ref (cdr (car (sqlite-query conn sql))) 0)))
+                 (if (string? day) (string->date day) day))
+               (message)
+    '()))
+
+(define (financial-data--due-day how-often day)
+  "The last day a source could have on day: the trading day before it for a daily source, a week before it for a weekly one."
+  (if (eq? how-often 'daily)
+      (add-trading-days day -1)
+      (date-add-days day -7)))
+
+(define (financial-data-behind db-path &optional (day (today)))
+  "The sources in the database at db-path that are behind on day (today): a list of (name last-day due-day), where last-day is '() if the source has
+nothing yet. An empty list means it is up to date."
+  (with-sqlite (conn db-path)
+    (filter (lambda (row) (or (null? (cadr row)) (< (cadr row) (caddr row))))
+            (map (lambda (source)
+                   (list (car source)
+                         (financial-data--last-day conn (cadr source))
+                         (financial-data--due-day (caddr source) day)))
+                 financial-data-sources-to-check))))
+
+(define (financial-data--create-runs conn)
+  (sqlite-execute conn "CREATE TABLE IF NOT EXISTS update_runs (day TEXT, started TEXT, behind TEXT, result TEXT)"))
+
+(define (financial-data-updated-on? db-path day)
+  "#t if a run of financial-data-update-if-behind went through on day."
+  (with-sqlite (conn db-path)
+    (financial-data--create-runs conn)
+    (not (null? (financial-data--last-day conn (format "SELECT MAX(day) FROM update_runs WHERE day = '{}' AND result = 'done'"
+                                                       (date->string day)))))))
+
+(define (financial-data--note-run db-path day started behind result)
+  (with-sqlite (conn db-path)
+    (financial-data--create-runs conn)
+    (sqlite-execute conn "INSERT INTO update_runs VALUES (?, ?, ?, ?)"
+                    (list (date->string day) started (string-join (map car behind) ", ") result))))
+
+(define (financial-data--describe-behind behind)
+  "A line for each source that is behind: its name, its last day and the day it could have."
+  (for-each (lambda (row)
+              (display "  ") (display (car row)) (display ": last day ")
+              (display (if (null? (cadr row)) "none" (cadr row))) (display ", could have ") (display (caddr row)) (newline))
+            behind))
+
+(define (financial-data-update-if-behind creds db-path &key (force #f) (tries 1) (wait-seconds 60))
+  "Runs financial-data-update if a source in the database is behind (financial-data-behind), and no run has gone through yet today (with :force #t,
+whether or not one has). It tries :tries times, :wait-seconds apart, if the update fails (the network may not be up yet just after the computer wakes).
+It displays a short account of what it did, and returns 'up-to-date, 'already-updated-today, 'updated or 'failed."
+  (let* ((day (today))
+         (started (time->string (current-time)))
+         (behind (financial-data-behind db-path day)))
+    (display started) (display " ")
+    (cond ((null? behind)
+           (display "The financial data is up to date.") (newline)
+           'up-to-date)
+          ((and (not force) (financial-data-updated-on? db-path day))
+           (display "Behind, but it was brought up to date once today already; the next try is tomorrow:") (newline)
+           (financial-data--describe-behind behind)
+           'already-updated-today)
+          (else
+           (display "Behind:") (newline)
+           (financial-data--describe-behind behind)
+           (let loop ((try 1))
+             (let ((failure (catch-error (begin (financial-data-update creds db-path) '()) (message) message)))
+               (cond ((null? failure)
+                      (financial-data--note-run db-path day started behind "done")
+                      (display (time->string (current-time))) (display " Updated.") (newline)
+                      (let ((still (financial-data-behind db-path day)))
+                        (if (not (null? still))
+                            (begin (display "Still behind (a source has not published yet, or it was a holiday):") (newline)
+                                   (financial-data--describe-behind still))))
+                      'updated)
+                     ((< try tries)
+                      (display "The update failed: ") (display failure) (newline)
+                      (display "Trying again in ") (display wait-seconds) (display " seconds.") (newline)
+                      (sleep wait-seconds)
+                      (loop (+ try 1)))
+                     (else
+                      (financial-data--note-run db-path day started behind (string-append "failed: " failure))
+                      (display "The update failed: ") (display failure) (newline)
+                      'failed))))))))
