@@ -241,7 +241,8 @@ A share well above share-by-chance means the industries are separating returns; 
 ;
 ; The tables, for each frequency: weekly_prices (ticker, period, close) and weekly_prices_asked (ticker, last_period, periods, note), a row for each stock
 ; asked for, so that a run that is stopped picks up where it left off (and monthly_prices and monthly_prices_asked); and stock_dividends (ticker,
-; annual_dividend, payments_per_year, ex_date), the dividends as Schwab has them now, which stock-prices-update gets afresh each time (a few requests).
+; annual_dividend, payments_per_year, ex_date), the dividends as Schwab has them now, which stock-prices-update gets afresh each time (a few requests),
+; and stock_dividend_history, each of those added up over time: a row for each stock and ex-date seen.
 
 (define stock-prices-default-years '(("weekly" . 3) ("monthly" . 2)))    ; how many years of returns, unless :years says
 (define stock-prices-periods-per-year '(("weekly" . 52) ("monthly" . 12)))
@@ -307,7 +308,36 @@ before (stock-prices-last-whole-period frequency (today)), the prices are behind
 ; --- dividends ---
 
 (define (stock-dividends--create conn)
-  (sqlite-execute conn "CREATE TABLE IF NOT EXISTS stock_dividends (ticker TEXT PRIMARY KEY, annual_dividend REAL, payments_per_year INTEGER, ex_date TEXT)"))
+  (sqlite-execute conn "CREATE TABLE IF NOT EXISTS stock_dividends (ticker TEXT PRIMARY KEY, annual_dividend REAL, payments_per_year INTEGER, ex_date TEXT)")
+  (sqlite-execute conn "CREATE TABLE IF NOT EXISTS stock_dividend_history (ticker TEXT, ex_date TEXT, payment REAL, annual_dividend REAL,
+                                                                           payments_per_year INTEGER, first_seen TEXT, last_seen TEXT,
+                                                                           PRIMARY KEY (ticker, ex_date))"))
+
+; stock_dividends is a picture of today: Schwab gives only the latest (or next) ex-date and the dividend at its current rate. stock_dividend_history keeps
+; each of those pictures, a row for each stock and ex-date, so that it grows a payment at a time into a record of what was paid: a stock that pays four
+; times a year gets four rows a year, from the day the history began (it cannot go back further). A row's payment is the annual dividend over the payments
+; a year (or the annual dividend, for a stock with no number of payments); first_seen and last_seen are the days it was first and last in Schwab's
+; answer. If Schwab changes the amount for an ex-date it has already given (an announced dividend that was revised), the row takes the latest.
+(define (stock-dividends--record-history conn day)
+  "Adds today's dividends (the table stock_dividends) to stock_dividend_history: a new row for each stock and ex-date it does not have yet, and, for one
+it has, the latest amount and last_seen. day is today, as YYYY-MM-DD text."
+  (sqlite-execute conn
+    "INSERT INTO stock_dividend_history (ticker, ex_date, payment, annual_dividend, payments_per_year, first_seen, last_seen)
+       SELECT ticker, ex_date, CASE WHEN payments_per_year > 0 THEN annual_dividend / payments_per_year ELSE annual_dividend END,
+              annual_dividend, payments_per_year, ?, ?
+         FROM stock_dividends WHERE annual_dividend > 0 AND ex_date != ''   -- (a WHERE is needed before ON CONFLICT)
+       ON CONFLICT (ticker, ex_date) DO UPDATE SET payment = excluded.payment, annual_dividend = excluded.annual_dividend,
+                                                  payments_per_year = excluded.payments_per_year, last_seen = excluded.last_seen"
+    (list day day)))
+
+(define (stock-dividend-history db-path &optional (ticker '()))
+  "The dividends recorded in stock_dividend_history (see stock-dividends-update): a table of ticker, ex_date, payment, annual_dividend,
+payments_per_year, first_seen and last_seen, for one ticker or, without one, every stock, in order of ticker and ex-date."
+  (with-sqlite (conn db-path)
+    (stock-dividends--create conn)
+    (if (null? ticker)
+        (sqlite-query conn "SELECT * FROM stock_dividend_history ORDER BY ticker, ex_date")
+        (sqlite-query conn "SELECT * FROM stock_dividend_history WHERE ticker = ? ORDER BY ex_date" '() '() (list ticker)))))
 
 (define (stock-dividends--batch creds tickers)
   "Schwab's dividend facts for the tickers, as a table of ticker, annual_dividend, payments_per_year and ex_date (\"\" if there is none)."
@@ -326,8 +356,9 @@ before (stock-prices-last-whole-period frequency (today)), the prices are behind
 
 (define (stock-dividends-update creds db-path)
   "Gets Schwab's dividend facts for every stock in ticker_industry but the Canadian ones (a year's dividends at the current rate, how many payments a
-year, and the latest or next ex-dividend date) and keeps them in the table stock_dividends, in place of what it had. Asks for stock-returns-batch at a time.
-Returns how many stocks it has, and how many of them pay a dividend."
+year, and the latest or next ex-dividend date) and keeps them in the table stock_dividends, in place of what it had, and adds them to the history of
+dividends (stock_dividend_history: see stock-dividends--record-history). Asks for stock-returns-batch at a time. Returns how many stocks it has, and how
+many of them pay a dividend."
   (with-sqlite (conn db-path)
     (stock-dividends--create conn)
     (let ((tickers (vector->list (table-column (sqlite-query conn "SELECT ticker FROM ticker_industry WHERE ticker NOT LIKE '%.TO' ORDER BY ticker")
@@ -341,6 +372,7 @@ Returns how many stocks it has, and how many of them pay a dividend."
         (sqlite-execute conn "DELETE FROM stock_dividends")
         (for-each (lambda (found) (if (> (table-row-count found) 0) (sqlite-write-table conn "stock_dividends" found 'append)))
                   batches))
+      (stock-dividends--record-history conn (date->string (today)))
       (sqlite-query conn "SELECT COUNT(*) AS stocks, SUM(annual_dividend > 0) AS paying_dividends FROM stock_dividends"))))
 
 ; --- prices ---

@@ -344,6 +344,41 @@ class TestMonthlyReturns(PricesTestCase):
         self.assertEqual(self.stored("SELECT * FROM stock_dividends ORDER BY ticker"), [("AAA", 4.0, 4, "2026-08-14"), ("BBB", 0.0, 0, "")])
         self.assertShows('(table-column (stock-dividends-update creds db) "paying_dividends")', "#(1)")
 
+    def history(self):
+        return self.stored("SELECT ticker, ex_date, payment, first_seen, last_seen FROM stock_dividend_history ORDER BY ticker, ex_date")
+
+    def test_the_history_keeps_each_ex_date_as_it_comes(self):
+        self.run_lisp("(define (today) (date 2026 8 10))")
+        self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0") ("BBB" 0.0 0 "") ("CCC" 1.2 12 "")))""")
+        self.run_lisp("(stock-dividends-update creds db)")
+        # BBB pays nothing, and CCC has no ex-date: neither is in the history
+        self.assertEqual(self.history(), [("AAA", "2026-08-14", 1.0, "2026-08-10", "2026-08-10")])
+        self.run_lisp("(define (today) (date 2026 8 17))")                  # a week later: the same ex-date, seen again
+        self.run_lisp("(stock-dividends-update creds db)")
+        self.assertEqual(self.history(), [("AAA", "2026-08-14", 1.0, "2026-08-10", "2026-08-17")])
+        self.run_lisp("(define (today) (date 2026 11 9))")                  # the next quarter, at a higher rate: a second row, the first kept
+        self.run_lisp("""(set! dividends '(("AAA" 4.4 4 "2026-11-13 00:00:00.0")))""")
+        self.run_lisp("(stock-dividends-update creds db)")
+        self.assertEqual(self.history(), [("AAA", "2026-08-14", 1.0, "2026-08-10", "2026-08-17"),
+                                          ("AAA", "2026-11-13", 1.1, "2026-11-09", "2026-11-09")])
+        self.assertEqual(self.stored("SELECT ticker FROM stock_dividends"), [("AAA",)])   # while stock_dividends has today's alone
+        self.assertShows('(table-column (stock-dividend-history db "AAA") "payment")', "#(1.0 1.1)")
+        self.assertShows('(table-row-count (stock-dividend-history db "BBB"))', "0")
+
+    def test_a_revised_amount_for_an_ex_date_replaces_the_old_one(self):
+        self.run_lisp("(define (today) (date 2026 11 2))")
+        self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-11-13 00:00:00.0")))""")
+        self.run_lisp("(stock-dividends-update creds db)")
+        self.run_lisp("(define (today) (date 2026 11 9))")
+        self.run_lisp("""(set! dividends '(("AAA" 4.8 4 "2026-11-13 00:00:00.0")))""")
+        self.run_lisp("(stock-dividends-update creds db)")
+        self.assertEqual(self.history(), [("AAA", "2026-11-13", 1.2, "2026-11-02", "2026-11-09")])
+
+    def test_a_stock_without_a_number_of_payments_pays_its_annual_dividend(self):
+        self.run_lisp("""(set! dividends '(("AAA" 2.5 0 "2026-06-01 00:00:00.0")))""")
+        self.run_lisp("(stock-dividends-update creds db)")
+        self.assertEqual([row[2] for row in self.history()], [2.5])
+
     def test_dividends_that_cannot_be_got_leave_the_old_ones_as_they_were(self):
         self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0")))""")
         self.run_lisp("(stock-dividends-update creds db)")

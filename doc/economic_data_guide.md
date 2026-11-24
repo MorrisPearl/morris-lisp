@@ -90,7 +90,8 @@ Treasury yields, SOFR, the Freddie Mac mortgage rate and current coupons
 (see "A database of market history" in the
 [library manual](lisp_library_reference.md#a-database-of-market-history)),
 and `stock-prices-update` fills it with every stock's weekly and monthly
-closing prices and today's dividends, from Schwab.
+closing prices and today's dividends, from Schwab, and adds those to a
+history of dividends that grows a payment at a time (`stock-dividend-history`).
 The Mac can keep both up to date by itself, with a job that runs
 `examples/update_financial_data.lsp` when you log in, and each morning at
 9:00; if the Mac is asleep or off at 9:00, the job runs when it wakes. The

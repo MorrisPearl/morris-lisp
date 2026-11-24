@@ -335,7 +335,8 @@
   ai-bust-scenarios ai-bust-models ai-bust-parts ai-bust-responses compare-ai-busts plot-ai-busts plot-ai-bust ai-investment-data)
 (lazy-load "industry_returns.lsp" stock-returns-update industry-returns industry-variation
   stock-dividends-update stock-prices-update periodic-returns return-components stock-components
-  other-returns rate-changes components-and-others stock-prices-last-whole-period stock-prices-asked-through)
+  other-returns rate-changes components-and-others stock-prices-last-whole-period stock-prices-asked-through
+  stock-dividend-history)
 
 ; A company's stakes in other companies (often its customers), the gains on them and its guarantees, beside its revenue, from the SEC
 (lazy-load "vendor_financing.lsp" vendor-financing)

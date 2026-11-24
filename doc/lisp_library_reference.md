@@ -2624,10 +2624,21 @@ makes it seem to move with nothing; a week is long enough for that to wash out.
 #### `(stock-dividends-update creds "path/to/financial_data.db")`
 Schwab's dividend facts for every stock but the Canadian ones, kept in the table `stock_dividends`
 (`ticker`, `annual_dividend`, `payments_per_year`, `ex_date`) in place of what it had: a few requests,
-400 stocks at a time. It is a picture of today's dividends, a row for each stock, not a history: each call
+400 stocks at a time. That table is a picture of today's dividends, a row for each stock: each call
 replaces the last. It asks for every stock before it deletes anything, so a call that fails (the sign-in has
-run out) leaves the table as it was. `stock-prices-update` calls it first. Returns how many stocks it has, and how many
+run out) leaves the table as it was. Each call also adds today's picture to `stock_dividend_history`, the
+history of dividends, a row for each stock and ex-date (below). `stock-prices-update` calls it first. Returns how many stocks it has, and how many
 pay a dividend.
+
+#### `(stock-dividend-history "path/to/financial_data.db" [ticker])`
+The dividends seen so far, for one stock or all: a table of `ticker`, `ex_date`, `payment`, `annual_dividend`,
+`payments_per_year`, `first_seen` and `last_seen`, in order of ticker and ex-date. Schwab gives only a stock's
+latest (or next) ex-date, so the history grows one payment at a time, from the day it began (November 24,
+2026); a stock that pays four times a year gets four rows a year. `payment` is the annual dividend over the
+payments a year. `first_seen` and `last_seen` are the days `stock-dividends-update` first and last saw it;
+if Schwab revises the amount for an ex-date it has already given, the row takes the new one. A stock that pays
+nothing, or has no ex-date, has no rows. The daily job (`update_financial_data.lsp`) runs
+`stock-dividends-update` with each week's stock prices, often enough to see every payment.
 
 #### `(stock-prices-update creds "path/to/financial_data.db" [:frequency f :years n :end-date d])`
 Each stock's closes at the end of each week (or month) for the last `:years`, from Schwab, kept in the
