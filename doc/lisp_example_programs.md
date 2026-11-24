@@ -117,6 +117,8 @@ files in `examples/` and `lib/` from anywhere:
 | `chess.lsp`, `chess_book.lsp`, `chess_example.lsp` | a complete chess program: rules, notation, search with alpha-beta and a table, an opening book | nothing |
 | `kenken_example.lsp` | constraint propagation and backtracking | nothing |
 | `backgammon_train.lsp`, `backgammon_play.lsp` | a neural network that learns backgammon by playing itself (TD-Gammon), and a game against it: vectors of features, back-propagation as whole-vector arithmetic, TD(lambda) | nothing (training takes a long while; see below) |
+| `backgammon_compare.lsp` | plays two players (trained networks, the heuristic player or random play) against each other, with or without the doubling cube, and reports the points a game with a standard error | two network files, or `heuristic` / `random` |
+| `backgammon_widen.lsp` | adds hidden units to a trained network, with small weights so that it plays as before, ready for more training | a trained network file (see above) |
 | `backgammon_endgame_check.lsp` | checks a trained network on end-game positions with checkers only on the 1 points, where the exact chance of winning is a short recursion | a trained network file (see above) |
 
 **Languages**
@@ -1003,6 +1005,20 @@ point. In a notebook, `(play-backgammon :file "backgammon_net.txt")` plays the s
 and `:human-first #f` lets the computer start. You type your moves in the usual notation
 (`24/18 13/11`, `bar/20`, `3/off`; one checker that uses both dice can be written as a single move, `13/8` for a 3-2, if either order of the dice is legal), and `?` lists the plays your dice allow. `:log-file "games.txt"` adds every move, double and
 result to a file, one tab-separated line each, to look at the games later.
+
+`backgammon_compare.lsp A B [games] [exact] [cube]` plays games between A and B, each a network file,
+`heuristic` or `random` (1000 games, exact end games on and the cube on, unless told otherwise). It
+prints the points a game A wins, with its standard error, the wins, and how the games ended: by a
+dropped double, by bearing off, or cut off. Give `cube` as 0 to play without the cube (nobody doubles
+and everyone takes). That is the way to judge two networks of similar strength: with the cube, nearly
+every game between them ends on a drop, because the doubling player has just enough of an edge that the
+other side drops, so the result says little about how well either plays.
+
+`backgammon_widen.lsp net.txt wider.txt extra [seed]` writes a copy of the network with `extra` more
+hidden units. Their weights into the outputs are tiny (spread 0.01), so the new network plays almost as the
+old one did, and their weights from the inputs are small and random (spread 0.1). The output weights
+cannot be exactly zero: the input weights learn only through them, so with zeros the new units would
+never change. Train the wider network with the eighth argument of `backgammon_train.lsp`.
 
 `backgammon_endgame_check.lsp net.txt` compares the network's chance of winning with the exact
 chance in positions where each side has only checkers on its 1 point (each roll bears off
