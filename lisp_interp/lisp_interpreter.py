@@ -80,6 +80,7 @@ HOW THE CODE IS ORGANIZED
     lisp_portfolio.py     combine-returns, bootstrap-paths, portfolio-value, covariance-matrix, mean-variance-weights, ...
     lisp_rates.py         interest-rate paths and their fit to option prices (simulate-rate-paths, calibrate-rate-model, ...), and
                           SOFR curves (sofr-*; sofr-calibration-data downloads from tastytrade)
+    lisp_term_premium.py  term-premium-decomposition: Treasury yields as expected rates, convexity and a term premium
     lisp_kernel.py        the Jupyter kernel (with lisp_jupyter.py)
     lisp_notebook_files.py  file-to-notebook, set-slide-types, notebook-to-slides: notebooks as files
     lisp_jupyter_debug.py the debug REPL in Jupyter, made with ipywidgets

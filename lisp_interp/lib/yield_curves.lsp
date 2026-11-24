@@ -370,3 +370,111 @@ is the last in it on or before :date, the latest, if none is given."
   (let ((years (/ (+ 1 (vector-range months)) 12.0)))
     (make-table "years" years
                 "zero" (svensson-zero-rates (gsw-parameters curve :date date) years))))
+
+; ---------------------------------------------------------------------------
+; 4. The Fed's curve of TIPS: real yields, and inflation compensation
+; ---------------------------------------------------------------------------
+;
+; A TIPS (Treasury Inflation-Protected Security) pays a coupon and face value that grow with the consumer price
+; index, so its yield is a real yield: what it earns above inflation. A nominal Treasury's yield less a TIPS's of
+; the same maturity is the inflation compensation, or "breakeven": the inflation at which the two would earn the
+; same. It is not just the inflation investors expect: it has in it a premium for the risk of inflation, and the
+; difference in how easily the two are traded, which the Fed's note on the file warns of.
+
+(define gsw-tips-url "https://www.federalreserve.gov/data/yield-curve-tables/feds200805.csv")
+
+(define (tips-curve--name heading)
+  "The name here of a column of the Fed's TIPS file that is kept: TIPSY05 is real-5, the real zero rate at 5
+years, and BKEVEN05 breakeven-5, the inflation compensation, its zero rate; #f for the others."
+  (let ((found-real (regex-match "^TIPSY(\\d+)$" heading))
+        (found-breakeven (regex-match "^BKEVEN(\\d+)$" heading)))
+    (cond ((equal? heading "Date") "date")
+          (found-real (string-append "real-" (number->string (string->number (second found-real)))))
+          (found-breakeven (string-append "breakeven-" (number->string (string->number (second found-breakeven)))))
+          (else #f))))
+
+(define (tips-curve &key (start-date '()) (end-date '()) (cache-hours 12))
+  "The Federal Reserve's fitted curve of TIPS (Gurkaynak, Sack, and Wright, as gsw-curve is of nominal Treasuries),
+as a table, the oldest day first, from :start-date to :end-date (a date, or YYYY-MM-DD text; all of it, if they are
+not given: it begins in 1999). The columns are the date; real-2 ... real-20, the real zero rate at each whole number
+of years from 2 to 20; and breakeven-2 ... breakeven-20, the inflation compensation at each: the nominal zero rate
+(the Fed's other curve, zero-n of gsw-curve) less the real one. All are decimals, continuously compounded, nan
+where the Fed gives none. The file is one download of the whole history (15 MB), kept for :cache-hours (12)."
+  (let* ((file (http-get-csv gsw-tips-url #t cache-hours :skip "Date" :missing "NA"))
+         (columns (loop for column in file
+                        for name = (tips-curve--name (car column))
+                        when name
+                        collect (cons name (if (equal? name "date") (cdr column) (/ (cdr column) 100)))))
+         (dates (table-column columns "date"))
+         (first-day (yield-curves--day start-date (vector-min dates)))
+         (last-day (yield-curves--day end-date (vector-max dates))))
+    (table-filter columns (vector-and (>= dates first-day) (<= dates last-day)))))
+
+; ---------------------------------------------------------------------------
+; 5. The slope of the curve, and what it is made of
+; ---------------------------------------------------------------------------
+;
+; The slope is a long yield less a short one: the 10-year less the 3-month, say. Each yield is the average
+; of the short rates expected to its maturity, plus convexity, plus a term premium (term-premium-decomposition,
+; in lisp_term_premium.py, says how a model separates them), so the slope is the same pieces, long less short:
+;
+;   slope = (expected long - expected short)          the rates the market expects to rise, or fall
+;         + (convexity long - convexity short)        small: uncertainty about rates lowers long yields
+;         + (term premium long - term premium short)  what investors want for holding long bonds
+;
+; And each yield is a real yield plus inflation compensation (tips-curve), so the slope is also the slope of
+; real yields plus the slope of inflation compensation.
+
+(define (yield-slope--at decomposition years)
+  "The rows of a table as term-premium-decomposition makes that are for this maturity, in years."
+  (let ((rows (table-filter decomposition (< (abs (- (table-column decomposition "years") years)) 1e-6))))
+    (when (= (table-row-count rows) 0)
+      (error (format "yield-slope-decomposition: the table has no maturity of {} years: give it in term-premium-decomposition's :years"
+                     years)))
+    rows))
+
+(define (yield-slope-decomposition decomposition &key (long 10) (short 0.25))
+  "The slope of the yield curve, the zero yield at :long years (10) less that at :short (0.25, 3 months), and
+what it is made of, as a table with a row for each day of decomposition (a table as term-premium-decomposition
+makes, which has both maturities among its years). The columns, as decimals:
+  date           the day
+  slope          the long yield less the short
+  expected       the part from expected short rates: the average expected to the long maturity, less the
+                 average expected to the short one
+  convexity      the long maturity's convexity less the short one's
+  term-premium   the long maturity's term premium less the short one's
+  error          what the model doesn't fit, long less short
+so that slope = expected + convexity + term-premium + error."
+  (let* ((long-rows (yield-slope--at decomposition long))
+         (short-rows (yield-slope--at decomposition short))
+         (difference (lambda (column) (- (table-column long-rows column) (table-column short-rows column)))))
+    (make-table "date" (table-column long-rows "date")
+                "slope" (difference "yield")
+                "expected" (difference "expected")
+                "convexity" (difference "convexity")
+                "term-premium" (difference "term-premium")
+                "error" (difference "error"))))
+
+(define (yield-slope-inflation tips &key (long 10) (short 2))
+  "The slope of the yield curve, the nominal zero yield at :long years (10) less that at :short (2), as the slope
+of real yields plus the slope of inflation compensation: a table with a row for each day of tips (as tips-curve
+makes) that has numbers at both maturities, with the columns
+  date        the day
+  slope       the nominal long yield less the short one: real plus inflation, at each maturity
+  real        the real long yield less the short one
+  inflation   the long maturity's inflation compensation less the short one's
+so that slope = real + inflation. The maturities are whole numbers of years from 2 to 20: the Fed's TIPS curve
+has no others."
+  (for-each (lambda (years)
+              (unless (and (integer? years) (<= 2 years 20))
+                (error "yield-slope-inflation: :long and :short are whole numbers of years from 2 to 20, not" years)))
+            (list long short))
+  (let* ((column (lambda (kind years) (table-column tips (format "{}-{}" kind years))))
+         (real (- (column "real" long) (column "real" short)))
+         (inflation (- (column "breakeven" long) (column "breakeven" short)))
+         (slope (+ real inflation))
+         (present (vector-not (vector-nan? slope))))
+    (make-table "date" (vector-select (table-column tips "date") present)
+                "slope" (vector-select slope present)
+                "real" (vector-select real present)
+                "inflation" (vector-select inflation present))))

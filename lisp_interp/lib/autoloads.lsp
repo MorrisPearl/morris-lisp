@@ -63,12 +63,14 @@
   trade-scenario-date trade-scenario-rate trade-scenario-prices trade-scenario-contract-size trade-scenario-unit
   trade-scenario-underlyings trade-scenario-strikes trade-scenario-trades)
 
-; Yield curves: the Treasury's par curve and the Fed's fitted curve, zero rates and forward rates
+; Yield curves: the Treasury's par curve and the Fed's fitted curves (nominal and TIPS), zero rates and forward rates,
+; and the slope of the curve in pieces
 (lazy-load "yield_curves.lsp"
   treasury-par-curve latest-treasury-points treasury-zero-curve par-curve-zeros curve-forward-rates forward-rates-table extend-forward-curve gsw-curve
   curve-discount-factors bond-cash-flows bond-accrued-interest bond-flows-by-month
   gsw-parameters gsw-zero-curve
-  svensson-zero-rates svensson-forward-rates)
+  svensson-zero-rates svensson-forward-rates
+  tips-curve yield-slope-decomposition yield-slope-inflation)
 
 ; Options on the 10-year note future (ZN), as the rows the rate model is fitted to
 (lazy-load "note_options.lsp" note-option-rows)

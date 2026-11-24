@@ -160,6 +160,8 @@ out, as [section 6](#6-putting-sources-together) shows.
 | Exchange rates: dollars per euro, and the dollar against all currencies | `(fred-table creds "DEXUSEU")`, `(fred-table creds "DTWEXBGS")` | Federal Reserve, via FRED |
 | The Treasury's whole yield curve, each day | `(treasury-par-curve)` (see [Yield curves](lisp_paths_manual.md#yield-curves)) | Treasury |
 | A smooth curve of zero rates and forward rates, from 1961 | `(gsw-curve)` | Federal Reserve staff |
+| Real yields of TIPS and inflation compensation, from 1999 | `(tips-curve)` | Federal Reserve staff |
+| Yields as expected rates and a term premium | `(term-premium-decomposition (gsw-curve))` (see [What the slope of the curve is made of](lisp_paths_manual.md#what-the-slope-of-the-curve-is-made-of)) | worked out from the Fed's curve |
 
 ### Housing
 

@@ -4164,7 +4164,8 @@ what you do to make paths, from the very beginning, what the program does, and e
 functions: `treasury-par-curve`, `latest-treasury-points`, `par-curve-zeros`, `treasury-zero-curve`,
 `curve-forward-rates`, `forward-rates-table`, `curve-discount-factors`, `bond-cash-flows`,
 `bond-accrued-interest`, `bond-flows-by-month`, `gsw-curve`, `gsw-parameters`, `svensson-zero-rates`,
-`svensson-forward-rates`, `gsw-zero-curve`, `sofr-forward-curve`, `extend-forward-curve`;
+`svensson-forward-rates`, `gsw-zero-curve`, `sofr-forward-curve`, `extend-forward-curve`, `tips-curve`;
+`term-premium-decomposition`, `yield-slope-decomposition`, `yield-slope-inflation`;
 `simulate-rate-paths`, `simulate-mortgage-rate-paths`, `simulate-rate-factors`, `rate-curve-on-date`,
 `curve-par-yield`, `path-present-values`, `price-callable-bond`; `calibrate-rate-model`,
 `calibrate-to-note-options`, `note-option-comparison`, `note-option-rows`, `sofr-calibration-data`.

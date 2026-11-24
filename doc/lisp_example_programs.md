@@ -164,6 +164,7 @@ files in `examples/` and `lib/` from anywhere:
 | `filing_tone_example.lsp` | how negative, positive, and uncertain a company's 10-K risk factors are, year by year, charted | an SEC user agent, and the Loughran-McDonald word lists |
 | `sofr_and_mortgage_rates.lsp` | whether the 30-year mortgage rate can be told from SOFR (it can't; the 10-year yield tells it) | a FRED key |
 | `yield_curve_example.lsp` | today's Treasury yield curve from the Treasury and from the Fed: zero rates and forward rates, charted | nothing: free downloads |
+| `yield_slope_example.lsp` | the slope of the Treasury curve as expected rates, a term premium and convexity since 1972, and as real yields and inflation since 2004, charted | nothing: free downloads |
 | `map_example.lsp` | maps colored by a value | Census and BEA keys |
 | `plot_chart_example.lsp` | `plot-chart`: lines, symbols, bars, categories, two axes | nothing |
 | `report_example.lsp` | a table written as a text report with control breaks: mortgages with subtotals by zip code and state and a grand total, on pages; a letter to each client | nothing |
@@ -1521,6 +1522,14 @@ Svensson curve -- and charts them together, then the one-month forward rates a m
 rates starts from. The Treasury's are rougher than the Fed's smooth ones, as the second chart
 shows. The functions are in the library manual's
 [lisp_paths_manual.md](lisp_paths_manual.md) (Part 6, "Yield curves").
+
+`yield_slope_example.lsp` needs no key either. It splits the slope of the curve, the 10-year
+yield less the 3-month, into the short rates the market expects, a term premium and convexity, with the
+New York Fed's model fitted to the Fed's curve since 1961 (`term-premium-decomposition`,
+`yield-slope-decomposition`). It then splits the 10-year less the 2-year into real yields and inflation
+compensation, from the Fed's TIPS curve (`tips-curve`, `yield-slope-inflation`). It prints today's
+pieces and charts both. See "What the slope of the curve is made of" in
+[lisp_paths_manual.md](lisp_paths_manual.md#what-the-slope-of-the-curve-is-made-of).
 
 `plot_chart_example.lsp` needs nothing, and is a tour of `plot-chart` in eleven small
 charts: a monthly line over grouped quarterly bars on one date axis; stacked bars with

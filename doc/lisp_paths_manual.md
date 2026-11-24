@@ -14,7 +14,8 @@ day or month by month. This manual is about making those paths, in two ways:
 
 Part 1 is what you do, from the very beginning, to make a set of paths of rates. Part 2 is what
 the program does when you do it: where the forward rates come from, and how the volatility that
-option prices imply becomes paths. Part 3 uses the paths, to price a bond, find its
+option prices imply becomes paths. It also shows what the slope of the curve is made of: expected rates, a term
+premium and convexity. Part 3 uses the paths, to price a bond, find its
 option-adjusted spread and duration, and look at mortgage rates and callable bonds. Part 4 is
 the paths made from history. Part 5 prices six things from the very beginning, a cell at a time
 in a notebook: a Treasury note, a callable bond, a mortgage, a stock option, a floating-rate note,
@@ -41,6 +42,7 @@ deals, which are priced on these paths, in [lisp_cmo_manual.md](lisp_cmo_manual.
   - [How a path is made](#how-a-path-is-made)
   - [How implied volatility sets the numbers](#how-implied-volatility-sets-the-numbers)
   - [How the paths compare with history](#how-the-paths-compare-with-history)
+  - [What the slope of the curve is made of](#what-the-slope-of-the-curve-is-made-of)
 - [Part 3. Using the paths](#part-3-using-the-paths)
   - [How many paths](#how-many-paths)
   - [Pricing on the paths: a bond, its OAS and its duration](#pricing-on-the-paths-a-bond-its-oas-and-its-duration)
@@ -485,6 +487,106 @@ buyer pays for protection, so options imply more volatility than what follows, o
 pricing, use the options' (a price has to agree with the market's prices); for a forecast of how
 widely rates will spread, the history is the better guide, and smaller volatilities, as
 `(* 0.8 sigma2)`, give it.
+
+### What the slope of the curve is made of
+
+The forward rates the paths start from are what the market charges today for money in each
+future month. They aren't a forecast of rates. A 10-year yield is close to the average of the
+short rates expected over the next ten years, but not equal to it, for two reasons:
+
+- **The term premium.** A long bond's price swings when rates move, and the people who hold one
+  want to be paid for that. Its yield is (usually) higher than the short rates they expect.
+- **Convexity.** A bond's price is a convex function of its yield, so uncertainty about rates
+  makes a long bond worth a little more, and its yield a little lower.
+
+So each yield is three pieces:
+
+```text
+yield = expected short rates (their average to the maturity) + convexity + term premium
+```
+
+The **slope** of the curve, a long yield less a short one, is the same three pieces, long less
+short. A steep curve can mean the market expects rates to rise, or that investors want more
+for holding long bonds, or both. Prices alone can't tell these apart: a model has to.
+
+**The model.** `term-premium-decomposition` uses the model the New York Fed publishes its term
+premium from, by Adrian, Crump and Moench (2013), "ACM" for short. Each step is a linear
+regression on the Fed's curve (`gsw-curve`), at each month's end since 1961:
+
+1. The curve is summed up by five numbers, the principal components of its yields from 3
+   months to 10 years: its level, slope, curvature and two smaller bends.
+2. Each month's five numbers are fitted as a straight-line function of the last month's, plus
+   a surprise. That says what the curve, and so the 1-month rate, is expected to be a month
+   ahead, a year ahead, or ten years ahead. Averaging the expected 1-month rates gives the
+   **expected** piece.
+3. Each month, each bond earned something more than the 1-month rate: its excess return. That
+   is fitted on the five numbers at the start of the month and the month's surprises. The part
+   the start of the month predicts is what investors were paid for bearing the surprises: the
+   **prices of risk**.
+4. A bond's yield is worked out from all of this twice: once with the prices of risk, which
+   fits the curve, and once without them, as if investors didn't care about risk. The
+   **term premium** is the difference. **Convexity** is the yield without the prices of risk
+   less the expected piece.
+
+```lisp
+(define parts (term-premium-decomposition (gsw-curve)))       ; 3 months, 2, 5 and 10 years
+(table-tail parts 4)                                          ; the latest day
+(define slope (yield-slope-decomposition parts :long 10 :short 0.25))
+```
+
+Each row has `yield = expected + convexity + term-premium + error`. The `error` is what five
+numbers can't fit, a few hundredths of a point. The 10-year, on some month-ends, in percent:
+
+| Month's end | yield | expected | convexity | term premium |
+|---|---|---|---|---|
+| 1981-09-30 | 14.89 | 10.48 | -0.17 | 4.60 |
+| 1999-12-31 | 6.70 | 5.26 | -0.17 | 1.63 |
+| 2007-06-29 | 5.07 | 4.79 | -0.17 | 0.43 |
+| 2012-07-31 | 1.55 | 1.89 | -0.17 | -0.20 |
+| 2020-03-31 | 0.79 | 2.41 | -0.17 | -1.48 |
+| 2023-10-31 | 4.96 | 4.91 | -0.17 | 0.21 |
+| 2026-10-30 | 4.93 | 4.60 | -0.17 | 0.47 |
+
+On 2026-11-13, the 10-year less the 3-month was 0.84 points: 0.21 from expected rates, 0.73
+from the term premium, -0.17 from convexity, and 0.07 the model doesn't fit. Most of today's
+slope is term premium, not an expected rise in rates.
+
+**How far to trust it.** Four things to know:
+
+- **It follows the New York Fed's numbers, a little lower.** For the 10-year, from 1961 to 2026,
+  the correlation with the term premium the New York Fed publishes is 0.9998, and this one is on
+  average 0.18 points lower (0.15 at 5 years, 0.13 at 2 years). The fitted yields agree to about
+  0.01 point. The difference is in the expected piece and is about the same every month, so it
+  probably comes from the data: which short rate is used, and the exact sample.
+- **The history sets the level.** The model's expected rates head back toward the average of the
+  months it is fitted to. Fitted from 1990 rather than 1961 (`:start-date "1990-01-01"`), the
+  10-year's expected piece on 2026-11-13 is 3.67% instead of 4.76%, and its term premium 1.53%
+  instead of 0.52%. The ups and downs agree. The levels depend on what you think the long-run
+  average rate is.
+- **Convexity is the same every day.** The model's rates are as uncertain on one day as on
+  another, so convexity depends only on the maturity: -0.17 points at 10 years, -0.06 at 5.
+- **The early 3-month rate is rough.** Before about 1972 the Fed's curve has few short
+  Treasuries to fit, and its 3-month rate jumps from month to month. A slope from 3 months is
+  noisy then. One from 2 years is not.
+
+**Real yields and inflation.** A yield is also a real yield, what a TIPS earns above
+inflation, plus **inflation compensation** (the "breakeven"), the inflation at which a TIPS
+and a nominal Treasury earn the same. The Fed fits a curve to TIPS as it does to nominal
+Treasuries (`tips-curve`, from 1999, at 2 to 20 years), and `yield-slope-inflation` splits the
+slope into the two:
+
+```lisp
+(define inflation (yield-slope-inflation (tips-curve) :long 10 :short 2))
+```
+
+Inflation compensation isn't just the inflation investors expect. It includes a premium for
+inflation risk, and the difference in how easily TIPS and nominal Treasuries trade, as the
+Fed's note on the file warns. Separating those would take a model of its own, like the one
+above, fitted to both curves.
+
+`examples/yield_slope_example.lsp` charts both decompositions: the 10-year less the 3-month
+since 1972 as expected rates and term premium, and the 10-year less the 2-year since 2004 as
+real yields and inflation compensation.
 
 ## Part 3. Using the paths
 
@@ -1901,6 +2003,77 @@ and `longer-forwards` from then on: a table if `forwards` is one, and otherwise 
 (vector-ref both 59)                        ; => 0.04
 (vector-ref both 66)                        ; => 0.045
 (vector-ref both 72)                        ; => 0.05
+```
+
+#### `(term-premium-decomposition fed [:years y :factors k :daily #t :start-date d])`
+(In `lisp_term_premium.py`.) Each Treasury zero yield split into expected short rates,
+convexity and a term premium, by the New York Fed's model (Adrian, Crump and Moench). See
+"What the slope of the curve is made of", in Part 2. `fed` is the Fed's curve, a table as
+`gsw-curve` makes, with at least 5 years of history and preferably all of it, from 1961. The model is
+fitted to the last day of each month from `:start-date` on (all of `fed`, if not given).
+
+The result is a table with a row for each day and maturity. The days are each month's last day,
+plus the last day in `fed` if it isn't one. With `:daily #t` they are every day from `:start-date`.
+The columns, as decimals for a year, continuously compounded:
+
+| Column | What it is |
+|---|---|
+| `date` | the day |
+| `years` | the maturity: each of `:years` (`0.25 2 5 10` by default; any whole number of months from 1/12 to 10 years) |
+| `yield` | the Fed's zero rate at that maturity |
+| `fitted` | the model's yield, from the day's factors |
+| `expected` | the average of the short rates the model expects, from the day to the maturity |
+| `convexity` | what uncertainty about rates takes off the yield: small, negative, and the same each day |
+| `term-premium` | what holding the bond earns over rolling 1-month bills, as the model prices risk |
+| `error` | `yield` less `fitted` |
+
+So `yield = expected + convexity + term-premium + error`. `:factors` (5) is how many
+principal components of the curve the model has. It is an error if the model's yields grow
+without limit, which can happen with too many factors for too little history.
+
+```lisp
+(define parts (term-premium-decomposition (gsw-curve) :years '(1 2 5 10)))
+(table-where parts "years" 10)                       ; the 10-year, month by month
+(define every-day (term-premium-decomposition (gsw-curve) :years 10 :daily #t))
+(define this-year (table-filter every-day (>= (table-column every-day "date") (date 2026 1 1))))
+```
+
+`:start-date` sets the history the model is fitted to, not just the days shown. Fitted to too
+short a history, the model doesn't know the long-run average rate (see "How far to trust
+it", in Part 2), so it is an error with less than 5 years. To see the days of one year, fit to
+all of it, with `:daily #t`, and keep the days you want, as above.
+
+#### `(yield-slope-decomposition decomposition [:long years :short years])`
+The slope of the curve, the zero yield at `:long` years (10) less that at `:short` (0.25), with
+the same pieces long less short: a table of `date`, `slope`, `expected`, `convexity`,
+`term-premium` and `error`, a row for each day of `decomposition` (a table as
+`term-premium-decomposition` makes, with both maturities in its `:years`). `slope = expected +
+convexity + term-premium + error`. An error if a maturity isn't in the table.
+
+```lisp
+(define slope (yield-slope-decomposition (term-premium-decomposition (gsw-curve)) :long 10 :short 0.25))
+(plot-chart (list (list "slope" (table-column slope "date") (table-column slope "slope"))
+                  (list "term premium" (table-column slope "date") (table-column slope "term-premium"))))
+```
+
+#### `(tips-curve [:start-date d :end-date d :cache-hours h])`
+The Fed's fitted curve of TIPS (Gürkaynak, Sack and Wright, as `gsw-curve` is of nominal
+Treasuries) as a table, the oldest day first, from `:start-date` to `:end-date` (all of it if
+they aren't given: it begins in 1999). The columns are `date`, then `real-2` ... `real-20`
+(the real zero rate at each whole number of years from 2 to 20) and `breakeven-2` ...
+`breakeven-20` (inflation compensation: the nominal zero rate less the real one). All are
+decimals, continuously compounded, `nan` where the Fed gives none. The file is one download,
+15 MB, kept for `:cache-hours` (12).
+
+#### `(yield-slope-inflation tips [:long years :short years])`
+The slope of the nominal curve, the zero yield at `:long` years (10) less that at `:short`
+(2), as the slope of real yields plus the slope of inflation compensation: a table of `date`,
+`slope`, `real` and `inflation`, with `slope = real + inflation`, a row for each day of `tips`
+(as `tips-curve` makes) that has numbers at both maturities. The maturities are whole numbers
+of years from 2 to 20.
+
+```lisp
+(define inflation (yield-slope-inflation (tips-curve :start-date (date 2020 1 1))))
 ```
 
 ### Paths of rates

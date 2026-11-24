@@ -79,6 +79,7 @@ import lisp_sec_filings
 import lisp_sec_insiders
 import lisp_simplex
 import lisp_rates
+import lisp_term_premium
 import lisp_sqlite
 import lisp_stratify
 import lisp_tables
@@ -2132,7 +2133,7 @@ SHARED_BUILTIN_TABLES = (
     lisp_sec.BUILTINS, lisp_sec_filings.BUILTINS, lisp_sec_insiders.BUILTINS, lisp_fdic.BUILTINS, lisp_census.BUILTINS, lisp_bls.BUILTINS, lisp_bea.BUILTINS,
     lisp_maps.BUILTINS, lisp_google.BUILTINS, lisp_financial_model.BUILTINS, lisp_financial_sensitivity.BUILTINS, lisp_financial_compare.BUILTINS, lisp_financial_peers.BUILTINS, lisp_schwab.BUILTINS, lisp_alpha_vantage.BUILTINS, lisp_finra.BUILTINS,
     lisp_http.BUILTINS,
-    lisp_tastytrade.BUILTINS, lisp_futures.BUILTINS, lisp_rates.BUILTINS, lisp_simplex.BUILTINS,
+    lisp_tastytrade.BUILTINS, lisp_futures.BUILTINS, lisp_rates.BUILTINS, lisp_term_premium.BUILTINS, lisp_simplex.BUILTINS,
     lisp_backgammon.BUILTINS, lisp_baseball.BUILTINS, lisp_investment_paths.BUILTINS, lisp_portfolio.BUILTINS, lisp_finance.BUILTINS, lisp_options.BUILTINS,
     lisp_clock.BUILTINS, lisp_calendar.BUILTINS, lisp_widgets.BUILTINS,
 )
