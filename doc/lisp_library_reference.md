@@ -2452,25 +2452,36 @@ A table of the time series: for each instrument and term, its `rows`, `first_day
 `last_day`.
 
 #### `(financial-data-behind "path/to/financial_data.db" [day])`
-The sources that are behind on `day` (today): a list of `(name last-day due-day)`, one
-for each of the TBA prices, the Treasury's par yields, SOFR and Freddie Mac's mortgage
-rate whose last day is before the last day it could have. That is the trading day before
-`day` for the daily ones, and a week before it for the weekly mortgage rate. `last-day` is
-`'()` for a source with nothing yet. An empty list means the database is up to date.
+The sources that are behind on `day` (today): a list of `(name last-day due-day update)`, one
+for each source whose last day is before the last day it could have:
+
+| Source | The last day it could have | Its update |
+|---|---|---|
+| TBA prices, Treasury par yields, SOFR | the trading day before `day` | `market` (`financial-data-update`) |
+| Freddie Mac's mortgage rate | a week before `day` (it comes out each Thursday) | `market` |
+| the stocks' weekly prices (Schwab) | the Monday of the last whole week before `day`'s | `weekly-stock-prices` (`stock-prices-update`) |
+| the stocks' monthly prices (Schwab) | the first of the month before `day`'s | `monthly-stock-prices` (`stock-prices-update :frequency "monthly"`) |
+
+A stock price table's last day is the period every stock has been asked for
+(`stock-prices-asked-through`), so a run of `stock-prices-update` that stopped part way is behind.
+`last-day` is `'()` for a source with nothing yet. An empty list means the database is up to date.
 
 ```lisp
 (financial-data-behind db (date 2026 11 24))
-; (("SOFR (New York Fed)" 2026-11-20 2026-11-23))   -- SOFR alone is behind
+; (("SOFR (New York Fed)" 2026-11-20 2026-11-23 market))   -- SOFR alone is behind
 ```
 
 #### `(financial-data-update-if-behind creds "path/to/financial_data.db" [:force #t :tries n :wait-seconds s])`
-Runs `financial-data-update` only if a source is behind, and not if an update has already
-gone through today (unless `:force #t`): a source still behind afterwards has not published
-yet, or had a holiday, and asking again the same day would not bring it. An update that
-fails is tried `:tries` times (1), `:wait-seconds` apart (60). It prints a line or two about
-what it found and did, notes each update in the database's `update_runs` table (`day`,
-`started`, `behind`, `result`: `done` or `failed: ` and why), and returns `up-to-date`,
-`already-updated-today`, `updated` or `failed`. `examples/update_financial_data.lsp` calls
+Runs each update that has a source behind: the market data first, then the weekly stock
+prices, then the monthly ones, each on its own, so that one that fails (Schwab's sign-in
+runs out each week) does not stop the others. An update is not run again on a day it has
+already gone through (unless `:force #t`): a source still behind afterwards has not
+published yet, or had a holiday, and asking again the same day would not bring it. An update
+that fails is tried `:tries` times (1), `:wait-seconds` apart (60). It prints a line or two
+about what it found and did, notes each update in the database's `update_runs` table (`day`,
+`started`, `update_name`, `behind`, `result`: `done` or `failed: ` and why), and returns
+`up-to-date`, or a list of `(update result)`, such as `((market updated) (weekly-stock-prices failed))`,
+where a result is `updated`, `already-updated-today` or `failed`. `examples/update_financial_data.lsp` calls
 it; the [data guide](economic_data_guide.md#keeping-the-database-of-market-history-up-to-date)
 says how to have the Mac run that each day.
 
@@ -2613,7 +2624,9 @@ makes it seem to move with nothing; a week is long enough for that to wash out.
 #### `(stock-dividends-update creds "path/to/financial_data.db")`
 Schwab's dividend facts for every stock but the Canadian ones, kept in the table `stock_dividends`
 (`ticker`, `annual_dividend`, `payments_per_year`, `ex_date`) in place of what it had: a few requests,
-400 stocks at a time. `stock-prices-update` calls it first. Returns how many stocks it has, and how many
+400 stocks at a time. It is a picture of today's dividends, a row for each stock, not a history: each call
+replaces the last. It asks for every stock before it deletes anything, so a call that fails (the sign-in has
+run out) leaves the table as it was. `stock-prices-update` calls it first. Returns how many stocks it has, and how many
 pay a dividend.
 
 #### `(stock-prices-update creds "path/to/financial_data.db" [:frequency f :years n :end-date d])`
@@ -2624,6 +2637,15 @@ keeps going from where it stopped when it is called again, and it notes the stoc
 (in `weekly_prices_asked`). An error that would happen for every stock, a sign-in that has run out or Schwab
 not answering, stops it instead. It returns how many stocks have every period, how many some, and how many
 none, by reason.
+
+#### `(stock-prices-last-whole-period frequency day)`
+The first day of the last whole week (its Monday) or month (`frequency` `"weekly"` or `"monthly"`) before the
+one `day` is in: the last period `stock-prices-update` asks for on that day.
+
+#### `(stock-prices-asked-through conn frequency)`
+With a connection to the database, the last period that every stock has been asked for: the earliest of the
+stocks' last periods in `weekly_prices_asked` (or `monthly_prices_asked`), or `'()` if a stock has not been
+asked for at all. `financial-data-behind` compares it with `stock-prices-last-whole-period`.
 
 #### `(periodic-returns "path/to/financial_data.db" [:frequency f :years n])`
 A table with a `period` column and a column of returns for each stock that has a return in every one of the

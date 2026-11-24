@@ -344,6 +344,14 @@ class TestMonthlyReturns(PricesTestCase):
         self.assertEqual(self.stored("SELECT * FROM stock_dividends ORDER BY ticker"), [("AAA", 4.0, 4, "2026-08-14"), ("BBB", 0.0, 0, "")])
         self.assertShows('(table-column (stock-dividends-update creds db) "paying_dividends")', "#(1)")
 
+    def test_dividends_that_cannot_be_got_leave_the_old_ones_as_they_were(self):
+        self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0")))""")
+        self.run_lisp("(stock-dividends-update creds db)")
+        # the next time, the sign-in has run out: nothing is deleted
+        self.run_lisp("""(define (schwab-get creds path params) (error "schwab-get: sign in again with (schwab-login creds)"))""")
+        self.assertLispError("(stock-dividends-update creds db)", "schwab-login")
+        self.assertEqual(self.stored("SELECT ticker, annual_dividend FROM stock_dividends"), [("AAA", 4.0)])
+
     def test_only_the_stocks_with_every_period_are_in_the_returns(self):
         self.update()
         self.assertShows('(table-column-names (periodic-returns db %s))' % self.options, '("period" "AAA" "BBB" "CCC" "DDD")')

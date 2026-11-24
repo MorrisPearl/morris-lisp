@@ -1,7 +1,8 @@
 ; update_financial_data.lsp
 ; =========================
-; Brings the database of market history up to date, if it is behind: the job the Mac runs when it starts or wakes and once a day (economic_data_guide.md
-; says how to set that up). When the database is up to date it says so and stops, in a second or two.
+; Brings the database of market history (the market data, and the stocks' weekly and monthly prices from Schwab) up to date, if it is behind: the job
+; the Mac runs when it starts or wakes and once a day (economic_data_guide.md says how to set that up). When the database is up to date it says so and
+; stops, in two seconds or so.
 ;
 ;   python3 lisp_interpreter.py examples/update_financial_data.lsp                  the database in morris_lisp/data
 ;   python3 lisp_interpreter.py examples/update_financial_data.lsp path/to/the.db   another one

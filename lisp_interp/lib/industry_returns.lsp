@@ -275,10 +275,27 @@ A share well above share-by-chance means the industries are separating returns; 
       (string-append "date(" day-sql ", '-6 days', 'weekday 1')")
       (string-append "date(" day-sql ", 'start of month')")))
 
-(define (stock-prices--last-period frequency day)
+(define (stock-prices-last-whole-period frequency day)
   "The first day of the last whole period before the period of day."
   (let ((this-period (stock-prices--period-of frequency day)))
     (if (equal? frequency "weekly") (date-add-days this-period -7) (date-add-months this-period -1))))
+
+(define (stock-prices-asked-through conn frequency)
+  "The last whole period that every stock (in ticker_industry, but for the Canadian ones) has been asked for, by stock-prices-update, with the database
+connection conn: the earliest of the stocks' last periods. '() if a stock has not been asked for at all, or there is no table of them yet. If it is
+before (stock-prices-last-whole-period frequency (today)), the prices are behind."
+  (stock-prices--check frequency)
+  (catch-error
+    (let ((through (vector-ref (table-column
+                                 (sqlite-query conn (string-append "SELECT CASE WHEN SUM(a.ticker IS NULL) > 0 THEN NULL ELSE MIN(a.last_period) END AS through
+                                                                     FROM ticker_industry t LEFT JOIN " (stock-prices--asked-table frequency) " a
+                                                                          ON a.ticker = t.ticker
+                                                                    WHERE t.ticker NOT LIKE '%.TO'"))
+                                 "through")
+                               0)))
+      (if (string? through) (string->date through) through))
+    (message)
+    '()))
 
 (define (stock-prices--first-period frequency last-period years)
   "The first day of the period whose close comes before the first return: years before the last period."
@@ -315,13 +332,15 @@ Returns how many stocks it has, and how many of them pay a dividend."
     (stock-dividends--create conn)
     (let ((tickers (vector->list (table-column (sqlite-query conn "SELECT ticker FROM ticker_industry WHERE ticker NOT LIKE '%.TO' ORDER BY ticker")
                                                "ticker"))))
-      (sqlite-execute conn "DELETE FROM stock_dividends")
-      (let loop ((remaining tickers))
-        (if (pair? remaining)
-            (let ((count (min stock-returns-batch (length remaining))))
-              (let ((found (stock-dividends--batch creds (stock-returns--first count remaining))))
-                (if (> (table-row-count found) 0) (sqlite-write-table conn "stock_dividends" found 'append)))
-              (loop (list-tail remaining count)))))
+      ; Every batch is asked for before the old facts are deleted, so that a run stopped part way (by a sign-in that has run out, say) leaves them as they were.
+      (let ((batches (let loop ((remaining tickers) (found '()))
+                       (if (pair? remaining)
+                           (let ((count (min stock-returns-batch (length remaining))))
+                             (loop (list-tail remaining count) (cons (stock-dividends--batch creds (stock-returns--first count remaining)) found)))
+                           (reverse found)))))
+        (sqlite-execute conn "DELETE FROM stock_dividends")
+        (for-each (lambda (found) (if (> (table-row-count found) 0) (sqlite-write-table conn "stock_dividends" found 'append)))
+                  batches))
       (sqlite-query conn "SELECT COUNT(*) AS stocks, SUM(annual_dividend > 0) AS paying_dividends FROM stock_dividends"))))
 
 ; --- prices ---
@@ -368,7 +387,7 @@ stocks it has every period for, how many some periods, and how many none, by rea
   (with-sqlite (conn db-path)
     (stock-prices--create conn frequency)
     (let* ((end (if (null? end-date) (today) (if (string? end-date) (string->date end-date) end-date)))
-           (last-period (stock-prices--last-period frequency end))
+           (last-period (stock-prices-last-whole-period frequency end))
            (first-period (stock-prices--first-period frequency last-period (stock-prices--years frequency years)))
            (wanted (stock-prices--wanted conn frequency last-period)))
       (display (length wanted)) (display " stocks to get") (newline)
@@ -595,7 +614,7 @@ the stock's returns with the component: below 0, it moves against it), and share
 from Schwab. A symbol Schwab has no prices for is an error."
   (stock-prices--check frequency)
   (let* ((end (if (null? end-date) (today) (if (string? end-date) (string->date end-date) end-date)))
-         (last-period (stock-prices--last-period frequency end))
+         (last-period (stock-prices-last-whole-period frequency end))
          (first-period (stock-prices--first-period frequency last-period (stock-prices--years frequency years)))
          (one (lambda (symbol)
                 (let* ((prices (stock-returns--ask-schwab

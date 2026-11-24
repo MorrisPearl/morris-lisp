@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  The Mac's job that keeps morris_lisp/data/financial_data.db up to date: it runs examples/update_financial_data.lsp
+  The Mac's job that keeps morris_lisp/data/financial_data.db up to date (the market data and the stock prices): it runs examples/update_financial_data.lsp
   when you log in (RunAtLoad), and each day at 9:00 in the morning (StartCalendarInterval); if the Mac is asleep or off
   at 9:00, it runs when the Mac wakes. When the database is up to date the script stops in a second or two.
   economic_data_guide.md ("Keeping the database of market history up to date") says how to install and remove it.

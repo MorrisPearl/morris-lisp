@@ -88,18 +88,29 @@ Good to know:
 `financial-data-update` fills `data/financial_data.db` with TBA prices,
 Treasury yields, SOFR, the Freddie Mac mortgage rate and current coupons
 (see "A database of market history" in the
-[library manual](lisp_library_reference.md#a-database-of-market-history)).
-The Mac can keep it up to date by itself, with a job that runs
+[library manual](lisp_library_reference.md#a-database-of-market-history)),
+and `stock-prices-update` fills it with every stock's weekly and monthly
+closing prices and today's dividends, from Schwab.
+The Mac can keep both up to date by itself, with a job that runs
 `examples/update_financial_data.lsp` when you log in, and each morning at
 9:00; if the Mac is asleep or off at 9:00, the job runs when it wakes. The
 script asks `financial-data-update-if-behind` whether any source is behind
-the last day it could have (the trading day before today, or a week ago for
-the weekly mortgage rate). If none is, it says so and stops, in a second or
-two. If one is, it updates the database, which takes seconds when it is a
-few days behind. It updates at most once a day: a source that is still
+the last day it could have: the trading day before today for the market
+data, a week ago for the weekly mortgage rate, and the last whole week or
+month for the stock prices. If none is, it says so and stops, in two
+seconds or so. If one is, it runs that source's update. The market data
+takes seconds when it is a few days behind; the stock prices take more than
+an hour, on the first weekday of each week (and of each month for the
+monthly ones). Each update runs at most once a day: a source that is still
 behind afterwards (it has not published yet, or it was a bond-market
 holiday) waits for the next day. An update that fails, because the network
 isn't up yet just after waking, say, is tried twice more, a minute apart.
+
+The stock prices need a Schwab sign-in, which runs out after a week. When it
+has, the log says so (`failed: ... schwab-login ...`), the market data is
+updated anyway, and the stock prices wait until you sign in again with
+`(schwab-login creds)`; the next run, the next morning or after
+`launchctl kickstart` below, picks them up.
 
 The job is `lisp_interp/tools/financial_data_update.plist`, a launchd
 *LaunchAgent*. Its paths are for `/Users/morris`; change them if the files
