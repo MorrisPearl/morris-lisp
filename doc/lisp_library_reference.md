@@ -4906,6 +4906,30 @@ the same amount while the interest falls and the principal rises:
                  ("principal" (2 3 4 6 8) "stacked-bar"))))
 ```
 
+A series can be drawn against a second vertical axis, on the right, with its
+own scale, written at its top and bottom, by adding `:axis 2` to it: for
+numbers of very different sizes, such as housing starts and mortgage rates.
+The key says `(right)` after the names of those series, and `:alt-y-min` and
+`:alt-y-max` are the right axis's ends, as `:y-min` and `:y-max` are the left's.
+
+```lisp
+(display-svg (hand-drawn-chart '("2019" "2020" "2021" "2022" "2023")
+               '(("housing starts" (1290 1380 1600 1550 1420) "bar")
+                 ("mortgage rate %" (3.9 3.1 3.0 5.3 6.8) "star" :axis 2))
+               :y-min 0))
+```
+
+A bar series can be filled with a scribble (a line going back and forth, as
+if with a pencil) instead of a solid color, by adding `:scribble #t` to it;
+`:scribble #t` among the chart's own keys does it for every bar, and a
+series' own `:scribble #f` then keeps that one solid.
+
+```lisp
+(display-svg (hand-drawn-chart '("1" "2" "3" "4" "5")
+               '(("interest" (8 7 6 4 2) "stacked-bar" :scribble #t)
+                 ("principal" (2 3 4 6 8) "stacked-bar"))))
+```
+
 Every series has its own color. The names are in a key at the top right. The vertical axis runs from
 the lowest to the highest of all the numbers, written at its bottom and top;
 `:y-min 0` makes the bars start from zero. The other keys are `:title`,

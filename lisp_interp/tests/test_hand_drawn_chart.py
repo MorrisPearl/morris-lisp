@@ -68,3 +68,28 @@ class TestHandDrawnChart(LispTestCase):
         self.assertEqual(interest_a[0][0], principal_a[0][0])                # the same column
         self.assertEqual(interest_a[0][1], principal_a[3][1])                # the top of one is the bottom of the other
         self.assertEqual(principal_a[0][1], 30.0)                            # the stack of 10 reaches the top
+
+    def test_a_series_on_axis_2_has_its_own_scale_on_the_right(self):
+        src = '\'("a" "b") \'(("p" (0 100) "bar") ("q" (3 4) "square" :axis 2) ("r" (5 6) :axis 2)) :wobble 0'
+        doc = self.chart(src)
+        texts = self.texts(doc)
+        self.assertEqual(texts[:4], ["0", "100", "3", "6"])               # each axis's lowest and highest
+        self.assertIn("q (right)", texts)
+        self.assertIn("p", texts)
+        right_axis = [line for line in doc.getElementsByTagName("line")
+                      if (line.getAttribute("x1"), line.getAttribute("y1"), line.getAttribute("y2"))
+                      == ("530.0", "30.0", "345.0")]                    # a vertical line at the plot's right edge
+        self.assertEqual(len(right_axis), 1)
+        # an axis other than 1 or 2 is an error
+        with self.assertRaises(lisp_core.LispError):
+            self.run_lisp('(hand-drawn-chart \'("a") \'(("p" (1) :axis 3)))')
+
+    def test_a_scribbled_bar_is_filled_with_a_line_and_a_solid_one_is_not(self):
+        series = '\'(("p" (1 2) "bar" :scribble #t) ("q" (2 1) "bar"))'
+        doc = self.chart('\'("a" "b") ' + series)
+        self.assertEqual(len(doc.getElementsByTagName("polyline")), 3)        # p's two bars and its key
+        self.assertEqual(len(doc.getElementsByTagName("polygon")), 6)         # (the outlines of all, still)
+        doc = self.chart('\'("a" "b") ' + series + ' :scribble #t')           # all the bars
+        self.assertEqual(len(doc.getElementsByTagName("polyline")), 6)
+        doc = self.chart('\'("a" "b") \'(("p" (1 2) "bar" :scribble #f)) :scribble #t')   # the series' own choice wins
+        self.assertEqual(len(doc.getElementsByTagName("polyline")), 0)
