@@ -4891,11 +4891,22 @@ Architects Daughter font.
 
 The labels go under the horizontal axis. Each series is `(name values)` or
 `(name values shape)`, with a value for each label, and the shape is `"bar"`,
-`"square"`, `"triangle"`, `"diamond"`, `"circle"`, `"cross"` or `"star"`. The
-series with no shape get `"square"`, `"star"`, `"cross"`, `"circle"`,
-`"triangle"` and `"diamond"` in turn; a bar is only drawn when asked for.
-Several series of bars stand side by side, and every series has its own
-color. The names are in a key at the top right. The vertical axis runs from
+`"stacked-bar"`, `"square"`, `"triangle"`, `"diamond"`, `"circle"`, `"cross"`
+or `"star"`. The series with no shape get `"square"`, `"star"`, `"cross"`,
+`"circle"`, `"triangle"` and `"diamond"` in turn; a bar is only drawn when
+asked for. Several series of `"bar"` stand side by side. The series of
+`"stacked-bar"` stand one on top of another, in the order of the list, in one
+more bar, and the axis then starts at zero and ends at the highest stack. That
+suits a loan's payments, to show that the principal and the interest add up to
+the same amount while the interest falls and the principal rises:
+
+```lisp
+(display-svg (hand-drawn-chart '("1" "2" "3" "4" "5")
+               '(("interest" (8 7 6 4 2) "stacked-bar")
+                 ("principal" (2 3 4 6 8) "stacked-bar"))))
+```
+
+Every series has its own color. The names are in a key at the top right. The vertical axis runs from
 the lowest to the highest of all the numbers, written at its bottom and top;
 `:y-min 0` makes the bars start from zero. The other keys are `:title`,
 `:wobble` (the largest move of a point, in pixels; 4), `:seed` (a number, to

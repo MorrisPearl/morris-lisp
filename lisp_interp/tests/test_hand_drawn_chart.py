@@ -58,3 +58,13 @@ class TestHandDrawnChart(LispTestCase):
         self.assertIn("d", texts)
         self.assertNotIn("b", texts)
         self.assertNotIn("c", texts)
+
+    def test_stacked_bars_stand_on_each_other_and_the_axis_goes_to_the_highest_stack(self):
+        doc = self.chart('\'("a" "b") \'(("i" (8 3) "stacked-bar") ("p" (2 7) "stacked-bar")) :wobble 0')
+        self.assertEqual(self.texts(doc)[:2], ["0", "10"])                   # from zero to the stacks' 10
+        bars = [[tuple(map(float, point.split(","))) for point in polygon.getAttribute("points").split()]
+                for polygon in doc.getElementsByTagName("polygon")]
+        interest_a, principal_a = bars[0], bars[3]                           # (each series: its bars at "a" and "b", then its key)
+        self.assertEqual(interest_a[0][0], principal_a[0][0])                # the same column
+        self.assertEqual(interest_a[0][1], principal_a[3][1])                # the top of one is the bottom of the other
+        self.assertEqual(principal_a[0][1], 30.0)                            # the stack of 10 reaches the top

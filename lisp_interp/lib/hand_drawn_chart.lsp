@@ -17,11 +17,13 @@
 ;   (write-text-file "sales.svg" (hand-drawn-chart labels series :seed 7))
 ;
 ; The labels go under the horizontal axis. Each series is (name values) or (name values shape): the values are as
-; many as the labels, and the shape is "bar", "square", "triangle", "diamond", "circle", "cross" or "star". The series
-; with no shape get "square", "star", "cross", "circle", "triangle" and "diamond" in turn. Several series of bars
-; stand side by side. The names are in a key at the top right. The vertical axis runs from the lowest to the highest
-; of all the numbers, written at its bottom and top; :y-min and :y-max give other
-; ends (for bars that start from zero, :y-min 0).
+; many as the labels, and the shape is "bar", "stacked-bar", "square", "triangle", "diamond", "circle", "cross" or
+; "star". The series with no shape get "square", "star", "cross", "circle", "triangle" and "diamond" in turn.
+; Several series of "bar" stand side by side. The series of "stacked-bar" stand one on top of another, in the order
+; of the list, in one more bar (for the principal and the interest of a payment, say, to show that they add up to the
+; same amount each time). The names are in a key at the top right. The vertical axis runs from the lowest to the
+; highest of all the numbers (of the stacks, for stacked bars, and from zero), written at its bottom and top;
+; :y-min and :y-max give other ends (for bars that start from zero, :y-min 0).
 ;
 ; Keys:
 ;   :title  text above the chart (none)                      :wobble  the largest move of a point, in pixels (4)
@@ -143,7 +145,14 @@
   (let* ((series (hand-chart--complete-all series))
          (labels (if (vector? labels) (vector->list labels) labels))
          (count (length labels))
-         (all-values (apply append (map cadr series)))
+         (bar-series (filter (lambda (one) (equal? (caddr one) "bar")) series))
+         (stacked-series (filter (lambda (one) (equal? (caddr one) "stacked-bar")) series))
+         (stacked-totals (if (null? stacked-series)           ; the height of each label's stack
+                             '()
+                             (apply map + (map cadr stacked-series))))
+         (all-values (append (apply append (map cadr (filter (lambda (one) (not (equal? (caddr one) "stacked-bar"))) series)))
+                             stacked-totals
+                             (if (null? stacked-series) '() '(0))))   ; (a stack starts from zero)
          (low (or y-min (apply min all-values)))
          (high (or y-max (apply max all-values)))
          (low (if (= low high) (- low 1) low))            ; (a flat chart still has an axis)
@@ -152,9 +161,9 @@
          (top (if title 55 30)) (bottom (- height 55))
          (slot (/ (- right left) count))
          (symbol-size 8)
-         (bar-series (filter (lambda (one) (equal? (caddr one) "bar")) series))
-         (group (* 0.6 slot))                             ; the width of all the bars of a label together
-         (bar-width (if (null? bar-series) 0 (/ group (length bar-series))))
+         (columns (+ (length bar-series) (if (null? stacked-series) 0 1)))   ; the bars side by side at a label: each "bar" series, and all the "stacked-bar" series as one
+         (group (* 0.6 slot))                             ; the width of all the columns of a label together
+         (bar-width (if (= columns 0) 0 (/ group columns)))
          (center (lambda (i) (+ left (* slot (+ i 0.5)))))
          (y-of (lambda (value) (- bottom (* (- bottom top) (/ (- value low) (- high low))))))
          (color-of (lambda (place) (list-ref hand-chart-colors (mod place (length hand-chart-colors)))))
@@ -163,8 +172,8 @@
     (dolist (one series)
       (if (not (= (length (cadr one)) count))
           (error (format "hand-drawn-chart: {} labels but {} values for \"{}\"" count (length (cadr one)) (car one))))
-      (if (not (or (equal? (caddr one) "bar") (member (caddr one) hand-chart-default-shapes)))
-          (error (format "hand-drawn-chart: the shape of \"{}\" should be \"bar\", \"square\", \"triangle\", \"diamond\", \"circle\", \"cross\" or \"star\", not {}"
+      (if (not (or (equal? (caddr one) "bar") (equal? (caddr one) "stacked-bar") (member (caddr one) hand-chart-default-shapes)))
+          (error (format "hand-drawn-chart: the shape of \"{}\" should be \"bar\", \"stacked-bar\", \"square\", \"triangle\", \"diamond\", \"circle\", \"cross\" or \"star\", not {}"
                          (car one) (to-string (caddr one))))))
     ; the axes
     (add! (hand-chart--line left bottom right bottom "#333" 2 wobble))
@@ -180,16 +189,23 @@
     ; each series: its bars or symbols at each label, and its place in the key at the top right
     (loop for one in series
           for place from 0
-          do (let ((color (color-of place))
-                   (shape (caddr one))
-                   (bar-place (if (equal? (caddr one) "bar") (- (length bar-series) (length (member one bar-series))) 0)))
+          do (let* ((color (color-of place))
+                    (shape (caddr one))
+                    (bar-place (if (equal? shape "bar") (- (length bar-series) (length (member one bar-series))) 0))
+                    (stack-place (if (equal? shape "stacked-bar") (- (length stacked-series) (length (member one stacked-series))) 0)))
                (loop for i from 0 below count
                      do (let ((y (y-of (list-ref (cadr one) i))))
-                          (if (equal? shape "bar")
-                              (let ((bar-left (+ (- (center i) (* 0.5 group)) (* bar-place bar-width))))
-                                (add! (hand-chart--bar bar-left (+ bar-left bar-width) y bottom color wobble)))
-                              (add! (hand-chart--symbol shape (center i) y symbol-size color wobble)))))
-               (if (equal? shape "bar")
+                          (cond ((equal? shape "bar")
+                                 (let ((bar-left (+ (- (center i) (* 0.5 group)) (* bar-place bar-width))))
+                                   (add! (hand-chart--bar bar-left (+ bar-left bar-width) y bottom color wobble))))
+                                ((equal? shape "stacked-bar")  ; on top of the stacked series before it, in the last column
+                                 (let* ((below (apply + (cons 0 (loop for j from 0 below stack-place
+                                                                       collect (list-ref (cadr (list-ref stacked-series j)) i)))))
+                                        (bar-left (+ (- (center i) (* 0.5 group)) (* (length bar-series) bar-width))))
+                                   (add! (hand-chart--bar bar-left (+ bar-left bar-width)
+                                                          (y-of (+ below (list-ref (cadr one) i))) (y-of below) color wobble))))
+                                (else (add! (hand-chart--symbol shape (center i) y symbol-size color wobble))))))
+               (if (or (equal? shape "bar") (equal? shape "stacked-bar"))
                    (add! (hand-chart--bar (- right 118) (- right 102) (+ top 3 (* 24 place)) (+ top 17 (* 24 place)) color wobble))
                    (add! (hand-chart--symbol shape (- right 110) (+ top 10 (* 24 place)) symbol-size color wobble)))
                (add! (hand-chart--text (- right 94) (+ top 15 (* 24 place)) (car one) "start" 16))))
