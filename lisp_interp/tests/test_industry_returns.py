@@ -324,10 +324,59 @@ class TestMonthlyReturns(PricesTestCase):
         self.assertAlmostEqual(self.return_of("AAA", 1), BANK[1])
         self.assertEqual([i for i in range(12) if abs(self.return_of("AAA", i) - BANK[i]) > 1e-12], [0, 3, 6, 9])   # Nov, Feb, May, Aug
 
+    def with_history(self, rows, last_seen="2026-11-01"):
+        """Updates the prices, then makes the history of dividends rows: (ticker ex-date payment), each last seen on last_seen."""
+        self.update()
+        connection = sqlite3.connect(self.database)
+        connection.execute("DELETE FROM stock_dividend_history")      # (the update put today's picture in it)
+        for ticker, ex_date, payment in rows:
+            connection.execute("INSERT INTO stock_dividend_history VALUES (?, ?, ?, ?, 4, '2026-01-01', ?)", (ticker, ex_date, payment, payment * 4, last_seen))
+        connection.commit()
+        connection.close()
+
+    def dividend_in(self, ticker, index):
+        """The dividend in a month's return: the return less the price change, times the last month's close."""
+        before, after = MONTHLY[ticker][index], MONTHLY[ticker][index + 1]
+        return self.return_of(ticker, index) * before - (after - before)
+
+    def test_the_history_of_dividends_is_used_from_its_first_ex_date_on(self):
+        # Worked out from today's dividend, AAA pays 1.00 in November, February, May and August. The history has May 12 (1.50) and August 20 (0.50).
+        self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0")))""")
+        self.with_history([("AAA", "2026-05-12", 1.5), ("AAA", "2026-08-20", 0.5)])
+        months = [round(self.dividend_in("AAA", i), 9) for i in range(12)]   # November 2025 to October 2026
+        self.assertEqual(months, [1.0, 0, 0, 1.0, 0, 0, 1.5, 0, 0, 0.5, 0, 0])
+
+    def test_after_the_history_begins_a_month_it_has_no_payment_for_has_none(self):
+        # the history has February alone: May and August, which today's dividend would have, are left with none
+        self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0")))""")
+        self.with_history([("AAA", "2026-02-10", 1.25)])
+        months = [round(self.dividend_in("AAA", i), 9) for i in range(12)]
+        self.assertEqual(months, [1.0, 0, 0, 1.25, 0, 0, 0, 0, 0, 0, 0, 0])
+
+    def test_after_the_last_day_the_history_saw_a_stock_its_dividend_is_worked_out_again(self):
+        # the history has May 12 (1.50), and last saw AAA in June: from July on, its dividend is worked out from today's again (August: 1.00)
+        self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0")))""")
+        self.with_history([("AAA", "2026-05-12", 1.5)], last_seen="2026-06-20")
+        months = [round(self.dividend_in("AAA", i), 9) for i in range(12)]
+        self.assertEqual(months, [1.0, 0, 0, 1.0, 0, 0, 1.5, 0, 0, 1.0, 0, 0])
+
+    def test_a_stock_not_in_the_history_is_worked_out_as_before(self):
+        self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0") ("CCC" 12.0 0 "")))""")
+        self.with_history([("BBB", "2026-02-10", 1.0)])
+        self.assertEqual([round(self.dividend_in("AAA", i), 9) for i in range(12)], [1.0, 0, 0, 1.0, 0, 0, 1.0, 0, 0, 1.0, 0, 0])
+        self.assertAlmostEqual(self.dividend_in("CCC", 0), 1.0)                  # a twelfth a month, as before
+        self.assertAlmostEqual(self.dividend_in("BBB", 3), 1.0)                  # and BBB, with no dividend today, has its recorded one
+        self.assertAlmostEqual(self.dividend_in("BBB", 4), 0.0)
+
     def test_the_ex_dates_go_forward_from_schwabs_as_well_as_back(self):
         # an ex-date of May 31, 2026, paid twice a year: November 2025 and May 2026 (and May 31 less 6 months is November 30, not December 1)
         self.run_lisp("""(set! dividends '(("AAA" 2.0 2 "2026-05-31 00:00:00.0") ("CCC" 1.2 12 "2025-12-02 00:00:00.0")))""")
         self.update()
+        # (without the history: it would take CCC's ex-date, a year before today, for the only payment in a year)
+        connection = sqlite3.connect(self.database)
+        connection.execute("DELETE FROM stock_dividend_history")
+        connection.commit()
+        connection.close()
         self.assertEqual([i for i in range(12) if abs(self.return_of("AAA", i) - BANK[i]) > 1e-12], [0, 6])
         # CCC pays monthly, and Schwab's ex-date is in December 2025: every month has a dividend of 0.10, before it and after it
         self.assertEqual([i for i in range(12) if abs(self.return_of("CCC", i) - OIL[i]) > 1e-12], list(range(12)))
@@ -447,6 +496,21 @@ class TestWeeklyReturns(PricesTestCase):
         # the week of November 10, 2025 is the third return (the first is the week of October 27): AAA's price change that week, and a dividend of 1
         before, after = WEEKLY["AAA"][2], WEEKLY["AAA"][3]
         self.assertAlmostEqual(self.return_of("AAA", 2), (after - before + 1.0) / before)
+
+    def test_a_recorded_dividend_is_in_the_week_of_its_ex_date(self):
+        self.run_lisp("""(set! dividends '(("AAA" 4.0 4 "2026-08-14 00:00:00.0")))""")
+        self.update()
+        connection = sqlite3.connect(self.database)
+        connection.execute("DELETE FROM stock_dividend_history")
+        connection.execute("INSERT INTO stock_dividend_history VALUES ('AAA', '2026-05-16', 2.0, 8.0, 4, '2026-05-01', '2026-10-30')")  # a Saturday
+        connection.commit()
+        connection.close()
+        weeks = [str(day) for day in lisp_core.pairs_to_list(self.run_lisp('(vector->list (table-column (periodic-returns db :years 1) "period"))'))]
+        with_dividend = [weeks[i] for i in range(len(weeks)) if abs(self.return_of("AAA", i) - WEEKLY_BANK[i]) > 1e-12]
+        self.assertEqual(with_dividend, ["2025-11-10", "2026-02-09", "2026-05-11"])     # worked out before May; May's from the history; no August
+        i = weeks.index("2026-05-11")
+        before, after = WEEKLY["AAA"][i], WEEKLY["AAA"][i + 1]
+        self.assertAlmostEqual(self.return_of("AAA", i), (after - before + 2.0) / before)
 
     def test_a_dividend_without_an_ex_date_is_a_52nd_every_week(self):
         self.run_lisp("""(set! dividends '(("CCC" 52.0 0 "")))""")

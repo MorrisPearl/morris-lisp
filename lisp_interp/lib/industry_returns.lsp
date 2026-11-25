@@ -239,6 +239,11 @@ A share well above share-by-chance means the industries are separating returns; 
 ; few days. A stock with a dividend but no ex-date, or with a number of payments a year that doesn't divide a year into whole months, gets its dividend
 ; spread evenly over the periods (a 52nd a week, a 12th a month).
 ;
+; Where the history of dividends (stock_dividend_history) has a stock, its own record is used instead, for the periods it knows about: from the period of
+; the stock's first recorded ex-date to the period of the last day the history saw the stock. In those, a period's dividend is the payments recorded with
+; an ex-date in it, and none if there are none; before and after them, the dividend is worked out as above. The history is only as complete as the updates were regular: it sees each payment if stock-dividends-update runs at least once between one
+; ex-date and the next (the daily job runs it each week), and a payment it missed counts as none.
+;
 ; The tables, for each frequency: weekly_prices (ticker, period, close) and weekly_prices_asked (ticker, last_period, periods, note), a row for each stock
 ; asked for, so that a run that is stopped picks up where it left off (and monthly_prices and monthly_prices_asked); and stock_dividends (ticker,
 ; annual_dividend, payments_per_year, ex_date), the dividends as Schwab has them now, which stock-prices-update gets afresh each time (a few requests),
@@ -466,17 +471,28 @@ last years the prices table has."
          SELECT DISTINCT ticker, MIN(date(month, printf('+%d days', day_of_month - 1)), date(month, '+1 month', '-1 day')) AS day, payment
            FROM ex_months),     -- (DISTINCT: Schwab's own date is there twice, once for each step)
        paid AS (SELECT ticker, " (stock-prices--period-sql frequency "day") " AS period, SUM(payment) AS dividend FROM ex_days GROUP BY ticker, period),
+       -- the dividends in the history: what was paid in each period, and the periods the history knows about for each stock: from its first
+       -- recorded ex-date to the last day it was seen
+       recorded AS (SELECT ticker, " (stock-prices--period-sql frequency "ex_date") " AS period, SUM(payment) AS dividend
+                       FROM stock_dividend_history GROUP BY ticker, period),
+       recorded_span AS (SELECT ticker, MIN(" (stock-prices--period-sql frequency "ex_date") ") AS first_period,
+                                " (stock-prices--period-sql frequency "MAX(last_seen)") " AS last_period
+                           FROM stock_dividend_history GROUP BY ticker),
        -- a stock with a dividend but no ex-date, or an odd number of payments a year: spread evenly over the periods
        spread AS (SELECT ticker, annual_dividend / " (number->string spread-over) ".0 AS dividend FROM stock_dividends
                    WHERE annual_dividend > 0 AND NOT (ex_date != '' AND payments_per_year IN (1, 2, 3, 4, 6, 12))),
        priced AS (
          SELECT p.ticker, p.period, p.close,
                 LAG(p.close) OVER (PARTITION BY p.ticker ORDER BY p.period) AS previous_close,
-                COALESCE(paid.dividend, spread.dividend, 0) AS dividend,
+                CASE WHEN p.period BETWEEN recorded_span.first_period AND recorded_span.last_period
+                     THEN COALESCE(recorded.dividend, 0)                                             -- from the history
+                     ELSE COALESCE(paid.dividend, spread.dividend, 0) END AS dividend,               -- worked out from today's dividend
                 COALESCE(r.market_cap, 0) AS market_cap
            FROM " prices " p
                 LEFT JOIN paid ON paid.ticker = p.ticker AND paid.period = p.period
                 LEFT JOIN spread ON spread.ticker = p.ticker
+                LEFT JOIN recorded ON recorded.ticker = p.ticker AND recorded.period = p.period
+                LEFT JOIN recorded_span ON recorded_span.ticker = p.ticker
                 LEFT JOIN stock_returns r ON r.ticker = p.ticker
           WHERE p.period >= ? AND p.period <= ?),
        returns AS (

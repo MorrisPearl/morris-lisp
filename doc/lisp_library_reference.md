@@ -2616,6 +2616,15 @@ months before and after it, which only approximates the real ones: they move abo
 company that changed its dividend paid other amounts. A stock with a dividend but no ex-date, or a number of
 payments that doesn't divide the year into whole months, gets its dividend spread evenly (a 52nd a week).
 
+Where the history of dividends (`stock-dividend-history`, below) has a stock, its own record is used
+instead, for the periods it knows about: from the period of the stock's first recorded ex-date to the period
+of the last day the history saw the stock. In those, a period's dividend is the payments recorded with an
+ex-date in it, at the amounts paid, and none if there are none. Before and after them, the dividend is
+worked out from today's, as above. The history began on November 24, 2026, so for now it changes only the
+latest weeks; as it grows, more of the returns use real payments. It is only as complete as its updates
+were regular: the daily job runs `stock-dividends-update` each week, which sees every payment, but if the
+updates stopped for longer than the time between two payments, a payment missed counts as none.
+
 **Why weekly.** Twenty-four monthly returns are few: a correlation measured from 24 numbers is uncertain by
 about 0.2, and there can be no more than 23 components. Three years of weeks give 156 returns. Daily returns
 would give more still, but a small stock that trades rarely has a closing price that is often stale, which
