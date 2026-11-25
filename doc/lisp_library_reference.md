@@ -4922,7 +4922,8 @@ The key says `(right)` after the names of those series, and `:alt-y-min` and
 A bar series can be filled with a scribble (a line going back and forth, as
 if with a pencil) instead of a solid color, by adding `:scribble #t` to it;
 `:scribble #t` among the chart's own keys does it for every bar, and a
-series' own `:scribble #f` then keeps that one solid.
+series' own `:scribble #f` then keeps that one solid. The small bar in the
+key is always solid.
 
 ```lisp
 (display-svg (hand-drawn-chart '("1" "2" "3" "4" "5")
@@ -4930,7 +4931,7 @@ series' own `:scribble #f` then keeps that one solid.
                  ("principal" (2 3 4 6 8) "stacked-bar"))))
 ```
 
-Every series has its own color. The names are in a key at the top right. The vertical axis runs from
+Every series has its own color. The names are in a key under the labels. The vertical axis runs from
 the lowest to the highest of all the numbers, written at its bottom and top;
 `:y-min 0` makes the bars start from zero. The other keys are `:title`,
 `:wobble` (the largest move of a point, in pixels; 4), `:seed` (a number, to

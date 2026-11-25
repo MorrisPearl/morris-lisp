@@ -21,7 +21,7 @@
 ; "star". The series with no shape get "square", "star", "cross", "circle", "triangle" and "diamond" in turn.
 ; Several series of "bar" stand side by side. The series of "stacked-bar" stand one on top of another, in the order
 ; of the list, in one more bar (for the principal and the interest of a payment, say, to show that they add up to the
-; same amount each time). The names are in a key at the top right. The vertical axis runs from the lowest to the
+; same amount each time). The names are in a key below the labels. The vertical axis runs from the lowest to the
 ; highest of all the numbers (of the stacks, for stacked bars, and from zero), written at its bottom and top;
 ; :y-min and :y-max give other ends (for bars that start from zero, :y-min 0).
 ;
@@ -76,16 +76,16 @@
           (hand-chart--n x) (hand-chart--n y) anchor size hand-chart-font (hand-chart--escape text)))
 
 ; A scribble across a rectangle: one line going back and forth from side to side, down the rectangle, with the end of
-; each stroke moved a little, in the place of a solid color. step is the pixels between one stroke and the next.
-(define (hand-chart--scribble left right top bottom color wobble step)
+; each stroke moved a little, in the place of a solid color: always 4 strokes, however big the rectangle.
+(define (hand-chart--scribble left right top bottom color wobble)
   (let* ((high (min top bottom))
          (low (max top bottom))
-         (strokes (max 1 (floor (/ (- low high) step))))
+         (strokes 4)
          (points (loop for k from 0 to strokes
                        collect (format "{},{}"
-                                       (hand-chart--n (+ (if (even? k) left right) (hand-chart--shake (* 0.5 wobble))))
-                                       (hand-chart--n (+ high (* k (/ (- low high) strokes)) (hand-chart--shake (* 0.5 wobble))))))))
-    (format "<polyline points=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"1.5\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"
+                                       (hand-chart--n (+ (if (even? k) left right) (hand-chart--shake (* 1.5 wobble))))
+                                       (hand-chart--n (+ high (* k (/ (- low high) strokes)) (hand-chart--shake (* 3.5 wobble))))))))
+    (format "<polyline points=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"6.5\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"
             (string-join points " ") color)))
 
 ; A bar: a rectangle whose four corners are each moved a little, outlined in the color, and filled with a light color
@@ -101,7 +101,7 @@
                      corners)
                 " ")
               (if scribble "none" color) color)
-      (if scribble (hand-chart--scribble left right top bottom color wobble (if (< (- right left) 20) 4 7)) ""))))
+      (if scribble (hand-chart--scribble left right top bottom color wobble) ""))))
 
 ; ---------------------------------------------------------------------------
 ; Symbols: each is a list of strokes, a stroke being a list of (x y) points joined by lines, drawn around
@@ -202,7 +202,19 @@
          (range-1 (hand-chart--range (on-axis 1) y-min y-max))
          (range-2 (hand-chart--range (on-axis 2) alt-y-min alt-y-max))
          (left 70) (right (- width (if two-axes 70 20)))
-         (top (if title 55 30)) (bottom (- height 55))
+         ; The key goes under the labels, in rows: each entry (symbol, then name) is where the one before ends, or at
+         ; the start of the next row when it would not fit.
+         (key-names (map (lambda (one) (if (and two-axes (= (hand-chart--axis-of one) 2)) (string-append (car one) " (right)") (car one))) series))
+         (key-places (let ((x left) (row 0))              ; each entry's (x row)
+                       (loop for name in key-names
+                             collect (let ((entry-width (+ 40 (* 8.5 (string-length name)))))
+                                       (if (and (> x left) (> (+ x entry-width) (- width 20)))
+                                           (begin (set! x left) (set! row (+ row 1))))
+                                       (let ((place (list x row)))
+                                         (set! x (+ x entry-width))
+                                         place)))))
+         (key-rows (if (null? key-places) 0 (+ 1 (apply max (map cadr key-places)))))
+         (top (if title 55 30)) (bottom (- height 55 (* 24 key-rows)))
          (slot (/ (- right left) count))
          (symbol-size 8)
          (bar-series (filter (lambda (one) (equal? (hand-chart--shape one) "bar")) series))
@@ -217,8 +229,6 @@
                  (let ((range (if (= axis 1) range-1 range-2)))
                    (- bottom (* (- bottom top) (/ (- value (car range)) (- (cadr range) (car range))))))))
          (color-of (lambda (place) (list-ref hand-chart-colors (mod place (length hand-chart-colors)))))
-         (key-names (map (lambda (one) (if (and two-axes (= (hand-chart--axis-of one) 2)) (string-append (car one) " (right)") (car one))) series))
-         (key-left (- right 30 (* 8.5 (apply max (cons 0 (map string-length key-names))))))   ; (the key's symbols, with room for the longest name)
          (parts '()))
     (define (add! part) (set! parts (cons part parts)))
     (dolist (one series)
@@ -245,12 +255,14 @@
     (loop for i from 0 below count
           do (if (or (not end-labels-only) (= i 0) (= i (- count 1)))
                  (add! (hand-chart--text (center i) (+ bottom 28) (list-ref labels i) "middle" 16))))
-    ; each series: its bars or symbols at each label, and its place in the key at the top right
+    ; each series: its bars or symbols at each label, and its place in the key below the labels
     (loop for one in series
           for place from 0
           do (let* ((color (color-of place))
                     (shape (hand-chart--shape one))
                     (axis (hand-chart--axis-of one))
+                    (key-x (car (list-ref key-places place)))                       ; the key's entry for this series
+                    (key-y (+ bottom 58 (* 24 (cadr (list-ref key-places place)))))
                     (scribbled (hand-chart--scribble-of one scribble))
                     (bar-place (if (equal? shape "bar") (- (length bar-series) (length (member one bar-series))) 0))
                     (stack-place (if (equal? shape "stacked-bar") (- (length (stacks axis)) (length (member one (stacks axis)))) 0))
@@ -269,9 +281,10 @@
                                                           (y-of axis (+ below (list-ref (cadr one) i))) (y-of axis below) color wobble scribbled))))
                                 (else (add! (hand-chart--symbol shape (center i) y symbol-size color wobble))))))
                (if (hand-chart--bar-shape? shape)
-                   (add! (hand-chart--bar (- key-left 8) (+ key-left 8) (+ top 3 (* 24 place)) (+ top 17 (* 24 place)) color wobble scribbled))
-                   (add! (hand-chart--symbol shape key-left (+ top 10 (* 24 place)) symbol-size color wobble)))
-               (add! (hand-chart--text (+ key-left 16) (+ top 15 (* 24 place)) (list-ref key-names place) "start" 16))))
+                   (add! (hand-chart--bar (+ key-x 2) (+ key-x 18) (+ key-y -7) (+ key-y 7) color wobble #f))
+                   ; (the key's swatch is solid, scribbled or not)
+                   (add! (hand-chart--symbol shape (+ key-x 10) key-y symbol-size color wobble)))
+               (add! (hand-chart--text (+ key-x 26) (+ key-y 5) (list-ref key-names place) "start" 16))))
     (string-append
       (format "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\">"
               width height width height)

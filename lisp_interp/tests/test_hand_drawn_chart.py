@@ -78,7 +78,7 @@ class TestHandDrawnChart(LispTestCase):
         self.assertIn("p", texts)
         right_axis = [line for line in doc.getElementsByTagName("line")
                       if (line.getAttribute("x1"), line.getAttribute("y1"), line.getAttribute("y2"))
-                      == ("530.0", "30.0", "345.0")]                    # a vertical line at the plot's right edge
+                      == ("530.0", "30.0", "321.0")]                    # a vertical line at the plot's right edge
         self.assertEqual(len(right_axis), 1)
         # an axis other than 1 or 2 is an error
         with self.assertRaises(lisp_core.LispError):
@@ -87,9 +87,20 @@ class TestHandDrawnChart(LispTestCase):
     def test_a_scribbled_bar_is_filled_with_a_line_and_a_solid_one_is_not(self):
         series = '\'(("p" (1 2) "bar" :scribble #t) ("q" (2 1) "bar"))'
         doc = self.chart('\'("a" "b") ' + series)
-        self.assertEqual(len(doc.getElementsByTagName("polyline")), 3)        # p's two bars and its key
+        self.assertEqual(len(doc.getElementsByTagName("polyline")), 2)        # p's two bars (the key's swatch is solid)
         self.assertEqual(len(doc.getElementsByTagName("polygon")), 6)         # (the outlines of all, still)
         doc = self.chart('\'("a" "b") ' + series + ' :scribble #t')           # all the bars
-        self.assertEqual(len(doc.getElementsByTagName("polyline")), 6)
+        self.assertEqual(len(doc.getElementsByTagName("polyline")), 4)
         doc = self.chart('\'("a" "b") \'(("p" (1 2) "bar" :scribble #f)) :scribble #t')   # the series' own choice wins
         self.assertEqual(len(doc.getElementsByTagName("polyline")), 0)
+
+    def test_the_key_is_under_the_labels_in_rows_that_wrap(self):
+        names = [str(t) for t in ("alpha", "beta", "gamma")]
+        doc = self.chart('\'("a" "b") \'(("alpha" (1 2)) ("beta" (2 1)) ("gamma" (1 1)))')
+        by_text = {t.firstChild.data: float(t.getAttribute("y")) for t in doc.getElementsByTagName("text")}
+        self.assertTrue(by_text["a"] < by_text["alpha"] == by_text["beta"] == by_text["gamma"])   # one row, under "a"
+        long_names = ["x" * 25, "y" * 25, "z" * 25]                     # too wide for one row of 600 pixels
+        series = " ".join('("%s" (1 2))' % n for n in long_names)
+        doc = self.chart('\'("a" "b") \'(%s)' % series)
+        ys = [float(t.getAttribute("y")) for t in doc.getElementsByTagName("text") if t.firstChild.data in long_names]
+        self.assertGreater(len(set(ys)), 1)                             # more than one row
