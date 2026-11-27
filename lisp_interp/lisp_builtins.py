@@ -30,10 +30,10 @@ from lisp_core import (
     Env, GenericFunction, Keyword, LispAbort, LispDate, LispError, LispHashTable, LispString, LispStruct,
     LispVector, Macro, NIL, Pair, Procedure, Symbol,
     _brief, _date_from_pydate, _lisp_scalar, _vector_widen_for,
-    apply_proc, builtin_names, check_numbers, lisp_equal, plural, check_vector_elements, expand_macro, gensym,
+    apply_proc, builtin_names, check_numbers, check_required_methods, lisp_equal, plural, check_vector_elements, expand_macro, gensym,
     get_verbose_level, is_true, keyword_options,
     lisp_error_of_kind, list_to_pairs, pairs_to_list, parse, pretty_print_string,
-    reconstruct_macro_source, reconstruct_procedure_source, run_file, seval,
+    reconstruct_macro_source, reconstruct_procedure_source, resolve_struct_literals, run_file, seval,
     set_verbose_level, set_vector_precision, throw_to, to_display_string, to_string, parse_date_text, vector_precision,
 )
 import lisp_alpha_vantage
@@ -1085,6 +1085,9 @@ PROCEDURE_BUILTINS = {
 # ---------------------------------------------------------------------------
 
 def make_struct_fn(struct_type, plist):
+    """(%make-struct type plist) -- what the constructor make-<type> calls: a new struct with these slots, if the type's
+    :required-methods all have a method for it (see check_required_methods)."""
+    check_required_methods(struct_type, "make-%s" % struct_type.name)
     values = {}
     items = pairs_to_list(plist)
     for i in range(0, len(items), 2):
@@ -1397,9 +1400,17 @@ def lisp_format(template, *args):
     return LispString("".join(pieces))
 
 
+def write_to_string(x):
+    """(write-to-string x) -- x as text that read-from-string reads back as it was: a string in quotes ("a \\"b\\""), a symbol
+    without, and a struct as #S(type :slot value ...). (to-string, format and display show a string without its quotes.) A
+    date is written 2026-11-20, which reads back as a symbol, and a function as #<procedure>, which does not read back."""
+    return LispString(to_string(x))
+
+
 STRING_BUILTINS = {
     "string-append": lambda *a: LispString("".join(a)),
     "to-string": lambda a: LispString(to_display_string(a)),
+    "write-to-string": write_to_string,
     "string-length": lambda s: len(s),
     "substring": lambda s, start, end=None: LispString(s[start:end]),
     "string=?": lambda a, b: a == b,
@@ -1961,9 +1972,10 @@ def make_eval_builtins(env, out):
         """(read-from-string text) -- the Lisp expression that text is, read but
         not evaluated: (read-from-string "(+ 1 2)") is the list (+ 1 2), which
         eval then evaluates to 3. Code is data: the reader that turns a program's
-        text into lists is the same one. An error if the text has no expression,
-        or more than one (to read several, put them in a list: wrap the text in
-        parentheses)."""
+        text into lists is the same one. A struct written as it prints,
+        #S(point :x 1 :y 2), is read as that struct (its type has to be defined).
+        An error if the text has no expression, or more than one (to read several,
+        put them in a list: wrap the text in parentheses)."""
         if not isinstance(text, str):
             raise LispError("read-from-string: expected a string, not %s" % _brief(text))
         try:
@@ -1973,7 +1985,10 @@ def make_eval_builtins(env, out):
         if len(expressions) != 1:
             raise LispError("read-from-string: the text has %s, and it reads one (to read several, wrap the text in parentheses)"
                             % plural(len(expressions), "expression"))
-        return expressions[0]
+        try:
+            return resolve_struct_literals(expressions[0], env)
+        except LispError as e:
+            raise LispError("read-from-string: %s" % e)
 
     def lisp_macroexpand_1(form):
         """(macroexpand-1 'form) -- if form is a call to a macro, expand it one

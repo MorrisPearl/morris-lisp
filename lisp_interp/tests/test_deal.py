@@ -158,11 +158,15 @@ class TestTheSplitsAreMethods(DealTestCase):
         self.assertShows("(generic-function? pay-principal)", "#t")
         self.assertShows("(generic-function-methods pay-principal)", "(sequential-split pro-rata-split io-po-split pac-split)")
 
-    def test_a_split_of_no_kind_that_pays_cannot_be_run(self):
-        self.a_pool_paying(30.0, 4)
-        self.run_lisp('(deal-add-tranche! deal "A" 120.0)')
-        self.run_lisp("""(deal-add-split! deal "POOL" (make-split :children '("A")))""")
-        self.assertLispError("(deal-run! deal)", "pay-principal: there is no method for a split")
+    def test_a_split_of_a_kind_that_does_not_pay_principal_cannot_be_made(self):
+        """split's defstruct requires a method of pay-principal (:required-methods), so a split that could not pay is not made at all,
+        instead of failing when the deal is run: not a split of no kind, and not one of a new kind until it has its method."""
+        self.assertLispError("""(make-split :children '("A"))""", "make-split: a split needs a method of pay-principal")
+        self.run_lisp("(defstruct (stingy-split (:include split)))")
+        self.assertLispError("""(make-stingy-split :children '("A"))""", "pay-principal has none for stingy-split")
+        self.run_lisp("(defmethod pay-principal ((split stingy-split) deal parent t) #f)")
+        self.assertShows("""(split-children (make-stingy-split :children '("A")))""", '("A")')
+        self.assertShows("""(split-children (make-average-life-split :children '("A")))""", '("A")')     # (its method is sequential-split's)
 
     def test_a_split_has_only_its_children_as_data(self):
         self.run_lisp("""(define s (make-pac-split :children '("A" "B") :low-psa 100 :high-psa 300))""")

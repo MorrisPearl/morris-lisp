@@ -253,6 +253,7 @@ interpreter, e.g. `export LISP_PATH=~/models:~/models/common`.
 | Quasiquote | `` `(a ,b ,@c) `` | Like `quote`, but `,x` splices in the value of `x` and `,@x` splices in the elements of list `x` — see Macros below |
 | Vector | `#(1 2 3)`, `(vector 1 2 3)` | Fixed-size; holds numbers, strings, and/or dates (not lists or booleans) |
 | Date | `(date 2024 3 15)` | Prints as `2024-03-15` |
+| Struct | `#S(point :x 1 :y 2)`, `(make-point :x 1 :y 2)` | A record of a type made by `defstruct`: prints as `#S(...)`, and reads back as that struct (see `defstruct`) |
 | Model | *(returned by regression)* | Prints as `#<linear-model ...>` etc. |
 
 **Words that are numbers.** The reader reads a token as a number if
@@ -1099,7 +1100,7 @@ variables for the length of a body. The rows of a table (see
 `table-rows`, under "Tables") are structs too.
 
 #### defstruct
-#### `(defstruct name slot...)`, `(defstruct (name (:include parent [slot-override...])) slot...)`
+#### `(defstruct name slot...)`, `(defstruct (name (:include parent [slot-override...]) (:required-methods generic-function...)) slot...)`
 Common-Lisp-style record type. Each `slot` is either a bare symbol (default
 value `'()`) or `(slot-name default-expr)` — e.g. `(visible #t)`. Defines,
 and binds into the current environment:
@@ -1146,6 +1147,23 @@ order. `struct?`, `struct-ref`, `struct-set!`, and `struct-type-name` (see
 "Structs" under Built-in functions) work generically on any struct
 instance by slot-name symbol, without needing the type-specific accessor
 names — useful when writing code that works across struct types.
+
+**A struct reads back as it prints.** `#S(name :slot value ...)`, written in a program or in text that `read-from-string` reads, is the
+struct that `(make-name :slot value ...)` makes, as in Common Lisp: the slots it leaves out have their defaults, and the values are data,
+not evaluated (`#S(point :x (+ 1 2))` has the list `(+ 1 2)` in its `x`). The type has to be defined by then: a `#S(...)` is made when the
+form it is in is evaluated, so it can follow its `defstruct` in the same file or notebook cell. So a struct can be written to a file with
+`write-to-string` and read back with `read-from-string` (see "Saving a deal, and loading it" in the CMO manual).
+
+```lisp
+(defstruct point x y (label "origin"))
+#S(point :x 1 :y 2)                                   ; => #S(point :x 1 :y 2 :label "origin")
+(point-y '#S(point :x 1 :y 2))                        ; => 2
+(define p (make-point :x 3 :y (list "a" 4)))
+(equal? p (read-from-string (write-to-string p)))     ; => #t
+```
+
+The other option, `(:required-methods generic-function...)`, names the generic functions that every instance, of this type or of
+a type that includes it, must have a method of; making one without is an error. See `defgeneric`, below.
 
 **Inheritance** — `(defstruct (name (:include parent)) slot...)` gives
 `name` every one of `parent`'s slots (in `parent`'s own order) plus its own
@@ -4386,6 +4404,22 @@ is such a method. They are the way that a method builds on the one it extends:
 (label (make-square :name "q"))            ; => "shape q"
 ```
 
+**A type that is meant to be included** can say which generic functions every type that includes it must have a method of:
+`(defstruct (shape (:required-methods area)) ...)`. Making an instance, with `make-<type>` or as `#S(...)`, is then an error unless each of
+them has a method for its type, of its own or of a type it includes, or one for any argument (`t`), and the error says which is missing. So
+the type `shape` itself cannot be made, and a new kind of shape cannot be made until its `area` is defined: the check is when an instance is
+made, not at the `defstruct`, because the methods are defined after it. The requirement is inherited: a type that includes `shape` and
+names its own `:required-methods` needs both.
+
+```lisp
+(defstruct (shape (:required-methods area)) (name "shape"))
+(defstruct (circle (:include shape)) (r 1))
+(defmethod area ((s circle)) (* 3 (circle-r s) (circle-r s)))
+(area (make-circle :r 2))                  ; => 12
+(defstruct (square (:include shape)) (side 1))
+(catch-error (make-square) (message) message)     ; => "make-square: a square needs a method of area (the defstruct of shape says so, with :required-methods), and area has none for square or a type it includes: define one first, (defmethod area ((x square) ...) ...)"
+```
+
 `(generic-function? f)` is `#t` for a generic function, and `(generic-function-methods f)` lists the types it has methods for, in the
 order they were defined (`t` is the method for any argument). A generic function is called like any function, and can be passed
 to `map`; a method that calls itself or another in tail position runs in constant stack space.
@@ -5594,13 +5628,27 @@ way and wanting to run it directly.
 The Lisp expression that `text` is written as, read but not evaluated: the same reader that turns a program's text into lists.
 `eval` then runs it. That is what "code is data" means: a program is lists, and a list can be made, looked at, and changed like any
 other. An error if the text has no expression, or more than one (to read several, put the text in parentheses, and they are read as
-one list).
+one list). A struct written as it prints, `#S(point :x 1 :y 2)`, is read as that struct, if its type is defined.
 
 ```lisp
 (read-from-string "(+ 1 2)")             ; => (+ 1 2)
 (car (read-from-string "(+ 1 2)"))       ; => +
 (eval (read-from-string "(+ 1 2)"))      ; => 3
 (read-from-string "((1 2 3) (4 5))")     ; => ((1 2 3) (4 5))
+```
+
+#### `(write-to-string x)`
+`x` as text that `read-from-string` reads back as it was, as Common Lisp's `write-to-string` writes it: a string in quotes (with `\"` for a
+quote in it), a symbol without, and a struct as `#S(type :slot value ...)`. `to-string`, `format` and `display` show a string as its
+characters, without the quotes, which is for people; this is for text that a program reads again, such as the file that `save-deal`
+writes (see the CMO manual). Two things do not come back: a date is written `2026-11-20`, which reads back as a symbol (write it with
+`date->string`, and read it with `string->date`), and a function is written `#<procedure f>`, which is not data at all. A function's text is
+its code, not the values that the code refers to, so a function is saved as the data that it is made from, and made again.
+
+```lisp
+(string-length (write-to-string "abc"))                   ; => 5
+(write-to-string '(1 "two" three))                        ; => (1 "two" three)
+(read-from-string (write-to-string '(1 "two" three)))     ; => (1 "two" three)
 ```
 
 #### `(apply f arg1 ... args)`

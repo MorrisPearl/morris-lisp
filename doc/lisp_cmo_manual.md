@@ -52,6 +52,7 @@ The **baseball manual**, [lisp_baseball_manual.md](lisp_baseball_manual.md), cov
   - [Interest shortfalls](#interest-shortfalls)
   - [What is not modeled](#what-is-not-modeled)
 - [Checking a deal](#checking-a-deal)
+- [Saving a deal, and loading it](#saving-a-deal-and-loading-it)
 - [Making another kind of split](#making-another-kind-of-split)
   - [How the kinds are related](#how-the-kinds-are-related)
   - [A kind that changes one thing](#a-kind-that-changes-one-thing)
@@ -1011,6 +1012,69 @@ write-down, no triggers or turbo payments, no excess spread, no fees (the collat
 A deal that is built with the builders and run is right, and `deal-check` is for the changes that are made to one by hand, and for the data it
 was given. A mistake in a floater's cap, say, makes the coupons stop adding up, and is found.
 
+## Saving a deal, and loading it
+
+`(save-deal deal path)` writes the deal in a file, and `(load-deal path)` makes it again (`lib/deal_save.lsp`):
+
+```lisp
+(define deal (new-deal "Demo" :collateral '((120.0 0.0 0.0 6)) :speed (prepayment-speed 'cpr 0)))
+(deal-sequential! deal "POOL" '(("A" 50.0) ("B" 70.0)))
+(save-deal deal "demo.deal")                         ; => "demo.deal"
+(define again (load-deal "demo.deal"))
+(deal-names again)                                   ; => ("POOL" "A" "B")
+(deal-run! again)
+(node-principal (get-node again "A"))                ; => #(20.0 20.0 10.0 0.0 0.0 0.0)
+```
+
+**What is saved is what the deal is made from**, as data: its name, dates and settings, its collateral (the table of its pieces), its
+pricing speed, Treasury curve and model of rates, each split with the tranches that it divides its parent into, and the price, yield, spread
+or OAS that each tranche was given, and its delay. The rest is worked out again when the deal is loaded, by the functions that worked it out
+when it was built: `load-deal` gives a new deal the collateral and the settings, and adds the splits in the order of the tree, so the cash
+flows of the collateral, the sizes that a split works out (a PAC's, a floater's, one by average life) and the coupons of the tranches come out
+as they were. Then it checks that every tranche is the size that the file says it was, and gives the tranches their prices. A tranche priced by
+its OAS keeps the OAS, and is priced by it when the paths of rates are run (see `deal-run-paths!`). The cash flows of a run are not saved:
+run the loaded deal.
+
+**Functions are not saved as their text.** A function's text is its code, but not the values that the code refers to. The coupon of a
+tranche at 6%, `(constant-coupon 0.06)`, pretty-prints as `(lambda (index) rate)`, and `rate` is 0.06 only in the place where the function
+was made: read back and called, it is the error `unbound symbol: rate`. A builtin has no text at all (`#<builtin car>`). That is why the
+coupons are made again, by the code that made them, from the data that is saved. A deal can be given two functions of its own, a
+prepayment model and an index function (see `deal-set-prepayment-model!` and `deal-set-index-function!`); they are not saved, `save-deal`
+says so, and they are given to the loaded deal again. A value that is not data (a function in a slot of a split of your own, say) is an
+error when the deal is saved, and nothing is written.
+
+**The file is text** that a person can read: a `deal-file` struct written as it prints, with a slot to a line (`write-to-string`
+writes each value as `read-from-string` reads it back). The deal above is saved as:
+
+```text
+; The deal "Demo", saved by save-deal. (load-deal "the name of this file") makes it again.
+#S(deal-file
+ :version 1
+ :name "Demo"
+ :first-payment ()
+ ...
+ :pricing-speed #S(speed-curve :type cpr :pieces ((0 0 ())))
+ ...
+ :collateral
+ (("balance" . #(120.0))
+  ("wac" . #(0.0))
+  ...)
+ :other-tranches ()
+ :splits
+ (("POOL" (("A" 50.0 :z #f :notional #f :follows ()) ("B" 70.0 :z #f :notional #f :follows ())) #S(sequential-split :children ("A" "B") :loss-rule reverse :accretion-to ())))
+ :prices
+ (("POOL" :priced-by () :value () :delay 24)
+  ("A" :priced-by () :value () :delay 24)
+  ("B" :priced-by () :value () :delay 24))
+ :names ("POOL" "A" "B"))
+```
+
+`load-deal` reads the file with `read-from-string`, which reads data and runs nothing, so a file can only describe a deal. A split is written
+as the struct it is, `#S(sequential-split ...)`, so a kind of split of your own (see "Making another kind of split") is saved like the others,
+and is loaded once the file that defines its struct and its methods has been loaded; before, `load-deal` says that there is no struct type
+of that name. A file that is not a saved deal, or was saved in another version of the way deals are saved, or has a tranche that does not
+come out the size that it was, is an error that says so.
+
 ## Making another kind of split
 
 A split is a struct, a type that includes `split`, and what makes a kind of split what it is are its **methods**: functions chosen by the kind of the
@@ -1037,23 +1101,59 @@ split (see `defgeneric` and `defmethod` in the language manual). `(generic-funct
 ### How the kinds are related
 
 Each kind includes `split`, or another kind, and so has the slots and the methods of the one it includes. Here they are as `lib/deal.lsp` makes them, each
-with the slots that it adds:
+with the slots that it adds, and an arrow from each kind to the one it includes (a Mermaid diagram, which GitHub and JupyterLab draw):
 
-```text
-split                           children, loss-rule
-├── sequential-split            accretion-to
-│   └── average-life-split      lives
-├── pro-rata-split              (none: its loss-rule starts as pro-rata, not reverse)
-│   ├── floater-inverse-split   cap, margin, index-name, leverage, constant
-│   └── premium-discount-split  premium-coupon, discount-coupon
-├── pac-split                   low-psa, high-psa, schedule
-└── io-po-split                 io-coupon
+```mermaid
+classDiagram
+    direction TB
+    class split {
+        children
+        loss-rule
+    }
+    class sequential-split {
+        accretion-to
+    }
+    class average-life-split {
+        lives
+    }
+    class pro-rata-split {
+        no new slot: its loss-rule starts as pro-rata, not reverse
+    }
+    class floater-inverse-split {
+        cap
+        margin
+        index-name
+        leverage
+        constant
+    }
+    class premium-discount-split {
+        premium-coupon
+        discount-coupon
+    }
+    class pac-split {
+        low-psa
+        high-psa
+        schedule
+    }
+    class io-po-split {
+        io-coupon
+    }
+    split <|-- sequential-split
+    sequential-split <|-- average-life-split
+    split <|-- pro-rata-split
+    pro-rata-split <|-- floater-inverse-split
+    pro-rata-split <|-- premium-discount-split
+    split <|-- pac-split
+    split <|-- io-po-split
 ```
 
 What differs from kind to kind is which of the generic functions it has methods of its own for:
 
 - **`split`** has the methods that every kind has unless it has its own: `pay-interest`, `allocate-loss`, `check-split`, `calculate-sizes` and
-  `assign-coupons`. It has no `pay-principal`, so each kind that includes `split` itself has its own. No split is made of the kind `split` alone.
+  `assign-coupons`. It has no `pay-principal`, so each kind that includes `split` itself has its own, and its defstruct says so:
+  `(defstruct (split (:required-methods pay-principal)) children (loss-rule 'reverse))` makes a split of a kind that has no `pay-principal`,
+  its own or one of a kind it includes, an error to make (see `defgeneric` in the language manual). So no split is made of the kind `split`
+  alone, and a new kind cannot be used before it can pay.
 - **`sequential-split`** has its own `pay-principal`, which pays in order, and `check-split`, since it is the kind that can have Z bonds.
   **`average-life-split`** is paid as it is, and has only its own `calculate-sizes` (the sizes from the average lives) and `check-split`.
 - **`pro-rata-split`** pays the principal, and the interest, in proportion. **`floater-inverse-split`** and **`premium-discount-split`** are paid as it is,
@@ -1096,7 +1196,8 @@ It takes four steps, each one a part of the block below:
 
 1. **The struct.** The kind includes `split`, since no kind there is pays principal the way it does, and has a slot for what it needs to know, the
    `months` of the lockout. `defstruct` makes `make-lockout-split`, which takes the slots of `split` (`:children`, `:loss-rule`) as well as its own,
-   and `lockout-split-months` to read the slot.
+   and `lockout-split-months` to read the slot. Until the kind has a `pay-principal`, `make-lockout-split` is an error, which says what is
+   missing: `split` requires one (`:required-methods`, in "How the kinds are related").
 2. **The methods.** A kind that includes `split` itself has its own `pay-principal`. This one chooses the order the children are paid in (in the
    lockout, the locked-out bond last) and pays them in that order with `pay-child!`, each what it is owed, up to the cash that is left. Its
    `check-split` calls `(call-next-method)`, the checks that every kind has (no Z bonds, a loss rule that there is), and then makes its own. Its
@@ -1112,6 +1213,7 @@ It takes four steps, each one a part of the block below:
 
 ; 1. The struct: it includes split, and has a slot for the months of the lockout.
 (defstruct (lockout-split (:include split)) months)
+(catch-error (make-lockout-split :children '("NAS" "SUP") :months 2) (message) message)   ; => "make-lockout-split: a lockout-split needs a method of pay-principal (the defstruct of split says so, with :required-methods), and pay-principal has none for lockout-split or a type it includes: define one first, (defmethod pay-principal ((x lockout-split) ...) ...)"
 
 ; 2. The methods. It includes split itself, so it says how the principal is paid.
 (defmethod pay-principal ((split lockout-split) deal parent t)
@@ -1227,6 +1329,7 @@ A kind of your own can stay in a file of your own, loaded with `require` before 
 
 1. put the struct, its methods, its plan and its builder (`lockout-plan` and `deal-lockout!`) in `lib/deal.lsp`, beside the other kinds, each with its
    docstring;
+   (`save-deal` saves a split of a kind of your own wherever it is defined, so this is not needed for that);
 2. put its form in `(standard-split-forms)`, in `lib/deal_builder.lsp`, so that it is in every menu;
 3. add the names that `defstruct` and `define` made (`make-lockout-split`, `lockout-split?`, `lockout-split-months`, `lockout-split-months-set!`,
    `copy-lockout-split`, `lockout-plan` and `deal-lockout!`) to the `lazy-load` of `deal.lsp` in `lib/autoloads.lsp`, so that calling one of them
@@ -1443,6 +1546,9 @@ POOL  100,000,000 ────┤   floater and inverse floater
 
 What is wrong is said in red in the pop-up (the names that are in the deal already, a balance that is not a number, balances that do not add up), and what was done
 is said in the line at the bottom of the window.
+
+To keep a deal that was built, save it: `(save-deal deal "demo.deal")`, and `(load-deal "demo.deal")` makes it again (see "Saving a deal,
+and loading it").
 
 **In a notebook**, the cell finishes and the window stays open beside the notebook (the kernel runs Qt's event loop between cells). The deal is the notebook's: what
 the window adds is in `deal`, and what the notebook changes, by the builders or in another view such as `(bonds deal)`, is drawn in the window. **From a Lisp file**

@@ -381,6 +381,7 @@ class TestPlansAndTheOutline(DealChangesCase):
 
     def test_a_split_of_a_kind_of_your_own_is_labelled_split_unless_it_says_otherwise(self):
         self.run_lisp('''(defstruct (my-split (:include split)))
+                         (defmethod pay-principal ((split my-split) deal parent t) #f)     ; (split requires one: see :required-methods)
                          (defstruct (my-other-split (:include sequential-split)))
                          (defmethod split-label ((split my-other-split)) "mine")''')
         self.assertShows('(split-label (make-my-split :children (list "A")))', '"split"')

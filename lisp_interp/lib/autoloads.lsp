@@ -278,6 +278,12 @@
   deal-builder--form-lives-text bonds deal-gui-flows deal-gui-flows-set! deal-gui--show-flows! deal-gui--table deal-builder--show-node-flows
   deal-gui--type-number deal-gui--typed! deal-gui--update-prices! deal-builder--priced-column-texts deal-builder--balance-charts split-form-inputs deal-builder--plan-effect deal-builder--plan-effect-heading)
 
+; Saving a deal in a file, and loading it again (see "Saving a deal, and loading it" in lisp_cmo_manual.md)
+(lazy-load "deal_save.lsp"
+  save-deal load-deal make-deal-file deal-file? copy-deal-file deal-save--date-text deal-save--tranche-arguments deal-save--tops deal-save--splits
+  deal-save--price-entry deal-save--slots deal-save--slot-text deal-save--text deal-save--check-reads-back deal-save--check-has-pieces
+  deal-save--option deal-save--date deal-save--read deal-save--give-prices! deal-save--check-sizes deal-save--put-in-order!)
+
 ; Building a deal by clicking on its tree, in a window of its own (see "Building a deal on its tree" in lisp_cmo_manual.md)
 (lazy-load "deal_tree.lsp"
   deal-tree deal-tree--nodes deal-tree--nodes-below deal-tree--form deal-tree--title-of-split deal-tree--asking deal-tree--plan

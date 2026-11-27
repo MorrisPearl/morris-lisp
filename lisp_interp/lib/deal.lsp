@@ -43,7 +43,8 @@
 ; floater and inverse floater split sizes them from the cap. (assign-coupons split deal parent) gives the children their
 ; coupons, which for a split of any kind is the parent's. To make another kind of split, include split (or a kind there is) and
 ; write its methods, as sequential-split, pro-rata-split, pac-split and the others have; (call-next-method) calls the method of
-; the kind that it extends.
+; the kind that it extends. Every kind has a pay-principal: split's defstruct requires one (:required-methods), so a split of a kind
+; that has none, its own or one that it includes, cannot be made.
 ;
 ; A split is added in two steps, so that the first can be looked at: a plan (a split-plan: the tranches to add and the split) is made by
 ; sequential-plan, pac-plan and the others, and deal-add-plan! adds it; deal-sequential! and the others are the two together. A split that is in
@@ -81,7 +82,9 @@
 
 ; loss-rule says how the split divides a loss among its children: reverse (the last first, up to what each owes), forward (the first
 ; first), or pro-rata (by what each owes)
-(defstruct split children (loss-rule 'reverse))                           ; (a kind of split is a type that includes this one)
+; A kind of split is a type that includes split, and has a method of pay-principal (its own, or that of the kind it includes): split's
+; :required-methods says so, so that a split of a kind without one cannot be made (make-split itself is an error: split is no kind of split).
+(defstruct (split (:required-methods pay-principal)) children (loss-rule 'reverse))
 
 (defstruct (sequential-split (:include split)) (accretion-to '()))   ; (the bond that what the Z bonds accrue is paid to first)
 (defstruct (pro-rata-split (:include split)) (loss-rule 'pro-rata))

@@ -1052,6 +1052,76 @@ class TestGenericFunctions(LispTestCase):
         self.assertLispError("(area (make-circle) 5)", "expected 1 argument")           # (the method's own parameters)
 
 
+class TestStructsReadBack(LispTestCase):
+    """A struct prints as #S(type :slot value ...), and reads back as one: in a program, and by read-from-string."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('(defstruct point x y (label "origin"))')
+
+    def test_a_struct_in_a_program_is_that_struct_with_the_defaults_for_the_slots_it_leaves_out(self):
+        self.assertShows("#S(point :x 1 :y 2)", '#S(point :x 1 :y 2 :label "origin")')
+        self.assertShows("(point-x #s(point :x 5))", "5")                              # (#s as well as #S)
+        self.assertShows("(point-x #S(point :x (+ 1 2)))", "(+ 1 2)")                  # (the values are data, not evaluated)
+
+    def test_a_struct_in_quoted_data_or_a_vector_is_a_struct_too(self):
+        self.assertShows("(map point? '(#S(point :x 3) 4))", "(#t #f)")
+        self.assertShows("(point-y (vector-ref #(#S(point :y 4)) 0))", "4")
+
+    def test_what_prints_reads_back_the_same(self):
+        self.run_lisp('(define p (make-point :x (make-point :x 9) :y (list "a" 1.5 #(1 2)) :label "home"))')
+        self.assertShows("(equal? p (read-from-string (format \"{}\" p)))", "#t")
+        self.assertShows('(point-x (point-x (car (read-from-string "(#S(point :x #S(point :x 9)))"))))', "9")
+
+    def test_a_struct_can_follow_the_defstruct_of_its_type_in_text_that_is_read_all_at_once(self):
+        """A notebook's cell is read whole before any of it runs: the #S(...) of a type defined earlier in it is made when its form
+        is evaluated, after the defstruct."""
+        forms = list(lisp_core.parse("(defstruct box size) (define b #S(box :size 3)) (box-size b)"))
+        self.assertEqual([lisp_core.seval(form, self.env) for form in forms][-1], 3)
+
+    def test_what_is_not_a_struct_that_can_be_read(self):
+        self.assertLispError('(read-from-string "#S(nothing :x 1)")', "there is no struct type called nothing")
+        self.assertLispError('(read-from-string "#S(point :z 1)")', "a point has no slot called z (its slots are label, x, y)")
+        self.assertLispError('(read-from-string "#S(point x 1)")', "after the type come slots and their values")
+        self.assertLispError('(read-from-string "#S(:x 1)")', "with the name of its type first")
+        with self.assertRaises(lisp_core.LispError) as unfinished:
+            list(lisp_core.parse("#S(point :x 1"))
+        self.assertEqual(unfinished.exception.kind, lisp_core.UNFINISHED)            # (the console reads another line)
+
+
+class TestRequiredMethods(LispTestCase):
+    """(defstruct (name (:required-methods generic-function...)) slot...): every instance, of the type or of one that includes it, must
+    have a method of each, or making it is an error."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("(defstruct (shape (:required-methods area)) (name \"shape\"))"
+                      "(defstruct (circle (:include shape)) (r 1))"
+                      "(defstruct (square (:include shape)) (side 1))")
+
+    def test_a_type_without_a_method_cannot_be_made(self):
+        self.assertLispError("(make-circle)", "make-circle: a circle needs a method of area (the defstruct of shape says so, "
+                                              "with :required-methods), and area is not a generic function yet")
+        self.run_lisp("(defmethod area ((s circle)) (* 3 (circle-r s) (circle-r s)))")
+        self.assertShows("(area (make-circle :r 2))", "12")
+        self.assertLispError("(make-square)", "and area has none for square or a type it includes: define one first, "
+                                              "(defmethod area ((x square) ...) ...)")
+        self.assertLispError("(make-shape)", "and area has none for shape")
+        self.assertLispError('(read-from-string "#S(square :side 2)")', "make-square: a square needs a method of area")
+
+    def test_the_method_of_a_type_it_includes_or_for_any_argument_is_enough(self):
+        self.run_lisp("(defmethod area ((s shape)) 0)")
+        self.assertShows("(area (make-square))", "0")
+        self.run_lisp("(defstruct (tall-square (:include square) (:required-methods height)) (height 2))")
+        self.assertLispError("(make-tall-square)", "a tall-square needs a method of height (the defstruct of tall-square says so")
+        self.run_lisp("(defmethod height (x) 1)")                                     # (the method for any argument)
+        self.assertShows("(tall-square-height (make-tall-square))", "2")
+
+    def test_what_the_option_will_not_take(self):
+        self.assertLispError("(defstruct (bad (:required-methods \"area\")) a)", "names generic functions, such as (:required-methods area)")
+        self.assertLispError("(defstruct (bad (:colour red)) a)", "the options are :include and :required-methods")
+
+
 class TestWithStruct(LispTestCase):
     """(with-struct struct-expr body...) -- bind every slot as a variable."""
 

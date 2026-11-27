@@ -324,14 +324,22 @@ class LispStructType:
 
     `env` is the environment the defstruct was evaluated in, where call-super
     evaluates this type's slot defaults (the constructor evaluates them in a
-    scope inside it)."""
+    scope inside it).
 
-    def __init__(self, name, own_slots, parent=None, env=None):
+    `required_methods` is the generic functions that an instance must have a
+    method of, each with the name of the type whose defstruct says so (its
+    :required-methods): the parent's first, then this type's own. Making an
+    instance checks them (see check_required_methods)."""
+
+    def __init__(self, name, own_slots, parent=None, env=None, own_required_methods=()):
         self.name = name              # Symbol
         self.env = env
         self.parent = parent          # LispStructType or None
         self.own_slots = own_slots    # this type's own slot declarations, unmerged
         self.slots = LispStructType._merge_slots(parent, own_slots)
+        inherited = list(parent.required_methods) if parent is not None else []
+        self.required_methods = inherited + [(method_name, name) for method_name in own_required_methods
+                                             if all(method_name != required for required, _ in inherited)]
 
     @staticmethod
     def _merge_slots(parent, own_slots):
@@ -489,8 +497,36 @@ class GenericFunction:
     def __call__(self, *args):
         return apply_method(self.applicable(list(args)), list(args))
 
+    def has_method_for(self, struct_type):
+        """Whether a call whose first argument is of this struct type has a method: the type's own, or that of a type it
+        includes, or the method for any argument (t)."""
+        if None in self.methods:
+            return True
+        while struct_type is not None:
+            if str(struct_type.name) in self.methods:
+                return True
+            struct_type = struct_type.parent
+        return False
+
     def __repr__(self):
         return "#<generic-function %s>" % (self.name,)
+
+
+def check_required_methods(struct_type, who):
+    """An error, said by who (such as make-point), unless every generic function that the struct type requires -- its
+    defstruct's :required-methods, and those of the types it includes -- has a method for it: so a type that is meant to be
+    included, such as one that names a method every kind of it must have, cannot be made without one."""
+    for method_name, required_by in struct_type.required_methods:
+        generic = struct_type.env.lookup_or_none(method_name) if struct_type.env is not None else None
+        if not isinstance(generic, GenericFunction):
+            raise LispError("%s: a %s needs a method of %s (the defstruct of %s says so, with :required-methods), and %s is not a "
+                            "generic function yet: define it with defgeneric or defmethod first"
+                            % (who, struct_type.name, method_name, required_by, method_name))
+        if not generic.has_method_for(struct_type):
+            raise LispError("%s: a %s needs a method of %s (the defstruct of %s says so, with :required-methods), and %s has none "
+                            "for %s or a type it includes: define one first, (defmethod %s ((x %s) ...) ...)"
+                            % (who, struct_type.name, method_name, required_by, method_name, struct_type.name,
+                               method_name, struct_type.name))
 
 
 class LispError(Exception):
@@ -605,6 +641,9 @@ def tokenize(text):
         elif c == ';':                      # comment runs to end of line
             while i < n and text[i] != '\n':
                 i += 1
+        elif c == '#' and i + 2 < n and text[i + 1] in "Ss" and text[i + 2] == '(':
+            tokens.append(("#S(", line, i, i + 3))    # start of a struct, as one prints: #S(point :x 1 :y 2)
+            i += 3
         elif c == '#' and i + 1 < n and text[i + 1] == '(':
             tokens.append(("#(", line, i, i + 2))     # start of a vector literal
             i += 2
@@ -640,11 +679,13 @@ def tokenize(text):
 # ---------------------------------------------------------------------------
 
 class Tokens:
-    """The tokens of some source text (see tokenize), and how far reading has got through them."""
+    """The tokens of some source text (see tokenize), and how far reading has got through them. struct_literals_read
+    counts the #S(...) read so far, so that parse can tell whether a form has one."""
 
     def __init__(self, text):
         self.items = tokenize(text)
         self.position = 0
+        self.struct_literals_read = 0
 
     def more(self):
         return self.position < len(self.items)
@@ -668,13 +709,93 @@ class Tokens:
         return self.items[index][3]
 
 
+class StructLiteral:
+    """#S(type :slot value ...), as the reader reads it: the name of a struct type, and slots with their values, which
+    are data (they are not evaluated). The reader has no environment to find the type in, so the struct is made later,
+    by make_struct_from_literal: when the form that holds it is evaluated (see FormWithStructLiterals), or by
+    read-from-string, which has the environment."""
+
+    def __init__(self, type_name, slot_values, line):
+        self.type_name = type_name          # Symbol
+        self.slot_values = slot_values      # [(Keyword, value)], in the order they were written
+        self.line = line
+
+    def __repr__(self):
+        return "#S(%s%s)" % (self.type_name, "".join(" %s %s" % (key, to_string(value)) for key, value in self.slot_values))
+
+
+class FormWithStructLiterals:
+    """A top-level form with a #S(...) in it, as parse gives it: seval makes its structs (see resolve_struct_literals) just
+    before it evaluates it, after the forms before it have been evaluated -- so a #S(...) can follow, in the same file or
+    the same cell, the defstruct of its type, as in Common Lisp, where a struct is made when it is read."""
+
+    def __init__(self, form):
+        self.form = form
+
+    def __repr__(self):
+        return to_string(self.form)
+
+
+def make_struct_from_literal(literal, env):
+    """The struct that #S(type :slot value ...) is: made by the type's constructor, make-<type>, with those slots, so that the
+    slots it doesn't give have their defaults, and the type's :required-methods are checked. A #S(...) inside a value is
+    made first."""
+    struct_type = env.lookup_or_none(Symbol("%%struct-type-%s" % literal.type_name))
+    if struct_type is None:
+        raise LispError("#S(%s ...) on line %d: there is no struct type called %s (define it with defstruct, or load the file "
+                        "that does, first)" % (literal.type_name, literal.line, literal.type_name))
+    slot_names = set(str(slot_name) for slot_name, _ in struct_type.slots)
+    arguments = []
+    for key, value in literal.slot_values:
+        if str(key)[1:] not in slot_names:
+            raise LispError("#S(%s ...) on line %d: a %s has no slot called %s (its slots are %s)"
+                            % (literal.type_name, literal.line, literal.type_name, str(key)[1:], ", ".join(sorted(slot_names))))
+        arguments += [key, resolve_struct_literals(value, env)]
+    constructor = env.lookup_or_none(Symbol("make-%s" % literal.type_name))
+    if not isinstance(constructor, Procedure):
+        raise LispError("#S(%s ...) on line %d: make-%s, the constructor of %s, is not defined"
+                        % (literal.type_name, literal.line, literal.type_name, literal.type_name))
+    return apply_proc(constructor, arguments)
+
+
+def resolve_struct_literals(x, env):
+    """x, with each #S(...) in it, at any depth (in a list, in a vector, or as the value of a slot), made into the struct that it
+    is (see make_struct_from_literal). What has none in it is returned as it is."""
+    if isinstance(x, FormWithStructLiterals):
+        return resolve_struct_literals(x.form, env)
+    if isinstance(x, StructLiteral):
+        return make_struct_from_literal(x, env)
+    if isinstance(x, Pair):
+        items, p = [], x
+        while isinstance(p, Pair):                  # (along the list, not down it: a long list is not a deep one)
+            items.append(p.car)
+            p = p.cdr
+        made = [resolve_struct_literals(item, env) for item in items]
+        tail = resolve_struct_literals(p, env)
+        if tail is p and all(new is old for new, old in zip(made, items)):
+            return x
+        result = tail
+        for item in reversed(made):
+            result = Pair(item, result)
+        return result
+    if isinstance(x, LispVector) and x.items.dtype == object:
+        items = list(x.items)
+        made = [resolve_struct_literals(item, env) for item in items]
+        return x if all(new is old for new, old in zip(made, items)) else LispVector(made)
+    return x
+
+
 def parse(text):
     """Parse source text into top-level Lisp expressions, one at a time. (A
     generator, so a file's forms before a missing or extra parenthesis still
-    get run. A string that is never closed is found before any form is read.)"""
+    get run. A string that is never closed is found before any form is read.)
+    A form with a #S(...) in it is given as a FormWithStructLiterals, whose
+    structs seval makes when it evaluates it."""
     tokens = Tokens(text)
     while tokens.more():
-        yield read_from(tokens)
+        literals_before = tokens.struct_literals_read
+        form = read_from(tokens)
+        yield form if tokens.struct_literals_read == literals_before else FormWithStructLiterals(form)
 
 
 def read_from(tokens):
@@ -708,6 +829,20 @@ def read_from(tokens):
             raise lisp_error_of_kind("missing ')': the #( on line %d is never closed" % line, UNFINISHED)
         tokens.take()  # discard ")"
         return LispVector(items)
+    elif token == "#S(":
+        items = []
+        while tokens.more() and tokens.peek() != ")":
+            items.append(read_from(tokens))
+        if not tokens.more():
+            raise lisp_error_of_kind("missing ')': the #S( on line %d is never closed" % line, UNFINISHED)
+        tokens.take()  # discard ")"
+        if not items or not isinstance(items[0], Symbol) or isinstance(items[0], Keyword):
+            raise LispError("#S( on line %d: a struct is written #S(type :slot value ...), with the name of its type first" % line)
+        if len(items) % 2 != 1 or not all(isinstance(key, Keyword) for key in items[1::2]):
+            raise LispError("#S(%s ...) on line %d: after the type come slots and their values, :slot value ..., such as "
+                            "#S(point :x 1 :y 2)" % (items[0], line))
+        tokens.struct_literals_read += 1
+        return StructLiteral(items[0], list(zip(items[1::2], items[2::2])), line)
     elif token == ")":
         raise LispError("unexpected ')' on line %d -- there are more )s than (s before it" % line)
     elif token in ("'", "`", ",", ",@"):
@@ -1566,8 +1701,10 @@ def struct_function_docs(type_name, slot_names):
 
 
 def define_struct(args, env):
-    """(defstruct name slot...) or (defstruct (name (:include parent)) slot...); args is what follows the
-    defstruct. Each slot is a symbol (default '()) or (slot default-expr). Defines, in env:
+    """(defstruct name slot...) or (defstruct (name option...) slot...); args is what follows the defstruct.
+    The options are (:include parent [(slot default-expr)...]) and (:required-methods generic-function...): the
+    generic functions that every instance, of this type or of one that includes it, must have a method of (making
+    one is an error otherwise). Each slot is a symbol (default '()) or (slot default-expr). Defines, in env:
       make-<name>          a constructor taking one keyword argument per slot --
                            an ordinary &key Procedure whose body calls %make-struct
       <name>-<slot>        an accessor for each slot, inherited slots included
@@ -1578,6 +1715,7 @@ def define_struct(args, env):
     name_form = args.car
     parent_type = None
     own_slots = []
+    own_required_methods = []
     if isinstance(name_form, Pair):
         type_name = name_form.car
         opt_p = name_form.cdr
@@ -1602,8 +1740,14 @@ def define_struct(args, env):
                             "(expected (slot-name default-expr))" % (override_spec,))
                     own_slots.append((override_spec.car, override_spec.cdr.car))
                     override_p = override_p.cdr
+            elif isinstance(opt, Pair) and isinstance(opt.car, Keyword) and opt.car == ":required-methods":
+                for method_name in pairs_to_list(opt.cdr):
+                    if not isinstance(method_name, Symbol):
+                        raise LispError("defstruct: :required-methods names generic functions, such as "
+                                        "(:required-methods area), not %s" % to_string(method_name))
+                    own_required_methods.append(method_name)
             else:
-                raise LispError("defstruct: unsupported option in %r (only :include is supported)"
+                raise LispError("defstruct: unsupported option in %r (the options are :include and :required-methods)"
                                  % (name_form,))
             opt_p = opt_p.cdr
     else:
@@ -1623,7 +1767,7 @@ def define_struct(args, env):
             raise LispError("defstruct: the slot %s of %s is given twice -- a slot is declared once (an inherited slot's "
                             "default is changed in :include or by naming it, not both)" % (slot_name, type_name))
         seen.add(slot_name)
-    struct_type = LispStructType(type_name, own_slots, parent=parent_type, env=env)
+    struct_type = LispStructType(type_name, own_slots, parent=parent_type, env=env, own_required_methods=own_required_methods)
     slots = struct_type.slots
     env[Symbol("%%struct-type-%s" % type_name)] = struct_type  # for a later defstruct's :include
 
@@ -1935,6 +2079,8 @@ def seval(expr, env, call=None):
     If an error escapes, the calls in progress are recorded on the exception
     (exc.lisp_trace) on its way out."""
     global _call_depth
+    if type(expr) is FormWithStructLiterals:
+        expr = resolve_struct_literals(expr, env)       # (its #S(...) are made now, after the forms before it ran)
     control_stack = [('EVAL', expr, env)]
     value_stack = []
     entry_depth = _call_depth
@@ -2001,6 +2147,8 @@ def _run_eval_loop(control_stack, value_stack):
             elif isinstance(x, Symbol):
                 value_stack.append(cur_env.find(x)[x])
             elif not isinstance(x, Pair):
+                if type(x) is StructLiteral:   # a #S(...) in code that was not read by parse (built by a program, say)
+                    x = make_struct_from_literal(x, cur_env)
                 value_stack.append(x)          # self-evaluating literal
             else:
                 op, args = x.car, x.cdr
