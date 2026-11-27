@@ -53,6 +53,11 @@ The **baseball manual**, [lisp_baseball_manual.md](lisp_baseball_manual.md), cov
   - [What is not modeled](#what-is-not-modeled)
 - [Checking a deal](#checking-a-deal)
 - [Making another kind of split](#making-another-kind-of-split)
+  - [How the kinds are related](#how-the-kinds-are-related)
+  - [A kind that changes one thing](#a-kind-that-changes-one-thing)
+  - [A kind of your own, step by step](#a-kind-of-your-own-step-by-step)
+  - [Putting it in the menus](#putting-it-in-the-menus)
+  - [Making it one of the standard kinds](#making-it-one-of-the-standard-kinds)
 - [The deal object, and its views in a notebook](#the-deal-object-and-its-views-in-a-notebook)
 - [Building a deal by clicking](#building-a-deal-by-clicking)
 - [Building a deal on its tree](#building-a-deal-on-its-tree)
@@ -117,12 +122,13 @@ names, in the order they were added; `(deal-leaves deal)` are the bonds; `(deal-
 
 A **split** (`defstruct split`) names its `children`, and divides what its parent was paid among them. What differs from one kind of split to
 another is its **methods**, of five generic functions: `pay-principal`, `pay-interest`, `allocate-loss`, `calculate-sizes` and
-`assign-coupons`, with `check-split` for what it will not divide. (They are described in "Making another kind of split".) The kinds there are:
+`assign-coupons`, with `check-split` for what it will not divide. (They are described in "Making another kind of split", with how the kinds include one another, and how to make a kind of your own.) The kinds there are:
 
 | Kind | Made by | What it does |
 |---|---|---|
 | `sequential-split` | `deal-sequential!` | pays the first child until it is paid, and then the next; a child can be a Z bond |
 | `pro-rata-split` | `deal-pro-rata!` | pays each child in proportion to what it still owes |
+| `average-life-split` | `deal-average-life!` | a sequential split whose sizes are worked out from the average lives that the children are to have |
 | `pac-split` | `deal-pac!` | a PAC paid on a schedule, and its companion |
 | `floater-inverse-split` | `deal-floater-inverse!` | a floater and an inverse floater that together have the coupon of the node they come from |
 | `premium-discount-split` | `deal-premium-discount!` | a bond with a higher coupon and one with a lower, that together have its coupon |
@@ -1025,12 +1031,49 @@ split (see `defgeneric` and `defmethod` in the language manual). `(generic-funct
 - `(assign-coupons split deal parent)` gives the children their coupons, which for a split of any kind are the parent's.
 - `(check-split split deal parent)` is an error if the split cannot divide the parent: a Z bond is only a child of a sequential split, and an IO/PO
   split needs an IO that follows its PO.
-- `(split-label split)` says in a few words what kind of split it is (`"sequential"`, `"PAC and companion"`), for the outline of the deal and the deal builder.
+- `(split-label split)` says in a few words what kind of split it is (`"sequential"`, `"PAC and companion"`), for the outline of the deal, the deal
+  builder and the deal tree.
+
+### How the kinds are related
+
+Each kind includes `split`, or another kind, and so has the slots and the methods of the one it includes. Here they are as `lib/deal.lsp` makes them, each
+with the slots that it adds:
+
+```text
+split                           children, loss-rule
+├── sequential-split            accretion-to
+│   └── average-life-split      lives
+├── pro-rata-split              (none: its loss-rule starts as pro-rata, not reverse)
+│   ├── floater-inverse-split   cap, margin, index-name, leverage, constant
+│   └── premium-discount-split  premium-coupon, discount-coupon
+├── pac-split                   low-psa, high-psa, schedule
+└── io-po-split                 io-coupon
+```
+
+What differs from kind to kind is which of the generic functions it has methods of its own for:
+
+- **`split`** has the methods that every kind has unless it has its own: `pay-interest`, `allocate-loss`, `check-split`, `calculate-sizes` and
+  `assign-coupons`. It has no `pay-principal`, so each kind that includes `split` itself has its own. No split is made of the kind `split` alone.
+- **`sequential-split`** has its own `pay-principal`, which pays in order, and `check-split`, since it is the kind that can have Z bonds.
+  **`average-life-split`** is paid as it is, and has only its own `calculate-sizes` (the sizes from the average lives) and `check-split`.
+- **`pro-rata-split`** pays the principal, and the interest, in proportion. **`floater-inverse-split`** and **`premium-discount-split`** are paid as it is,
+  and have their own `calculate-sizes` and `assign-coupons`: the sizes and the coupons that make the two bonds, together, what their parent is.
+- **`pac-split`** has its own `pay-principal` (the schedule first) and `calculate-sizes`.
+- **`io-po-split`** has its own of nearly all of them, `pay-principal`, `allocate-loss`, `check-split`, `calculate-sizes` and `assign-coupons`, because its
+  two children are each as big as the parent.
+
+Each of the seven kinds has a `split-label` of its own, and a form in `(standard-split-forms)`, which is the menu of the deal tree and the tabs of the
+deal builder. The bonds are another, shorter, hierarchy: `collateral` and `tranche` include `node`.
+
+### A kind that changes one thing
 
 A new kind includes `split`, or one of the kinds there are, and has methods of its own; `(call-next-method)` calls the method of the kind that it
-extends. This one does what a sequential split does, and says what it is dividing:
+extends. `lib/deal.lsp` is loaded first, with `require`, because `split` is defined there: the functions of a library are loaded when one of them is
+called (see `lazy-load`), and `defstruct` calls none of them. This kind does what a sequential split does, and says what it is dividing:
 
 ```lisp
+(require "deal.lsp")
+
 (defstruct (noting-split (:include sequential-split)))
 
 (defmethod pay-principal ((split noting-split) deal parent t)
@@ -1038,8 +1081,159 @@ extends. This one does what a sequential split does, and says what it is dividin
   (call-next-method))
 ```
 
-A kind with data of its own (a PAC has `low-psa`, `high-psa` and its `schedule`) has slots for it. A method is looked up by the kind of the first
-argument, so a method for `sequential-split` is also the method for `noting-split`, until it has one of its own.
+A method is looked up by the kind of the first argument, so a method for `sequential-split` is also the method for `noting-split`, until it has one of
+its own.
+
+### A kind of your own, step by step
+
+A **lockout** is a kind of split that `lib/deal.lsp` does not have. Its first child is a bond that is *locked out* of principal for the first months of
+the deal, so that its balance stays as it is for a while (a NAS bond, non-accelerating senior, is one); in those months the principal goes to the
+other children, in order. After the lockout the children are paid in order, the locked-out bond first, as by a sequential split. If the others are
+paid off in the lockout, the locked-out bond is paid what is left, so that all of the parent's principal is paid to one child or another, as it has
+to be.
+
+It takes four steps, each one a part of the block below:
+
+1. **The struct.** The kind includes `split`, since no kind there is pays principal the way it does, and has a slot for what it needs to know, the
+   `months` of the lockout. `defstruct` makes `make-lockout-split`, which takes the slots of `split` (`:children`, `:loss-rule`) as well as its own,
+   and `lockout-split-months` to read the slot.
+2. **The methods.** A kind that includes `split` itself has its own `pay-principal`. This one chooses the order the children are paid in (in the
+   lockout, the locked-out bond last) and pays them in that order with `pay-child!`, each what it is owed, up to the cash that is left. Its
+   `check-split` calls `(call-next-method)`, the checks that every kind has (no Z bonds, a loss rule that there is), and then makes its own. Its
+   `split-label` names it. The rest are the methods of `split`: the children are paid interest at the parent's coupon, written down last first, and
+   are the sizes they are made.
+3. **A plan.** A plan is the tranches to add and the split that divides the parent among them (see "Plans, and looking before adding"). `lockout-plan`
+   makes one with `make-split-plan`, as `sequential-plan` does for a sequential split, and `deal-lockout!` adds it, as `deal-sequential!` does.
+4. **Using it.** It is used as the kinds there are. The toy pool of "A deal in a few lines", 20 of principal a month for six months, is divided into
+   `NAS`, which is locked out for two months, and `SUP`, its support:
+
+```lisp
+(require "deal.lsp")                     ; (split, and the generic functions, are defined there)
+
+; 1. The struct: it includes split, and has a slot for the months of the lockout.
+(defstruct (lockout-split (:include split)) months)
+
+; 2. The methods. It includes split itself, so it says how the principal is paid.
+(defmethod pay-principal ((split lockout-split) deal parent t)
+  "In the months of the lockout, the first child is paid last: only what the others cannot take. After them, it is paid first."
+  (let* ((children (map (lambda (name) (get-node deal name)) (split-children split)))
+         (order (if (< t (lockout-split-months split))
+                    (append (cdr children) (list (car children)))
+                    children))
+         (cash (vector-ref (node-principal parent) t)))
+    (dolist (child order)
+      (set! cash (pay-child! child t cash)))))
+
+(defmethod check-split ((split lockout-split) deal parent)
+  "A lockout split has the bond that is locked out, and at least one more, and locks it out for a whole number of months."
+  (call-next-method)
+  (when (< (length (split-children split)) 2)
+    (error "a lockout split has the bond that is locked out, and at least one that is paid in its place"))
+  (let ((months (lockout-split-months split)))
+    (unless (and (integer? months) (>= months 0))
+      (error (format "a lockout is a whole number of months, 0 or more, not {}" months)))))
+
+(defmethod split-label ((split lockout-split)) "lockout")
+
+; 3. A plan, and the builder that adds it.
+(define (lockout-plan children months)
+  "The plan of a lockout split into the children, a list of (name balance): the first is locked out of principal for the months."
+  (make-split-plan :tranches children
+                   :split (make-lockout-split :children (map car children) :months months)))
+
+(define (deal-lockout! deal parent-name children months)
+  "Adds the children, a list of (name balance), and locks the first out of the parent's principal for the months."
+  (deal-add-plan! deal parent-name (lockout-plan children months)))
+
+; 4. Using it.
+(define deal (new-deal "Lockout" :collateral '((120.0 0.0 0.0 6)) :speed (prepayment-speed 'cpr 0)))
+(deal-lockout! deal "POOL" '(("NAS" 60.0) ("SUP" 60.0)) 2)
+(deal-run! deal)
+(node-principal (get-node deal "NAS"))               ; => #(0.0 0.0 20.0 20.0 20.0 0.0)
+(node-principal (get-node deal "SUP"))               ; => #(20.0 20.0 0.0 0.0 0.0 20.0)
+(deal-check deal)                                    ; => #t
+(split-label (node-split (get-node deal "POOL")))    ; => "lockout"
+
+(define early (new-deal "Lockout" :collateral '((120.0 0.0 0.0 6)) :speed (prepayment-speed 'cpr 0)))
+(deal-lockout! early "POOL" '(("NAS" 90.0) ("SUP" 30.0)) 2)
+(deal-run! early)
+(node-principal (get-node early "NAS"))              ; => #(0.0 10.0 20.0 20.0 20.0 20.0)
+(node-principal (get-node early "SUP"))              ; => #(20.0 10.0 0.0 0.0 0.0 0.0)
+(deal-check early)                                   ; => #t
+
+(define refused (new-deal "Lockout" :collateral '((120.0 0.0 0.0 6))))
+(catch-error (deal-lockout! refused "POOL" '(("NAS" 60.0) ("SUP" 60.0)) 2.5) (message) message)   ; => "a lockout is a whole number of months, 0 or more, not 2.5"
+(node-split (get-node refused "POOL"))               ; => ()
+```
+
+`NAS` is paid nothing in months 1 and 2, the lockout, while `SUP` is paid the 20 of each; then `NAS` is paid first, until it is paid off in month 5, and
+`SUP` is paid the rest. In the second deal `SUP` is paid off in month 2, in the lockout, and `NAS` is paid the 10 that is left, and then everything. A
+split that `check-split` refuses is not added, and nothing of its plan is.
+
+`deal-check` is how a new kind is tested: it says whether, in every month and at every split, the children were paid all that their parent was, and no
+more than they were owed (see "Checking a deal"). A `pay-principal` that leaves some of the cash unpaid, or pays a child more than it owes, is found by it.
+
+### Putting it in the menus
+
+The menu of the deal tree, and the tabs of the deal builder, are a table of `split-form`s, and a kind of split is in them when there is a form for it (the
+slots of a form are in "Building a deal by clicking"). The form's `:label` is the kind's `split-label`, so that a tranche that is divided by a lockout is
+changed with this form. Its `:fields` are what the pop-up asks for; `:defaults` is what they are filled in with for a tranche that is not divided, and
+`:describe` what they are filled in with for one that is divided by a lockout, so that it can be changed; `:plan` makes the plan from the answers, which
+are a list of `(field-name . value)` (a `number` field's value is a number, an `integer` field's a whole one, and a `text` field's a string). This form
+makes the lockout of two bonds, the one that is locked out and its support, which is what is left:
+
+```lisp
+(define lockout-form
+  (make-split-form
+    :title "Lockout" :label "lockout"
+    :help "The first bond is paid no principal for the months of the lockout, unless the support bond is paid off; after them it is paid first."
+    :fields (list (list "locked" 'text "Locked-out bond" "")
+                  (list "balance" 'number "Its balance" 0)
+                  (list "support" 'text "Support bond (what is left)" "")
+                  (list "months" 'integer "Months locked out" 60))
+    :defaults (lambda (parent) (list (cons "locked" (string-append (node-name parent) "-NAS"))
+                                     (cons "balance" (/ (vector-ref (node-balance parent) 0) 2.0))
+                                     (cons "support" (string-append (node-name parent) "-SUP"))))
+    :describe (lambda (deal split)
+                (let ((locked (car (split-children split))))
+                  (list (cons "locked" locked)
+                        (cons "balance" (vector-ref (node-balance (get-node deal locked)) 0))
+                        (cons "support" (cadr (split-children split)))
+                        (cons "months" (lockout-split-months split)))))
+    :plan (lambda (parent answers)
+            (let ((whole (vector-ref (node-balance parent) 0))
+                  (balance (cdr (assoc "balance" answers))))
+              (unless (< 0 balance whole)
+                (error (format "the locked-out bond's balance is more than 0 and less than the {:,.2f} that is divided" whole)))
+              (lockout-plan (list (list (cdr (assoc "locked" answers)) balance)
+                                  (list (cdr (assoc "support" answers)) (- whole balance)))
+                            (cdr (assoc "months" answers)))))))
+```
+
+The form is added to the standard ones, for the deal tree or the deal builder:
+
+```lisp
+(deal-tree deal :forms (append (standard-split-forms) (list lockout-form)))
+(display-widget (bonds deal :forms (append (standard-split-forms) (list lockout-form))))
+```
+
+The menu of a tranche that is not divided then ends with **Lockout**, and its pop-up asks for the two names, the balance of the locked-out bond and the
+months. **Calculate the sizes** shows the two bonds, with their average lives, and **Add the tranches to the deal** adds them. The menu of a tranche that
+is divided by a lockout offers to change the lockout split, in the pop-up filled in as it is.
+
+### Making it one of the standard kinds
+
+A kind of your own can stay in a file of your own, loaded with `require` before it is used. To make it one of the kinds of the library, as the others are:
+
+1. put the struct, its methods, its plan and its builder (`lockout-plan` and `deal-lockout!`) in `lib/deal.lsp`, beside the other kinds, each with its
+   docstring;
+2. put its form in `(standard-split-forms)`, in `lib/deal_builder.lsp`, so that it is in every menu;
+3. add the names that `defstruct` and `define` made (`make-lockout-split`, `lockout-split?`, `lockout-split-months`, `lockout-split-months-set!`,
+   `copy-lockout-split`, `lockout-plan` and `deal-lockout!`) to the `lazy-load` of `deal.lsp` in `lib/autoloads.lsp`, so that calling one of them
+   loads the file;
+4. add it to the table in "Splits", and a section about it to "The kinds of split", in this manual;
+5. add tests under `lisp_interp/tests/`: what it pays, that `deal-check` is `#t` for deals divided by it, and what `check-split` refuses
+   (`test_names.py` fails if a name is defined twice, or replaces a builtin).
 
 ## The deal object, and its views in a notebook
 

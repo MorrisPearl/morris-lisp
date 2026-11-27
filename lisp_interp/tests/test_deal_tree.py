@@ -2,9 +2,11 @@
 for a split. First the Lisp functions the window calls, without a window; then the window itself, which is drawn by Qt off the screen
 (QT_QPA_PLATFORM=offscreen), clicked and filled in the way a person does it: the menu's actions are triggered, the fields typed into and
 the buttons clicked. Qt's event loop is not run (deal-tree would wait in it for the window to be closed); the pop-ups are shown instead of
-waiting, and the question before taking a split away is answered by the test."""
+waiting, and the question before taking a split away is answered by the test. Last, the kind of split that the CMO manual makes, step by step,
+in "Making another kind of split": its blocks are run as they are written, and its form is used in the window's menu and pop-up."""
 
 import os
+import re
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")      # (before Qt is imported: the windows are drawn off the screen)
@@ -95,22 +97,14 @@ class TreeFunctionsTest(LispTestCase):
             self.run_lisp('(deal-tree--asking forms deal "Diagonal" "POOL")')
 
 
-@unittest.skipIf(QtWidgets is None, "PyQt6 is needed")
-class TreeWindowTest(LispTestCase):
-    """The window, drawn off the screen, and clicked as a person does."""
+class TreeWindowActions:
+    """Doing what the user does, in the window that is self.window."""
 
-    def setUp(self):
-        super().setUp()
-        self.run_lisp('(require "deal_tree.lsp") (define deal %s)' % psa_deal("demo", 100000000.0, 6.5, psa=150))
-        self.open_window()
-
-    def open_window(self):
-        """Opens the window of the deal, without waiting in Qt's event loop for it to be closed."""
+    def open_window(self, src='(deal-tree deal)'):
+        """Opens the window that src makes, without waiting in Qt's event loop for it to be closed."""
         with mock.patch.object(QtWidgets.QApplication, "exec", lambda application: 0):
-            self.window = self.run_lisp('(deal-tree deal)')
+            self.window = self.run_lisp(src)
         self.addCleanup(self.window.close)
-
-    # -- doing what the user does ----------------------------------------------
 
     def node(self, name):
         """The node called name, as the window has it: (name parent balance split-label kind)."""
@@ -144,6 +138,20 @@ class TreeWindowTest(LispTestCase):
     def boxes(self):
         """The boxes drawn, by the name of the tranche."""
         return {item.node[0]: item for item in self.window.scene.items() if hasattr(item, "node")}
+
+    def line_texts(self, dialog):
+        """What is in the pop-up's lines to type in, in order."""
+        return [edit.text() for edit in dialog.findChildren(QtWidgets.QLineEdit) if edit.isVisible()]
+
+
+@unittest.skipIf(QtWidgets is None, "PyQt6 is needed")
+class TreeWindowTest(TreeWindowActions, LispTestCase):
+    """The window, drawn off the screen, and clicked as a person does."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp('(require "deal_tree.lsp") (define deal %s)' % psa_deal("demo", 100000000.0, 6.5, psa=150))
+        self.open_window()
 
     def divide_pool(self):
         """Divides POOL into A (60 million) and B (the rest) by a sequential split, through the menu and the pop-up."""
@@ -185,8 +193,7 @@ class TreeWindowTest(LispTestCase):
     def test_the_pop_up_has_the_fields_of_the_kind_of_split(self):
         dialog = self.choose("POOL", "PAC")
         self.assertIn("Divide POOL, which has a balance of 100,000,000.00, by a PAC and companion split", self.visible_labels(dialog)[0])
-        self.assertEqual([edit.text() for edit in dialog.findChildren(QtWidgets.QLineEdit) if edit.isVisible()],
-                         ["POOL-PAC", "POOL-COMP", "100", "300"])
+        self.assertEqual(self.line_texts(dialog), ["POOL-PAC", "POOL-COMP", "100", "300"])
         self.assertEqual(dialog.findChildren(QtWidgets.QComboBox)[0].currentText(), "reverse")
 
     def test_the_tranches_can_be_added_only_after_their_sizes_are_calculated(self):
@@ -247,6 +254,88 @@ class TreeWindowTest(LispTestCase):
         self.window.close()
         self.run_lisp('(deal-delete-split! deal "POOL")')                 # (a closed window is not drawn again)
         self.assertEqual(set(self.boxes()), {"POOL", "X", "Y"})
+
+
+def manual_section_blocks(heading):
+    """The ```lisp blocks of the section of the CMO manual under the ## heading (its ### sections are a part of it), in order."""
+    with open(CMO_DOC, encoding="utf-8") as f:
+        text = f.read()
+    section = text.split("\n## %s\n" % heading, 1)[1].split("\n## ", 1)[0]
+    return re.findall(r"```lisp\n(.*?)```", section, re.S)
+
+
+@unittest.skipIf(QtWidgets is None, "PyQt6 is needed")
+class ManualsKindOfSplitTest(TreeWindowActions, LispTestCase):
+    """The lockout split that "Making another kind of split" in lisp_cmo_manual.md makes, step by step. The section's blocks are run as
+    they are written, one after another, as in a notebook (all but the ones that open a window or a widget), and then its form is used in
+    the deal tree: its menu, and the pop-up that adds a lockout split and changes it."""
+
+    def setUp(self):
+        super().setUp()
+        lisp_core.run_file(os.path.join(LIB, "autoloads.lsp"), self.env)     # (as at the console: a library is loaded when it is called)
+        blocks = manual_section_blocks("Making another kind of split")
+        self.assertGreaterEqual(len(blocks), 4)                              # (a kind that changes one thing, a lockout, its form, the window)
+        for block in blocks:
+            if "(deal-tree " not in block and "(display-widget" not in block:
+                self.run_lisp(block)
+        self.run_lisp('(define demo %s)' % psa_deal("demo", 100000000.0, 6.5, psa=150))
+        self.open_window('(deal-tree demo :forms (append (standard-split-forms) (list lockout-form)))')
+
+    def lockout(self, balance, months):
+        """Chooses Lockout in the menu of POOL and types the balance of the locked-out bond and the months: the pop-up, with the sizes
+        calculated."""
+        dialog = self.choose("POOL", "Lockout")
+        edits = [edit for edit in dialog.findChildren(QtWidgets.QLineEdit) if edit.isVisible()]
+        edits[1].setText(balance)
+        edits[3].setText(months)
+        self.button(dialog, "Calculate the sizes").click()
+        return dialog
+
+    def principal(self, deal, name):
+        """What the tranche called name of the deal (a Lisp name) was paid in principal, month by month, as a Python list."""
+        return lisp_widgets.to_python(self.run_lisp('(vector->list (node-principal (get-node %s "%s")))' % (deal, name)))
+
+    def test_the_manuals_deals_are_paid_as_it_says(self):
+        self.assertEqual(self.principal("deal", "NAS"), [0.0, 0.0, 20.0, 20.0, 20.0, 0.0])
+        self.assertEqual(self.principal("early", "SUP"), [20.0, 10.0, 0.0, 0.0, 0.0, 0.0])
+
+    def test_the_new_kind_is_at_the_end_of_the_menu(self):
+        self.assertEqual(self.menu_texts("POOL")[-2:], [("IO/PO...", True), ("Lockout...", True)])
+
+    def test_its_pop_up_is_made_from_the_form_and_adds_the_two_bonds(self):
+        dialog = self.choose("POOL", "Lockout")
+        self.assertIn("Divide POOL, which has a balance of 100,000,000.00, by a lockout split", self.visible_labels(dialog)[0])
+        self.assertEqual(self.line_texts(dialog), ["POOL-NAS", "50000000", "POOL-SUP", "60"])     # (the defaults: half, and 60 months)
+        dialog = self.lockout("40,000,000", "60")
+        self.assertEqual([row[:3] for row in self.sizes_shown(dialog)],
+                         [["POOL-NAS", "40,000,000.00", "40.00%"], ["POOL-SUP", "60,000,000.00", "60.00%"]])
+        self.button(dialog, "Add the tranches to the deal").click()
+        self.assertEqual(self.window.statusBar().currentMessage(),
+                         "Added POOL-NAS, POOL-SUP under POOL, by a lockout split. Click a tranche to divide it, or to change its split.")
+        self.assertEqual(self.node("POOL")[3], "lockout")                    # (the label drawn on the lines of the split)
+        self.run_lisp('(deal-run! demo)')
+        self.assertIs(self.run_lisp('(deal-check demo)'), True)
+        self.assertEqual(self.run_lisp('(vector-ref (node-principal (get-node demo "POOL-NAS")) 59)'), 0.0)      # (the last month locked out)
+        self.assertGreater(self.run_lisp('(vector-ref (node-principal (get-node demo "POOL-NAS")) 60)'), 0.0)
+
+    def test_a_lockout_split_is_changed_in_its_pop_up_filled_in_as_it_is(self):
+        self.button(self.lockout("40000000", "60"), "Add the tranches to the deal").click()
+        self.assertEqual(self.menu_texts("POOL"), [("Change the lockout split of POOL...", True),
+                                                   ("Take away the split of POOL, and everything under it...", True)])
+        dialog = self.choose("POOL", "Change the lockout split")
+        self.assertEqual(self.line_texts(dialog), ["POOL-NAS", "40000000", "POOL-SUP", "60"])     # (what :describe says)
+        dialog.findChildren(QtWidgets.QLineEdit)[3].setText("36")
+        self.button(dialog, "Calculate the sizes").click()
+        self.button(dialog, "Change the split").click()
+        self.assertEqual(self.run_lisp('(lockout-split-months (node-split (get-node demo "POOL")))'), 36)
+
+    def test_what_the_form_and_the_kind_refuse_is_said_in_the_pop_up(self):
+        dialog = self.lockout("100,000,000", "60")
+        self.assertIn("the locked-out bond's balance is more than 0 and less than the 100,000,000.00 that is divided", self.visible_labels(dialog))
+        self.assertFalse(self.button(dialog, "Add the tranches to the deal").isEnabled())
+        dialog = self.lockout("40,000,000", "-3")
+        self.assertIn("a lockout is a whole number of months, 0 or more, not -3", self.visible_labels(dialog))     # (from check-split)
+        self.assertEqual(len(self.window.nodes), 1)
 
 
 if __name__ == "__main__":
