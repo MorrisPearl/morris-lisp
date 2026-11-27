@@ -276,7 +276,12 @@
   deal-gui--show-delete! deal-builder--form-children-text deal-builder--form-decimal-to-percent deal-builder--show-plan-effect split-form-describe
   split-form-describe-set! split-form-label split-form-label-set! deal-builder--without-traceback deal-builder--average-lives-of deal-builder--form-lives
   deal-builder--form-lives-text bonds deal-gui-flows deal-gui-flows-set! deal-gui--show-flows! deal-gui--table deal-builder--show-node-flows
-  deal-gui--type-number deal-gui--typed! deal-gui--update-prices! deal-builder--priced-column-texts deal-builder--balance-charts)
+  deal-gui--type-number deal-gui--typed! deal-gui--update-prices! deal-builder--priced-column-texts deal-builder--balance-charts split-form-inputs deal-builder--plan-effect deal-builder--plan-effect-heading)
+
+; Building a deal by clicking on its tree, in a window of its own (see "Building a deal on its tree" in lisp_cmo_manual.md)
+(lazy-load "deal_tree.lsp"
+  deal-tree deal-tree--nodes deal-tree--nodes-below deal-tree--form deal-tree--title-of-split deal-tree--asking deal-tree--plan
+  deal-tree--sizes deal-tree--apply! deal-tree--delete!)
 
 ; Views of a deal in a notebook: its collateral, and its dates and pricing speed (see lisp_cmo_manual.md)
 (lazy-load "deal_views.lsp"

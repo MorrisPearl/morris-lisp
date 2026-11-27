@@ -172,6 +172,7 @@ files in `examples/` and `lib/` from anywhere:
 | `plot_chart_example.lsp` | `plot-chart`: lines, symbols, bars, categories, two axes | nothing |
 | `report_example.lsp` | a table written as a text report with control breaks: mortgages with subtotals by zip code and state and a grand total, on pages; a letter to each client | nothing |
 | `deal_example.lsp` | a structured deal as a tree: a pool of mortgages divided by sequential and pro-rata splits into bonds, run at two prepayment speeds; and a PAC with its companion | nothing |
+| `deal_tree_example.lsp` | a structured deal built by clicking on a drawing of its tree, in a window of its own: a menu of the kinds of split, and a pop-up for each | PyQt6 |
 
 ## Techniques, and where to see them
 
@@ -1601,6 +1602,11 @@ a tranche into bonds in order by **average life**: give the life of all but one,
 grid; click a tranche to divide it, with a tab for each kind of split (sequential, pro rata, PAC, floater and inverse floater, premium and discount, IO and PO) and the fields it needs; one
 button calculates the sizes of the new tranches and shows them, and another adds them to the deal, under their parent in the grid. Click a tranche that is divided to change its split (what is
 under it is worked out again), or to take the split, and everything under it, away.
+
+`deal_tree_example.lsp` needs PyQt6. It builds the same kind of deal in a window of its own, which draws the deal as a tree (the [CMO manual](lisp_cmo_manual.md#building-a-deal-on-its-tree) says how): each tranche is a box,
+and each split the lines from a tranche to its children. Click a tranche for a menu of the kinds of split; choosing one opens a pop-up with the fields that kind asks for, a button that
+calculates the sizes, and one that adds the tranches, once their sizes have been looked at. The program waits for the window to be closed, and then shows the deal's outline
+(`deal-outline`).
 
 ---
 

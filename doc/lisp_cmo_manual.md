@@ -55,6 +55,7 @@ The **baseball manual**, [lisp_baseball_manual.md](lisp_baseball_manual.md), cov
 - [Making another kind of split](#making-another-kind-of-split)
 - [The deal object, and its views in a notebook](#the-deal-object-and-its-views-in-a-notebook)
 - [Building a deal by clicking](#building-a-deal-by-clicking)
+- [Building a deal on its tree](#building-a-deal-on-its-tree)
 - [An example program](#an-example-program)
 
 ## A deal in a few lines
@@ -1214,9 +1215,60 @@ kind of split", has a `split-label` method, and a form with that label):
 (display-widget (bonds deal :forms (append (standard-split-forms) (list halves))))
 ```
 
+## Building a deal on its tree
+
+`lib/deal_tree.lsp` builds a deal by clicking on a **drawing of its tree**, in a window of its own (drawn with PyQt6, by `lisp_deal_tree.py`). Each tranche is a box with
+its name and its balance (the collateral green, a tranche that is divided blue, a bond white, with *Z* or *notional* after the name of a Z bond or an IO), and each split
+is the set of lines that join a tranche to its children, with the kind of split written on them. The collateral is at the left, and each split's children are to the
+right of their parent, one above the other:
+
+```text
+                                          IO and PO
+                      ┌── A  40,000,000 ─────────────────┬── A-IO (notional)  40,000,000
+                      │                                  └── A-PO  40,000,000
+POOL  100,000,000 ────┤   floater and inverse floater
+   sequential         ├── B  30,000,000 ─────────────────┬── B-F  20,000,000
+                      │                                  └── B-I  10,000,000
+                      └── Z (Z)  30,000,000
+```
+
+```lisp
+(define deal (new-deal "Demo 2026-1" :first-payment (date 2026 12 25) :collateral '((100000000.0 6.5 6.0 360))))
+(deal-tree deal)
+```
+
+- **Click a tranche that is not divided**, and a menu lists the kinds of split: **Sequential**, **Average life**, **Pro rata**, **PAC**, **Floater/inverse**,
+  **Premium/discount** and **IO/PO**. Choose one, and a window pops up with the fields that kind needs, filled in to begin with as the tabs of the deal builder are
+  (see "Building a deal by clicking", which says what each field is).
+- **Calculate the sizes** shows, under the fields, what the tranches would be, without changing the deal: the tranches of the split and any under them, their
+  balances, what they were (for a split that is changed), the share of their parent's that each is, and their average lives at the pricing speed.
+- **Add the tranches to the deal** adds them, and the tree is drawn again with them in it. It can be pressed only once the sizes have been calculated, and it is
+  turned off again when a field is changed: what is added is what was looked at.
+- **Click a tranche that is divided**, and the menu offers to **change the split** (the same pop-up, filled in as the split was made, with a button **Change the
+  split**: the tranches under it are worked out again, to the leaves) or to **take the split away**, with every tranche under it, after asking.
+
+What is wrong is said in red in the pop-up (the names that are in the deal already, a balance that is not a number, balances that do not add up), and what was done
+is said in the line at the bottom of the window.
+
+**In a notebook**, the cell finishes and the window stays open beside the notebook (the kernel runs Qt's event loop between cells). The deal is the notebook's: what
+the window adds is in `deal`, and what the notebook changes, by the builders or in another view such as `(bonds deal)`, is drawn in the window. **From a Lisp file**
+run at the command line, `(deal-tree deal)` returns when the window is closed, with the deal as it was built: `examples/deal_tree_example.lsp` does that, and then
+shows the deal's outline.
+
+**What the menu and the pop-ups are made from.** The kinds of split in the menu are a table, the `split-form`s of `(standard-split-forms)` (see "Building a deal by
+clicking", which says what the slots of one are), and the fields of each pop-up are what its form asks for: `(split-form-inputs form deal node)` is the list of fields,
+`(name kind label value [options])`, each with the value to begin with (the form's default, what its `:defaults` says for the node, or what the node's split has, if it is
+divided by a split of the form's kind). The window draws a field of each kind: `text`, `number` and `integer` as a line to type in, `textarea` as a box of several lines,
+`dropdown` as a list to choose from, and `checkbox` as a box to tick. So a kind of split of your own is in the menu, with its own fields, when its form is added:
+
+```lisp
+(deal-tree deal :forms (append (standard-split-forms) (list halves)))      ; halves: the form of "Building a deal by clicking"
+```
+
 ## An example program
 
 `examples/deal_example.lsp` builds a deal of two levels and runs it at two prepayment speeds; divides a pool into a PAC and its companion and shows
 what the PAC owes at five speeds; divides the companion into a second PAC; divides a bond into a floater and an inverse floater and shows their
 coupons at five levels of the index; has a Z bond and an accretion directed bond; strips a bond into an IO and a PO and divides the PO; and makes
 a deal from two pieces of collateral that have different pass-through coupons. The example programs document describes it.
+`examples/deal_tree_example.lsp` opens the window of "Building a deal on its tree" on a pool of 100 million, and shows the deal's outline when it is closed.

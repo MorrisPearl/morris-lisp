@@ -48,6 +48,24 @@
 ; in the deal, or '() if there is no way to say (the fields keep their defaults); plan: (plan parent answers) is the split-plan for
 ; dividing the parent as the answers say, answers a list of (field-name . value), or an error that says what is wrong.
 
+(define (split-form-inputs form deal node)
+  "What the form asks for, to divide the node or to change its split: its fields, (name kind label value [options]) as widget-actions takes them,
+each with the value to start with. That is the form's default, or what (defaults node) says, or, if the node is divided by a split of the form's
+kind, what that split has (see describe)."
+  (let* ((split (node-split node))
+         (described (if (and (not (null? split))
+                             (not (null? (split-form-describe form)))
+                             (equal? (split-form-label form) (split-label split)))
+                        ((split-form-describe form) deal split)
+                        '()))
+         (values (append described ((split-form-defaults form) node))))        ; (assoc finds the first, so what the split has comes first)
+    (map (lambda (field)
+           (let ((given (assoc (car field) values)))
+             (if given
+                 (append (list (list-ref field 0) (list-ref field 1) (list-ref field 2) (cdr given)) (list-tail field 4))
+                 field)))
+         (split-form-fields form))))
+
 (defstruct deal-gui deal forms grid flows panel messages delete-row delete-button confirm-button cancel-button (chosen '()) (names '()))
 ; the deal being built, the split-forms, the widgets (the grid, the place under it for the cash flows of a tranche, the panel, ...), the name of
 ; the tranche chosen ('() if none), and the names of the tranches in the rows of the grid
@@ -498,9 +516,14 @@ nan for a node that is paid no principal, such as an interest-only bond."
              (if (> (vector-sum principal) 0.0) (average-life principal) nan)))
          names)))
 
-(define (deal-builder--show-plan-effect deal trial parent-name)
-  "Shows what the nodes below the parent are in the trial deal, which has a plan applied to it: their balances, and what each is of its
-own parent's, their average lives, and what they are in the deal itself (a node that is new has no balance there)."
+(define (deal-builder--plan-effect-heading trial parent-name)
+  "The line above the table of deal-builder--plan-effect: the parent, its balance, and the kind of split that divides it in the trial deal."
+  (format "{} ({:,.2f}) divided by a {} split into:" parent-name (vector-ref (node-balance (get-node trial parent-name)) 0)
+          (split-label (node-split (get-node trial parent-name)))))
+
+(define (deal-builder--plan-effect deal trial parent-name)
+  "A table of what the nodes below the parent are in the trial deal, which has a plan applied to it: their balances, and what each is of its
+own parent's, their average lives, and what they are in the deal itself (a column \"was\", if any of them is in it; a node that is new has nan there)."
   (let* ((entries (cdr (deal--outline-below trial parent-name 0)))
          (names (map car entries))
          (balance-in (lambda (a-deal name) (vector-ref (node-balance (get-node a-deal name)) 0)))
@@ -514,9 +537,13 @@ own parent's, their average lives, and what they are in the deal itself (a node 
                           (list "balance" (list->vector (map (lambda (name) (balance-in trial name)) names))
                                 "share of its parent" (list->vector share)
                                 "average life" (list->vector (deal-builder--average-lives-of trial names))))))
-    (display (format "{} ({:,.2f}) divided by a {} split into:\n" parent-name (balance-in trial parent-name)
-                     (split-label (node-split (get-node trial parent-name)))))
-    (display-table (apply make-table columns) '(("was" ",.2f") ("balance" ",.2f") ("share of its parent" ".2%") ("average life" ".2f")))))
+    (apply make-table columns)))
+
+(define (deal-builder--show-plan-effect deal trial parent-name)
+  "Shows the table of deal-builder--plan-effect, under its heading."
+  (display (format "{}\n" (deal-builder--plan-effect-heading trial parent-name)))
+  (display-table (deal-builder--plan-effect deal trial parent-name)
+                 '(("was" ",.2f") ("balance" ",.2f") ("share of its parent" ".2%") ("average life" ".2f"))))
 
 (define (deal-gui--show-sizes! gui title answers)
   "The button that shows the sizes: the plan is tried on a copy of the deal, so that what is wrong with it is said, and what the tranches

@@ -87,6 +87,7 @@ import lisp_tastytrade
 import lisp_time_series
 import lisp_vector_math
 import lisp_widgets
+import lisp_deal_tree
 
 
 # ---------------------------------------------------------------------------
@@ -2135,7 +2136,7 @@ SHARED_BUILTIN_TABLES = (
     lisp_http.BUILTINS,
     lisp_tastytrade.BUILTINS, lisp_futures.BUILTINS, lisp_rates.BUILTINS, lisp_term_premium.BUILTINS, lisp_simplex.BUILTINS,
     lisp_backgammon.BUILTINS, lisp_baseball.BUILTINS, lisp_investment_paths.BUILTINS, lisp_portfolio.BUILTINS, lisp_finance.BUILTINS, lisp_options.BUILTINS,
-    lisp_clock.BUILTINS, lisp_calendar.BUILTINS, lisp_widgets.BUILTINS,
+    lisp_clock.BUILTINS, lisp_calendar.BUILTINS, lisp_widgets.BUILTINS, lisp_deal_tree.BUILTINS,
 )
 
 
