@@ -128,6 +128,7 @@ length, one value for each row. When the vectors have names, `model-report`
 uses them in place of `x1`, `x2`, and `y`.
 
 ```lisp
+(define conn (sqlite-open "loans.db"))
 (define rows (sqlite-query conn "select zero_flag, balance, loan_age from t"))
 (define m (linear-regression (cdr rows) (car rows)))   ; zero_flag from balance and loan_age
 (display (model-report m))   ; "Linear model:  zero_flag = ... + c*balance + c*loan_age"
@@ -722,7 +723,9 @@ flag, `'categorical` and `0` give the same model; `'categorical` only adds
 the checks.)
 
 ```lisp
-(define home-type (vector 0 1 0 1 1))          ; 0=own, 1=rent
+(define income (vector 22000 31000 38000 45000 52000 61000 70000 84000 97000 120000))
+(define happiness (vector 4.1 5.0 5.6 6.0 6.3 6.6 6.8 7.0 7.1 7.2))
+(define home-type (vector 1 1 0 1 0 0 1 0 0 0))          ; 0=own, 1=rent
 (define m (spline-regression (list income home-type) happiness
                               (list 2 'categorical)))
 (display (model-report m))

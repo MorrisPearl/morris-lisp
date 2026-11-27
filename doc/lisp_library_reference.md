@@ -3806,7 +3806,7 @@ and `>` in the data are shown as themselves. It is written ten pages at a time, 
 `:title` is the title of the web page. `examples/report_example.lsp` writes the mortgage report both ways.
 
 ```lisp
-(write-report-html mortgages "mortgages.html" spec :title "Mortgages, October")
+(write-report-html loans "mortgages.html" spec :title "Mortgages, October")
 ```
 
 #### A report in Markdown
@@ -3834,7 +3834,7 @@ formatted whole when it ends, so it has to fit in memory.
     :summaries (list (list "loans" 'count) (list "total" 'sum "balance"))
     :breaks (list (make-report-break :field "state" :header "## State {{state}}"
                                      :footer "{{loans}} loans, {{total:,.2f}}\n"))))
-(write-report mortgages "mortgages.md" markdown-spec)
+(write-report loans "mortgages.md" markdown-spec)
 ```
 
 #### What it comes to
@@ -4504,9 +4504,11 @@ A quoted list works too. In it, the relations and the goal can be symbols
 ```
 
 To print each value beside its variable's name, go through the two lists
-together. For the problem read from the first file above:
+together. For a problem that names its variables, as one read from a file does:
 
 ```lisp
+(define problem '(("objective" 3 5) ("constraints" (1 0) (0 2) (3 2)) ("relations" <= <= <=) ("rhs" 4 12 18)
+                  ("goal" maximize) ("variables" "x1" "x2")))
 (define result (lp-solve problem))
 (do ((names (cdr (assoc "variables" problem)) (cdr names))
      (values (cdr (assoc "solution" result)) (cdr values)))

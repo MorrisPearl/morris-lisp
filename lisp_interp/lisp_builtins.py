@@ -1112,6 +1112,14 @@ def struct_set(s, slot_name, value):
     return NIL
 
 
+def struct_slot_names(s):
+    """(struct-slot-names s) -- the names of the slots of the struct s, as symbols, in the order of its type: the slots of the type
+    it includes first. With struct-ref and struct-set!, a program can go through the slots of a struct of any type."""
+    if not isinstance(s, LispStruct):
+        raise LispError("struct-slot-names: not a struct: %s" % _brief(s))
+    return list_to_pairs([slot_name for slot_name, _ in s.struct_type.slots])
+
+
 def call_method(accessor, instance, *args):
     """(call-method accessor instance arg...) -- call the procedure stored in
     one of instance's slots, passing instance itself as the first argument.
@@ -1172,6 +1180,7 @@ STRUCT_BUILTINS = {
     "struct-ref": struct_ref,
     "struct-set!": struct_set,
     "struct-type-name": lambda s: s.struct_type.name,
+    "struct-slot-names": struct_slot_names,
     "call-method": call_method,
     "call-super": call_super,
 }

@@ -1605,8 +1605,8 @@ under it is worked out again), or to take the split, and everything under it, aw
 
 `deal_tree_example.lsp` needs PyQt6. It builds the same kind of deal in a window of its own, which draws the deal as a tree (the [CMO manual](lisp_cmo_manual.md#building-a-deal-on-its-tree) says how): each tranche is a box,
 and each split the lines from a tranche to its children. Click a tranche for a menu of the kinds of split; choosing one opens a pop-up with the fields that kind asks for, a button that
-calculates the sizes, and one that adds the tranches, once their sizes have been looked at. The program waits for the window to be closed, and then shows the deal's outline
-(`deal-outline`).
+calculates the sizes, and one that adds the tranches, once their sizes have been looked at. The window's File menu saves the deal in a file, and opens one (see
+`save-deal`). The program waits for the window to be closed, and then shows the deal's outline (`deal-outline`).
 
 ---
 

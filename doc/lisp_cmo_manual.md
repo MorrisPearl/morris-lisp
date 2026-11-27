@@ -1069,6 +1069,9 @@ writes each value as `read-from-string` reads it back). The deal above is saved 
  :names ("POOL" "A" "B"))
 ```
 
+`(deal-load! deal path)` makes a deal that there is already the one in the file: its tranches, collateral, settings and prices become the file's, and what
+shows the deal (a window of its tree, a grid of its tranches) shows the deal from the file. The deal tree's **Open...** does that.
+
 `load-deal` reads the file with `read-from-string`, which reads data and runs nothing, so a file can only describe a deal. A split is written
 as the struct it is, `#S(sequential-split ...)`, so a kind of split of your own (see "Making another kind of split") is saved like the others,
 and is loaded once the file that defines its struct and its methods has been loaded; before, `load-deal` says that there is no struct type
@@ -1278,8 +1281,8 @@ more than they were owed (see "Checking a deal"). A `pay-principal` that leaves 
 ### Putting it in the menus
 
 The menu of the deal tree, and the tabs of the deal builder, are a table of `split-form`s, and a kind of split is in them when there is a form for it (the
-slots of a form are in "Building a deal by clicking"). The form's `:label` is the kind's `split-label`, so that a tranche that is divided by a lockout is
-changed with this form. Its `:fields` are what the pop-up asks for; `:defaults` is what they are filled in with for a tranche that is not divided, and
+slots of a form are in "Building a deal by clicking"). The form's `:kind` is the name of the kind's struct, `lockout-split`, so that a tranche that is
+divided by a lockout is changed with this form; what the menu calls the kind is what its `split-label` says, "lockout". Its `:fields` are what the pop-up asks for; `:defaults` is what they are filled in with for a tranche that is not divided, and
 `:describe` what they are filled in with for one that is divided by a lockout, so that it can be changed; `:plan` makes the plan from the answers, which
 are a list of `(field-name . value)` (a `number` field's value is a number, an `integer` field's a whole one, and a `text` field's a string). This form
 makes the lockout of two bonds, the one that is locked out and its support, which is what is left:
@@ -1287,7 +1290,7 @@ makes the lockout of two bonds, the one that is locked out and its support, whic
 ```lisp
 (define lockout-form
   (make-split-form
-    :title "Lockout" :label "lockout"
+    :title "Lockout" :kind 'lockout-split
     :help "The first bond is paid no principal for the months of the lockout, unless the support bond is paid off; after them it is paid first."
     :fields (list (list "locked" 'text "Locked-out bond" "")
                   (list "balance" 'number "Its balance" 0)
@@ -1488,7 +1491,7 @@ the cash flows column runs it). `notebooks/deal_builder.ipynb` is a notebook tha
 | Slot | Is |
 |---|---|
 | `:title` | the title of the tab |
-| `:label` | what `split-label` says of the splits that it makes: the tab that is shown for a split that is in the deal is the one with its label |
+| `:kind` | the kind of split that it makes, the name of its struct, such as `'sequential-split`: the tab that is shown for a split that is in the deal is the one of its kind, and what the splits are called is what their `split-label` says |
 | `:help` | a line of HTML above the fields |
 | `:fields` | the fields, each `(name kind label default [options])`: see `widget-actions` in the language manual (`number`, `integer`, `text`, `textarea`, `checkbox`, `dropdown`) |
 | `:defaults` | `(lambda (parent) ...)`: a list of `(field-name . value)` to put in the fields when the tranche `parent` is chosen |
@@ -1496,12 +1499,12 @@ the cash flows column runs it). `notebooks/deal_builder.ipynb` is a notebook tha
 | `:plan` | `(lambda (parent answers) ...)`: the plan that divides the node `parent` as the answers, a list of `(field-name . value)`, say, or an error that says what is wrong |
 
 `(standard-split-forms)` is the list that is used without `:forms`, and a form of your own is added to it (a kind of split of your own, with its methods, as in "Making another
-kind of split", has a `split-label` method, and a form with that label):
+kind of split", has a form whose `:kind` is its struct):
 
 ```lisp
 (define halves
   (make-split-form
-    :title "Halves" :label "sequential" :help "Two tranches of half each."
+    :title "Halves" :kind 'sequential-split :help "Two tranches of half each."
     :fields (list (list "first" 'text "First" "") (list "second" 'text "Second" ""))
     :defaults (lambda (parent) (list (cons "first" (string-append (node-name parent) "-1"))
                                      (cons "second" (string-append (node-name parent) "-2"))))
@@ -1547,13 +1550,15 @@ POOL  100,000,000 ────┤   floater and inverse floater
 What is wrong is said in red in the pop-up (the names that are in the deal already, a balance that is not a number, balances that do not add up), and what was done
 is said in the line at the bottom of the window.
 
-To keep a deal that was built, save it: `(save-deal deal "demo.deal")`, and `(load-deal "demo.deal")` makes it again (see "Saving a deal,
-and loading it").
+**Saving and opening.** The window's **File** menu saves the deal in a file (**Save...**, as `save-deal` does: see "Saving a deal, and loading it"), and opens
+one (**Open...**): the deal becomes the one in the file, as `(deal-load! deal path)` makes it, so the notebook's `deal`, and any other view of it, has the deal
+that was opened, and the tree is drawn again for it.
 
 **In a notebook**, the cell finishes and the window stays open beside the notebook (the kernel runs Qt's event loop between cells). The deal is the notebook's: what
 the window adds is in `deal`, and what the notebook changes, by the builders or in another view such as `(bonds deal)`, is drawn in the window. **From a Lisp file**
 run at the command line, `(deal-tree deal)` returns when the window is closed, with the deal as it was built: `examples/deal_tree_example.lsp` does that, and then
-shows the deal's outline.
+shows the deal's outline. (When Qt draws off the screen, with `QT_QPA_PLATFORM=offscreen`, as the tests have it, no one could close the window, so
+`deal-tree` says so and returns at once.)
 
 **What the menu and the pop-ups are made from.** The kinds of split in the menu are a table, the `split-form`s of `(standard-split-forms)` (see "Building a deal by
 clicking", which says what the slots of one are), and the fields of each pop-up are what its form asks for: `(split-form-inputs form deal node)` is the list of fields,

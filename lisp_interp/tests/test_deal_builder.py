@@ -421,7 +421,7 @@ class TestDealBuilder(BuilderCase):
           (define halves
             (make-split-form
               :title "Halves"
-              :label "sequential"
+              :kind 'sequential-split
               :help "Two tranches of half each."
               :fields (list (list "first" 'text "First" "") (list "second" 'text "Second" ""))
               :defaults (lambda (parent) (list (cons "first" (string-append (node-name parent) "-1"))
@@ -615,7 +615,7 @@ class TestChangingAndTakingAwayInTheBuilder(BuilderCase):
     def test_a_form_that_does_not_say_what_is_in_its_fields_leaves_them_as_they_were(self):
         self.run_lisp('''
           (define bare
-            (make-split-form :title "Bare" :label "sequential" :help "No describe."
+            (make-split-form :title "Bare" :kind 'sequential-split :help "No describe."
                              :fields (list (list "tranches" 'textarea "Tranches" ""))
                              :defaults (lambda (parent) (list (cons "tranches" "X1\\nX2")))
                              :plan (lambda (parent answers) (sequential-plan (list (list "X1" 40000000.0) (list "X2" 60000000.0))))))

@@ -102,6 +102,27 @@ class SaveAndLoadTest(LispTestCase):
             self.assertEqual(self.text("(deal-%s loaded)" % setting), self.text("(deal-%s deal)" % setting), setting)
         self.assertIs(self.run_lisp('(deal-in-tree? loaded "LOOSE")'), False)
 
+    def test_the_dates_are_written_as_dates_and_a_file_that_has_them_as_text_is_read_too(self):
+        self.run_lisp('(define deal (new-deal "Dated" :first-payment (date 2026 12 25) :collateral (quote ((120.0 0.0 0.0 6)))))')
+        self.save()
+        self.assertIn(" :first-payment 2026-12-25\n", self.file_text())
+        self.rewrite_file(" :first-payment 2026-12-25\n", ' :first-payment "2026-12-25"\n')       # (as the first files had them)
+        self.load()
+        self.assertShows("(equal? (deal-first-payment loaded) (date 2026 12 25))", "#t")
+
+    def test_a_deal_that_is_loaded_into_is_the_one_from_the_file_and_keeps_its_views(self):
+        self.run_lisp('(define deal %s) (deal-sequential! deal "POOL" (quote (("A" 40.0) ("B" 80.0))))' % TOY_POOL)
+        self.save()
+        self.run_lisp('(define other (new-deal "Other" :collateral (quote ((60.0 0.0 0.0 3)))))'
+                      '(define refreshed 0) (deal-add-view! other (quote (tranches)) (lambda () (set! refreshed (+ refreshed 1))))'
+                      '(define same other)')
+        self.run_lisp('(deal-load! other "%s")' % self.path)
+        self.assertShows("(deal-name same)", '"Toy"')                                # (what had the deal has the one from the file)
+        self.assertShows("(deal-names same)", '("POOL" "A" "B")')
+        self.assertShows("refreshed", "1")                                         # (its view showed it)
+        self.run_lisp('(deal-delete-split! other "POOL")')
+        self.assertShows("refreshed", "2")                                         # (and still shows it as it changes)
+
     def test_a_tranche_priced_by_its_oas_keeps_it_for_when_the_paths_are_run(self):
         self.run_lisp('(define deal %s) (deal-sequential! deal "POOL" (quote (("A" 40.0) ("B" 80.0))))' % TOY_POOL)
         self.run_lisp('(node-priced-by-set! (get-node deal "A") (quote oas)) (node-oas-set! (get-node deal "A") 50)')     # (as deal-set-oas! leaves it)

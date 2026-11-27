@@ -2,7 +2,8 @@
 ;
 ; Builds a structured deal by clicking on a drawing of its tree, in a window of its own (see deal_tree.lsp, and "Building a deal on
 ; its tree" in lisp_cmo_manual.md). The deal begins as its collateral alone, a pool of 100 million: click it, choose a kind of split,
-; fill in the pop-up, calculate the sizes, and add the tranches. Close the window when the deal is built, and its tranches are shown.
+; fill in the pop-up, calculate the sizes, and add the tranches. The File menu saves the deal in a file (and opens one, which the deal
+; becomes). Close the window when the deal is built, and its tranches are shown.
 ; Needs PyQt6. Run it from the examples directory:
 ;   python3 ../lisp_interpreter.py deal_tree_example.lsp
 

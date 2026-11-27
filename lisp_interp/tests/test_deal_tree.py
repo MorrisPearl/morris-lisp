@@ -7,6 +7,8 @@ in "Making another kind of split": its blocks are run as they are written, and i
 
 import os
 import re
+import shutil
+import tempfile
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")      # (before Qt is imported: the windows are drawn off the screen)
@@ -57,7 +59,7 @@ class TreeFunctionsTest(LispTestCase):
                                   ["losses", "dropdown", "Losses", "reverse", ["reverse", "forward", "pro-rata"]]])
 
     def test_a_form_for_a_divided_tranche_has_what_its_split_has(self):
-        self.run_lisp('(deal-tree--apply! forms deal "Sequential" "POOL" %s)' % SEQUENTIAL)
+        self.run_lisp('(split-form-apply! (split-form-named forms "Sequential") deal "POOL" %s)' % SEQUENTIAL)
         heading, help_text, fields = self.value('(deal-tree--asking forms deal "Sequential" "POOL")')
         self.assertEqual(heading, "Change the sequential split of POOL, which has a balance of 100,000,000.00")
         self.assertEqual(fields[0], ["tranches", "textarea", "Tranches", "A 60000000.0\nB 40000000.0"])
@@ -72,19 +74,19 @@ class TreeFunctionsTest(LispTestCase):
         self.assertEqual(len(self.value('(deal-tree--nodes deal)')), 1)
 
     def test_applying_divides_the_tranche_and_says_so(self):
-        message = self.value('(deal-tree--apply! forms deal "Sequential" "POOL" %s)' % SEQUENTIAL)
+        message = self.value('(split-form-apply! (split-form-named forms "Sequential") deal "POOL" %s)' % SEQUENTIAL)
         self.assertEqual(message, "Added A, B under POOL, by a sequential split.")
         self.assertEqual([node[0] for node in self.value('(deal-tree--nodes deal)')], ["POOL", "A", "B"])
 
     def test_applying_to_a_divided_tranche_changes_its_split(self):
-        self.run_lisp('(deal-tree--apply! forms deal "Sequential" "POOL" %s)' % SEQUENTIAL)
-        message = self.value('(deal-tree--apply! forms deal "Pro rata" "POOL" '
+        self.run_lisp('(split-form-apply! (split-form-named forms "Sequential") deal "POOL" %s)' % SEQUENTIAL)
+        message = self.value('(split-form-apply! (split-form-named forms "Pro rata") deal "POOL" '
                              '(list (cons "tranches" "A 50000000\nB") (cons "losses" "pro-rata")))')
         self.assertTrue(message.startswith("Changed the split of POOL: it is a pro rata split into A, B"))
         self.assertEqual(self.value('(deal-tree--nodes deal)')[1], ["A", "POOL", 50000000.0, "", ""])
 
     def test_deleting_takes_away_the_split_and_everything_under_it(self):
-        self.run_lisp('(deal-tree--apply! forms deal "Sequential" "POOL" %s)' % SEQUENTIAL)
+        self.run_lisp('(split-form-apply! (split-form-named forms "Sequential") deal "POOL" %s)' % SEQUENTIAL)
         self.run_lisp('(deal-sequential! deal "A" (list (list "A1" 30000000) (list "A2" 30000000)))')
         self.assertEqual(self.value('(deal-tree--delete! deal "POOL")'), "Took away the split of POOL, and A, A1, A2, B. POOL is not divided.")
         self.assertEqual(len(self.value('(deal-tree--nodes deal)')), 1)
@@ -142,6 +144,11 @@ class TreeWindowActions:
     def line_texts(self, dialog):
         """What is in the pop-up's lines to type in, in order."""
         return [edit.text() for edit in dialog.findChildren(QtWidgets.QLineEdit) if edit.isVisible()]
+
+    def file_menu_item(self, text):
+        """The item of the window's File menu that starts with text."""
+        file_menu = self.window.menuBar().actions()[0].menu()
+        return next(action for action in file_menu.actions() if action.text().startswith(text))
 
 
 @unittest.skipIf(QtWidgets is None, "PyQt6 is needed")
@@ -247,6 +254,60 @@ class TreeWindowTest(TreeWindowActions, LispTestCase):
             self.choose("POOL", "Take away")
         self.assertEqual(len(self.window.nodes), 1)
         self.assertEqual(self.window.statusBar().currentMessage(), "Took away the split of POOL, and A, B. POOL is not divided.")
+
+    def test_the_window_is_not_waited_for_when_qt_draws_it_off_the_screen(self):
+        """Off the screen (as here, with QT_QPA_PLATFORM=offscreen), no one could close the window, so Qt's event loop is not run: running
+        it would wait for ever."""
+        with mock.patch.object(QtWidgets.QApplication, "exec") as event_loop, mock.patch("builtins.print") as said:
+            other = self.run_lisp("(deal-tree deal)")
+        self.addCleanup(other.close)
+        event_loop.assert_not_called()
+        self.assertIn("off the screen", said.call_args[0][0])
+
+    def test_the_file_menu_saves_the_deal_and_opens_one(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        saved = os.path.join(directory, "demo.deal")
+        self.divide_pool()
+        with mock.patch.object(QtWidgets.QFileDialog, "getSaveFileName", return_value=(saved[:-len(".deal")], "")) as asked:
+            self.file_menu_item("Save").trigger()                    # (a name with no ending is given .deal)
+        self.assertEqual(asked.call_args[0][2], os.path.join(os.getcwd(), "demo.deal"))        # (the name it suggests is the deal's)
+        self.assertTrue(os.path.exists(saved))
+        self.assertEqual(self.window.statusBar().currentMessage(), "Saved demo in %s." % saved)
+        self.run_lisp('(save-deal (new-deal "Other 2026-2" :collateral (quote ((50000000.0 6.0 5.5 360)))) "%s")'
+                      % os.path.join(directory, "other.deal"))
+        with mock.patch.object(QtWidgets.QFileDialog, "getOpenFileName", return_value=(os.path.join(directory, "other.deal"), "")) as asked:
+            self.file_menu_item("Open").trigger()
+        self.assertEqual(asked.call_args[0][2], directory)                                     # (it begins where the deal was saved)
+        self.assertEqual(self.window.windowTitle(), "Deal tree: Other 2026-2")
+        self.assertEqual(set(self.boxes()), {"POOL"})
+        self.assertEqual(self.run_lisp("(deal-name deal)"), "Other 2026-2")                   # (the variable has the deal from the file)
+        self.assertEqual(self.window.statusBar().currentMessage(), "Opened Other 2026-2, from %s." % os.path.join(directory, "other.deal"))
+        with mock.patch.object(QtWidgets.QFileDialog, "getOpenFileName", return_value=(saved, "")):
+            self.file_menu_item("Open").trigger()
+        self.assertEqual(set(self.boxes()), {"POOL", "A", "B"})
+        self.run_lisp('(deal-sequential! deal "A" (list (list "A1" 30000000) (list "A2" 30000000)))')
+        self.assertEqual(set(self.boxes()), {"POOL", "A", "B", "A1", "A2"})                  # (what changes it elsewhere is still drawn)
+
+    def test_what_cannot_be_opened_or_saved_is_said(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        not_a_deal = os.path.join(directory, "notes.txt")
+        with open(not_a_deal, "w", encoding="utf-8") as f:
+            f.write("(some notes)")
+        with mock.patch.object(QtWidgets.QFileDialog, "getOpenFileName", return_value=(not_a_deal, "")), \
+                mock.patch.object(QtWidgets.QMessageBox, "warning") as warned:
+            self.file_menu_item("Open").trigger()
+        self.assertIn("is not a deal saved by save-deal", warned.call_args[0][2])
+        self.assertIn("is not a deal saved by save-deal", self.window.statusBar().currentMessage())
+        with mock.patch.object(QtWidgets.QFileDialog, "getOpenFileName", return_value=("", "")) as asked:
+            self.file_menu_item("Open").trigger()                     # (the window was closed without choosing a file: nothing happens)
+        asked.assert_called_once()
+        self.assertEqual(self.run_lisp("(deal-names deal)").car, "POOL")
+
+    def test_the_name_suggested_for_a_file_is_the_deals(self):
+        self.assertEqual(lisp_deal_tree.file_name_for("Demo 2026-1"), "Demo 2026-1.deal")
+        self.assertEqual(lisp_deal_tree.file_name_for("Deal: A/B"), "Deal_ A_B.deal")
 
     def test_a_change_made_to_the_deal_elsewhere_is_drawn(self):
         self.run_lisp('(deal-sequential! deal "POOL" (list (list "X" 10000000) (list "Y" 90000000)))')

@@ -29,7 +29,7 @@
 ; the buttons calculate and make the change: the tranches of the split are worked out again, and so are those under them, to the
 ; leaves (see deal-replace-split!). A button under the panel takes the split away, with every tranche under it, after asking.
 ;
-; Each tab is a split-form: the title of the tab, the label that the splits of its kind have (see split-label), a line that explains it,
+; Each tab is a split-form: the title of the tab, the kind of split that it makes (the name of its struct), a line that explains it,
 ; its fields (see widget-actions), the values to put in the fields when a tranche is chosen, a function that says what is in the fields
 ; for a split that is in the deal, and a function that makes a split-plan (see deal.lsp) from the answers. The forms are those of
 ; (standard-split-forms), one for each kind of split of deal.lsp; a form of your own, for a kind of split of your own, is added
@@ -41,8 +41,9 @@
 (require "deal_pricing.lsp")
 (require "widgets.lsp")
 
-(defstruct split-form title label help fields defaults describe plan)
-; title: the name of the tab; label: what split-label says of the splits that it makes; help: a line of HTML above the fields; fields:
+(defstruct split-form title kind help fields defaults describe plan)
+; title: the name of the tab; kind: the kind of split that it makes, the name of its struct, such as sequential-split (a split that is in the
+; deal is changed with the form of its kind, and what the splits of the kind are called comes from their split-label); help: a line of HTML above the fields; fields:
 ; widget-actions fields, (name kind label default [options]); defaults: (defaults parent) is a list of (field-name . value) to put in the
 ; fields when the parent is chosen; describe: (describe deal split) is the list of (field-name . value) that makes the split, which is
 ; in the deal, or '() if there is no way to say (the fields keep their defaults); plan: (plan parent answers) is the split-plan for
@@ -55,7 +56,7 @@ kind, what that split has (see describe)."
   (let* ((split (node-split node))
          (described (if (and (not (null? split))
                              (not (null? (split-form-describe form)))
-                             (equal? (split-form-label form) (split-label split)))
+                             (split-form-for? form split))
                         ((split-form-describe form) deal split)
                         '()))
          (values (append described ((split-form-defaults form) node))))        ; (assoc finds the first, so what the split has comes first)
@@ -65,6 +66,39 @@ kind, what that split has (see describe)."
                  (append (list (list-ref field 0) (list-ref field 1) (list-ref field 2) (cdr given)) (list-tail field 4))
                  field)))
          (split-form-fields form))))
+
+(define (split-form-for? form split)
+  "Whether the form makes splits of the kind that split is."
+  (equal? (split-form-kind form) (struct-type-name split)))
+
+(define (split-form-of forms split)
+  "The form in forms that makes splits of the kind that split is, or #f if there is none."
+  (find-if (lambda (form) (split-form-for? form split)) forms))
+
+(define (split-form-named forms title)
+  "The form in forms whose title is title, or an error that says there is none."
+  (let ((form (find-if (lambda (form) (equal? (split-form-title form) title)) forms)))
+    (unless form
+      (error (format "there is no kind of split called {}" title)))
+    form))
+
+(define (split-form-label form)
+  "What the splits that the form makes are called, which is what split-label says of one: the form makes one of its kind, with no children, and asks it."
+  (split-label (eval (list (string->symbol (format "make-{}" (split-form-kind form)))))))
+
+(define (split-form-apply! form deal name answers)
+  "Divides the node called name as the answers (a list of (field-name . value)) on the form say, or changes its split if it is divided, and returns a
+line that says what was done. The deal tree and the deal builder both do it this way."
+  (let* ((plan ((split-form-plan form) (get-node deal name) answers))
+         (adding (null? (node-split (get-node deal name))))
+         (children (string-join (split-children (split-plan-split plan)) ", ")))
+    (if adding
+        (deal-add-plan! deal name plan)
+        (deal-replace-split! deal name plan))
+    (if adding
+        (format "Added {} under {}, by a {} split." children name (split-label (split-plan-split plan)))
+        (format "Changed the split of {}: it is a {} split into {}, and what is under them is worked out again."
+                name (split-label (split-plan-split plan)) children))))
 
 (defstruct deal-gui deal forms grid flows panel messages delete-row delete-button confirm-button cancel-button (chosen '()) (names '()))
 ; the deal being built, the split-forms, the widgets (the grid, the place under it for the cash flows of a tranche, the panel, ...), the name of
@@ -183,7 +217,7 @@ average life, and is what is left."
   (list
     (make-split-form
       :title "Sequential"
-      :label "sequential"
+      :kind 'sequential-split
       :help "One tranche to a line: its name and its balance, and z after the balance if it is a Z bond. The last can leave out its balance, and be what is left. They are paid in order."
       :fields (list (list "tranches" 'textarea "Tranches" "")
                     (list "accretion" 'text "Accretion directed to" "")
@@ -199,7 +233,7 @@ average life, and is what is left."
                                :losses (deal-builder--form-losses answers))))
     (make-split-form
       :title "Average life"
-      :label "sequential by average life"
+      :kind 'average-life-split
       :help "One tranche to a line: its name and the average life, in years, that it is to have. One tranche, anywhere in the list, has no life: it is what is left. They are paid in order, and are made the sizes that have the lives, at the pricing speed."
       :fields (list (list "tranches" 'textarea "Tranches" "")
                     (list "losses" 'dropdown "Losses" "reverse" form-loss-rules))
@@ -212,7 +246,7 @@ average life, and is what is left."
                                  :losses (deal-builder--form-losses answers))))
     (make-split-form
       :title "Pro rata"
-      :label "pro rata"
+      :kind 'pro-rata-split
       :help "One tranche to a line: its name and its balance. The last can leave out its balance, and be what is left. They are paid in proportion to what each is owed."
       :fields (list (list "tranches" 'textarea "Tranches" "")
                     (list "losses" 'dropdown "Losses" "pro-rata" form-loss-rules))
@@ -225,7 +259,7 @@ average life, and is what is left."
                              :losses (deal-builder--form-losses answers))))
     (make-split-form
       :title "PAC"
-      :label "PAC and companion"
+      :kind 'pac-split
       :help "A PAC is paid on a schedule, if the collateral prepays at any speed from the low one to the high one, and its companion is paid what is over. The sizes are worked out from the two speeds."
       :fields (list (list "pac" 'text "PAC" "")
                     (list "companion" 'text "Companion" "")
@@ -246,7 +280,7 @@ average life, and is what is left."
                         :losses (deal-builder--form-losses answers))))
     (make-split-form
       :title "Floater/inverse"
-      :label "floater and inverse floater"
+      :kind 'floater-inverse-split
       :help "The floater pays the index plus the margin, up to the cap, and the inverse floater pays what makes the two together pay the parent's coupon. The sizes are worked out from the cap."
       :fields (list (list "floater" 'text "Floater" "")
                     (list "inverse" 'text "Inverse floater" "")
@@ -266,7 +300,7 @@ average life, and is what is left."
                                     :margin (deal-builder--form-percent-to-decimal (deal-builder--form-answer answers "margin")))))
     (make-split-form
       :title "Premium/discount"
-      :label "premium and discount"
+      :kind 'premium-discount-split
       :help "The premium bond has a coupon above the parent's, and the discount bond one below it. The sizes are worked out so that, together, they pay the parent's coupon."
       :fields (list (list "premium" 'text "Premium bond" "")
                     (list "discount" 'text "Discount bond" "")
@@ -287,7 +321,7 @@ average life, and is what is left."
                                      :discount-coupon (deal-builder--form-percent-to-decimal (deal-builder--form-answer answers "discount-coupon")))))
     (make-split-form
       :title "IO/PO"
-      :label "IO and PO"
+      :kind 'io-po-split
       :help "Both are as big as the parent. The PO is paid all of its principal, and the IO is paid its interest, on a notional balance that follows the PO's."
       :fields (list (list "io" 'text "IO" "")
                     (list "po" 'text "PO" "")
@@ -442,7 +476,7 @@ or none of them if asking is the empty list."
 
 (define (deal-gui--form-for gui split)
   "The form of the tab for splits of the kind that split is, or #f if there is none."
-  (find-if (lambda (form) (equal? (split-form-label form) (split-label split))) (deal-gui-forms gui)))
+  (split-form-of (deal-gui-forms gui) split))
 
 (define (deal-gui--put-away! gui)
   "Nothing is chosen: the panel and the button that takes away a split are put away."
@@ -504,8 +538,7 @@ or none of them if asking is the empty list."
 
 (define (deal-gui--plan gui title answers)
   "The plan for dividing the chosen tranche as the answers on the tab called title say."
-  (let ((form (find-if (lambda (form) (equal? (split-form-title form) title)) (deal-gui-forms gui))))
-    ((split-form-plan form) (deal-gui--parent gui) answers)))
+  ((split-form-plan (split-form-named (deal-gui-forms gui) title)) (deal-gui--parent gui) answers))
 
 (define (deal-builder--average-lives-of trial names)
   "The average life, in years, of each of the nodes of the trial deal, a list: found by running a copy of the deal, at the pricing speed.
@@ -554,18 +587,8 @@ below the chosen one would be is shown."
 
 (define (deal-gui--apply! gui title answers)
   "The button that adds the tranches to the deal, or changes the split: the grid shows them, and the panel is put away."
-  (let* ((parent (deal-gui--parent gui))
-         (plan (deal-gui--plan gui title answers))
-         (adding (null? (node-split parent)))
-         (children (string-join (split-children (split-plan-split plan)) ", ")))
-    (if adding
-        (deal-add-plan! (deal-gui-deal gui) (node-name parent) plan)
-        (deal-replace-split! (deal-gui-deal gui) (node-name parent) plan))
-    (deal-gui--say gui (if adding
-                          (format "Added {} under {}, by a {} split. Click a tranche to divide it, or to change its split.\n"
-                                  children (node-name parent) (split-label (split-plan-split plan)))
-                          (format "Changed the split of {}: it is a {} split into {}, and what is under them is worked out again. Click a tranche to divide it, or to change its split.\n"
-                                  (node-name parent) (split-label (split-plan-split plan)) children)))))
+  (let ((said (split-form-apply! (split-form-named (deal-gui-forms gui) title) (deal-gui-deal gui) (node-name (deal-gui--parent gui)) answers)))
+    (deal-gui--say gui (format "{} Click a tranche to divide it, or to change its split.\n" said))))
 
 (define (deal-gui--ask-whether-to-delete! gui)
   "The button that takes away the split: says what would go, and asks."

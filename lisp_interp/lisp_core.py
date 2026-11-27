@@ -49,6 +49,7 @@ import datetime
 import difflib
 import inspect
 import os
+import re
 import time
 import sys
 
@@ -854,8 +855,12 @@ def read_from(tokens):
         return atom(token)
 
 
+# A word written as a date prints, 2026-11-20, is read as that date, so that a date that is written out reads back as a date.
+DATE_WORD = re.compile(r"\d{4}-\d{2}-\d{2}$")
+
+
 def atom(token):
-    """Convert a single token into a number, string, boolean, or symbol."""
+    """Convert a single token into a number, string, boolean, date (a word such as 2026-11-20), or symbol."""
     if token.startswith('"') and token.endswith('"'):
         return LispString(token[1:-1])
     if token == "#t":
@@ -872,6 +877,11 @@ def atom(token):
         return float(token)
     except ValueError:
         pass
+    if DATE_WORD.match(token):
+        date = parse_date_text(token)
+        if date is None:
+            raise LispError("%s is written as a date, year-month-day, but there is no such date" % token)
+        return date
     return Symbol(token)
 
 

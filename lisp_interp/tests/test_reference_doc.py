@@ -10,12 +10,21 @@ from support import *  # noqa: F401,F403 -- the interpreter's modules, numpy, mo
 
 
 #
-# Every fenced ```lisp block in lisp_interpreter_reference.md is run, and each
-# top-level form written as   (expr)   ; => value   must print as `value`.
-# That keeps the documentation honest: if a builtin's behavior changes, this
-# fails until the doc (or the interpreter) is fixed.
+# Every fenced ```lisp block of the documents is run (but for those that need
+# what the tests don't have, see _has_risky_word, and those that a document
+# marks, see _blocks_marked_not_run), and each top-level form
+# written as   (expr)   ; => value   must print as `value`. That keeps the
+# documentation honest: if a builtin's behavior changes, this fails until the
+# doc (or the interpreter) is fixed. The blocks of a section (a ## or ###
+# heading) run one after another in one environment, so a block can use what
+# an earlier one defined. A form that is an error fails the test, unless the
+# document says it is one (its comment begins "an error" or "raises"), or it
+# uses a name that a block of the document defines that is not run with it
+# (one in another section, or one that is skipped): then the rest of its
+# block is not run either.
 
-# blocks that would block on stdin, need the network/GUI, or touch the disk
+# blocks that would block on stdin, need the network/GUI, or touch the disk: a block that has one of these at the start of a word
+# (see _has_risky_word) is not run
 _RISKY_BLOCK_WORDS = (
     "(breakpoint)", "(breakpoint (", '(breakpoint "', "(abort", "debug-repl",
     "fred-table", "tastytrade", "schwab-", "treasury-par-curve", "gsw-curve", "tips-curve", "google-", "three-statement-model", "sensitivity-workbook", "compare-companies", "alpha-vantage-", "text-tone", "filing-tone", "sofr-", "(sec-", "(fdic-", "(census-", "(bls-", "(bea-", "(sleep", "redirect-output", "sqlite-open", "with-sqlite", "lp-read-file",
@@ -37,6 +46,17 @@ _LOADABLE_IN_EXAMPLES_DOC = {
 }
 
 
+def _blocks_marked_not_run(text):
+    """The ```lisp blocks of a document's text that it marks as not to be run by the tests, with an HTML comment on the line before
+    them, which a reader does not see: <!-- not run by the tests: it takes 40 seconds -->."""
+    return set(re.findall(r"<!-- not run by the tests[^>]*-->\s*\n```lisp\n(.*?)```", text, re.S))
+
+
+def _has_risky_word(block):
+    """Whether the block has one of _RISKY_BLOCK_WORDS at the start of a word: exit is in (exit), but not in convexity."""
+    return any(re.search(r"(?<![\w-])" + re.escape(word), block) for word in _RISKY_BLOCK_WORDS)
+
+
 def _loads_something_unsafe(doc, block):
     """Whether the block loads a file that a block in this document isn't allowed to. A block that calls file-to-notebook, set-slide-types or
     notebook-to-slides is never run: it writes a notebook (and file-to-notebook, without a path, opens a file dialog)."""
@@ -56,12 +76,62 @@ _ILLUSTRATIVE_PREFIXES = ("e.g.", "one of", "some", "a ", "an ", "somewhere", "e
 
 
 # examples that depend on global counters / what else has been defined
-_SKIPPED_FORMS = ("(gensym", "(defined-functions)", "(bound-variables)")
+_SKIPPED_FORMS = ("(gensym", "(defined-functions)", "(bound-variables)", "(defined-macros)")
+
+# how a document says that a form is an error: its comment, or what follows its ; =>, begins with one of these
+_ERROR_WORDS = ("an error", "error", "raises")
+
+
+def _says_error(documented, comment):
+    """Whether the document says that the form is an error: what follows its ; =>, or else its comment, begins with an error or raises."""
+    said = documented if documented is not None else comment
+    return said is not None and said.lower().startswith(_ERROR_WORDS)
+
+
+def _definitions(code):
+    """The names that some code defines (with define, defmacro, defgeneric, defmethod or defstruct), and the names of its structs, whose
+    functions (make-point, point-x, point?) are defined too."""
+    names = set(re.findall(r"\((?:define|defmacro|defgeneric|defmethod)\s+\(?([^\s()]+)", code))
+    structs = set(re.findall(r"\(defstruct\s+\(?([^\s()]+)", code))
+    return names | structs, structs
+
+
+def _names_defined_in(text):
+    """The names that the ```lisp blocks of a document's text define, and its structs (see _definitions)."""
+    return _definitions("\n".join(re.findall(r"```lisp\n(.*?)```", text, re.S)))
+
+
+_SYMBOL_EDGE = r"[\w\-?!*<>=/+.%]"         # a character that a symbol can have, so that one next to a name makes it part of a longer one
+
+
+def _uses_name(block, name):
+    """Whether the block has the name as a symbol of its own, not as a part of a longer one."""
+    return re.search(r"(?<!%s)%s(?!%s)" % (_SYMBOL_EDGE, re.escape(name), _SYMBOL_EDGE), block) is not None
+
+
+def _blocks_not_run(doc, sections):
+    """The numbers of the blocks of a document (the (section, block) pairs of _blocks_by_section) that are not run: those with a risky word
+    or an unsafe load."""
+    return {number for number, (_, block) in enumerate(sections) if _has_risky_word(block) or _loads_something_unsafe(doc, block)}
+
+
+def _names_only_not_run(sections, not_run):
+    """The names that only blocks that are not run define: a block that uses one, and fails, fails for want of what those blocks need (the
+    network, a file, a window), not because the document is wrong."""
+    run_names = set().union(*[_definitions(block)[0] for number, (_, block) in enumerate(sections) if number not in not_run])
+    return set().union(*[_definitions(block)[0] for number, (_, block) in enumerate(sections) if number in not_run]) - run_names
+
+
+def _defined_in_document(name, names, structs):
+    """Whether the name is one that a block of the document defines: a function or variable, or a function of one of its structs."""
+    return name in names or any(name in ("make-" + struct, "copy-" + struct, struct + "?") or name.startswith(struct + "-")
+                                for struct in structs)
 
 
 def _split_doc_forms(block):
-    """Yield (form_text, expected_or_None) for each top-level form in a doc
-    code block; `expected` is the text after a trailing `; =>` comment."""
+    """Yield (form_text, expected_or_None, comment_or_None) for each top-level
+    form in a doc code block; `expected` is the text after a trailing `; =>`
+    comment, and `comment` the whole of a comment after it on its line."""
     i, n = 0, len(block)
     while i < n:
         c = block[i]
@@ -101,7 +171,11 @@ def _split_doc_forms(block):
         eol = block.find("\n", i)
         eol = n if eol < 0 else eol
         m = re.match(r"\s*;\s*=>\s*(.*)$", block[i:eol])
-        yield block[start:i], (m.group(1).strip() if m else None)
+        comment = re.match(r"\s*;+\s*(.*)$", block[i:eol])
+        if not comment:                     # (or a line of comment of its own, right under the form)
+            next_eol = block.find("\n", eol + 1)
+            comment = re.match(r"\s*;+\s*(.*)$", block[eol + 1:n if next_eol < 0 else next_eol])
+        yield block[start:i], (m.group(1).strip() if m else None), (comment.group(1).strip() if comment else None)
 
 
 def _blocks_by_section(text):
@@ -167,17 +241,21 @@ class TestReferenceDocExamples(unittest.TestCase):
             "a doc example opened the debug REPL"))
         patcher.start()
         self.addCleanup(patcher.stop)
-        blocks = []                 # (the document's name, the block, its section if blocks share an environment)
+        blocks = []                 # (the document's name, the block, the section whose environment it runs in)
+        defined = {}                # the document's name -> the names its blocks define, and its structs (see _names_defined_in)
+        needs_not_run = {}          # the document's name -> the names that only its blocks that are not run define
         for doc, fewest in ((REFERENCE_DOC, 50), (LIBRARY_DOC, 50), (EXAMPLES_DOC, 10), (CMO_DOC, 5), (FORECASTING_DOC, 5), (PATHS_DOC, 5),
                             (MACRO_DOC, 5), (REGRESSION_DOC, 10), (BASEBALL_DOC, 5)):
             with open(doc, encoding="utf-8") as f:
                 text = f.read()
-            found = re.findall(r"```lisp\n(.*?)```", text, re.S)
-            self.assertGreater(len(found), fewest, "found few lisp code blocks in " + os.path.basename(doc))
-            if doc == EXAMPLES_DOC:
-                blocks += [(os.path.basename(doc), block, section) for section, block in _blocks_by_section(text)]
-            else:
-                blocks += [(os.path.basename(doc), block, None) for block in found]
+            name = os.path.basename(doc)
+            sections = _blocks_by_section(text)
+            self.assertGreater(len(sections), fewest, "found few lisp code blocks in " + name)
+            not_run = _blocks_not_run(name, sections) | {number for number, (_, block) in enumerate(sections)
+                                                         if block.rstrip("\n") in {marked.rstrip("\n") for marked in _blocks_marked_not_run(text)}}
+            blocks += [(name, block, (name, section)) for number, (section, block) in enumerate(sections) if number not in not_run]
+            defined[name] = _names_defined_in(text)
+            needs_not_run[name] = _names_only_not_run(sections, not_run)
 
         use_alarm = hasattr(signal, "SIGALRM")
         verified, failures = 0, []
@@ -194,53 +272,48 @@ class TestReferenceDocExamples(unittest.TestCase):
         if use_alarm:
             signal.signal(signal.SIGALRM, on_alarm)
 
-        shared_envs = {}            # section -> the environment its blocks run in, one after another
+        shared_envs = {}            # (document, section) -> the environment its blocks run in, one after another
         for bi, (doc, block, section) in enumerate(blocks):
-            if any(word in block for word in _RISKY_BLOCK_WORDS) or _loads_something_unsafe(doc, block):
-                continue
-            if section is not None and "; =>" not in block and "(load " not in block:
+            if doc == os.path.basename(EXAMPLES_DOC) and "; =>" not in block and "(load " not in block:
                 continue                    # an excerpt from a program, shown for reading, not for running
-            if section is None:
-                env = _fresh_env()
-            else:
-                if section not in shared_envs:
-                    shared_envs[section] = _fresh_env()
-                env = shared_envs[section]
+            if section not in shared_envs:
+                shared_envs[section] = _fresh_env()
+            env = shared_envs[section]
             lisp_core.debug_state.reset()       # breakpoints belong to the whole process, not one block
             if use_alarm:
                 signal.alarm(20)
             try:
-                for text, documented in _split_doc_forms(block):
+                for text, documented, comment in _split_doc_forms(block):
+                    where = "%s, block %d: %s" % (doc, bi, text.replace("\n", " ")[:80])
+                    expects_error = _says_error(documented, comment)
                     try:
-                        exprs = lisp_core.parse(text)
-                    except lisp_core.LispError:
-                        break
-                    stop = False
-                    for expr in exprs:
-                        try:
+                        value = lisp_core.NIL
+                        for expr in lisp_core.parse(text):
                             value = lisp_core.seval(expr, env)
-                        except TimeoutError:
-                            raise
-                        except Exception as e:
-                            # an example whose setup lives in an earlier block, or one
-                            # that documents an error, has nothing to compare here
-                            if documented is not None and ("unbound symbol" not in str(e) or section is not None):
-                                failures.append("%s, block %d: %s  raised %s: %s"
-                                                % (doc, bi, text.replace("\n", " ")[:80], type(e).__name__, e))
-                            stop = True
-                            break
-                        if documented is None or documented.startswith(_ILLUSTRATIVE_PREFIXES) \
-                                or "again" in documented or any(s in text for s in _SKIPPED_FORMS):
-                            continue
-                        if (_doc_value_matches(lisp_core.to_string(value), documented)
-                                or _doc_value_matches(lisp_core.to_display_string(value), documented)):
-                            verified += 1
-                        else:
-                            failures.append("%s, block %d: %s\n      doc says: %s\n      got:      %s"
-                                            % (doc, bi, text.replace("\n", " ")[:80], documented,
-                                               lisp_core.to_string(value)))
-                    if stop:
-                        break
+                    except TimeoutError:
+                        raise
+                    except Exception as e:
+                        if expects_error:
+                            continue                # (the document says that it is an error)
+                        unbound = re.match(r"unbound symbol: (\S+)", str(e))
+                        set_up_elsewhere = unbound and _defined_in_document(unbound.group(1), *defined[doc])
+                        needs_what_is_not_run = any(_uses_name(block, name) for name in needs_not_run[doc])
+                        if not (set_up_elsewhere or needs_what_is_not_run):
+                            failures.append("%s  raised %s: %s" % (where, type(e).__name__, e))
+                        break                       # (the rest of the block depends on it; an unbound name that the document defines
+                                                    # is set up by a block that is not run with this one, and a block that uses what only
+                                                    # blocks that are not run make cannot be run either)
+                    if expects_error and documented is None:
+                        failures.append("%s  -- the document says it is an error, and it gave %s" % (where, lisp_core.to_string(value)[:80]))
+                        continue
+                    if documented is None or documented.startswith(_ILLUSTRATIVE_PREFIXES) \
+                            or "again" in documented or any(s in text for s in _SKIPPED_FORMS):
+                        continue
+                    if (_doc_value_matches(lisp_core.to_string(value), documented)
+                            or _doc_value_matches(lisp_core.to_display_string(value), documented)):
+                        verified += 1
+                    else:
+                        failures.append("%s\n      doc says: %s\n      got:      %s" % (where, documented, lisp_core.to_string(value)))
             except TimeoutError:
                 failures.append("%s, block %d timed out" % (doc, bi))
             finally:

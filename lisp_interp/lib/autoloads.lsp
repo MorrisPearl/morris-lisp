@@ -268,26 +268,27 @@
   deal-gui--plan deal-gui--refresh! deal-gui--say deal-gui--show-sizes! deal-gui? deal-builder--form-answer deal-builder--form-children
   deal-builder--form-coupon-percent deal-builder--form-line deal-builder--form-losses deal-builder--form-name deal-builder--form-number deal-builder--form-optional-name deal-builder--form-percent-to-decimal
   make-deal-gui make-split-form split-form-defaults split-form-defaults-set! split-form-fields split-form-fields-set!
-  split-form-help split-form-help-set! split-form-plan split-form-plan-set! split-form-title split-form-title-set!
+  split-form-help split-form-help-set! split-form-plan split-form-plan-set! split-form-title split-form-title-set! split-form-kind split-form-kind-set!
+  split-form-for? split-form-of split-form-named split-form-apply!
   split-form? standard-split-forms deal-gui--apply! deal-gui--ask-whether-to-delete! deal-gui--button
   deal-gui-cancel-button deal-gui-cancel-button-set! deal-gui-confirm-button deal-gui-confirm-button-set!
   deal-gui--delete! deal-gui-delete-button deal-gui-delete-button-set! deal-gui-delete-row deal-gui-delete-row-set!
   deal-gui--form-for deal-gui--keep! deal-gui--offer-to-change! deal-gui--offer-to-divide! deal-gui--put-away!
   deal-gui--show-delete! deal-builder--form-children-text deal-builder--form-decimal-to-percent deal-builder--show-plan-effect split-form-describe
-  split-form-describe-set! split-form-label split-form-label-set! deal-builder--without-traceback deal-builder--average-lives-of deal-builder--form-lives
+  split-form-describe-set! split-form-label deal-builder--without-traceback deal-builder--average-lives-of deal-builder--form-lives
   deal-builder--form-lives-text bonds deal-gui-flows deal-gui-flows-set! deal-gui--show-flows! deal-gui--table deal-builder--show-node-flows
   deal-gui--type-number deal-gui--typed! deal-gui--update-prices! deal-builder--priced-column-texts deal-builder--balance-charts split-form-inputs deal-builder--plan-effect deal-builder--plan-effect-heading)
 
 ; Saving a deal in a file, and loading it again (see "Saving a deal, and loading it" in lisp_cmo_manual.md)
 (lazy-load "deal_save.lsp"
-  save-deal load-deal make-deal-file deal-file? copy-deal-file deal-save--date-text deal-save--tranche-arguments deal-save--tops deal-save--splits
+  save-deal load-deal deal-load! make-deal-file deal-file? copy-deal-file deal-save--tranche-arguments deal-save--tops deal-save--splits
   deal-save--price-entry deal-save--slots deal-save--slot-text deal-save--text deal-save--check-reads-back deal-save--check-has-pieces
   deal-save--option deal-save--date deal-save--read deal-save--give-prices! deal-save--check-sizes deal-save--put-in-order!)
 
 ; Building a deal by clicking on its tree, in a window of its own (see "Building a deal on its tree" in lisp_cmo_manual.md)
 (lazy-load "deal_tree.lsp"
-  deal-tree deal-tree--nodes deal-tree--nodes-below deal-tree--form deal-tree--title-of-split deal-tree--asking deal-tree--plan
-  deal-tree--sizes deal-tree--apply! deal-tree--delete!)
+  deal-tree deal-tree--nodes deal-tree--nodes-below deal-tree--title-of-split deal-tree--asking deal-tree--sizes deal-tree--delete!
+  deal-tree--save deal-tree--open!)
 
 ; Views of a deal in a notebook: its collateral, and its dates and pricing speed (see lisp_cmo_manual.md)
 (lazy-load "deal_views.lsp"

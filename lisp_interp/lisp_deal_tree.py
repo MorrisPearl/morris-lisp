@@ -7,10 +7,12 @@ children, with the kind of split written on them.
 Click a box, and a menu comes up. For a tranche that is not divided, the menu lists the kinds of split; choosing one opens a pop-up window
 with the fields that kind of split asks for, and two buttons: "Calculate the sizes" shows what the tranches would be, and "Add the tranches
 to the deal" adds them (it can be pressed only after the sizes have been calculated, for the fields as they are). For a tranche that is
-divided, the menu offers to change the split (the same pop-up, filled in as the split is) or to take it away.
+divided, the menu offers to change the split (the same pop-up, filled in as the split is) or to take it away. The File menu saves the deal
+in a file, and opens one.
 
 The window knows nothing about deals. Everything it does, it does by calling the Lisp functions it was given by deal-tree:
 
+  name ()                          the name of the deal, for the title of the window
   nodes ()                         every node, depth first, as lists (name parent-name balance split-label kind)
   kinds ()                         the titles of the kinds of split, for the menu
   title-of-split (name)            the title of the kind of split that divides the node, or "" if none of the kinds is it
@@ -18,14 +20,19 @@ The window knows nothing about deals. Everything it does, it does by calling the
   sizes (title name answers)       (heading columns rows): what the tranches below the node would be
   apply (title name answers)       divides the node (or changes its split), and returns a line that says what was done
   delete (name)                    takes away the split of the node, and returns a line that says what was taken away
+  save (path)                      saves the deal in the file at path, and returns a line that says so
+  open (path)                      makes the deal the one saved in the file at path, and returns a line that says so
 
 answers is a list of (field-name . value), as widget-actions gives them. A Lisp error in any of these is shown in the window, as a line.
 
 In a Jupyter notebook the kernel runs Qt's event loop between cells (ipykernel's "qt" event loop, which this turns on), so the cell that
-opens the window finishes and the window stays open. Anywhere else, deal-tree-window-show runs the event loop until the window is closed.
+opens the window finishes and the window stays open. Anywhere else, deal-tree-window-show runs the event loop until the window is closed,
+unless Qt is drawing off the screen (QT_QPA_PLATFORM=offscreen, as the tests have it), where no one could close it.
 """
 
 import math
+import os
+import re
 
 from lisp_core import LispError, LispString, Pair, Procedure, apply_proc, keyword_options, list_to_pairs
 from lisp_widgets import to_python
@@ -52,7 +59,10 @@ LINE_COLOR = "#7a8694"          # the lines of a split
 LABEL_COLOR = "#3c4a5c"         # the kind of split written on its lines
 ERROR_COLOR = "#b00020"
 
-FUNCTION_NAMES = ("nodes", "kinds", "title-of-split", "asking", "sizes", "apply", "delete")
+FUNCTION_NAMES = ("name", "nodes", "kinds", "title-of-split", "asking", "sizes", "apply", "delete", "save", "open")
+DEAL_FILE_SUFFIX = ".deal"                                   # what the name of a file of a deal ends with
+DEAL_FILE_FILTER = "Deals (*.deal);;All files (*)"            # what the Save and Open windows show
+OFFSCREEN_PLATFORM = "offscreen"                             # Qt's platform when it draws off the screen (QT_QPA_PLATFORM=offscreen)
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +352,11 @@ def tree_layout(nodes):
     return places
 
 
+def file_name_for(deal_name):
+    """The name of a file for the deal called deal_name: its name, with each character that a file name should not have made _, and .deal."""
+    return re.sub(r"[^\w .-]", "_", deal_name) + DEAL_FILE_SUFFIX
+
+
 def make_window(deal_name, functions):
     """The main window: the tree of the deal in a view that scrolls, and a status bar for what was done and what went wrong."""
     QtCore, QtGui, QtWidgets = _qt()
@@ -377,6 +392,7 @@ def make_window(deal_name, functions):
             self.functions = functions
             self.nodes = []
             self.closed = False
+            self.directory = os.getcwd()            # where the Save and Open windows begin: where a deal was last saved or opened
             self.setWindowTitle("Deal tree: %s" % deal_name)
             self.scene = QtWidgets.QGraphicsScene(self)
             self.view = QtWidgets.QGraphicsView(self.scene)
@@ -388,6 +404,7 @@ def make_window(deal_name, functions):
             self.text_font = QtGui.QFont()
             self.label_font = QtGui.QFont()
             self.label_font.setItalic(True)
+            self.make_file_menu()
             self.redraw()
             self.say("Click a tranche to divide it, or to change or take away its split.")
 
@@ -411,9 +428,11 @@ def make_window(deal_name, functions):
                 return
             try:
                 self.nodes = call_lisp(self.functions["nodes"])
+                self.deal_name = str(call_lisp(self.functions["name"]))
             except LispCallFailed as error:
                 self.say(str(error), error=True)
                 return
+            self.setWindowTitle("Deal tree: %s" % self.deal_name)
             self.scene.clear()
             name_metrics = QtGui.QFontMetrics(self.name_font)
             text_metrics = QtGui.QFontMetrics(self.text_font)
@@ -475,6 +494,48 @@ def make_window(deal_name, functions):
             label = self.scene.addSimpleText(split_label, self.label_font)
             label.setBrush(QtGui.QBrush(QtGui.QColor(LABEL_COLOR)))
             label.setPos(parent_box.right() + LABEL_MARGIN, parent_box.center().y() - label.boundingRect().height() - 1)
+
+        # -- the File menu ----------------------------------------------------
+
+        def make_file_menu(self):
+            """The File menu: save the deal in a file, or open one."""
+            file_menu = self.menuBar().addMenu("File")
+            save = file_menu.addAction("Save...")
+            save.setShortcut(QtGui.QKeySequence.StandardKey.Save)
+            save.triggered.connect(lambda checked=False: self.save_deal())
+            open_file = file_menu.addAction("Open...")
+            open_file.setShortcut(QtGui.QKeySequence.StandardKey.Open)
+            open_file.triggered.connect(lambda checked=False: self.open_deal())
+
+        def save_deal(self):
+            """Asks where to save the deal (a name that has no ending is given .deal), and saves it there."""
+            suggested = os.path.join(self.directory, file_name_for(self.deal_name))
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save the deal", suggested, DEAL_FILE_FILTER)
+            if not path:
+                return
+            if not os.path.splitext(path)[1]:
+                path += DEAL_FILE_SUFFIX
+            self.use_file(self.functions["save"], path)
+
+        def open_deal(self):
+            """Asks for a file of a deal, and makes the deal the one in it: the tree is drawn again, for the deal from the file."""
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open a deal", self.directory, DEAL_FILE_FILTER)
+            if not path:
+                return
+            self.use_file(self.functions["open"], path)
+
+        def use_file(self, function, path):
+            """Saves the deal in the file at path, or opens it from there, as function does, and says what was done, or what went wrong (also
+            in a message box: a file that could not be saved or opened is not to be missed)."""
+            try:
+                message = call_lisp(function, LispString(path))
+            except LispCallFailed as error:
+                self.say(str(error), error=True)
+                QtWidgets.QMessageBox.warning(self, "The deal tree", str(error))
+                return
+            self.directory = os.path.dirname(path)
+            self.redraw()
+            self.say(message)
 
         # -- the menu ---------------------------------------------------------
 
@@ -554,7 +615,7 @@ def make_window(deal_name, functions):
 # ---------------------------------------------------------------------------
 
 def deal_tree_window(deal_name, *options):
-    """(deal-tree-window deal-name :nodes f :kinds f :title-of-split f :asking f :sizes f :apply f :delete f) -- the window that draws a
+    """(deal-tree-window deal-name :name f :nodes f :kinds f :title-of-split f :asking f :sizes f :apply f :delete f :save f :open f) -- the window that draws a
     deal as a tree, made but not shown yet (see deal-tree-window-show). The functions are those at the top of lisp_deal_tree.py; deal-tree
     (lib/deal_tree.lsp) gives them."""
     functions = keyword_options(list(options), FUNCTION_NAMES, "deal-tree-window")
@@ -570,7 +631,8 @@ def deal_tree_window(deal_name, *options):
 
 def deal_tree_window_show(window):
     """(deal-tree-window-show window) -- shows the window, and returns it. In a notebook it returns at once, and the window stays open;
-    anywhere else it returns when the window is closed."""
+    anywhere else it returns when the window is closed -- unless Qt is drawing off the screen, where no one could close it: then it says so,
+    and returns at once."""
     application = _application()
     tree = window.view.sceneRect().size().toSize()
     screen = application.primaryScreen().availableSize()
@@ -579,7 +641,11 @@ def deal_tree_window_show(window):
     window.show()
     window.raise_()
     if _running_kernel() is None:
-        application.exec()
+        if application.platformName() == OFFSCREEN_PLATFORM:
+            print("deal-tree: Qt is drawing the window off the screen (QT_QPA_PLATFORM is offscreen), where no one can close it, "
+                  "so it is not waited for")
+        else:
+            application.exec()
     return window
 
 

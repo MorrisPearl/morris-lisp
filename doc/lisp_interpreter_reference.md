@@ -252,7 +252,7 @@ interpreter, e.g. `export LISP_PATH=~/models:~/models/common`.
 | Dotted pair | `(1 . 2)`, `(a b . c)` | An IMPROPER list — `.` before the last element sets the final cdr directly instead of `()`. Mainly used for variadic parameter lists (see below), but works anywhere |
 | Quasiquote | `` `(a ,b ,@c) `` | Like `quote`, but `,x` splices in the value of `x` and `,@x` splices in the elements of list `x` — see Macros below |
 | Vector | `#(1 2 3)`, `(vector 1 2 3)` | Fixed-size; holds numbers, strings, and/or dates (not lists or booleans) |
-| Date | `(date 2024 3 15)` | Prints as `2024-03-15` |
+| Date | `(date 2024 3 15)`, `2024-03-15` | Prints as `2024-03-15`, and a word written that way is read as that date (see "Words that are dates", below) |
 | Struct | `#S(point :x 1 :y 2)`, `(make-point :x 1 :y 2)` | A record of a type made by `defstruct`: prints as `#S(...)`, and reads back as that struct (see `defstruct`) |
 | Model | *(returned by regression)* | Prints as `#<linear-model ...>` etc. |
 
@@ -266,7 +266,18 @@ silently does nothing:
 
 ```lisp
 (define nan 5)       ; an error: nan can't be used as a name -- a name must be a symbol
-(let ((inf 1)) inf)  ; the same error
+(let ((inf 1)) inf)  ; an error too, the same one
+```
+
+**Words that are dates.** A word written year-month-day, such as `2026-11-20`, is read as that date: it is how a date prints, so a
+date that is printed (or written to a file, with `write-to-string`) reads back as a date, not as a symbol. A word written that way that
+is no date is an error, so such a word cannot be a name either.
+
+```lisp
+(date? 2026-11-20)                                   ; => #t
+(date-month 2026-11-20)                              ; => 11
+(equal? (date 2026 11 20) (read-from-string "2026-11-20"))   ; => #t
+(read-from-string "2026-02-30")                      ; an error: 2026-02-30 is written as a date, year-month-day, but there is no such date
 ```
 
 Comments run from `;` to end of line.
@@ -1296,7 +1307,7 @@ them too. Some are problems a program can expect and get past, such as a web sit
 **kind**, a name for such a problem, and `:only`, after the variable, catches only the errors of the kinds it names (a symbol,
 or a list of them); every other error passes on, as if the `catch-error` weren't there:
 
-```lisp
+```
 (catch-error protected-expr (var) :only (kind...) handler-body...)
 ```
 
@@ -1680,7 +1691,7 @@ ran across the whole grid:
         (set! i (+ i 1))       ; "increment my total" -- or so it looks
         (set! col (+ col 1))))
     (set! row (+ row 1))))
-(display i)                    ; => 0, NOT 9 -- silently wrong, no error
+i                              ; => 0, NOT 9 -- silently wrong, no error
 ```
 
 Every `,body` gets spliced directly into the macro's own `(let ((i 0)) ...)`
@@ -2670,8 +2681,12 @@ Calls `(f key value)` once for every entry in `h`, for side effects
 (building a report, summing values, ...); returns `'()`.
 
 ```lisp
+(define counts (make-hash-table))
+(hash-table-set! counts 'apples 3)
+(hash-table-set! counts 'pears 4)
 (define total 0)
-(hash-table-for-each (lambda (k v) (set! total (+ total v))) h)
+(hash-table-for-each (lambda (k v) (set! total (+ total v))) counts)
+total                          ; => 7
 ```
 
 #### `(hash-table-copy h)`
@@ -2786,7 +2801,8 @@ match right at the very start (`0`) still tests true.
 ```lisp
 (string-search "hello world" "world")   ; => 6
 (string-search "hello world" "xyz")     ; => #f
-(if (string-search s "xyz") "found" "not found")
+(define s "hello world")
+(if (string-search s "xyz") "found" "not found")   ; => "not found"
 ```
 
 #### `(string-contains? s sub)`
@@ -4251,7 +4267,7 @@ column with `stratify`, or take each group's averages with `table-group-by`.
 See `defstruct`, under "Structs" in "Special forms and standard macros", above, for the
 type-specific `make-<name>`/`<name>-<slot>`/`<name>-<slot>-set!`/`<name>?`/
 `copy-<name>` names it generates. `struct?`, `struct-ref`, `struct-set!`,
-and `struct-type-name` work generically on any struct instance, by
+`struct-type-name` and `struct-slot-names` work generically on any struct instance, by
 slot-name symbol, without needing to know its specific type; `call-method`
 and `call-super` (below) are a different kind of generic tool, for the "lambda in a slot"
 dispatch pattern struct inheritance enables — see their own entries. To use
@@ -4293,6 +4309,16 @@ Returns `s`'s struct type's name, as a symbol (e.g. `'point`).
 
 ```lisp
 (struct-type-name p)           ; => point
+```
+
+#### `(struct-slot-names s)`
+The names of `s`'s slots, as symbols, in the order of its type: the slots of the type it includes first. With `struct-ref` and
+`struct-set!`, a program can go through the slots of a struct of any type, such as to copy one struct's slots into another
+(`deal-load!`, in the CMO manual, does that).
+
+```lisp
+(struct-slot-names p)          ; => (x y)
+(map (lambda (slot) (struct-ref p slot)) (struct-slot-names p))   ; => (99 2)
 ```
 
 #### `(call-method accessor instance arg...)`
@@ -4405,19 +4431,19 @@ is such a method. They are the way that a method builds on the one it extends:
 ```
 
 **A type that is meant to be included** can say which generic functions every type that includes it must have a method of:
-`(defstruct (shape (:required-methods area)) ...)`. Making an instance, with `make-<type>` or as `#S(...)`, is then an error unless each of
-them has a method for its type, of its own or of a type it includes, or one for any argument (`t`), and the error says which is missing. So
-the type `shape` itself cannot be made, and a new kind of shape cannot be made until its `area` is defined: the check is when an instance is
-made, not at the `defstruct`, because the methods are defined after it. The requirement is inherited: a type that includes `shape` and
-names its own `:required-methods` needs both.
+`(defstruct (figure (:required-methods surface)) ...)`. Making an instance, with `make-<type>` or as `#S(...)`, is then an error unless each
+of them has a method for its type, of its own or of a type it includes, or one for any argument (`t`), and the error says which is missing.
+So the type `figure` itself cannot be made, and a new kind of figure cannot be made until its `surface` is defined: the check is when an
+instance is made, not at the `defstruct`, because the methods are defined after it. The requirement is inherited: a type that includes
+`figure` and names its own `:required-methods` needs both.
 
 ```lisp
-(defstruct (shape (:required-methods area)) (name "shape"))
-(defstruct (circle (:include shape)) (r 1))
-(defmethod area ((s circle)) (* 3 (circle-r s) (circle-r s)))
-(area (make-circle :r 2))                  ; => 12
-(defstruct (square (:include shape)) (side 1))
-(catch-error (make-square) (message) message)     ; => "make-square: a square needs a method of area (the defstruct of shape says so, with :required-methods), and area has none for square or a type it includes: define one first, (defmethod area ((x square) ...) ...)"
+(defstruct (figure (:required-methods surface)) (name "figure"))
+(defstruct (disc (:include figure)) (r 1))
+(defmethod surface ((f disc)) (* 3 (disc-r f) (disc-r f)))
+(surface (make-disc :r 2))                 ; => 12
+(defstruct (tile (:include figure)) (side 1))
+(catch-error (make-tile) (message) message)     ; => "make-tile: a tile needs a method of surface (the defstruct of figure says so, with :required-methods), and surface has none for tile or a type it includes: define one first, (defmethod surface ((x tile) ...) ...)"
 ```
 
 `(generic-function? f)` is `#t` for a generic function, and `(generic-function-methods f)` lists the types it has methods for, in the
@@ -4437,6 +4463,9 @@ calendar date (month 13, Feb 30, etc.).
 ```lisp
 (date 2024 3 15)               ; => 2024-03-15
 ```
+
+A date can also be written as it prints, `2024-03-15`: the reader reads a word written year-month-day as that date (see "Words that
+are dates"), so a date that is printed, or written to a file with `write-to-string`, reads back as a date.
 
 #### `(date-year d)`, `(date-month d)`, `(date-day d)`
 Integer accessors.
@@ -5641,9 +5670,9 @@ one list). A struct written as it prints, `#S(point :x 1 :y 2)`, is read as that
 `x` as text that `read-from-string` reads back as it was, as Common Lisp's `write-to-string` writes it: a string in quotes (with `\"` for a
 quote in it), a symbol without, and a struct as `#S(type :slot value ...)`. `to-string`, `format` and `display` show a string as its
 characters, without the quotes, which is for people; this is for text that a program reads again, such as the file that `save-deal`
-writes (see the CMO manual). Two things do not come back: a date is written `2026-11-20`, which reads back as a symbol (write it with
-`date->string`, and read it with `string->date`), and a function is written `#<procedure f>`, which is not data at all. A function's text is
-its code, not the values that the code refers to, so a function is saved as the data that it is made from, and made again.
+writes (see the CMO manual). A date is written `2026-11-20`, which reads back as that date. What does not come back is a function, which
+is written `#<procedure f>` and is not data at all (nor is a hash table, `#<hash-table 3 entries>`). A function's text is its code, not the
+values that the code refers to, so a function is saved as the data that it is made from, and made again.
 
 ```lisp
 (string-length (write-to-string "abc"))                   ; => 5
@@ -6600,7 +6629,7 @@ interpreter, about 1,300 of them:
 | `test_profiling.py` | `profile` and its results: counts, times, self time, recursion, tail calls, and built-in functions |
 | `test_parser.py` | the parser framework, `lib/parser.lsp`: tokens, each kind of item, errors, and two grammars compared with Python's own parsing |
 | `test_programs.py` | the command line, the console (its display, and Control-C), the chess, KenKen, and SQL programs, and the example scripts |
-| `test_reference_doc.py` | **the documents**: every ` ```lisp ` example with a `; =>` result is run, and the test fails if the interpreter no longer returns that value. So when you change how something behaves, the tests say which documented examples need updating |
+| `test_reference_doc.py` | **the documents**: every ` ```lisp ` example is run, and the test fails if a `; =>` result is no longer what the interpreter returns, or if a form is an error that the document doesn't say is one. So when you change how something behaves, the tests say which documented examples need updating |
 
 `support.py` has what they all use: the interpreter's modules, and
 `LispTestCase`, which gives each test a fresh global environment.
@@ -6671,14 +6700,22 @@ that code (`source: ...`). A failing example from a manual is listed
 like this:
 
 ```
-lisp_interpreter_reference.md, block 239: (defined-macros)
-      doc says: (double-it)
-      got:      (while do double-it)
+lisp_interpreter_reference.md, block 239: (round 2.5)
+      doc says: 3
+      got:      2
 ```
 
 Here, either the example in the manual is out of date (fix the
 manual), or the interpreter changed when it shouldn't have (fix the
 code).
+
+**Writing examples that the test can run.** The ` ```lisp ` blocks of a section (a `##` or `###` heading) run one after another,
+in one environment, so a block can use what an earlier block of its section defined. A form that is meant to be an error says so,
+in a comment on its line or on the line under it that begins "an error" or "raises": `(car '())   ; an error: car: ...`. A form that
+uses a name that the document defines in a block that is not run with it (in another section, or a block that is not run at all)
+stops its block, without failing. A block that needs what the tests don't have, the network or a window, is not run, by the words in it
+(`_RISKY_BLOCK_WORDS` in `test_reference_doc.py`); one that is too slow, or that needs one that is not run, is marked with an HTML
+comment, which a reader of the document does not see, on the line before it: `<!-- not run by the tests: it takes 40 seconds -->`.
 
 ## Adding your own builtins
 
@@ -6691,7 +6728,7 @@ Write a builtin in Python when it needs something Lisp can't do: a Python
 package, a network or file format, or speed on large data. The steps:
 
 **1. Create a module** — a new file next to the others, e.g.
-`lisp_finance.py`. Write each builtin as an ordinary Python function, and
+`lisp_mortgage_math.py`. Write each builtin as an ordinary Python function, and
 end the file with a `BUILTINS` table:
 
 ```python
@@ -6729,16 +6766,16 @@ BUILTINS = {
 ```
 
 **2. Register it** in `lisp_builtins.py`: import the module with the
-others at the top of the file (`import lisp_finance`), and add one line to
+others at the top of the file (`import lisp_mortgage_math`), and add one line to
 `make_global_env()` next to the other modules' tables:
 
 ```python
-    env.update(lisp_finance.BUILTINS)
+    env.update(lisp_mortgage_math.BUILTINS)
 ```
 
 **3. Try it** — restart the interpreter (or the Jupyter kernel):
 
-```lisp
+```
 (level-payment 6.0 360 100000)             ; => 599.5505251527569
 (remaining-balance 6.0 360 100000 12)      ; => 98771.98828772324
 ```

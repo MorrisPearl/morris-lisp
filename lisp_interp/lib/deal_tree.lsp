@@ -19,11 +19,15 @@
 ;
 ;   (deal-tree deal :forms (append (standard-split-forms) (list my-form)))
 ;
+; The window's File menu saves the deal in a file (see save-deal), and opens one: the deal becomes the one in the file (see deal-load!), so
+; that what refers to the deal, a notebook's variable or another view of it, has the one that was opened.
+;
 ; The window is drawn by lisp_deal_tree.py, with PyQt6. In a notebook, the cell finishes and the window stays open beside it: the deal is
 ; the notebook's, so what the window adds is in the deal, and what the notebook (or another view, such as (bonds deal)) changes is drawn in
 ; the window. Run from a Lisp file at the command line, (deal-tree deal) returns when the window is closed.
 
 (require "deal_builder.lsp")
+(require "deal_save.lsp")
 
 ; ---------------------------------------------------------------------------
 ; What the window is told about the deal
@@ -47,23 +51,16 @@ balance is a notional one (an IO), and \"\" for the others."
   "Every node of the deal, the collateral first, each before the nodes under it: see deal-tree--nodes-below."
   (deal-tree--nodes-below deal (deal-root deal) ""))
 
-(define (deal-tree--form forms title)
-  "The split-form whose title is title."
-  (let ((form (find-if (lambda (form) (equal? (split-form-title form) title)) forms)))
-    (unless form
-      (error (format "there is no kind of split called {}" title)))
-    form))
-
 (define (deal-tree--title-of-split forms deal name)
   "The title of the form for the kind of split that divides the node called name, or \"\" if no form is for that kind (it can then be taken
 away, but not changed)."
-  (let ((form (find-if (lambda (form) (equal? (split-form-label form) (split-label (node-split (get-node deal name))))) forms)))
+  (let ((form (split-form-of forms (node-split (get-node deal name)))))
     (if form (split-form-title form) "")))
 
 (define (deal-tree--asking forms deal title name)
   "What the pop-up window for dividing the node called name by the form called title shows, as a list (heading help fields): the line at
 the top, the line that explains the kind of split, and the fields (see split-form-inputs)."
-  (let* ((form (deal-tree--form forms title))
+  (let* ((form (split-form-named forms title))
          (node (get-node deal name))
          (balance (vector-ref (node-balance node) 0)))
     (list (if (null? (node-split node))
@@ -72,37 +69,31 @@ the top, the line that explains the kind of split, and the fields (see split-for
           (split-form-help form)
           (split-form-inputs form deal node))))
 
-(define (deal-tree--plan forms deal title name answers)
-  "The split-plan for dividing the node called name as the answers (a list of (field-name . value)) on the form called title say."
-  ((split-form-plan (deal-tree--form forms title)) (get-node deal name) answers))
-
 (define (deal-tree--sizes forms deal title name answers)
   "What the tranches below the node called name would be, if it were divided as the answers say, as a list (heading columns rows): the
 deal is not changed (see deal-trial-of-plan). The columns and the rows are those of deal-builder--plan-effect."
-  (let* ((trial (deal-trial-of-plan deal name (deal-tree--plan forms deal title name answers)))
+  (let* ((plan ((split-form-plan (split-form-named forms title)) (get-node deal name) answers))
+         (trial (deal-trial-of-plan deal name plan))
          (table (deal-builder--plan-effect deal trial name)))
     (list (deal-builder--plan-effect-heading trial name)
           (map car table)
           (loop for row from 0 below (vector-length (cdr (car table)))
                 collect (map (lambda (column) (vector-ref (cdr column) row)) table)))))
 
-(define (deal-tree--apply! forms deal title name answers)
-  "Divides the node called name as the answers say, or changes its split if it is divided, and returns a line that says what was done."
-  (let* ((plan (deal-tree--plan forms deal title name answers))
-         (adding (null? (node-split (get-node deal name))))
-         (children (string-join (split-children (split-plan-split plan)) ", ")))
-    (if adding
-        (deal-add-plan! deal name plan)
-        (deal-replace-split! deal name plan))
-    (if adding
-        (format "Added {} under {}, by a {} split." children name (split-label (split-plan-split plan)))
-        (format "Changed the split of {}: it is a {} split into {}, and what is under them is worked out again."
-                name (split-label (split-plan-split plan)) children))))
-
 (define (deal-tree--delete! deal name)
   "Takes away the split of the node called name, and every node under it, and returns a line that says what was taken away."
   (let ((gone (deal-delete-split! deal name)))
     (format "Took away the split of {}, and {}. {} is not divided." name (string-join gone ", ") name)))
+
+(define (deal-tree--save deal path)
+  "Saves the deal in the file at path (see save-deal), and returns a line that says so."
+  (save-deal deal path)
+  (format "Saved {} in {}." (deal-name deal) path))
+
+(define (deal-tree--open! deal path)
+  "Makes the deal the one saved in the file at path (see deal-load!), and returns a line that says so."
+  (deal-load! deal path)
+  (format "Opened {}, from {}." (deal-name deal) path))
 
 ; ---------------------------------------------------------------------------
 ; The window
@@ -113,12 +104,15 @@ deal is not changed (see deal-trial-of-plan). The columns and the rows are those
 :forms are the kinds of split in the menu, split-forms (see deal_builder.lsp). Returns the window."
   (let ((window (deal-tree-window
                   (deal-name deal)
+                  :name (lambda () (deal-name deal))
                   :nodes (lambda () (deal-tree--nodes deal))
                   :kinds (lambda () (map split-form-title forms))
                   :title-of-split (lambda (name) (deal-tree--title-of-split forms deal name))
                   :asking (lambda (title name) (deal-tree--asking forms deal title name))
                   :sizes (lambda (title name answers) (deal-tree--sizes forms deal title name answers))
-                  :apply (lambda (title name answers) (deal-tree--apply! forms deal title name answers))
-                  :delete (lambda (name) (deal-tree--delete! deal name)))))
+                  :apply (lambda (title name answers) (split-form-apply! (split-form-named forms title) deal name answers))
+                  :delete (lambda (name) (deal-tree--delete! deal name))
+                  :save (lambda (path) (deal-tree--save deal path))
+                  :open (lambda (path) (deal-tree--open! deal path)))))
     (deal-add-view! deal '(tranches) (lambda () (deal-tree-window-redraw window)))
     (deal-tree-window-show window)))

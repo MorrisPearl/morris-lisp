@@ -5,6 +5,9 @@
 ;   (save-deal deal "demo.deal")
 ;   (define deal (load-deal "demo.deal"))
 ;
+; (deal-load! deal "demo.deal") makes a deal that there is already the one in the file, so that what refers to it (a variable, a window
+; of its tree, a grid of its tranches) has the one from the file: the deal tree window's Open does that.
+;
 ; What is saved is what the deal is made from, as data: its name, dates and settings, its collateral (the table of its pieces), its
 ; pricing speed and Treasury curve, each split with the tranches that it divides its parent into, and the price, yield, spread or OAS
 ; that each tranche was given, and its delay. The rest is worked out again from those when the deal is loaded, by the functions that
@@ -31,8 +34,8 @@
 
 (defstruct deal-file version name first-payment closing-date collateral-name shortfalls pricing-speed treasury-curve home-price-growth
   mortgage-spread defaults liquidation-lag rate-model index collateral other-tranches splits prices names)
-; version: deal-save-format-version when it was saved. The dates are text, "2026-11-25", or '() (a date is written 2026-11-25, which reads back as
-; a symbol). collateral: the table of the pieces of collateral. other-tranches: the tranches that no split pays (that have not been given a
+; version: deal-save-format-version when it was saved. The dates are dates, written 2026-11-25, or '() (a file saved before dates read back as
+; dates has them as text, "2026-11-25", which is read too). collateral: the table of the pieces of collateral. other-tranches: the tranches that no split pays (that have not been given a
 ; parent), as the arguments of deal-add-tranche!, (name balance :z z :notional notional :follows follows). splits: (parent tranches split)
 ; for each split, the parents in the order of the tree, each before the ones under it, which is the order they are added in again; tranches
 ; are the arguments of deal-add-tranche! for the children, as a split-plan has them. prices: (name :priced-by kind :value value :delay days)
@@ -44,10 +47,6 @@
 ; ---------------------------------------------------------------------------
 ; Saving
 ; ---------------------------------------------------------------------------
-
-(define (deal-save--date-text date)
-  "A date as the text \"2026-11-25\", or '() for none."
-  (if (null? date) '() (date->string date)))
 
 (define (deal-save--tranche-arguments deal name)
   "The arguments of deal-add-tranche! that make the tranche called name again as it is: (name balance :z z :notional notional :follows follows)."
@@ -77,8 +76,8 @@
   "The slots of the deal-file that the deal is saved as, a list of (slot-name . value), in the order of the defstruct."
   (list (cons 'version deal-save-format-version)
         (cons 'name (deal-name deal))
-        (cons 'first-payment (deal-save--date-text (deal-first-payment deal)))
-        (cons 'closing-date (deal-save--date-text (deal-closing-date deal)))
+        (cons 'first-payment (deal-first-payment deal))
+        (cons 'closing-date (deal-closing-date deal))
         (cons 'collateral-name (deal-root deal))
         (cons 'shortfalls (deal-shortfalls deal))
         (cons 'pricing-speed (deal-pricing-speed deal))
@@ -158,9 +157,9 @@ Returns path.
   (let ((found (member key (cdr entry))))
     (if (and found (pair? (cdr found))) (cadr found) '())))
 
-(define (deal-save--date text)
-  "The date that the text \"2026-11-25\" is, or '() for '()."
-  (if (null? text) '() (string->date text)))
+(define (deal-save--date value)
+  "The date in a file: a date, or '() for none, or, in a file saved before dates read back as dates, the text \"2026-11-25\"."
+  (if (string? value) (string->date value) value))
 
 (define (deal-save--read path)
   "The deal-file in the file at path, or an error that says what is wrong with it."
@@ -241,4 +240,21 @@ nothing in it is run.
     (deal-save--put-in-order! deal (deal-file-names saved))
     (deal-index-set! deal (deal-file-index saved))
     (deal-save--give-prices! deal (deal-file-prices saved))
+    deal))
+
+(define deal-save--kept-slots '(views tracks-prices))     ; (what a deal that is loaded into keeps of its own: see deal-load!)
+
+(define (deal-load! deal path)
+  "Makes the deal the one saved in the file at path (see load-deal): its name, tranches, collateral, settings and prices become the file's. What shows
+the deal, a window of its tree or a grid of its tranches in a notebook, is kept, and shows the deal from the file, and a variable that has the deal has
+the one from the file. Returns the deal.
+
+  (deal-load! deal \"demo.deal\")"
+  (let ((loaded (load-deal path)))
+    (dolist (slot (struct-slot-names deal))
+      (unless (member slot deal-save--kept-slots)
+        (struct-set! deal slot (struct-ref loaded slot))))
+    (when (deal-tracks-prices loaded)
+      (deal-pricing--track-prices! deal))             ; (the deal's prices are worked out again when it changes, as the loaded deal's were)
+    (deal-changed! deal 'collateral 'tranches 'info 'index 'prices)
     deal))

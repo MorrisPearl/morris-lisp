@@ -48,6 +48,15 @@ class TestReader(LispTestCase):
         self.assertIs(self.run_lisp("#t"), True)
         self.assertIs(self.run_lisp("#f"), False)
 
+    def test_a_word_written_as_a_date_is_that_date(self):
+        """A date prints as 2026-11-20, and that word reads back as the date, so a date that is written out comes back as one."""
+        self.assertShows("(date? 2026-11-20)", "#t")
+        self.assertShows("(equal? 2026-11-20 (date 2026 11 20))", "#t")
+        self.assertShows("(equal? (list (date 2024 2 29) \"x\") (read-from-string (write-to-string (list (date 2024 2 29) \"x\"))))", "#t")
+        self.assertShows("(symbol? (string->symbol \"2026-11-20\"))", "#t")         # (a symbol of that name can still be made)
+        self.assertLispError("2026-02-30", "2026-02-30 is written as a date, year-month-day, but there is no such date")
+        self.assertShows("(symbol? (quote 2026-11-2))", "#t")                          # (only year-month-day, all of it, is a date)
+
     def test_strings_and_escapes(self):
         self.assertEqual(self.run_lisp(r'"hello"'), "hello")
         self.assertEqual(self.run_lisp(r'"a\nb"'), "a\nb")
@@ -1078,6 +1087,12 @@ class TestStructsReadBack(LispTestCase):
         is evaluated, after the defstruct."""
         forms = list(lisp_core.parse("(defstruct box size) (define b #S(box :size 3)) (box-size b)"))
         self.assertEqual([lisp_core.seval(form, self.env) for form in forms][-1], 3)
+
+    def test_the_names_of_the_slots_of_a_struct_of_any_type(self):
+        self.run_lisp("(defstruct (point-3d (:include point)) z)")
+        self.assertShows("(struct-slot-names (make-point-3d))", "(x y label z)")
+        self.assertShows("(map (lambda (slot) (struct-ref #S(point :x 1 :y 2) slot)) (struct-slot-names (make-point)))", '(1 2 "origin")')
+        self.assertLispError("(struct-slot-names 5)", "struct-slot-names: not a struct: 5")
 
     def test_what_is_not_a_struct_that_can_be_read(self):
         self.assertLispError('(read-from-string "#S(nothing :x 1)")', "there is no struct type called nothing")

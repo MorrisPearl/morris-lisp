@@ -1517,7 +1517,7 @@ model looks at: its rate, size, the borrower's credit score, and its loan-to-val
 
 ```lisp
 (define latest (latest-treasury-points))          ; (2026-10-29 ((0.083 4.06) ... (10.0 4.98) (30.0 5.32)))
-(define deal (new-deal "One mortgage" :closing-date (today) :first-payment (date 2026 12 1)
+(define deal (new-deal "One mortgage" :closing-date (date 2026 10 30) :first-payment (date 2026 12 1)
                        :treasury-curve (cadr latest)
                        :collateral (list (make-collateral-piece :balance 400000.0 :wac 7.25 :coupon 7.25 :wam 360 :age 0
                                                                 :credit-score 760 :ltv 80.0 :loan-size 400000))
@@ -1553,6 +1553,7 @@ own pace, and the yield and spread are of those cash flows:
 rates. This runs the loan on each path, and on each again with the curve moved up and down, so it
 takes a while: 40 paths took 40 seconds (use 200 or more for a price to rely on):
 
+<!-- not run by the tests: it takes 40 seconds -->
 ```lisp
 (deal-run-paths! deal :paths 40 :seed 1)
 (node-oas loan)                                    ; 173 basis points
@@ -1564,6 +1565,7 @@ the lender, a year. And the loan's effective duration is a third shorter than it
 rates fall, it is paid off, and doesn't gain as a bond would. What the loan is worth at a given
 OAS, say 150 basis points:
 
+<!-- not run by the tests: it needs the paths of the block above, which is not run -->
 ```lisp
 (deal-set-oas! deal "LOAN" 150)
 (node-price loan)                                  ; 100.91: a lender who wants 150 over the paths pays this much
