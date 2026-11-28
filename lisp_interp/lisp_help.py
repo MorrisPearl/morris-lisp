@@ -21,8 +21,8 @@ import os
 import re
 
 from lisp_core import (
-    NIL, SPECIAL_FORMS, GenericFunction, LispError, LispString, Macro, Pair, Procedure, Symbol,
-    _param_spec_from, builtin_names, pairs_to_list, parse, struct_function_docs, to_string,
+    NIL, SPECIAL_FORMS, TOP_LEVEL_MAX_ITEMS, GenericFunction, LispError, LispString, Macro, Pair, Procedure, Symbol,
+    _brief, _param_spec_from, builtin_names, pairs_to_list, parse, struct_function_docs, to_string,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -91,10 +91,18 @@ def joined(how_called, text):
     return how_called + "\n" + "\n".join("  " + line if line else "" for line in text.splitlines())
 
 
+BRIEF_VALUE_LENGTH = 200      # the characters of a variable's value that help shows
+
+
 def brief(value):
-    """The value as the interpreter prints it, cut short if it is long."""
-    text = to_string(value)
-    return text if len(text) <= 200 else text[:200] + " ..."
+    """The value as the interpreter prints it, cut short if it is long: no more of a long list, or a big hash table,
+    than a notebook cell shows, so that a big value is quick to show, and a value that holds itself, which can't be
+    printed, as an error message shows it."""
+    try:
+        text = to_string(value, TOP_LEVEL_MAX_ITEMS)
+    except LispError:
+        text = _brief(value)
+    return text if len(text) <= BRIEF_VALUE_LENGTH else text[:BRIEF_VALUE_LENGTH] + " ..."
 
 
 # ---------------------------------------------------------------------------

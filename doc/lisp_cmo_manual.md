@@ -1027,20 +1027,23 @@ was given. A mistake in a floater's cap, say, makes the coupons stop adding up, 
 ```
 
 **What is saved is what the deal is made from**, as data: its name, dates and settings, its collateral (the table of its pieces), its
-pricing speed, Treasury curve and model of rates, each split with the tranches that it divides its parent into, and the price, yield, spread
-or OAS that each tranche was given, and its delay. The rest is worked out again when the deal is loaded, by the functions that worked it out
+pricing speed, Treasury curve, model of rates, prepayment model and index function, each split with the tranches that it divides its parent
+into, and the price, yield, spread or OAS that each tranche was given, and its delay. The rest is worked out again when the deal is loaded, by the functions that worked it out
 when it was built: `load-deal` gives a new deal the collateral and the settings, and adds the splits in the order of the tree, so the cash
 flows of the collateral, the sizes that a split works out (a PAC's, a floater's, one by average life) and the coupons of the tranches come out
 as they were. Then it checks that every tranche is the size that the file says it was, and gives the tranches their prices. A tranche priced by
 its OAS keeps the OAS, and is priced by it when the paths of rates are run (see `deal-run-paths!`). The cash flows of a run are not saved:
 run the loaded deal.
 
-**Functions are not saved as their text.** A function's text is its code, but not the values that the code refers to. The coupon of a
-tranche at 6%, `(constant-coupon 0.06)`, pretty-prints as `(lambda (index) rate)`, and `rate` is 0.06 only in the place where the function
-was made: read back and called, it is the error `unbound symbol: rate`. A builtin has no text at all (`#<builtin car>`). That is why the
-coupons are made again, by the code that made them, from the data that is saved. A deal can be given two functions of its own, a
-prepayment model and an index function (see `deal-set-prepayment-model!` and `deal-set-index-function!`); they are not saved, `save-deal`
-says so, and they are given to the loaded deal again. A value that is not data (a function in a slot of a split of your own, say) is an
+**A function is saved as its code**, `#.(lambda (piece path) ...)`, which reads back as the function that the code makes (see "Functions
+print as their code" in the language manual). That is all of a function made at the top level, but not of one made inside another function,
+that uses its variables (a closure): the coupon of a tranche at 6%, `(constant-coupon 0.06)`, is written `#.(lambda (index) rate)`, and
+`rate` is 0.06 only in the place where the function was made; read back and called, it is the error `unbound symbol: rate`. That is why the
+coupons are not saved, but made again, by the code that made them, from the data that is. A deal can be given two functions of its own, a
+prepayment model and an index function (see `deal-set-prepayment-model!` and `deal-set-index-function!`). Each is saved when its code is all
+of it, as that of `refinancing`, above, is (it uses only its parameters and functions defined at the top level), and the loaded deal has it.
+A closure is not saved: `save-deal` says so, and why (`closure-variables` names the variables), and it is given to the loaded deal again.
+Anything else that can't be written so that it reads back as it is (a closure in a slot of a split of your own, say, or a widget) is an
 error when the deal is saved, and nothing is written.
 
 **The file is text** that a person can read: a `deal-file` struct written as it prints, with a slot to a line (`write-to-string`
@@ -1055,6 +1058,9 @@ writes each value as `read-from-string` reads it back). The deal above is saved 
  ...
  :pricing-speed #S(speed-curve :type cpr :pieces ((0 0 ())))
  ...
+ :prepayment-model ()
+ :index-function ()
+ :index ()
  :collateral
  (("balance" . #(120.0))
   ("wac" . #(0.0))

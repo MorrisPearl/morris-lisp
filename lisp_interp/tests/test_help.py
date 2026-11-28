@@ -40,6 +40,8 @@ class TestDocumentation(LispTestCase):
         self.assertEqual(self.documentation("rate"), "rate is a variable. Its value is 0.05")
         self.run_lisp("(define long (iota 500))")
         self.assertTrue(self.documentation("long").endswith(" ..."))
+        self.run_lisp("(define selfish (make-hash-table)) (hash-table-set! selfish 'me selfish)")     # (which can't be printed)
+        self.assertEqual(self.documentation("selfish"), "selfish is a variable. Its value is #H((me . #H((...))))")
 
     def test_a_name_that_is_not_defined_has_none(self):
         self.assertIsNone(self.documentation("no-such-name"))

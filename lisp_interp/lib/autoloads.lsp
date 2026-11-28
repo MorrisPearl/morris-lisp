@@ -282,7 +282,8 @@
 ; Saving a deal in a file, and loading it again (see "Saving a deal, and loading it" in lisp_cmo_manual.md)
 (lazy-load "deal_save.lsp"
   save-deal load-deal deal-load! make-deal-file deal-file? copy-deal-file deal-save--tranche-arguments deal-save--tops deal-save--splits
-  deal-save--price-entry deal-save--slots deal-save--slot-text deal-save--text deal-save--check-reads-back deal-save--check-has-pieces
+  deal-save--price-entry deal-save--why-not-written deal-save--kept-function deal-save--slots deal-save--slot-text deal-save--text
+  deal-save--check-reads-back deal-save--note-function-not-saved deal-save--check-has-pieces
   deal-save--option deal-save--date deal-save--read deal-save--give-prices! deal-save--check-sizes deal-save--put-in-order!)
 
 ; Building a deal by clicking on its tree, in a window of its own (see "Building a deal on its tree" in lisp_cmo_manual.md)

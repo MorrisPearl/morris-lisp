@@ -159,26 +159,57 @@ class SaveAndLoadTest(LispTestCase):
         self.assertEqual(lisp_widgets.to_python(self.run_lisp('(vector->list (node-principal (get-node loaded "B")))', elsewhere)),
                          [20.0, 20.0, 20.0, 20.0, 0.0, 0.0])                         # (B, the last child, is paid first)
 
-    def test_what_is_not_data_is_not_saved(self):
-        self.run_lisp('(define deal %s)' % psa_deal("demo", 1000.0, 6.0, term=12))
+    def add_kept_split(self, rule):
+        """Divides the deal's pool by a split of a kind of one's own, whose rule slot holds rule (Lisp source)."""
         self.run_lisp("(defstruct (kept-split (:include split)) rule)"
                       "(defmethod pay-principal ((split kept-split) deal parent t) #f)"
                       '(deal-add-plan! deal "POOL" (make-split-plan :tranches (quote (("A" 400.0) ("B" 600.0))) '
-                      ':split (make-kept-split :children (quote ("A" "B")) :rule (lambda (x) x))))')
-        with self.assertRaisesRegex(lisp_core.LispError, "save-deal: the splits of the deal is not data that can be written and read back"):
+                      ':split (make-kept-split :children (quote ("A" "B")) :rule %s)))' % rule)
+
+    def test_what_does_not_read_back_as_it_is_is_not_saved(self):
+        self.run_lisp('(define deal %s)' % psa_deal("demo", 1000.0, 6.0, term=12))
+        self.add_kept_split("((lambda (n) (lambda (x) (* x n))) 2)")        # a closure: its code doesn't have n
+        with self.assertRaisesRegex(lisp_core.LispError, r"save-deal: the splits of the deal cannot be saved: the function "
+                                                         r"#.\(lambda \(x\) \(\* x n\)\) uses n, a variable of the place where it was made"):
             self.save()
         self.assertFalse(os.path.exists(self.path))                                  # (nothing is written)
+        self.run_lisp('(kept-split-rule-set! (node-split (get-node deal "POOL")) %struct-type-kept-split)')    # (not data at all)
+        with self.assertRaisesRegex(lisp_core.LispError, "save-deal: the splits of the deal cannot be saved: #<struct-type kept-split> is not data"):
+            self.save()
         self.run_lisp(HAND_DEAL + hand_deal([100.0, 50.0, 0.0], [50.0, 50.0], name="handmade", variable="handmade"))
         with self.assertRaisesRegex(lisp_core.LispError, "was given its cash flows, not pieces of collateral"):
             self.save("handmade")
 
-    def test_a_function_that_a_deal_was_given_is_not_saved_and_save_deal_says_so(self):
-        self.run_lisp('(define deal %s)' % TOY_POOL)
-        self.run_lisp("(deal-set-index-function! deal (lambda (short-rates) short-rates))")
+    def test_a_function_made_at_the_top_level_is_saved_as_its_code(self):
+        self.run_lisp('(define deal %s)' % psa_deal("demo", 1000.0, 6.0, term=12))
+        self.run_lisp("(define (double x) (* 2 x))")
+        self.add_kept_split("(lambda (x) (double x))")
         self.save()
-        self.assertIn("save-deal: the deal's index function is a function, which is not saved", "".join(self.out))
+        self.assertIn("#S(kept-split :children (\"A\" \"B\") :loss-rule reverse :rule #.(lambda (x) (double x)))", self.file_text())
+        self.load()
+        self.assertEqual(self.run_lisp('((kept-split-rule (node-split (get-node loaded "POOL"))) 21)'), 42)
+
+    def test_a_prepayment_model_and_an_index_function_are_saved_unless_they_are_closures(self):
+        self.run_lisp('(define deal %s)' % TOY_POOL)
+        self.run_lisp("(define (flat-model piece path) (vector-fill (collateral-piece-wam piece) 5.0))"
+                      "(deal-set-prepayment-model! deal flat-model)"
+                      "(deal-set-index-function! deal (lambda (short-rates) (+ short-rates 0.001)))")
+        self.save()
+        self.assertNotIn("is not saved", "".join(self.out))
+        self.assertIn(" :prepayment-model #.(lambda (piece path) (vector-fill (collateral-piece-wam piece) 5.0))\n", self.file_text())
+        self.assertIn(" :index-function #.(lambda (short-rates) (+ short-rates 0.001))\n", self.file_text())
+        self.load()
+        self.assertEqual(self.text("(deal-prepayment-model loaded)"), self.text("flat-model"))
+        self.assertEqual(self.text("((deal-index-function loaded) (vector 0.02 0.03))"), "#(0.021 0.031)")
+        self.run_lisp("(define (index-over spread) (lambda (short-rates) (+ short-rates spread)))"
+                      "(deal-set-index-function! deal (index-over 0.002))")
+        self.save()
+        self.assertIn("save-deal: the deal's index function is not saved (the function #.(lambda (short-rates) (+ short-rates spread)) "
+                      "uses spread, a variable of the place where it was made", "".join(self.out))
+        self.assertIn("give it to the loaded deal again, with deal-set-index-function!", "".join(self.out))
         self.load()
         self.assertEqual(self.text("(deal-index-function loaded)"), "()")
+        self.assertEqual(self.text("(deal-prepayment-model loaded)"), self.text("flat-model"))
 
     def test_what_is_not_a_saved_deal_is_an_error_and_nothing_in_it_is_run(self):
         with open(self.path, "w", encoding="utf-8") as f:

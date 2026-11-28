@@ -33,7 +33,7 @@ from lisp_core import (
     apply_proc, builtin_names, check_numbers, check_required_methods, lisp_equal, plural, check_vector_elements, expand_macro, gensym,
     get_verbose_level, is_true, keyword_options,
     lisp_error_of_kind, list_to_pairs, pairs_to_list, parse, pretty_print_string,
-    reconstruct_macro_source, reconstruct_procedure_source, resolve_struct_literals, run_file, seval,
+    closure_variables, reconstruct_macro_source, reconstruct_procedure_source, resolve_literals, run_file, seval,
     set_verbose_level, set_vector_precision, throw_to, to_display_string, to_string, parse_date_text, vector_precision,
 )
 import lisp_alpha_vantage
@@ -511,13 +511,13 @@ BOOLEAN_BUILTINS = {
 
 def car(p):
     if not isinstance(p, Pair):
-        raise LispError("car: not a pair: %s" % (to_string(p),))
+        raise LispError("car: not a pair: %s" % (_brief(p),))
     return p.car
 
 
 def cdr(p):
     if not isinstance(p, Pair):
-        raise LispError("cdr: not a pair: %s" % (to_string(p),))
+        raise LispError("cdr: not a pair: %s" % (_brief(p),))
     return p.cdr
 
 
@@ -533,7 +533,7 @@ def make_cxr(name, cxr_name=None):
         for step in steps:
             if not isinstance(value, Pair):
                 raise LispError("%s: %s doesn't have that part -- it would take the %s of %s"
-                                % (name, to_string(x), "car" if step == "a" else "cdr", to_string(value)))
+                                % (name, _brief(x), "car" if step == "a" else "cdr", _brief(value)))
             value = value.car if step == "a" else value.cdr
         return value
     return cxr
@@ -566,7 +566,7 @@ def set_car(p, x):
     """(set-car! p x) -- change the car of the pair p (the first element, if p
     is a list) to x, in place. Returns '()."""
     if not isinstance(p, Pair):
-        raise LispError("set-car!: not a pair: %s" % (to_string(p),))
+        raise LispError("set-car!: not a pair: %s" % (_brief(p),))
     p.car = x
     return NIL
 
@@ -575,7 +575,7 @@ def set_cdr(p, x):
     """(set-cdr! p x) -- change the cdr of the pair p (the rest of the list,
     if p is a list) to x, in place. Returns '()."""
     if not isinstance(p, Pair):
-        raise LispError("set-cdr!: not a pair: %s" % (to_string(p),))
+        raise LispError("set-cdr!: not a pair: %s" % (_brief(p),))
     p.cdr = x
     return NIL
 
@@ -1211,7 +1211,7 @@ def hash_table_set(h, key, value):
     try:
         h.table[key] = value
     except TypeError:
-        raise LispError("hash-table-set!: not a hashable key (lists/vectors/structs "
+        raise LispError("hash-table-set!: not a hashable key (lists, vectors, structs and hash tables "
                         "can't be hash-table keys): %r" % (key,))
     return NIL
 
@@ -1222,7 +1222,7 @@ def hash_table_ref(h, key, *default):
         if key in h.table:
             return h.table[key]
     except TypeError:
-        raise LispError("hash-table-ref: not a hashable key (lists/vectors/structs "
+        raise LispError("hash-table-ref: not a hashable key (lists, vectors, structs and hash tables "
                         "can't be hash-table keys): %r" % (key,))
     return default[0] if default else False
 
@@ -1232,7 +1232,7 @@ def hash_table_has(h, key):
     try:
         return key in h.table
     except TypeError:
-        raise LispError("hash-table-has?: not a hashable key (lists/vectors/structs "
+        raise LispError("hash-table-has?: not a hashable key (lists, vectors, structs and hash tables "
                         "can't be hash-table keys): %r" % (key,))
 
 
@@ -1409,17 +1409,43 @@ def lisp_format(template, *args):
     return LispString("".join(pieces))
 
 
-def write_to_string(x):
-    """(write-to-string x) -- x as text that read-from-string reads back as it was: a string in quotes ("a \\"b\\""), a symbol
-    without, and a struct as #S(type :slot value ...). (to-string, format and display show a string without its quotes.) A
-    date is written 2026-11-20, which reads back as a symbol, and a function as #<procedure>, which does not read back."""
-    return LispString(to_string(x))
+def write_to_string(x, *options):
+    """(write-to-string x [:readably #t]) -- x as text that read-from-string reads back as it was: a string in quotes
+    ("a \\"b\\""), a symbol without, a date as 2026-11-20, a struct as #S(type :slot value ...), a hash table as
+    #H((key . value) ...), and a function as #. and its code, #.(lambda (x) (* x 2)), or a builtin as #. and its name,
+    #.car. (to-string, format and display show a string without its quotes.) A function made inside another, that uses
+    its variables, reads back without their values (see closure-variables), and a value that is not data, such as a
+    widget, is written #<...>, which doesn't read back at all: with :readably #t, either is an error, which says what
+    it is, as Common Lisp's *print-readably* makes it."""
+    options = keyword_options(options, ["readably"], "write-to-string")
+    try:
+        return LispString(to_string(x, readably=is_true(options.get("readably", False))))
+    except LispError as e:
+        raise LispError("write-to-string: %s" % e)
+
+
+def lisp_closure_variables(f):
+    """(closure-variables f) -- the variables that the function f uses of the place where it was made, when that was
+    inside a function or a let: '() unless f is a closure. f prints as its code, #.(lambda ...), which doesn't have their
+    values, so the function that its printed form reads back as looks them up at the top level instead."""
+    return list_to_pairs(closure_variables(f))
+
+
+def printed_by_name(f):
+    """(%printed-by-name f) -- f, a function, marked to print as its name, #.f, rather than as its code: lazy-load's
+    stand-ins for a library's functions are, since their code is the interpreter's, and uses a variable of its own."""
+    if not isinstance(f, Procedure):
+        raise LispError("%%printed-by-name: expected a function made by lambda, not %s" % _brief(f))
+    f.prints_by_name = True
+    return f
 
 
 STRING_BUILTINS = {
     "string-append": lambda *a: LispString("".join(a)),
     "to-string": lambda a: LispString(to_display_string(a)),
     "write-to-string": write_to_string,
+    "closure-variables": lisp_closure_variables,
+    "%printed-by-name": printed_by_name,
     "string-length": lambda s: len(s),
     "substring": lambda s, start, end=None: LispString(s[start:end]),
     "string=?": lambda a, b: a == b,
@@ -1981,10 +2007,13 @@ def make_eval_builtins(env, out):
         """(read-from-string text) -- the Lisp expression that text is, read but
         not evaluated: (read-from-string "(+ 1 2)") is the list (+ 1 2), which
         eval then evaluates to 3. Code is data: the reader that turns a program's
-        text into lists is the same one. A struct written as it prints,
-        #S(point :x 1 :y 2), is read as that struct (its type has to be defined).
-        An error if the text has no expression, or more than one (to read several,
-        put them in a list: wrap the text in parentheses)."""
+        text into lists is the same one. A struct, a hash table and a function
+        written as they print are read as them: #S(point :x 1 :y 2) is that struct
+        (its type has to be defined), #H(("a" . 1)) that hash table, and
+        #.(lambda (x) (* x 2)) the function that the lambda expression makes at the
+        top level (#.car is the function car). Reading runs nothing. An error if
+        the text has no expression, or more than one (to read several, put them in
+        a list: wrap the text in parentheses)."""
         if not isinstance(text, str):
             raise LispError("read-from-string: expected a string, not %s" % _brief(text))
         try:
@@ -1995,7 +2024,7 @@ def make_eval_builtins(env, out):
             raise LispError("read-from-string: the text has %s, and it reads one (to read several, wrap the text in parentheses)"
                             % plural(len(expressions), "expression"))
         try:
-            return resolve_struct_literals(expressions[0], env)
+            return resolve_literals(expressions[0], env)
         except LispError as e:
             raise LispError("read-from-string: %s" % e)
 

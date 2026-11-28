@@ -135,9 +135,13 @@ class LispKernel(IPythonKernel):
             elif lisp_tables.is_table(result):          # and a table, as display-table shows it
                 env[Symbol("display-table")](result)
             else:
+                try:
+                    text = to_string(result, TOP_LEVEL_MAX_ITEMS)
+                except LispError as e:              # (a value that holds itself can't be printed)
+                    return self._error_reply("LispError", str(e))
                 self.send_response(self.iopub_socket, "execute_result", {
                     "execution_count": self.execution_count,
-                    "data": {"text/plain": to_string(result, TOP_LEVEL_MAX_ITEMS)},
+                    "data": {"text/plain": text},
                     "metadata": {},
                 })
 

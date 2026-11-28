@@ -28,9 +28,11 @@ class TestProcedureNames(LispTestCase):
         self.run_lisp("(defstruct point x y)")
         self.assertEqual(str(self.run_lisp("make-point").name), "make-point")
 
-    def test_procedures_print_with_their_name(self):
-        self.assertShows("(define (square x) (* x x)) square", "#<procedure square>")
-        self.assertShows("(lambda (x) x)", "#<procedure>")
+    def test_procedures_print_as_their_code_and_are_shown_by_their_name_in_messages(self):
+        self.assertShows("(define (square x) (* x x)) square", "#.(lambda (x) (* x x))")
+        self.assertShows("(lambda (x) x)", "#.(lambda (x) x)")
+        self.assertEqual(lisp_core._brief(self.run_lisp("square")), "#<procedure square>")     # (in an error message, or a trace)
+        self.assertEqual(lisp_core._brief(self.run_lisp("(lambda (x) x)")), "#<procedure>")
 
     def test_macros_remember_their_name(self):
         self.assertEqual(str(self.run_lisp("(defmacro m (x) x) m").name), "m")
@@ -1222,7 +1224,14 @@ class TestKernelCells(unittest.TestCase):
         self.assertTrue(cell.results[0].endswith(" 99 ... (50 more))"))
 
     def test_a_builtin_is_shown_by_its_name(self):
-        self.assertEqual(self.frontend.run("car").results, ["#<builtin car>"])
+        self.assertEqual(self.frontend.run("car").results, ["#.car"])
+
+    def test_a_value_that_holds_itself_is_an_error_and_not_a_crash(self):
+        cell = self.frontend.run("(define selfish (make-hash-table)) (hash-table-set! selfish 'me selfish) selfish")
+        self.assertEqual(cell.results, [])
+        self.assertEqual(len(cell.errors), 1)
+        self.assertTrue(cell.errors[0].startswith("LispError: this hash table holds itself"), cell.errors)
+        self.assertEqual(self.frontend.run("(hash-table-count selfish)").results, ["1"])     # (the kernel goes on)
 
     def test_a_cell_with_a_syntax_error_does_nothing(self):
         cell = self.frontend.run("(define cell-test-x 5)\n(define cell-test-y (+ 1 2)")

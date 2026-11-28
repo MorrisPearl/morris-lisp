@@ -14,11 +14,14 @@
 ; worked it out when the deal was built: the cash flows of the collateral, the sizes that a split works out (a PAC's, a floater's), and
 ; the coupons of the tranches.
 ;
-; Functions are not saved as their text. A function's text is its code, but not the values that the code refers to: the coupon of a
-; tranche at 6%, (constant-coupon 0.06), prints as (lambda (index) rate), and rate is 0.06 only where the function was made: read back
-; and called, it is the error "unbound symbol: rate". A builtin has no text at all (#<builtin car>). So the functions of a deal are made
-; again, by the code that made them, from data that can be saved. The two that a person can give a deal, a prepayment model and an index
-; function (see deal_pricing.lsp), are not saved, and save-deal says so.
+; A function is written as its code, #.(lambda (piece path) ...), which reads back as the function that the code makes at the top level.
+; That is all of a function that was made at the top level, but not of one made inside another function, that uses that function's
+; variables (a closure): the coupon of a tranche at 6%, (constant-coupon 0.06), is written #.(lambda (index) rate), and rate is 0.06 only
+; where the function was made; read back and called, it is the error "unbound symbol: rate" (see closure-variables). So the coupons of the
+; tranches are not saved, but made again, by the code that made them, from data that is. The two functions that a person can give a deal,
+; a prepayment model and an index function (see deal_pricing.lsp), are saved when their code is all of them (a function defined at the
+; top level, say), and otherwise are not, and save-deal says so. Anything else that cannot be written so that it reads back as it is
+; (see write-to-string's :readably), such as a closure in a split of a kind of one's own, is an error, and nothing is written.
 ;
 ; The file is a deal-file struct, written as it prints, #S(deal-file :name "Demo" ...), with a slot to a line. load-deal reads it with
 ; read-from-string, which reads data and runs nothing, so a file can only describe a deal, not do anything else. A split is written as the
@@ -33,9 +36,10 @@
                                         ; deal-file-version, which is the accessor of the version slot of a deal-file)
 
 (defstruct deal-file version name first-payment closing-date collateral-name shortfalls pricing-speed treasury-curve home-price-growth
-  mortgage-spread defaults liquidation-lag rate-model index collateral other-tranches splits prices names)
+  mortgage-spread defaults liquidation-lag rate-model prepayment-model index-function index collateral other-tranches splits prices names)
 ; version: deal-save-format-version when it was saved. The dates are dates, written 2026-11-25, or '() (a file saved before dates read back as
-; dates has them as text, "2026-11-25", which is read too). collateral: the table of the pieces of collateral. other-tranches: the tranches that no split pays (that have not been given a
+; dates has them as text, "2026-11-25", which is read too). prepayment-model, index-function: the functions that the deal was given, written as their
+; code, or '() (if it was not given one, or its code is not all of it; a file saved before they were saved does not have them). collateral: the table of the pieces of collateral. other-tranches: the tranches that no split pays (that have not been given a
 ; parent), as the arguments of deal-add-tranche!, (name balance :z z :notional notional :follows follows). splits: (parent tranches split)
 ; for each split, the parents in the order of the tree, each before the ones under it, which is the order they are added in again; tranches
 ; are the arguments of deal-add-tranche! for the children, as a split-plan has them. prices: (name :priced-by kind :value value :delay days)
@@ -72,6 +76,21 @@
   (let ((node (get-node deal name)))
     (list name :priced-by (node-priced-by node) :value (deal-pricing--priced-by-value node) :delay (node-delay node))))
 
+(define deal-save--written-by "write-to-string: ")      ; (how the errors of write-to-string begin)
+
+(define (deal-save--why-not-written value)
+  "Why the value cannot be written so that it reads back as it is, the error of write-to-string with :readably (a closure, say), or #f if it can."
+  (catch-error (begin (write-to-string value :readably #t) #f)
+    (message)
+    (if (string-starts-with? message deal-save--written-by)
+        (substring message (string-length deal-save--written-by) (string-length message))
+        message)))
+
+(define (deal-save--kept-function function)
+  "The function that the deal was given, as it is saved: the function, if its code is all of it (see deal-save--why-not-written), or '() if it is not,
+or if there is none."
+  (if (or (null? function) (deal-save--why-not-written function)) '() function))
+
 (define (deal-save--slots deal)
   "The slots of the deal-file that the deal is saved as, a list of (slot-name . value), in the order of the defstruct."
   (list (cons 'version deal-save-format-version)
@@ -87,6 +106,8 @@
         (cons 'defaults (deal-defaults deal))
         (cons 'liquidation-lag (deal-liquidation-lag deal))
         (cons 'rate-model (deal-rate-model deal))
+        (cons 'prepayment-model (deal-save--kept-function (deal-prepayment-model deal)))
+        (cons 'index-function (deal-save--kept-function (deal-index-function deal)))
         (cons 'index (deal-index deal))
         (cons 'collateral (deal-collateral deal))
         (cons 'other-tranches (map (lambda (name) (deal-save--tranche-arguments deal name))
@@ -111,16 +132,24 @@
                  (apply string-append (map deal-save--slot-text slots))
                  ")\n"))
 
-(define (deal-save--check-reads-back text slots)
-  "An error if a slot of the text does not read back as the value it was written from: a function, a hash table or anything else that is
-written #<...> is not data, and is not saved."
-  (let ((read-back (read-from-string text)))
-    (dolist (slot slots)
-      (let ((written (write-to-string (cdr slot))))
-        (when (or (string-contains? written "#<")
-                  (not (equal? written (write-to-string (struct-ref read-back (car slot))))))
-          (error (format "save-deal: the {} of the deal is not data that can be written and read back (a function, say): {}"
-                         (car slot) (if (> (string-length written) 200) (string-append (substring written 0 200) " ...") written))))))))
+(define (deal-save--check-reads-back slots)
+  "An error if the value of a slot cannot be written so that it reads back as it is: a value that is not data, written #<...>, or a function made
+inside another, that uses its variables (see deal-save--why-not-written), or a value that reads back as something else."
+  (dolist (slot slots)
+    (let ((why (deal-save--why-not-written (cdr slot))))
+      (when why
+        (error (format "save-deal: the {} of the deal cannot be saved: {}" (car slot) why))))
+    (let* ((written (write-to-string (cdr slot)))
+           (read-back (catch-error (write-to-string (read-from-string written)) (message) message)))
+      (unless (equal? written read-back)
+        (error (format "save-deal: the {} of the deal does not read back as it was written: {}"
+                       (car slot) (if (> (string-length written) 200) (string-append (substring written 0 200) " ...") written)))))))
+
+(define (deal-save--note-function-not-saved what function setter)
+  "Says that the deal's function (what it is, its prepayment model, say) is not saved, and why, if it is not."
+  (let ((why (if (null? function) #f (deal-save--why-not-written function))))
+    (when why
+      (display (format "save-deal: the deal's {} is not saved ({}): give it to the loaded deal again, with {}\n" what why setter)))))
 
 (define (deal-save--check-has-pieces deal)
   "An error if the collateral of the deal has a balance but no pieces: its cash flows were given to it, and there is nothing to work them out from again."
@@ -132,20 +161,17 @@ written #<...> is not data, and is not saved."
 (define (save-deal deal path)
   "Saves the deal in the file at path, as data that load-deal makes it again from: its name, dates and settings, its collateral, its pricing speed and
 Treasury curve, its splits and their tranches, and the price, yield, spread or OAS that each tranche was given, and its delay. The cash flows, the sizes
-that splits work out and the coupons are worked out again when it is loaded. A prepayment model or an index function that the deal was given is a
-function, which is not saved (save-deal says so): give it to the loaded deal again. The file is text, #S(deal-file ...), that a person can read.
-Returns path.
+that splits work out and the coupons are worked out again when it is loaded. A prepayment model or an index function that the deal was given is
+saved as its code, if that is all of it; one made inside another function, that uses that function's variables, is not saved (save-deal says so):
+give it to the loaded deal again. The file is text, #S(deal-file ...), that a person can read. Returns path.
 
   (save-deal deal \"demo.deal\")"
   (deal-save--check-has-pieces deal)
-  (let* ((slots (deal-save--slots deal))
-         (text (deal-save--text deal slots)))
-    (deal-save--check-reads-back text slots)
-    (write-text-file path text)
-    (unless (null? (deal-prepayment-model deal))
-      (display "save-deal: the deal's prepayment model is a function, which is not saved: give it to the loaded deal again, with deal-set-prepayment-model!\n"))
-    (unless (null? (deal-index-function deal))
-      (display "save-deal: the deal's index function is a function, which is not saved: give it to the loaded deal again, with deal-set-index-function!\n"))
+  (let ((slots (deal-save--slots deal)))
+    (deal-save--check-reads-back slots)
+    (write-text-file path (deal-save--text deal slots))
+    (deal-save--note-function-not-saved "prepayment model" (deal-prepayment-model deal) "deal-set-prepayment-model!")
+    (deal-save--note-function-not-saved "index function" (deal-index-function deal) "deal-set-index-function!")
     path))
 
 ; ---------------------------------------------------------------------------
@@ -211,9 +237,9 @@ sizes worked them out to something else, from the collateral and the settings th
 (define (load-deal path)
   "The deal saved in the file at path by save-deal, made again: its collateral and settings are given to a new deal, its splits are added in the order
 of the tree (so the cash flows, the sizes that splits work out and the coupons are worked out as they were when it was built), and its tranches are
-given the prices, yields, spreads, OASs and delays that they had. An error if the file is not one that save-deal wrote, if it has a kind of split
-that is not defined (load the file that defines it first), or if a tranche does not come out the size that it was. The file is read as data, and
-nothing in it is run.
+given the prices, yields, spreads, OASs and delays that they had, and the deal its prepayment model and index function, if they were saved. An error if
+the file is not one that save-deal wrote, if it has a kind of split that is not defined (load the file that defines it first), or if a tranche does
+not come out the size that it was. The file is read as data, and nothing in it is run (a function in it is made, from its code, but not called).
 
   (define deal (load-deal \"demo.deal\"))"
   (let* ((saved (deal-save--read path))
@@ -230,6 +256,10 @@ nothing in it is run.
     (deal-set-liquidation-lag! deal (deal-file-liquidation-lag saved))
     (unless (null? (deal-file-rate-model saved))
       (deal-set-rate-model! deal (deal-file-rate-model saved)))
+    (unless (null? (deal-file-prepayment-model saved))                 ; (before the collateral, whose cash flows a pricing speed of the model needs it for)
+      (deal-set-prepayment-model! deal (deal-file-prepayment-model saved)))
+    (unless (null? (deal-file-index-function saved))
+      (deal-set-index-function! deal (deal-file-index-function saved)))
     (unless (null? (deal-file-collateral saved))
       (deal-set-collateral! deal (deal-file-collateral saved)))
     (dolist (tranche (deal-file-other-tranches saved))

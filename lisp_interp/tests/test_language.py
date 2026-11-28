@@ -1031,7 +1031,7 @@ class TestGenericFunctions(LispTestCase):
         self.assertShows("(generic-function? car)", "#f")
         self.assertShows("(procedure? area)", "#t")
         self.assertShows("(generic-function-methods area)", "(circle square)")
-        self.assertShows("area", "#<generic-function area>")
+        self.assertShows("area", "#.area")
         self.run_lisp("(defmethod anything ((x t)) 1) (defmethod anything ((s square)) 2)")
         self.assertShows("(generic-function-methods anything)", "(t square)")
 
@@ -1102,6 +1102,155 @@ class TestStructsReadBack(LispTestCase):
         with self.assertRaises(lisp_core.LispError) as unfinished:
             list(lisp_core.parse("#S(point :x 1"))
         self.assertEqual(unfinished.exception.kind, lisp_core.UNFINISHED)            # (the console reads another line)
+
+
+class TestHashTablesReadBack(LispTestCase):
+    """A hash table prints as #H((key . value) ...), each entry as hash-table->alist has it, and reads back as a hash table with those entries."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_lisp("(define h (make-hash-table)) (hash-table-set! h \"apples\" 3) (hash-table-set! h 'rates '(0.01 0.02))"
+                      "(hash-table-set! h 2026-11-27 (make-hash-table))")
+
+    def test_a_hash_table_prints_every_key_and_value(self):
+        self.assertShows("h", '#H(("apples" . 3) (rates 0.01 0.02) (2026-11-27 . #H()))')
+        self.assertShows("(make-hash-table)", "#H()")
+        self.run_lisp("(display h)")
+        self.assertEqual(self.printed(), '#H(("apples" . 3) (rates 0.01 0.02) (2026-11-27 . #H()))')
+
+    def test_what_prints_reads_back_the_same(self):
+        self.assertShows("(equal? h (read-from-string (write-to-string h)))", "#t")
+        self.assertShows("(hash-table-ref (read-from-string (write-to-string h)) 'rates)", "(0.01 0.02)")
+        self.assertShows('(hash-table-keys #H(("b" . 1) ("a" . 2)))', '("b" "a")')         # (in the order they were written)
+        self.assertShows("(hash-table-count (hash-table-ref #H((x . #H((y . 1)))) 'x))", "1")
+
+    def test_two_hash_tables_are_equal_if_their_keys_and_values_are(self):
+        self.assertShows('(equal? #H((a . 1) (b . 2)) #H((b . 2) (a . 1)))', "#t")
+        self.assertShows('(equal? #H((a . 1)) #H((a . 2)))', "#f")
+        self.assertShows('(equal? #H((a . 1)) #H((a . 1) (b . 2)))', "#f")
+        self.assertShows('(equal? #H((a . (1 2))) #H((a 1 2)))', "#t")
+        self.assertLispError("(hash-table-set! h h 1)", "lists, vectors, structs and hash tables can't be hash-table keys")
+
+    def test_a_notebook_cell_shows_the_first_entries_of_a_big_one(self):
+        self.run_lisp("(define big (make-hash-table)) (dotimes (i 150) (hash-table-set! big i (* i i)))")
+        shown = lisp_core.to_string(self.run_lisp("big"), lisp_core.TOP_LEVEL_MAX_ITEMS)
+        self.assertTrue(shown.startswith("#H((0 . 0) (1 . 1) (2 . 4) "))
+        self.assertTrue(shown.endswith(" (99 . 9801) ... (50 more))"))
+        self.assertEqual(lisp_core.to_string(self.run_lisp("big")).count(" . "), 150)    # (write-to-string: all of it)
+
+    def test_an_error_message_shows_a_few_entries(self):
+        self.run_lisp("(define big (make-hash-table)) (dotimes (i 150) (hash-table-set! big i i))")
+        self.assertLispError("(car big)", "car: not a pair: #H((0 . 0) (1 . 1) (2 . 2) ... n=150)")
+
+    def test_pretty_print_puts_an_entry_on_a_line(self):
+        self.run_lisp("(pretty-print h)")
+        self.assertEqual(self.printed(), '#H(("apples" . 3)\n   (rates 0.01 0.02)\n   (2026-11-27 . #H())\n  )\n')
+
+    def test_what_is_not_a_hash_table_that_can_be_read(self):
+        self.assertLispError("#H(1 2)", "a hash table is written #H((key . value) ...), a pair for each entry")
+        self.assertLispError("#H((a . 1) (a . 2))", "the key a is in it twice")
+        self.assertLispError("#H(((1 2) . 3))", "(1 2) can't be a hash-table key")
+        self.assertLispError("#H((#t . 3))", "#t and #f can't be hash-table keys")
+        with self.assertRaises(lisp_core.LispError) as unfinished:
+            list(lisp_core.parse("#H((a . 1)"))
+        self.assertEqual(unfinished.exception.kind, lisp_core.UNFINISHED)
+
+
+class TestFunctionsReadBack(LispTestCase):
+    """A function prints as #. and its code, #.(lambda (x) ...), or for a builtin, a generic function or a struct's constructor, #. and its
+    name; either reads back as a function: the one that the code makes in the top-level environment, or the one that the name is bound to there."""
+
+    def test_a_function_prints_as_its_code(self):
+        self.run_lisp('(define (area w h) "The area." (when (> w 0) (* w h)))')
+        self.assertShows("area", '#.(lambda (w h) "The area." (when (> w 0) (* w h)))')        # (macros as written, not expanded)
+        self.assertShows("(lambda (a &optional (b 2) &key (c 3)) (+ a b c))", "#.(lambda (a &optional (b 2) &key (c 3)) (+ a b c))")
+        self.assertShows("(lambda args args)", "#.(lambda args args)")
+        self.run_lisp("(print area)")
+        self.assertEqual(self.printed(), '#.(lambda (w h) "The area." (when (> w 0) (* w h)))\n')
+
+    def test_a_builtin_a_generic_function_and_a_constructor_print_as_their_names(self):
+        self.run_lisp("(defstruct point x y) (defgeneric size (s)) (defmethod size ((p point)) 1)")
+        self.assertShows("(list car make-point point-x size)", "(#.car #.make-point #.point-x #.size)")
+
+    def test_what_prints_reads_back_as_a_function_that_does_the_same(self):
+        self.run_lisp("(define (area w h) (* w h)) (define back (read-from-string (write-to-string area)))")
+        self.assertShows("(back 3 4)", "12")
+        self.assertShows("(eq? back area)", "#f")                                      # (a new function, made from the code)
+        self.assertShows("(eq? car (read-from-string (write-to-string car)))", "#t")      # (the function of that name)
+        self.assertShows("(#.(lambda (x) (* x 10)) 4)", "40")
+        self.assertShows("(map #.car '((1 2) (3 4)))", "(1 3)")
+        self.run_lisp("(defstruct holder f) (define held (make-holder :f (lambda (n) (+ n 1))))")
+        self.assertShows("((holder-f (read-from-string (write-to-string held))) 1)", "2")
+
+    def test_a_closure_reads_back_without_the_values_of_the_variables_it_used(self):
+        self.run_lisp("(define (constant rate) (lambda (index) rate)) (define six (constant 0.06))")
+        self.assertShows("six", "#.(lambda (index) rate)")
+        self.assertShows("(closure-variables six)", "(rate)")
+        self.assertLispError("((read-from-string (write-to-string six)) 1)", "unbound symbol: rate")
+        self.assertShows("(closure-variables (constant 1))", "(rate)")
+        self.assertShows("(closure-variables constant)", "()")                            # (made at the top level)
+        self.assertShows("(closure-variables car)", "()")
+        self.assertShows("(closure-variables (let ((n 1)) (lambda (x) (* x x))))", "()")   # (it doesn't use n)
+        self.assertShows("(closure-variables (let ((n 1)) (lambda (x) (list 'n x))))", "()")  # (a quoted n is not the variable)
+        self.assertShows("(closure-variables (let ((n 1) (m 2)) (lambda (x &optional (y m)) (+ x y n))))", "(n m)")
+
+    def test_a_lazy_loaded_function_prints_as_its_name(self):
+        lisp_builtins.load_init_file(self.env, lisp_builtins.DEFAULT_INIT_FILE)
+        self.assertShows("ridders", "#.ridders")                                          # (the stand-in, before solver.lsp is loaded)
+        self.assertShows("(procedure? (read-from-string (write-to-string ridders)))", "#t")
+
+    def test_what_is_not_a_function_that_can_be_read(self):
+        self.assertLispError("#.(+ 1 2)", "#. is followed by a function, as one prints: a lambda expression, (lambda (x) ...), or the name of a function")
+        self.assertLispError("#.5", "#. is followed by a function")
+        self.assertLispError("#.nothing-here", "#.nothing-here on line 1: there is no function called nothing-here")
+        self.run_lisp("(define five 5)")
+        self.assertLispError("#.five", "#.five on line 1: five is 5, which is not a function")
+        with self.assertRaises(lisp_core.LispError) as unfinished:
+            list(lisp_core.parse("#."))
+        self.assertEqual(unfinished.exception.kind, lisp_core.UNFINISHED)
+
+
+class TestWritingReadably(LispTestCase):
+    """What can't be written so that it reads back: #<...> can't be read at all, and write-to-string with :readably #t refuses it, and a closure."""
+
+    def test_what_prints_as_hash_less_than_cannot_be_read(self):
+        self.assertLispError('(read-from-string "(1 #<widget>)")', "the #< on line 1 begins something that can't be read")
+
+    def test_readably_refuses_a_closure_and_what_is_not_data(self):
+        self.run_lisp("(define (constant rate) (lambda (index) rate)) (defstruct point x)")
+        self.assertShows("(write-to-string (list 1 \"a\" 'b 2.5 2026-11-27 car (lambda (x) x)) :readably #t)",
+                         '"(1 \\"a\\" b 2.5 2026-11-27 #.car #.(lambda (x) x))"')
+        self.assertLispError("(write-to-string (list (constant 0.06)) :readably #t)",
+                             "write-to-string: the function #.(lambda (index) rate) uses rate, a variable of the place where it was made, and its "
+                             "code doesn't have its value: read back, it would look it up at the top level instead")
+        self.assertLispError("(write-to-string %struct-type-point :readably #t)",
+                             "write-to-string: #<struct-type point> is not data, so it can't be written so that it reads back")
+        self.assertShows("(write-to-string (constant 0.06))", '"#.(lambda (index) rate)"')         # (without :readably, it is written)
+
+
+class TestPrintingWhatHoldsItself(LispTestCase):
+    """A list, vector, struct or hash table that holds itself can't be printed: it is an error that says so, which catch-error catches."""
+
+    def test_each_kind_is_an_error_that_says_so(self):
+        self.run_lisp("(define h (make-hash-table)) (hash-table-set! h 'me h)")
+        self.assertLispError("(write-to-string h)", "this hash table holds itself")
+        self.run_lisp("(defstruct box contents) (define b (make-box)) (box-contents-set! b (list 1 b))")
+        self.assertLispError("(write-to-string b)", "this box (a struct) holds itself")
+        self.run_lisp("(define l (list 1 2)) (set-car! l l)")
+        self.assertLispError("(write-to-string l)", "this list holds itself")
+        self.run_lisp("(define circle (list 1 2 3)) (set-cdr! (cddr circle) circle)")
+        self.assertLispError("(write-to-string circle)", "this list goes round in a circle")
+        self.assertLispError("(display circle)", "this list goes round in a circle")
+        self.assertShows("(catch-error (write-to-string h) (message) 'caught)", "caught")
+
+    def test_a_circle_longer_than_a_notebook_shows_is_found_too(self):
+        self.run_lisp("(define circle (iota 500)) (set-cdr! (list-tail circle 499) circle)")
+        with self.assertRaisesRegex(lisp_core.LispError, "goes round in a circle"):
+            lisp_core.to_string(self.run_lisp("circle"), lisp_core.TOP_LEVEL_MAX_ITEMS)
+
+    def test_the_same_value_twice_is_not_inside_itself(self):
+        self.run_lisp("(defstruct pair-of left right) (define h #H((a . 1))) (define both (list h h (make-pair-of :left h :right h)))")
+        self.assertShows("both", "(#H((a . 1)) #H((a . 1)) #S(pair-of :left #H((a . 1)) :right #H((a . 1))))")
 
 
 class TestRequiredMethods(LispTestCase):
@@ -1539,10 +1688,10 @@ class TestPrintingLongValuesAndBuiltins(LispTestCase):
         self.assertEqual(lisp_core.to_string(self.run_lisp("(vector-range 0 500)")).count(" "), 499)    # (to-string: all of it)
 
     def test_a_builtin_prints_as_its_name(self):
-        self.assertShows("car", "#<builtin car>")
+        self.assertShows("car", "#.car")
         self.run_lisp("(print car) (display (list car))")
-        self.assertEqual(self.printed(), "#<builtin car>\n(#<builtin car>)")
-        self.assertShows("(list + vector-mean)", "(#<builtin +> #<builtin vector-mean>)")
+        self.assertEqual(self.printed(), "#.car\n(#.car)")
+        self.assertShows("(list + vector-mean)", "(#.+ #.vector-mean)")
 
 
 class TestPrintingStrings(LispTestCase):

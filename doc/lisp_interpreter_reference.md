@@ -135,9 +135,11 @@ end.
   kernel (Kernel > Restart starts a new one).
   - **What a cell shows.** Its last value, as the console prints it. A
     table is shown as a table, as `display-table` shows it (its first 20
-    rows, and how many there are), and a long list or vector shows only its
-    first 100 elements, and how many more it has -- `(print x)` shows all of
-    it, and `(display-table t :max-rows #f)` every row. Charts are drawn in the
+    rows, and how many there are), and a long list or vector, or a big hash
+    table, shows only its first 100 elements or entries, and how many more it
+    has -- `(print x)` shows all of it, and `(display-table t :max-rows #f)`
+    every row. A value that holds itself (a hash table that is one of its own
+    values, say) can't be printed: the cell says so, as an error. Charts are drawn in the
     cell, and `display-table`, `display-markdown`, `display-html`, and
     `display-svg` show what they're given. `_`, `__`, and `___` are the
     last three values, and `_5` the value of cell 5.
@@ -254,6 +256,8 @@ interpreter, e.g. `export LISP_PATH=~/models:~/models/common`.
 | Vector | `#(1 2 3)`, `(vector 1 2 3)` | Fixed-size; holds numbers, strings, and/or dates (not lists or booleans) |
 | Date | `(date 2024 3 15)`, `2024-03-15` | Prints as `2024-03-15`, and a word written that way is read as that date (see "Words that are dates", below) |
 | Struct | `#S(point :x 1 :y 2)`, `(make-point :x 1 :y 2)` | A record of a type made by `defstruct`: prints as `#S(...)`, and reads back as that struct (see `defstruct`) |
+| Hash table | `#H(("a" . 1) ("b" . 2))`, `(make-hash-table)` | Prints as `#H(...)`, with every key and value, and reads back as a hash table with those entries (see "Hash tables") |
+| Function | `#.(lambda (x) (* x 2))`, `#.car` | Prints as `#.` and its code, or for a builtin `#.` and its name, and reads back as a function (see "Functions print as their code", below) |
 | Model | *(returned by regression)* | Prints as `#<linear-model ...>` etc. |
 
 **Words that are numbers.** The reader reads a token as a number if
@@ -279,6 +283,28 @@ is no date is an error, so such a word cannot be a name either.
 (equal? (date 2026 11 20) (read-from-string "2026-11-20"))   ; => #t
 (read-from-string "2026-02-30")                      ; an error: 2026-02-30 is written as a date, year-month-day, but there is no such date
 ```
+
+**Functions print as their code.** A function prints as `#.` and its code, `#.(lambda (x) (* x 2))`, rebuilt from what it was made
+of, as `pretty-print` shows it (so without its comments); and a builtin, a generic function, a struct's constructor, and the stand-in
+that `lazy-load` makes for a library's function, as `#.` and a name, `#.car`. Either reads back as a function: `#.(lambda ...)` as the
+function that the lambda expression makes at the top level, and `#.car` as the function called `car` there. (In Common Lisp, `#.`
+evaluates what follows it as it is read; here it may only be followed by a lambda expression or a name, so reading runs nothing.) A
+function made at the top level reads back as one that does what it did. One made inside another function, or a `let`, that uses its
+variables (a *closure*) does not: what is written is its code, and not the values of those variables, so the function made from the
+code looks them up at the top level instead. `closure-variables` says which they are.
+
+```lisp
+(define (area w h) (* w h))
+area                                                 ; => #.(lambda (w h) (* w h))
+((read-from-string (write-to-string area)) 3 4)      ; => 12
+(list car +)                                         ; => (#.car #.+)
+(define (constant rate) (lambda (index) rate))
+(constant 0.06)                                      ; => #.(lambda (index) rate)
+(closure-variables (constant 0.06))                  ; => (rate)
+```
+
+What is not data at all, such as a widget, a database connection or a struct's type, prints as `#<...>`, which says what it is but not
+how to make it again: reading `#<` is an error.
 
 Comments run from `;` to end of line.
 
@@ -2620,7 +2646,25 @@ number, string, symbol, keyword, or date — not a list, vector, or struct
 (none of those can be a Python `dict` key either, for the same underlying
 reason: nothing stops them being mutated after insertion, which would
 silently corrupt the table), and not `#t` or `#f` (which Python would
-treat as the keys 1 and 0). Using one anyway is an error.
+treat as the keys 1 and 0). A hash table can't be a key either. Using one anyway is an error.
+
+**A hash table prints with every key and value**, as `#H(` and its entries, each `(key . value)` as `hash-table->alist` gives it, in the
+order they were added, and `)`: `#H(("apples" . 3) (rates 0.01 0.02))` (an entry whose value is a list prints as that list with the key
+in front of it, as any pair does). Written so, in a program or in text that `read-from-string` reads, it is a hash table with those
+entries, whose keys and values are data, not evaluated, as in a `#S(...)`; so a hash table can be written to a file with
+`write-to-string`, and read back. Two hash tables are `equal?` if they have the same keys, each with values that are `equal?`, as two
+structs are if their slots are. As the value of a notebook cell, a hash table shows its first 100 entries, and how many more it has.
+In a program, a `#H(...)` is one hash table, made when the form it is in is evaluated: a function with one in it returns that same table
+every time, so use `make-hash-table` for a new one each time.
+
+```lisp
+(define stock (make-hash-table))
+(hash-table-set! stock "apples" 3)
+(hash-table-set! stock 'rates '(0.01 0.02))
+stock                                                         ; => #H(("apples" . 3) (rates 0.01 0.02))
+(hash-table-ref #H(("a" . 1) ("b" . 2)) "b")                  ; => 2
+(equal? stock (read-from-string (write-to-string stock)))     ; => #t
+```
 
 #### `(make-hash-table)`
 Returns a new, empty hash table.
@@ -5657,7 +5701,9 @@ way and wanting to run it directly.
 The Lisp expression that `text` is written as, read but not evaluated: the same reader that turns a program's text into lists.
 `eval` then runs it. That is what "code is data" means: a program is lists, and a list can be made, looked at, and changed like any
 other. An error if the text has no expression, or more than one (to read several, put the text in parentheses, and they are read as
-one list). A struct written as it prints, `#S(point :x 1 :y 2)`, is read as that struct, if its type is defined.
+one list). What prints so that it reads back is read as what it is: a struct, `#S(point :x 1 :y 2)` (if its type is defined), a hash
+table, `#H(("a" . 1))`, a date, `2026-11-20`, and a function, `#.(lambda (x) (* x 2))` or `#.car` (see "Functions print as their code"). Reading
+runs nothing; a function in the text is made, from its code, but not called. Something written `#<...>`, which is not data, is an error.
 
 ```lisp
 (read-from-string "(+ 1 2)")             ; => (+ 1 2)
@@ -5666,18 +5712,38 @@ one list). A struct written as it prints, `#S(point :x 1 :y 2)`, is read as that
 (read-from-string "((1 2 3) (4 5))")     ; => ((1 2 3) (4 5))
 ```
 
-#### `(write-to-string x)`
+#### `(write-to-string x [:readably #t])`
 `x` as text that `read-from-string` reads back as it was, as Common Lisp's `write-to-string` writes it: a string in quotes (with `\"` for a
-quote in it), a symbol without, and a struct as `#S(type :slot value ...)`. `to-string`, `format` and `display` show a string as its
-characters, without the quotes, which is for people; this is for text that a program reads again, such as the file that `save-deal`
-writes (see the CMO manual). A date is written `2026-11-20`, which reads back as that date. What does not come back is a function, which
-is written `#<procedure f>` and is not data at all (nor is a hash table, `#<hash-table 3 entries>`). A function's text is its code, not the
-values that the code refers to, so a function is saved as the data that it is made from, and made again.
+quote in it), a symbol without, a date as `2026-11-20`, a struct as `#S(type :slot value ...)`, a hash table as `#H((key . value) ...)`,
+and a function as `#.` and its code, or its name (see "Functions print as their code"). `to-string`, `format` and `display` show a string
+as its characters, without the quotes, which is for people; this is for text that a program reads again, such as the file that
+`save-deal` writes (see the CMO manual). Two things don't come back as they were: a closure, which comes back as its code without the
+values of the variables it used, and what is not data, written `#<...>`, which doesn't come back at all. With `:readably #t` either is
+an error that says what it is, as Common Lisp's `*print-readably*` makes it, so that what is written is sure to read back. A list, struct
+or hash table that holds itself is an error too, with or without it: the writing would never end.
 
 ```lisp
 (string-length (write-to-string "abc"))                   ; => 5
 (write-to-string '(1 "two" three))                        ; => (1 "two" three)
 (read-from-string (write-to-string '(1 "two" three)))     ; => (1 "two" three)
+(write-to-string (list car (lambda (x) (* x 2))) :readably #t)   ; => (#.car #.(lambda (x) (* x 2)))
+(define (constant rate) (lambda (index) rate))
+(catch-error (write-to-string (constant 0.06) :readably #t) (message) message)   ; => "write-to-string: the function #.(lambda (index) rate) uses rate, a variable of the place where it was made, and its code doesn't have its value: read back, it would look it up at the top level instead"
+```
+
+#### `(closure-variables f)`
+The variables that the function `f` uses of the place where it was made, when that was inside a function or a `let`, not the top
+level: `'()` unless `f` is a *closure*. `f` prints as its code, which doesn't have the values of these variables, so the function that
+its printed form reads back as looks them up at the top level instead (see "Functions print as their code"). `'()` for a builtin, and
+for a function that uses only its own parameters and the top-level variables, whose printed form is all of it. It is found by looking at
+the names in the code (leaving out what is quoted), so a name that the function makes a variable of its own, in a `let` inside it, is
+counted if the place it was made has a variable of that name too.
+
+```lisp
+(define (constant rate) (lambda (index) rate))
+(closure-variables (constant 0.06))                           ; => (rate)
+(closure-variables (let ((n 2)) (lambda (x) (* x x))))        ; => ()
+(closure-variables constant)                                  ; => ()
 ```
 
 #### `(apply f arg1 ... args)`
@@ -5804,7 +5870,8 @@ impossible to miss: scan straight down any closing paren's column and you
 can see exactly which opening paren it closes. A procedure or macro value
 is shown as its reconstructed, name-free `(lambda ...)`/`(defmacro
 <anonymous> ...)` source (see `pretty-print-function`, below, for the
-named version); anything else prints as-is, including plain nested lists.
+named version); a hash table is spread out as a list is, an entry,
+`(key . value)`, to a line; anything else prints as-is.
 Writes to the current output with a trailing newline. Returns `'()`.
 
 ```lisp
@@ -6256,8 +6323,10 @@ stack recording **which procedure was called, with which arguments**.
 `(define (f x) ...)` is named `f`; `(define g (lambda ...))` names that
 lambda `g`, if it doesn't already have a name (so `(define h g)` doesn't
 rename it); a `defstruct`'s `make-<name>` constructors are named. A
-procedure never bound to a name is `<lambda>`. Procedures now print with
-their name — `#<procedure square>` — and `#<procedure>` when anonymous.
+procedure never bound to a name is `<lambda>`. In a trace and in an error
+message a procedure is shown by its name, `#<procedure square>`, or
+`#<procedure>` when it has none; printed, as a cell's value or by `print`,
+it is its code (see "Functions print as their code").
 
 #### `(verbose [level])`
 Turns call tracing on and off. With no argument, returns the current level.

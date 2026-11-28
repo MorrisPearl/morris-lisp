@@ -48,6 +48,7 @@ catch-error doesn't catch it.
 import datetime
 import difflib
 import inspect
+import itertools
 import os
 import re
 import time
@@ -303,11 +304,22 @@ class LispDate:
 class LispHashTable:
     """A mutable hash table (make-hash-table, hash-table-*): a thin wrapper
     around a Python dict. Keys must be immutable Lisp values -- numbers,
-    strings, symbols, keywords, or dates. Lists, vectors, and structs can
-    change, so they can't be keys."""
+    strings, symbols, keywords, or dates. Lists, vectors, structs and hash
+    tables can change, so they can't be keys.
+
+    Two hash tables are equal (equal?) if they have the same keys, and the
+    values of each key are equal, whatever order the keys were added in, as
+    two structs are equal if their slots are: so a hash table that is written
+    out (write-to-string) and read back is equal to the one it was."""
 
     def __init__(self):
         self.table = {}
+
+    def __eq__(self, other):
+        return (isinstance(other, LispHashTable) and len(self.table) == len(other.table)
+                and all(key in other.table and lisp_equal(value, other.table[key]) for key, value in self.table.items()))
+
+    __hash__ = None     # (it can change, so it can't be a key: see above)
 
     def __repr__(self):
         return "#<hash-table %d entr%s>" % (len(self.table), "y" if len(self.table) == 1 else "ies")
@@ -421,12 +433,18 @@ class Procedure:
                       extra arguments; otherwise None (see parse_params)
       keyword_specs   the &key parameters, as (name, default_expr) pairs
       body, env       the body expressions, and the environment it was defined in
-      name            used only to label it in traces and stack traces
+      name            used to label it in traces and stack traces
       is_scope        True for the procedure a let turns into (a %scope-lambda). It's
-                      a variable scope, not a real call, so traces leave it out."""
+                      a variable scope, not a real call, so traces leave it out.
+      prints_by_name  True for a procedure that the interpreter made, rather than you:
+                      a struct's constructor, or a lazy-load's stand-in for a library's
+                      function. It prints as its name, #.make-point, since its code
+                      isn't anything you wrote (and the constructor's has the struct's
+                      type in it, which has no printed form). Others print as their
+                      code, #.(lambda (x) ...): see to_string."""
 
     def __init__(self, params, body, env, rest_param=None, keyword_specs=None,
-                 name=None, is_scope=False, optional_specs=None):
+                 name=None, is_scope=False, optional_specs=None, prints_by_name=False):
         self.params = params      # list of Symbol FIXED parameter names
         self.optional_specs = optional_specs or []  # see parse_params()
         self.rest_param = rest_param
@@ -435,6 +453,7 @@ class Procedure:
         self.env = env            # environment in which it was defined
         self.name = name
         self.is_scope = is_scope
+        self.prints_by_name = prints_by_name
 
     def __repr__(self):
         return "#<procedure %s>" % (self.name,) if self.name is not None else "#<procedure>"
@@ -645,6 +664,16 @@ def tokenize(text):
         elif c == '#' and i + 2 < n and text[i + 1] in "Ss" and text[i + 2] == '(':
             tokens.append(("#S(", line, i, i + 3))    # start of a struct, as one prints: #S(point :x 1 :y 2)
             i += 3
+        elif c == '#' and i + 2 < n and text[i + 1] in "Hh" and text[i + 2] == '(':
+            tokens.append(("#H(", line, i, i + 3))    # start of a hash table, as one prints: #H(("a" . 1) ("b" . 2))
+            i += 3
+        elif c == '#' and i + 1 < n and text[i + 1] == '.':
+            tokens.append(("#.", line, i, i + 2))     # a function, as one prints: #.(lambda (x) (* x 2)), or #.car
+            i += 2
+        elif c == '#' and i + 1 < n and text[i + 1] == '<':
+            raise LispError("the #< on line %d begins something that can't be read: a value that is not data (a widget, a "
+                            "database connection, a struct type, ...) prints as #<...>, which says what it is, but not how "
+                            "to make it again" % line)
         elif c == '#' and i + 1 < n and text[i + 1] == '(':
             tokens.append(("#(", line, i, i + 2))     # start of a vector literal
             i += 2
@@ -680,13 +709,13 @@ def tokenize(text):
 # ---------------------------------------------------------------------------
 
 class Tokens:
-    """The tokens of some source text (see tokenize), and how far reading has got through them. struct_literals_read
-    counts the #S(...) read so far, so that parse can tell whether a form has one."""
+    """The tokens of some source text (see tokenize), and how far reading has got through them. literals_read counts the
+    #S(...), #H(...) and #. read so far, so that parse can tell whether a form has one."""
 
     def __init__(self, text):
         self.items = tokenize(text)
         self.position = 0
-        self.struct_literals_read = 0
+        self.literals_read = 0
 
     def more(self):
         return self.position < len(self.items)
@@ -710,11 +739,14 @@ class Tokens:
         return self.items[index][3]
 
 
+# A struct, a hash table and a function print in a way that reads back as them: #S(point :x 1 :y 2), #H(("a" . 1)) and
+# #.(lambda (x) (* x 2)). The reader reads each as one of the three literals below. It has no environment, which a struct
+# needs to find its type in, and a function to be made in, so what each is is made later, by resolve_literals: when the
+# form that holds it is evaluated (see FormWithLiterals), or by read-from-string, which has the environment.
+
 class StructLiteral:
     """#S(type :slot value ...), as the reader reads it: the name of a struct type, and slots with their values, which
-    are data (they are not evaluated). The reader has no environment to find the type in, so the struct is made later,
-    by make_struct_from_literal: when the form that holds it is evaluated (see FormWithStructLiterals), or by
-    read-from-string, which has the environment."""
+    are data (they are not evaluated). See make_struct_from_literal."""
 
     def __init__(self, type_name, slot_values, line):
         self.type_name = type_name          # Symbol
@@ -725,10 +757,39 @@ class StructLiteral:
         return "#S(%s%s)" % (self.type_name, "".join(" %s %s" % (key, to_string(value)) for key, value in self.slot_values))
 
 
-class FormWithStructLiterals:
-    """A top-level form with a #S(...) in it, as parse gives it: seval makes its structs (see resolve_struct_literals) just
-    before it evaluates it, after the forms before it have been evaluated -- so a #S(...) can follow, in the same file or
-    the same cell, the defstruct of its type, as in Common Lisp, where a struct is made when it is read."""
+class HashTableLiteral:
+    """#H((key . value) ...), as the reader reads it: the entries of a hash table, as hash-table->alist gives them, in
+    order. The keys and values are data (they are not evaluated). See make_hash_table_from_literal."""
+
+    def __init__(self, entries, line):
+        self.entries = entries              # [(key, value)], in the order they were written
+        self.line = line
+
+    def __repr__(self):
+        return "#H(%s)" % " ".join(to_string(Pair(key, value)) for key, value in self.entries)
+
+
+class FunctionLiteral:
+    """#.x, as the reader reads it, where x is a lambda expression, (lambda (params...) body...), or the name of a
+    function: the function that the lambda expression makes in the top-level environment, or the function that the
+    name is bound to there. See make_function_from_literal."""
+
+    def __init__(self, form, line):
+        self.form = form                    # a Pair, (lambda ...), or a Symbol
+        self.line = line
+
+    def __repr__(self):
+        return "#." + to_string(self.form)
+
+
+LITERAL_TYPES = (StructLiteral, HashTableLiteral, FunctionLiteral)
+
+
+class FormWithLiterals:
+    """A top-level form with a #S(...), #H(...) or #. in it, as parse gives it: seval makes what they are (see
+    resolve_literals) just before it evaluates it, after the forms before it have been evaluated -- so a #S(...) can
+    follow, in the same file or the same cell, the defstruct of its type, as in Common Lisp, where a struct is made when
+    it is read."""
 
     def __init__(self, form):
         self.form = form
@@ -751,7 +812,7 @@ def make_struct_from_literal(literal, env):
         if str(key)[1:] not in slot_names:
             raise LispError("#S(%s ...) on line %d: a %s has no slot called %s (its slots are %s)"
                             % (literal.type_name, literal.line, literal.type_name, str(key)[1:], ", ".join(sorted(slot_names))))
-        arguments += [key, resolve_struct_literals(value, env)]
+        arguments += [key, resolve_literals(value, env)]
     constructor = env.lookup_or_none(Symbol("make-%s" % literal.type_name))
     if not isinstance(constructor, Procedure):
         raise LispError("#S(%s ...) on line %d: make-%s, the constructor of %s, is not defined"
@@ -759,20 +820,76 @@ def make_struct_from_literal(literal, env):
     return apply_proc(constructor, arguments)
 
 
-def resolve_struct_literals(x, env):
-    """x, with each #S(...) in it, at any depth (in a list, in a vector, or as the value of a slot), made into the struct that it
-    is (see make_struct_from_literal). What has none in it is returned as it is."""
-    if isinstance(x, FormWithStructLiterals):
-        return resolve_struct_literals(x.form, env)
+def make_hash_table_from_literal(literal, env):
+    """The hash table that #H((key . value) ...) is, with its entries in the order they are written. A key or value
+    that is written as a struct, a hash table or a function prints is made first. An error if a key is in it twice, or
+    is one that hash-table-set! refuses."""
+    table = LispHashTable()
+    for key, value in literal.entries:
+        key = resolve_literals(key, env)
+        if isinstance(key, bool):
+            raise LispError("#H(...) on line %d: #t and #f can't be hash-table keys -- use a number, string, symbol, "
+                            "keyword, or date" % literal.line)
+        try:
+            already_in = key in table.table
+        except TypeError:
+            raise LispError("#H(...) on line %d: %s can't be a hash-table key (lists, vectors, structs and hash tables can't be)"
+                            % (literal.line, _brief(key)))
+        if already_in:
+            raise LispError("#H(...) on line %d: the key %s is in it twice" % (literal.line, _brief(key)))
+        table.table[key] = resolve_literals(value, env)
+    return table
+
+
+def top_level_env(env):
+    """The top-level environment, the one that env is inside of (or env, if it is that one)."""
+    while env.outer is not None:
+        env = env.outer
+    return env
+
+
+def is_function(x):
+    """Whether x is a function: one made by lambda or define, a generic function, or a builtin (a Python function)."""
+    return isinstance(x, (Procedure, GenericFunction)) or inspect.isroutine(x)
+
+
+def make_function_from_literal(literal, env):
+    """The function that #.x is. For #.(lambda ...), the function that the lambda expression makes in the top-level
+    environment: the same as the one it was printed from, unless that one was made inside a function or a let and used
+    its variables (see closure_variables), whose values the printed code doesn't have. For #.name, the function that
+    the name is bound to in the top-level environment."""
+    top = top_level_env(env)
+    if isinstance(literal.form, Symbol):
+        value = top.lookup_or_none(literal.form)
+        if value is None:
+            raise LispError("#.%s on line %d: there is no function called %s (define it, or load the file that does, first)"
+                            % (literal.form, literal.line, literal.form))
+        if not is_function(value):
+            raise LispError("#.%s on line %d: %s is %s, which is not a function"
+                            % (literal.form, literal.line, literal.form, _brief(value)))
+        return value
+    return seval(resolve_literals(literal.form, env), top)
+
+
+def resolve_literals(x, env):
+    """x, with each #S(...), #H(...) and #. in it, at any depth (in a list, in a vector, as the value of a slot, or as a
+    key or a value of a hash table), made into what it is: see make_struct_from_literal, make_hash_table_from_literal
+    and make_function_from_literal. What has none in it is returned as it is."""
+    if isinstance(x, FormWithLiterals):
+        return resolve_literals(x.form, env)
     if isinstance(x, StructLiteral):
         return make_struct_from_literal(x, env)
+    if isinstance(x, HashTableLiteral):
+        return make_hash_table_from_literal(x, env)
+    if isinstance(x, FunctionLiteral):
+        return make_function_from_literal(x, env)
     if isinstance(x, Pair):
         items, p = [], x
         while isinstance(p, Pair):                  # (along the list, not down it: a long list is not a deep one)
             items.append(p.car)
             p = p.cdr
-        made = [resolve_struct_literals(item, env) for item in items]
-        tail = resolve_struct_literals(p, env)
+        made = [resolve_literals(item, env) for item in items]
+        tail = resolve_literals(p, env)
         if tail is p and all(new is old for new, old in zip(made, items)):
             return x
         result = tail
@@ -781,7 +898,7 @@ def resolve_struct_literals(x, env):
         return result
     if isinstance(x, LispVector) and x.items.dtype == object:
         items = list(x.items)
-        made = [resolve_struct_literals(item, env) for item in items]
+        made = [resolve_literals(item, env) for item in items]
         return x if all(new is old for new, old in zip(made, items)) else LispVector(made)
     return x
 
@@ -790,13 +907,13 @@ def parse(text):
     """Parse source text into top-level Lisp expressions, one at a time. (A
     generator, so a file's forms before a missing or extra parenthesis still
     get run. A string that is never closed is found before any form is read.)
-    A form with a #S(...) in it is given as a FormWithStructLiterals, whose
-    structs seval makes when it evaluates it."""
+    A form with a #S(...), #H(...) or #. in it is given as a FormWithLiterals,
+    whose structs, hash tables and functions seval makes when it evaluates it."""
     tokens = Tokens(text)
     while tokens.more():
-        literals_before = tokens.struct_literals_read
+        literals_before = tokens.literals_read
         form = read_from(tokens)
-        yield form if tokens.struct_literals_read == literals_before else FormWithStructLiterals(form)
+        yield form if tokens.literals_read == literals_before else FormWithLiterals(form)
 
 
 def read_from(tokens):
@@ -842,8 +959,34 @@ def read_from(tokens):
         if len(items) % 2 != 1 or not all(isinstance(key, Keyword) for key in items[1::2]):
             raise LispError("#S(%s ...) on line %d: after the type come slots and their values, :slot value ..., such as "
                             "#S(point :x 1 :y 2)" % (items[0], line))
-        tokens.struct_literals_read += 1
+        tokens.literals_read += 1
         return StructLiteral(items[0], list(zip(items[1::2], items[2::2])), line)
+    elif token == "#H(":
+        entries = []
+        while tokens.more() and tokens.peek() != ")":
+            entry = read_from(tokens)
+            if not isinstance(entry, Pair):
+                raise LispError("#H( on line %d: a hash table is written #H((key . value) ...), a pair for each entry, as "
+                                "hash-table->alist gives them, such as #H((\"a\" . 1) (\"b\" . 2)) -- and %s is not a pair"
+                                % (line, to_string(entry)))
+            entries.append((entry.car, entry.cdr))
+        if not tokens.more():
+            raise lisp_error_of_kind("missing ')': the #H( on line %d is never closed" % line, UNFINISHED)
+        tokens.take()  # discard ")"
+        tokens.literals_read += 1
+        return HashTableLiteral(entries, line)
+    elif token == "#.":
+        if not tokens.more():
+            raise lisp_error_of_kind("nothing follows the #. on line %d" % line, UNFINISHED)
+        form = read_from(tokens)
+        is_name = isinstance(form, Symbol) and not isinstance(form, Keyword)
+        is_lambda = isinstance(form, Pair) and isinstance(form.car, Symbol) and form.car == "lambda"
+        if not (is_name or is_lambda):
+            raise LispError("#.%s on line %d: #. is followed by a function, as one prints: a lambda expression, "
+                            "(lambda (x) ...), or the name of a function. (In Common Lisp, #. runs what follows it as it "
+                            "is read; here, reading runs nothing.)" % (to_string(form), line))
+        tokens.literals_read += 1
+        return FunctionLiteral(form, line)
     elif token == ")":
         raise LispError("unexpected ')' on line %d -- there are more )s than (s before it" % line)
     elif token in ("'", "`", ",", ",@"):
@@ -1171,6 +1314,7 @@ _macros_expanding = 0   # how many macros are building their expansions right no
 
 TRACE_MAX_FRAMES = 40   # a longer stack trace keeps the outermost 10 and innermost 30
 _BRIEF_MAX_ITEMS = 6    # list/vector elements shown before "..."
+_BRIEF_FIRST_ITEMS = 3  # the elements of a longer vector, or the entries of a bigger hash table, shown before "... n=<how many>"
 _BRIEF_MAX_DEPTH = 3    # nesting shown before "(...)"
 _BRIEF_MAX_STRING = 40  # string characters shown before "..."
 
@@ -1233,7 +1377,7 @@ def _brief(x, depth=0):
         n = len(x.items)
         if n <= _BRIEF_MAX_ITEMS:
             return "#(" + " ".join(to_string(item) for item in x.items) + ")"
-        return "#(" + " ".join(to_string(item) for item in x.items[:3]) + " ... n=%d)" % n
+        return "#(" + " ".join(to_string(item) for item in x.items[:_BRIEF_FIRST_ITEMS]) + " ... n=%d)" % n
     if isinstance(x, LispStruct):
         if depth >= _BRIEF_MAX_DEPTH:
             return "#S(%s ...)" % (x.struct_type.name,)
@@ -1243,8 +1387,16 @@ def _brief(x, depth=0):
         if len(slots) > 4:
             parts.append("...")
         return "#S(%s%s)" % (x.struct_type.name, "".join(" " + part for part in parts))
+    if isinstance(x, LispHashTable):
+        if depth >= _BRIEF_MAX_DEPTH:
+            return "#H(...)"
+        n = len(x.table)
+        if n <= _BRIEF_MAX_ITEMS:
+            return "#H(" + " ".join(_brief(Pair(key, value), depth + 1) for key, value in x.table.items()) + ")"
+        first = itertools.islice(x.table.items(), _BRIEF_FIRST_ITEMS)
+        return "#H(" + " ".join(_brief(Pair(key, value), depth + 1) for key, value in first) + " ... n=%d)" % n
     if isinstance(x, (Procedure, Macro)):
-        return repr(x)
+        return repr(x)          # (by its name, #<procedure f>: its code would make an error message long)
     if isinstance(x, LispDate):
         return to_string(x)
     text = str(x)
@@ -1790,7 +1942,7 @@ def define_struct(args, env):
     docs = struct_function_docs(type_name, [str(slot_name) for slot_name, _ in slots])
     env[Symbol("make-%s" % type_name)] = Procedure(
         [], [LispString(docs["make-%s" % type_name]), make_body], env, rest_param=None, keyword_specs=slots,
-        name=Symbol("make-%s" % type_name))
+        name=Symbol("make-%s" % type_name), prints_by_name=True)
 
     def make_accessor(slot_name):
         def accessor(s):
@@ -2089,8 +2241,8 @@ def seval(expr, env, call=None):
     If an error escapes, the calls in progress are recorded on the exception
     (exc.lisp_trace) on its way out."""
     global _call_depth
-    if type(expr) is FormWithStructLiterals:
-        expr = resolve_struct_literals(expr, env)       # (its #S(...) are made now, after the forms before it ran)
+    if type(expr) is FormWithLiterals:
+        expr = resolve_literals(expr, env)      # (its #S(...), #H(...) and #. are made now, after the forms before it ran)
     control_stack = [('EVAL', expr, env)]
     value_stack = []
     entry_depth = _call_depth
@@ -2157,8 +2309,8 @@ def _run_eval_loop(control_stack, value_stack):
             elif isinstance(x, Symbol):
                 value_stack.append(cur_env.find(x)[x])
             elif not isinstance(x, Pair):
-                if type(x) is StructLiteral:   # a #S(...) in code that was not read by parse (built by a program, say)
-                    x = make_struct_from_literal(x, cur_env)
+                if type(x) in LITERAL_TYPES:    # a #S(...), #H(...) or #. in code that parse did not read (a program built it, say)
+                    x = resolve_literals(x, cur_env)
                 value_stack.append(x)          # self-evaluating literal
             else:
                 op, args = x.car, x.cdr
@@ -2397,25 +2549,71 @@ def to_display_string(x):
         return "()"
     if isinstance(x, LispString):
         return x
-    if isinstance(x, (Pair, LispVector, LispDate, LispStruct)) or inspect.isroutine(x):
+    if isinstance(x, (Pair, LispVector, LispDate, LispStruct, LispHashTable, Procedure, GenericFunction)) or inspect.isroutine(x):
         return to_string(x)
     return str(x)
 
 
-TOP_LEVEL_MAX_ITEMS = 100      # the most elements of a list or vector shown as the value of a notebook cell or a console line
+TOP_LEVEL_MAX_ITEMS = 100      # the most elements of a list, vector or hash table shown as the value of a notebook cell or a console line
 
 
 def more_items_note(count):
-    """What stands for the elements of a list or vector that aren't shown."""
+    """What stands for the elements of a list, vector or hash table that aren't shown."""
     return "... (%s more)" % format(count, ",")
 
 
-def to_string(x, max_items=None):
-    """A value as the REPL prints it (strings in quotes). Loops rather than
-    recursing along a list, so a very long list prints fine. With max_items, a
-    list or vector (at any depth) shows only its first max_items elements, and
-    how many more it has: a notebook cell's value is shown that way, so that a
-    vector of a million numbers doesn't fill the page."""
+def to_string(x, max_items=None, readably=False):
+    """A value as the REPL prints it (strings in quotes), which read-from-string reads back as the same value: a struct
+    as #S(type :slot value ...), a hash table as #H((key . value) ...), and a function as #. and its code,
+    #.(lambda (x) ...), or for a builtin, a generic function or a struct's constructor, #. and its name, #.car. With
+    max_items, a list, vector or hash table (at any depth) shows only its first max_items elements, and how many more it
+    has: a notebook cell's value is shown that way, so that a vector of a million numbers doesn't fill the page. A value
+    that holds itself (a hash table that is one of its own values, say) is an error, since printing it would never end.
+
+    With readably, as Common Lisp's *print-readably*, what would not read back as it is is an error, rather than
+    printed: a value that is not data, which prints as #<...>, and a closure, a function that uses variables of the
+    place where it was made, whose values its code doesn't have (see closure_variables)."""
+    return _written(x, max_items, set(), readably)
+
+
+def _holds_itself(x):
+    """The error for printing x, which holds itself."""
+    what = {Pair: "list", LispVector: "vector", LispHashTable: "hash table", Procedure: "function"}.get(type(x))
+    if isinstance(x, LispStruct):
+        what = "%s (a struct)" % (x.struct_type.name,)
+    return LispError("this %s holds itself (it is one of its own elements or values, or is inside one of them), so it "
+                     "can't be printed: the printing would never end" % (what or "value",))
+
+
+def _goes_round(x):
+    """The error for printing x, a list whose cdrs come back to it."""
+    return LispError("this list goes round in a circle (the cdr of one of its pairs is an earlier pair of it, as set-cdr! "
+                     "can make it), so it can't be printed: the printing would never end")
+
+
+_SHORT_CODE = 60        # the characters of a function's code that an error message shows
+
+
+def _not_readable(x):
+    """The error for printing x readably, which can't be: x is a closure, a builtin without a name, or not data."""
+    if isinstance(x, Procedure):
+        code = to_string(reconstruct_procedure_source(x))
+        uses = closure_variables(x)
+        return LispError("the function #.%s uses %s, %s of the place where it was made, and its code doesn't have %s: "
+                         "read back, it would look %s up at the top level instead"
+                         % (code if len(code) <= _SHORT_CODE else code[:_SHORT_CODE - 3] + "...", ", ".join(uses),
+                            "a variable" if len(uses) == 1 else "variables", "its value" if len(uses) == 1 else "their values",
+                            "it" if len(uses) == 1 else "them"))
+    if inspect.isroutine(x):
+        return LispError("%s is a function written in Python that has no name, so it can't be written so that it reads back"
+                         % (_brief(x),))
+    return LispError("%s is not data, so it can't be written so that it reads back: it says what it is, and not how to "
+                     "make it again" % (_brief(x),))
+
+
+def _written(x, max_items, inside, readably):
+    """to_string's work. inside is the ids of the lists, vectors, structs, hash tables and functions that x is in, that
+    are being printed, so that one that is inside itself is found."""
     if x is True:
         return "#t"
     if x is False:
@@ -2429,33 +2627,75 @@ def to_string(x, max_items=None):
         return '"%s"' % x.replace("\\", "\\\\").replace('"', '\\"')
     if isinstance(x, LispDate):
         return x.date.isoformat()
+    if isinstance(x, GenericFunction):
+        return "#." + str(x.name)
+    if inspect.isroutine(x):            # a builtin: a function written in Python, which has no code to show, but a name
+        name = builtin_names.get(x)
+        if name:
+            return "#." + name
+        if readably:
+            raise _not_readable(x)
+        return "#<builtin>"
+    if not isinstance(x, (Pair, LispVector, LispStruct, LispHashTable, Procedure)):
+        if readably and not isinstance(x, (int, float, np.generic, Symbol)):
+            raise _not_readable(x)
+        return str(x)
+    if id(x) in inside:
+        raise _holds_itself(x)
+    inside.add(id(x))
     if isinstance(x, LispVector):
         # Not .tolist(): str() of a float32 prints the short value it actually
         # holds (0.964), while a Python float would print 0.9639999866485596.
         shown = x.items if max_items is None else x.items[:max_items]
-        parts = [to_string(item, max_items) for item in shown]
+        parts = [_written(item, max_items, inside, readably) for item in shown]
         if len(shown) < len(x.items):
             parts.append(more_items_note(len(x.items) - len(shown)))
-        return "#(" + " ".join(parts) + ")"
-    if isinstance(x, LispStruct):
-        parts = ["%s %s" % (Keyword(":" + slot_name), to_string(x.values.get(slot_name), max_items))
+        text = "#(" + " ".join(parts) + ")"
+    elif isinstance(x, LispStruct):
+        parts = ["%s %s" % (Keyword(":" + slot_name), _written(x.values.get(slot_name), max_items, inside, readably))
                  for slot_name, _ in x.struct_type.slots]
-        return "#S(%s %s)" % (x.struct_type.name, " ".join(parts)) if parts else "#S(%s)" % (x.struct_type.name,)
-    if isinstance(x, Pair):
-        parts = []
-        p = x
-        while isinstance(p, Pair):
-            if max_items is not None and len(parts) == max_items:
-                return "(" + " ".join(parts + [more_items_note(len(pairs_to_list(p)))]) + ")"
-            parts.append(to_string(p.car, max_items))
-            p = p.cdr
-        if p is NIL:
-            return "(" + " ".join(parts) + ")"
-        return "(" + " ".join(parts) + " . " + to_string(p) + ")"
-    if inspect.isroutine(x):            # a builtin: a function written in Python
-        name = builtin_names.get(x)
-        return "#<builtin %s>" % name if name else "#<builtin>"
-    return str(x)
+        text = "#S(%s %s)" % (x.struct_type.name, " ".join(parts)) if parts else "#S(%s)" % (x.struct_type.name,)
+    elif isinstance(x, LispHashTable):
+        entries = list(x.table.items())
+        shown = entries if max_items is None else entries[:max_items]
+        parts = [_written(Pair(key, value), max_items, inside, readably) for key, value in shown]   # as hash-table->alist prints
+        if len(shown) < len(entries):
+            parts.append(more_items_note(len(entries) - len(shown)))
+        text = "#H(" + " ".join(parts) + ")"
+    elif isinstance(x, Procedure):
+        if x.prints_by_name and x.name is not None:
+            text = "#." + str(x.name)
+        else:
+            if readably and closure_variables(x):
+                raise _not_readable(x)
+            text = "#." + _written(reconstruct_procedure_source(x), max_items, inside, readably)
+    else:
+        text = _written_list(x, max_items, inside, readably)
+    inside.discard(id(x))
+    return text
+
+
+def _written_list(x, max_items, inside, readably):
+    """A list, as to_string prints it. A list whose cdrs come back to one of its pairs (set-cdr! can make one) is an
+    error: it is found by a second place in the list, which moves along it at half the speed of the one being printed,
+    and which the one being printed comes to again only if the list goes round in a circle."""
+    parts = []
+    count = 0                           # the elements gone past, printed or not
+    p = slower = x
+    while isinstance(p, Pair):
+        if max_items is None or count < max_items:
+            parts.append(_written(p.car, max_items, inside, readably))
+        count += 1
+        p = p.cdr
+        if count % 2 == 0:
+            slower = slower.cdr
+        if p is slower:
+            raise _goes_round(x)
+    if count > len(parts):
+        return "(" + " ".join(parts + [more_items_note(count - len(parts))]) + ")"
+    if p is NIL:
+        return "(" + " ".join(parts) + ")"
+    return "(" + " ".join(parts) + " . " + _written(p, max_items, inside, readably) + ")"
 
 
 PRETTY_PRINT_ONE_LINE_LIMIT = 8     # a list or vector of this many atoms or fewer is printed on one line
@@ -2494,7 +2734,7 @@ def pretty_print_string(expr):
                 items.append(p.car)
                 p = p.cdr                   # (a dotted list's tail is an atom, too)
         return (len(items) <= PRETTY_PRINT_ONE_LINE_LIMIT
-                and not any(isinstance(item, (Pair, LispVector)) for item in items))
+                and not any(isinstance(item, (Pair, LispVector, LispHashTable)) for item in items))
 
     def write(x):
         if isinstance(x, (Pair, LispVector)) and is_short_list_of_atoms(x):
@@ -2526,6 +2766,17 @@ def pretty_print_string(expr):
                 write(item)
                 first = False
             break_line(open_col + 1)  # align under the '(' of '#(', not the '#'
+            emit_text(')')
+        elif isinstance(x, LispHashTable) and x.table:
+            open_col = col()
+            emit_text('#H(')
+            first = True
+            for key, value in x.table.items():      # each entry as hash-table->alist has it, (key . value)
+                if not first:
+                    break_line(open_col + 3)
+                write(Pair(key, value))
+                first = False
+            break_line(open_col + 2)  # align under the '(' of '#H(', not the '#'
             emit_text(')')
         else:
             emit_text(to_string(x))
@@ -2566,6 +2817,54 @@ def reconstruct_procedure_source(proc, name=None):
     if name is not None:
         return Pair(Symbol("define"), Pair(Pair(name, param_spec), body))
     return Pair(Symbol("lambda"), Pair(param_spec, body))
+
+
+def closure_variables(proc):
+    """The variables that the function proc uses of the place where it was made, when that is inside a function or a
+    let, not at the top level: a closure's. Its printed code, #.(lambda ...), doesn't have their values, so the function
+    that the code makes when it is read back looks them up at the top level instead. [] for a function made at the top
+    level, for one that uses only its own parameters and the top-level variables, and for a builtin.
+
+    It is found by looking at the names in the code (except what is quoted): a name that is a variable of the place the
+    function was made counts, even where an inner let or lambda of the function's own makes it a variable of its own."""
+    if not isinstance(proc, Procedure):
+        return []
+    own = set(proc.params) | {name for name, _ in proc.optional_specs} | {name for name, _ in proc.keyword_specs}
+    if proc.rest_param is not None:
+        own.add(proc.rest_param)
+    code = list(proc.body) + [default for _, default in proc.optional_specs + proc.keyword_specs if default is not None]
+    found = []
+    for name in _symbols_in(code):
+        if name in own:
+            continue
+        scope = proc.env
+        while scope.outer is not None:      # each scope it was made inside, up to (and not counting) the top level
+            if name in scope:
+                found.append(name)
+                break
+            scope = scope.outer
+    return found
+
+
+def _symbols_in(code):
+    """The symbols in code, a list of forms, each once, in the order they first appear: not keywords, and not what is
+    quoted, (quote ...)."""
+    found, seen = [], set()
+    to_look_at = list(reversed(code))
+    while to_look_at:
+        x = to_look_at.pop()
+        if isinstance(x, Symbol) and not isinstance(x, Keyword):
+            if x not in seen:
+                seen.add(x)
+                found.append(x)
+        elif isinstance(x, Pair) and not (isinstance(x.car, Symbol) and x.car == "quote"):
+            items, p = [], x
+            while isinstance(p, Pair):
+                items.append(p.car)
+                p = p.cdr
+            items.append(p)                 # (the tail of a dotted list, or '())
+            to_look_at.extend(reversed(items))
+    return found
 
 
 def reconstruct_macro_source(macro, name=None):
