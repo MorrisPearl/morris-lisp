@@ -16,9 +16,13 @@ DEFAULT_PREDICTORS = ["credit_score", "current_ltv", "loan_age", "dti", "sato", 
                       "investor", "second_home", "cash_out", "refinance", "one_borrower"]
 SEVERITY_PREDICTORS = ["ltv_at_default", "loan_size_k", "mi_percent", "months_since_default", "investor"]
 
-LOAN_MONTH_COLUMNS = ["loan_id", "period", "sample_bucket", "calendar_month", "months_delinquent", "scheduled_upb", "start_upb", "smm", "incentive",
+LOAN_MONTH_COLUMNS = ["loan_id", "period", "sample_bucket", "calendar_month", "months_delinquent", "scheduled_upb", "start_upb", "smm", "prepaid", "rate", "incentive",
                       "loan_age", "credit_score", "current_ltv", "sato", "burnout", "occupancy", "purpose", "dti", "borrowers", "defaulted", "after_default",
                       "exit_code", "removal_upb", "loss", "severity", "ltv_at_default", "mi_percent", "months_since_default"]
+
+
+SURVEY_RATE = 3.0      # the survey rate of every month here, percent: a loan's rate is this plus its incentive
+EIGHTHS = 8            # note rates are in eighths of a percent
 
 
 def logistic(x):
@@ -50,16 +54,19 @@ def make_database(path, months=12, loans_a_month=2000, sales=600, seed=1):
     rows = []
     for month in range(1, months + 1):
         for n in range(loans_a_month):
-            incentive = rng.uniform(-1.5, 2.5)
+            incentive = round(rng.uniform(-1.5, 2.5) * EIGHTHS) / EIGHTHS        # (note rates are in eighths, so loans share a rate)
             ltv, score = rng.uniform(40, 140), int(rng.integers(620, 820))
             balance = rng.uniform(100000, 400000)
             rows.append({"loan_id": "L%d-%d" % (month, n), "period": "2020-%02d-01" % month, "sample_bucket": int(rng.integers(0, 100)),
                          "calendar_month": month, "months_delinquent": int(rng.choice([0, 0, 0, 0, 5])), "scheduled_upb": balance, "start_upb": balance + 300,
                          "smm": 1.0 if rng.random() < chance_of_prepaying(incentive * 100) else 0.0, "incentive": incentive,
+                         "rate": SURVEY_RATE + incentive,
                          "loan_age": int(rng.integers(1, 200)), "credit_score": score, "current_ltv": ltv, "sato": rng.normal(0, 0.3),
                          "burnout": int(rng.integers(0, 30)), "occupancy": str(rng.choice(["P", "I", "S"])), "purpose": str(rng.choice(["P", "C", "N"])),
                          "dti": int(rng.integers(15, 50)), "borrowers": int(rng.choice([1, 2])),
                          "defaulted": 1 if rng.random() < chance_of_defaulting(ltv, score) else 0, "after_default": int(rng.random() < 0.05)})
+    for row in rows:
+        row["prepaid"] = row["smm"] * row["scheduled_upb"]
     rows[0]["credit_score"] = None                                    # (a loan with no credit score is left out)
     for n in range(sales):
         ltv = rng.uniform(50, 150)
@@ -219,6 +226,31 @@ class TestThePrepaymentModel(ModelsCase):
         for bp in (-100, 0, 100, 200):
             self.assertAlmostEqual(cprs[bp], 100 * (1 - (1 - chance_of_prepaying(bp)) ** 12), delta=6.0)
         self.assertTrue(cprs[-100] < cprs[0] < cprs[100] < cprs[200])
+
+    def test_loans_of_the_same_rate_age_and_month_are_put_together(self):
+        self.run_lisp('(define data (freddie-rate-age-groups conn "sample_bucket < 80"))')
+        self.assertShows("(map car (loan-data-predictors data))", '("incentive_bp" "loan_age")')
+        where = "sample_bucket < 80 AND COALESCE(months_delinquent, 99) < 4 AND scheduled_upb > 0 AND incentive IS NOT NULL"
+        groups = self.sql("""SELECT SUM(prepaid) / SUM(scheduled_upb), SUM(scheduled_upb), AVG(incentive) * 100, loan_age FROM loan_months
+                             WHERE %s GROUP BY rate, loan_age, period""" % where)
+        self.assertEqual(len(self.vector("(loan-data-outcomes data)")), len(groups))
+        np.testing.assert_allclose(self.vector("(loan-data-weights data)").sum(), sum(group[1] for group in groups))
+        prepaid = sum(group[0] * group[1] for group in groups)
+        np.testing.assert_allclose((self.vector("(loan-data-outcomes data)") * self.vector("(loan-data-weights data)")).sum(), prepaid)
+
+    def test_the_rate_and_age_model_has_an_s_curve_and_the_actual_one_adds_up(self):
+        self.run_lisp('''(define data (freddie-rate-age-groups conn "sample_bucket < 80"))
+                         (define model (fit-rate-age-model data))
+                         (define curve (rate-age-s-curve model :age 36))
+                         (define actual (actual-s-curve data :step 50))''')
+        cprs = dict(zip(self.vector('(table-column curve "incentive_bp")'), self.vector('(table-column curve "CPR")')))
+        self.assertTrue(cprs[-100] < cprs[0] < cprs[100] < cprs[200])
+        self.assertTrue(np.all(self.vector('(table-column actual "incentive_bp")') % 50 == 0))
+        np.testing.assert_allclose(self.vector('(table-column actual "balance")').sum(), self.vector("(loan-data-weights data)").sum())
+        everything = self.vector("(loan-data-outcomes data)") @ self.vector("(loan-data-weights data)") / self.vector("(loan-data-weights data)").sum()
+        weights = self.vector('(table-column actual "balance")')
+        smms = 1 - (1 - self.vector('(table-column actual "CPR")') / 100) ** (1 / 12)
+        self.assertAlmostEqual(smms @ weights / weights.sum(), everything)
 
     def test_a_model_fitted_to_the_groups_can_be_tried_on_the_loans_and_the_charts_are_drawn(self):
         self.run_lisp('''(define by-loan (fit-prepayment-model (freddie-loan-months conn "sample_bucket < 80")))

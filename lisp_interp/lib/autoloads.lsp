@@ -122,7 +122,8 @@
 ; A prepayment model fitted to Freddie Mac's loans, from the database that load_freddie_data/ makes
 (lazy-load "freddie_prepayment.lsp"
   fit-prepayment-model freddie-groups freddie-loan-months plot-prepayment-s-curves prepayment-s-curve
-  freddie-prepayment-fit freddie-prepayment-model prepayment-model-columns save-freddie-prepayment-fit)
+  freddie-prepayment-fit freddie-prepayment-model prepayment-model-columns save-freddie-prepayment-fit
+  freddie-rate-age-groups fit-rate-age-model actual-s-curve rate-age-s-curve)
 
 ; What the models of Freddie Mac's loans share: reading the database that load_freddie_data/ makes, fitting, and trying a model month by month
 (lazy-load "freddie_loans.lsp"

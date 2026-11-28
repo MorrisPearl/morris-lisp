@@ -64,6 +64,49 @@ its weight its scheduled balance."
 ; a loan to draw the S-curve of a model for: three years old, $250,000, a credit score of 750, 70% loan-to-value, a purchase, of a primary home, in the spring or fall
 
 ; ---------------------------------------------------------------------------
+; The simplest model: the incentive and the age, fitted to groups of the same rate, age and month
+; ---------------------------------------------------------------------------
+
+(define rate-age-predictors
+  (list (make-predictor :name "incentive_bp" :sql "incentive * 100" :group-sql "incentive * 100" :knots '(-100 0 50 100 150 200 300))
+        (make-predictor :name "loan_age" :sql "loan_age" :group-sql "loan_age" :knots '(6 12 24 36 60 120))))
+; what the simplest prepayment model looks at: the incentive, in basis points, and the age, in months, with the knots of prepayment-predictors
+
+(define rate-age-loan-months "COALESCE(months_delinquent, 99) < 4 AND scheduled_upb > 0 AND incentive IS NOT NULL")
+; the months of loans that the simplest model is for: not four or more months delinquent, with a balance, and with an incentive (its other
+; predictor, the age, every month has)
+
+(define (freddie-rate-age-groups conn where)
+  "The loan-data of the months of loans in the table loan_months that are where (an SQL condition, such as \"sample_bucket < 80\"), put together by
+the loan's rate, its age and the month: a row for each group, its outcome the group's smm (all that its loans prepaid over all of their scheduled
+balances), its weight that balance, and its predictors (rate-age-predictors). All the loans of a group have the same incentive, as the survey rate
+is the month's."
+  (let ((groups (format "(SELECT period, rate, loan_age, AVG(incentive) AS incentive, SUM(scheduled_upb) AS balance, SUM(prepaid) AS prepaid
+                          FROM loan_months WHERE ({}) AND ({}) GROUP BY rate, loan_age, period)"
+                        rate-age-loan-months where)))
+    (freddie-loans--loan-data-from conn groups "prepaid / balance" "balance" "1 = 1" rate-age-predictors predictor-group-sql)))
+
+(define (fit-rate-age-model data)
+  "A model of the smm on the incentive and the age alone (rate-age-predictors), fitted to the loan-data (of freddie-rate-age-groups)."
+  (freddie-loans--fit-rate-model data rate-age-predictors))
+
+(define (actual-s-curve data &key (step 25) (youngest 0) (oldest 360))
+  "A table of what the rows of the loan-data (made with the predictors incentive_bp and loan_age, such as freddie-rate-age-groups') of loans from
+youngest to oldest months old prepaid, for each incentive rounded to the nearest step basis points: the columns incentive_bp, CPR (all of the rows'
+prepayments over all of their balances, as an annual rate, in percent) and balance (all of their scheduled balances)."
+  (let* ((incentive (cdr (assoc "incentive_bp" (loan-data-predictors data))))
+         (age (cdr (assoc "loan_age" (loan-data-predictors data))))
+         (rows (make-table "incentive_bp" (* step (round (/ incentive step)))
+                           "age" age
+                           "balance" (loan-data-weights data)
+                           "prepaid" (* (loan-data-outcomes data) (loan-data-weights data))))
+         (in-ages (table-filter rows (<= youngest age oldest)))
+         (by-incentive (table-group-by in-ages "incentive_bp" '(("balance" sum "balance") ("prepaid" sum "prepaid")))))
+    (make-table "incentive_bp" (table-column by-incentive "incentive_bp")
+                "CPR" (annual-rate (/ (table-column by-incentive "prepaid") (table-column by-incentive "balance")))
+                "balance" (table-column by-incentive "balance"))))
+
+; ---------------------------------------------------------------------------
 ; The model, for a deal: (model piece path)
 ; ---------------------------------------------------------------------------
 
@@ -128,11 +171,17 @@ library: freddie-prepayment-fit), which gives the CPR, in percent, of each month
     (annual-rate (model-predict (if (null? fit) (freddie-prepayment-fit) fit)
                                 (prepayment-model-columns piece path :home-price-growth home-price-growth :mortgage-spread mortgage-spread)))))
 
-(define (prepayment-s-curve model &key (loan typical-prepayment-loan))
-  "A table of the CPR that the model says the loan (a list of (predictor value)) prepays at, for each incentive from -200 to 400 basis points, in steps of 25."
+(define (prepayment-s-curve model &key (loan typical-prepayment-loan) (predictors prepayment-predictors))
+  "A table of the CPR that the model says the loan (a list of (predictor value)) prepays at, for each incentive from -200 to 400 basis points, in steps of 25.
+predictors are the model's: rate-age-predictors for a model of fit-rate-age-model, with a loan such as '((\"loan_age\" 36))."
   (let ((incentives (list->vector (loop for bp from -200 to 400 by 25 collect bp))))
     (make-table "incentive_bp" incentives
-                "CPR" (annual-rate (model-curve model prepayment-predictors loan "incentive_bp" incentives)))))
+                "CPR" (annual-rate (model-curve model predictors loan "incentive_bp" incentives)))))
+
+(define (rate-age-s-curve model &key (age 36))
+  "The S-curve of a model of fit-rate-age-model: a table of the CPR it says a loan age months old prepays at, for each incentive from -200 to 400 basis
+points (see prepayment-s-curve)."
+  (prepayment-s-curve model :loan (list (list "loan_age" age)) :predictors rate-age-predictors))
 
 (define (plot-prepayment-s-curves models &key (loan typical-prepayment-loan))
   "A chart of the S-curve of each model (a list of (name model)): the CPR of the loan, against the incentive."

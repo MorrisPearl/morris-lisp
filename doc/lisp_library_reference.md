@@ -4280,6 +4280,21 @@ each group's smm and the averages of its loans (the averages of groups are close
 `(fit-prepayment-model data)` fits either. `(prepayment-s-curve model)` is the CPR of `typical-prepayment-loan` for each incentive from -200 to 400 basis points, and
 `(plot-prepayment-s-curves (list (list name model) ...))` draws them.
 
+**The simplest model: incentive and age.** `(freddie-rate-age-groups conn where)` puts the months of loans together by the loan's rate, its age and
+the month (all the loans of a group have the same incentive, as the survey rate is the month's): each group's smm, all that its loans prepaid over all of
+their scheduled balances, weighted by that balance. `(fit-rate-age-model data)` fits a `spline-logistic` of it on the incentive and the age alone
+(`rate-age-predictors`), `(rate-age-s-curve model [:age 36])` is its S-curve for a loan of that age, and `(actual-s-curve data [:step 25 :youngest 0
+:oldest 360])` is what the loans of those ages did, for each incentive rounded to the nearest `step` basis points: the CPR of all of them together, and
+their balance. Over the whole database (37 million loan months, 1.6 million groups) it takes about a minute and a half.
+
+```lisp
+(define conn (sqlite-open "/Users/morris/freddie_data/freddie_loans.db"))
+(define groups (freddie-rate-age-groups conn "1 = 1"))
+(define simple (fit-rate-age-model groups))
+(display-table (rate-age-s-curve simple :age 36))
+(display-table (actual-s-curve groups :youngest 24 :oldest 60))     ; loans two to five years old
+```
+
 **For a deal.** `(freddie-prepayment-model [:home-price-growth 3.0 :mortgage-spread 1.75 :fit model])` is a prepayment model of the kind that a deal is given,
 `(model piece path)` (see "The prepayment model" in [lisp_cmo_manual.md](lisp_cmo_manual.md)): for a `collateral-piece` and a path of rates, the CPR of each month of
 the piece, from what the fitted model looks at in each month, `(prepayment-model-columns piece path)`. The incentive is the wac less the rate of a new mortgage, the
